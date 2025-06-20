@@ -24,9 +24,10 @@ For more background, please refer to the Medium article.
 
 3. **Upload Map and Configuration File:** 
 
-Within provider_setup/ staged_files, upload the map file (`SanFrancisco.osm.pbf` or your custom `.osm.pbf` map) and `ors-config.yaml` file to the internal stage `ors_spcs_stage` created in Step 1. 
+- Within provider_setup/ staged_files, upload the map file (`SanFrancisco.osm.pbf` or your custom `.osm.pbf` map) and `ors-config.yaml` file to the internal stage `ors_spcs_stage` created in Step 1. 
 
-Refresh stage metadata after uploading the map via UI or via code
+- Check the ors-config.yaml and amend to link to the map of your choice.
+- Refresh stage metadata after uploading the map via UI or via code
 
 ```sql
  ALTER STAGE REFRESH CORE.ORS_SPCS_STAGE REFRESH;
