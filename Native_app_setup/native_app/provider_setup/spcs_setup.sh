@@ -1,7 +1,7 @@
 # authenticate with SPCS repository
-snow spcs image-registry login -c <CONNECTION_NAME>
+snow spcs image-registry login -c YOUR_CONNECTION
 
-REPO_URL=$(snow spcs image-repository url openrouteservice_spcs.core.image_repository -c <CONNECTION_NAME>)
+REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c YOUR_CONNECTION)
 
 # command below should display image repository URL, in case of issues get it from here: https://docs.snowflake.com/en/developer-guide/snowpark-container-services/working-with-registry-repository#image-repository-url
 echo $REPO_URL
@@ -22,6 +22,11 @@ docker push $REPO_URL/routing_reverse_proxy:v0.5.6
 cd ../vroom
 docker build --rm --platform linux/amd64 -t $REPO_URL/vroom-docker:v1.0.1 .
 docker push $REPO_URL/vroom-docker:v1.0.1
+
+# downloader image
+cd ../downloader
+docker build --rm --platform linux/amd64 -t $REPO_URL/downloader:v0.0.3 .
+docker push $REPO_URL/downloader:v0.0.3 
 
 # go back to the working directory
 cd ../..

@@ -6,14 +6,18 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        source_file: /home/ors/files/ile-de-france-latest.osm.pbf
         instructions: false
     profiles:
       driving-car:
         enabled: true
       cycling-road:
         enabled: true
+      cycling-electric:
+        enabled: true
       driving-hgv:
+        enabled: true
+      foot-walking:
         enabled: true
 ################################################################################
 ### Configuration file for openrouteservice. For a description please visit: ###
@@ -32,6 +36,7 @@ ors:
 #    keep-alive-timeout: 30000
 #spring:
 #  profiles:
+
 #    active: default
 #  mvc:
 #    servlet:
@@ -83,11 +88,11 @@ ors:
 #      maximum_avoid_polygon_extent: 20000
 #      maximum_alternative_routes: 3
     matrix:
-#      enabled: true
+      enabled: true
 #      attribution: openrouteservice.org, OpenStreetMap contributors
 #      maximum_routes: 2500
 #      maximum_routes_flexible: 25
-      maximum_visited_nodes: 1000000
+      maximum_visited_nodes: 1000000000
 #      maximum_search_radius: 2000
 #      u_turn_costs: -1
 #    isochrones:
@@ -171,7 +176,7 @@ ors:
 #    ##### Profile defaults defined here are not overridden by      #####
 #    ##### a custom YAML file's ors.engine.profile_default, but by  #####
 #    ##### a custom YAML file's ors.engine.profiles.<profile>       #####
-#    profiles:
+    profiles:
 #      driving-car:
 #        encoder_name: driving-car
 #        build:
@@ -339,5 +344,5 @@ ors:
 #            enable_custom_models: false
 #          elevation: true
 #          gtfs_file: ./src/test/files/vrn_gtfs_cut.zip
-#        service:
-#          maximum_visited_nodes: 1000000
+        service:
+          maximum_visited_nodes: 1000000000
