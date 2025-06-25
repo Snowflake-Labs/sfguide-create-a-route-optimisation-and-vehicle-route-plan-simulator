@@ -203,10 +203,11 @@ def get_vroom_response(payload):
     downstream_headers ={"Content-Type":"application/json"}
     r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
     vroom_r = r.json()
-    # Process the result to include GeoJSON geometry
+    # Process the result to include GeoJSON geometry. Reverse the coordinates
     for route in vroom_r['routes']:
         if 'geometry' in route:
-            route['geometry'] = decode(route['geometry'])
+            decoded_geometry = decode(route['geometry'])
+            route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
 def get_ors_response(function, profile, payload, format):
