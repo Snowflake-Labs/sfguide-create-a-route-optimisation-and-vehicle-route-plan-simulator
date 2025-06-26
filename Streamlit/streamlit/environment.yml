@@ -1,0 +1,8 @@
+name: app_environment
+channels:
+  - snowflake
+dependencies:
+  - pydeck=*
+  - python=3.11.*
+  - snowflake-snowpark-python=
+  - streamlit=
