@@ -13,7 +13,7 @@ spec:
         REBUILD_GRAPHS: false
         ORS_CONFIG_LOCATION: /home/ors/files/ors-config.yml
         XMS: 3G 
-        XMX: 18G
+        XMX: 200G
   endpoints:
     - name: ors
       port: 8082
