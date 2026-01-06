@@ -12,7 +12,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 - Docker Desktop installed and running
 - Snowflake CLI (`snow`) installed
 - Active Snowflake connection with ACCOUNTADMIN role
-- Repository cloned at: `/Users/ppaczewski/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator`
+- Repository cloned at: `/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator`
 
 ## Workflow
 
@@ -93,7 +93,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 - Directory not found: Ensure running from `Native_app/` directory
 - Build failures: Check Docker daemon status and retry
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 41
 
 ### Step 4: Deploy Native App
 
@@ -101,9 +101,10 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Actions:**
 
-1. **Deploy** the application:
+1. **Deploy and open the application** the application:
    ```bash
-   cd Native_app && snow app run -c <connection>
+   cd Native_app && snow app run -c <connecti1on>
+   snow app open -c <connection>
    ```
 
 2. **Verify** deployment output includes:
@@ -117,7 +118,6 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 - ✋ Step 3: After starting Docker build - monitor for authentication errors
 - ✋ Step 4: After deployment - verify application created successfully
-- ✋ Step 6: After grant callback - confirm "App successfully deployed" message
 
 ## Common Issues
 
