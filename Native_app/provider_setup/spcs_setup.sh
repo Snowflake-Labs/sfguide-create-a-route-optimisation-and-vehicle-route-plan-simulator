@@ -1,7 +1,7 @@
 # authenticate with SPCS repository
-snow spcs image-registry login -c ppaczewskisnowhouse
+snow spcs image-registry login -c <connection>
 
-REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c ppaczewskisnowhouse)
+REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>)
 
 # command below should display image repository URL, in case of issues get it from here: https://docs.snowflake.com/en/developer-guide/snowpark-container-services/working-with-registry-repository#image-repository-url
 echo $REPO_URL

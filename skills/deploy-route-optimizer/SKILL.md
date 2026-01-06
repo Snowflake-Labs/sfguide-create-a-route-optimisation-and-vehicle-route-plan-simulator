@@ -70,8 +70,8 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
    ```
    If not running: `open -a Docker` (macOS)
 
-2. **Update** connection name in `Native_app/provider_setup/spcs_setup.sh`:
-   - Replace `<CONNECTION_NAME>` with active connection name
+2. **Check** connection name in `Native_app/provider_setup/spcs_setup.sh`:
+   - instead of `<connection` use active connection name, do not replace the name in file directly, use a variable instead
 
 3. **Execute** SPCS setup script from `Native_app/` directory:
    ```bash
@@ -93,7 +93,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 - Directory not found: Ensure running from `Native_app/` directory
 - Build failures: Check Docker daemon status and retry
 
-**Next:** Proceed to Step 41
+**Next:** Proceed to Step 4
 
 ### Step 4: Deploy Native App
 
@@ -103,7 +103,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 1. **Deploy and open the application** the application:
    ```bash
-   cd Native_app && snow app run -c <connecti1on>
+   cd Native_app && snow app run -c <connection>
    snow app open -c <connection>
    ```
 
