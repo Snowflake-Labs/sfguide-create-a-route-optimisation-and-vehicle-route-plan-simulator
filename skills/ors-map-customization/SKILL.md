@@ -8,27 +8,11 @@ description: "Customize OpenRouteService map region for route optimization. Use 
 Reconfigure OpenRouteService Native App to use a different geographic region/country map.
 
 ## Prerequisites
-
 - Active Snowflake connection with access to:
   - `OPENROUTESERVICE_SETUP` database
   - `OPENROUTESERVICE_NATIVE_APP` application
 - Compute resources to download and process map data
 - Services in `OPENROUTESERVICE_NATIVE_APP.CORE` schema
-
-## Parameters
-
-**Gather from user:**
-
-```
-Country/Region: <COUNTRY_NAME>
-  - Example: 'albania', 'germany', 'france'
-  - Must be lowercase for notebook execution
-  - Will be uppercase for service paths
-```
-
-**Derived parameters:**
-- `<MAP_FILE>`: `{country_name}-latest.osm.pbf`
-- `<REGION_PATH>`: `{COUNTRY_NAME_UPPERCASE}`
 
 ## Workflow
 
@@ -40,13 +24,13 @@ Country/Region: <COUNTRY_NAME>
 
 1. **Execute** notebook and associated objects setup using SQL:
    ```sql
-   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_SETUP.PUBLIC.GEOFABRIK_NETWORK_RULE
+   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP_NETWORK_RULE
    MODE = EGRESS
    TYPE = HOST_PORT
-   VALUE_LIST = ('download.geofabrik.de');
+   VALUE_LIST = ('download.geofabrik.de', 'download.bbbike.org');
 
-   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION GEOFABRIK_ACCESS_INTEGRATION
-   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_SETUP.PUBLIC.GEOFABRIK_NETWORK_RULE)
+   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION DOWNLOAD_MAP_ACCESS_INTEGRATION
+   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAPNETWORK_RULE)
    ENABLED = TRUE;
    
    CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL
@@ -60,7 +44,7 @@ Country/Region: <COUNTRY_NAME>
    RUNTIME_NAME = 'SYSTEM$BASIC_RUNTIME' 
    COMPUTE_POOL = 'OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL' 
    MAIN_FILE = 'download_map.ipynb'
-   EXTERNAL_ACCESS_INTEGRATIONS = (GEOFABRIK_ACCESS_INTEGRATION);
+   EXTERNAL_ACCESS_INTEGRATIONS = (DOWNLOAD_MAP_ACCESS_INTEGRATION);
 
    ALTER NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP ADD LIVE VERSION FROM LAST;
    ```
@@ -73,112 +57,102 @@ Country/Region: <COUNTRY_NAME>
 
 **Actions:**
 
-1. **Execute** notebook with country parameter:
+1. **Check** if map already exists in stage:
    ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP(country => '<COUNTRY_NAME>')
+   ALTER STAGE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE REFRESH; 
+   LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE;
    ```
+   
+   - Look for the `<MAP_NAME>` file in the stage listing
+   - If map already exists, **you must ask the user** if they want to download it again
+   - If user declines, skip to Step 3
+
+2. **Execute** notebook with three parameters:
+   ```sql
+   EXECUTE NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP(
+     url => '<URL>',
+     map_name => '<MAP_NAME>',
+     region_name => '<REGION_NAME>'
+   )
+   ```
+   
+   **Parameters:**
+   - `url`: Link to download OSM map in osm.pbf format from download.geofabrik.de or download.bbbike.org
+     - Example: `'https://download.geofabrik.de/europe/albania-latest.osm.pbf'`, `'https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf'`
+   - `map_name`: File name of the map
+     - Example: For URL aboves, use `'albania-latest.osm.pbf'`, `'new-york.osm.pbf'` do not change the capitalization 
+   - `region_name`: Region name (must be consistent with map_name)
+     - Example: For URL above, use `'albania'`, `'new-york'`
+     - **IMPORTANT:** If user requests a specific region (e.g., "Zurich") but you decide to download a larger region (e.g., "switzerland-latest.osm.pbf"), you MUST:
+       1. Check with the user that if you can download the larger region instead
+       2. Use the region_name that matches the map file (e.g., `'switzerland'` not `'zurich'`)
    
    **Timeout:** Use 12000 seconds (map downloads can be large)
 
-2. **Verify** execution succeeded
+3. **Verify** execution succeeded
 
 **Output:** Map data downloaded to stage
 
-### Step 3: Update Service Configuration
-
-**Goal:** Reconfigure ORS service to point to new map region
-
-**Actions:**
-
-1. **Retrieve** current service specification:
-   ```sql
-   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
-   ```
-
-2. **Update** service specification with new region paths:
-   ```sql
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE FROM SPECIFICATION $$
-   spec:
-     containers:
-     - name: "ors"
-       image: "sfpscogs-ppaczewski-aws-demo.registry.snowflakecomputing.com/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0"
-       env:
-         REBUILD_GRAPHS: "false"
-         ORS_CONFIG_LOCATION: "/home/ors/files/ors-config.yml"
-         XMS: "3G"
-         XMX: "200G"
-       resources:
-         limits:
-           memory: "58Gi"
-           cpu: "6"
-         requests:
-           memory: "0.5Gi"
-           cpu: "0.5"
-       volumeMounts:
-       - name: "files"
-         mountPath: "/home/ors/files"
-       - name: "graphs"
-         mountPath: "/home/ors/graphs"
-       - name: "elevation-cache"
-         mountPath: "/home/ors/elevation_cache"
-     volumes:
-     - name: "files"
-       source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE"
-       uid: 0
-       gid: 0
-     - name: "graphs"
-       source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_PATH>"
-       uid: 0
-       gid: 0
-     - name: "elevation-cache"
-       source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_PATH>"
-       uid: 0
-       gid: 0
-     endpoints:
-     - name: "ors"
-       port: 8082
-       public: false
-   $$
-   ```
-
-   **Critical:** Replace `<REGION_PATH>` with uppercase country name
-
-**Output:** Service configured for new region
-
-### Step 4: Update Configuration File
+### Step 3: Update Configuration File
 
 **Goal:** Modify ors-config.yml to reference new map file
 
 **Actions:**
 
-1. **Download** configuration file from stage:
-   ```sql
-   GET @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/ors-config.yml file:///tmp/
-   ```
+1. **Edit** the local configuration file at `provider_setup/staged_files/ors-config.yml`:
+   - Locate line: `source_file: /home/ors/files/{old-map}`
+   - Replace with: `source_file: /home/ors/files/<MAP_NAME>`
 
-2. **Edit** the configuration file:
-   - Locate line: `source_file: /home/ors/files/{old-map}.osm.pbf`
-   - Replace with: `source_file: /home/ors/files/<MAP_FILE>`
-
-3. **Upload** modified file back to stage:
+2. **Upload** modified file to stage:
    ```sql
-   PUT file:///tmp/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   PUT file://provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
 **Output:** Configuration updated to reference new map
 
+### Step 4: Update Service Configuration
+
+**Goal:** Reconfigure ORS service to point to new map region
+
+**Actions:**
+
+1. **Download** service specification file from stage:
+   ```sql
+   GET @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/openrouteservice.yaml file:///tmp/
+   ```
+
+2. **Edit** the service specification file:
+   - Update all volume source paths to use `<REGION_NAME>`:
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/"`
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/"`
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/"`
+
+3. **Upload** modified specification file back to stage:
+   ```sql
+   PUT file:///tmp/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```
+
+4. **Update** service with new specification:
+   ```sql
+   ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
+   FROM @openrouteservice_native_app_pkg.app_src.stage 
+   SPECIFICATION_FILE='/services/openrouteservice/openrouteservice.yaml';
+   ```
+
+**Output:** Service configured for new region
+
 ### Step 5: Resume Services
 
-**Goal:** Restart all ORS services to apply changes
+**Goal:** Restart all ORS services
 
 **Actions:**
 
 1. **Resume** all services in parallel:
    ```sql
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
    ```
 
 2. **Verify** services are resuming (status will change from SUSPENDED)

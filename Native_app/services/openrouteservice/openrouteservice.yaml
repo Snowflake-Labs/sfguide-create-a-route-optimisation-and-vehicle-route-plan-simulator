@@ -20,8 +20,8 @@ spec:
       public: false
   volumes:
     - name: files
-      source: "@CORE.ORS_SPCS_STAGE"
+      source: "@CORE.ORS_SPCS_STAGE/SanFrancisco"
     - name: graphs
-      source: "@CORE.ORS_GRAPHS_SPCS_STAGE/SANFRANCISCO"
+      source: "@CORE.ORS_GRAPHS_SPCS_STAGE/SanFrancisco"
     - name: elevation-cache
-      source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/SANFRANCISCO"
+      source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/SanFrancisco"

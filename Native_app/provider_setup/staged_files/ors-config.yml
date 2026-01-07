@@ -6,7 +6,7 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        source_file: /home/ors/files/berlin-latest.osm.pbf
         instructions: false
         service:
         maximum_visited_nodes: 1000000000

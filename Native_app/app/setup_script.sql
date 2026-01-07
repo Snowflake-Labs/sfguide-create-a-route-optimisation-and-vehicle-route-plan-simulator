@@ -36,7 +36,7 @@ BEGIN
    LET pool_name := (SELECT CURRENT_DATABASE()) || '_compute_pool';
 
    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
-      INSTANCE_FAMILY = HIGHMEM_X64_M
+      INSTANCE_FAMILY = HIGHMEM_X64_S
       MIN_NODES = 1
       MAX_NODES = 1
       AUTO_RESUME = true;

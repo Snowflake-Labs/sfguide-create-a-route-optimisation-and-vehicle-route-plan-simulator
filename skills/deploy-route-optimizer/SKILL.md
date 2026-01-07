@@ -45,10 +45,10 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 1. **Upload** files from `Native_app/provider_setup/staged_files/` to stage:
    ```bash
    snow stage copy "Native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE --connection <connection> --overwrite
+     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
    
    snow stage copy "Native_app/provider_setup/staged_files/ors-config.yml" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE --connection <connection> --overwrite
+     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
 
    snow stage copy "Notebook/download_map.ipynb" \
    @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE --connection <connection> --overwrite
