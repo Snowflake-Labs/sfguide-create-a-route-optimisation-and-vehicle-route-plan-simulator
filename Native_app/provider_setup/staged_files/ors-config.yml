@@ -6,33 +6,44 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/berlin-latest.osm.pbf
+        source_file: /home/ors/files/Berlin.osm.pbf
         instructions: false
         service:
-        maximum_visited_nodes: 1000000000
-    profiles:
-      driving-car:
+        maximum_visited_nodes: 100000000
+    profiles:   
+## Driving profiles
+      driving-car: 
         enabled: true
+      driving-hgv: 
+        enabled: false
+## Cycling profiles
+      cycling-regular:
+        enabled: false
       cycling-road:
         enabled: true
-      driving-hgv:
-        enabled: true
+      cycling-mountain:
+        enabled: false
       cycling-electric:
-        enabled: true
+        enabled: false
+# Foot profiles
       foot-walking:
         enabled: true
+      foot-hiking:
+        enabled: false
+# Wheelchair profiles
+      wheelchair:
+        enabled: false
   endpoints:
     matrix:
-      maximum_visited_nodes: 1000000000
+      maximum_visited_nodes: 100000000
       maximum_routes: 250000
-#        maximum_distance: 100000
-#        maximum_distance_dynamic_weights: 100000
-#        maximum_distance_avoid_areas: 100000
-#        maximum_waypoints: 50
-#        maximum_snapping_radius: 400
-#        maximum_distance_alternative_routes: 100000
-#        maximum_distance_round_trip_routes: 100000
-#        maximum_visited_nodes: 10000000
+#      maximum_distance: 100000
+#      maximum_distance_dynamic_weights: 100000
+#      maximum_distance_avoid_areas: 100000
+#      maximum_waypoints: 50
+#      maximum_snapping_radius: 400
+#      maximum_distance_alternative_routes: 100000
+#      maximum_distance_round_trip_routes: 100000
 ################################################################################
 ### Configuration file for openrouteservice. For a description please visit: ###
 ### https://giscience.github.io/openrouteservice/run-instance/configuration/ ###

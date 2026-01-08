@@ -39,7 +39,8 @@ BEGIN
       INSTANCE_FAMILY = HIGHMEM_X64_S
       MIN_NODES = 1
       MAX_NODES = 1
-      AUTO_RESUME = true;
+      AUTO_RESUME = true
+      AUTO_SUSPEND_SECS = 600;
 
    RETURN 'Compute Pool Created Successfully';
 

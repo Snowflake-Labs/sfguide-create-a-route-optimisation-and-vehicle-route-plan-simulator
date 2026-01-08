@@ -35,8 +35,10 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
    
    CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL
    MIN_NODES = 1
-   MAX_NODES = 3
-   INSTANCE_FAMILY = CPU_X64_S;
+   MAX_NODES = 2
+   INSTANCE_FAMILY = CPU_X64_S
+   AUTO_RESUME = TRUE
+   AUTO_SUSPEND_SECS = 600;
 
    CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP
    FROM '@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE'
@@ -91,19 +93,56 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 3. **Verify** execution succeeded
 
+4. **Check downloaded map size** and suggest resource scaling if needed:
+   - List the stage to get the map file size:
+     ```sql
+     LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/;
+     ```
+   - **If map size is between 1GB and 5GB**, suggest the user to scale up resources:
+     - Inform the user that larger maps require more compute resources for graph building
+     - Ask if they want to scale up the compute pool and extend auto-suspend
+     - If user agrees, execute:
+       ```sql
+       ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+       ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 28800;
+       ```
+     - The HIGHMEM_X64_M instance provides more memory for processing larger map data
+     - The 8-hour auto-suspend (28800 seconds) allows sufficient time for graph building
+
 **Output:** Map data downloaded to stage
 
 ### Step 3: Update Configuration File
 
-**Goal:** Modify ors-config.yml to reference new map file
+**Goal:** Modify ors-config.yml to reference new map file and configure routing profiles
 
 **Actions:**
 
-1. **Edit** the local configuration file at `provider_setup/staged_files/ors-config.yml`:
+1. **Edit** the local configuration file at `Native_app/provider_setup/staged_files/ors-config.yml`:
    - Locate line: `source_file: /home/ors/files/{old-map}`
    - Replace with: `source_file: /home/ors/files/<MAP_NAME>`
 
-2. **Upload** modified file to stage:
+2. **Inform user about routing profiles:** Read the `ors-config.yml` file and present the current profile configuration to the user in a table format:
+
+   | Profile | Category | Status |
+   |---------|----------|--------|
+   | driving-car | Driving | Enabled/Disabled |
+   | driving-hgv | Driving | Enabled/Disabled |
+   | cycling-regular | Cycling | Enabled/Disabled |
+   | cycling-road | Cycling | Enabled/Disabled |
+   | cycling-mountain | Cycling | Enabled/Disabled |
+   | cycling-electric | Cycling | Enabled/Disabled |
+   | foot-walking | Foot | Enabled/Disabled |
+   | foot-hiking | Foot | Enabled/Disabled |
+   | wheelchair | Wheelchair | Enabled/Disabled |
+
+3. **Ask user** if they want to enable or disable any profiles:
+   - Present options: "Keep current", "Enable more", "Disable some"
+   - If user chooses to modify profiles, ask which specific profiles to enable/disable
+   - **Update** the `ors-config.yml` file with their selections by changing `enabled: true/false` for each profile
+
+   **Note:** Enabling more profiles increases build time and resource usage. The default configuration (driving-car, cycling-road, foot-walking) covers most common use cases.
+
+4. **Upload** modified file to stage:
    ```sql
    PUT file://provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
@@ -116,23 +155,18 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Actions:**
 
-1. **Download** service specification file from stage:
-   ```sql
-   GET @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/openrouteservice.yaml file:///tmp/
-   ```
-
-2. **Edit** the service specification file:
+1. **Edit** the local specification file at `Native_app/services/openrouteservice/openrouteservice.yaml`:
    - Update all volume source paths to use `<REGION_NAME>`:
      - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/"`
      - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/"`
      - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/"`
 
-3. **Upload** modified specification file back to stage:
+2. **Upload** modified specification file to stage:
    ```sql
-   PUT file:///tmp/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   PUT file:///services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
-4. **Update** service with new specification:
+3. **Update** service with new specification:
    ```sql
    ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
    FROM @openrouteservice_native_app_pkg.app_src.stage 
