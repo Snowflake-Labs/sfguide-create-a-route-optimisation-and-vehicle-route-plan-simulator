@@ -3,3 +3,6 @@
 
 # Ignore the 'output' folder
 /Native_app/output
+
+# Ignore log file
+/Native_app/provider_setup/spcs_setup.log

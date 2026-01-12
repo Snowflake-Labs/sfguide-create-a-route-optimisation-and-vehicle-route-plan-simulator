@@ -24,13 +24,13 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 1. **Execute** notebook and associated objects setup using SQL:
    ```sql
-   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP_NETWORK_RULE
+   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE
    MODE = EGRESS
    TYPE = HOST_PORT
    VALUE_LIST = ('download.geofabrik.de', 'download.bbbike.org');
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION DOWNLOAD_MAP_ACCESS_INTEGRATION
-   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAPNETWORK_RULE)
+   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAPNETWORK_RULE)
    ENABLED = TRUE;
    
    CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL
@@ -40,15 +40,15 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
    AUTO_RESUME = TRUE
    AUTO_SUSPEND_SECS = 600;
 
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP
-   FROM '@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE'
-   QUERY_WAREHOUSE = 'COMPUTE_WH' 
+   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP
+   FROM '@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE'
+   QUERY_WAREHOUSE = 'ROUTING_ANALYTICS' 
    RUNTIME_NAME = 'SYSTEM$BASIC_RUNTIME' 
    COMPUTE_POOL = 'OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL' 
    MAIN_FILE = 'download_map.ipynb'
    EXTERNAL_ACCESS_INTEGRATIONS = (DOWNLOAD_MAP_ACCESS_INTEGRATION);
 
-   ALTER NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP ADD LIVE VERSION FROM LAST;
    ```
 
 **Output:** Notebook created 
@@ -71,7 +71,7 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 2. **Execute** notebook with three parameters:
    ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_SETUP.PUBLIC.DOWNLOAD_MAP(
+   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP(
      url => '<URL>',
      map_name => '<MAP_NAME>',
      region_name => '<REGION_NAME>'
@@ -100,7 +100,7 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
      ```
    - **If map size is between 1GB and 5GB**, suggest the user to scale up resources:
      - Inform the user that larger maps require more compute resources for graph building
-     - Ask if they want to scale up the compute pool and extend auto-suspend
+     - Ask if they want to scale up the compute pool and extend auto-suspend which might result in excessive cost if used improperly
      - If user agrees, execute:
        ```sql
        ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
@@ -108,6 +108,17 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
        ```
      - The HIGHMEM_X64_M instance provides more memory for processing larger map data
      - The 8-hour auto-suspend (28800 seconds) allows sufficient time for graph building
+
+   - **If map size is above 5GB**, suggest the user to scale up resources:
+     - Inform the user that very large maps require more compute resources and significantly longer graph building time
+     - Ask if they want to scale up the compute pool and extend auto-suspend which might result in excessive cost if used improperly
+     - If user agrees, execute:
+       ```sql
+       ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+       ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 86400;
+       ```
+     - The HIGHMEM_X64_M instance provides more memory for processing larger map data
+     - The 24-hour auto-suspend (86400 seconds) allows sufficient time for graph building with very large maps
 
 **Output:** Map data downloaded to stage
 

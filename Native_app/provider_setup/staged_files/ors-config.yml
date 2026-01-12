@@ -6,7 +6,7 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/Berlin.osm.pbf
+        source_file: /home/ors/files/SanFrancisco.osm.pbf
         instructions: false
         service:
         maximum_visited_nodes: 100000000
@@ -15,7 +15,7 @@ ors:
       driving-car: 
         enabled: true
       driving-hgv: 
-        enabled: false
+        enabled: true
 ## Cycling profiles
       cycling-regular:
         enabled: false
@@ -27,7 +27,7 @@ ors:
         enabled: false
 # Foot profiles
       foot-walking:
-        enabled: true
+        enabled: false
       foot-hiking:
         enabled: false
 # Wheelchair profiles

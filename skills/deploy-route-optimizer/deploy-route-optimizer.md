@@ -24,15 +24,15 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 1. **Execute** environment setup SQL:
    ```sql
-   -- From Native_app/provider_setup/env_setup.sql
-   CREATE DATABASE OPENROUTESERVICE_SETUP;
-   CREATE STAGE OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
-   CREATE STAGE OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
-   CREATE STAGE OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
-   CREATE IMAGE REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP;
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
+   CREATE IMAGE IF NOT EXISTS REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60;
    ```
 
-**Output:** Database `OPENROUTESERVICE_SETUP` with stages and image repository created
+**Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created
 
 **Next:** Proceed to Step 2
 
@@ -89,8 +89,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 **Expected Duration:** 5-10 minutes
 
 **If error occurs:**
-- Docker authentication issue: Sign in to Docker Desktop with Snowflake org credentials
-- Directory not found: Ensure running from `Native_app/` directory
+- Docker authentication issue: Sign in to Docker Desktop with your org credentials
 - Build failures: Check Docker daemon status and retry
 
 **Next:** Proceed to Step 4
