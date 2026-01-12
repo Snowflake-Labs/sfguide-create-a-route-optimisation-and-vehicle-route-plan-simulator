@@ -117,6 +117,24 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Output:** Native app deployed and accessible via Snowsight URL
 
+### Step 5: User Confirmation (Required)
+
+**Goal:** Ensure user has completed UI setup before marking skill as complete
+
+**Actions:**
+
+1. **Ask user to confirm** they have completed the following in Snowsight:
+   - Navigated to Data Products >> Apps >> OPENROUTESERVICE_NATIVE_APP
+   - Granted all required privileges via the UI
+   - Launched the app using the button in the upper right corner
+   - Verified the app is now accessible and services are running
+
+2. **Wait for explicit confirmation** from user before proceeding to any subsequent skills
+
+**IMPORTANT:** Do NOT mark this skill as complete until the user confirms all the above steps are done.
+
+**Output:** User confirmation received that app is fully operational
+
 ## Stopping Points
 
 - ✋ Step 3: After starting Docker build - monitor for authentication errors
