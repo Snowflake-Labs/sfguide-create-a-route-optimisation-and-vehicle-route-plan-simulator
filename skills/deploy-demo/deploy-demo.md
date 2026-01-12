@@ -52,9 +52,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 3
 
-### Step 3: Deploy and Run the Notebook
+### Step 3: Deploy and Run the Notebook to add Carto data
 
-**Goal:** Create and execute the routing setup notebook
+**Goal:** Create and execute notebook that will add Carto data to the database.
 
 **Actions:**
 
@@ -93,7 +93,37 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 4
 
-### Step 4: Deploy the Streamlit Application
+### Step 4: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
+
+**Goal:** Create and execute the notebook that will help to explore Routing functions with AISQL
+
+**Actions:**
+
+1. **Upload** notebook files to stage:
+   ```bash
+   snow stage copy "Notebook/routing_functions_aisql.ipynb" \
+     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+   
+   snow stage copy "Notebook/environment.yml" \
+     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+   ```
+
+2. **Create** the notebook:
+   ```sql
+   CREATE OR REPLACE NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL
+   FROM '@VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.NOTEBOOK'
+   MAIN_FILE = 'routing_functions_aisql'
+   QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
+   COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
+   
+   ALTER NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
+   ```
+
+**Output:** Notebook created and ready to be explored
+
+**Next:** Proceed to Step 5
+
+### Step 5: Deploy the Streamlit Application
 
 **Goal:** Deploy the route simulator Streamlit app
 
@@ -131,7 +161,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 5
 
-### Step 5: Run the Demo
+### Step 6: Run the Demo
 
 **Goal:** Access and use the route simulator
 
@@ -176,10 +206,6 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 ### Marketplace Dataset Not Found
 **Symptom:** Cannot find Overture Maps dataset
 **Solution:** Search for "Carto" in Marketplace, look for "Overture Maps - Places"
-
-### Notebook Cells Fail
-**Symptom:** Errors when running notebook
-**Solution:** Ensure Carto dataset is installed, run cells from "add_carto_data" section
 
 ### Streamlit App Errors
 **Symptom:** App fails to load or shows errors

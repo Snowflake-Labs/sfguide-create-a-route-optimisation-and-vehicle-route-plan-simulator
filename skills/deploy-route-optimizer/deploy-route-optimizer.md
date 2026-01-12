@@ -100,13 +100,17 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Actions:**
 
-1. **Deploy and open the application** the application:
+1. **Deploy the application:**
    ```bash
-   cd Native_app && snow app run -c <connection>
+   cd Native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
+   ```
+
+2. **Open the application in browser:**
+   ```bash
    snow app open -c <connection>
    ```
 
-2. **Verify** deployment output includes:
+3. **Verify** deployment output includes:
    - Application package created: `OPENROUTESERVICE_NATIVE_APP_PKG`
    - Application created: `OPENROUTESERVICE_NATIVE_APP`
    - Snowsight URL provided

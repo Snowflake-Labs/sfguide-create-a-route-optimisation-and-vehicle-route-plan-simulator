@@ -33,8 +33,6 @@ ROUTING_PROFILES = [
     'driving-car',
     'driving-hgv', 
     'cycling-road',
-    'cycling-electric',
-    'foot-walking'
 ]
 
 SKILL_DISPLAY_MAP = {
@@ -125,8 +123,6 @@ if test_function == "🗺️ DIRECTIONS":
         - **driving-car**: Standard passenger vehicle routing
         - **driving-hgv**: Heavy goods vehicle with truck restrictions
         - **cycling-road**: Bicycle routing on roads and bike paths
-        - **cycling-electric**: Electric bike routing with extended range
-        - **foot-walking**: Pedestrian routing on walkways and streets
         
         **💡 Use Cases:**
         - **Navigation systems** for turn-by-turn directions
@@ -257,15 +253,15 @@ if test_function == "🗺️ DIRECTIONS":
                             leg_distance = calculate_distance(prev_waypoint['lat'], prev_waypoint['lon'],
                                                             waypoint_lat, waypoint_lon)
                             st.caption(f"🚚 {leg_distance:.1f}km from previous")
-        
-        with st.expander("🔧 **Manual Coordinate Adjustment**", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                start_lat = st.number_input("Start Latitude:", value=start_coords['lat'], format="%.6f", key="start_lat")
-                start_lon = st.number_input("Start Longitude:", value=start_coords['lon'], format="%.6f", key="start_lon")
-            with col2:
-                end_lat = st.number_input("End Latitude:", value=end_coords['lat'], format="%.6f", key="end_lat")
-                end_lon = st.number_input("End Longitude:", value=end_coords['lon'], format="%.6f", key="end_lon")
+    
+    with st.expander("🔧 **Manual Coordinate Adjustment**", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            start_lat = st.number_input("Start Latitude:", value=start_coords['lat'], format="%.6f", key="start_lat")
+            start_lon = st.number_input("Start Longitude:", value=start_coords['lon'], format="%.6f", key="start_lon")
+        with col2:
+            end_lat = st.number_input("End Latitude:", value=end_coords['lat'], format="%.6f", key="end_lat")
+            end_lon = st.number_input("End Longitude:", value=end_coords['lon'], format="%.6f", key="end_lon")
     
     if st.button("🧪 Test DIRECTIONS Function", type="primary"):
         with st.spinner("Calling ORS DIRECTIONS function..."):
@@ -1058,10 +1054,6 @@ elif test_function == "⏰ ISOCHRONES":
             center_lat = center_coords['lat']
             center_lon = center_coords['lon']
             
-            with st.expander("🔧 **Manual Coordinate Adjustment**", expanded=False):
-                center_lat = st.number_input("Center Latitude:", value=center_coords['lat'], format="%.6f", key="center_lat")
-                center_lon = st.number_input("Center Longitude:", value=center_coords['lon'], format="%.6f", key="center_lon")
-            
         with col2:
             st.markdown("**⏰ Isochrone Configuration**")
             time_range = st.slider("Time Range (minutes):", min_value=5, max_value=60, value=15, step=5, key="time_range")
@@ -1255,10 +1247,9 @@ st.markdown('''
 - **Input**: Routing profile, center coordinates, time range (minutes)
 - **Output**: Polygon representing reachable area within time limit
 
-**🚗 Available Profiles:**
+**🚗 Default Profiles:**
 - `driving-car`: Standard car routing
 - `driving-hgv`: Heavy goods vehicle routing  
 - `cycling-road`: Road bicycle routing
-- `cycling-electric`: Electric bicycle routing
-- `foot-walking`: Pedestrian routing
+
 ''', unsafe_allow_html=True)
