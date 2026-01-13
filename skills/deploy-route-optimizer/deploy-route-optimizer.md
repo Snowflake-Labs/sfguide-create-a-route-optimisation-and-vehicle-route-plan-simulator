@@ -9,14 +9,43 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 ## Prerequisites
 
-- Docker Desktop installed and running
+- Container runtime (Podman or Docker) installed and running
 - Snowflake CLI (`snow`) installed
 - Active Snowflake connection with ACCOUNTADMIN role
 - Repository cloned at: `/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator`
 
 ## Workflow
 
-### Step 1: Setup Database and Stages
+### Step 1: Detect Container Runtime
+
+**Goal:** Identify available container runtime and let user choose
+
+**Actions:**
+
+1. **Check** which container runtimes are installed:
+   ```bash
+   podman --version 2>/dev/null && echo "PODMAN_AVAILABLE=true" || echo "PODMAN_AVAILABLE=false"
+   docker --version 2>/dev/null && echo "DOCKER_AVAILABLE=true" || echo "DOCKER_AVAILABLE=false"
+   ```
+
+2. **Based on results:**
+   - If **both** are installed: Ask user which they prefer (Podman or Docker)
+   - If **only Podman**: Use Podman
+   - If **only Docker**: Use Docker
+   - If **neither**: Stop and ask user to install one (see check-prerequisites skill)
+
+3. **Verify** the selected runtime is running:
+   - For Podman: `podman info` (if fails: `podman machine start`)
+   - For Docker: `docker info` (if fails: `open -a Docker` on macOS)
+
+4. **Set** the container command variable for subsequent steps:
+   - `CONTAINER_CMD=podman` or `CONTAINER_CMD=docker`
+
+**Output:** Container runtime selected and verified running
+
+**Next:** Proceed to Step 2
+
+### Step 2: Setup Database and Stages
 
 **Goal:** Create required Snowflake infrastructure
 
@@ -34,9 +63,9 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created
 
-**Next:** Proceed to Step 2
+**Next:** Proceed to Step 3
 
-### Step 2: Upload Configuration Files
+### Step 3: Upload Configuration Files
 
 **Goal:** Stage required configuration and map files
 
@@ -56,26 +85,50 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Output:** Configuration files uploaded to Snowflake stage
 
-**Next:** Proceed to Step 3
+**Next:** Proceed to Step 4
 
-### Step 3: Build and Push Docker Images
+### Step 4: Build and Push Container Images
 
-**Goal:** Build 4 Docker images and push to Snowflake image repository
+**Goal:** Build 4 container images and push to Snowflake image repository
 
 **Actions:**
 
-1. **Verify** Docker Desktop is running:
+1. **Authenticate** with SPCS image registry:
    ```bash
-   docker info
+   snow spcs image-registry login -c <connection>
    ```
-   If not running: `open -a Docker` (macOS)
 
-2. **Check** connection name in `Native_app/provider_setup/spcs_setup.sh`:
-   - instead of `<connection` use active connection name, do not replace the name in file directly, use a variable instead
-
-3. **Execute** SPCS setup script from `Native_app/` directory:
+2. **Get** repository URL:
    ```bash
-   cd Native_app && bash provider_setup/spcs_setup.sh
+   REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>)
+   echo $REPO_URL
+   ```
+
+3. **Build and push** images using the selected container runtime (`$CONTAINER_CMD` = podman or docker):
+
+   ```bash
+   # openrouteservice image
+   cd Native_app/services/openrouteservice
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/openrouteservice:v9.0.0 .
+   $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
+   
+   # downloader image
+   cd ../downloader
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/downloader:v0.0.3 .
+   $CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
+   
+   # gateway image
+   cd ../gateway
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.5.6 .
+   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.5.6
+   
+   # vroom image
+   cd ../vroom
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/vroom-docker:v1.0.1 .
+   $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
+   
+   # return to working directory
+   cd ../../..
    ```
 
 4. **Monitor** progress (builds 4 images):
@@ -84,17 +137,19 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
    - routing_reverse_proxy:v0.5.6
    - vroom-docker:v1.0.1
 
-**Output:** All 4 Docker images pushed to Snowflake image repository
+**Output:** All 4 container images pushed to Snowflake image repository
 
 **Expected Duration:** 5-10 minutes
 
 **If error occurs:**
-- Docker authentication issue: Sign in to Docker Desktop with your org credentials
-- Build failures: Check Docker daemon status and retry
+- Authentication issue: Ensure you ran `snow spcs image-registry login`
+- Podman machine not running: `podman machine start`
+- Docker daemon not running: Start Docker Desktop
+- Build failures: Check container runtime status and retry
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 5
 
-### Step 4: Deploy Native App
+### Step 5: Deploy Native App
 
 **Goal:** Create and deploy the native application
 
@@ -117,7 +172,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Output:** Native app deployed and accessible via Snowsight URL
 
-### Step 5: User Confirmation (Required)
+### Step 6: User Confirmation (Required)
 
 **Goal:** Ensure user has completed UI setup before marking skill as complete
 
@@ -137,14 +192,21 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 ## Stopping Points
 
-- ✋ Step 3: After starting Docker build - monitor for authentication errors
-- ✋ Step 4: After deployment - verify application created successfully
+- ✋ Step 1: After detecting container runtime - confirm user's choice if both available
+- ✋ Step 4: After starting container build - monitor for authentication errors
+- ✋ Step 5: After deployment - verify application created successfully
 
 ## Common Issues
 
-### Docker Authentication Required
-**Symptom:** "Sign in to continue using Docker Desktop"
-**Solution:** Sign in to Docker Desktop with Snowflake organization credentials
+### Container Runtime Not Running
+**Symptom:** "Cannot connect to the Docker daemon" or "Cannot connect to Podman"
+**Solution:** 
+- Podman: `podman machine start`
+- Docker: Start Docker Desktop application
+
+### Authentication Required
+**Symptom:** "unauthorized" or "authentication required"
+**Solution:** Run `snow spcs image-registry login -c <connection>`
 
 ### Wrong Directory Error
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
