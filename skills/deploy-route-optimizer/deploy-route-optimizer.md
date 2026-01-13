@@ -100,23 +100,10 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
    snow spcs image-registry login -c <connection>
    ```
 
-   **For Podman:** Session tokens don't work with Podman's registry authentication. You need a Programmatic Access Token (PAT).
-   
-   **Ask the user** to create a PAT in Snowsight:
-   1. Go to **Snowsight** → Click your username (bottom left) → **My Profile**
-   2. Scroll to **Programmatic access tokens** section
-   3. Click **+ Generate new token**
-   4. Give it a name (e.g., "podman-registry")
-   5. Copy the token immediately (it won't be shown again)
-   
-   **Ask the user** to provide the PAT token, then login:
+   **For Podman:**
    ```bash
-   podman login <registry-hostname> -u <SNOWFLAKE_USERNAME> -p <PAT_TOKEN>
-   ```
-   
-   Example:
-   ```bash
-   podman login sfseeurope-demo810-uswest.registry.snowflakecomputing.com -u BECKY -p eyJraWQ...
+   REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+   snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
    ```
 
 2. **Get** repository URL:
@@ -229,14 +216,11 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 **Symptom:** "unauthorized" or "authentication required" or "invalid username/password"
 **Solution:** 
 - Docker: Run `snow spcs image-registry login -c <connection>`
-- Podman: Create a PAT in Snowsight (My Profile → Programmatic access tokens), then run:
+- Podman: Use session token with password-stdin:
   ```bash
-  podman login <registry-hostname> -u <SNOWFLAKE_USERNAME> -p <PAT_TOKEN>
+  REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+  snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
   ```
-
-### Podman Session Token Failure
-**Symptom:** "unable to retrieve auth token" during blob copy with Podman
-**Solution:** Podman doesn't work with session tokens from `snow spcs image-registry login`. You must use a PAT (Programmatic Access Token) instead. See Step 4 for instructions.
 
 ### Wrong Directory Error
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
