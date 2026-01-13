@@ -8,13 +8,18 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 
 Before getting started, ensure you have the following installed:
 
-### 1. Cortex Code CLI
+### 1. Visual Studio Code (VS Code)
+- **Required for:** Running Cortex Code CLI as an integrated terminal experience
+- **Installation:** [Download VS Code](https://code.visualstudio.com/download)
+- Open this project folder in VS Code before running Cortex Code commands
+
+### 2. Cortex Code CLI
 - **Status:** Currently in Private Preview
 - **Installation:** TBA (To Be Announced)
 - Cortex Code is Snowflake's AI-powered CLI that enables natural language interactions with your codebase and Snowflake resources
 - Contact your Snowflake account team for access during Private Preview
 
-### 2. Docker
+### 3. Docker
 - **Required for:** Building and pushing container images to Snowflake
 - **Installation:** 
   - macOS: [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
@@ -22,12 +27,12 @@ Before getting started, ensure you have the following installed:
   - Linux: [Docker Engine](https://docs.docker.com/engine/install/)
 - Ensure Docker daemon is running before deploying the app
 
-### 3. Snowflake Account
+### 4. Snowflake Account
 - Access to a Snowflake account with ACCOUNTADMIN privileges (or appropriate roles)
 - Snowpark Container Services enabled
 - Sufficient compute resources for running SPCS services
 
-### 4. Snowflake CLI (snow)
+### 5. Snowflake CLI (snow)
 - Install via: `pip install snowflake-cli-labs`
 - Configure a connection: `snow connection add`
 
