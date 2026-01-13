@@ -4,6 +4,33 @@
 
 This project deploys OpenRouteService as a Snowflake Native App with Snowpark Container Services (SPCS). It provides route optimization, directions, and isochrone calculations for configurable geographic regions.
 
+## Prerequisites
+
+Before getting started, ensure you have the following installed:
+
+### 1. Cortex Code CLI
+- **Status:** Currently in Private Preview
+- **Installation:** TBA (To Be Announced)
+- Cortex Code is Snowflake's AI-powered CLI that enables natural language interactions with your codebase and Snowflake resources
+- Contact your Snowflake account team for access during Private Preview
+
+### 2. Docker
+- **Required for:** Building and pushing container images to Snowflake
+- **Installation:** 
+  - macOS: [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
+  - Windows: [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+  - Linux: [Docker Engine](https://docs.docker.com/engine/install/)
+- Ensure Docker daemon is running before deploying the app
+
+### 3. Snowflake Account
+- Access to a Snowflake account with ACCOUNTADMIN privileges (or appropriate roles)
+- Snowpark Container Services enabled
+- Sufficient compute resources for running SPCS services
+
+### 4. Snowflake CLI (snow)
+- Install via: `pip install snowflake-cli-labs`
+- Configure a connection: `snow connection add`
+
 ## Step-By-Step Guide
 
 ### 1. Deploy App
