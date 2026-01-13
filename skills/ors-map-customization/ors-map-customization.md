@@ -204,10 +204,109 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** All services active with new map configuration
 
+### Step 6: Create Feature Branch for Customizations
+
+**Goal:** Preserve original files on main branch, commit customizations to feature branch
+
+**Actions:**
+
+1. **Create** feature branch for this region:
+   ```bash
+   git checkout -b feature/ors-<REGION_NAME>
+   ```
+
+2. **Commit** the config file changes made in Steps 3-4:
+   ```bash
+   git add Native_app/provider_setup/staged_files/ors-config.yml
+   git add Native_app/services/openrouteservice/openrouteservice.yaml
+   git commit -m "Configure ORS for <REGION_NAME> map region"
+   ```
+
+**Output:** Feature branch created with config changes
+
+### Step 7: Customize Function Tester Streamlit App
+
+**Goal:** Update Function Tester with region-specific coordinates and locations
+
+**Actions:**
+
+1. **Read** the current function tester file at `Native_app/code_artifacts/streamlit/pages/function_tester.py`
+
+2. **Identify** the data structures to update:
+   - `SF_ADDRESSES` dict (rename to `<REGION>_ADDRESSES`) - contains start/end location presets
+   - `SF_WAYPOINT_ADDRESSES` list (rename to `<REGION>_WAYPOINT_ADDRESSES`) - contains waypoint presets
+   - `ROUTING_PROFILES` list - should match enabled profiles from Step 3
+   - Page title and sidebar text references to "San Francisco"
+
+3. **Generate** region-specific coordinates:
+   - Research 5 popular START locations in the region (landmarks, city centers, transport hubs)
+   - Research 5 popular END locations in the region (different from start locations)
+   - Research 20 WAYPOINT locations spread across the region (cities, towns, points of interest)
+   - Each location needs: `name`, `lat`, `lon`, `full_address`
+
+4. **Update** the function_tester.py file:
+   - Replace `SF_ADDRESSES` with `<REGION>_ADDRESSES` containing region-specific start/end locations
+   - Replace `SF_WAYPOINT_ADDRESSES` with `<REGION>_WAYPOINT_ADDRESSES` containing region waypoints
+   - Update `ROUTING_PROFILES` to only include profiles enabled in ors-config.yml
+   - Update page title from "San Francisco Map" to "<REGION_NAME> Map"
+   - Update sidebar text from "San Francisco Addresses" to "<REGION_NAME> Addresses"
+   - Update all references from `SF_ADDRESSES` to `<REGION>_ADDRESSES` throughout the file
+   - Update all references from `SF_WAYPOINT_ADDRESSES` to `<REGION>_WAYPOINT_ADDRESSES` throughout the file
+   - Update routing profile documentation text to reflect enabled profiles
+
+**Output:** Function tester customized for region
+
+### Step 8: Deploy Updated Streamlit App
+
+**Goal:** Upload customized streamlit and upgrade Native App
+
+**Actions:**
+
+1. **Upload** modified function_tester.py to stage:
+   ```bash
+   snow stage copy Native_app/code_artifacts/streamlit/pages/function_tester.py @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
+   ```
+
+2. **Upgrade** the Native App to use updated streamlit:
+   ```sql
+   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING '@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE';
+   ```
+
+3. **Verify** upgrade succeeded
+
+**Output:** Native App updated with region-specific Function Tester
+
+### Step 9: Commit Streamlit Changes to Feature Branch
+
+**Goal:** Commit all customizations to the feature branch
+
+**Actions:**
+
+1. **Add and commit** the function tester changes:
+   ```bash
+   git add Native_app/code_artifacts/streamlit/pages/function_tester.py
+   git commit -m "Customize function tester for <REGION_NAME> map region"
+   ```
+
+2. **Show** the user the commit history on the feature branch:
+   ```bash
+   git log --oneline -5
+   ```
+
+3. **Inform** user that:
+   - Original San Francisco version remains on `main` branch
+   - All <REGION_NAME> customizations are on `feature/ors-<REGION_NAME>` branch
+   - To switch back to SF version: `git checkout main`
+   - To return to this region: `git checkout feature/ors-<REGION_NAME>`
+
+**Output:** All changes committed to feature branch
+
 ## Stopping Points
 
 - ✋ After Step 2: Confirm map download completed successfully
 - ✋ After Step 5: Verify services resumed without errors
+- ✋ After Step 7: Confirm region-specific coordinates are accurate
+- ✋ After Step 9: Verify all changes committed to feature branch
 
 ## Verification
 
@@ -220,6 +319,21 @@ After completion, verify:
    Status should be READY or RUNNING
 
 2. **Map loaded:** Services should be using the new region for routing calculations
+
+3. **Function Tester updated:** Open the Native App and verify:
+   - Page title shows "<REGION_NAME> Map"
+   - Start/End dropdowns show region-specific locations
+   - Waypoints are relevant to the region
+   - Only enabled routing profiles are available
+
+4. **Git branches correct:**
+   ```bash
+   git branch
+   git log --oneline main -3
+   git log --oneline feature/ors-<REGION_NAME> -3
+   ```
+   - Main branch should have original SF configuration
+   - Feature branch should have region-specific customizations
 
 ## Common Issues
 
@@ -234,4 +348,8 @@ After completion, verify:
 
 ## Output
 
-OpenRouteService Native App reconfigured to use specified country/region map, with all services resumed and operational.
+OpenRouteService Native App reconfigured to use specified country/region map, with:
+- All services resumed and operational
+- Function Tester customized with region-specific locations
+- Original SF version preserved on main branch
+- All customizations committed to feature/ors-<REGION_NAME> branch
