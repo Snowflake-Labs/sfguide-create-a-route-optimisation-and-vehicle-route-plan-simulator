@@ -36,6 +36,22 @@ Before getting started, ensure you have the following installed:
 - Install via: `pip install snowflake-cli-labs`
 - Configure a connection: `snow connection add`
 
+### 6. Git
+- **Required for:** Version control and managing region-specific configurations via branches
+- **Installation:**
+  - macOS: `brew install git` or [Download](https://git-scm.com/download/mac)
+  - Windows: [Git for Windows](https://git-scm.com/download/win)
+  - Linux: `sudo apt install git` or `sudo yum install git`
+- Verify installation: `git --version`
+
+### 7. GitHub CLI (Optional)
+- **Required for:** Forking repositories and managing GitHub operations from the command line
+- **Installation:** [GitHub CLI](https://cli.github.com/)
+  - macOS: `brew install gh`
+  - Windows: `winget install --id GitHub.cli`
+  - Linux: See [installation docs](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
+- Authenticate: `gh auth login`
+
 ## Step-By-Step Guide
 
 ### 1. Deploy App
