@@ -28,11 +28,14 @@ None - this skill helps you install prerequisites!
    # Check Cortex Code CLI
    cortex --version 2>/dev/null && echo "Cortex Code: INSTALLED" || echo "Cortex Code: NOT FOUND"
    
-   # Check Docker
+   # Check Podman
+   podman --version 2>/dev/null && echo "Podman: INSTALLED" || echo "Podman: NOT FOUND"
+   
+   # Check Docker (optional if Podman is installed)
    docker --version 2>/dev/null && echo "Docker: INSTALLED" || echo "Docker: NOT FOUND"
    
-   # Check Docker daemon running
-   docker info >/dev/null 2>&1 && echo "Docker Daemon: RUNNING" || echo "Docker Daemon: NOT RUNNING"
+   # Check container runtime is running (Podman or Docker)
+   podman info >/dev/null 2>&1 && echo "Podman Daemon: RUNNING" || docker info >/dev/null 2>&1 && echo "Docker Daemon: RUNNING" || echo "Container Runtime: NOT RUNNING"
    
    # Check Snowflake CLI
    snow --version 2>/dev/null && echo "Snowflake CLI: INSTALLED" || echo "Snowflake CLI: NOT FOUND"
@@ -55,8 +58,9 @@ None - this skill helps you install prerequisites!
    |--------------|--------|----------|
    | VS Code | ✅/❌ | Yes |
    | Cortex Code CLI | ✅/❌ | Yes |
-   | Docker | ✅/❌ | Yes |
-   | Docker Daemon | ✅/❌ | Yes |
+   | Podman | ✅/❌ | Yes (or Docker) |
+   | Docker | ✅/❌ | Yes (or Podman) |
+   | Container Runtime | ✅/❌ | Yes |
    | Snowflake CLI | ✅/❌ | Yes |
    | Snowflake Connection | ✅/❌ | Yes |
    | Git | ✅/❌ | Yes |
@@ -99,7 +103,31 @@ None - this skill helps you install prerequisites!
 - **Instructions:** Contact your Snowflake account team for access
 - **Note:** Installation instructions will be provided upon receiving access
 
-#### Docker Installation
+#### Container Runtime Installation (Podman or Docker)
+
+**Podman** (recommended - no daemon required):
+- **macOS:**
+  ```bash
+  brew install podman
+  podman machine init
+  podman machine start
+  ```
+
+- **Windows:** Download Podman Desktop: https://podman-desktop.io/downloads
+
+- **Linux:**
+  ```bash
+  # Ubuntu/Debian
+  sudo apt-get update
+  sudo apt-get install podman
+  
+  # RHEL/CentOS/Fedora
+  sudo dnf install podman
+  ```
+
+- **Verify:** `podman --version && podman info`
+
+**Docker** (alternative if Podman is not available):
 - **macOS:**
   ```bash
   brew install --cask docker
@@ -223,12 +251,14 @@ After completion, all these commands should succeed:
 ```bash
 code --version          # VS Code
 cortex --version        # Cortex Code CLI  
-docker --version        # Docker
-docker info             # Docker daemon running
+podman --version        # Podman (or docker --version for Docker)
+podman info             # Podman running (or docker info for Docker)
 snow --version          # Snowflake CLI
 snow connection list    # At least one connection configured
 git --version           # Git
 ```
+
+**Note:** Either Podman or Docker is required - you don't need both.
 
 ## Common Issues
 

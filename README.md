@@ -19,13 +19,18 @@ Before getting started, ensure you have the following installed:
 - Cortex Code is Snowflake's AI-powered CLI that enables natural language interactions with your codebase and Snowflake resources
 - Contact your Snowflake account team for access during Private Preview
 
-### 3. Docker
+### 3. Container Runtime (Docker or Podman)
 - **Required for:** Building and pushing container images to Snowflake
-- **Installation:** 
-  - macOS: [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
-  - Windows: [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
-  - Linux: [Docker Engine](https://docs.docker.com/engine/install/)
-- Ensure Docker daemon is running before deploying the app
+- **Options (install one):**
+  - **Podman** (recommended):
+    - macOS: `brew install podman`
+    - Windows: [Podman Desktop](https://podman-desktop.io/downloads)
+    - Linux: `sudo apt install podman` or `sudo dnf install podman`
+  - **Docker**:
+    - macOS: [Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/)
+    - Windows: [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+    - Linux: [Docker Engine](https://docs.docker.com/engine/install/)
+- Ensure the container runtime is running before deploying the app
 
 ### 4. Snowflake Account
 - Access to a Snowflake account with ACCOUNTADMIN privileges (or appropriate roles)
