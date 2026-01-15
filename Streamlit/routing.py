@@ -26,7 +26,7 @@ lookup_table = session.table('DATA.LOOKUP')
 industry_choices = lookup_table.select('INDUSTRY').to_pandas()['INDUSTRY'].tolist()
 
 with st.sidebar:
-    route_functions_option = st.radio('Where are the routing functions', ['OPENROUTESERVICE_NATIVE_APP', 'VEHICLE_ROUTING_SIMULATOR'])
+    route_functions_option = 'OPENROUTESERVICE_NATIVE_APP'
     selected_industry = st.radio('Select Industry', industry_choices)
 
     filtered_lookup = lookup_table.filter(col('INDUSTRY') == selected_industry)
@@ -50,7 +50,7 @@ st.markdown('''
 <h1grey>Powered by the Open Route Service Native App</h1grey>
 ''', unsafe_allow_html=True)
 
-# Define routing methods
+# Routing methods - must match enabled profiles in ors-config.yml
 methods = ['driving-car', 'driving-hgv', 'cycling-road']
 
 # Load points of interest data
@@ -71,8 +71,8 @@ places_filtered = places_filtered.select(
 with st.sidebar:
     st.markdown('##### Cortex Powered Map Filter')
     st.info('Give me the LAT and LON which centers the following place')
-    model_choice = st.selectbox('Choose Model:', ['reka-flash', 'mistral-large2', 'claude-4-sonnet'], 2)
-    place_input = st.text_input('Choose Input', 'The Empire State Building, New York')
+    model_choice = 'claude-sonnet-4-5'
+    place_input = st.text_input('Choose Input', 'Golden Gate Bridge, San Francisco')
     distance_input = st.number_input('Distance from location in KM', 1, 300, 15)
 
 @st.cache_data

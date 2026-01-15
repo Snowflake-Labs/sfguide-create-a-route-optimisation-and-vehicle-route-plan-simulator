@@ -146,6 +146,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
    
    snow stage copy "Streamlit/environment.yml" \
      @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
+   
+   snow stage copy "Streamlit/logo.svg" \
+     @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
    ```
 
 3. **Create** the Streamlit app:
@@ -157,9 +160,11 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"Streamlit"}}';
    ```
 
-**Output:** Streamlit application deployed
+**Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-road`.
 
-**Next:** Proceed to Step 5
+**Output:** Streamlit application deployed with routing methods matching native app configuration
+
+**Next:** Proceed to Step 6
 
 ### Step 6: Run the Demo
 

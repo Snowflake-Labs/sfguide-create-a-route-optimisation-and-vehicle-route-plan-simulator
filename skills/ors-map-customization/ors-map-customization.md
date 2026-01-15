@@ -204,27 +204,7 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** All services active with new map configuration
 
-### Step 6: Create Feature Branch for Customizations
-
-**Goal:** Preserve original files on main branch, commit customizations to feature branch
-
-**Actions:**
-
-1. **Create** feature branch for this region:
-   ```bash
-   git checkout -b feature/ors-<REGION_NAME>
-   ```
-
-2. **Commit** the config file changes made in Steps 3-4:
-   ```bash
-   git add Native_app/provider_setup/staged_files/ors-config.yml
-   git add Native_app/services/openrouteservice/openrouteservice.yaml
-   git commit -m "Configure ORS for <REGION_NAME> map region"
-   ```
-
-**Output:** Feature branch created with config changes
-
-### Step 7: Customize Function Tester Streamlit App
+### Step 6: Customize Function Tester Streamlit App
 
 **Goal:** Update Function Tester with region-specific coordinates and locations
 
@@ -256,7 +236,221 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** Function tester customized for region
 
-### Step 8: Deploy Updated Streamlit App
+### Step 7: Customize Routing Functions AISQL Notebook
+
+**Goal:** Update the routing_functions_aisql.ipynb notebook to use region-specific locations for AI-generated data
+
+**Actions:**
+
+1. **Determine notebook location scope:**
+   
+   The notebook generates sample data (restaurants, customers, delivery jobs) using AI. For practical route optimization demos, all generated locations must be within a drivable area (typically a single city or metro area).
+   
+   **If the map region is country-wide or state-wide** (e.g., "great-britain", "switzerland", "germany", "california"):
+   - Ask the user which major city within that region to use for the notebook's sample data
+   - Example: For "great-britain" map, ask: "Which city should the notebook use for sample data? (e.g., London, Manchester, Birmingham)"
+   - Use the chosen city name (referred to as `<NOTEBOOK_CITY>`) in all AI prompts
+   
+   **If the map region is already city-level** (e.g., "new-york", "london", "zurich"):
+   - Use the region name directly as `<NOTEBOOK_CITY>`
+
+2. **Read** the notebook file at `Notebook/routing_functions_aisql.ipynb`
+
+3. **Identify** the location-specific AI prompts that need updating. These cells use AI_COMPLETE to generate sample data:
+
+   | Cell Name | Current Location Reference | What to Change |
+   |-----------|---------------------------|----------------|
+   | `simple_directions_data` | "Mission District", "Financial District", "SAN FRANCISCO" | Change to two distinct areas within <NOTEBOOK_CITY> |
+   | `ten_random` | "San Francisco" restaurants | Change to "<NOTEBOOK_CITY>" restaurants |
+   | `gen_supplier` | "San Francisco" food supplier | Change to "<NOTEBOOK_CITY>" food supplier |
+   | `one_vehicle_optimisation` | "San Francisco" deliveries | Change to "<NOTEBOOK_CITY>" deliveries |
+   | `service_these_people` | "San Francisco" residential locations | Change to "<NOTEBOOK_CITY>" residential locations |
+   | `takeawaydeliveries` | "San Francisco" takeaway deliveries | Change to "<NOTEBOOK_CITY>" takeaway deliveries |
+   | `geocode_summit_address` | "450 Concar Dr, San Mateo, CA" (Snowflake HQ) | Change to a notable address in <NOTEBOOK_CITY> (e.g., Snowflake office or landmark) |
+   | `isochrones_try` | Same SF Snowflake office | Same address as above |
+
+4. **Update** each cell's AI prompt by replacing location references:
+   
+   **simple_directions_data cell:**
+   - Change `'Return 1 hotel in the Mission District and 1 restaurant in the Financial District IN SAN FRANCISCO.'`
+   - To: `'Return 1 hotel in <DISTRICT_1> and 1 restaurant in <DISTRICT_2> IN <NOTEBOOK_CITY>.'`
+   - Where `<DISTRICT_1>` and `<DISTRICT_2>` are two distinct areas within the city (research appropriate districts)
+
+   **ten_random cell:**
+   - Change `'Return 10 restaurants in San Francisco.'`
+   - To: `'Return 10 restaurants in <NOTEBOOK_CITY>.'`
+
+   **gen_supplier cell:**
+   - Change `'give me a location in San Francisco that sells food to restaurants.'`
+   - To: `'give me a location in <NOTEBOOK_CITY> that sells food to restaurants.'`
+
+   **one_vehicle_optimisation cell:**
+   - Change `'Return 10 delivery jobs with 1 available vehicle in San Francisco.'`
+   - To: `'Return 10 delivery jobs with 1 available vehicle in <NOTEBOOK_CITY>.'`
+
+   **service_these_people cell:**
+   - Change `'give me 40 random residential locations in San Francisco'`
+   - To: `'give me 40 random residential locations in <NOTEBOOK_CITY>'`
+
+   **takeawaydeliveries cell:**
+   - Change `'in San Francisco based on the following template'`
+   - To: `'in <NOTEBOOK_CITY> based on the following template'`
+
+   **geocode_summit_address and isochrones_try cells:**
+   - Change the Snowflake office address to a notable location in <NOTEBOOK_CITY>
+   - Research the Snowflake office address in the city, or use a well-known landmark
+
+5. **Update** markdown descriptions in the notebook:
+   - Cell `heading_simple_directions`: Change "San Francisco" to "<NOTEBOOK_CITY>"
+   - Cell `create_synthetic_jobs_and_vehicle`: Change "San Francisco" to "<NOTEBOOK_CITY>"
+   - Cell `head_multi_vehicles`: Change "San Francisco" to "<NOTEBOOK_CITY>"
+   - Cell `optimal_base_table`: Change "SAN FRANCISCO" to "<NOTEBOOK_CITY>" in the heading
+
+**Output:** Notebook customized for city-specific AI data generation (using <NOTEBOOK_CITY> within the <REGION_NAME> map)
+
+### Step 8: Customize Add Carto Data Notebook
+
+**Goal:** Update the add_carto_data.ipynb notebook to load POI data for the chosen region
+
+**Actions:**
+
+1. **Use the same `<NOTEBOOK_CITY>` determined in Step 8:**
+   - If a country/state-wide region was selected, use the major city chosen in Step 8
+   - If a city-level region was selected, use that city name
+
+2. **Determine the geohash for `<NOTEBOOK_CITY>`:**
+   - Execute the following SQL to find the geohash (precision 2) for the city:
+     ```sql
+     SELECT ST_GEOHASH(ST_MAKEPOINT(<CITY_LONGITUDE>, <CITY_LATITUDE>), 2) as geohash;
+     ```
+   - Common geohash examples:
+     - San Francisco: `9q`
+     - New York: `dr`
+     - London: `gc`
+     - Paris: `u0`
+     - Berlin: `u3`
+     - Tokyo: `xn`
+     - Sydney: `r3`
+
+3. **Read** the notebook file at `Notebook/add_carto_data.ipynb`
+
+4. **Update** the `add_carto_data` cell:
+   - Change the geohash filter from current value to `<GEOHASH>`
+   - The cell creates `DATA.REGION_DATA` table from Carto Overture Maps data
+   
+   **Before:**
+   ```sql
+   WHERE ST_GEOHASH(GEOMETRY,2) = '9q';
+   ```
+   
+   **After:**
+   ```sql
+   WHERE ST_GEOHASH(GEOMETRY,2) = '<GEOHASH>';
+   ```
+
+5. **Update** the `prompt_multi_layer_isochrone` cell:
+   - Change city references in the AI prompt from "San Francisco" to `<NOTEBOOK_CITY>`
+   
+   **Lines to update:**
+   - `"size the points so they pinpoint hotels on a map easily within the city of San Francisco."` → `"size the points so they pinpoint hotels on a map easily within the city of <NOTEBOOK_CITY>."`
+   - `"Snowflake World Tour Event in San Francisco 2025"` → `"Snowflake World Tour Event in <NOTEBOOK_CITY> 2025"`
+
+6. **Update** the Streamlit app default location at `Streamlit/routing.py`:
+   - Find the `place_input` text input default value
+   - Change from current location to a landmark in `<NOTEBOOK_CITY>`
+   
+   **Before:**
+   ```python
+   place_input = st.text_input('Choose Input', 'Golden Gate Bridge, San Francisco')
+   ```
+   
+   **After:**
+   ```python
+   place_input = st.text_input('Choose Input', '<LANDMARK>, <NOTEBOOK_CITY>')
+   ```
+   - Choose an iconic landmark in the city (e.g., "Big Ben, London", "Eiffel Tower, Paris", "Brandenburg Gate, Berlin")
+
+7. **Re-upload** the modified files:
+   ```bash
+   snow stage copy "Notebook/add_carto_data.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
+   snow stage copy "Streamlit/routing.py" @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --overwrite
+   ```
+
+8. **Recreate** the database tables with new region data:
+   ```sql
+   -- Create region data table with new geohash
+   CREATE OR REPLACE TABLE VEHICLE_ROUTING_SIMULATOR.DATA.REGION_DATA AS 
+   SELECT * FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+   WHERE ST_GEOHASH(GEOMETRY,2) = '<GEOHASH>';
+   
+   -- Recreate PLACES table from new region data
+   CREATE OR REPLACE TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES AS 
+   SELECT 
+       GEOMETRY,
+       PHONES:list[0]['element']::text AS PHONES,
+       CATEGORIES:primary::text AS CATEGORY,
+       NAMES:primary::text AS NAME,
+       ADDRESSES:list[0]['element'] AS ADDRESS,
+       COALESCE(categories:alternate:list, ARRAY_CONSTRUCT()) AS ALTERNATE
+   FROM VEHICLE_ROUTING_SIMULATOR.DATA.REGION_DATA
+   WHERE CATEGORIES:primary IS NOT NULL;
+   
+   -- Add search optimization
+   ALTER TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES ADD SEARCH OPTIMIZATION ON EQUALITY(ALTERNATE);
+   ALTER TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
+   ```
+
+9. **Verify** the data was loaded:
+   ```sql
+   SELECT COUNT(*) FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES;
+   ```
+   - Should return a substantial number of POIs (typically 100K+ for major cities)
+
+**Output:** Add Carto Data notebook and Streamlit app customized for <NOTEBOOK_CITY>, POI data loaded
+
+### Step 9: Create Feature Branch and Commit All Customizations
+
+**Goal:** Preserve original files on main branch, commit all customizations to feature branch
+
+**Actions:**
+
+1. **Create** feature branch for this region:
+   ```bash
+   git checkout -b feature/ors-<REGION_NAME>
+   ```
+
+2. **Add and commit** all customization changes made in Steps 3-8:
+   ```bash
+   git add Native_app/provider_setup/staged_files/ors-config.yml
+   git add Native_app/services/openrouteservice/openrouteservice.yaml
+   git add Native_app/code_artifacts/streamlit/pages/function_tester.py
+   git add Notebook/routing_functions_aisql.ipynb
+   git add Notebook/add_carto_data.ipynb
+   git add Streamlit/routing.py
+   git commit -m "Configure ORS and customize all artifacts for <REGION_NAME> map region"
+   ```
+
+3. **Show** the user the commit history on the feature branch:
+   ```bash
+   git log --oneline -3
+   ```
+
+4. **Verify** you are on the feature branch:
+   ```bash
+   git branch --show-current
+   ```
+   - Should show `feature/ors-<REGION_NAME>`
+
+5. **Inform** user that:
+   - Original San Francisco/NYC version remains on `main` branch
+   - All <REGION_NAME> customizations are on `feature/ors-<REGION_NAME>` branch
+   - **You are now on the feature branch** with all customizations
+   - To switch back to original version: `git checkout main`
+   - To return to this region: `git checkout feature/ors-<REGION_NAME>`
+
+**Output:** Feature branch created with all config and customization changes committed
+
+### Step 10: Deploy Updated Streamlit App
 
 **Goal:** Upload customized streamlit and upgrade Native App
 
@@ -276,36 +470,13 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** Native App updated with region-specific Function Tester
 
-### Step 9: Commit Streamlit Changes to Feature Branch
-
-**Goal:** Commit all customizations to the feature branch
-
-**Actions:**
-
-1. **Add and commit** the function tester changes:
-   ```bash
-   git add Native_app/code_artifacts/streamlit/pages/function_tester.py
-   git commit -m "Customize function tester for <REGION_NAME> map region"
-   ```
-
-2. **Show** the user the commit history on the feature branch:
-   ```bash
-   git log --oneline -5
-   ```
-
-3. **Inform** user that:
-   - Original San Francisco version remains on `main` branch
-   - All <REGION_NAME> customizations are on `feature/ors-<REGION_NAME>` branch
-   - To switch back to SF version: `git checkout main`
-   - To return to this region: `git checkout feature/ors-<REGION_NAME>`
-
-**Output:** All changes committed to feature branch
-
 ## Stopping Points
 
 - ✋ After Step 2: Confirm map download completed successfully
 - ✋ After Step 5: Verify services resumed without errors
-- ✋ After Step 7: Confirm region-specific coordinates are accurate
+- ✋ After Step 6: Confirm region-specific coordinates are accurate for Function Tester
+- ✋ After Step 7: Confirm AISQL notebook location references are updated correctly
+- ✋ After Step 8: Confirm Add Carto Data notebook and POI data loaded for the region
 - ✋ After Step 9: Verify all changes committed to feature branch
 
 ## Verification
@@ -326,14 +497,27 @@ After completion, verify:
    - Waypoints are relevant to the region
    - Only enabled routing profiles are available
 
-4. **Git branches correct:**
+4. **AISQL Notebook updated:** Open `Notebook/routing_functions_aisql.ipynb` and verify:
+   - All AI prompts reference <NOTEBOOK_CITY> (a city within the map region) instead of San Francisco
+   - Geocode address references a location within <NOTEBOOK_CITY>
+   - Markdown descriptions mention the correct city
+
+5. **Add Carto Data Notebook updated:** Open `Notebook/add_carto_data.ipynb` and verify:
+   - Geohash filter matches the chosen city/region
+   - AI prompts reference <NOTEBOOK_CITY> instead of San Francisco
+   - POI data table (`VEHICLE_ROUTING_SIMULATOR.DATA.PLACES`) contains data for the region
+
+6. **Streamlit Simulator updated:** Open `Streamlit/routing.py` and verify:
+   - Default location input references a landmark in <NOTEBOOK_CITY>
+
+7. **Git branches correct:**
    ```bash
-   git branch
-   git log --oneline main -3
-   git log --oneline feature/ors-<REGION_NAME> -3
+   git branch --show-current
+   git log --oneline -3
    ```
+   - Current branch should be `feature/ors-<REGION_NAME>`
    - Main branch should have original SF configuration
-   - Feature branch should have region-specific customizations
+   - Feature branch should have all region-specific customizations in a single commit
 
 ## Common Issues
 
@@ -351,5 +535,9 @@ After completion, verify:
 OpenRouteService Native App reconfigured to use specified country/region map, with:
 - All services resumed and operational
 - Function Tester customized with region-specific locations
-- Original SF version preserved on main branch
-- All customizations committed to feature/ors-<REGION_NAME> branch
+- AISQL Notebook customized with city-specific AI prompts (using a major city within the map region)
+- Add Carto Data Notebook customized with region-specific geohash and POI data loaded
+- Streamlit Simulator updated with region-specific default location
+- Original SF/NYC version preserved on main branch
+- All customizations (config files, notebooks, Streamlit apps) committed together to feature/ors-<REGION_NAME> branch in a single commit
+- **Working directory checked out to feature/ors-<REGION_NAME> branch**
