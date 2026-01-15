@@ -428,32 +428,74 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
    - If NO, skip to Step 9
    - If YES, ask what industries they want (e.g., "Beverage distribution", "Medical supplies", "Electronics", "Retail goods")
 
-2. **Update** Cell 15 in `Notebook/add_carto_data.ipynb` with custom industries:
-   
-   Each industry requires:
-   | Field | Purpose | Example |
-   |-------|---------|---------|
-   | `INDUSTRY` | Display name in app | 'Beverages' |
-   | `PA`, `PB`, `PC` | Product categories (3 skill levels) | 'Alcoholic', 'Carbonated', 'Still Water' |
-   | `IND` | Keywords to find distributor/warehouse locations | ARRAY_CONSTRUCT('beverage drink brewery distillery') |
-   | `IND2` | Secondary keywords (warehouse, depot, etc.) | ARRAY_CONSTRUCT('warehouse distribution depot factory') |
-   | `CTYPE` | Customer place categories (from Overture Maps) | ARRAY_CONSTRUCT('bar', 'restaurant', 'supermarket', 'hotel') |
-   | `STYPE` | Vehicle skill descriptions | ARRAY_CONSTRUCT('Standard Delivery', 'Temperature Controlled', 'Premium Service') |
+2. **For each industry**, generate SPECIFIC product types, customer types, and vehicle skills that match the industry:
 
-   **Example custom industry:**
+   | Field | Purpose | Must be industry-specific |
+   |-------|---------|---------------------------|
+   | `INDUSTRY` | Display name in app | Industry name |
+   | `PA`, `PB`, `PC` | 3 product categories representing different skill levels | Products specific to this industry |
+   | `IND` | Keywords to find distributor/warehouse locations | Industry-specific supplier keywords |
+   | `IND2` | Secondary keywords (warehouse, depot, etc.) | Generic logistics terms |
+   | `CTYPE` | Customer place categories (from Overture Maps) | Customers who buy this industry's products |
+   | `STYPE` | Vehicle skill descriptions matching PA/PB/PC | Delivery capabilities needed for these products |
+
+3. **Industry-Specific Examples:**
+
+   **Beverages:**
    ```sql
    SELECT
        'Beverages', 
-       'Alcoholic Beverages', 
-       'Carbonated Drinks', 
-       'Still Water', 
-       ARRAY_CONSTRUCT('beverage drink brewery distillery bottling'),
+       'Alcoholic Beverages',      -- PA: Skill 1 - requires age verification
+       'Carbonated Drinks',        -- PB: Skill 2 - fragile, needs careful handling
+       'Still Water',              -- PC: Skill 3 - bulk/heavy items
+       ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
        ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'), 
-       ARRAY_CONSTRUCT('bar', 'restaurant', 'hotel', 'supermarket'), 
-       ARRAY_CONSTRUCT('Standard Delivery', 'Temperature Controlled', 'Premium Service')
+       ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
+       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity')
    ```
 
-3. **Show user** available Overture Maps categories for their region:
+   **Electronics:**
+   ```sql
+   SELECT
+       'Electronics', 
+       'High-Value Items',         -- PA: Skill 1 - secure transport needed
+       'Fragile Equipment',        -- PB: Skill 2 - careful handling
+       'Standard Electronics',     -- PC: Skill 3 - regular delivery
+       ARRAY_CONSTRUCT('electronics computer phone appliance tech hardware'),
+       ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'), 
+       ARRAY_CONSTRUCT('electronics_store', 'computer_store', 'mobile_phone_shop', 'department_store', 'supermarket'),
+       ARRAY_CONSTRUCT('Secure Transport', 'Fragile Goods Handler', 'Standard Delivery')
+   ```
+
+   **Pharmaceuticals:**
+   ```sql
+   SELECT
+       'Pharmaceuticals', 
+       'Controlled Substances',    -- PA: Skill 1 - licensed carrier required
+       'Temperature Sensitive',    -- PB: Skill 2 - cold chain required
+       'OTC Medications',          -- PC: Skill 3 - standard handling
+       ARRAY_CONSTRUCT('pharmaceutical drug medicine medical prescription'),
+       ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler laboratory'), 
+       ARRAY_CONSTRUCT('pharmacy', 'hospital', 'clinic', 'dentist', 'doctor'),
+       ARRAY_CONSTRUCT('Licensed Pharmaceutical Carrier', 'Cold Chain Certified', 'Standard Medical Delivery')
+   ```
+
+   **Office Supplies:**
+   ```sql
+   SELECT
+       'Office Supplies', 
+       'Furniture',                -- PA: Skill 1 - large items, installation
+       'Electronics Equipment',    -- PB: Skill 2 - fragile items
+       'Paper & Consumables',      -- PC: Skill 3 - bulk standard goods
+       ARRAY_CONSTRUCT('office stationery furniture supplies paper equipment'),
+       ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'), 
+       ARRAY_CONSTRUCT('office', 'coworking_space', 'government_office', 'bank', 'company'),
+       ARRAY_CONSTRUCT('Furniture Delivery & Install', 'Fragile Equipment Handler', 'Bulk Goods Delivery')
+   ```
+
+4. **Update** Cell 15 in `Notebook/add_carto_data.ipynb` with the user's chosen industries
+
+5. **Show user** available Overture Maps categories for their region:
    ```sql
    SELECT DISTINCT CATEGORY, COUNT(*) as COUNT 
    FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
@@ -462,26 +504,32 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
    LIMIT 50;
    ```
    - This helps user choose valid `CTYPE` values that exist in their region
+   - Recommend categories with sufficient POI count (100+)
 
-4. **Generate** the updated INSERT statement with all industries (default + custom or replaced)
+6. **Generate** the complete INSERT statement with all chosen industries
+   - Each industry must have industry-specific values for ALL fields
+   - Do NOT use generic values across industries
 
-5. **Update** the notebook cell with the new INSERT statement
+7. **Update** Cell 15 in `Notebook/add_carto_data.ipynb` with the new INSERT statement
 
-6. **Re-upload** the modified notebook:
+8. **Re-upload** the modified notebook:
    ```bash
    snow stage copy "Notebook/add_carto_data.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
    ```
 
-7. **Recreate** the LOOKUP table with new industries:
+9. **Recreate** the LOOKUP table with new industries:
    ```sql
    DROP TABLE IF EXISTS VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
    -- Then run the CREATE TABLE and INSERT from the updated notebook cell
    ```
 
-8. **Verify** industries are loaded:
-   ```sql
-   SELECT INDUSTRY, PA, PB, PC FROM VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
-   ```
+10. **Verify** industries are loaded correctly:
+    ```sql
+    SELECT INDUSTRY, PA, PB, PC, CTYPE, STYPE FROM VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
+    ```
+    - Confirm each industry has unique, relevant product types
+    - Confirm customer types match the industry
+    - Confirm vehicle skills align with product requirements
 
 **Note:** The Streamlit app (`routing.py`) does NOT need updating - it reads industries dynamically from `DATA.LOOKUP`.
 
