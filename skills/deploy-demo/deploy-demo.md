@@ -93,7 +93,34 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 4
 
-### Step 4: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
+### Step 4: Check for Latest Claude Model
+
+**Goal:** Verify the latest Claude Sonnet model available in Snowflake Cortex
+
+**Actions:**
+
+1. **Check** the Snowflake Cortex AI documentation for available models:
+   - Reference: https://docs.snowflake.com/en/user-guide/snowflake-cortex/aisql
+   - Look for the latest Claude Sonnet model in the "Choosing a model" section
+
+2. **Verify** model availability by running this SQL:
+   ```sql
+   -- Test the model is available
+   SELECT AI_COMPLETE('claude-sonnet-4-5', 'Say hello') AS test_response;
+   ```
+
+3. **If needed, update** the notebook to use the latest model:
+   - Current default: `claude-sonnet-4-5`
+   - If a newer Claude Sonnet model is listed in the documentation, update the notebook file `Notebook/routing_functions_aisql.ipynb` before uploading
+   - Replace all occurrences of the old model name with the new one
+
+**Note:** As of January 2026, the recommended Claude Sonnet model is `claude-sonnet-4-5`. Check the documentation link above for any newer versions.
+
+**Output:** Confirmed latest Claude Sonnet model for use in the notebook
+
+**Next:** Proceed to Step 5
+
+### Step 5: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
 
 **Goal:** Create and execute the notebook that will help to explore Routing functions with AISQL
 
@@ -121,9 +148,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Notebook created and ready to be explored
 
-**Next:** Proceed to Step 5
+**Next:** Proceed to Step 6
 
-### Step 5: Deploy the Streamlit Application
+### Step 6: Deploy the Streamlit Application
 
 **Goal:** Deploy the route simulator Streamlit app
 
@@ -164,9 +191,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Streamlit application deployed with routing methods matching native app configuration
 
-**Next:** Proceed to Step 6
+**Next:** Proceed to Step 7
 
-### Step 6: Run the Demo
+### Step 7: Run the Demo
 
 **Goal:** Access and use the route simulator
 
@@ -204,7 +231,8 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 - Step 1: After getting Marketplace data - verify dataset accessible
 - Step 3: After notebook creation - run notebook cells manually in Snowsight
-- Step 5: After accessing Streamlit - verify app loads correctly
+- Step 4: After checking Claude model - verify model is available and working
+- Step 6: After accessing Streamlit - verify app loads correctly
 
 ## Common Issues
 
