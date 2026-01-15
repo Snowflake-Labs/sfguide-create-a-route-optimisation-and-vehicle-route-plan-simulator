@@ -4,6 +4,108 @@
 
 This project deploys OpenRouteService as a Snowflake Native App with Snowpark Container Services (SPCS). It provides route optimization, directions, and isochrone calculations for configurable geographic regions.
 
+## Installation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         INSTALLATION FLOW                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐
+│  PREREQUISITES  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. Install VS Code, Cortex Code CLI, Docker/Podman, Snowflake CLI, Git    │
+│  2. Configure Snowflake connection: snow connection add                      │
+│  3. Ensure ACCOUNTADMIN access and SPCS enabled                              │
+└────────┬────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  DEPLOY APP     │  ←── skills/deploy-route-optimizer
+└────────┬────────┘
+         │
+         ├──────────────────────────────────────────────────────────────────┐
+         │                                                                   │
+         ▼                                                                   │
+┌─────────────────────────────────────────────────────────────────┐         │
+│  Creates:                                                        │         │
+│  • Application Package (OPENROUTESERVICE_NATIVE_APP_PKG)        │         │
+│  • Native App (OPENROUTESERVICE_NATIVE_APP)                     │         │
+│  • Compute Pool for SPCS services                               │         │
+│  • 4 Container Services:                                         │         │
+│    - ORS_SERVICE (OpenRouteService engine)                      │         │
+│    - VROOM_SERVICE (Route optimization)                         │         │
+│    - ROUTING_GATEWAY_SERVICE (API gateway)                      │         │
+│    - DOWNLOADER (Map data manager)                              │         │
+│  • Default Map: San Francisco                                    │         │
+└────────┬────────────────────────────────────────────────────────┘         │
+         │                                                                   │
+         ▼                                                                   │
+┌─────────────────────┐                                                      │
+│  LAUNCH APP IN UI   │  ←── Required for first-time activation              │
+└────────┬────────────┘                                                      │
+         │                                                                   │
+         │                    ┌──────────────────────────────────────────────┘
+         │                    │
+         ▼                    ▼
+┌─────────────────┐    ┌─────────────────┐
+│   OPTIONAL:     │    │   OPTIONAL:     │
+│  CUSTOMIZE MAP  │    │  DEPLOY DEMO    │  ←── skills/deploy-demo
+└────────┬────────┘    └────────┬────────┘
+         │                      │
+         │                      ├────────────────────────────────────────────┐
+         ▼                      │                                             │
+┌─────────────────────────────────────────────────────────────────┐         │
+│  skills/ors-map-customization                                    │         │
+│                                                                  │         │
+│  1. Download OSM map (Geofabrik)                                │         │
+│  2. Configure routing profiles                                   │         │
+│  3. Update service configuration                                 │         │
+│  4. Resume services with new map                                 │         │
+│  5. Customize Function Tester (region coordinates)              │         │
+│  6. Customize AISQL Notebook (city-specific prompts)            │         │
+│  7. Customize Add Carto Data (region geohash)                   │         │
+│  8. Create Git feature branch                                    │         │
+│  9. Deploy updated Streamlit                                     │         │
+└────────┬────────────────────────────────────────────────────────┘         │
+         │                                                                   │
+         │                      ┌────────────────────────────────────────────┘
+         │                      │
+         ▼                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  READY TO USE                                                    │
+│                                                                  │
+│  Native App Functions:                                           │
+│  • DIRECTIONS(profile, coordinates) - Get route directions      │
+│  • OPTIMIZATION(jobs, vehicles) - Optimize vehicle routes       │
+│  • ISOCHRONES(profile, lon, lat, minutes) - Travel time polygons│
+│                                                                  │
+│  Streamlit Apps:                                                 │
+│  • Function Tester - Test routing functions interactively       │
+│  • Route Simulator - Full vehicle routing simulation            │
+│                                                                  │
+│  Notebooks:                                                      │
+│  • routing_functions_aisql.ipynb - AI-powered route demos       │
+│  • add_carto_data.ipynb - Load POI data from Marketplace        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Quick Start Commands
+
+```bash
+# Step 1: Deploy the Route Optimizer Native App
+use the local skill from skills/deploy-route-optimizer
+
+# Step 2 (Optional): Customize the map region
+use the local skill from skills/ors-map-customization
+
+# Step 3 (Optional): Deploy demo notebooks and Streamlit
+use the local skill from skills/deploy-demo
+```
+
 ## Prerequisites
 
 Before getting started, ensure you have the following installed:
@@ -94,10 +196,11 @@ The `ors-map-customization` skill provides a complete workflow to:
 | 3 | Update `ors-config.yml` with map file and routing profiles |
 | 4 | Update `openrouteservice.yaml` with region volume paths |
 | 5 | Resume all ORS services |
-| 6 | Create Git feature branch for customizations |
-| 7 | Customize Function Tester with region-specific coordinates |
-| 8 | Deploy updated Streamlit app |
-| 9 | Commit all changes to feature branch |
+| 6 | Customize Function Tester with region-specific coordinates |
+| 7 | Customize AISQL Notebook with city-specific AI prompts |
+| 8 | Customize Add Carto Data notebook with region geohash |
+| 9 | Create Git feature branch and commit all customizations |
+| 10 | Deploy updated Streamlit app |
 
 ### Routing Profiles
 
