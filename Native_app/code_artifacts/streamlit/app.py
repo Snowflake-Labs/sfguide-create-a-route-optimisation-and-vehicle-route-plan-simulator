@@ -62,31 +62,39 @@ def get_service_status():
     try:
         # Use fully qualified name - no USE statements needed in Streamlit
         status_query = f"SHOW SERVICES IN SCHEMA {SERVICE_DATABASE}.{SERVICE_SCHEMA}"
-        result = session.sql(status_query).to_pandas()
+        result = session.sql(status_query).collect()
         
-        if not result.empty:
-            # Try different possible column names for service name
-            service_name_col = None
-            for col_name in ['name', 'SERVICE_NAME', 'service_name', 'NAME']:
-                if col_name in result.columns:
-                    service_name_col = col_name
-                    break
+        # Convert to pandas manually to avoid column mismatch issues
+        if result:
+            # Get column names from the first row's fields
+            rows = [row.as_dict() for row in result]
+            df = pd.DataFrame(rows)
             
-            if service_name_col:
-                # Rename column to standard name for consistency
-                result = result.rename(columns={service_name_col: 'SERVICE_NAME'})
+            if not df.empty:
+                # Try different possible column names for service name
+                service_name_col = None
+                for col_name in ['name', 'SERVICE_NAME', 'service_name', 'NAME']:
+                    if col_name in df.columns:
+                        service_name_col = col_name
+                        break
                 
-            # Try different possible column names for status
-            status_col = None
-            for col_name in ['status', 'STATUS', 'Status']:
-                if col_name in result.columns:
-                    status_col = col_name
-                    break
+                if service_name_col:
+                    # Rename column to standard name for consistency
+                    df = df.rename(columns={service_name_col: 'SERVICE_NAME'})
                     
-            if status_col and status_col != 'STATUS':
-                result = result.rename(columns={status_col: 'STATUS'})
+                # Try different possible column names for status
+                status_col = None
+                for col_name in ['status', 'STATUS', 'Status']:
+                    if col_name in df.columns:
+                        status_col = col_name
+                        break
+                        
+                if status_col and status_col != 'STATUS':
+                    df = df.rename(columns={status_col: 'STATUS'})
+            
+            return df
         
-        return result
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Error fetching service status: {str(e)}")
         return pd.DataFrame()
@@ -260,9 +268,15 @@ if not service_status_df.empty:
     # Create metrics row
     col1, col2, col3, col4 = st.columns(4)
     
-    if '"status"' in service_status_df.columns:
-        # Clean the status values first (remove quotes) then count
-        status_clean = service_status_df['"status"'].astype(str).str.replace('"', '').str.upper()
+    # Find the status column (could be 'status', 'STATUS', or '"status"')
+    status_col = None
+    for col_name in ['status', 'STATUS', '"status"']:
+        if col_name in service_status_df.columns:
+            status_col = col_name
+            break
+    
+    if status_col:
+        status_clean = service_status_df[status_col].astype(str).str.replace('"', '').str.upper()
         running_count = len(status_clean[status_clean == 'RUNNING'])
         stopped_count = len(status_clean[status_clean == 'SUSPENDED'])
         total_count = len(service_status_df)
@@ -348,20 +362,20 @@ if not service_status_df.empty:
     
     # Display the service status table with better formatting
     if not service_status_df.empty:
-        # Select relevant columns for display using the actual column names (with quotes)
+        # Select relevant columns for display - check both quoted and unquoted versions
         display_columns = []
         available_columns = {
-            '"name"': '🔧 Service',
-            '"status"': '📊 Status', 
-            '"database_name"': '🗄️ Database',
-            '"schema_name"': '📁 Schema',
-            '"current_instances"': '📈 Running',
-            '"target_instances"': '🎯 Target',
-            '"min_instances"': '📉 Min',
-            '"max_instances"': '📈 Max',
-            '"auto_resume"': '🔄 Auto Resume',
-            '"owner"': '👤 Owner',
-            '"created_on"': '📅 Created'
+            'name': '🔧 Service',
+            'status': '📊 Status', 
+            'database_name': '🗄️ Database',
+            'schema_name': '📁 Schema',
+            'current_instances': '📈 Running',
+            'target_instances': '🎯 Target',
+            'min_instances': '📉 Min',
+            'max_instances': '📈 Max',
+            'auto_resume': '🔄 Auto Resume',
+            'owner': '👤 Owner',
+            'created_on': '📅 Created'
         }
         
         # Use the actual column names from the service status
@@ -374,25 +388,25 @@ if not service_status_df.empty:
             
             # Clean up and format the data using actual column names
             for col in display_df.columns:
-                if col == '"name"':
+                if col == 'name':
                     # Clean service names - remove quotes and improve display
                     display_df[col] = display_df[col].astype(str).str.replace('"', '').str.replace('_', ' ')
-                elif col == '"status"':
+                elif col == 'status':
                     # Add status symbols and clean quotes
                     display_df[col] = display_df[col].astype(str).str.replace('"', '').apply(lambda x: 
                         f"🟢 {x}" if str(x).upper() == 'RUNNING' 
                         else f"🔴 {x}" if str(x).upper() == 'SUSPENDED'
                         else f"🟡 {x}")
-                elif col == '"auto_resume"':
+                elif col == 'auto_resume':
                     # Convert boolean to symbols and clean quotes
                     display_df[col] = display_df[col].astype(str).str.replace('"', '').apply(lambda x: 
                         "✅" if str(x).upper() == 'TRUE' 
                         else "❌" if str(x).upper() == 'FALSE'
                         else str(x))
-                elif col in ['"current_instances"', '"target_instances"', '"min_instances"', '"max_instances"']:
+                elif col in ['current_instances', 'target_instances', 'min_instances', 'max_instances']:
                     # Format numbers nicely and clean quotes
                     display_df[col] = display_df[col].astype(str).str.replace('"', '')
-                elif col == '"created_on"':
+                elif col == 'created_on':
                     # Format dates nicely and clean quotes
                     try:
                         # First remove quotes, then parse datetime
@@ -436,9 +450,16 @@ if not service_status_df.empty:
     st.markdown('<h1sub>📜 SERVICE LOGS</h1sub>', unsafe_allow_html=True)
     
     # Get available services for logs
-    if '"name"' in service_status_df.columns:
+    # Find name column (could be 'name', 'SERVICE_NAME', or '"name"')
+    name_col = None
+    for col_name in ['name', 'SERVICE_NAME', '"name"']:
+        if col_name in service_status_df.columns:
+            name_col = col_name
+            break
+    
+    if name_col:
         # Clean service names (remove quotes)
-        available_services = [name.strip('"') for name in service_status_df['"name"'].tolist()]
+        available_services = [str(name).strip('"') for name in service_status_df[name_col].tolist()]
         
         if available_services:
             # Create tabs for each service

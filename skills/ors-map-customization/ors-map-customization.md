@@ -487,18 +487,33 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 
 **Output:** Industry categories customized for user's use case
 
-### Step 9: Create Feature Branch and Commit All Customizations
+### Step 9: Save Customizations (Git Optional)
 
-**Goal:** Preserve original files on main branch, commit all customizations to feature branch
+**Goal:** Save customizations - either to a Git branch or just locally
 
 **Actions:**
 
-1. **Create** feature branch for this region:
+1. **Check** if Git is available and the directory is a Git repository:
+   ```bash
+   git status
+   ```
+
+2. **If Git is NOT available or not a Git repo:**
+   - Inform user that customizations have been made directly to local files
+   - Recommend keeping a backup of original files if they want to restore defaults later
+   - **Skip to Step 10**
+
+3. **If Git IS available:**
+   - **Ask user** if they want to save customizations to a feature branch
+   - If NO, inform them changes remain in working directory and skip to Step 10
+   - If YES, continue with branching:
+
+4. **Create** feature branch for this region:
    ```bash
    git checkout -b feature/ors-<REGION_NAME>
    ```
 
-2. **Add and commit** all customization changes made in Steps 3-8:
+5. **Add and commit** all customization changes made in Steps 3-8:
    ```bash
    git add Native_app/provider_setup/staged_files/ors-config.yml
    git add Native_app/services/openrouteservice/openrouteservice.yaml
@@ -509,25 +524,13 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
    git commit -m "Configure ORS and customize all artifacts for <REGION_NAME> map region"
    ```
 
-3. **Show** the user the commit history on the feature branch:
-   ```bash
-   git log --oneline -3
-   ```
-
-4. **Verify** you are on the feature branch:
-   ```bash
-   git branch --show-current
-   ```
-   - Should show `feature/ors-<REGION_NAME>`
-
-5. **Inform** user that:
-   - Original San Francisco/NYC version remains on `main` branch
+6. **Inform** user that:
+   - Original San Francisco version remains on `main` branch
    - All <REGION_NAME> customizations are on `feature/ors-<REGION_NAME>` branch
-   - **You are now on the feature branch** with all customizations
    - To switch back to original version: `git checkout main`
    - To return to this region: `git checkout feature/ors-<REGION_NAME>`
 
-**Output:** Feature branch created with all config and customization changes committed
+**Output:** Customizations saved (either to Git branch or local files only)
 
 ### Step 10: Deploy Updated Streamlit App
 
@@ -557,7 +560,7 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 - ✋ After Step 7: Confirm AISQL notebook location references are updated correctly
 - ✋ After Step 8: Confirm Add Carto Data notebook and POI data loaded for the region
 - ✋ After Step 8b (if used): Confirm industry categories customized and LOOKUP table updated
-- ✋ After Step 9: Verify all changes committed to feature branch
+- ✋ After Step 9: Verify customizations saved (Git branch if using Git, or local files)
 
 ## Verification
 
@@ -590,14 +593,14 @@ After completion, verify:
 6. **Streamlit Simulator updated:** Open `Streamlit/routing.py` and verify:
    - Default location input references a landmark in <NOTEBOOK_CITY>
 
-7. **Git branches correct:**
+7. **Git branches (if using Git):**
    ```bash
    git branch --show-current
    git log --oneline -3
    ```
-   - Current branch should be `feature/ors-<REGION_NAME>`
+   - If Git was used: Current branch should be `feature/ors-<REGION_NAME>`
    - Main branch should have original SF configuration
-   - Feature branch should have all region-specific customizations in a single commit
+   - If not using Git: Skip this verification
 
 ## Common Issues
 
@@ -619,9 +622,15 @@ OpenRouteService Native App reconfigured to use specified country/region map, wi
 - Add Carto Data Notebook customized with region-specific geohash and POI data loaded
 - Streamlit Simulator updated with region-specific default location
 - Industry categories customized (if Step 8b was used)
-- Original SF/NYC version preserved on main branch
-- All customizations (config files, notebooks, Streamlit apps) committed together to feature/ors-<REGION_NAME> branch in a single commit
-- **Working directory checked out to feature/ors-<REGION_NAME> branch**
+
+**If using Git:**
+- Original SF version preserved on main branch
+- All customizations committed to `feature/ors-<REGION_NAME>` branch
+- Working directory checked out to feature branch
+
+**If not using Git:**
+- All customizations saved to local files
+- User advised to keep backup of original files if needed
 
 **Note on Industry Customization:**
 The Streamlit app reads industries dynamically from the database, so only the `add_carto_data.ipynb` notebook needs updating when changing industries. The app will automatically reflect any changes to the `DATA.LOOKUP` table.
