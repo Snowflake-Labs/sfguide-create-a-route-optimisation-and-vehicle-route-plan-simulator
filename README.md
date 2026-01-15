@@ -27,54 +27,58 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 │  DEPLOY APP     │  ←── skills/deploy-route-optimizer
 └────────┬────────┘
          │
-         ├──────────────────────────────────────────────────────────────────┐
-         │                                                                   │
-         ▼                                                                   │
-┌─────────────────────────────────────────────────────────────────┐         │
-│  Creates:                                                        │         │
-│  • Application Package (OPENROUTESERVICE_NATIVE_APP_PKG)        │         │
-│  • Native App (OPENROUTESERVICE_NATIVE_APP)                     │         │
-│  • Compute Pool for SPCS services                               │         │
-│  • 4 Container Services:                                         │         │
-│    - ORS_SERVICE (OpenRouteService engine)                      │         │
-│    - VROOM_SERVICE (Route optimization)                         │         │
-│    - ROUTING_GATEWAY_SERVICE (API gateway)                      │         │
-│    - DOWNLOADER (Map data manager)                              │         │
-│  • Default Map: San Francisco                                    │         │
-└────────┬────────────────────────────────────────────────────────┘         │
-         │                                                                   │
-         ▼                                                                   │
-┌─────────────────────┐                                                      │
-│  LAUNCH APP IN UI   │  ←── Required for first-time activation              │
-└────────┬────────────┘                                                      │
-         │                                                                   │
-         │                    ┌──────────────────────────────────────────────┘
-         │                    │
-         ▼                    ▼
-┌─────────────────┐    ┌─────────────────┐
-│   OPTIONAL:     │    │   OPTIONAL:     │
-│  CUSTOMIZE MAP  │    │  DEPLOY DEMO    │  ←── skills/deploy-demo
-└────────┬────────┘    └────────┬────────┘
-         │                      │
-         │                      ├────────────────────────────────────────────┐
-         ▼                      │                                             │
-┌─────────────────────────────────────────────────────────────────┐         │
-│  skills/ors-map-customization                                    │         │
-│                                                                  │         │
-│  1. Download OSM map (Geofabrik)                                │         │
-│  2. Configure routing profiles                                   │         │
-│  3. Update service configuration                                 │         │
-│  4. Resume services with new map                                 │         │
-│  5. Customize Function Tester (region coordinates)              │         │
-│  6. Customize AISQL Notebook (city-specific prompts)            │         │
-│  7. Customize Add Carto Data (region geohash)                   │         │
-│  8. Create Git feature branch                                    │         │
-│  9. Deploy updated Streamlit                                     │         │
-└────────┬────────────────────────────────────────────────────────┘         │
-         │                                                                   │
-         │                      ┌────────────────────────────────────────────┘
-         │                      │
-         ▼                      ▼
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Creates:                                                        │
+│  • Application Package (OPENROUTESERVICE_NATIVE_APP_PKG)        │
+│  • Native App (OPENROUTESERVICE_NATIVE_APP)                     │
+│  • Compute Pool for SPCS services                               │
+│  • 4 Container Services:                                         │
+│    - ORS_SERVICE (OpenRouteService engine)                      │
+│    - VROOM_SERVICE (Route optimization)                         │
+│    - ROUTING_GATEWAY_SERVICE (API gateway)                      │
+│    - DOWNLOADER (Map data manager)                              │
+│  • Default Map: San Francisco                                    │
+└────────┬────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  LAUNCH APP IN UI   │  ←── Required for first-time activation
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│   OPTIONAL: CUSTOMIZE MAP                                        │
+│   skills/ors-map-customization                                   │
+│                                                                  │
+│  1. Download OSM map (Geofabrik)                                │
+│  2. Configure routing profiles                                   │
+│  3. Update service configuration                                 │
+│  4. Resume services with new map                                 │
+│  5. Customize Function Tester (region coordinates)              │
+│  6. Customize AISQL Notebook (city-specific prompts)            │
+│  7. Customize Add Carto Data (region geohash)                   │
+│  8. Create Git feature branch                                    │
+│  9. Deploy updated Streamlit                                     │
+│                                                                  │
+│  ⚠️  Run this BEFORE deploy-demo if you want a custom region     │
+└────────┬────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│   OPTIONAL: DEPLOY DEMO                                          │
+│   skills/deploy-demo                                             │
+│                                                                  │
+│  Deploys notebooks and Streamlit with customized locations:     │
+│  • Gets Overture Maps POI data from Snowflake Marketplace       │
+│  • Creates AISQL Notebook in Snowflake                          │
+│  • Deploys Route Simulator Streamlit app                        │
+│                                                                  │
+│  ⚠️  Run AFTER customize map to use your chosen region           │
+│     (Otherwise defaults to San Francisco)                        │
+└────────┬────────────────────────────────────────────────────────┘
+         │
+         ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  READY TO USE                                                    │
 │                                                                  │
@@ -100,9 +104,11 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 use the local skill from skills/deploy-route-optimizer
 
 # Step 2 (Optional): Customize the map region
+# ⚠️ Run this BEFORE deploy-demo if you want a custom region
 use the local skill from skills/ors-map-customization
 
 # Step 3 (Optional): Deploy demo notebooks and Streamlit
+# ⚠️ Run AFTER customize-map to use your chosen region (otherwise defaults to San Francisco)
 use the local skill from skills/deploy-demo
 ```
 
@@ -168,14 +174,17 @@ Before getting started, ensure you have the following installed:
 - The default map installed is for San Francisco
 
 ### 2. (Optional) Select a Custom Map
+- **Run this BEFORE deploy-demo if you want a custom region**
 - After the app is deployed, you can select a custom map
 - Type in Cortex Code CLI: `use the local skill from skills/ors-map-customization`
 - Follow the prompts to select your region (e.g., Great Britain, Germany, France, etc.)
 - It is recommended to use the smallest map possible for your use case; larger maps require more compute power
+- This skill customizes all notebooks and Streamlit apps with your chosen location
 
 ### 3. (Optional) Deploy Demo Notebook and Streamlit
-- Prerequisite: Custom map installed (e.g., New York)
+- **Run AFTER customize-map to use your chosen region** (otherwise defaults to San Francisco)
 - Type in Cortex Code CLI: `use the local skill from skills/deploy-demo`
+- This deploys the customized notebooks and Streamlit apps to Snowflake
 
 ## Map Customization Skill
 
