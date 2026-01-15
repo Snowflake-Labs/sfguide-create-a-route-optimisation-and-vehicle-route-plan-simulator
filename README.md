@@ -11,16 +11,17 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 │                         INSTALLATION FLOW                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────┐
-│  PREREQUISITES  │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. Install VS Code, Cortex Code CLI, Docker/Podman, Snowflake CLI, Git    │
-│  2. Configure Snowflake connection: snow connection add                      │
-│  3. Ensure ACCOUNTADMIN access and SPCS enabled                              │
-└────────┬────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│  CHECK PREREQUISITES                                               │
+│  skills/check-prerequisites                                        │
+│                                                                    │
+│  Checks for:                                                       │
+│  • VS Code, Cortex Code CLI, Docker/Podman, Snowflake CLI, Git   │
+│  • Snowflake connection configuration                              │
+│  • ACCOUNTADMIN access and SPCS enabled                            │
+│                                                                    │
+│  Guides installation of any missing dependencies                   │
+└────────┬──────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────┐
@@ -100,6 +101,9 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 ### Quick Start Commands
 
 ```bash
+# Step 0 (Recommended): Check and install prerequisites
+use the local skill from skills/check-prerequisites
+
 # Step 1: Deploy the Route Optimizer Native App
 use the local skill from skills/deploy-route-optimizer
 
@@ -166,6 +170,12 @@ Before getting started, ensure you have the following installed:
 - Authenticate: `gh auth login`
 
 ## Step-By-Step Guide
+
+### 0. (Recommended) Check Prerequisites
+- In Cortex Code CLI type: `use the local skill from skills/check-prerequisites`
+- This will check for all required dependencies (VS Code, Cortex Code CLI, Docker/Podman, Snowflake CLI, Git)
+- It will guide you through installing any missing tools
+- It also verifies your Snowflake connection is configured correctly
 
 ### 1. Deploy App
 - Go to the working directory of the project
@@ -286,9 +296,12 @@ Or simply run the map customization skill again for the desired region.
 
 | Skill | Description | Command |
 |-------|-------------|---------|
+| `check-prerequisites` | Check and install required dependencies | `use the local skill from skills/check-prerequisites` |
 | `deploy-route-optimizer` | Deploy the ORS Native App | `use the local skill from skills/deploy-route-optimizer` |
 | `ors-map-customization` | Change map region and customize app | `use the local skill from skills/ors-map-customization` |
 | `deploy-demo` | Deploy demo notebook and streamlit | `use the local skill from skills/deploy-demo` |
+| `customize-function-tester` | Update Function Tester coordinates | `use the local skill from skills/customize-function-tester` |
+| `uninstall-route-optimizer` | Remove app and clean up resources | `use the local skill from skills/uninstall-route-optimizer` |
 
 ## Project Structure
 
