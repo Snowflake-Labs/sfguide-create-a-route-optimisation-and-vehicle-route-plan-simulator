@@ -1,24 +1,68 @@
 ---
 name: ors-map-customization
-description: "Customize OpenRouteService map region and industry categories for route optimization. Use when: changing ORS map data, switching countries/regions, reconfiguring route service geography, customizing industry categories. Triggers: change ors map, customize route map, switch openrouteservice region, update ors country, customize industries."
+description: "Customize OpenRouteService deployment: map region, vehicle types, and/or industry categories. Use when: changing location, modifying vehicle profiles, customizing industries. Triggers: customize deployment, change map, modify vehicles, customize industries."
 ---
 
-# OpenRouteService Map Customization
+# OpenRouteService Customization
 
-Reconfigure OpenRouteService Native App to use a different geographic region/country map.
+Customize your OpenRouteService deployment with options for location, vehicle types, and industries.
 
 ## Prerequisites
 - Active Snowflake connection with access to:
   - `OPENROUTESERVICE_SETUP` database
   - `OPENROUTESERVICE_NATIVE_APP` application
-- Compute resources to download and process map data
+- Compute resources to download and process map data (if changing location)
 - Services in `OPENROUTESERVICE_NATIVE_APP.CORE` schema
 
 ## Workflow
 
+### Step 0: Determine Customization Scope
+
+**Goal:** Ask user what they want to customize to determine which steps to run
+
+**Actions:**
+
+1. **Ask the user three yes/no questions:**
+
+   **Question 1: "Do you want to customize the LOCATION (map region)?"**
+   - Examples: Change from San Francisco to Paris, London, Tokyo, etc.
+   - If YES → Set `CUSTOMIZE_LOCATION = true`
+   - If NO → Set `CUSTOMIZE_LOCATION = false`
+
+   **Question 2: "Do you want to customize VEHICLE TYPES (routing profiles)?"**
+   - Examples: Add walking, wheelchair, electric bicycle; remove truck
+   - If YES → Set `CUSTOMIZE_VEHICLES = true`
+   - If NO → Set `CUSTOMIZE_VEHICLES = false`
+
+   **Question 3: "Do you want to customize INDUSTRIES for the demo?"**
+   - Examples: Change from Food/Healthcare/Cosmetics to Beverages/Electronics/Pharmaceuticals
+   - If YES → Set `CUSTOMIZE_INDUSTRIES = true`
+   - If NO → Set `CUSTOMIZE_INDUSTRIES = false`
+
+2. **Determine which steps to run based on answers:**
+
+   | Customization | Steps Required |
+   |---------------|----------------|
+   | Location = YES | Steps 1-5 (download map, upload, rebuild graphs) |
+   | Vehicles = YES | Steps 3-5 (modify profiles, rebuild graphs) |
+   | Industries = YES | Step 8b (modify notebooks) |
+   | Location OR Vehicles = YES | Steps 6, 10 (update Function Tester, redeploy app) |
+   | ANY = YES | Steps 7-8 (update AISQL notebook, Carto notebook, Streamlit) |
+   | ALL = NO | Inform user nothing to customize, exit |
+
+3. **Summarize the plan to user:**
+   - "Based on your choices, I will:"
+   - List what will be customized
+   - List what will NOT change
+   - Ask for confirmation before proceeding
+
+**Output:** Customization scope determined, user confirmed plan
+
 ### Step 1: Setup Notebook
 
-**Goal:** Create required Notebook
+**SKIP IF:** `CUSTOMIZE_LOCATION = false`
+
+**Goal:** Create required Notebook for map download
 
 **Actions:**
 
@@ -54,6 +98,8 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 **Output:** Notebook created 
 
 ### Step 2: Download Map Data
+
+**SKIP IF:** `CUSTOMIZE_LOCATION = false`
 
 **Goal:** Execute notebook to download OSM map data for target region
 
@@ -124,7 +170,9 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 ### Step 3: Update Configuration File
 
-**Goal:** Modify ors-config.yml to reference new map file and configure routing profiles
+**SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
+
+**Goal:** Modify ors-config.yml to reference new map file and/or configure routing profiles
 
 **Actions:**
 
@@ -162,7 +210,9 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 ### Step 4: Update Service Configuration
 
-**Goal:** Reconfigure ORS service to point to new map region
+**SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
+
+**Goal:** Reconfigure ORS service to point to new map region and/or vehicle profiles
 
 **Actions:**
 
@@ -188,7 +238,9 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 ### Step 5: Resume Services
 
-**Goal:** Restart all ORS services
+**SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
+
+**Goal:** Restart all ORS services to rebuild graphs with new map/profiles
 
 **Actions:**
 
@@ -206,7 +258,9 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 ### Step 6: Customize Function Tester Streamlit App
 
-**Goal:** Update Function Tester with region-specific coordinates and locations
+**SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
+
+**Goal:** Update Function Tester with region-specific coordinates and available vehicle profiles
 
 **Actions:**
 
@@ -237,6 +291,8 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 **Output:** Function tester customized for region
 
 ### Step 7: Customize Routing Functions AISQL Notebook
+
+**RUN IF:** Any customization is selected (location, vehicles, or industries)
 
 **Goal:** Update the routing_functions_aisql.ipynb notebook to use region-specific locations for AI-generated data
 
@@ -309,6 +365,8 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 **Output:** Notebook customized for city-specific AI data generation (using <NOTEBOOK_CITY> within the <REGION_NAME> map)
 
 ### Step 8: Customize Add Carto Data Notebook
+
+**RUN IF:** Any customization is selected (location, vehicles, or industries)
 
 **Goal:** Update the add_carto_data.ipynb notebook to load POI data for the chosen region
 
@@ -408,11 +466,11 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** Add Carto Data notebook and Streamlit app customized for <NOTEBOOK_CITY>, POI data loaded
 
-### Step 8b: Customize Industry Categories (Optional)
+### Step 8b: Customize Industry Categories
 
-**Goal:** Allow user to customize industry categories for their use case
+**SKIP IF:** `CUSTOMIZE_INDUSTRIES = false`
 
-**IMPORTANT:** This step is OPTIONAL. Only proceed if user wants to change industry categories.
+**Goal:** Customize industry categories for the user's use case
 
 **Background:**
 The default industries are:
@@ -580,9 +638,11 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 
 **Output:** Customizations saved (either to Git branch or local files only)
 
-### Step 10: Deploy Updated Streamlit App
+### Step 10: Deploy Updated Function Tester App
 
-**Goal:** Upload customized streamlit and upgrade Native App
+**SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
+
+**Goal:** Upload customized Function Tester and upgrade Native App (only needed if location or vehicles changed)
 
 **Actions:**
 
@@ -623,18 +683,21 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 
 ## Stopping Points
 
-- ✋ After Step 2: Confirm map download completed successfully
-- ✋ After Step 5: Verify services resumed without errors
-- ✋ After Step 6: Confirm region-specific coordinates are accurate for Function Tester
+- ✋ After Step 0: Confirm customization scope with user before proceeding
+- ✋ After Step 2 (if location changed): Confirm map download completed successfully
+- ✋ After Step 5 (if location or vehicles changed): Verify services resumed without errors
+- ✋ After Step 6 (if location or vehicles changed): Confirm Function Tester coordinates are accurate
 - ✋ After Step 7: Confirm AISQL notebook location references are updated correctly
 - ✋ After Step 8: Confirm Add Carto Data notebook and POI data loaded for the region
-- ✋ After Step 8b (if used): Confirm industry categories customized and LOOKUP table updated
+- ✋ After Step 8b (if industries changed): Confirm industry categories customized
 - ✋ After Step 9: Verify customizations saved (Git branch if using Git, or local files)
 - ✋ After Step 11: Confirm user decision on deploy-demo (chain automatically or run later)
 
 ## Verification
 
-After completion, verify:
+After completion, verify based on what was customized:
+
+**If Location or Vehicles were changed:**
 
 1. **Services running:**
    ```sql
@@ -650,6 +713,8 @@ After completion, verify:
    - Waypoints are relevant to the region
    - Only enabled routing profiles are available
 
+**If any customization was made:**
+
 4. **AISQL Notebook updated:** Open `Notebook/routing_functions_aisql.ipynb` and verify:
    - All AI prompts reference <NOTEBOOK_CITY> (a city within the map region) instead of San Francisco
    - Geocode address references a location within <NOTEBOOK_CITY>
@@ -657,6 +722,8 @@ After completion, verify:
 
 5. **Add Carto Data Notebook updated:** Open `Notebook/add_carto_data.ipynb` and verify:
    - Geohash filter matches the chosen city/region
+
+**If Industries were changed:**
    - AI prompts reference <NOTEBOOK_CITY> instead of San Francisco
    - POI data table (`VEHICLE_ROUTING_SIMULATOR.DATA.PLACES`) contains data for the region
 
@@ -685,13 +752,27 @@ After completion, verify:
 
 ## Output
 
-OpenRouteService Native App reconfigured to use specified country/region map, with:
-- All services resumed and operational
-- Function Tester customized with region-specific locations
-- AISQL Notebook customized with city-specific AI prompts (using a major city within the map region)
-- Add Carto Data Notebook customized with region-specific geohash and POI data loaded
+OpenRouteService deployment customized based on user choices:
+
+**If Location was changed:**
+- New map downloaded and uploaded to stage
+- Services restarted to rebuild routing graphs
+- Function Tester updated with region-specific coordinates
+
+**If Vehicle Types were changed:**
+- Routing profiles enabled/disabled in configuration
+- Services restarted to rebuild graphs for new profiles
+- Function Tester updated with available vehicle types
+
+**If Industries were changed:**
+- Industry categories customized in add_carto_data.ipynb
+- LOOKUP table configuration updated
+- Streamlit app will read new industries dynamically
+
+**For all customizations:**
+- AISQL Notebook updated with city-specific AI prompts
+- Add Carto Data Notebook updated with region-specific geohash
 - Streamlit Simulator updated with region-specific default location
-- Industry categories customized (if Step 8b was used)
 
 **If using Git:**
 - Original SF version preserved on main branch
@@ -704,3 +785,5 @@ OpenRouteService Native App reconfigured to use specified country/region map, wi
 
 **Note on Industry Customization:**
 The Streamlit app reads industries dynamically from the database, so only the `add_carto_data.ipynb` notebook needs updating when changing industries. The app will automatically reflect any changes to the `DATA.LOOKUP` table.
+
+**Important:** If only industries were changed (no location or vehicle changes), the Native App does not need to be redeployed - only the demo content needs updating via `deploy-demo`.

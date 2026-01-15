@@ -121,8 +121,9 @@ use the local skill from skills/check-prerequisites
 # Step 1: Deploy the Route Optimizer Native App
 use the local skill from skills/deploy-route-optimizer
 
-# Step 2 (Optional): Customize the map region
-# ⚠️ Run this BEFORE deploy-demo if you want a custom region
+# Step 2 (Optional): Customize location, vehicles, and/or industries
+# ⚠️ Run this BEFORE deploy-demo if you want customizations
+# The skill asks yes/no for each: location, vehicles, industries
 use the local skill from skills/ors-map-customization
 
 # Step 3 (Optional): Deploy demo notebooks and Streamlit
@@ -200,43 +201,61 @@ Before getting started, ensure you have the following installed:
 - After deployment, the link to the app will be provided. For first time use, you must launch the application in the UI
 - The default map installed is for San Francisco
 
-### 2. (Optional) Select a Custom Map
-- **Run this BEFORE deploy-demo if you want a custom region**
-- After the app is deployed, you can select a custom map
+### 2. (Optional) Customize Your Deployment
+- **Run this BEFORE deploy-demo if you want any customizations**
+- After the app is deployed, you can customize location, vehicles, and/or industries
 - Type in Cortex Code CLI: `use the local skill from skills/ors-map-customization`
-- Follow the prompts to select your region (e.g., Great Britain, Germany, France, etc.)
-- It is recommended to use the smallest map possible for your use case; larger maps require more compute power
-- This skill customizes all notebooks and Streamlit apps with your chosen location
+- The skill asks three yes/no questions:
+  - **Location?** - Change map region (e.g., San Francisco → Paris)
+  - **Vehicles?** - Modify routing profiles (add walking, wheelchair, etc.)
+  - **Industries?** - Change industry categories (Food → Beverages, etc.)
+- Only the steps for your chosen customizations will run
+- If you only change industries, no map download or app redeployment is needed
 
 ### 3. (Optional) Deploy Demo Notebook and Streamlit
 - **Run AFTER customize-map to use your chosen region** (otherwise defaults to San Francisco)
 - Type in Cortex Code CLI: `use the local skill from skills/deploy-demo`
 - This deploys the customized notebooks and Streamlit apps to Snowflake
 
-## Map Customization Skill
+## Customization Skill
 
-The `ors-map-customization` skill provides a complete workflow to:
+The `ors-map-customization` skill provides a flexible workflow to customize your deployment. It starts by asking **three yes/no questions** to determine what to customize:
 
-1. **Download map data** from OpenStreetMap (Geofabrik)
-2. **Configure routing profiles** (driving-car, driving-hgv, cycling-road, etc.)
-3. **Update service configuration** to use the new map region
-4. **Customize the Function Tester** Streamlit app with region-specific locations
-5. **Manage changes via Git branches** to preserve the original configuration
+### Decision Tree
+
+| Question | If YES | If NO |
+|----------|--------|-------|
+| **Customize LOCATION?** | Downloads new map, uploads to stage, rebuilds graphs | Skips map download entirely |
+| **Customize VEHICLES?** | Modifies routing profiles, rebuilds graphs | Keeps default profiles |
+| **Customize INDUSTRIES?** | Modifies industry categories in notebooks | Keeps default industries |
+
+### What Gets Updated
+
+| Your Choices | Actions Taken |
+|--------------|---------------|
+| Location = YES | Steps 1-5 (download map, upload, rebuild graphs) |
+| Vehicles = YES | Steps 3-5 (modify profiles, rebuild graphs) |
+| Industries = YES | Step 8b (modify notebooks) |
+| Location OR Vehicles = YES | Steps 6, 10 (update Function Tester, redeploy app) |
+| Industries ONLY | Only demo content updated - no app redeployment needed |
 
 ### Workflow Steps
 
-| Step | Description |
-|------|-------------|
-| 1 | Setup notebook for map downloads |
-| 2 | Download OSM map data for target region |
-| 3 | Update `ors-config.yml` with map file and routing profiles |
-| 4 | Update `openrouteservice.yaml` with region volume paths |
-| 5 | Resume all ORS services |
-| 6 | Customize Function Tester with region-specific coordinates |
-| 7 | Customize AISQL Notebook with city-specific AI prompts |
-| 8 | Customize Add Carto Data notebook with region geohash |
-| 9 | Create Git feature branch and commit all customizations |
-| 10 | Deploy updated Streamlit app |
+| Step | Description | When Run |
+|------|-------------|----------|
+| 0 | Ask yes/no questions to determine scope | Always |
+| 1 | Setup notebook for map downloads | Location = YES |
+| 2 | Download OSM map data for target region | Location = YES |
+| 3 | Update `ors-config.yml` with map file and routing profiles | Location OR Vehicles = YES |
+| 4 | Update `openrouteservice.yaml` with region volume paths | Location OR Vehicles = YES |
+| 5 | Resume all ORS services | Location OR Vehicles = YES |
+| 6 | Customize Function Tester with region-specific coordinates | Location OR Vehicles = YES |
+| 7 | Customize AISQL Notebook with city-specific AI prompts | Any = YES |
+| 8 | Customize Add Carto Data notebook with region geohash | Any = YES |
+| 8b | Customize industry categories | Industries = YES |
+| 9 | Create Git feature branch and commit all customizations | Any = YES |
+| 10 | Deploy updated Streamlit app | Location OR Vehicles = YES |
+| 11 | Chain to deploy-demo | Any = YES |
 
 ### Routing Profiles
 
