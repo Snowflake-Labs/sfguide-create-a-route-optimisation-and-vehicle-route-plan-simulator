@@ -1,6 +1,6 @@
 ---
 name: ors-map-customization
-description: "Customize OpenRouteService map region for route optimization. Use when: changing ORS map data, switching countries/regions, reconfiguring route service geography. Triggers: change ors map, customize route map, switch openrouteservice region, update ors country."
+description: "Customize OpenRouteService map region and industry categories for route optimization. Use when: changing ORS map data, switching countries/regions, reconfiguring route service geography, customizing industry categories. Triggers: change ors map, customize route map, switch openrouteservice region, update ors country, customize industries."
 ---
 
 # OpenRouteService Map Customization
@@ -408,6 +408,85 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 
 **Output:** Add Carto Data notebook and Streamlit app customized for <NOTEBOOK_CITY>, POI data loaded
 
+### Step 8b: Customize Industry Categories (Optional)
+
+**Goal:** Allow user to customize industry categories for their use case
+
+**IMPORTANT:** This step is OPTIONAL. Only proceed if user wants to change industry categories.
+
+**Background:**
+The default industries are:
+- **Healthcare** - pharmaceutical supplies, medical equipment to hospitals, pharmacies, dentists
+- **Food** - fresh, frozen, and non-perishable goods to supermarkets, restaurants, butchers
+- **Cosmetics** - hair products, electronics, make-up to retail outlets
+
+The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOOKUP` table, so **only the notebook needs updating** - the Streamlit adapts automatically.
+
+**Actions:**
+
+1. **Ask user** if they want to customize industry categories
+   - If NO, skip to Step 9
+   - If YES, ask what industries they want (e.g., "Beverage distribution", "Medical supplies", "Electronics", "Retail goods")
+
+2. **Update** Cell 15 in `Notebook/add_carto_data.ipynb` with custom industries:
+   
+   Each industry requires:
+   | Field | Purpose | Example |
+   |-------|---------|---------|
+   | `INDUSTRY` | Display name in app | 'Beverages' |
+   | `PA`, `PB`, `PC` | Product categories (3 skill levels) | 'Alcoholic', 'Carbonated', 'Still Water' |
+   | `IND` | Keywords to find distributor/warehouse locations | ARRAY_CONSTRUCT('beverage drink brewery distillery') |
+   | `IND2` | Secondary keywords (warehouse, depot, etc.) | ARRAY_CONSTRUCT('warehouse distribution depot factory') |
+   | `CTYPE` | Customer place categories (from Overture Maps) | ARRAY_CONSTRUCT('bar', 'restaurant', 'supermarket', 'hotel') |
+   | `STYPE` | Vehicle skill descriptions | ARRAY_CONSTRUCT('Standard Delivery', 'Temperature Controlled', 'Premium Service') |
+
+   **Example custom industry:**
+   ```sql
+   SELECT
+       'Beverages', 
+       'Alcoholic Beverages', 
+       'Carbonated Drinks', 
+       'Still Water', 
+       ARRAY_CONSTRUCT('beverage drink brewery distillery bottling'),
+       ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'), 
+       ARRAY_CONSTRUCT('bar', 'restaurant', 'hotel', 'supermarket'), 
+       ARRAY_CONSTRUCT('Standard Delivery', 'Temperature Controlled', 'Premium Service')
+   ```
+
+3. **Show user** available Overture Maps categories for their region:
+   ```sql
+   SELECT DISTINCT CATEGORY, COUNT(*) as COUNT 
+   FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+   GROUP BY CATEGORY 
+   ORDER BY COUNT DESC 
+   LIMIT 50;
+   ```
+   - This helps user choose valid `CTYPE` values that exist in their region
+
+4. **Generate** the updated INSERT statement with all industries (default + custom or replaced)
+
+5. **Update** the notebook cell with the new INSERT statement
+
+6. **Re-upload** the modified notebook:
+   ```bash
+   snow stage copy "Notebook/add_carto_data.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
+   ```
+
+7. **Recreate** the LOOKUP table with new industries:
+   ```sql
+   DROP TABLE IF EXISTS VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
+   -- Then run the CREATE TABLE and INSERT from the updated notebook cell
+   ```
+
+8. **Verify** industries are loaded:
+   ```sql
+   SELECT INDUSTRY, PA, PB, PC FROM VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
+   ```
+
+**Note:** The Streamlit app (`routing.py`) does NOT need updating - it reads industries dynamically from `DATA.LOOKUP`.
+
+**Output:** Industry categories customized for user's use case
+
 ### Step 9: Create Feature Branch and Commit All Customizations
 
 **Goal:** Preserve original files on main branch, commit all customizations to feature branch
@@ -477,6 +556,7 @@ Reconfigure OpenRouteService Native App to use a different geographic region/cou
 - ✋ After Step 6: Confirm region-specific coordinates are accurate for Function Tester
 - ✋ After Step 7: Confirm AISQL notebook location references are updated correctly
 - ✋ After Step 8: Confirm Add Carto Data notebook and POI data loaded for the region
+- ✋ After Step 8b (if used): Confirm industry categories customized and LOOKUP table updated
 - ✋ After Step 9: Verify all changes committed to feature branch
 
 ## Verification
@@ -538,6 +618,10 @@ OpenRouteService Native App reconfigured to use specified country/region map, wi
 - AISQL Notebook customized with city-specific AI prompts (using a major city within the map region)
 - Add Carto Data Notebook customized with region-specific geohash and POI data loaded
 - Streamlit Simulator updated with region-specific default location
+- Industry categories customized (if Step 8b was used)
 - Original SF/NYC version preserved on main branch
 - All customizations (config files, notebooks, Streamlit apps) committed together to feature/ors-<REGION_NAME> branch in a single commit
 - **Working directory checked out to feature/ors-<REGION_NAME> branch**
+
+**Note on Industry Customization:**
+The Streamlit app reads industries dynamically from the database, so only the `add_carto_data.ipynb` notebook needs updating when changing industries. The app will automatically reflect any changes to the `DATA.LOOKUP` table.
