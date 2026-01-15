@@ -236,7 +236,7 @@ The `ors-map-customization` skill provides a flexible workflow to customize your
 | Location = YES | Steps 1-5 (download map, upload, rebuild graphs) |
 | Vehicles = YES | Steps 3-5 (modify profiles, rebuild graphs) |
 | Industries = YES | Step 8b (modify notebooks) |
-| Location OR Vehicles = YES | Steps 6, 10 (update Function Tester, redeploy app) |
+| Location OR Vehicles = YES | Steps 6, 10 (update Function Tester + Simulator, redeploy app) |
 | Industries ONLY | Only demo content updated - no app redeployment needed |
 
 ### Workflow Steps
@@ -249,7 +249,7 @@ The `ors-map-customization` skill provides a flexible workflow to customize your
 | 3 | Update `ors-config.yml` with map file and routing profiles | Location OR Vehicles = YES |
 | 4 | Update `openrouteservice.yaml` with region volume paths | Location OR Vehicles = YES |
 | 5 | Resume all ORS services | Location OR Vehicles = YES |
-| 6 | Customize Function Tester with region-specific coordinates | Location OR Vehicles = YES |
+| 6 | Customize Function Tester + Simulator with region-specific coordinates | Location OR Vehicles = YES |
 | 7 | Customize AISQL Notebook with city-specific AI prompts | Any = YES |
 | 8 | Customize Add Carto Data notebook with region geohash | Any = YES |
 | 8b | Customize industry categories | Industries = YES |

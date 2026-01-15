@@ -256,11 +256,11 @@ Customize your OpenRouteService deployment with options for location, vehicle ty
 
 **Output:** All services active with new map configuration
 
-### Step 6: Customize Function Tester Streamlit App
+### Step 6: Customize Streamlit Apps
 
 **SKIP IF:** `CUSTOMIZE_LOCATION = false` AND `CUSTOMIZE_VEHICLES = false`
 
-**Goal:** Update Function Tester with region-specific coordinates and available vehicle profiles
+**Goal:** Update Function Tester and Simulator Streamlit apps with region-specific coordinates and available vehicle profiles
 
 **Actions:**
 
@@ -288,7 +288,7 @@ Customize your OpenRouteService deployment with options for location, vehicle ty
    - Update all references from `SF_WAYPOINT_ADDRESSES` to `<REGION>_WAYPOINT_ADDRESSES` throughout the file
    - Update routing profile documentation text to reflect enabled profiles
 
-**Output:** Function tester customized for region
+**Output:** Function Tester and Simulator Streamlit apps customized for region
 
 ### Step 7: Customize Routing Functions AISQL Notebook
 
