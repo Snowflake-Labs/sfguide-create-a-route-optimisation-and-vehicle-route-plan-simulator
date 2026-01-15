@@ -552,6 +552,27 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 
 **Output:** Native App updated with region-specific Function Tester
 
+### Step 11: Chain to Deploy Demo
+
+**Goal:** Automatically continue to deploy the demo with customized settings
+
+**Actions:**
+
+1. **Inform user** that customization is complete and ask if they want to deploy the demo now
+   - The demo will use their customized region and industry settings
+   - This will deploy the notebooks and Simulator Streamlit with their chosen city
+
+2. **If YES:**
+   - Inform user you will now run the deploy-demo skill
+   - **Invoke** the deploy-demo skill: `use the local skill from skills/deploy-demo`
+   - This ensures the customized notebooks and Streamlit are deployed with the correct region/industry settings
+
+3. **If NO:**
+   - Inform user they can run `use the local skill from skills/deploy-demo` later when ready
+   - Remind them that the demo must be deployed to see the customizations in action
+
+**Output:** User continues to deploy-demo or is informed how to do it later
+
 ## Stopping Points
 
 - ✋ After Step 2: Confirm map download completed successfully
@@ -561,6 +582,7 @@ The Streamlit app (`routing.py`) reads industries dynamically from the `DATA.LOO
 - ✋ After Step 8: Confirm Add Carto Data notebook and POI data loaded for the region
 - ✋ After Step 8b (if used): Confirm industry categories customized and LOOKUP table updated
 - ✋ After Step 9: Verify customizations saved (Git branch if using Git, or local files)
+- ✋ After Step 11: Confirm user decision on deploy-demo (chain automatically or run later)
 
 ## Verification
 
