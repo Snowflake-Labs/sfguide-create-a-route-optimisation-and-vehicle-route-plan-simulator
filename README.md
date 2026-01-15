@@ -96,6 +96,20 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
 │  • routing_functions_aisql.ipynb - AI-powered route demos       │
 │  • add_carto_data.ipynb - Load POI data from Marketplace        │
 └─────────────────────────────────────────────────────────────────┘
+
+                              · · ·
+
+┌─────────────────────────────────────────────────────────────────┐
+│  UNINSTALL (When needed)                                         │
+│  skills/uninstall-route-optimizer                                │
+│                                                                  │
+│  Removes all resources for fresh redeployment:                  │
+│  • Native App (OPENROUTESERVICE_NATIVE_APP)                     │
+│  • Application Package (OPENROUTESERVICE_NATIVE_APP_PKG)        │
+│  • Setup Database (OPENROUTESERVICE_SETUP)                      │
+│  • Compute Pool and Services                                     │
+│  • Optional: Warehouse, local container images                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Quick Start Commands
@@ -114,6 +128,9 @@ use the local skill from skills/ors-map-customization
 # Step 3 (Optional): Deploy demo notebooks and Streamlit
 # ⚠️ Run AFTER customize-map to use your chosen region (otherwise defaults to San Francisco)
 use the local skill from skills/deploy-demo
+
+# Uninstall: Remove app and all dependencies (when needed)
+use the local skill from skills/uninstall-route-optimizer
 ```
 
 ## Prerequisites
