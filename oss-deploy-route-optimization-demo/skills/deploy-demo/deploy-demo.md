@@ -52,7 +52,47 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 2
 
-### Step 2: Get Carto Overture Dataset from Marketplace
+### Step 2: Read Current ORS Configuration
+
+**Goal:** Detect the current map region and vehicle profiles from the ORS configuration to customize the demo accordingly
+
+**Actions:**
+
+1. **Read** the current ORS configuration from the stage:
+   ```sql
+   SELECT $1 AS config_content
+   FROM @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE
+   WHERE METADATA$FILENAME LIKE '%ors-config.yml'
+   LIMIT 1;
+   ```
+
+2. **Extract** the current map region from `source_file`:
+   - Look for the line: `source_file: /home/ors/files/<MAP_NAME>.osm.pbf`
+   - Extract `<MAP_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
+   - This determines the `<REGION_NAME>` for the demo
+
+3. **Extract** the enabled vehicle profiles:
+   - Look for profiles with `enabled: true`
+   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
+   - Store the list of enabled profiles
+
+4. **Determine the city for the demo:**
+   - If map is a city (e.g., "SanFrancisco", "Paris", "London"): Use that city name
+   - If map is a region/country (e.g., "great-britain", "germany"): Ask user which city within that region to use for sample data
+
+5. **Store configuration for later steps:**
+   - `<REGION_NAME>`: The map region name
+   - `<NOTEBOOK_CITY>`: The city to use for AI-generated sample data
+   - `<ENABLED_PROFILES>`: List of enabled vehicle profiles
+
+**Output:** Current ORS configuration detected:
+- Map Region: `<REGION_NAME>`
+- Demo City: `<NOTEBOOK_CITY>`
+- Vehicle Profiles: `<ENABLED_PROFILES>`
+
+**Next:** Proceed to Step 3
+
+### Step 3: Get Carto Overture Dataset from Marketplace
 
 **Goal:** Acquire the Overture Maps Places dataset for point-of-interest data
 
@@ -66,9 +106,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Carto Overture Places dataset available in your account as `OVERTURE_MAPS__PLACES`
 
-**Next:** Proceed to Step 3
+**Next:** Proceed to Step 4
 
-### Step 3: Setup Database and Schemas
+### Step 4: Setup Database and Schemas
 
 **Goal:** Create required database infrastructure for the demo
 
@@ -88,9 +128,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Database `VEHICLE_ROUTING_SIMULATOR` with DATA, NOTEBOOKS, and STREAMLITS schemas
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 5
 
-### Step 4: Deploy and Run the Notebook to add Carto data
+### Step 5: Deploy and Run the Notebook to add Carto data
 
 **Goal:** Create and execute notebook that will add Carto data to the database.
 
@@ -129,9 +169,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Notebook deployed with standing data for the Streamlit app
 
-**Next:** Proceed to Step 5
+**Next:** Proceed to Step 6
 
-### Step 5: Check for Latest Claude Model
+### Step 6: Check for Latest Claude Model
 
 **Goal:** Verify the latest Claude Sonnet model available in Snowflake Cortex
 
@@ -156,24 +196,29 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Confirmed latest Claude Sonnet model for use in the notebook
 
-**Next:** Proceed to Step 6
+**Next:** Proceed to Step 7
 
-### Step 6: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
+### Step 7: Deploy the AISQL Notebook (Customized for Region)
 
-**Goal:** Create and execute the notebook that will help to explore Routing functions with AISQL
+**Goal:** Create the AISQL exploration notebook, customized for the detected region
 
 **Actions:**
 
-1. **Upload** notebook files to stage:
+1. **Before uploading**, update the notebook with region-specific prompts:
+   - Open `oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb`
+   - Update AI prompts to use `<NOTEBOOK_CITY>` instead of "San Francisco"
+   - Example: Change "Generate a restaurant in San Francisco" to "Generate a restaurant in `<NOTEBOOK_CITY>`"
+
+2. **Upload** notebook files to stage:
    ```bash
-   snow stage copy "Notebook/routing_functions_aisql.ipynb" \
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb" \
      @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
    
-   snow stage copy "Notebook/environment.yml" \
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
      @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
    ```
 
-2. **Create** the notebook:
+3. **Create** the notebook:
    ```sql
    CREATE OR REPLACE NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL
    FROM '@VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.NOTEBOOK'
@@ -184,39 +229,48 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
    ALTER NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
    ```
 
-**Output:** Notebook created and ready to be explored
+**Output:** Notebook created with AI prompts customized for `<NOTEBOOK_CITY>`
 
-**Next:** Proceed to Step 7
+**Next:** Proceed to Step 8
 
-### Step 7: Deploy the Streamlit Application
+### Step 8: Deploy the Streamlit Application (Customized for Region)
 
-**Goal:** Deploy the route simulator Streamlit app
+**Goal:** Deploy the route simulator Streamlit app, customized for the detected region
 
 **Actions:**
 
-1. **Create** the Streamlit stage:
+1. **Before uploading**, update the Streamlit with region-specific defaults:
+   - Open `oss-deploy-route-optimization-demo/Streamlit/routing.py`
+   - Find the `place_input` default value (currently "Golden Gate Bridge, San Francisco")
+   - Update to a landmark in `<NOTEBOOK_CITY>`:
+     - London: "Big Ben, London"
+     - Paris: "Eiffel Tower, Paris"
+     - Berlin: "Brandenburg Gate, Berlin"
+     - etc.
+
+2. **Create** the Streamlit stage:
    ```sql
    CREATE STAGE IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
    ```
 
-2. **Upload** Streamlit files to stage:
+3. **Upload** Streamlit files to stage:
    ```bash
-   snow stage copy "Streamlit/routing.py" \
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" \
      @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
    
-   snow stage copy "Streamlit/extra.css" \
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/extra.css" \
      @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
    
-   snow stage copy "Streamlit/environment.yml" \
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/environment.yml" \
      @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
    
-   snow stage copy "Streamlit/logo.svg" \
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/logo.svg" \
      @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
    ```
 
-3. **Create** the Streamlit app:
+4. **Create** the Streamlit app:
    ```sql
    CREATE OR REPLACE STREAMLIT VEHICLE_ROUTING_SIMULATOR.STREAMLITS.SIMULATOR
    ROOT_LOCATION = '@VEHICLE_ROUTING_SIMULATOR.STREAMLITS.streamlit'
@@ -227,11 +281,13 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-road`.
 
-**Output:** Streamlit application deployed with routing methods matching native app configuration
+**Output:** Streamlit application deployed with:
+- Default search location set to `<NOTEBOOK_CITY>`
+- Vehicle profiles matching the ORS configuration (`<ENABLED_PROFILES>`)
 
-**Next:** Proceed to Step 8
+**Next:** Proceed to Step 9
 
-### Step 8: Run the Demo
+### Step 9: Run the Demo
 
 **Goal:** Access and use the route simulator
 
@@ -267,10 +323,11 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 ## Stopping Points
 
-- Step 1: After getting Marketplace data - verify dataset accessible
-- Step 3: After notebook creation - run notebook cells manually in Snowsight
-- Step 4: After checking Claude model - verify model is available and working
-- Step 6: After accessing Streamlit - verify app loads correctly
+- Step 2: After reading ORS config - confirm detected region and city with user
+- Step 3: After getting Marketplace data - verify dataset accessible
+- Step 5: After Carto notebook - verify data is populated
+- Step 6: After checking Claude model - verify model is available
+- Step 9: After accessing Streamlit - verify app loads correctly with correct region
 
 ## Common Issues
 
