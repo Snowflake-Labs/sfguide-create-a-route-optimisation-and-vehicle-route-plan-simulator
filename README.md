@@ -264,13 +264,15 @@ skills/customizations/
 
 | User Choice | Sub-Skills Executed |
 |-------------|---------------------|
-| Location = YES | `location` → `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
-| Vehicles = YES | `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
+| Location = YES | `location` → `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-route-optimizer** → **deploy-demo** |
+| Vehicles = YES | `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-route-optimizer** → **deploy-demo** |
 | Industries = YES | `industries` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
-| Any combination | All relevant + `streamlits` + `aisql-notebook` + `carto-notebook` → **deploy-demo** |
+| Location/Vehicles + Industries | All relevant + **deploy-route-optimizer** → **deploy-demo** |
 | Nothing | No sub-skills (exit) |
 
-> **IMPORTANT:** For ANY customization, all Streamlits and notebooks are updated, and `deploy-demo` MUST be run to apply changes.
+> **IMPORTANT:** 
+> - For ANY customization: All Streamlits and notebooks are updated, and `deploy-demo` MUST be run
+> - For Location/Vehicles changes: `deploy-route-optimizer` MUST also be run to push updated `function_tester.py` to the Native App (images don't need rebuilding)
 
 ### Sub-Skill Details
 

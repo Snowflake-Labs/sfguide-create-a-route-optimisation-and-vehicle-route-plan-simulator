@@ -56,11 +56,13 @@ Main entry point for customizing your OpenRouteService deployment. This skill de
 
    | User Choice | Sub-Skills to Run |
    |-------------|-------------------|
-   | Location = YES | `location.md` → `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
-   | Vehicles = YES | `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
-   | Industries = YES | `industries.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
-   | Any combination | All relevant sub-skills + `streamlits.md` + `aisql-notebook.md` + `carto-notebook.md` → `deploy-demo` |
+   | Location = YES | `location.md` → `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → **deploy-route-optimizer** → `deploy-demo` |
+   | Vehicles = YES | `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → **deploy-route-optimizer** → `deploy-demo` |
+   | Industries only = YES | `industries.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
+   | Location OR Vehicles + Industries | All relevant sub-skills → **deploy-route-optimizer** → `deploy-demo` |
    | ALL = NO | Inform user nothing to customize, exit |
+
+   > **NOTE:** When Location or Vehicles change, `deploy-route-optimizer` must be run to push the updated `function_tester.py` to the Native App. Images don't need to be rebuilt - only the app code is updated.
 
 3. **Get the target region/city name:**
    - If Location = YES: Ask user for the target region (e.g., "Paris", "Great Britain", "New York")
@@ -150,13 +152,15 @@ Execute the sub-skills in this order:
 
 **Actions:**
 
-1. **If Location or Vehicles changed:**
-   - Upload updated files and upgrade Native App
-   - Resume services to rebuild graphs
+1. **If Location OR Vehicles changed:**
+   - Run `deploy-route-optimizer` to push the updated `function_tester.py` to the Native App
+   - Images do NOT need to be rebuilt - only the app code is updated
+   - Run: `use the local skill from skills/deploy-route-optimizer`
+   - Resume services to rebuild graphs (if location changed)
 
 2. **ALWAYS run `deploy-demo`** to apply changes:
    - This is required for ANY customization (location, vehicles, or industries)
-   - The notebooks and Streamlit apps must be re-deployed to reflect the changes
+   - The notebooks and Simulator Streamlit must be re-deployed to reflect the changes
    - Run: `use the local skill from skills/deploy-demo`
 
 **Output:** Customizations deployed to Snowflake
