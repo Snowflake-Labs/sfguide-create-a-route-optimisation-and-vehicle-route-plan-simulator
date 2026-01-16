@@ -11,10 +11,12 @@ This skill routes customization requests to the correct lab skill based on what 
 
 | What You Want to Change | Correct Skill | What It Does |
 |------------------------|---------------|--------------|
-| **Map/Location** | `oss-install-openrouteservice-native-app/skills/customizations/location` | Downloads new map, rebuilds routing graphs |
-| **Vehicle Profiles** | `oss-install-openrouteservice-native-app/skills/customizations/vehicles` | Changes routing profiles (car, truck, bicycle, etc.), rebuilds graphs |
+| **Map/Location** | `oss-install-openrouteservice-native-app/skills/customizations/location` | Downloads new map, updates Function Tester, upgrades Native App, rebuilds graphs |
+| **Vehicle Profiles** | `oss-install-openrouteservice-native-app/skills/customizations/vehicles` | Changes routing profiles, updates Function Tester, rebuilds graphs |
 | **Industry Categories** | `oss-deploy-route-optimization-demo/skills/customizations/industries` | Updates product types, customer types for demo |
-| **Streamlit Apps** | `oss-deploy-route-optimization-demo/skills/customizations/streamlits` | Updates sample coordinates in apps (run AFTER location change) |
+| **Demo Streamlit (Simulator)** | `oss-deploy-route-optimization-demo/skills/customizations/streamlits` | Updates Simulator coordinates (only if demo installed) |
+
+> **_NOTE:_** The **Function Tester** is part of the Native App and is automatically updated when you change location or vehicles. The **Simulator** is part of the demo and only needs updating if the demo is installed.
 
 ## Workflow
 

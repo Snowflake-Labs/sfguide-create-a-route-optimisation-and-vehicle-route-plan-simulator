@@ -1,11 +1,19 @@
 ---
 name: customize-location
-description: "Change the OpenRouteService map region. Use when: switching to a different country, state, or city. Triggers: change map, new region, download map, customize location."
+description: "Change the OpenRouteService map region. Downloads map, updates Function Tester with new addresses, upgrades Native App, rebuilds routing graphs. Use when: switching to a different country, state, or city, change location to paris. Triggers: change location, change map, new region, download map, customize location, change location to."
 ---
 
 # Customize Location (Map Region)
 
-Downloads a new OpenStreetMap region and rebuilds the routing graphs.
+Downloads a new OpenStreetMap region, updates the Function Tester with region-specific addresses, upgrades the Native App, and rebuilds the routing graphs.
+
+**This skill handles:**
+1. Downloading the map data from Geofabrik or BBBike
+2. Updating ors-config.yml with the new map path
+3. Updating service specifications for the new region
+4. Restarting services to rebuild routing graphs
+5. **Updating Function Tester with new sample addresses**
+6. **Upgrading the Native App to deploy the changes**
 
 ## Prerequisites
 
