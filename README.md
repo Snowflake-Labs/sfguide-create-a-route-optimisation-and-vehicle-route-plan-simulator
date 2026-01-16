@@ -173,8 +173,8 @@ Before getting started, ensure you have the following installed:
 - Install via: `pip install snowflake-cli-labs`
 - Configure a connection: `snow connection add`
 
-### 6. Git
-- **Required for:** Version control and managing region-specific configurations via branches
+### 6. Git (Optional)
+- **Required for:** Cloning the repository (alternatively, download as ZIP)
 - **Installation:**
   - macOS: `brew install git` or [Download](https://git-scm.com/download/mac)
   - Windows: [Git for Windows](https://git-scm.com/download/win)
@@ -182,7 +182,7 @@ Before getting started, ensure you have the following installed:
 - Verify installation: `git --version`
 
 ### 7. GitHub CLI (Optional)
-- **Required for:** Forking repositories and managing GitHub operations from the command line
+- **Required for:** Managing GitHub operations from the command line
 - **Installation:** [GitHub CLI](https://cli.github.com/)
   - macOS: `brew install gh`
   - Windows: `winget install --id GitHub.cli`
@@ -249,7 +249,7 @@ skills/customizations/
    - Customize INDUSTRIES? (demo categories)
 3. **Orchestrator determines which sub-skills to run**
 4. **Sub-skills execute in the correct order**
-5. **Changes are saved (Git branch or local files)**
+5. **Changes are applied to local files**
 6. **Option to chain to deploy-demo**
 
 ### Decision Tree
@@ -313,67 +313,28 @@ use the local skill from skills/customizations/carto-notebook
 
 **Note:** Enabling more profiles increases graph build time and resource usage.
 
-## Git Branching Strategy
+## Customizing to a Different Region
 
-This project uses a branching strategy to manage multiple map configurations while preserving the original San Francisco setup.
+When you run the customization skill, changes are made directly to your local files:
 
-### Branch Structure
+- `Native_app/provider_setup/staged_files/ors-config.yml` - Map file and routing profiles
+- `Native_app/services/openrouteservice/openrouteservice.yaml` - Volume paths for map data
+- `Native_app/code_artifacts/streamlit/pages/function_tester.py` - Function Tester coordinates
+- `Streamlit/routing.py` - Simulator coordinates
+- `Notebook/routing_functions_aisql.ipynb` - AI prompts for your region
+- `Notebook/add_carto_data.ipynb` - POI data source for your region
 
-```
-main                           <- Original San Francisco configuration
-├── feature/ors-great-britain  <- Great Britain customizations
-├── feature/ors-germany        <- Germany customizations
-└── feature/ors-<region>       <- Other region customizations
-```
+**Tip:** If you want to preserve the original San Francisco configuration, make a backup of these files before customizing.
 
-### How It Works
+To customize to a new region:
 
-1. **`main` branch** always contains the original San Francisco configuration
-2. When you run the customizations skill, it creates a **feature branch** (e.g., `feature/ors-great-britain`)
-3. All configuration changes are committed to the feature branch:
-   - `Native_app/provider_setup/staged_files/ors-config.yml` - Map file and routing profiles
-   - `Native_app/services/openrouteservice/openrouteservice.yaml` - Volume paths for map data
-   - `Native_app/code_artifacts/streamlit/pages/function_tester.py` - Function Tester coordinates
-   - `Streamlit/routing.py` - Simulator coordinates
-   - `Notebook/routing_functions_aisql.ipynb` - AI prompts for your region
-   - `Notebook/add_carto_data.ipynb` - POI data source for your region
-
-### Switching Between Regions
-
-To switch to a different map configuration:
-
-```bash
-# Switch to San Francisco (original)
-git checkout main
-
-# Switch to Great Britain
-git checkout feature/ors-great-britain
-
-# Switch to another region
-git checkout feature/ors-<region-name>
-```
-
-**Note:** After switching branches, you'll need to:
-1. Upload the config files to Snowflake stages
-2. Update the ORS service specification
-3. Upgrade the Native App
-
-Or simply run the customizations skill again for the desired region.
-
-### Creating a New Region Configuration
-
-1. Start from the `main` branch: `git checkout main`
-2. Run: `use the local skill from skills/customizations`
-3. Answer YES to customize location
-4. Select your desired region
-5. The orchestrator will automatically:
-   - Run the relevant sub-skills in order
-   - Create a new feature branch (if Git is available)
+1. Run: `use the local skill from oss-install-openrouteservice-native-app/skills/customizations`
+2. Answer YES to customize location
+3. Select your desired region
+4. The skill will automatically:
    - Download the map (via `location.md`)
    - Update all configuration files (via `vehicles.md`)
-   - Customize all Streamlit apps (via `streamlits.md`)
-   - Update all notebooks (via `aisql-notebook.md`, `carto-notebook.md`)
-   - Commit all changes to the feature branch
+   - Rebuild the routing graphs
 
 ## Available Skills
 

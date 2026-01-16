@@ -115,40 +115,7 @@ Execute the sub-skills in this order:
 
 **Output:** All relevant sub-skills executed
 
-### Step 3: Save Customizations
-
-**Goal:** Save all customizations - either to Git or locally
-
-**Actions:**
-
-1. **Check** if Git is available:
-   ```bash
-   git status
-   ```
-
-2. **If Git is NOT available:**
-   - Inform user that customizations have been made to local files
-   - Recommend keeping a backup if they want to restore defaults later
-   - Skip to Step 4
-
-3. **If Git IS available:**
-   - Ask user if they want to save to a feature branch
-   - If YES:
-     ```bash
-     git checkout -b feature/ors-<REGION_NAME>
-     git add Native_app/provider_setup/staged_files/ors-config.yml
-     git add Native_app/services/openrouteservice/openrouteservice.yaml
-     git add Native_app/code_artifacts/streamlit/pages/function_tester.py
-     git add Notebook/routing_functions_aisql.ipynb
-     git add Notebook/add_carto_data.ipynb
-     git add Streamlit/routing.py
-     git commit -m "Customize ORS deployment for <REGION_NAME>"
-     ```
-   - Inform user about branch management
-
-**Output:** Customizations saved
-
-### Step 4: Deploy Updates
+### Step 3: Deploy Updates
 
 **Goal:** Apply customizations to Snowflake
 
