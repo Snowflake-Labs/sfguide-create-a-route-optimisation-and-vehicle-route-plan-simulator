@@ -29,23 +29,34 @@ This skill routes customization requests to the correct lab skill based on what 
 3. **Industries** - Change demo industry categories (Food, Healthcare, Cosmetics)
 4. **Streamlit coordinates only** - Just update sample addresses (no map change)
 
-### Step 2: Route to Correct Skill
+### Step 2: Check if Demo is Installed
+
+Before updating demo components, check if the demo database exists:
+
+```sql
+SHOW DATABASES LIKE 'VEHICLE_ROUTING_SIMULATOR';
+```
+
+- **If the database EXISTS:** Demo is installed, proceed with demo updates after ORS changes
+- **If the database does NOT exist:** Demo is not installed, skip demo-related updates
+
+### Step 3: Route to Correct Skill
 
 **If user wants to change LOCATION or MAP:**
 
 > This requires downloading a new map and rebuilding the routing graphs. This is handled by the OpenRouteService installation lab.
 
-Run this skill:
+1. Run the location skill:
 ```
 use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
 ```
 
-After the location skill completes, also run:
+2. After the location skill completes, run vehicles:
 ```
 use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
 ```
 
-Then update the Streamlit apps:
+3. **Only if demo is installed:** Update the Streamlit apps:
 ```
 use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
 ```
@@ -56,12 +67,12 @@ use the local skill from oss-deploy-route-optimization-demo/skills/customization
 
 > This updates which routing profiles are available and rebuilds the graphs.
 
-Run this skill:
+1. Run the vehicles skill:
 ```
 use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
 ```
 
-Then update the Streamlit apps to reflect new profiles:
+2. **Only if demo is installed:** Update the Streamlit apps to reflect new profiles:
 ```
 use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
 ```
@@ -70,9 +81,10 @@ use the local skill from oss-deploy-route-optimization-demo/skills/customization
 
 **If user wants to change INDUSTRIES:**
 
-> This only affects the demo simulator categories, not the routing engine.
+> This only affects the demo simulator categories, not the routing engine. Requires demo to be installed.
 
-Run this skill:
+1. First verify demo is installed (check for `VEHICLE_ROUTING_SIMULATOR` database)
+2. If installed, run:
 ```
 use the local skill from oss-deploy-route-optimization-demo/skills/customizations/industries
 ```
@@ -81,9 +93,10 @@ use the local skill from oss-deploy-route-optimization-demo/skills/customization
 
 **If user wants to update STREAMLIT coordinates only:**
 
-> This updates sample addresses in the apps without changing the map.
+> This updates sample addresses in the apps without changing the map. Requires demo to be installed.
 
-Run this skill:
+1. First verify demo is installed (check for `VEHICLE_ROUTING_SIMULATOR` database)
+2. If installed, run:
 ```
 use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
 ```
