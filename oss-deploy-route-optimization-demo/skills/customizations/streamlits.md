@@ -1,28 +1,37 @@
 ---
-name: customize-streamlits
-description: "Update Function Tester and Simulator Streamlit apps with region-specific coordinates. Use when: changing map region, updating sample addresses. Triggers: customize streamlit, update coordinates, update function tester."
+name: update-demo-streamlit-coordinates
+description: "Update ONLY the Simulator Streamlit coordinates after a location change has already been completed. This does NOT download maps or rebuild graphs. Use ONLY after running the location skill. Triggers: update simulator coordinates, refresh demo streamlit, update routing.py coordinates."
 ---
 
-# Customize Streamlit Apps
+# Update Demo Streamlit Coordinates
 
-Updates the Function Tester and Simulator Streamlit apps with region-specific coordinates and settings.
+Updates the Simulator Streamlit app (`routing.py`) with region-specific coordinates.
 
-> **_IMPORTANT:_** This skill only updates the Streamlit app files. If you are changing the map region or vehicle profiles, you MUST first run the ORS skills to download the map and rebuild the routing graphs:
-> - **For location changes:** Run `oss-install-openrouteservice-native-app/skills/customizations/location` first
-> - **For vehicle changes:** Run `oss-install-openrouteservice-native-app/skills/customizations/vehicles` first
+> **_STOP - READ THIS FIRST:_**
 > 
-> Otherwise, the Streamlit apps will have new coordinates but the routing engine won't have the map data to service requests in that region.
+> ❌ **DO NOT USE THIS SKILL** if you want to change the map location.
+> 
+> ✅ **To change location (e.g., San Francisco → Paris)**, use:
+> ```
+> use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
+> ```
+> 
+> This skill ONLY updates the Simulator's default coordinates. It does NOT:
+> - Download maps
+> - Rebuild routing graphs
+> - Update the Function Tester (that's done by the location skill)
+> 
+> Only use this skill if the location skill has already been run and you just need to update the Simulator's coordinates.
 
 ## Prerequisites
 
 - Active Snowflake connection
 - OpenRouteService Native App deployed
-- **If changing location:** Map already downloaded via `location.md` skill
-- **If changing vehicles:** Profiles already updated via `vehicles.md` skill
+- **Location skill already run** - Map downloaded and graphs rebuilding
+- Demo already deployed (`VEHICLE_ROUTING_SIMULATOR` database exists)
 - Know the target region and a major city within it
 - Access to:
-  - `Native_app/code_artifacts/streamlit/pages/function_tester.py`
-  - `Streamlit/routing.py`
+  - `oss-deploy-route-optimization-demo/Streamlit/routing.py`
 
 ## Input Parameters
 
