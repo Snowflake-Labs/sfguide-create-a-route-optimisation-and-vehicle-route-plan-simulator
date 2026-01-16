@@ -264,11 +264,13 @@ skills/customizations/
 
 | User Choice | Sub-Skills Executed |
 |-------------|---------------------|
-| Location = YES | `location` → `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` |
-| Vehicles only = YES | `vehicles` → `streamlits` |
-| Industries only = YES | `industries` → `aisql-notebook` → `carto-notebook` |
-| Location + Industries | All sub-skills |
+| Location = YES | `location` → `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
+| Vehicles = YES | `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
+| Industries = YES | `industries` → `streamlits` → `aisql-notebook` → `carto-notebook` → **deploy-demo** |
+| Any combination | All relevant + `streamlits` + `aisql-notebook` + `carto-notebook` → **deploy-demo** |
 | Nothing | No sub-skills (exit) |
+
+> **IMPORTANT:** For ANY customization, all Streamlits and notebooks are updated, and `deploy-demo` MUST be run to apply changes.
 
 ### Sub-Skill Details
 

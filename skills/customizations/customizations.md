@@ -38,24 +38,28 @@ Main entry point for customizing your OpenRouteService deployment. This skill de
 
    **Question 1: "Do you want to customize the LOCATION (map region)?"**
    - Examples: Change from San Francisco to Paris, London, Tokyo, etc.
-   - If YES → Will run: `location.md`, `vehicles.md`, `streamlits.md`, `aisql-notebook.md`, `carto-notebook.md`
+   - If YES → Will run: `location.md`, `vehicles.md`
    
    **Question 2: "Do you want to customize VEHICLE TYPES (routing profiles)?"**
    - Examples: Add walking, wheelchair, electric bicycle; remove truck
-   - If YES → Will run: `vehicles.md`, `streamlits.md`
+   - If YES → Will run: `vehicles.md`
    
    **Question 3: "Do you want to customize INDUSTRIES for the demo?"**
    - Examples: Change from Food/Healthcare/Cosmetics to Beverages/Electronics/Pharmaceuticals
-   - If YES → Will run: `industries.md`, `aisql-notebook.md`, `carto-notebook.md`
+   - If YES → Will run: `industries.md`
+
+   **For ANY customization (Location, Vehicles, or Industries = YES):**
+   - Will ALWAYS run: `streamlits.md`, `aisql-notebook.md`, `carto-notebook.md`
+   - Will ALWAYS require: `deploy-demo` to apply changes to Snowflake
 
 2. **Determine the execution plan based on answers:**
 
    | User Choice | Sub-Skills to Run |
    |-------------|-------------------|
-   | Location = YES | `location.md` → `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` |
-   | Vehicles only = YES | `vehicles.md` → `streamlits.md` |
-   | Industries only = YES | `industries.md` → `aisql-notebook.md` → `carto-notebook.md` |
-   | Location + Industries = YES | All sub-skills |
+   | Location = YES | `location.md` → `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
+   | Vehicles = YES | `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
+   | Industries = YES | `industries.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
+   | Any combination | All relevant sub-skills + `streamlits.md` + `aisql-notebook.md` + `carto-notebook.md` → `deploy-demo` |
    | ALL = NO | Inform user nothing to customize, exit |
 
 3. **Get the target region/city name:**
@@ -79,7 +83,7 @@ Main entry point for customizing your OpenRouteService deployment. This skill de
 
 **Actions:**
 
-Execute the sub-skills in this order (skipping any that aren't needed):
+Execute the sub-skills in this order:
 
 1. **If Location = YES:**
    - Run `location.md` with `<REGION_NAME>`
@@ -93,15 +97,15 @@ Execute the sub-skills in this order (skipping any that aren't needed):
    - Run `industries.md`
    - This customizes industry categories in the demo
 
-4. **If Location = YES OR Vehicles = YES:**
+4. **ALWAYS run (for any customization):**
    - Run `streamlits.md` with `<REGION_NAME>` and `<NOTEBOOK_CITY>`
    - This updates Function Tester and Simulator with region-specific coordinates
 
-5. **If Location = YES OR Industries = YES:**
+5. **ALWAYS run (for any customization):**
    - Run `aisql-notebook.md` with `<NOTEBOOK_CITY>`
    - This updates AI prompts in the AISQL notebook
 
-6. **If Location = YES OR Industries = YES:**
+6. **ALWAYS run (for any customization):**
    - Run `carto-notebook.md` with `<NOTEBOOK_CITY>`
    - This updates POI data source and geohash filter
 
@@ -150,11 +154,12 @@ Execute the sub-skills in this order (skipping any that aren't needed):
    - Upload updated files and upgrade Native App
    - Resume services to rebuild graphs
 
-2. **Ask user** if they want to run `deploy-demo` now:
-   - If YES: Run `use the local skill from skills/deploy-demo`
-   - If NO: Inform them to run it later
+2. **ALWAYS run `deploy-demo`** to apply changes:
+   - This is required for ANY customization (location, vehicles, or industries)
+   - The notebooks and Streamlit apps must be re-deployed to reflect the changes
+   - Run: `use the local skill from skills/deploy-demo`
 
-**Output:** Customizations deployed
+**Output:** Customizations deployed to Snowflake
 
 ## Running Individual Sub-Skills
 
