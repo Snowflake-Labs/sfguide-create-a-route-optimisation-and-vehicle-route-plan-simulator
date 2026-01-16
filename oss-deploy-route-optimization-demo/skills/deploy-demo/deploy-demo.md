@@ -33,7 +33,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
      > 
      > Please install it first using the skill from the `openrouteservice/` directory:
      > ```
-     > use the local skill from openrouteservice/skills/deploy-route-optimizer
+     > use the local skill from oss-install-openrouteservice-native-app/skills/deploy-route-optimizer
      > ```
      > 
      > After installation, return and run this demo deployment skill again.
