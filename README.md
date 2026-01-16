@@ -49,18 +49,19 @@ This project deploys OpenRouteService as a Snowflake Native App with Snowpark Co
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│   OPTIONAL: CUSTOMIZE MAP                                        │
-│   skills/ors-map-customization                                   │
+│   OPTIONAL: CUSTOMIZE YOUR DEPLOYMENT                            │
+│   skills/customizations                                          │
 │                                                                  │
-│  1. Download OSM map (Geofabrik)                                │
-│  2. Configure routing profiles                                   │
-│  3. Update service configuration                                 │
-│  4. Resume services with new map                                 │
-│  5. Customize Function Tester (region coordinates)              │
-│  6. Customize AISQL Notebook (city-specific prompts)            │
-│  7. Customize Add Carto Data (region geohash)                   │
-│  8. Create Git feature branch                                    │
-│  9. Deploy updated Streamlit                                     │
+│  Modular sub-skills for flexible customization:                 │
+│  • location.md     - Download new map, rebuild routing graphs   │
+│  • vehicles.md     - Configure routing profiles                 │
+│  • industries.md   - Customize industry categories              │
+│  • streamlits.md   - Update Function Tester + Simulator         │
+│  • aisql-notebook.md - Update AI prompts for your region        │
+│  • carto-notebook.md - Update POI data source                   │
+│                                                                  │
+│  Main orchestrator asks what you want to customize and          │
+│  runs only the relevant sub-skills                              │
 │                                                                  │
 │  ⚠️  Run this BEFORE deploy-demo if you want a custom region     │
 └────────┬────────────────────────────────────────────────────────┘
@@ -123,8 +124,9 @@ use the local skill from skills/deploy-route-optimizer
 
 # Step 2 (Optional): Customize location, vehicles, and/or industries
 # ⚠️ Run this BEFORE deploy-demo if you want customizations
-# The skill asks yes/no for each: location, vehicles, industries
-use the local skill from skills/ors-map-customization
+# The orchestrator asks yes/no for each: location, vehicles, industries
+# Then runs only the relevant sub-skills
+use the local skill from skills/customizations
 
 # Step 3 (Optional): Deploy demo notebooks and Streamlit
 # ⚠️ Run AFTER customize-map to use your chosen region (otherwise defaults to San Francisco)
@@ -204,12 +206,18 @@ Before getting started, ensure you have the following installed:
 ### 2. (Optional) Customize Your Deployment
 - **Run this BEFORE deploy-demo if you want any customizations**
 - After the app is deployed, you can customize location, vehicles, and/or industries
-- Type in Cortex Code CLI: `use the local skill from skills/ors-map-customization`
-- The skill asks three yes/no questions:
+- Type in Cortex Code CLI: `use the local skill from skills/customizations`
+- The orchestrator skill asks three yes/no questions:
   - **Location?** - Change map region (e.g., San Francisco → Paris)
   - **Vehicles?** - Modify routing profiles (add walking, wheelchair, etc.)
   - **Industries?** - Change industry categories (Food → Beverages, etc.)
-- Only the steps for your chosen customizations will run
+- Based on your answers, it runs only the relevant sub-skills:
+  - `location.md` - Downloads map, rebuilds routing graphs
+  - `vehicles.md` - Configures routing profiles
+  - `industries.md` - Customizes industry categories
+  - `streamlits.md` - Updates Function Tester & Simulator
+  - `aisql-notebook.md` - Updates AI prompts for your region
+  - `carto-notebook.md` - Updates POI data source
 - If you only change industries, no map download or app redeployment is needed
 
 ### 3. (Optional) Deploy Demo Notebook and Streamlit
@@ -217,9 +225,32 @@ Before getting started, ensure you have the following installed:
 - Type in Cortex Code CLI: `use the local skill from skills/deploy-demo`
 - This deploys the customized notebooks and Streamlit apps to Snowflake
 
-## Customization Skill
+## Customization Skills
 
-The `ors-map-customization` skill provides a flexible workflow to customize your deployment. It starts by asking **three yes/no questions** to determine what to customize:
+The customization system uses a **modular architecture** with a main orchestrator and individual sub-skills:
+
+```
+skills/customizations/
+├── customizations.md    <- Main orchestrator (entry point)
+├── location.md          <- Download new map, rebuild graphs
+├── vehicles.md          <- Configure routing profiles
+├── industries.md        <- Customize industry categories
+├── streamlits.md        <- Update Function Tester & Simulator
+├── aisql-notebook.md    <- Update AI prompts for your region
+└── carto-notebook.md    <- Update POI data source
+```
+
+### How It Works
+
+1. **Run the main skill:** `use the local skill from skills/customizations`
+2. **Answer three yes/no questions:**
+   - Customize LOCATION? (map region)
+   - Customize VEHICLES? (routing profiles)
+   - Customize INDUSTRIES? (demo categories)
+3. **Orchestrator determines which sub-skills to run**
+4. **Sub-skills execute in the correct order**
+5. **Changes are saved (Git branch or local files)**
+6. **Option to chain to deploy-demo**
 
 ### Decision Tree
 
@@ -229,33 +260,39 @@ The `ors-map-customization` skill provides a flexible workflow to customize your
 | **Customize VEHICLES?** | Modifies routing profiles, rebuilds graphs | Keeps default profiles |
 | **Customize INDUSTRIES?** | Modifies industry categories in notebooks | Keeps default industries |
 
-### What Gets Updated
+### Which Sub-Skills Run
 
-| Your Choices | Actions Taken |
-|--------------|---------------|
-| Location = YES | Steps 1-5 (download map, upload, rebuild graphs) |
-| Vehicles = YES | Steps 3-5 (modify profiles, rebuild graphs) |
-| Industries = YES | Step 8b (modify notebooks) |
-| Location OR Vehicles = YES | Steps 6, 10 (update Function Tester + Simulator, redeploy app) |
-| Industries ONLY | Only demo content updated - no app redeployment needed |
+| User Choice | Sub-Skills Executed |
+|-------------|---------------------|
+| Location = YES | `location` → `vehicles` → `streamlits` → `aisql-notebook` → `carto-notebook` |
+| Vehicles only = YES | `vehicles` → `streamlits` |
+| Industries only = YES | `industries` → `aisql-notebook` → `carto-notebook` |
+| Location + Industries | All sub-skills |
+| Nothing | No sub-skills (exit) |
 
-### Workflow Steps
+### Sub-Skill Details
 
-| Step | Description | When Run |
-|------|-------------|----------|
-| 0 | Ask yes/no questions to determine scope | Always |
-| 1 | Setup notebook for map downloads | Location = YES |
-| 2 | Download OSM map data for target region | Location = YES |
-| 3 | Update `ors-config.yml` with map file and routing profiles | Location OR Vehicles = YES |
-| 4 | Update `openrouteservice.yaml` with region volume paths | Location OR Vehicles = YES |
-| 5 | Resume all ORS services | Location OR Vehicles = YES |
-| 6 | Customize Function Tester + Simulator with region-specific coordinates | Location OR Vehicles = YES |
-| 7 | Customize AISQL Notebook with city-specific AI prompts | Any = YES |
-| 8 | Customize Add Carto Data notebook with region geohash | Any = YES |
-| 8b | Customize industry categories | Industries = YES |
-| 9 | Create Git feature branch and commit all customizations | Any = YES |
-| 10 | Deploy updated Streamlit app | Location OR Vehicles = YES |
-| 11 | Chain to deploy-demo | Any = YES |
+| Sub-Skill | Purpose | What It Updates |
+|-----------|---------|-----------------|
+| `location.md` | Change map region | Downloads OSM map, uploads to stage, rebuilds routing graphs |
+| `vehicles.md` | Configure profiles | Updates `ors-config.yml` with enabled/disabled profiles |
+| `industries.md` | Customize demo | Modifies industry categories (products, customers, vehicle skills) |
+| `streamlits.md` | Update apps | Sets region-specific coordinates in Function Tester & Simulator |
+| `aisql-notebook.md` | Update AI prompts | Changes city references in AI_COMPLETE calls |
+| `carto-notebook.md` | Update POI source | Modifies geohash filter for your region |
+
+### Running Individual Sub-Skills
+
+You can also run sub-skills directly for specific customizations:
+
+```bash
+use the local skill from skills/customizations/location
+use the local skill from skills/customizations/vehicles
+use the local skill from skills/customizations/industries
+use the local skill from skills/customizations/streamlits
+use the local skill from skills/customizations/aisql-notebook
+use the local skill from skills/customizations/carto-notebook
+```
 
 ### Routing Profiles
 
@@ -288,11 +325,14 @@ main                           <- Original San Francisco configuration
 ### How It Works
 
 1. **`main` branch** always contains the original San Francisco configuration
-2. When you run the map customization skill, it creates a **feature branch** (e.g., `feature/ors-great-britain`)
+2. When you run the customizations skill, it creates a **feature branch** (e.g., `feature/ors-great-britain`)
 3. All configuration changes are committed to the feature branch:
    - `Native_app/provider_setup/staged_files/ors-config.yml` - Map file and routing profiles
    - `Native_app/services/openrouteservice/openrouteservice.yaml` - Volume paths for map data
-   - `Native_app/code_artifacts/streamlit/pages/function_tester.py` - Region-specific coordinates
+   - `Native_app/code_artifacts/streamlit/pages/function_tester.py` - Function Tester coordinates
+   - `Streamlit/routing.py` - Simulator coordinates
+   - `Notebook/routing_functions_aisql.ipynb` - AI prompts for your region
+   - `Notebook/add_carto_data.ipynb` - POI data source for your region
 
 ### Switching Between Regions
 
@@ -314,30 +354,45 @@ git checkout feature/ors-<region-name>
 2. Update the ORS service specification
 3. Upgrade the Native App
 
-Or simply run the map customization skill again for the desired region.
+Or simply run the customizations skill again for the desired region.
 
 ### Creating a New Region Configuration
 
 1. Start from the `main` branch: `git checkout main`
-2. Run: `use the local skill from skills/ors-map-customization`
-3. Select your desired region
-4. The skill will automatically:
-   - Create a new feature branch
-   - Download the map (if needed)
-   - Update all configuration files
-   - Customize the Function Tester with local coordinates
-   - Commit changes to the feature branch
+2. Run: `use the local skill from skills/customizations`
+3. Answer YES to customize location
+4. Select your desired region
+5. The orchestrator will automatically:
+   - Run the relevant sub-skills in order
+   - Create a new feature branch (if Git is available)
+   - Download the map (via `location.md`)
+   - Update all configuration files (via `vehicles.md`)
+   - Customize all Streamlit apps (via `streamlits.md`)
+   - Update all notebooks (via `aisql-notebook.md`, `carto-notebook.md`)
+   - Commit all changes to the feature branch
 
 ## Available Skills
+
+### Main Skills
 
 | Skill | Description | Command |
 |-------|-------------|---------|
 | `check-prerequisites` | Check and install required dependencies | `use the local skill from skills/check-prerequisites` |
 | `deploy-route-optimizer` | Deploy the ORS Native App | `use the local skill from skills/deploy-route-optimizer` |
-| `ors-map-customization` | Change map region and customize app | `use the local skill from skills/ors-map-customization` |
-| `deploy-demo` | Deploy demo notebook and streamlit | `use the local skill from skills/deploy-demo` |
-| `customize-function-tester` | Update Function Tester coordinates | `use the local skill from skills/customize-function-tester` |
+| `customizations` | Orchestrate customizations (location, vehicles, industries) | `use the local skill from skills/customizations` |
+| `deploy-demo` | Deploy demo notebooks and Streamlit apps | `use the local skill from skills/deploy-demo` |
 | `uninstall-route-optimizer` | Remove app and clean up resources | `use the local skill from skills/uninstall-route-optimizer` |
+
+### Customization Sub-Skills
+
+| Sub-Skill | Description | Command |
+|-----------|-------------|---------|
+| `location` | Download new map, rebuild routing graphs | `use the local skill from skills/customizations/location` |
+| `vehicles` | Configure routing profiles | `use the local skill from skills/customizations/vehicles` |
+| `industries` | Customize industry categories for demo | `use the local skill from skills/customizations/industries` |
+| `streamlits` | Update Function Tester & Simulator coordinates | `use the local skill from skills/customizations/streamlits` |
+| `aisql-notebook` | Update AI prompts for your region | `use the local skill from skills/customizations/aisql-notebook` |
+| `carto-notebook` | Update POI data source for your region | `use the local skill from skills/customizations/carto-notebook` |
 
 ## Project Structure
 
@@ -353,9 +408,27 @@ Or simply run the map customization skill again for the desired region.
 │   └── services/
 │       └── openrouteservice/
 │           └── openrouteservice.yaml     # Service spec with volume paths
+├── Notebook/
+│   ├── routing_functions_aisql.ipynb     # AI-powered route demos
+│   └── add_carto_data.ipynb              # POI data from Marketplace
+├── Streamlit/
+│   └── routing.py                        # Route Optimization Simulator
 ├── skills/
-│   ├── deploy-route-optimizer/           # Deployment skill
-│   ├── ors-map-customization/            # Map customization skill
-│   └── deploy-demo/                      # Demo deployment skill
+│   ├── check-prerequisites/              # Dependency checking skill
+│   │   └── check-prerequisites.md
+│   ├── deploy-route-optimizer/           # App deployment skill
+│   │   └── deploy-route-optimizer.md
+│   ├── customizations/                   # Modular customization skills
+│   │   ├── customizations.md             # Main orchestrator
+│   │   ├── location.md                   # Map region customization
+│   │   ├── vehicles.md                   # Routing profiles
+│   │   ├── industries.md                 # Industry categories
+│   │   ├── streamlits.md                 # Streamlit app updates
+│   │   ├── aisql-notebook.md             # AISQL notebook updates
+│   │   └── carto-notebook.md             # Carto notebook updates
+│   ├── deploy-demo/                      # Demo deployment skill
+│   │   └── deploy-demo.md
+│   └── uninstall-route-optimizer/        # Cleanup skill
+│       └── uninstall-route-optimizer.md
 └── README.md
 ```

@@ -1,0 +1,194 @@
+---
+name: customize-location
+description: "Change the OpenRouteService map region. Use when: switching to a different country, state, or city. Triggers: change map, new region, download map, customize location."
+---
+
+# Customize Location (Map Region)
+
+Downloads a new OpenStreetMap region and rebuilds the routing graphs.
+
+## Prerequisites
+
+- Active Snowflake connection
+- OpenRouteService Native App deployed
+- Compute resources for map download and graph building
+- Know your target region (available at download.geofabrik.de)
+
+## Input Parameters
+
+- `<REGION_NAME>`: Target region name (e.g., "great-britain", "switzerland", "new-york")
+- `<MAP_NAME>`: OSM file name (e.g., "great-britain-latest.osm.pbf")
+- `<URL>`: Download URL from geofabrik.de or bbbike.org
+
+## Workflow
+
+### Step 1: Setup Download Notebook
+
+**Goal:** Create required Notebook for map download
+
+**Actions:**
+
+1. **Execute** notebook setup SQL:
+   ```sql
+   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE
+   MODE = EGRESS
+   TYPE = HOST_PORT
+   VALUE_LIST = ('download.geofabrik.de', 'download.bbbike.org');
+
+   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION DOWNLOAD_MAP_ACCESS_INTEGRATION
+   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE)
+   ENABLED = TRUE;
+   
+   CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL
+   MIN_NODES = 1
+   MAX_NODES = 2
+   INSTANCE_FAMILY = CPU_X64_S
+   AUTO_RESUME = TRUE
+   AUTO_SUSPEND_SECS = 600;
+
+   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP
+   FROM '@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE'
+   QUERY_WAREHOUSE = 'ROUTING_ANALYTICS' 
+   RUNTIME_NAME = 'SYSTEM$BASIC_RUNTIME' 
+   COMPUTE_POOL = 'OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL' 
+   MAIN_FILE = 'download_map.ipynb'
+   EXTERNAL_ACCESS_INTEGRATIONS = (DOWNLOAD_MAP_ACCESS_INTEGRATION);
+
+   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP ADD LIVE VERSION FROM LAST;
+   ```
+
+**Output:** Download notebook created
+
+### Step 2: Download Map Data
+
+**Goal:** Execute notebook to download OSM map data for target region
+
+**Actions:**
+
+1. **Check** if map already exists:
+   ```sql
+   ALTER STAGE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE REFRESH; 
+   LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE;
+   ```
+   - If map exists, ask user if they want to re-download
+
+2. **Execute** download notebook:
+   ```sql
+   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP(
+     url => '<URL>',
+     map_name => '<MAP_NAME>',
+     region_name => '<REGION_NAME>'
+   )
+   ```
+   
+   **Parameters:**
+   - `url`: Link to OSM map (e.g., `'https://download.geofabrik.de/europe/switzerland-latest.osm.pbf'`)
+   - `map_name`: File name (e.g., `'switzerland-latest.osm.pbf'`)
+   - `region_name`: Region name (e.g., `'switzerland'`)
+   
+   **Timeout:** 12000 seconds (large maps take time)
+
+3. **Check downloaded map size** and suggest resource scaling:
+   ```sql
+   LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/;
+   ```
+   
+   - **1GB - 5GB maps:** Suggest scaling up compute:
+     ```sql
+     ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+     ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 28800;
+     ```
+   
+   - **5GB+ maps:** Suggest larger scaling:
+     ```sql
+     ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+     ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 86400;
+     ```
+
+**Output:** Map data downloaded to stage
+
+### Step 3: Update Configuration
+
+**Goal:** Modify ors-config.yml to reference new map file
+
+**Actions:**
+
+1. **Edit** `Native_app/provider_setup/staged_files/ors-config.yml`:
+   - Change `source_file: /home/ors/files/{old-map}`
+   - To: `source_file: /home/ors/files/<MAP_NAME>`
+
+2. **Upload** to stage:
+   ```sql
+   PUT file://provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```
+
+**Output:** Configuration updated
+
+### Step 4: Update Service Specification
+
+**Goal:** Reconfigure ORS service to point to new map region
+
+**Actions:**
+
+1. **Edit** `Native_app/services/openrouteservice/openrouteservice.yaml`:
+   - Update all volume source paths:
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/"`
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/"`
+     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/"`
+
+2. **Upload** specification:
+   ```sql
+   PUT file:///services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```
+
+3. **Update** service:
+   ```sql
+   ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
+   FROM @openrouteservice_native_app_pkg.app_src.stage 
+   SPECIFICATION_FILE='/services/openrouteservice/openrouteservice.yaml';
+   ```
+
+**Output:** Service configured for new region
+
+### Step 5: Rebuild Routing Graphs
+
+**Goal:** Restart services to rebuild graphs with new map
+
+**Actions:**
+
+1. **Resume** all services:
+   ```sql
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
+   ```
+
+2. **Verify** services are running:
+   ```sql
+   SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
+   ```
+
+**Note:** Graph building can take 30 minutes to several hours depending on map size.
+
+**Output:** Services rebuilding with new map
+
+## Common Map URLs
+
+| Region | URL |
+|--------|-----|
+| Great Britain | `https://download.geofabrik.de/europe/great-britain-latest.osm.pbf` |
+| France | `https://download.geofabrik.de/europe/france-latest.osm.pbf` |
+| Germany | `https://download.geofabrik.de/europe/germany-latest.osm.pbf` |
+| Switzerland | `https://download.geofabrik.de/europe/switzerland-latest.osm.pbf` |
+| New York | `https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf` |
+| California | `https://download.geofabrik.de/north-america/us/california-latest.osm.pbf` |
+
+## Stopping Points
+
+- ✋ After Step 2: Confirm map download completed
+- ✋ After Step 5: Verify services are rebuilding graphs
+
+## Output
+
+Map region changed to `<REGION_NAME>` with routing graphs rebuilding.
