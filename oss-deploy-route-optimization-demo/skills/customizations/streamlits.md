@@ -7,10 +7,18 @@ description: "Update Function Tester and Simulator Streamlit apps with region-sp
 
 Updates the Function Tester and Simulator Streamlit apps with region-specific coordinates and settings.
 
+> **_IMPORTANT:_** This skill only updates the Streamlit app files. If you are changing the map region or vehicle profiles, you MUST first run the ORS skills to download the map and rebuild the routing graphs:
+> - **For location changes:** Run `oss-install-openrouteservice-native-app/skills/customizations/location` first
+> - **For vehicle changes:** Run `oss-install-openrouteservice-native-app/skills/customizations/vehicles` first
+> 
+> Otherwise, the Streamlit apps will have new coordinates but the routing engine won't have the map data to service requests in that region.
+
 ## Prerequisites
 
 - Active Snowflake connection
 - OpenRouteService Native App deployed
+- **If changing location:** Map already downloaded via `location.md` skill
+- **If changing vehicles:** Profiles already updated via `vehicles.md` skill
 - Know the target region and a major city within it
 - Access to:
   - `Native_app/code_artifacts/streamlit/pages/function_tester.py`

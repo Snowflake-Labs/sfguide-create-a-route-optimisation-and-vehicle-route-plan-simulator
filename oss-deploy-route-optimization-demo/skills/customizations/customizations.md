@@ -17,14 +17,16 @@ Main entry point for customizing your OpenRouteService deployment. This skill de
 
 ## Customization Options
 
-| Component | Skill File | Description |
-|-----------|------------|-------------|
-| **Location** | `location.md` | Change map region (download new map, rebuild routing graphs) |
-| **Vehicle Types** | `vehicles.md` | Enable/disable routing profiles (car, truck, bicycle, walking, etc.) |
-| **Industries** | `industries.md` | Customize industry categories for the demo (product types, customers) |
-| **Streamlit Apps** | `streamlits.md` | Update Function Tester & Simulator with region-specific coordinates |
-| **AISQL Notebook** | `aisql-notebook.md` | Update AI prompts to generate data for your region |
-| **Carto Notebook** | `carto-notebook.md` | Update POI data source for your region |
+| Component | Skill Location | Description |
+|-----------|----------------|-------------|
+| **Location** | `oss-install-openrouteservice-native-app/skills/customizations/location.md` | Change map region (download new map, rebuild routing graphs) |
+| **Vehicle Types** | `oss-install-openrouteservice-native-app/skills/customizations/vehicles.md` | Enable/disable routing profiles (car, truck, bicycle, walking, etc.) |
+| **Industries** | `oss-deploy-route-optimization-demo/skills/customizations/industries.md` | Customize industry categories for the demo (product types, customers) |
+| **Streamlit Apps** | `oss-deploy-route-optimization-demo/skills/customizations/streamlits.md` | Update Function Tester & Simulator with region-specific coordinates |
+| **AISQL Notebook** | `oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook.md` | Update AI prompts to generate data for your region |
+| **Carto Notebook** | `oss-deploy-route-optimization-demo/skills/customizations/carto-notebook.md` | Update POI data source for your region |
+
+> **_IMPORTANT:_** Location and Vehicle changes require running the ORS skills first (to download maps and rebuild graphs), then the demo skills (to update Streamlit apps and notebooks).
 
 ## Workflow
 
@@ -88,27 +90,27 @@ Main entry point for customizing your OpenRouteService deployment. This skill de
 Execute the sub-skills in this order:
 
 1. **If Location = YES:**
-   - Run `location.md` with `<REGION_NAME>`
-   - This downloads the map, updates config, and rebuilds routing graphs
+   - Run `oss-install-openrouteservice-native-app/skills/customizations/location.md` with `<REGION_NAME>`
+   - This downloads the new map, updates ors-config.yml, and triggers graph rebuild
 
 2. **If Location = YES OR Vehicles = YES:**
-   - Run `vehicles.md` with `<REGION_NAME>`
-   - This configures routing profiles in ors-config.yml
+   - Run `oss-install-openrouteservice-native-app/skills/customizations/vehicles.md` with `<REGION_NAME>`
+   - This configures routing profiles in ors-config.yml and triggers graph rebuild
 
 3. **If Industries = YES:**
-   - Run `industries.md`
+   - Run `oss-deploy-route-optimization-demo/skills/customizations/industries.md`
    - This customizes industry categories in the demo
 
 4. **ALWAYS run (for any customization):**
-   - Run `streamlits.md` with `<REGION_NAME>` and `<NOTEBOOK_CITY>`
+   - Run `oss-deploy-route-optimization-demo/skills/customizations/streamlits.md` with `<REGION_NAME>` and `<NOTEBOOK_CITY>`
    - This updates Function Tester and Simulator with region-specific coordinates
 
 5. **ALWAYS run (for any customization):**
-   - Run `aisql-notebook.md` with `<NOTEBOOK_CITY>`
+   - Run `oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook.md` with `<NOTEBOOK_CITY>`
    - This updates AI prompts in the AISQL notebook
 
 6. **ALWAYS run (for any customization):**
-   - Run `carto-notebook.md` with `<NOTEBOOK_CITY>`
+   - Run `oss-deploy-route-optimization-demo/skills/customizations/carto-notebook.md` with `<NOTEBOOK_CITY>`
    - This updates POI data source and geohash filter
 
 **Output:** All relevant sub-skills executed
@@ -169,14 +171,21 @@ Execute the sub-skills in this order:
 
 Users can also run individual customizations directly:
 
+**ORS Skills (map and graph changes):**
 ```
-use the local skill from skills/customizations/location
-use the local skill from skills/customizations/vehicles
-use the local skill from skills/customizations/industries
-use the local skill from skills/customizations/streamlits
-use the local skill from skills/customizations/aisql-notebook
-use the local skill from skills/customizations/carto-notebook
+use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
+use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
 ```
+
+**Demo Skills (app and notebook changes):**
+```
+use the local skill from oss-deploy-route-optimization-demo/skills/customizations/industries
+use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
+use the local skill from oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook
+use the local skill from oss-deploy-route-optimization-demo/skills/customizations/carto-notebook
+```
+
+> **_WARNING:_** If you run `location` or `vehicles` individually, you MUST also run the `streamlits` skill afterward to update the Streamlit apps with the new configuration.
 
 ## Output
 
