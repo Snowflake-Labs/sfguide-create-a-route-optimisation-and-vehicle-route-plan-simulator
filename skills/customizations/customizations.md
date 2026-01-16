@@ -39,8 +39,8 @@ Before updating demo components, check if the demo database exists:
 SHOW DATABASES LIKE 'VEHICLE_ROUTING_SIMULATOR';
 ```
 
-- **If the database EXISTS:** Demo is installed, proceed with demo updates after ORS changes
-- **If the database does NOT exist:** Demo is not installed, skip demo-related updates
+- **If the database EXISTS:** Demo is installed, you may update demo components after ORS changes
+- **If the database does NOT exist:** Demo is NOT installed - **DO NOT attempt to update any demo files** (routing.py, notebooks, etc.). The demo will automatically use the correct configuration when it is deployed later.
 
 ### Step 3: Route to Correct Skill
 
@@ -48,20 +48,20 @@ SHOW DATABASES LIKE 'VEHICLE_ROUTING_SIMULATOR';
 
 > This requires downloading a new map and rebuilding the routing graphs. This is handled by the OpenRouteService installation lab.
 
-1. Run the location skill:
+Run the location skill (this handles everything for the Native App):
 ```
 use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
 ```
 
-2. After the location skill completes, run vehicles:
-```
-use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
-```
+This skill will:
+- Download the new map
+- Update ors-config.yml
+- Update service specifications
+- Rebuild routing graphs
+- Update Function Tester with new addresses
+- Upgrade the Native App
 
-3. **Only if demo is installed:** Update the Streamlit apps:
-```
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
-```
+> **_IMPORTANT:_** Do NOT attempt to update demo files (routing.py, notebooks, etc.) if the demo is not installed. When the demo IS deployed later, the `deploy-demo` skill will automatically read the current ORS configuration and apply the correct region settings.
 
 ---
 
@@ -69,15 +69,18 @@ use the local skill from oss-deploy-route-optimization-demo/skills/customization
 
 > This updates which routing profiles are available and rebuilds the graphs.
 
-1. Run the vehicles skill:
+Run the vehicles skill:
 ```
 use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
 ```
 
-2. **Only if demo is installed:** Update the Streamlit apps to reflect new profiles:
-```
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
-```
+This skill will:
+- Update ors-config.yml with new profiles
+- Rebuild routing graphs
+- Update Function Tester with new profile options
+- Upgrade the Native App
+
+> **_IMPORTANT:_** Do NOT attempt to update demo files if the demo is not installed. The demo will pick up the correct profiles when deployed.
 
 ---
 
