@@ -173,6 +173,36 @@ Downloads a new OpenStreetMap region and rebuilds the routing graphs.
 
 **Output:** Services rebuilding with new map
 
+### Step 6: Update and Deploy Function Tester
+
+**Goal:** Update the Function Tester Streamlit with region-specific addresses and deploy to the Native App
+
+**Actions:**
+
+1. **Generate** region-specific sample addresses for the Function Tester:
+   - 5 START addresses (landmarks, transport hubs in `<REGION_NAME>`)
+   - 5 END addresses (different locations)
+   - 20 WAYPOINT addresses spread across the region
+
+2. **Edit** `oss-install-openrouteservice-native-app/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
+   - Update page title to: `page_title="ORS Function Tester For <REGION_NAME> Map"`
+   - Replace `SF_ADDRESSES` with region-specific addresses
+   - Replace `SF_WAYPOINT_ADDRESSES` with region waypoints
+   - Update map center coordinates
+
+3. **Upload** updated Function Tester to stage:
+   ```bash
+   snow stage copy oss-install-openrouteservice-native-app/Native_app/code_artifacts/streamlit/pages/function_tester.py \
+     @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
+   ```
+
+4. **Upgrade** the Native App to apply changes:
+   ```sql
+   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING '@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE';
+   ```
+
+**Output:** Function Tester deployed with region-specific addresses
+
 ## Choosing a Map Size
 
 When the user asks to change location, **always ask if they want a city-only map or a larger region**:
@@ -220,6 +250,7 @@ For full country or region coverage, use **Geofabrik**:
 
 - ✋ After Step 2: Confirm map download completed
 - ✋ After Step 5: Verify services are rebuilding graphs
+- ✋ After Step 6: Verify Function Tester shows new region addresses
 
 ## Output
 
