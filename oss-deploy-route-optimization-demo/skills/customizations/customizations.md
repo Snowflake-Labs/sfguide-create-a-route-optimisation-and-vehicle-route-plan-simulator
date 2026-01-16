@@ -1,32 +1,38 @@
 ---
-name: customizations
-description: "Customize your OpenRouteService deployment. Use when: changing location, modifying vehicle profiles, customizing industries, updating notebooks, or configuring Streamlit apps. Triggers: customize, customize deployment, change settings."
+name: demo-customizations
+description: "Customize demo-specific settings like industries. NOT for changing location or vehicles - use oss-install-openrouteservice-native-app skills for that. Triggers: customize demo, change demo industries, customize industries."
 ---
 
-# OpenRouteService Customizations
+# Demo Customizations
 
-Main entry point for customizing your OpenRouteService deployment. This skill determines what you want to customize and runs the appropriate sub-skills.
+Customize demo-specific settings. This skill is ONLY for demo components (industries, notebooks).
+
+> **_STOP - FOR LOCATION OR VEHICLE CHANGES:_**
+> 
+> ❌ **DO NOT USE THIS SKILL** to change the map location or vehicle profiles.
+> 
+> ✅ **To change location**, use:
+> ```
+> use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
+> ```
+> 
+> ✅ **To change vehicles**, use:
+> ```
+> use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
+> ```
 
 ## Prerequisites
 
-- Active Snowflake connection with access to:
-  - `OPENROUTESERVICE_SETUP` database
-  - `OPENROUTESERVICE_NATIVE_APP` application
+- Demo must be installed (`VEHICLE_ROUTING_SIMULATOR` database exists)
 - OpenRouteService Native App deployed and running
-- Services in `OPENROUTESERVICE_NATIVE_APP.CORE` schema
 
-## Customization Options
+## Demo Customization Options
 
-| Component | Skill Location | Description |
-|-----------|----------------|-------------|
-| **Location** | `oss-install-openrouteservice-native-app/skills/customizations/location.md` | Change map region (download new map, rebuild routing graphs) |
-| **Vehicle Types** | `oss-install-openrouteservice-native-app/skills/customizations/vehicles.md` | Enable/disable routing profiles (car, truck, bicycle, walking, etc.) |
-| **Industries** | `oss-deploy-route-optimization-demo/skills/customizations/industries.md` | Customize industry categories for the demo (product types, customers) |
-| **Streamlit Apps** | `oss-deploy-route-optimization-demo/skills/customizations/streamlits.md` | Update Function Tester & Simulator with region-specific coordinates |
-| **AISQL Notebook** | `oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook.md` | Update AI prompts to generate data for your region |
-| **Carto Notebook** | `oss-deploy-route-optimization-demo/skills/customizations/carto-notebook.md` | Update POI data source for your region |
-
-> **_IMPORTANT:_** Location and Vehicle changes require running the ORS skills first (to download maps and rebuild graphs), then the demo skills (to update Streamlit apps and notebooks).
+| Component | Skill | Description |
+|-----------|-------|-------------|
+| **Industries** | `industries.md` | Customize industry categories (product types, customers) |
+| **AISQL Notebook** | `aisql-notebook.md` | Update AI prompts for sample data generation |
+| **Carto Notebook** | `carto-notebook.md` | Update POI data source |
 
 ## Workflow
 
