@@ -24,11 +24,14 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
    - Native App: `OPENROUTESERVICE_NATIVE_APP`
    - Application Package: `OPENROUTESERVICE_NATIVE_APP_PKG`
    - Database: `OPENROUTESERVICE_SETUP` (includes all stages and image repository)
+   - Demo Database: `VEHICLE_ROUTING_SIMULATOR` (includes notebooks and Streamlit apps)
+   - Marketplace Data: `OVERTURE_MAPS__PLACES` (Carto POI data)
    - Warehouse: `ROUTING_ANALYTICS` (optional)
 
 2. **Ask user** if they also want to:
    - Remove local container images (podman/docker)
    - Keep the warehouse for other uses
+   - Keep the Carto Overture Maps marketplace data for other uses
 
 **IMPORTANT:** Do NOT proceed without explicit user confirmation.
 
@@ -96,7 +99,47 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
 
 **Next:** Proceed to Step 5
 
-### Step 5: Drop Warehouse (Optional)
+### Step 5: Drop Demo Database
+
+**Goal:** Remove the demo database including notebooks and Streamlit apps
+
+**Actions:**
+
+1. **Drop** the demo database (this removes notebooks and Streamlit apps):
+   ```sql
+   DROP DATABASE IF EXISTS VEHICLE_ROUTING_SIMULATOR CASCADE;
+   ```
+
+2. **Verify** the database is removed:
+   ```sql
+   SHOW DATABASES LIKE 'VEHICLE_ROUTING_SIMULATOR';
+   ```
+
+**Output:** Demo database and all contents (notebooks, Streamlit apps) removed
+
+**Next:** Proceed to Step 6
+
+### Step 6: Drop Marketplace Data (Optional)
+
+**Goal:** Remove the Carto Overture Maps dataset if user confirmed
+
+**Actions:**
+
+1. **If user confirmed marketplace data removal**, drop the database:
+   ```sql
+   DROP DATABASE IF EXISTS OVERTURE_MAPS__PLACES CASCADE;
+   ```
+
+2. **Verify** the database is removed:
+   ```sql
+   SHOW DATABASES LIKE 'OVERTURE_MAPS__PLACES';
+   ```
+
+**Output:** Marketplace data removed (or skipped if user chose to keep it)
+
+**Next:** Proceed to Step 7
+
+### Step 7: Drop Warehouse (Optional)
 
 **Goal:** Remove the compute warehouse if user confirmed
 
@@ -114,9 +157,9 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
 
 **Output:** Warehouse removed (or skipped if user chose to keep it)
 
-**Next:** Proceed to Step 6
+**Next:** Proceed to Step 8
 
-### Step 6: Clean Up Local Container Images (Optional)
+### Step 8: Clean Up Local Container Images (Optional)
 
 **Goal:** Remove local container images if user confirmed
 
@@ -138,9 +181,9 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
 
 **Output:** Local container images removed (or skipped)
 
-**Next:** Proceed to Step 7
+**Next:** Proceed to Step 9
 
-### Step 7: Verification Summary
+### Step 9: Verification Summary
 
 **Goal:** Confirm all resources have been removed
 
@@ -152,6 +195,8 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
    SHOW APPLICATIONS LIKE 'OPENROUTESERVICE%';
    SHOW APPLICATION PACKAGES LIKE 'OPENROUTESERVICE%';
    SHOW DATABASES LIKE 'OPENROUTESERVICE%';
+   SHOW DATABASES LIKE 'VEHICLE_ROUTING_SIMULATOR';
+   SHOW DATABASES LIKE 'OVERTURE_MAPS__PLACES';
    ```
 
 2. **Present** summary to user:
@@ -160,7 +205,9 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
    |----------|--------|
    | Native App | ✅ Removed |
    | Application Package | ✅ Removed |
-   | Database (stages, image repo) | ✅ Removed |
+   | Setup Database (stages, image repo) | ✅ Removed |
+   | Demo Database (notebooks, Streamlit) | ✅ Removed |
+   | Marketplace Data (Carto POI) | ✅ Removed / ⏭️ Kept |
    | Warehouse | ✅ Removed / ⏭️ Kept |
    | Local Container Images | ✅ Removed / ⏭️ Skipped |
 
@@ -174,8 +221,9 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
 ## Stopping Points
 
 - ✋ Step 1: MUST wait for user confirmation before proceeding
-- ✋ Step 5: Confirm warehouse removal preference
-- ✋ Step 6: Confirm local image cleanup preference
+- ✋ Step 6: Confirm marketplace data removal preference
+- ✋ Step 7: Confirm warehouse removal preference
+- ✋ Step 8: Confirm local image cleanup preference
 
 ## Common Issues
 
@@ -196,7 +244,9 @@ Removes the OpenRouteService Native App and all associated Snowflake resources, 
 All OpenRouteService resources removed:
 - Native App: `OPENROUTESERVICE_NATIVE_APP` - Dropped
 - Application Package: `OPENROUTESERVICE_NATIVE_APP_PKG` - Dropped
-- Database: `OPENROUTESERVICE_SETUP` - Dropped (includes stages and image repository)
+- Setup Database: `OPENROUTESERVICE_SETUP` - Dropped (includes stages and image repository)
+- Demo Database: `VEHICLE_ROUTING_SIMULATOR` - Dropped (includes notebooks and Streamlit apps)
+- Marketplace Data: `OVERTURE_MAPS__PLACES` - Dropped or Kept (per user choice)
 - Warehouse: `ROUTING_ANALYTICS` - Dropped or Kept (per user choice)
 - Local Images: Removed or Skipped (per user choice)
 
