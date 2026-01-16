@@ -9,12 +9,50 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 ## Prerequisites
 
-- OpenRouteService Native App deployed and activated (use `deploy-route-optimizer` skill first)
+- OpenRouteService Native App deployed and activated
 - Active Snowflake connection
 
 ## Workflow
 
-### Step 1: Get Carto Overture Dataset from Marketplace
+### Step 1: Verify OpenRouteService Installation
+
+**Goal:** Check that the OpenRouteService Native App is installed and running before proceeding
+
+**Actions:**
+
+1. **Check** if the OpenRouteService Native App exists:
+   ```sql
+   SHOW APPLICATIONS LIKE 'OPENROUTESERVICE_NATIVE_APP';
+   ```
+
+2. **If the application does NOT exist:**
+   - **STOP** and inform the user:
+     > ⚠️ **OpenRouteService Native App is not installed.**
+     > 
+     > The demo requires the OpenRouteService Native App to provide routing functions.
+     > 
+     > Please install it first using the skill from the `openrouteservice/` directory:
+     > ```
+     > use the local skill from openrouteservice/skills/deploy-route-optimizer
+     > ```
+     > 
+     > After installation, return and run this demo deployment skill again.
+   - **Do NOT proceed** with the remaining steps
+
+3. **If the application EXISTS**, verify services are running:
+   ```sql
+   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+
+4. **If services are not running:**
+   - Inform user to activate the app via Snowsight (Data Products > Apps > OPENROUTESERVICE_NATIVE_APP)
+   - Wait for user confirmation before proceeding
+
+**Output:** OpenRouteService Native App verified as installed and running
+
+**Next:** Proceed to Step 2
+
+### Step 2: Get Carto Overture Dataset from Marketplace
 
 **Goal:** Acquire the Overture Maps Places dataset for point-of-interest data
 
@@ -28,9 +66,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Carto Overture Places dataset available in your account as `OVERTURE_MAPS__PLACES`
 
-**Next:** Proceed to Step 2
+**Next:** Proceed to Step 3
 
-### Step 2: Setup Database and Schemas
+### Step 3: Setup Database and Schemas
 
 **Goal:** Create required database infrastructure for the demo
 
@@ -50,9 +88,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Database `VEHICLE_ROUTING_SIMULATOR` with DATA, NOTEBOOKS, and STREAMLITS schemas
 
-**Next:** Proceed to Step 3
+**Next:** Proceed to Step 4
 
-### Step 3: Deploy and Run the Notebook to add Carto data
+### Step 4: Deploy and Run the Notebook to add Carto data
 
 **Goal:** Create and execute notebook that will add Carto data to the database.
 
@@ -91,9 +129,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Notebook deployed with standing data for the Streamlit app
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 5
 
-### Step 4: Check for Latest Claude Model
+### Step 5: Check for Latest Claude Model
 
 **Goal:** Verify the latest Claude Sonnet model available in Snowflake Cortex
 
@@ -118,9 +156,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Confirmed latest Claude Sonnet model for use in the notebook
 
-**Next:** Proceed to Step 5
+**Next:** Proceed to Step 6
 
-### Step 5: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
+### Step 6: Deploy and Run the Notebook that will help to explore Routing functions with AISQL
 
 **Goal:** Create and execute the notebook that will help to explore Routing functions with AISQL
 
@@ -148,9 +186,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Notebook created and ready to be explored
 
-**Next:** Proceed to Step 6
+**Next:** Proceed to Step 7
 
-### Step 6: Deploy the Streamlit Application
+### Step 7: Deploy the Streamlit Application
 
 **Goal:** Deploy the route simulator Streamlit app
 
@@ -191,9 +229,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Output:** Streamlit application deployed with routing methods matching native app configuration
 
-**Next:** Proceed to Step 7
+**Next:** Proceed to Step 8
 
-### Step 7: Run the Demo
+### Step 8: Run the Demo
 
 **Goal:** Access and use the route simulator
 
