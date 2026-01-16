@@ -173,16 +173,48 @@ Downloads a new OpenStreetMap region and rebuilds the routing graphs.
 
 **Output:** Services rebuilding with new map
 
-## Common Map URLs
+## Choosing a Map Size
 
-| Region | URL |
-|--------|-----|
-| Great Britain | `https://download.geofabrik.de/europe/great-britain-latest.osm.pbf` |
-| France | `https://download.geofabrik.de/europe/france-latest.osm.pbf` |
-| Germany | `https://download.geofabrik.de/europe/germany-latest.osm.pbf` |
-| Switzerland | `https://download.geofabrik.de/europe/switzerland-latest.osm.pbf` |
-| New York | `https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf` |
-| California | `https://download.geofabrik.de/north-america/us/california-latest.osm.pbf` |
+When the user asks to change location, **always ask if they want a city-only map or a larger region**:
+
+> "Do you want just the **city of Paris** (faster download, quicker graph build) or the **entire France** region (larger coverage, longer build time)?"
+
+- **City maps** (~50-200MB): Faster to download, quicker graph builds (5-15 min), perfect for demos
+- **Country/Region maps** (1-10GB): Full coverage, longer build times (1-8 hours), better for production
+
+## City-Specific Maps (BBBike.org)
+
+For city-only maps, use **BBBike.org** which offers pre-built city extracts:
+
+| City | URL | Approximate Size |
+|------|-----|------------------|
+| Paris | `https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf` | ~100MB |
+| London | `https://download.bbbike.org/osm/bbbike/London/London.osm.pbf` | ~150MB |
+| Berlin | `https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf` | ~80MB |
+| New York | `https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf` | ~200MB |
+| Tokyo | `https://download.bbbike.org/osm/bbbike/Tokyo/Tokyo.osm.pbf` | ~150MB |
+| Sydney | `https://download.bbbike.org/osm/bbbike/Sydney/Sydney.osm.pbf` | ~80MB |
+| Amsterdam | `https://download.bbbike.org/osm/bbbike/Amsterdam/Amsterdam.osm.pbf` | ~50MB |
+| Munich | `https://download.bbbike.org/osm/bbbike/Muenchen/Muenchen.osm.pbf` | ~60MB |
+| Barcelona | `https://download.bbbike.org/osm/bbbike/Barcelona/Barcelona.osm.pbf` | ~70MB |
+| Rome | `https://download.bbbike.org/osm/bbbike/Roma/Roma.osm.pbf` | ~60MB |
+
+> **_TIP:_** Browse all available cities at: https://download.bbbike.org/osm/bbbike/
+
+## Country/Region Maps (Geofabrik)
+
+For full country or region coverage, use **Geofabrik**:
+
+| Region | URL | Approximate Size |
+|--------|-----|------------------|
+| Great Britain | `https://download.geofabrik.de/europe/great-britain-latest.osm.pbf` | ~1.5GB |
+| France | `https://download.geofabrik.de/europe/france-latest.osm.pbf` | ~4GB |
+| Germany | `https://download.geofabrik.de/europe/germany-latest.osm.pbf` | ~3.5GB |
+| Switzerland | `https://download.geofabrik.de/europe/switzerland-latest.osm.pbf` | ~350MB |
+| New York State | `https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf` | ~500MB |
+| California | `https://download.geofabrik.de/north-america/us/california-latest.osm.pbf` | ~1GB |
+
+> **_TIP:_** Browse all regions at: https://download.geofabrik.de/
 
 ## Stopping Points
 
