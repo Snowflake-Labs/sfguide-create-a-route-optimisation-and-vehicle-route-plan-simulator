@@ -238,6 +238,47 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
 
 **Output:** Function Tester deployed with region-specific addresses
 
+### Step 7: Update MAP_CONFIG Table
+
+**Goal:** Store map configuration so Function Tester can dynamically load settings
+
+**Actions:**
+
+1. **Clear** any existing configuration:
+   ```sql
+   DELETE FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG;
+   ```
+
+2. **Insert** the new map configuration:
+   ```sql
+   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
+   VALUES ('<CITY_NAME>', <CENTER_LAT>, <CENTER_LON>, <MIN_LAT>, <MAX_LAT>, <MIN_LON>, <MAX_LON>, '<MAP_NAME>');
+   ```
+   
+   **Example for Paris:**
+   ```sql
+   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
+   VALUES ('Paris', 48.8566, 2.3522, 48.80, 48.92, 2.22, 2.42, 'Paris.osm.pbf');
+   ```
+   
+   **Example for Berlin:**
+   ```sql
+   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
+   VALUES ('Berlin', 52.5200, 13.4050, 52.35, 52.70, 13.08, 13.77, 'Berlin.osm.pbf');
+   ```
+
+3. **Verify** the configuration was saved:
+   ```sql
+   SELECT * FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG;
+   ```
+
+**Note:** The Function Tester will automatically generate test addresses within these bounds when it loads. If no MAP_CONFIG entry exists, it defaults to San Francisco.
+
+**Output:** MAP_CONFIG table updated with new region bounds
+
 ## Choosing a Map Size
 
 When the user asks to change location, **always ask if they want a city-only map or a larger region**:
@@ -286,7 +327,8 @@ For full country or region coverage, use **Geofabrik**:
 - ✋ After Step 2: Confirm map download completed
 - ✋ After Step 5: Verify services are rebuilding graphs
 - ✋ After Step 6: Verify Function Tester shows new region addresses
+- ✋ After Step 7: Verify MAP_CONFIG table has correct bounds
 
 ## Output
 
-Map region changed to `<REGION_NAME>` with routing graphs rebuilding.
+Map region changed to `<REGION_NAME>` with routing graphs rebuilding and Function Tester dynamically configured.

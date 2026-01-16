@@ -250,6 +250,33 @@ BEGIN
       AS '/optimization';
    GRANT USAGE ON FUNCTION core.optimization (VARIANT) TO APPLICATION ROLE app_user; 
 
+   CREATE OR REPLACE FUNCTION core.ORS_STATUS()
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 1
+      AS '/ors_status';
+   GRANT USAGE ON FUNCTION core.ORS_STATUS() TO APPLICATION ROLE app_user;
+
+   -- Create MAP_CONFIG table to store map metadata for the function tester
+   CREATE TABLE IF NOT EXISTS core.MAP_CONFIG (
+      city_name VARCHAR,
+      center_lat FLOAT,
+      center_lon FLOAT,
+      min_lat FLOAT,
+      max_lat FLOAT,
+      min_lon FLOAT,
+      max_lon FLOAT,
+      osm_file_name VARCHAR,
+      sample_addresses VARIANT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+   );
+   GRANT SELECT ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
+   GRANT INSERT ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
+   GRANT UPDATE ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
+   GRANT DELETE ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
+
    RETURN 'Functions successfully created';
 END;
 $$;

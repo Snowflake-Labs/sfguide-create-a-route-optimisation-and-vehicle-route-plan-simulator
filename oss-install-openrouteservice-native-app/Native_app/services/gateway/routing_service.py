@@ -35,6 +35,63 @@ app = Flask(__name__)
 def readiness_probe():
     return "OK"
 
+@app.get("/ors_status")
+def get_ors_status():
+    '''
+    Get ORS Status including graph bounds
+    Returns service status with bounding box information for available profiles
+    '''
+    try:
+        # Query ORS status endpoint
+        status_url = f'http://{ORS_HOST}:{ORS_PORT}{ORS_API_PATH}/status'
+        logger.info(f'Querying ORS status: {status_url}')
+        r = requests.get(url=status_url, timeout=10)
+        status_data = r.json()
+        
+        # Try to get bounds by making a test isochrone request at the center
+        # This helps determine if the service is ready and where the graph covers
+        bounds_info = {}
+        
+        if 'profiles' in status_data:
+            for profile_name, profile_data in status_data['profiles'].items():
+                bounds_info[profile_name] = {
+                    'ready': True,
+                    'encoder_name': profile_data.get('encoder_name', profile_name),
+                    'graph_build_date': profile_data.get('graph_build_date'),
+                    'osm_date': profile_data.get('osm_date')
+                }
+        
+        status_data['bounds_info'] = bounds_info
+        status_data['service_ready'] = len(bounds_info) > 0
+        
+        return status_data
+    except requests.exceptions.Timeout:
+        logger.error('ORS status request timed out - graphs may still be building')
+        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False}
+    except Exception as e:
+        logger.error(f'Error getting ORS status: {str(e)}')
+        return {'error': str(e), 'service_ready': False}
+
+@app.post("/ors_status")
+def post_ors_status():
+    '''
+    ORS Status Handler for Snowflake External Function
+    Returns service status with graph information
+    '''
+    message = request.json
+    logger.debug(f'Received status request: {message}')
+    
+    if message is None or not message.get('data'):
+        return {"data": [[0, get_ors_status()]]}
+    
+    input_rows = message['data']
+    status = get_ors_status()
+    output_rows = [[row[0], status] for row in input_rows]
+    
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    return response
+
 @app.post("/optimization_tabular")
 def post_optimization_tabular():
     '''

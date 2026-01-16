@@ -15,8 +15,151 @@ from datetime import datetime
 
 session = get_active_session()
 
+# Try to load map configuration from MAP_CONFIG table
+def get_map_config():
+    """Load map configuration from MAP_CONFIG table or return defaults"""
+    try:
+        config_df = session.sql("SELECT * FROM CORE.MAP_CONFIG ORDER BY updated_at DESC LIMIT 1").collect()
+        if config_df and len(config_df) > 0:
+            row = config_df[0]
+            return {
+                'city_name': row['CITY_NAME'],
+                'center_lat': float(row['CENTER_LAT']),
+                'center_lon': float(row['CENTER_LON']),
+                'min_lat': float(row['MIN_LAT']) if row['MIN_LAT'] else None,
+                'max_lat': float(row['MAX_LAT']) if row['MAX_LAT'] else None,
+                'min_lon': float(row['MIN_LON']) if row['MIN_LON'] else None,
+                'max_lon': float(row['MAX_LON']) if row['MAX_LON'] else None,
+                'sample_addresses': json.loads(row['SAMPLE_ADDRESSES']) if row['SAMPLE_ADDRESSES'] else None
+            }
+    except Exception as e:
+        pass  # Table doesn't exist yet or other error, use defaults
+    
+    # Default configuration for San Francisco (original default)
+    return {
+        'city_name': 'San Francisco',
+        'center_lat': 37.7749,
+        'center_lon': -122.4194,
+        'min_lat': 37.70,
+        'max_lat': 37.85,
+        'min_lon': -122.52,
+        'max_lon': -122.35,
+        'sample_addresses': None
+    }
+
+# Load map configuration
+MAP_CONFIG = get_map_config()
+
+def generate_sample_addresses_for_bounds(center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, city_name):
+    """Generate sample addresses within the map bounds"""
+    lat_range = (max_lat - min_lat) if (max_lat and min_lat) else 0.1
+    lon_range = (max_lon - min_lon) if (max_lon and min_lon) else 0.1
+    
+    addresses = {
+        'start': {},
+        'end': {}
+    }
+    
+    start_offsets = [
+        (0.02, -0.02, 'North West'),
+        (0.02, 0.02, 'North East'),
+        (0, 0, 'Center'),
+        (-0.01, -0.02, 'South West'),
+        (0.01, 0, 'North'),
+    ]
+    
+    for i, (lat_off, lon_off, direction) in enumerate(start_offsets):
+        lat = center_lat + (lat_off * lat_range * 5)
+        lon = center_lon + (lon_off * lon_range * 5)
+        if min_lat and max_lat:
+            lat = max(min_lat + 0.01, min(max_lat - 0.01, lat))
+        if min_lon and max_lon:
+            lon = max(min_lon + 0.01, min(max_lon - 0.01, lon))
+        
+        name = f"{direction} {city_name}"
+        addresses['start'][name] = {
+            'lat': round(lat, 4),
+            'lon': round(lon, 4),
+            'name': name,
+            'full_address': f"{direction} area of {city_name}"
+        }
+    
+    end_offsets = [
+        (-0.02, 0.02, 'South East'),
+        (-0.02, -0.02, 'South West'),
+        (0, 0.02, 'East'),
+        (0.02, 0, 'North'),
+        (-0.01, 0.01, 'South'),
+    ]
+    
+    for i, (lat_off, lon_off, direction) in enumerate(end_offsets):
+        lat = center_lat + (lat_off * lat_range * 5)
+        lon = center_lon + (lon_off * lon_range * 5)
+        if min_lat and max_lat:
+            lat = max(min_lat + 0.01, min(max_lat - 0.01, lat))
+        if min_lon and max_lon:
+            lon = max(min_lon + 0.01, min(max_lon - 0.01, lon))
+        
+        name = f"{direction} {city_name}"
+        addresses['end'][name] = {
+            'lat': round(lat, 4),
+            'lon': round(lon, 4),
+            'name': name,
+            'full_address': f"{direction} area of {city_name}"
+        }
+    
+    return addresses
+
+def generate_waypoint_addresses(center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, city_name):
+    """Generate waypoint addresses distributed across the map area"""
+    waypoints = []
+    
+    lat_range = (max_lat - min_lat) if (max_lat and min_lat) else 0.1
+    lon_range = (max_lon - min_lon) if (max_lon and min_lon) else 0.1
+    
+    grid_positions = [
+        (0, 0, 'Central'),
+        (0.15, 0, 'North Central'),
+        (-0.15, 0, 'South Central'),
+        (0, 0.15, 'East Central'),
+        (0, -0.15, 'West Central'),
+        (0.1, 0.1, 'North East'),
+        (0.1, -0.1, 'North West'),
+        (-0.1, 0.1, 'South East'),
+        (-0.1, -0.1, 'South West'),
+        (0.2, 0.05, 'Far North'),
+        (-0.2, 0.05, 'Far South'),
+        (0.05, 0.2, 'Far East'),
+        (0.05, -0.2, 'Far West'),
+        (0.15, 0.15, 'Upper East'),
+        (-0.15, -0.15, 'Lower West'),
+        (0, 0.08, 'Mid East'),
+        (0, -0.08, 'Mid West'),
+        (0.08, 0, 'Mid North'),
+        (-0.08, 0, 'Mid South'),
+        (0.12, -0.12, 'Upper West'),
+    ]
+    
+    for lat_off, lon_off, area_name in grid_positions:
+        lat = center_lat + (lat_off * lat_range)
+        lon = center_lon + (lon_off * lon_range)
+        
+        if min_lat and max_lat:
+            lat = max(min_lat + 0.005, min(max_lat - 0.005, lat))
+        if min_lon and max_lon:
+            lon = max(min_lon + 0.005, min(max_lon - 0.005, lon))
+        
+        waypoints.append({
+            'name': f'{area_name} District, {city_name}',
+            'lat': round(lat, 4),
+            'lon': round(lon, 4),
+            'full_address': f'{area_name} area of {city_name}'
+        })
+    
+    return waypoints
+
 st.set_page_config(
-    page_title="ORS Function Tester For San Francisco Map",
+    page_title=f"ORS Function Tester For {MAP_CONFIG['city_name']} Map",
     page_icon="🧪",
     layout="wide"
 )
@@ -24,9 +167,9 @@ st.set_page_config(
 with open('extra.css') as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-st.markdown('''
+st.markdown(f'''
 <h0black>ORS FUNCTION |</h0black><h0blue> TESTER</h0blue><BR>
-<h1grey>Test Open Route Service Native App Functions</h1grey>
+<h1grey>Test Open Route Service Native App Functions - {MAP_CONFIG['city_name']}</h1grey>
 ''', unsafe_allow_html=True)
 
 ROUTING_PROFILES = [
@@ -42,45 +185,70 @@ SKILL_DISPLAY_MAP = {
     4: 'Humidity control'
 }
 
-SF_ADDRESSES = {
-    'start': {
-        'Union Square, SF': {'lat': 37.7879, 'lon': -122.4074, 'name': 'Union Square, SF', 'full_address': 'Union Square, San Francisco, CA 94108'},
-        'Fishermans Wharf, SF': {'lat': 37.8080, 'lon': -122.4177, 'name': 'Fishermans Wharf, SF', 'full_address': 'Fishermans Wharf, San Francisco, CA 94133'},
-        'Mission District, SF': {'lat': 37.7599, 'lon': -122.4148, 'name': 'Mission District, SF', 'full_address': 'Mission District, San Francisco, CA 94110'},
-        'SOMA, SF': {'lat': 37.7785, 'lon': -122.3950, 'name': 'SOMA, SF', 'full_address': 'South of Market, San Francisco, CA 94103'},
-        'Nob Hill, SF': {'lat': 37.7930, 'lon': -122.4161, 'name': 'Nob Hill, SF', 'full_address': 'Nob Hill, San Francisco, CA 94109'},
-    },
-    'end': {
-        'Golden Gate Bridge Vista': {'lat': 37.8199, 'lon': -122.4783, 'name': 'Golden Gate Bridge Vista', 'full_address': 'Golden Gate Bridge, San Francisco, CA 94129'},
-        'Presidio, SF': {'lat': 37.7989, 'lon': -122.4662, 'name': 'Presidio, SF', 'full_address': 'Presidio, San Francisco, CA 94129'},
-        'Haight-Ashbury, SF': {'lat': 37.7692, 'lon': -122.4481, 'name': 'Haight-Ashbury, SF', 'full_address': 'Haight-Ashbury, San Francisco, CA 94117'},
-        'Marina District, SF': {'lat': 37.8037, 'lon': -122.4368, 'name': 'Marina District, SF', 'full_address': 'Marina District, San Francisco, CA 94123'},
-        'Castro, SF': {'lat': 37.7609, 'lon': -122.4350, 'name': 'Castro, SF', 'full_address': 'Castro District, San Francisco, CA 94114'},
+# Check if we have custom addresses from config, otherwise generate them
+if MAP_CONFIG.get('sample_addresses'):
+    SF_ADDRESSES = MAP_CONFIG['sample_addresses'].get('addresses', {})
+    SF_WAYPOINT_ADDRESSES = MAP_CONFIG['sample_addresses'].get('waypoints', [])
+elif MAP_CONFIG['city_name'] == 'San Francisco':
+    # Default San Francisco addresses (original hardcoded values)
+    SF_ADDRESSES = {
+        'start': {
+            'Union Square, SF': {'lat': 37.7879, 'lon': -122.4074, 'name': 'Union Square, SF', 'full_address': 'Union Square, San Francisco, CA 94108'},
+            'Fishermans Wharf, SF': {'lat': 37.8080, 'lon': -122.4177, 'name': 'Fishermans Wharf, SF', 'full_address': 'Fishermans Wharf, San Francisco, CA 94133'},
+            'Mission District, SF': {'lat': 37.7599, 'lon': -122.4148, 'name': 'Mission District, SF', 'full_address': 'Mission District, San Francisco, CA 94110'},
+            'SOMA, SF': {'lat': 37.7785, 'lon': -122.3950, 'name': 'SOMA, SF', 'full_address': 'South of Market, San Francisco, CA 94103'},
+            'Nob Hill, SF': {'lat': 37.7930, 'lon': -122.4161, 'name': 'Nob Hill, SF', 'full_address': 'Nob Hill, San Francisco, CA 94109'},
+        },
+        'end': {
+            'Golden Gate Bridge Vista': {'lat': 37.8199, 'lon': -122.4783, 'name': 'Golden Gate Bridge Vista', 'full_address': 'Golden Gate Bridge, San Francisco, CA 94129'},
+            'Presidio, SF': {'lat': 37.7989, 'lon': -122.4662, 'name': 'Presidio, SF', 'full_address': 'Presidio, San Francisco, CA 94129'},
+            'Haight-Ashbury, SF': {'lat': 37.7692, 'lon': -122.4481, 'name': 'Haight-Ashbury, SF', 'full_address': 'Haight-Ashbury, San Francisco, CA 94117'},
+            'Marina District, SF': {'lat': 37.8037, 'lon': -122.4368, 'name': 'Marina District, SF', 'full_address': 'Marina District, San Francisco, CA 94123'},
+            'Castro, SF': {'lat': 37.7609, 'lon': -122.4350, 'name': 'Castro, SF', 'full_address': 'Castro District, San Francisco, CA 94114'},
+        }
     }
-}
-
-SF_WAYPOINT_ADDRESSES = [
-    {'name': 'Embarcadero, SF', 'lat': 37.7955, 'lon': -122.3937, 'full_address': 'Embarcadero, San Francisco, CA 94105'},
-    {'name': 'Chinatown, SF', 'lat': 37.7941, 'lon': -122.4078, 'full_address': 'Chinatown, San Francisco, CA 94108'},
-    {'name': 'North Beach, SF', 'lat': 37.8060, 'lon': -122.4103, 'full_address': 'North Beach, San Francisco, CA 94133'},
-    {'name': 'Russian Hill, SF', 'lat': 37.8011, 'lon': -122.4194, 'full_address': 'Russian Hill, San Francisco, CA 94109'},
-    {'name': 'Pacific Heights, SF', 'lat': 37.7925, 'lon': -122.4382, 'full_address': 'Pacific Heights, San Francisco, CA 94115'},
-    {'name': 'Japantown, SF', 'lat': 37.7854, 'lon': -122.4294, 'full_address': 'Japantown, San Francisco, CA 94115'},
-    {'name': 'Western Addition, SF', 'lat': 37.7810, 'lon': -122.4340, 'full_address': 'Western Addition, San Francisco, CA 94117'},
-    {'name': 'Hayes Valley, SF', 'lat': 37.7759, 'lon': -122.4245, 'full_address': 'Hayes Valley, San Francisco, CA 94102'},
-    {'name': 'Civic Center, SF', 'lat': 37.7792, 'lon': -122.4191, 'full_address': 'Civic Center, San Francisco, CA 94102'},
-    {'name': 'Tenderloin, SF', 'lat': 37.7847, 'lon': -122.4141, 'full_address': 'Tenderloin, San Francisco, CA 94109'},
-    {'name': 'Potrero Hill, SF', 'lat': 37.7605, 'lon': -122.4009, 'full_address': 'Potrero Hill, San Francisco, CA 94107'},
-    {'name': 'Dogpatch, SF', 'lat': 37.7580, 'lon': -122.3874, 'full_address': 'Dogpatch, San Francisco, CA 94107'},
-    {'name': 'Bernal Heights, SF', 'lat': 37.7390, 'lon': -122.4156, 'full_address': 'Bernal Heights, San Francisco, CA 94110'},
-    {'name': 'Glen Park, SF', 'lat': 37.7340, 'lon': -122.4330, 'full_address': 'Glen Park, San Francisco, CA 94131'},
-    {'name': 'Noe Valley, SF', 'lat': 37.7502, 'lon': -122.4337, 'full_address': 'Noe Valley, San Francisco, CA 94114'},
-    {'name': 'Twin Peaks, SF', 'lat': 37.7544, 'lon': -122.4477, 'full_address': 'Twin Peaks, San Francisco, CA 94131'},
-    {'name': 'Cole Valley, SF', 'lat': 37.7654, 'lon': -122.4508, 'full_address': 'Cole Valley, San Francisco, CA 94117'},
-    {'name': 'Inner Sunset, SF', 'lat': 37.7600, 'lon': -122.4650, 'full_address': 'Inner Sunset, San Francisco, CA 94122'},
-    {'name': 'Outer Sunset, SF', 'lat': 37.7550, 'lon': -122.4950, 'full_address': 'Outer Sunset, San Francisco, CA 94122'},
-    {'name': 'Richmond District, SF', 'lat': 37.7800, 'lon': -122.4750, 'full_address': 'Richmond District, San Francisco, CA 94118'},
-]
+    SF_WAYPOINT_ADDRESSES = [
+        {'name': 'Embarcadero, SF', 'lat': 37.7955, 'lon': -122.3937, 'full_address': 'Embarcadero, San Francisco, CA 94105'},
+        {'name': 'Chinatown, SF', 'lat': 37.7941, 'lon': -122.4078, 'full_address': 'Chinatown, San Francisco, CA 94108'},
+        {'name': 'North Beach, SF', 'lat': 37.8060, 'lon': -122.4103, 'full_address': 'North Beach, San Francisco, CA 94133'},
+        {'name': 'Russian Hill, SF', 'lat': 37.8011, 'lon': -122.4194, 'full_address': 'Russian Hill, San Francisco, CA 94109'},
+        {'name': 'Pacific Heights, SF', 'lat': 37.7925, 'lon': -122.4382, 'full_address': 'Pacific Heights, San Francisco, CA 94115'},
+        {'name': 'Japantown, SF', 'lat': 37.7854, 'lon': -122.4294, 'full_address': 'Japantown, San Francisco, CA 94115'},
+        {'name': 'Western Addition, SF', 'lat': 37.7810, 'lon': -122.4340, 'full_address': 'Western Addition, San Francisco, CA 94117'},
+        {'name': 'Hayes Valley, SF', 'lat': 37.7759, 'lon': -122.4245, 'full_address': 'Hayes Valley, San Francisco, CA 94102'},
+        {'name': 'Civic Center, SF', 'lat': 37.7792, 'lon': -122.4191, 'full_address': 'Civic Center, San Francisco, CA 94102'},
+        {'name': 'Tenderloin, SF', 'lat': 37.7847, 'lon': -122.4141, 'full_address': 'Tenderloin, San Francisco, CA 94109'},
+        {'name': 'Potrero Hill, SF', 'lat': 37.7605, 'lon': -122.4009, 'full_address': 'Potrero Hill, San Francisco, CA 94107'},
+        {'name': 'Dogpatch, SF', 'lat': 37.7580, 'lon': -122.3874, 'full_address': 'Dogpatch, San Francisco, CA 94107'},
+        {'name': 'Bernal Heights, SF', 'lat': 37.7390, 'lon': -122.4156, 'full_address': 'Bernal Heights, San Francisco, CA 94110'},
+        {'name': 'Glen Park, SF', 'lat': 37.7340, 'lon': -122.4330, 'full_address': 'Glen Park, San Francisco, CA 94131'},
+        {'name': 'Noe Valley, SF', 'lat': 37.7502, 'lon': -122.4337, 'full_address': 'Noe Valley, San Francisco, CA 94114'},
+        {'name': 'Twin Peaks, SF', 'lat': 37.7544, 'lon': -122.4477, 'full_address': 'Twin Peaks, San Francisco, CA 94131'},
+        {'name': 'Cole Valley, SF', 'lat': 37.7654, 'lon': -122.4508, 'full_address': 'Cole Valley, San Francisco, CA 94117'},
+        {'name': 'Inner Sunset, SF', 'lat': 37.7600, 'lon': -122.4650, 'full_address': 'Inner Sunset, San Francisco, CA 94122'},
+        {'name': 'Outer Sunset, SF', 'lat': 37.7550, 'lon': -122.4950, 'full_address': 'Outer Sunset, San Francisco, CA 94122'},
+        {'name': 'Richmond District, SF', 'lat': 37.7800, 'lon': -122.4750, 'full_address': 'Richmond District, San Francisco, CA 94118'},
+    ]
+else:
+    # Generate addresses dynamically for non-San Francisco maps
+    SF_ADDRESSES = generate_sample_addresses_for_bounds(
+        MAP_CONFIG['center_lat'],
+        MAP_CONFIG['center_lon'],
+        MAP_CONFIG.get('min_lat'),
+        MAP_CONFIG.get('max_lat'),
+        MAP_CONFIG.get('min_lon'),
+        MAP_CONFIG.get('max_lon'),
+        MAP_CONFIG['city_name']
+    )
+    SF_WAYPOINT_ADDRESSES = generate_waypoint_addresses(
+        MAP_CONFIG['center_lat'],
+        MAP_CONFIG['center_lon'],
+        MAP_CONFIG.get('min_lat'),
+        MAP_CONFIG.get('max_lat'),
+        MAP_CONFIG.get('min_lon'),
+        MAP_CONFIG.get('max_lon'),
+        MAP_CONFIG['city_name']
+    )
 
 start_address_names = list(SF_ADDRESSES['start'].keys())
 end_address_names = list(SF_ADDRESSES['end'].keys())
@@ -103,7 +271,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    st.markdown("**🏠 San Francisco Addresses:**")
+    st.markdown(f"**🏠 {MAP_CONFIG['city_name']} Addresses:**")
 
 if test_function == "🗺️ DIRECTIONS":
     st.markdown('<h1sub>🗺️ DIRECTIONS FUNCTION TESTING</h1sub>', unsafe_allow_html=True)
@@ -536,7 +704,7 @@ elif test_function == "🚚 OPTIMIZATION":
         """)
     
     with st.expander("🧪 **OPTIMIZATION Test Configuration**", expanded=True):
-        st.markdown("**🏭 Sample Scenario: San Francisco Multi-Vehicle Fleet**")
+        st.markdown(f"**🏭 Sample Scenario: {MAP_CONFIG['city_name']} Multi-Vehicle Fleet**")
         
         st.markdown("**🚛 Vehicle Fleet Configuration:**")
         num_vehicles = st.number_input("Number of Vehicles:", min_value=1, max_value=5, value=2, key="num_vehicles")
@@ -632,8 +800,8 @@ elif test_function == "🚚 OPTIMIZATION":
                     center_lat = sum(v['coords']['lat'] for v in vehicle_configs) / len(vehicle_configs)
                     center_lon = sum(v['coords']['lon'] for v in vehicle_configs) / len(vehicle_configs)
                 else:
-                    center_lat = 37.7749
-                    center_lon = -122.4194
+                    center_lat = MAP_CONFIG['center_lat']
+                    center_lon = MAP_CONFIG['center_lon']
                 
                 def calculate_job_distance(lat1, lon1, lat2, lon2):
                     R = 6371
@@ -975,8 +1143,8 @@ Provide a concise summary of the optimization efficiency and routing strategy.""
                             
                             if route_data or point_data:
                                 view_state = pdk.ViewState(
-                                    latitude=37.7749,
-                                    longitude=-122.4194,
+                                    latitude=MAP_CONFIG['center_lat'],
+                                    longitude=MAP_CONFIG['center_lon'],
                                     zoom=12,
                                     pitch=0
                                 )
@@ -1037,7 +1205,7 @@ Provide a concise summary of the optimization efficiency and routing strategy.""
 elif test_function == "⏰ ISOCHRONES":
     st.markdown('<h1sub>⏰ ISOCHRONES FUNCTION TESTING</h1sub>', unsafe_allow_html=True)
     with st.expander("🧪 **ISOCHRONES Test Configuration**", expanded=True):
-        st.markdown("**⏰ Sample Scenario: San Francisco Catchment Area Analysis**")
+        st.markdown(f"**⏰ Sample Scenario: {MAP_CONFIG['city_name']} Catchment Area Analysis**")
         
         col1, col2 = st.columns(2)
         
