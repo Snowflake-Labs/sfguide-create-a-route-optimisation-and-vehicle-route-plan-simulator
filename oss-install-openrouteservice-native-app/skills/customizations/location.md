@@ -134,29 +134,48 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
 
 ### Step 4: Update Service Specification
 
-**Goal:** Reconfigure ORS service to point to new map region
+**Goal:** Reconfigure ORS service to point to new map region and trigger graph rebuild
 
 **Actions:**
 
 1. **Edit** `Native_app/services/openrouteservice/openrouteservice.yaml`:
-   - Update all volume source paths:
-     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/"`
-     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/"`
-     - `source: "@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/"`
+   
+   - **Set REBUILD_GRAPHS to true** - This is critical for new maps:
+     ```yaml
+     env:
+       REBUILD_GRAPHS: true  # Changed from false to trigger rebuild
+       ORS_CONFIG_LOCATION: /home/ors/files/ors-config.yml
+     ```
+   
+   - **Update all volume source paths** to new region:
+     ```yaml
+     volumes:
+       - name: files
+         source: "@CORE.ORS_SPCS_STAGE/<REGION_NAME>"
+       - name: graphs
+         source: "@CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>"
+       - name: elevation-cache
+         source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>"
+     ```
 
 2. **Upload** specification:
    ```sql
    PUT file:///services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
-3. **Update** service:
+3. **Suspend** the service first (required before updating spec):
+   ```sql
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SUSPEND;
+   ```
+
+4. **Update** service with new specification:
    ```sql
    ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
    FROM @openrouteservice_native_app_pkg.app_src.stage 
    SPECIFICATION_FILE='/services/openrouteservice/openrouteservice.yaml';
    ```
 
-**Output:** Service configured for new region
+**Output:** Service configured for new region with REBUILD_GRAPHS enabled
 
 ### Step 5: Rebuild Routing Graphs
 
@@ -177,7 +196,15 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
    SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
    ```
 
-**Note:** Graph building can take 30 minutes to several hours depending on map size.
+3. **Monitor** ORS_SERVICE logs for graph building progress:
+   ```sql
+   CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 100);
+   ```
+   - Look for: `"Graph built in X seconds"` messages for each enabled profile
+
+**Note:** Graph building can take 30 minutes to several hours depending on map size and number of enabled profiles.
+
+> **_IMPORTANT:_** After graphs are successfully built, set `REBUILD_GRAPHS` back to `false` in `openrouteservice.yaml` and re-upload to prevent unnecessary rebuilds on future service restarts.
 
 **Output:** Services rebuilding with new map
 
