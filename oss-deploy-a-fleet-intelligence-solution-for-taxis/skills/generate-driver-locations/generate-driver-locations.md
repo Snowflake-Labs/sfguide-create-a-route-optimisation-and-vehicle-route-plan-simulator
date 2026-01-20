@@ -490,15 +490,52 @@ This creates 15 points per trip with driver states:
 
 **Goal:** Upload and deploy the Streamlit application
 
-**Action:** 
-1. Run `scripts/deploy_streamlit.py` to upload files
-2. Execute `scripts/08_deploy_streamlit.sql` to create the app
+**Files Required:**
+
+The following files must be uploaded to the Snowflake stage:
+
+| File | Location | Description |
+|------|----------|-------------|
+| `Taxi_Control_Center.py` | Stage root | Main Streamlit app |
+| `environment.yml` | Stage root | Python dependencies (pydeck, altair, etc.) |
+| `extra.css` | Stage root | Custom CSS styling |
+| `logo.svg` | Stage root | Sidebar logo |
+| `pages/1_Driver_Routes.py` | `pages/` folder | Driver routes page |
+| `pages/2_Fleet_Heat_Map.py` | `pages/` folder | Heat map page |
+
+**Option A: Using deploy_streamlit.py**
 
 ```bash
 python scripts/deploy_streamlit.py \
     --account <account> \
     --user <user> \
     --password <password>
+```
+
+**Option B: Manual Upload via SQL**
+
+```sql
+-- Upload main files to stage root
+PUT 'file:///path/to/Taxi_Control_Center.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/environment.yml' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/extra.css' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/logo.svg' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+
+-- Upload page files to pages folder
+PUT 'file:///path/to/pages/1_Driver_Routes.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/pages/2_Fleet_Heat_Map.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+```
+
+**Then create the Streamlit app:**
+
+Execute `scripts/08_deploy_streamlit.sql` or run:
+
+```sql
+CREATE OR REPLACE STREAMLIT FLEET_INTELLIGENCE.PUBLIC.TAXI_CONTROL_CENTER
+  ROOT_LOCATION = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi'
+  MAIN_FILE = 'Taxi_Control_Center.py'
+  QUERY_WAREHOUSE = COMPUTE_WH
+  TITLE = 'Taxi Control Center';
 ```
 
 **Output:** Streamlit app deployed and accessible in Snowsight
@@ -548,8 +585,8 @@ SELECT 3, 'Morning', 6, 14, 28 UNION ALL
 SELECT 4, 'Day', 11, 19, 22 UNION ALL
 SELECT 5, 'Evening', 15, 23, 18
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'New York' WHERE ID = 'location';
 
 -- Warehouse: MEDIUM
 -- Estimated rows: ~22,000
@@ -572,8 +609,8 @@ SELECT 5, 'Evening', 15, 23, 9
 -- 04_create_trips.sql - 3 days:
 FROM TABLE(GENERATOR(ROWCOUNT => 3))
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'London' WHERE ID = 'location';
 
 -- Warehouse: LARGE
 -- Estimated rows: ~33,000
@@ -596,8 +633,8 @@ SELECT 5, 'Evening', 15, 23, 35
 -- 04_create_trips.sql - 7 days:
 FROM TABLE(GENERATOR(ROWCOUNT => 7))
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'Sydney' WHERE ID = 'location';
 
 -- Warehouse: XLARGE
 -- Estimated rows: ~315,000
@@ -610,22 +647,23 @@ view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
 ```
 FLEET_INTELLIGENCE
 ├── PUBLIC (schema)
-│   ├── SF_TAXI_LOCATIONS      # Location pool for target city
-│   ├── TAXI_DRIVERS           # Configured driver count
-│   ├── DRIVERS                # Driver display data
-│   ├── DRIVER_TRIPS           # Trip assignments
+│   ├── VARIABLES             # Configuration (location name, etc.)
+│   ├── TAXI_LOCATIONS        # Location pool for target city
+│   ├── TAXI_DRIVERS          # Configured driver count
+│   ├── DRIVERS               # Driver display data
+│   ├── DRIVER_TRIPS          # Trip assignments
 │   ├── DRIVER_TRIPS_WITH_COORDS # Trips with coordinates
-│   ├── DRIVER_ROUTES          # Raw ORS responses
-│   ├── DRIVER_ROUTES_PARSED   # Parsed route data
+│   ├── DRIVER_ROUTES         # Raw ORS responses
+│   ├── DRIVER_ROUTES_PARSED  # Parsed route data
 │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
-│   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
+│   └── DRIVER_LOCATIONS      # Interpolated positions with driver states
 │
 └── ANALYTICS (schema)
-    ├── DRIVERS                # View
-    ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
+    ├── DRIVERS               # View
+    ├── DRIVER_LOCATIONS      # View with LON/LAT and DRIVER_STATE
     ├── TRIPS_ASSIGNED_TO_DRIVERS # View
-    ├── ROUTE_NAMES            # View
-    └── TRIP_SUMMARY           # View
+    ├── ROUTE_NAMES           # View
+    └── TRIP_SUMMARY          # View
 ```
 
 ---
