@@ -44,7 +44,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 ---
 
-## Supported Locations
+## Supported Locations (Pre-configured)
 
 | Location | Bounding Box | Center Coords | Notes |
 |----------|--------------|---------------|-------|
@@ -58,6 +58,104 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 | **Boston** | -71.15 to -70.95, 42.30 to 42.40 | -71.06, 42.36 | Central Boston |
 | **Sydney** | 151.15 to 151.30, -33.92 to -33.82 | 151.21, -33.87 | CBD area |
 | **Singapore** | 103.75 to 103.95, 1.25 to 1.40 | 103.85, 1.35 | Central |
+
+---
+
+## Using a Custom Location (Any City)
+
+**The skill works with ANY city worldwide** - the pre-configured locations above are just examples. To use a different city:
+
+### Step 1: Find Your City's Bounding Box
+
+Use one of these methods to get the bounding box coordinates (min/max longitude and latitude):
+
+**Option A: Use OpenStreetMap**
+1. Go to [OpenStreetMap](https://www.openstreetmap.org)
+2. Navigate to your city and zoom to the area you want
+3. Click "Export" in the top menu
+4. The bounding box coordinates are shown (or click "Manually select a different area")
+
+**Option B: Use Google Maps**
+1. Navigate to your city center
+2. Note the coordinates from the URL (e.g., `@51.5074,-0.1278,12z`)
+3. Add/subtract ~0.1-0.15 degrees for the bounding box
+
+**Option C: Use a Bounding Box Tool**
+- [Bounding Box Tool](http://bboxfinder.com) - Draw a box and get coordinates
+- [Klokantech Bounding Box](https://boundingbox.klokantech.com/) - Multiple format outputs
+
+### Step 2: Calculate Your Values
+
+For a city centered at `(CENTER_LON, CENTER_LAT)`:
+
+```
+Bounding Box (typical city coverage ~15-20km):
+  MIN_LON = CENTER_LON - 0.10
+  MAX_LON = CENTER_LON + 0.10
+  MIN_LAT = CENTER_LAT - 0.08
+  MAX_LAT = CENTER_LAT + 0.08
+
+Map Center:
+  longitude = CENTER_LON
+  latitude = CENTER_LAT
+```
+
+### Step 3: Apply to Scripts
+
+**In `02_create_base_locations.sql`:**
+```sql
+WHERE ST_X(GEOMETRY) BETWEEN <MIN_LON> AND <MAX_LON>
+  AND ST_Y(GEOMETRY) BETWEEN <MIN_LAT> AND <MAX_LAT>
+```
+
+**In Streamlit files:**
+```python
+view_state = pdk.ViewState(latitude=<CENTER_LAT>, longitude=<CENTER_LON>, zoom=12)
+```
+
+### Example: Custom City (Tokyo)
+
+```sql
+-- Tokyo bounding box (central 23 wards)
+-- Center: 139.69, 35.69
+
+-- 02_create_base_locations.sql:
+WHERE ST_X(GEOMETRY) BETWEEN 139.60 AND 139.85
+  AND ST_Y(GEOMETRY) BETWEEN 35.60 AND 35.78
+
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=35.69, longitude=139.69, zoom=12)
+```
+
+### Example: Custom City (Dubai)
+
+```sql
+-- Dubai bounding box (downtown + marina area)
+-- Center: 55.27, 25.20
+
+-- 02_create_base_locations.sql:
+WHERE ST_X(GEOMETRY) BETWEEN 55.15 AND 55.40
+  AND ST_Y(GEOMETRY) BETWEEN 25.05 AND 25.30
+
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=25.20, longitude=55.27, zoom=12)
+```
+
+### Example: Custom City (Toronto)
+
+```sql
+-- Toronto bounding box (downtown + midtown)
+-- Center: -79.38, 43.65
+
+-- 02_create_base_locations.sql:
+WHERE ST_X(GEOMETRY) BETWEEN -79.50 AND -79.30
+  AND ST_Y(GEOMETRY) BETWEEN 43.60 AND 43.75
+
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=43.65, longitude=-79.38, zoom=12)
+```
+
+> **Remember:** Your OpenRouteService Native App must be configured with map data that covers your chosen city. If using a custom city, ensure you have the appropriate OSM PBF file loaded in ORS.
 
 ---
 
