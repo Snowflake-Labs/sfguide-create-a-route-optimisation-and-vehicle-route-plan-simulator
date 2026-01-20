@@ -1,0 +1,121 @@
+/* 
+   Snowflake Brand Colors CSS
+   Based on official Snowflake Brand Guidelines
+   https://www.snowflake.com/brand-guidelines/
+*/
+
+/* Primary Colors */
+:root {
+    --snowflake-blue: #29B5E8;      /* RGB: 41,181,232 */
+    --mid-blue: #11567F;            /* RGB: 17,86,127 */
+    --midnight: #000000;            /* RGB: 0,0,0 */
+    
+    /* Secondary Colors */
+    --star-blue: #71D3DC;           /* RGB: 113,221,220 */
+    --valencia-orange: #FF9F36;     /* RGB: 255,159,54 */
+    --purple-moon: #7D44CF;         /* RGB: 125,68,207 */
+    --first-light: #D45B90;         /* RGB: 212,91,144 */
+    --windy-city: #8A999E;          /* RGB: 138,153,158 */
+    
+    /* Tertiary Colors */
+    --iceberg: #003545;             /* RGB: 0,53,69 */
+    --ruby-sky: #3C0045;            /* RGB: 60,0,69 */
+    --violet-dawn: #1C0045;         /* RGB: 28,0,69 */
+    --winter: #24323D;              /* RGB: 36,50,61 */
+}
+
+/* Custom Streamlit Headers using Snowflake branding */
+h0black {
+    color: var(--midnight);
+    font-size: 40px;
+    font-weight: 900;
+    display: inline;
+}
+
+h0blue {
+    color: var(--snowflake-blue);
+    font-size: 40px;
+    font-weight: 900;
+    display: inline;
+}
+
+h1grey {
+    color: var(--windy-city);
+    font-size: 18px;
+    font-weight: 300;
+    display: inline;
+}
+
+h1sub {
+    color: var(--mid-blue);
+    font-size: 24px;
+    font-weight: 700;
+    display: inline;
+}
+
+/* Vehicle color classes for consistent styling */
+veh1 {
+    color: var(--purple-moon);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh2 {
+    color: var(--first-light);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh3 {
+    color: var(--valencia-orange);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh4 {
+    color: var(--star-blue);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh5 {
+    color: var(--iceberg);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh6 {
+    color: var(--ruby-sky);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+/* Snowflake button styling */
+.snowflake-button {
+    background-color: var(--snowflake-blue);
+    color: white;
+    border: none;
+    border-radius: 80px;
+    padding: 12px 27px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.snowflake-button:hover {
+    background-color: var(--mid-blue);
+}
+
+/* Map tooltip styling */
+.snowflake-tooltip {
+    background-color: var(--mid-blue);
+    color: white;
+    border-radius: 4px;
+    padding: 8px;
+}
+
