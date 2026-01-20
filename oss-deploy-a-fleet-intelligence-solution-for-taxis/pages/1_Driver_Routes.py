@@ -1,4 +1,4 @@
-# SF Taxi Fleet Intelligence - Driver Routes
+# Taxi Fleet Intelligence - Driver Routes
 # Track individual driver journeys with route visualization
 
 import streamlit as st
@@ -87,7 +87,7 @@ trip_summaryd = trip_summary.filter(col('DRIVER_ID') == driver)
 
 # Main header
 st.markdown(f'''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+<h0black>Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Viewing Routes for Driver {driver}</h1grey>
 ''', unsafe_allow_html=True)
 

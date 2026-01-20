@@ -1,4 +1,4 @@
-# SF Taxi Fleet Intelligence Control Center
+# Taxi Fleet Intelligence Control Center
 # Main entry point for multi-page Streamlit app
 
 import streamlit as st
@@ -11,7 +11,7 @@ from snowflake.snowpark.functions import *
 
 # Page configuration
 st.set_page_config(
-    page_title="SF Taxi Control Center",
+    page_title="Taxi Control Center",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -28,7 +28,7 @@ session = get_active_session()
 
 # Main page header
 st.markdown('''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+<h0black>Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Real-time Fleet Control Center</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -43,7 +43,7 @@ col1, col2, col3, col4 = st.columns(4)
 try:
     trips_count = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIPS_ASSIGNED_TO_DRIVERS').count()
     drivers_count = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIPS_ASSIGNED_TO_DRIVERS').select('DRIVER_ID').distinct().count()
-    locations_count = session.table('FLEET_INTELLIGENCE.PUBLIC.SF_TAXI_LOCATIONS').count()
+    locations_count = session.table('FLEET_INTELLIGENCE.PUBLIC.TAXI_LOCATIONS').count()
     
     # Get total distance
     total_distance = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIP_SUMMARY').agg(
@@ -118,10 +118,25 @@ try:
         get_width=3
     )
     
-    # Set view to San Francisco
+    # Get map center from data (auto-centers on any city)
+    try:
+        center_coords = session.sql("""
+            SELECT 
+                AVG(ST_X(ORIGIN)) AS CENTER_LON,
+                AVG(ST_Y(ORIGIN)) AS CENTER_LAT
+            FROM FLEET_INTELLIGENCE.ANALYTICS.TRIP_SUMMARY
+            LIMIT 1
+        """).collect()[0]
+        center_lat = float(center_coords['CENTER_LAT'])
+        center_lon = float(center_coords['CENTER_LON'])
+    except:
+        # Fallback to San Francisco if query fails
+        center_lat = 37.76
+        center_lon = -122.44
+    
     view_state = pdk.ViewState(
-        latitude=37.76,
-        longitude=-122.44,
+        latitude=center_lat,
+        longitude=center_lon,
         zoom=11.5,
         pitch=0
     )
@@ -252,7 +267,7 @@ st.markdown('''
 Use the sidebar to access different views:
 
 - **Driver Routes** - Track individual driver journeys with route visualization and AI insights
-- **Fleet Heat Map** - View driver density across San Francisco
+- **Fleet Heat Map** - View driver density across the city
 
 ### Data Sources
 
@@ -262,7 +277,7 @@ Use the sidebar to access different views:
 
 ### Features
 
-- **Real-time route tracking** with pickup/dropoff locations on actual SF roads
+- **Real-time route tracking** with pickup/dropoff locations on actual roads
 - **AI-powered trip analysis** using Snowflake Cortex
 - **Interactive maps** with pydeck visualization
 - **Driver performance metrics** including speed and distance analytics

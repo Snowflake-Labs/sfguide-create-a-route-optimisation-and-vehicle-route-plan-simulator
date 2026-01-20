@@ -1,5 +1,5 @@
-# SF Taxi Fleet Intelligence - Fleet Heat Map
-# View driver density across San Francisco
+# Taxi Fleet Intelligence - Fleet Heat Map
+# View driver density across the city
 
 import streamlit as st
 import pandas as pd
@@ -21,7 +21,7 @@ st.logo('logo.svg')
 
 # Main header
 st.markdown('''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
+<h0black>Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
 <h1grey>Driver Location Density Analysis</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -127,10 +127,17 @@ try:
                 ]
             )
         
-        # View state centered on SF
+        # View state - auto-center on data
+        if len(locations_df) > 0:
+            center_lat = locations_df['LAT'].mean()
+            center_lon = locations_df['LON'].mean()
+        else:
+            center_lat = 37.76
+            center_lon = -122.44
+        
         view_state = pdk.ViewState(
-            latitude=37.76,
-            longitude=-122.44,
+            latitude=center_lat,
+            longitude=center_lon,
             zoom=12,
             pitch=45 if view_type == "H3 Hexagons" else 0,
             bearing=0

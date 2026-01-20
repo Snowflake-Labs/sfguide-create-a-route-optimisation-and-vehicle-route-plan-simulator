@@ -1,5 +1,5 @@
 """
-SF Taxi Fleet Intelligence - Streamlit Deployment Script
+Taxi Fleet Intelligence - Streamlit Deployment Script
 
 This script uploads the Streamlit application files to a Snowflake stage.
 Run this before executing 08_deploy_streamlit.sql.
@@ -44,7 +44,7 @@ def upload_files(conn, base_path: Path):
     
     # Files to upload from the parent directory
     main_files = [
-        'SF_Taxi_Control_Center.py',
+        'Taxi_Control_Center.py',
         'extra.css',
         'logo.svg',
         'environment.yml'
@@ -56,7 +56,7 @@ def upload_files(conn, base_path: Path):
         'pages/2_Fleet_Heat_Map.py'
     ]
     
-    stage_path = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/sf_taxi'
+    stage_path = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi'
     
     print("Uploading Streamlit files to Snowflake stage...")
     

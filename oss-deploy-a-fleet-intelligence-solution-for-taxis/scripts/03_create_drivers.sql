@@ -45,7 +45,7 @@ home_locations AS (
     SELECT 
         LOCATION_ID,
         ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM SF_TAXI_LOCATIONS
+    FROM TAXI_LOCATIONS
     WHERE SOURCE_TYPE = 'address'
     LIMIT 100
 )
