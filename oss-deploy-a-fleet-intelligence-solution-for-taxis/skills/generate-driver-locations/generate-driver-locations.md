@@ -1,6 +1,6 @@
 ---
 name: generate-driver-locations
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
+description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (San Francisco, New York, London, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
 ---
 
 # Generate Driver Locations & Deploy Fleet Intelligence Dashboard
@@ -9,39 +9,201 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 - **Overture Maps Places & Addresses** - Points of interest and street addresses for pickup/dropoff locations
 - **OpenRouteService Native App** - Real road routing for actual driving paths
 - **Route Interpolation** - Driver positions along actual roads
+- **Configurable Location** - San Francisco, New York, London, Paris, and more
 - **Configurable Fleet Size** - Set number of drivers and simulation days
+
+---
+
+## ⚠️ IMPORTANT: Location Must Match OpenRouteService Configuration
+
+> **Before selecting a location, verify your OpenRouteService Native App is configured for that region.**
+>
+> The OpenRouteService app uses map data (OSM PBF files) for a specific geographic area. If you select a location that is **outside** the area configured in your ORS app, route generation will fail.
+>
+> **To check your ORS configuration:**
+> 1. Look at the OSM PBF file used during ORS setup (e.g., `SanFrancisco.osm.pbf`, `NewYork.osm.pbf`)
+> 2. Or test a route in your target city using the ORS function tester
+>
+> **Common configurations:**
+> - `SanFrancisco.osm.pbf` → Use **San Francisco** location
+> - `new-york.osm.pbf` → Use **New York** location
+> - `great-britain.osm.pbf` → Use **London** location
+> - `europe.osm.pbf` → Use any European city
+
+---
 
 ## Configuration Parameters
 
-Before running the scripts, determine these parameters:
-
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `LOCATION` | San Francisco | City/region for the simulation |
 | `NUM_DRIVERS` | 80 | Total number of taxi drivers |
 | `NUM_DAYS` | 1 | Number of days to simulate |
 | `START_DATE` | 2015-06-24 | First day of simulation |
 | `WAREHOUSE_SIZE` | MEDIUM | Warehouse size for data generation |
 
-### Recommended Warehouse Sizes
+---
+
+## Supported Locations
+
+| Location | Bounding Box | Center Coords | Notes |
+|----------|--------------|---------------|-------|
+| **San Francisco** | -122.52 to -122.35, 37.70 to 37.82 | -122.42, 37.77 | Default |
+| **New York** | -74.05 to -73.90, 40.65 to 40.85 | -73.97, 40.75 | Manhattan focus |
+| **London** | -0.20 to 0.05, 51.45 to 51.55 | -0.12, 51.51 | Central London |
+| **Paris** | 2.25 to 2.42, 48.82 to 48.90 | 2.35, 48.86 | Central Paris |
+| **Chicago** | -87.75 to -87.55, 41.80 to 41.95 | -87.63, 41.88 | Downtown |
+| **Los Angeles** | -118.35 to -118.15, 33.95 to 34.15 | -118.25, 34.05 | Central LA |
+| **Seattle** | -122.45 to -122.25, 47.55 to 47.70 | -122.33, 47.61 | Downtown |
+| **Boston** | -71.15 to -70.95, 42.30 to 42.40 | -71.06, 42.36 | Central Boston |
+| **Sydney** | 151.15 to 151.30, -33.92 to -33.82 | 151.21, -33.87 | CBD area |
+| **Singapore** | 103.75 to 103.95, 1.25 to 1.40 | 103.85, 1.35 | Central |
+
+---
+
+## Location Configuration in Scripts
+
+### Step 1: Modify `02_create_base_locations.sql`
+
+Change the bounding box to match your target location:
+
+```sql
+-- ============================================
+-- SAN FRANCISCO (Default)
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -122.52 AND -122.35
+  AND ST_Y(GEOMETRY) BETWEEN 37.70 AND 37.82
+
+-- ============================================
+-- NEW YORK
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -74.05 AND -73.90
+  AND ST_Y(GEOMETRY) BETWEEN 40.65 AND 40.85
+
+-- ============================================
+-- LONDON
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -0.20 AND 0.05
+  AND ST_Y(GEOMETRY) BETWEEN 51.45 AND 51.55
+
+-- ============================================
+-- PARIS
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN 2.25 AND 2.42
+  AND ST_Y(GEOMETRY) BETWEEN 48.82 AND 48.90
+
+-- ============================================
+-- CHICAGO
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -87.75 AND -87.55
+  AND ST_Y(GEOMETRY) BETWEEN 41.80 AND 41.95
+
+-- ============================================
+-- LOS ANGELES
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -118.35 AND -118.15
+  AND ST_Y(GEOMETRY) BETWEEN 33.95 AND 34.15
+
+-- ============================================
+-- SEATTLE
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -122.45 AND -122.25
+  AND ST_Y(GEOMETRY) BETWEEN 47.55 AND 47.70
+
+-- ============================================
+-- BOSTON
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN -71.15 AND -70.95
+  AND ST_Y(GEOMETRY) BETWEEN 42.30 AND 42.40
+
+-- ============================================
+-- SYDNEY
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN 151.15 AND 151.30
+  AND ST_Y(GEOMETRY) BETWEEN -33.92 AND -33.82
+
+-- ============================================
+-- SINGAPORE
+-- ============================================
+WHERE ST_X(GEOMETRY) BETWEEN 103.75 AND 103.95
+  AND ST_Y(GEOMETRY) BETWEEN 1.25 AND 1.40
+```
+
+### Step 2: Update Streamlit Map Center
+
+Modify `SF_Taxi_Control_Center.py` and page files to center the map on your location:
+
+```python
+# San Francisco (default)
+view_state = pdk.ViewState(latitude=37.76, longitude=-122.44, zoom=12)
+
+# New York
+view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
+
+# London
+view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
+
+# Paris
+view_state = pdk.ViewState(latitude=48.86, longitude=2.35, zoom=12)
+
+# Chicago
+view_state = pdk.ViewState(latitude=41.88, longitude=-87.63, zoom=12)
+
+# Los Angeles
+view_state = pdk.ViewState(latitude=34.05, longitude=-118.25, zoom=12)
+
+# Seattle
+view_state = pdk.ViewState(latitude=47.61, longitude=-122.33, zoom=12)
+
+# Boston
+view_state = pdk.ViewState(latitude=42.36, longitude=-71.06, zoom=12)
+
+# Sydney
+view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
+
+# Singapore
+view_state = pdk.ViewState(latitude=1.35, longitude=103.85, zoom=12)
+```
+
+### Step 3: Rename App Title (Optional)
+
+Update headers in Streamlit files:
+
+```python
+# From:
+st.markdown('<h0black>San Francisco Taxi |</h0black>...')
+
+# To (example for New York):
+st.markdown('<h0black>New York Taxi |</h0black>...')
+```
+
+---
+
+## Recommended Warehouse Sizes
 
 | Drivers | Days | Estimated Rows | Warehouse | Est. Time |
 |---------|------|----------------|-----------|-----------|
-| 20 | 1 | ~3,000 | SMALL | 2-3 min |
-| 80 | 1 | ~13,000 | MEDIUM | 5-8 min |
-| 80 | 7 | ~90,000 | LARGE | 20-30 min |
-| 200 | 1 | ~35,000 | LARGE | 15-20 min |
-| 200 | 7 | ~250,000 | XLARGE | 45-60 min |
-| 500 | 7 | ~600,000 | XLARGE | 2-3 hours |
+| 20 | 1 | ~4,000 | SMALL | 2-3 min |
+| 80 | 1 | ~18,000 | MEDIUM | 5-8 min |
+| 80 | 7 | ~125,000 | LARGE | 20-30 min |
+| 200 | 1 | ~45,000 | LARGE | 15-20 min |
+| 200 | 7 | ~315,000 | XLARGE | 45-60 min |
+| 500 | 7 | ~800,000 | XLARGE | 2-3 hours |
 
-**Formula:** `Rows ≈ NUM_DRIVERS × AVG_TRIPS_PER_DRIVER × 11 points × NUM_DAYS`
+*Note: Rows estimated at 15 location points per trip (includes waiting, pickup, driving, dropoff, idle states)*
+
+---
 
 ## Prerequisites
 
 1. **Snowflake Account** with appropriate privileges
 2. **OpenRouteService Native App** installed from Snowflake Marketplace
+   - ⚠️ **Must be configured for your target location's region**
 3. **Overture Maps Data** shares:
    - `OVERTURE_MAPS__PLACES`
    - `OVERTURE_MAPS__ADDRESSES`
+
+---
 
 ## Scripts Location
 
@@ -51,51 +213,66 @@ All scripts are in: `oss-deploy-a-fleet-intelligence-solution-for-taxis/scripts/
 
 ## Workflow
 
-### Step 1: Configure Warehouse Size
+### Step 1: Verify ORS Configuration
+
+**Goal:** Ensure OpenRouteService can route in your target location
+
+**Action:** Test the ORS DIRECTIONS function with coordinates in your target city:
+
+```sql
+-- Test route in San Francisco
+SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    'driving-car',
+    [-122.42, 37.77],  -- Origin (lon, lat)
+    [-122.40, 37.79]   -- Destination (lon, lat)
+);
+
+-- Test route in New York
+SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    'driving-car',
+    [-73.99, 40.75],
+    [-73.97, 40.76]
+);
+
+-- Test route in London
+SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    'driving-car',
+    [-0.13, 51.51],
+    [-0.10, 51.52]
+);
+```
+
+If the query returns a route geometry, your ORS is configured for that region. If it fails or returns null, you need to reconfigure ORS with the appropriate map data.
+
+**Output:** Confirmation that ORS can route in target location
+
+---
+
+### Step 2: Configure Database and Warehouse
 
 **Goal:** Create appropriately sized warehouse for data generation
 
 **Action:** Execute `scripts/01_setup_database.sql` with modified warehouse size
 
-**Modify the script** based on your parameters:
-
-```sql
--- For small datasets (≤80 drivers, 1 day)
-CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
-    WAREHOUSE_SIZE = 'MEDIUM'
-    AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE;
-
--- For medium datasets (≤200 drivers, ≤7 days)  
-CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
-    WAREHOUSE_SIZE = 'LARGE'
-    AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE;
-
--- For large datasets (>200 drivers or >7 days)
-CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
-    WAREHOUSE_SIZE = 'XLARGE'
-    AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE;
-```
+See [Recommended Warehouse Sizes](#recommended-warehouse-sizes) table above.
 
 **Output:** Warehouse and database infrastructure ready
 
 ---
 
-### Step 2: Create Base Locations
+### Step 3: Create Base Locations
 
-**Goal:** Load San Francisco locations from Overture Maps
+**Goal:** Load locations from Overture Maps for your target city
 
-**Action:** Execute `scripts/02_create_base_locations.sql`
+**Action:** Execute `scripts/02_create_base_locations.sql` with modified bounding box
 
-No modifications needed - this creates the location pool for all configurations.
+See [Location Configuration in Scripts](#location-configuration-in-scripts) above.
 
-**Output:** ~250,000 SF locations for pickup/dropoff points
+**Output:** Location pool for pickup/dropoff points in target city
 
 ---
 
-### Step 3: Create Drivers with Shift Patterns
+### Step 4: Create Drivers with Shift Patterns
 
 **Goal:** Create drivers distributed across shifts
 
@@ -117,13 +294,6 @@ SELECT 2, 'Early', 4, 12, 45 UNION ALL
 SELECT 3, 'Morning', 6, 14, 55 UNION ALL
 SELECT 4, 'Day', 11, 19, 45 UNION ALL
 SELECT 5, 'Evening', 15, 23, 35
-
--- Example: 40 drivers (half scale)
-SELECT 1 AS shift_id, 'Graveyard' AS shift_name, 22 AS shift_start, 6 AS shift_end, 4 AS driver_count UNION ALL
-SELECT 2, 'Early', 4, 12, 9 UNION ALL
-SELECT 3, 'Morning', 6, 14, 11 UNION ALL
-SELECT 4, 'Day', 11, 19, 9 UNION ALL
-SELECT 5, 'Evening', 15, 23, 7
 ```
 
 **Shift Distribution Formula:**
@@ -139,71 +309,19 @@ SELECT 5, 'Evening', 15, 23, 7
 
 ---
 
-### Step 4: Generate Trips with Varied Counts
+### Step 5: Generate Trips
 
 **Goal:** Create trip assignments for each day
 
-**Action:** Execute `scripts/04_create_trips.sql` with modified day range
+**Action:** Execute `scripts/04_create_trips.sql`
 
-**Modify for multiple days** - replace the single date with a date range:
-
-```sql
--- Single day (default)
--- Uses: '2015-06-24'
-
--- Multiple days: Modify the trips_with_hours CTE to generate for each day
--- Add this CTE before trip generation:
-days AS (
-    SELECT 
-        DATEADD('day', SEQ4(), '2015-06-24'::DATE) AS SIM_DATE,
-        SEQ4() AS DAY_NUM
-    FROM TABLE(GENERATOR(ROWCOUNT => <NUM_DAYS>))  -- Replace with number of days
-),
-
--- Then cross join with days in the trip generation
-```
-
-**Full multi-day modification for `04_create_trips.sql`:**
-
-```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PUBLIC.DRIVER_TRIPS AS
-WITH 
--- Generate simulation days
-days AS (
-    SELECT 
-        DATEADD('day', SEQ4(), '2015-06-24'::DATE) AS SIM_DATE,
-        SEQ4() AS DAY_NUM
-    FROM TABLE(GENERATOR(ROWCOUNT => 7))  -- <<< SET NUMBER OF DAYS HERE
-),
--- Determine number of trips per driver per day (varied)
-driver_trip_counts AS (
-    SELECT 
-        d.DRIVER_ID,
-        d.SHIFT_TYPE,
-        d.SHIFT_START_HOUR,
-        d.SHIFT_END_HOUR,
-        d.SHIFT_CROSSES_MIDNIGHT,
-        dy.SIM_DATE,
-        dy.DAY_NUM,
-        CASE d.SHIFT_TYPE
-            WHEN 'Morning' THEN UNIFORM(14, 22, RANDOM())
-            WHEN 'Day' THEN UNIFORM(12, 20, RANDOM())
-            WHEN 'Early' THEN UNIFORM(10, 18, RANDOM())
-            WHEN 'Evening' THEN UNIFORM(10, 16, RANDOM())
-            WHEN 'Graveyard' THEN UNIFORM(6, 12, RANDOM())
-        END AS NUM_TRIPS
-    FROM TAXI_DRIVERS d
-    CROSS JOIN days dy
-),
--- Rest of the query remains the same but includes SIM_DATE in TRIP_ID generation
-...
-```
+For multiple days, modify the script to include a days generator (see scripts/README.md for details).
 
 **Output:** Trips for all configured days
 
 ---
 
-### Step 5: Generate ORS Routes
+### Step 6: Generate ORS Routes
 
 **Goal:** Generate actual road routes using OpenRouteService
 
@@ -214,63 +332,54 @@ driver_trip_counts AS (
 - 5,000 trips: ~15-20 minutes  
 - 10,000 trips: ~30-45 minutes
 
-**For large datasets**, consider batching:
-
-```sql
--- Generate routes in batches of 1000
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PUBLIC.DRIVER_ROUTES AS
-SELECT * FROM (
-    SELECT 
-        *,
-        OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(...) AS ROUTE_RESPONSE
-    FROM DRIVER_TRIPS_WITH_COORDS
-    WHERE MOD(ABS(HASH(TRIP_ID)), 10) = 0  -- First 10%
-);
-
--- Then INSERT for remaining batches...
-```
-
 **Output:** Road-following route geometries for all trips
 
 ---
 
-### Step 6: Create Driver Locations
+### Step 7: Create Driver Locations
 
-**Goal:** Interpolate driver positions along routes
+**Goal:** Interpolate driver positions along routes with realistic speeds
 
 **Action:** Execute `scripts/06_create_driver_locations.sql`
 
-**Modify for multiple days** - update the timestamp calculation:
+This creates 15 points per trip with driver states:
+- `waiting` - Stationary, waiting for fare
+- `pickup` - Stationary, passenger boarding
+- `driving` - Variable speed based on time of day
+- `dropoff` - Slow, passenger exiting
+- `idle` - Stationary, post-trip
 
-```sql
--- Single day version uses:
-DATEADD('hour', TRIP_HOUR, '2015-06-24'::TIMESTAMP_NTZ)
+**Speed Distribution:**
+| Speed Band | Percentage |
+|------------|------------|
+| 0 km/h (Stationary) | ~23% |
+| 1-5 km/h (Crawling) | ~11% |
+| 6-15 km/h (Slow) | ~14% |
+| 16-30 km/h (Moderate) | ~26% |
+| 31-45 km/h (Normal) | ~20% |
+| 46+ km/h (Fast) | ~6% |
 
--- Multi-day version should use SIM_DATE from trips:
-DATEADD('hour', TRIP_HOUR, SIM_DATE::TIMESTAMP_NTZ)
-```
-
-**Output:** Location points for all trips across all days
+**Output:** Location points for all trips with realistic speed patterns
 
 ---
 
-### Step 7: Create Analytics Views
+### Step 8: Create Analytics Views
 
 **Goal:** Create views for Streamlit consumption
 
 **Action:** Execute `scripts/07_create_analytics_views.sql`
 
-No modifications needed - views work with any data volume.
-
 **Output:** Analytics views ready for Streamlit
 
 ---
 
-### Step 8: Deploy Streamlit Files
+### Step 9: Deploy Streamlit App
 
-**Goal:** Upload Streamlit app files to Snowflake stage
+**Goal:** Upload and deploy the Streamlit application
 
-**Action:** Run `scripts/deploy_streamlit.py`
+**Action:** 
+1. Run `scripts/deploy_streamlit.py` to upload files
+2. Execute `scripts/08_deploy_streamlit.sql` to create the app
 
 ```bash
 python scripts/deploy_streamlit.py \
@@ -279,23 +388,13 @@ python scripts/deploy_streamlit.py \
     --password <password>
 ```
 
-**Output:** Streamlit files uploaded to stage
-
----
-
-### Step 9: Create Streamlit App
-
-**Goal:** Deploy the Streamlit application
-
-**Action:** Execute `scripts/08_deploy_streamlit.sql`
-
 **Output:** Streamlit app deployed and accessible in Snowsight
 
 ---
 
 ## Quick Start (Run All)
 
-For automated execution with default settings (80 drivers, 1 day):
+For automated execution with default settings (San Francisco, 80 drivers, 1 day):
 
 ```bash
 cd oss-deploy-a-fleet-intelligence-solution-for-taxis/scripts
@@ -322,60 +421,73 @@ python deploy_streamlit.py \
 
 ## Configuration Examples
 
-### Example 1: Small Demo (20 drivers, 1 day)
+### Example 1: New York, 100 drivers, 1 day
 
 ```sql
--- 03_create_drivers.sql - shift_patterns CTE:
-SELECT 1, 'Graveyard', 22, 6, 2 UNION ALL
-SELECT 2, 'Early', 4, 12, 4 UNION ALL
-SELECT 3, 'Morning', 6, 14, 6 UNION ALL
-SELECT 4, 'Day', 11, 19, 4 UNION ALL
-SELECT 5, 'Evening', 15, 23, 4
+-- 02_create_base_locations.sql - bounding box:
+WHERE ST_X(GEOMETRY) BETWEEN -74.05 AND -73.90
+  AND ST_Y(GEOMETRY) BETWEEN 40.65 AND 40.85
 
--- Warehouse: SMALL
--- Estimated rows: ~3,000
--- Est. time: 2-3 minutes
+-- 03_create_drivers.sql - 100 drivers:
+SELECT 1, 'Graveyard', 22, 6, 10 UNION ALL
+SELECT 2, 'Early', 4, 12, 22 UNION ALL
+SELECT 3, 'Morning', 6, 14, 28 UNION ALL
+SELECT 4, 'Day', 11, 19, 22 UNION ALL
+SELECT 5, 'Evening', 15, 23, 18
+
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
+
+-- Warehouse: MEDIUM
+-- Estimated rows: ~22,000
 ```
 
-### Example 2: Production (200 drivers, 7 days)
+### Example 2: London, 50 drivers, 3 days
 
 ```sql
--- 01_setup_database.sql:
-WAREHOUSE_SIZE = 'XLARGE'
+-- 02_create_base_locations.sql - bounding box:
+WHERE ST_X(GEOMETRY) BETWEEN -0.20 AND 0.05
+  AND ST_Y(GEOMETRY) BETWEEN 51.45 AND 51.55
 
--- 03_create_drivers.sql - shift_patterns CTE:
+-- 03_create_drivers.sql - 50 drivers:
+SELECT 1, 'Graveyard', 22, 6, 5 UNION ALL
+SELECT 2, 'Early', 4, 12, 11 UNION ALL
+SELECT 3, 'Morning', 6, 14, 14 UNION ALL
+SELECT 4, 'Day', 11, 19, 11 UNION ALL
+SELECT 5, 'Evening', 15, 23, 9
+
+-- 04_create_trips.sql - 3 days:
+FROM TABLE(GENERATOR(ROWCOUNT => 3))
+
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
+
+-- Warehouse: LARGE
+-- Estimated rows: ~33,000
+```
+
+### Example 3: Sydney, 200 drivers, 7 days
+
+```sql
+-- 02_create_base_locations.sql - bounding box:
+WHERE ST_X(GEOMETRY) BETWEEN 151.15 AND 151.30
+  AND ST_Y(GEOMETRY) BETWEEN -33.92 AND -33.82
+
+-- 03_create_drivers.sql - 200 drivers:
 SELECT 1, 'Graveyard', 22, 6, 20 UNION ALL
 SELECT 2, 'Early', 4, 12, 45 UNION ALL
 SELECT 3, 'Morning', 6, 14, 55 UNION ALL
 SELECT 4, 'Day', 11, 19, 45 UNION ALL
 SELECT 5, 'Evening', 15, 23, 35
 
--- 04_create_trips.sql - days CTE:
+-- 04_create_trips.sql - 7 days:
 FROM TABLE(GENERATOR(ROWCOUNT => 7))
 
--- Estimated rows: ~250,000
--- Est. time: 45-60 minutes
-```
+-- Streamlit map center:
+view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
 
-### Example 3: Load Test (500 drivers, 30 days)
-
-```sql
--- 01_setup_database.sql:
-WAREHOUSE_SIZE = '2XLARGE'
-
--- 03_create_drivers.sql - shift_patterns CTE:
-SELECT 1, 'Graveyard', 22, 6, 50 UNION ALL
-SELECT 2, 'Early', 4, 12, 112 UNION ALL
-SELECT 3, 'Morning', 6, 14, 138 UNION ALL
-SELECT 4, 'Day', 11, 19, 112 UNION ALL
-SELECT 5, 'Evening', 15, 23, 88
-
--- 04_create_trips.sql - days CTE:
-FROM TABLE(GENERATOR(ROWCOUNT => 30))
-
--- Estimated rows: ~2.5 million
--- Est. time: 3-5 hours
--- Consider: Batch route generation
+-- Warehouse: XLARGE
+-- Estimated rows: ~315,000
 ```
 
 ---
@@ -385,7 +497,7 @@ FROM TABLE(GENERATOR(ROWCOUNT => 30))
 ```
 FLEET_INTELLIGENCE
 ├── PUBLIC (schema)
-│   ├── SF_TAXI_LOCATIONS      # ~250K SF locations
+│   ├── SF_TAXI_LOCATIONS      # Location pool for target city
 │   ├── TAXI_DRIVERS           # Configured driver count
 │   ├── DRIVERS                # Driver display data
 │   ├── DRIVER_TRIPS           # Trip assignments
@@ -393,11 +505,11 @@ FLEET_INTELLIGENCE
 │   ├── DRIVER_ROUTES          # Raw ORS responses
 │   ├── DRIVER_ROUTES_PARSED   # Parsed route data
 │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
-│   └── DRIVER_LOCATIONS       # Interpolated positions
+│   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
 │
 └── ANALYTICS (schema)
     ├── DRIVERS                # View
-    ├── DRIVER_LOCATIONS       # View with LON/LAT
+    ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
     ├── TRIPS_ASSIGNED_TO_DRIVERS # View
     ├── ROUTE_NAMES            # View
     └── TRIP_SUMMARY           # View
@@ -405,42 +517,17 @@ FLEET_INTELLIGENCE
 
 ---
 
-## Shift Pattern Design
-
-Default distribution (scales proportionally):
-
-| Shift | Hours | % of Fleet | Purpose |
-|-------|-------|------------|---------|
-| **Graveyard** | 22:00-06:00 | 10% | Overnight coverage |
-| **Early** | 04:00-12:00 | 22.5% | Early morning + AM rush |
-| **Morning** | 06:00-14:00 | 27.5% | Peak AM rush |
-| **Day** | 11:00-19:00 | 22.5% | Midday + PM rush |
-| **Evening** | 15:00-23:00 | 17.5% | Afternoon + PM rush |
-
----
-
-## Output Statistics (Default: 80 drivers, 1 day)
-
-| Metric | Value |
-|--------|-------|
-| Total drivers | 80 |
-| Total trips | ~1,200 |
-| Min trips/driver | 8 |
-| Max trips/driver | 22 |
-| Location points | ~13,000 |
-| Avg route distance | ~6.5 km |
-| Avg route duration | ~12 min |
-
----
-
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| ORS routes failing | Verify OpenRouteService Native App is installed |
+| ORS routes returning NULL | Location outside ORS configured region - verify map data |
+| ORS routes failing | Verify OpenRouteService Native App is installed and running |
+| No locations found | Bounding box may be too restrictive or outside Overture coverage |
 | Query timeout | Increase warehouse size |
 | Out of memory | Use larger warehouse or batch processing |
 | Missing Overture data | Install shares from Snowflake Marketplace |
 | Streamlit not loading | Check all files uploaded to stage |
+| Map centered wrong | Update view_state coordinates in Streamlit files |
 
 See `scripts/README.md` for detailed troubleshooting.
