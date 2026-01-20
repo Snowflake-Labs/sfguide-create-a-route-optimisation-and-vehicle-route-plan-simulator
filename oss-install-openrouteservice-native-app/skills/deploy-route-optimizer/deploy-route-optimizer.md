@@ -170,7 +170,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 2. **Open the application in browser:**
    ```bash
-   snow app open -c <connection>
+   cd Native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
 3. **Verify** deployment output includes:
