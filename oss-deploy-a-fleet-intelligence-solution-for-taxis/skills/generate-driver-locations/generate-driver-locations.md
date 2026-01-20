@@ -159,6 +159,105 @@ view_state = pdk.ViewState(latitude=43.65, longitude=-79.38, zoom=12)
 
 ---
 
+## Customizing Streamlit App for Your Location
+
+When changing the location, you need to update several files in the Streamlit app to reflect the new city name and map center.
+
+### Files to Update
+
+| File | What to Change |
+|------|----------------|
+| `SF_Taxi_Control_Center.py` | Page title, headers |
+| `pages/1_Driver_Routes.py` | Headers, map center |
+| `pages/2_Fleet_Heat_Map.py` | Headers, map center |
+
+### Step-by-Step: Update for New City
+
+**1. Main App File (`SF_Taxi_Control_Center.py`)**
+
+Find and replace the city name in headers:
+
+```python
+# FROM (San Francisco):
+st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+
+# TO (example for New York):
+st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+
+# TO (example for London):
+st.markdown('<h0black>London Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+```
+
+**2. Driver Routes Page (`pages/1_Driver_Routes.py`)**
+
+Update headers:
+```python
+# FROM:
+st.markdown(f'<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+
+# TO (your city):
+st.markdown(f'<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+```
+
+**3. Heat Map Page (`pages/2_Fleet_Heat_Map.py`)**
+
+Update headers:
+```python
+# FROM:
+st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
+
+# TO (your city):
+st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
+```
+
+Update map center coordinates:
+```python
+# FROM (San Francisco):
+view_state = pdk.ViewState(
+    latitude=37.76,
+    longitude=-122.44,
+    zoom=12
+)
+
+# TO (New York):
+view_state = pdk.ViewState(
+    latitude=40.75,
+    longitude=-73.97,
+    zoom=12
+)
+
+# TO (London):
+view_state = pdk.ViewState(
+    latitude=51.51,
+    longitude=-0.12,
+    zoom=12
+)
+```
+
+### Quick Find & Replace
+
+For a quick update, use find and replace in your editor:
+
+| Find | Replace With (example: New York) |
+|------|----------------------------------|
+| `San Francisco Taxi` | `New York Taxi` |
+| `latitude=37.76` | `latitude=40.75` |
+| `longitude=-122.44` | `longitude=-73.97` |
+
+### Optional: Rename the Main File
+
+You can also rename the main Streamlit file to match your city:
+
+```bash
+# Rename file
+mv SF_Taxi_Control_Center.py NYC_Taxi_Control_Center.py
+
+# Update 08_deploy_streamlit.sql to use new filename:
+MAIN_FILE = 'NYC_Taxi_Control_Center.py'
+```
+
+---
+
 ## Location Configuration in Scripts
 
 ### Step 1: Modify `02_create_base_locations.sql`
