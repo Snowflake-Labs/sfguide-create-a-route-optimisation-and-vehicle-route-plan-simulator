@@ -61,7 +61,7 @@ trip_summary = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIP_SUMMARY')
 
 # Join for driver locations
 all_driver_locations = session.table('FLEET_INTELLIGENCE.ANALYTICS.DRIVER_LOCATIONS')
-all_driver_locations = all_driver_locations.with_column('POINT_TIME', col('CURR_TIME').astype(StringType()))
+all_driver_locations = all_driver_locations.with_column('POINT_TIME_STR', col('POINT_TIME').astype(StringType()))
 
 # Join with route info
 vehicle_plans_poi = vehicle_plans_poi.join(route_names, 'TRIP_ID')
@@ -95,7 +95,7 @@ st.markdown(f'''
 time_by_hour = all_driver_locations.filter(col('DRIVER_ID') == driver)\
     .join(route_names, 'TRIP_ID')\
     .join(routes, 'TRIP_ID')\
-    .with_column('HOUR', hour(to_timestamp('CURR_TIME')))\
+    .with_column('HOUR', hour(to_timestamp('POINT_TIME')))\
     .group_by('HOUR', 'TRIP_NAME').agg(max('DISTANCE').alias('DISTANCE'))
 
 time_by_hour = time_by_hour.group_by('HOUR').agg(
