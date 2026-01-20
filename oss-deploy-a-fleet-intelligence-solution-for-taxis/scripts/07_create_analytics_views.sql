@@ -1,0 +1,96 @@
+-- =============================================================================
+-- SF Taxi Fleet Intelligence - Analytics Views
+-- =============================================================================
+-- This script creates views in the ANALYTICS schema that are consumed by
+-- the Streamlit application. These views provide clean interfaces to the
+-- underlying data tables.
+--
+-- Prerequisites:
+--   - 06_create_driver_locations.sql executed
+-- =============================================================================
+
+USE DATABASE FLEET_INTELLIGENCE;
+USE SCHEMA ANALYTICS;
+USE WAREHOUSE COMPUTE_WH;
+
+-- DRIVERS view - Driver information with shift details
+CREATE OR REPLACE VIEW DRIVERS AS
+SELECT * FROM FLEET_INTELLIGENCE.PUBLIC.DRIVERS;
+
+-- DRIVER_LOCATIONS view - Driver positions with LON/LAT extracted and driver state
+CREATE OR REPLACE VIEW DRIVER_LOCATIONS AS
+SELECT 
+    TRIP_ID,
+    DRIVER_ID,
+    PICKUP_TIME,
+    DROPOFF_TIME,
+    PICKUP_LOCATION,
+    DROPOFF_LOCATION,
+    ROUTE,
+    POINT_GEOM,
+    ST_X(POINT_GEOM) AS LON,
+    ST_Y(POINT_GEOM) AS LAT,
+    CURR_TIME AS POINT_TIME,
+    POINT_INDEX,
+    DRIVER_STATE,
+    KMH
+FROM FLEET_INTELLIGENCE.PUBLIC.DRIVER_LOCATIONS;
+
+-- TRIPS_ASSIGNED_TO_DRIVERS view - Trip details with route geometries
+CREATE OR REPLACE VIEW TRIPS_ASSIGNED_TO_DRIVERS AS
+SELECT 
+    DRIVER_ID,
+    TRIP_ID,
+    GEOMETRY,
+    ORIGIN,
+    DESTINATION,
+    ORIGIN_ADDRESS,
+    DESTINATION_ADDRESS,
+    TRIP_START_TIME AS PICKUP_TIME,
+    TRIP_END_TIME AS DROPOFF_TIME
+FROM FLEET_INTELLIGENCE.PUBLIC.DRIVER_ROUTE_GEOMETRIES;
+
+-- ROUTE_NAMES view - Human-readable trip names
+CREATE OR REPLACE VIEW ROUTE_NAMES AS
+SELECT 
+    TRIP_ID,
+    ORIGIN_ADDRESS || ' → ' || DESTINATION_ADDRESS AS TRIP_NAME
+FROM FLEET_INTELLIGENCE.PUBLIC.DRIVER_ROUTE_GEOMETRIES;
+
+-- TRIP_SUMMARY view - Comprehensive trip metrics with speed stats
+CREATE OR REPLACE VIEW TRIP_SUMMARY AS
+WITH trip_stats AS (
+    SELECT 
+        TRIP_ID,
+        AVG(KMH) AS AVERAGE_KMH,
+        MAX(KMH) AS MAX_KMH
+    FROM FLEET_INTELLIGENCE.PUBLIC.DRIVER_LOCATIONS
+    GROUP BY TRIP_ID
+)
+SELECT 
+    rg.TRIP_ID,
+    rg.DRIVER_ID,
+    rg.ORIGIN,
+    rg.DESTINATION,
+    rg.ORIGIN_ADDRESS,
+    rg.DESTINATION_ADDRESS,
+    rg.TRIP_START_TIME AS PICKUP_TIME,
+    rg.TRIP_END_TIME AS ACTUAL_DROPOFF_TIME,
+    rg.GEOMETRY,
+    rg.ROUTE_DISTANCE_METERS,
+    rg.ROUTE_DURATION_SECS,
+    rg.ORIGIN_ADDRESS AS ORIGIN_NEAREST_POI,
+    rg.DESTINATION_ADDRESS AS DESTINATION_NEAREST_POI,
+    ts.AVERAGE_KMH,
+    ts.MAX_KMH
+FROM FLEET_INTELLIGENCE.PUBLIC.DRIVER_ROUTE_GEOMETRIES rg
+LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
+
+-- Verify all views
+SELECT 'DRIVERS' AS VIEW_NAME, COUNT(*) AS ROW_COUNT FROM DRIVERS
+UNION ALL SELECT 'DRIVER_LOCATIONS', COUNT(*) FROM DRIVER_LOCATIONS
+UNION ALL SELECT 'TRIPS_ASSIGNED_TO_DRIVERS', COUNT(*) FROM TRIPS_ASSIGNED_TO_DRIVERS
+UNION ALL SELECT 'ROUTE_NAMES', COUNT(*) FROM ROUTE_NAMES
+UNION ALL SELECT 'TRIP_SUMMARY', COUNT(*) FROM TRIP_SUMMARY;
+
+SELECT 'Analytics views created successfully' AS STATUS;
