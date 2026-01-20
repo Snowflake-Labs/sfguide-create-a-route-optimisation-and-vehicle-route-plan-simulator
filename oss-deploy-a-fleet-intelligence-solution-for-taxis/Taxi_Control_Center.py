@@ -26,9 +26,24 @@ st.logo('logo.svg')
 # Initialize session
 session = get_active_session()
 
-# Main page header
-st.markdown('''
-<h0black>Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+# Get location from VARIABLES table
+def get_location():
+    try:
+        result = session.sql("""
+            SELECT VALUE FROM FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+            WHERE ID = 'location'
+        """).collect()
+        if result:
+            return result[0]['VALUE']
+    except:
+        pass
+    return 'San Francisco'  # Default fallback
+
+location = get_location()
+
+# Main page header with dynamic location
+st.markdown(f'''
+<h0black>{location} Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Real-time Fleet Control Center</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -261,13 +276,13 @@ except Exception as e:
 st.divider()
 
 # Navigation instructions
-st.markdown('''
+st.markdown(f'''
 ### Navigate the Control Center
 
 Use the sidebar to access different views:
 
 - **Driver Routes** - Track individual driver journeys with route visualization and AI insights
-- **Fleet Heat Map** - View driver density across the city
+- **Fleet Heat Map** - View driver density across {location}
 
 ### Data Sources
 

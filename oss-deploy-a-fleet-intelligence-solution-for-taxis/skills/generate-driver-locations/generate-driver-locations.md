@@ -159,21 +159,59 @@ view_state = pdk.ViewState(latitude=43.65, longitude=-79.38, zoom=12)
 
 ---
 
-## Streamlit App - Auto-Centers on Any City
+## Streamlit App - Dynamic Location Display
 
-The Streamlit app is **location-agnostic** and will automatically:
+The Streamlit app reads the location name from the **VARIABLES** table and displays it dynamically in all headers.
 
-- **Auto-center maps** on your data (calculates center from trip coordinates)
-- **Use generic titles** ("Taxi | Fleet Intelligence" instead of city-specific)
-- **Work with any city** without needing to modify the Streamlit files
+### How It Works
 
-You only need to change the bounding box in `02_create_base_locations.sql` - the Streamlit app handles everything else automatically.
+The `FLEET_INTELLIGENCE.PUBLIC.VARIABLES` table stores configuration settings:
+
+| ID | VALUE |
+|----|-------|
+| location | San Francisco |
+
+The Streamlit app queries this table and displays headers like:
+- **"San Francisco Taxi | Fleet Intelligence"**
+- **"New York Taxi | Fleet Heat Map"**
+- etc.
+
+### Updating the Location Name
+
+When you change to a different city, update the VARIABLES table:
+
+```sql
+-- Update location to New York
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'New York' 
+WHERE ID = 'location';
+
+-- Update location to London
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'London' 
+WHERE ID = 'location';
+
+-- Update location to Paris
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'Paris' 
+WHERE ID = 'location';
+
+-- Update to any custom city name
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'Your City Name' 
+WHERE ID = 'location';
+```
+
+The Streamlit app will automatically:
+- **Display the new location name** in all page headers
+- **Auto-center maps** on the data coordinates
+- **Work with any city** without code changes
 
 ---
 
 ## Location Configuration in Scripts
 
-### Only One File Needs Changes: `02_create_base_locations.sql`
+### Step 1: Update the Bounding Box in `02_create_base_locations.sql`
 
 Change the bounding box to match your target location:
 
@@ -239,7 +277,18 @@ WHERE ST_X(GEOMETRY) BETWEEN 103.75 AND 103.95
   AND ST_Y(GEOMETRY) BETWEEN 1.25 AND 1.40
 ```
 
-That's all you need to change! The Streamlit app will automatically center on your data.
+### Step 2: Update the Location Name in VARIABLES Table
+
+After changing the bounding box, update the location display name:
+
+```sql
+-- Example for New York
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'New York' 
+WHERE ID = 'location';
+```
+
+The Streamlit app will now display "New York Taxi | Fleet Intelligence" in all headers.
 
 ---
 

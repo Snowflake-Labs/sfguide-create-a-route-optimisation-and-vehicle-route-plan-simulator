@@ -19,9 +19,24 @@ with open('extra.css') as f:
 # Set sidebar logo
 st.logo('logo.svg')
 
-# Main header
-st.markdown('''
-<h0black>Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
+# Get location from VARIABLES table
+def get_location():
+    try:
+        result = session.sql("""
+            SELECT VALUE FROM FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+            WHERE ID = 'location'
+        """).collect()
+        if result:
+            return result[0]['VALUE']
+    except:
+        pass
+    return 'San Francisco'  # Default fallback
+
+location = get_location()
+
+# Main header with dynamic location
+st.markdown(f'''
+<h0black>{location} Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
 <h1grey>Driver Location Density Analysis</h1grey>
 ''', unsafe_allow_html=True)
 
