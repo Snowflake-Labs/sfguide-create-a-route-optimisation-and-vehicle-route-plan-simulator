@@ -30,6 +30,19 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
 
 ## Workflow
 
+### Step 0: Suspend Compute Pool
+
+**Goal:** Suspend the compute pool to allow configuration changes
+
+**Actions:**
+
+1. **Suspend** the compute pool (required before altering INSTANCE_FAMILY or other properties):
+   ```sql
+   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SUSPEND;
+   ```
+
+**Output:** Compute pool suspended
+
 ### Step 1: Setup Download Notebook
 
 **Goal:** Create required Notebook for map download
@@ -140,13 +153,6 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
 
 1. **Edit** `Native_app/services/openrouteservice/openrouteservice.yaml`:
    
-   - **Set REBUILD_GRAPHS to true** - This is critical for new maps:
-     ```yaml
-     env:
-       REBUILD_GRAPHS: true  # Changed from false to trigger rebuild
-       ORS_CONFIG_LOCATION: /home/ors/files/ors-config.yml
-     ```
-   
    - **Update all volume source paths** to new region:
      ```yaml
      volumes:
@@ -163,12 +169,7 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
    PUT file:///services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
-3. **Suspend** the service first (required before updating spec):
-   ```sql
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SUSPEND;
-   ```
-
-4. **Update** service with new specification:
+3. **Update** service with new specification:
    ```sql
    ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
    FROM @openrouteservice_native_app_pkg.app_src.stage 
@@ -183,7 +184,18 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
 
 **Actions:**
 
-1. **Resume** all services:
+1. **Ask user** if they want to rebuild graphs for the map:
+   - "Do you want to rebuild the routing graphs for this region? This will clear existing cached graphs and elevation data, forcing a fresh rebuild."
+
+2. **If user confirms YES**, clear existing graphs and elevation cache:
+   ```sql
+   REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/;
+   REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/;
+   ```
+   
+   > **_NOTE:_** This ensures graphs are rebuilt from scratch with the new map data rather than using potentially stale cached data.
+
+3. **Resume** all services:
    ```sql
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
