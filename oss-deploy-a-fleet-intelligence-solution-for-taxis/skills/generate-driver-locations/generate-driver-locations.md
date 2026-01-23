@@ -159,108 +159,59 @@ view_state = pdk.ViewState(latitude=43.65, longitude=-79.38, zoom=12)
 
 ---
 
-## Customizing Streamlit App for Your Location
+## Streamlit App - Dynamic Location Display
 
-When changing the location, you need to update several files in the Streamlit app to reflect the new city name and map center.
+The Streamlit app reads the location name from the **VARIABLES** table and displays it dynamically in all headers.
 
-### Files to Update
+### How It Works
 
-| File | What to Change |
-|------|----------------|
-| `SF_Taxi_Control_Center.py` | Page title, headers |
-| `pages/1_Driver_Routes.py` | Headers, map center |
-| `pages/2_Fleet_Heat_Map.py` | Headers, map center |
+The `FLEET_INTELLIGENCE.PUBLIC.VARIABLES` table stores configuration settings:
 
-### Step-by-Step: Update for New City
+| ID | VALUE |
+|----|-------|
+| location | San Francisco |
 
-**1. Main App File (`SF_Taxi_Control_Center.py`)**
+The Streamlit app queries this table and displays headers like:
+- **"San Francisco Taxi | Fleet Intelligence"**
+- **"New York Taxi | Fleet Heat Map"**
+- etc.
 
-Find and replace the city name in headers:
+### Updating the Location Name
 
-```python
-# FROM (San Francisco):
-st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+When you change to a different city, update the VARIABLES table:
 
-# TO (example for New York):
-st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+```sql
+-- Update location to New York
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'New York' 
+WHERE ID = 'location';
 
-# TO (example for London):
-st.markdown('<h0black>London Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+-- Update location to London
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'London' 
+WHERE ID = 'location';
+
+-- Update location to Paris
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'Paris' 
+WHERE ID = 'location';
+
+-- Update to any custom city name
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'Your City Name' 
+WHERE ID = 'location';
 ```
 
-**2. Driver Routes Page (`pages/1_Driver_Routes.py`)**
-
-Update headers:
-```python
-# FROM:
-st.markdown(f'<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-
-# TO (your city):
-st.markdown(f'<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-```
-
-**3. Heat Map Page (`pages/2_Fleet_Heat_Map.py`)**
-
-Update headers:
-```python
-# FROM:
-st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
-
-# TO (your city):
-st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
-```
-
-Update map center coordinates:
-```python
-# FROM (San Francisco):
-view_state = pdk.ViewState(
-    latitude=37.76,
-    longitude=-122.44,
-    zoom=12
-)
-
-# TO (New York):
-view_state = pdk.ViewState(
-    latitude=40.75,
-    longitude=-73.97,
-    zoom=12
-)
-
-# TO (London):
-view_state = pdk.ViewState(
-    latitude=51.51,
-    longitude=-0.12,
-    zoom=12
-)
-```
-
-### Quick Find & Replace
-
-For a quick update, use find and replace in your editor:
-
-| Find | Replace With (example: New York) |
-|------|----------------------------------|
-| `San Francisco Taxi` | `New York Taxi` |
-| `latitude=37.76` | `latitude=40.75` |
-| `longitude=-122.44` | `longitude=-73.97` |
-
-### Optional: Rename the Main File
-
-You can also rename the main Streamlit file to match your city:
-
-```bash
-# Rename file
-mv SF_Taxi_Control_Center.py NYC_Taxi_Control_Center.py
-
-# Update 08_deploy_streamlit.sql to use new filename:
-MAIN_FILE = 'NYC_Taxi_Control_Center.py'
-```
+The Streamlit app will automatically:
+- **Display the new location name** in all page headers
+- **Auto-center maps** on the data coordinates
+- **Work with any city** without code changes
 
 ---
 
 ## Location Configuration in Scripts
 
-### Step 1: Modify `02_create_base_locations.sql`
+### Step 1: Update the Bounding Box in `02_create_base_locations.sql`
 
 Change the bounding box to match your target location:
 
@@ -326,53 +277,18 @@ WHERE ST_X(GEOMETRY) BETWEEN 103.75 AND 103.95
   AND ST_Y(GEOMETRY) BETWEEN 1.25 AND 1.40
 ```
 
-### Step 2: Update Streamlit Map Center
+### Step 2: Update the Location Name in VARIABLES Table
 
-Modify `SF_Taxi_Control_Center.py` and page files to center the map on your location:
+After changing the bounding box, update the location display name:
 
-```python
-# San Francisco (default)
-view_state = pdk.ViewState(latitude=37.76, longitude=-122.44, zoom=12)
-
-# New York
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
-
-# London
-view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
-
-# Paris
-view_state = pdk.ViewState(latitude=48.86, longitude=2.35, zoom=12)
-
-# Chicago
-view_state = pdk.ViewState(latitude=41.88, longitude=-87.63, zoom=12)
-
-# Los Angeles
-view_state = pdk.ViewState(latitude=34.05, longitude=-118.25, zoom=12)
-
-# Seattle
-view_state = pdk.ViewState(latitude=47.61, longitude=-122.33, zoom=12)
-
-# Boston
-view_state = pdk.ViewState(latitude=42.36, longitude=-71.06, zoom=12)
-
-# Sydney
-view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
-
-# Singapore
-view_state = pdk.ViewState(latitude=1.35, longitude=103.85, zoom=12)
+```sql
+-- Example for New York
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+SET VALUE = 'New York' 
+WHERE ID = 'location';
 ```
 
-### Step 3: Rename App Title (Optional)
-
-Update headers in Streamlit files:
-
-```python
-# From:
-st.markdown('<h0black>San Francisco Taxi |</h0black>...')
-
-# To (example for New York):
-st.markdown('<h0black>New York Taxi |</h0black>...')
-```
+The Streamlit app will now display "New York Taxi | Fleet Intelligence" in all headers.
 
 ---
 
@@ -574,15 +490,52 @@ This creates 15 points per trip with driver states:
 
 **Goal:** Upload and deploy the Streamlit application
 
-**Action:** 
-1. Run `scripts/deploy_streamlit.py` to upload files
-2. Execute `scripts/08_deploy_streamlit.sql` to create the app
+**Files Required:**
+
+The following files must be uploaded to the Snowflake stage:
+
+| File | Location | Description |
+|------|----------|-------------|
+| `Taxi_Control_Center.py` | Stage root | Main Streamlit app |
+| `environment.yml` | Stage root | Python dependencies (pydeck, altair, etc.) |
+| `extra.css` | Stage root | Custom CSS styling |
+| `logo.svg` | Stage root | Sidebar logo |
+| `pages/1_Driver_Routes.py` | `pages/` folder | Driver routes page |
+| `pages/2_Fleet_Heat_Map.py` | `pages/` folder | Heat map page |
+
+**Option A: Using deploy_streamlit.py**
 
 ```bash
 python scripts/deploy_streamlit.py \
     --account <account> \
     --user <user> \
     --password <password>
+```
+
+**Option B: Manual Upload via SQL**
+
+```sql
+-- Upload main files to stage root
+PUT 'file:///path/to/Taxi_Control_Center.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/environment.yml' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/extra.css' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/logo.svg' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+
+-- Upload page files to pages folder
+PUT 'file:///path/to/pages/1_Driver_Routes.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///path/to/pages/2_Fleet_Heat_Map.py' @FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+```
+
+**Then create the Streamlit app:**
+
+Execute `scripts/08_deploy_streamlit.sql` or run:
+
+```sql
+CREATE OR REPLACE STREAMLIT FLEET_INTELLIGENCE.PUBLIC.TAXI_CONTROL_CENTER
+  ROOT_LOCATION = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/taxi'
+  MAIN_FILE = 'Taxi_Control_Center.py'
+  QUERY_WAREHOUSE = COMPUTE_WH
+  TITLE = 'Taxi Control Center';
 ```
 
 **Output:** Streamlit app deployed and accessible in Snowsight
@@ -632,8 +585,8 @@ SELECT 3, 'Morning', 6, 14, 28 UNION ALL
 SELECT 4, 'Day', 11, 19, 22 UNION ALL
 SELECT 5, 'Evening', 15, 23, 18
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'New York' WHERE ID = 'location';
 
 -- Warehouse: MEDIUM
 -- Estimated rows: ~22,000
@@ -656,8 +609,8 @@ SELECT 5, 'Evening', 15, 23, 9
 -- 04_create_trips.sql - 3 days:
 FROM TABLE(GENERATOR(ROWCOUNT => 3))
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'London' WHERE ID = 'location';
 
 -- Warehouse: LARGE
 -- Estimated rows: ~33,000
@@ -680,8 +633,8 @@ SELECT 5, 'Evening', 15, 23, 35
 -- 04_create_trips.sql - 7 days:
 FROM TABLE(GENERATOR(ROWCOUNT => 7))
 
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
+-- Update location display name:
+UPDATE FLEET_INTELLIGENCE.PUBLIC.VARIABLES SET VALUE = 'Sydney' WHERE ID = 'location';
 
 -- Warehouse: XLARGE
 -- Estimated rows: ~315,000
@@ -694,22 +647,23 @@ view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
 ```
 FLEET_INTELLIGENCE
 ├── PUBLIC (schema)
-│   ├── SF_TAXI_LOCATIONS      # Location pool for target city
-│   ├── TAXI_DRIVERS           # Configured driver count
-│   ├── DRIVERS                # Driver display data
-│   ├── DRIVER_TRIPS           # Trip assignments
+│   ├── VARIABLES             # Configuration (location name, etc.)
+│   ├── TAXI_LOCATIONS        # Location pool for target city
+│   ├── TAXI_DRIVERS          # Configured driver count
+│   ├── DRIVERS               # Driver display data
+│   ├── DRIVER_TRIPS          # Trip assignments
 │   ├── DRIVER_TRIPS_WITH_COORDS # Trips with coordinates
-│   ├── DRIVER_ROUTES          # Raw ORS responses
-│   ├── DRIVER_ROUTES_PARSED   # Parsed route data
+│   ├── DRIVER_ROUTES         # Raw ORS responses
+│   ├── DRIVER_ROUTES_PARSED  # Parsed route data
 │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
-│   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
+│   └── DRIVER_LOCATIONS      # Interpolated positions with driver states
 │
 └── ANALYTICS (schema)
-    ├── DRIVERS                # View
-    ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
+    ├── DRIVERS               # View
+    ├── DRIVER_LOCATIONS      # View with LON/LAT and DRIVER_STATE
     ├── TRIPS_ASSIGNED_TO_DRIVERS # View
-    ├── ROUTE_NAMES            # View
-    └── TRIP_SUMMARY           # View
+    ├── ROUTE_NAMES           # View
+    └── TRIP_SUMMARY          # View
 ```
 
 ---

@@ -1,4 +1,4 @@
-# SF Taxi Fleet Intelligence - Driver Routes
+# Taxi Fleet Intelligence - Driver Routes
 # Track individual driver journeys with route visualization
 
 import streamlit as st
@@ -23,6 +23,21 @@ with open('extra.css') as f:
 
 # Set sidebar logo
 st.logo('logo.svg')
+
+# Get location from VARIABLES table
+def get_location():
+    try:
+        result = session.sql("""
+            SELECT VALUE FROM FLEET_INTELLIGENCE.PUBLIC.VARIABLES 
+            WHERE ID = 'location'
+        """).collect()
+        if result:
+            return result[0]['VALUE']
+    except:
+        pass
+    return 'San Francisco'  # Default fallback
+
+location = get_location()
 
 # Helper function for bar charts
 def bar_creation(dataframe, measure, attribute):
@@ -85,9 +100,9 @@ def get_trips(driver):
 driver_day = vehicle_plans_poi.filter(col('DRIVER_ID') == driver)
 trip_summaryd = trip_summary.filter(col('DRIVER_ID') == driver)
 
-# Main header
+# Main header with dynamic location
 st.markdown(f'''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+<h0black>{location} Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Viewing Routes for Driver {driver}</h1grey>
 ''', unsafe_allow_html=True)
 
