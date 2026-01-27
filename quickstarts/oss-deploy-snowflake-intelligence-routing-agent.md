@@ -126,7 +126,6 @@ Each tool procedure combines Cortex AI geocoding with OpenRouteService functions
 | `PROFILE` | VARCHAR | Transport mode (default: `driving-car`) |
 
 **Example Usage:**
-![directions image](assets/si_directions_example.png)
 ```sql
 CALL OPENROUTESERVICE_NATIVE_APP.CORE.TOOL_DIRECTIONS(
     'from Union Square San Francisco to Golden Gate Bridge',
@@ -182,23 +181,6 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.TOOL_OPTIMIZATION(
 
 The Routing Agent is a Snowflake Intelligence agent configured with three tools that map to the stored procedures.
 
-### Agent Configuration
-
-| Setting | Value |
-|---------|-------|
-| **Name** | `ROUTING_AGENT` |
-| **Model** | `claude-4-sonnet` |
-| **Timeout** | 120 seconds |
-| **Token Budget** | 16,000 tokens |
-
-### Available Tools
-
-| Tool Name | Maps To | When Used |
-|-----------|---------|-----------|
-| `get_directions` | `TOOL_DIRECTIONS` | Questions about routes between locations |
-| `get_isochrone` | `TOOL_ISOCHRONE` | Questions about reachable areas or catchment zones |
-| `optimize_routes` | `TOOL_OPTIMIZATION` | Multi-stop delivery planning |
-
 ### Transport Profiles
 
 The agent supports multiple transport modes:
@@ -225,73 +207,26 @@ Once deployed, you can interact with the Routing Agent through the Snowflake Int
 ### Access the Agent
 
 1. Navigate to **Snowflake Intelligence** in Snowsight
-2. The **Route Assistant** agent will appear in your available agents
+2. The **Routing Agent** agent will appear in your available agents
 3. Click to start a conversation
 
 ### Example Conversations
 
 **Getting Directions:**
-```
-User: Get driving directions from Union Square to Golden Gate Bridge
-
-Agent: Here are the directions from Union Square to Golden Gate Bridge:
-- Distance: 8.5 km
-- Duration: 18 minutes
-- Route: Head northwest on Post St, turn left onto Van Ness Ave...
-```
+![directions image](assets/si_directions_example.png)
 
 **Reachability Analysis:**
-```
-User: Show me areas reachable within 15 minutes by car from Fisherman's Wharf
-
-Agent: Here's the 15-minute driving catchment area from Fisherman's Wharf:
-- Center: Fisherman's Wharf (37.81°N, 122.42°W)
-- Reachable area: 45.2 km²
-- The isochrone covers most of northern San Francisco including...
-```
+![isochrone image](assets/si_isochrone_example.png)
 
 **Route Optimization:**
-```
-User: I need to deliver to Ferry Building, Pier 39, and Ghirardelli Square 
-      with 2 vehicles starting from SFO Airport
-
-Agent: Here's the optimized route plan:
-- Vehicle 1: SFO → Ferry Building → Pier 39 → SFO (12.3 km, 28 min)
-- Vehicle 2: SFO → Ghirardelli Square → SFO (18.1 km, 35 min)
-- Total distance: 30.4 km
-- All deliveries assigned successfully
-```
+![optimization image](assets/si_optimization_example.png)
 
 ### Region Considerations
 
 > **_IMPORTANT:_** The agent works with locations within the region configured in your OpenRouteService Native App.
 
-To determine your configured region:
-1. Check the ORS config file at `oss-install-openrouteservice-native-app/Native_app/provider_setup/staged_files/ors-config.yml`
-2. Find the `source_file` value (e.g., `SanFrancisco.osm.pbf`)
-3. Use locations within that region for best results
-
-**Sample Queries by Region:**
-
-| Region | Directions | Isochrone | Optimization |
-|--------|-----------|-----------|--------------|
-| San Francisco | "Directions from Union Square to Golden Gate Bridge" | "15-minute drive from Fisherman's Wharf" | "Optimize deliveries to Ferry Building, Pier 39, and Ghirardelli Square with 2 vehicles starting from Union Square, San Francisco" |
-| New York | "Get driving directions from Times Square to Central Park" | "Show areas reachable within 15 minutes by car from Grand Central Station" | "Optimize deliveries to Empire State Building, Rockefeller Center, and Times Square with 2 vehicles starting from Grand Central Station" |
-| London | "Get driving directions from Tower Bridge to Buckingham Palace" | "Show areas reachable within 15 minutes by car from King's Cross Station" | "Optimize deliveries to British Museum, Tower of London, and Westminster Abbey with 2 vehicles starting from Trafalgar Square" |
-| Berlin | "Get driving directions from Brandenburg Gate to Alexanderplatz" | "Show areas reachable within 15 minutes by car from Berlin Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, and East Side Gallery with 2 vehicles starting from Alexanderplatz" |
-
 <!-- ------------------------ -->
 ## Troubleshooting
-
-### Common Issues
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Agent not visible in UI | Not registered with Intelligence | Run `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` |
-| Geocoding fails | Cortex AI model not accessible | Verify `claude-sonnet-4-5` is available in your account |
-| Empty directions | Location outside map region | Use locations within your ORS configured region |
-| Tool execution timeout | Complex query or large optimization | Increase warehouse size or reduce delivery points |
-| "Function not found" error | ORS Native App not running | Check service status with `SHOW SERVICES IN SCHEMA` |
 
 ### Checking Service Status
 
@@ -339,43 +274,9 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.TOOL_OPTIMIZATION(
 
 ### Changing the Map Region
 
-To use the agent with a different city or region, update your OpenRouteService Native App:
-
-```
-use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
-```
+To use the agent with a different city or region, update your OpenRouteService Native App. More details here: [Install OpenRouteService Native App](https://www.snowflake.com/en/developers/guides/oss-install-openrouteservice-native-app/
 
 After changing the region, the agent will automatically work with locations in the new area.
-
-### Modifying the Agent
-
-You can customize the agent's behavior by modifying the agent specification:
-
-**Change the orchestration model:**
-```sql
-ALTER AGENT OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_AGENT
-SET SPECIFICATION = '... models.orchestration: claude-4-sonnet ...';
-```
-
-**Update system instructions:**
-Modify the `instructions.system` field to change how the agent responds.
-
-**Adjust tool descriptions:**
-Update tool descriptions to guide the agent's tool selection behavior.
-
-<!-- ------------------------ -->
-## Available Cortex Code Skills
-
-| Skill | Description | Command |
-|-------|-------------|---------|
-| `deploy_snowflake_intelligence_routing_agent` | Deploy the Routing Agent | `use the local skill from oss-deploy-snowflake-intelligence-routing-agent/skills/deploy_snowflake_intelligence_routing_agent` |
-
-### Related Skills
-
-| Skill | Description | Command |
-|-------|-------------|---------|
-| `deploy-route-optimizer` | Install OpenRouteService Native App | `use the local skill from oss-install-openrouteservice-native-app/skills/deploy-route-optimizer` |
-| `customizations/location` | Change map region | `use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location` |
 
 <!-- ------------------------ -->
 ## Conclusion and Resources
@@ -393,7 +294,7 @@ The agent enables truly natural route planning - users simply describe locations
 
 - Deploy a Snowflake Intelligence Agent using Cortex Code skills
 - Create AI-enhanced stored procedures with Cortex geocoding
-- Build conversational routing assistants with natural language input
+- Build conversational routing agents with natural language input
 - Register and access agents through the Snowflake Intelligence UI
 - Test and troubleshoot agent tool execution
 
@@ -412,8 +313,3 @@ The agent enables truly natural route planning - users simply describe locations
 - [Snowflake Intelligence Documentation](https://docs.snowflake.com/en/user-guide/snowflake-intelligence) - Official documentation
 - [Snowflake Cortex AI](https://docs.snowflake.com/en/user-guide/snowflake-cortex/overview) - AI-powered features in Snowflake
 - [Creating Agents](https://docs.snowflake.com/en/user-guide/snowflake-intelligence/agents) - Agent creation guide
-
-### OpenRouteService Resources
-
-- [OpenRouteService Official Website](https://openrouteservice.org/) - Documentation and API reference
-- [VROOM Project](https://github.com/VROOM-Project/vroom) - Vehicle Routing Open-source Optimization Machine
