@@ -80,7 +80,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
 
    snow stage copy "Notebook/download_map.ipynb" \
-   @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE --connection <connection> --overwrite
+   @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/Notebook/ --connection <connection> --overwrite
    ```
 
 **Output:** Configuration files uploaded to Snowflake stage

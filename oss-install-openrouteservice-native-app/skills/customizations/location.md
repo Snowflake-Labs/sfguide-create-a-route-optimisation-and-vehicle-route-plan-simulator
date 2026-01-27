@@ -68,7 +68,7 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
    AUTO_SUSPEND_SECS = 600;
 
    CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP
-   FROM '@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE'
+   FROM '@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/Notebook'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS' 
    RUNTIME_NAME = 'SYSTEM$BASIC_RUNTIME' 
    COMPUTE_POOL = 'OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL' 
@@ -176,7 +176,9 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
    SPECIFICATION_FILE='/services/openrouteservice/openrouteservice.yaml';
    ```
 
-**Output:** Service configured for new region with REBUILD_GRAPHS enabled
+> **_IMPORTANT: DO NOT modify the `REBUILD_GRAPHS` parameter in openrouteservice.yaml**
+
+**Output:** Service configured for new region
 
 ### Step 5: Rebuild Routing Graphs
 
@@ -203,20 +205,18 @@ Downloads a new OpenStreetMap region, updates the Function Tester with region-sp
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
    ```
 
-2. **Verify** services are running:
+4. **Verify** services are running:
    ```sql
    SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
    ```
 
-3. **Monitor** ORS_SERVICE logs for graph building progress:
+5. **Monitor** ORS_SERVICE logs for graph building progress:
    ```sql
    CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 100);
    ```
    - Look for: `"Graph built in X seconds"` messages for each enabled profile
 
 **Note:** Graph building can take 30 minutes to several hours depending on map size and number of enabled profiles.
-
-> **_IMPORTANT:_** After graphs are successfully built, set `REBUILD_GRAPHS` back to `false` in `openrouteservice.yaml` and re-upload to prevent unnecessary rebuilds on future service restarts.
 
 **Output:** Services rebuilding with new map
 
