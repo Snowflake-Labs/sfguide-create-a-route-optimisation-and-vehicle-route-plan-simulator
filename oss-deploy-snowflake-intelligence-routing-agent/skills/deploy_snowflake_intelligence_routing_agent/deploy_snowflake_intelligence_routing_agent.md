@@ -170,69 +170,80 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_NATIVE_APP.CORE.TOOL_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
 AS
 $$
-DECLARE
-    result_cursor CURSOR FOR
-        WITH delivery_geocoded AS (
-            SELECT AI_COMPLETE(
-                'claude-sonnet-4-5',
-                CONCAT('Extract all delivery locations and return coordinates. Description: ', ?),
-                {'temperature': 0, 'max_tokens': 3000},
-                {'type': 'json', 'schema': {'type': 'object', 'properties': {'locations': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'longitude': {'type': 'number'}, 'latitude': {'type': 'number'}}, 'required': ['name', 'longitude', 'latitude']}}}}}
-            ) AS delivery_result
-        ),
-        depot_geocoded AS (
-            SELECT AI_COMPLETE(
-                'claude-sonnet-4-5',
-                CONCAT('Extract the depot location coordinates. Description: ', ?),
-                {'temperature': 0, 'max_tokens': 1000},
-                {'type': 'json', 'schema': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'longitude': {'type': 'number'}, 'latitude': {'type': 'number'}}, 'required': ['name', 'longitude', 'latitude']}}
-            ) AS depot_result
-        ),
-        jobs_built AS (
-            SELECT delivery_result,
-                   ARRAY_AGG(OBJECT_CONSTRUCT(
-                       'id', ROW_NUMBER() OVER (ORDER BY value:name),
-                       'location', ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT),
-                       'description', value:name::STRING
-                   )) AS jobs
-            FROM delivery_geocoded, TABLE(FLATTEN(delivery_geocoded.delivery_result, 'locations'))
-            GROUP BY delivery_result
-        ),
-        vehicles_built AS (
-            SELECT depot_result,
-                   ARRAY_AGG(OBJECT_CONSTRUCT(
-                       'id', seq4(),
-                       'profile', ?,
-                       'start', ARRAY_CONSTRUCT(depot_result:longitude::FLOAT, depot_result:latitude::FLOAT),
-                       'end', ARRAY_CONSTRUCT(depot_result:longitude::FLOAT, depot_result:latitude::FLOAT)
-                   )) AS vehicles
-            FROM depot_geocoded, TABLE(GENERATOR(ROWCOUNT => ?))
-            GROUP BY depot_result
-        ),
-        optimized AS (
-            SELECT j.delivery_result, v.depot_result, j.jobs, v.vehicles,
-                   OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(j.jobs, v.vehicles) AS opt_result
-            FROM jobs_built j, vehicles_built v
-        )
-        SELECT OBJECT_CONSTRUCT(
-            'deliveries', delivery_result:locations,
-            'depot', depot_result,
-            'num_vehicles', ?,
-            'routes', opt_result:routes,
-            'unassigned', opt_result:unassigned,
-            'summary', opt_result:summary
-        ) AS result
-        FROM optimized;
-    result_row VARIANT;
-BEGIN
-    OPEN result_cursor USING (DELIVERY_LOCATIONS, DEPOT_LOCATION, PROFILE, NUM_VEHICLES, NUM_VEHICLES);
-    FETCH result_cursor INTO result_row;
-    CLOSE result_cursor;
-    RETURN result_row;
-END;
+import json
+from snowflake.snowpark import Session
+
+def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str) -> dict:
+    # Geocode delivery locations
+    delivery_query = f"""
+    SELECT AI_COMPLETE(
+        'claude-sonnet-4-5',
+        'Extract all delivery locations and return coordinates. Description: {delivery_locations}',
+        {{'temperature': 0, 'max_tokens': 3000}},
+        {{'type': 'json', 'schema': {{'type': 'object', 'properties': {{'locations': {{'type': 'array', 'items': {{'type': 'object', 'properties': {{'name': {{'type': 'string'}}, 'longitude': {{'type': 'number'}}, 'latitude': {{'type': 'number'}}}}, 'required': ['name', 'longitude', 'latitude']}}}}}}}}}}
+    ) AS result
+    """
+    delivery_result = session.sql(delivery_query).collect()[0]['RESULT']
+    delivery_data = json.loads(delivery_result) if isinstance(delivery_result, str) else delivery_result
+    
+    # Geocode depot location
+    depot_query = f"""
+    SELECT AI_COMPLETE(
+        'claude-sonnet-4-5',
+        'Extract the depot location coordinates. Description: {depot_location}',
+        {{'temperature': 0, 'max_tokens': 1000}},
+        {{'type': 'json', 'schema': {{'type': 'object', 'properties': {{'name': {{'type': 'string'}}, 'longitude': {{'type': 'number'}}, 'latitude': {{'type': 'number'}}}}, 'required': ['name', 'longitude', 'latitude']}}}}
+    ) AS result
+    """
+    depot_result = session.sql(depot_query).collect()[0]['RESULT']
+    depot_data = json.loads(depot_result) if isinstance(depot_result, str) else depot_result
+    
+    # Build jobs array
+    jobs = []
+    for i, loc in enumerate(delivery_data.get('locations', []), start=1):
+        jobs.append({
+            'id': i,
+            'location': [loc['longitude'], loc['latitude']],
+            'description': loc['name']
+        })
+    
+    # Build vehicles array
+    vehicles = []
+    for i in range(1, num_vehicles + 1):
+        vehicles.append({
+            'id': i,
+            'profile': profile,
+            'start': [depot_data['longitude'], depot_data['latitude']],
+            'end': [depot_data['longitude'], depot_data['latitude']]
+        })
+    
+    # Call optimization
+    jobs_json = json.dumps(jobs).replace("'", "''")
+    vehicles_json = json.dumps(vehicles).replace("'", "''")
+    
+    opt_query = f"""
+    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
+        PARSE_JSON('{jobs_json}'),
+        PARSE_JSON('{vehicles_json}')
+    ) AS result
+    """
+    opt_result = session.sql(opt_query).collect()[0]['RESULT']
+    opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
+    
+    return {
+        'deliveries': delivery_data.get('locations', []),
+        'depot': depot_data,
+        'num_vehicles': num_vehicles,
+        'routes': opt_data.get('routes', []),
+        'unassigned': opt_data.get('unassigned', []),
+        'summary': opt_data.get('summary', {})
+    }
 $$;
 ```
 
