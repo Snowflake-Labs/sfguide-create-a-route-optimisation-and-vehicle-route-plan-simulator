@@ -1,0 +1,9 @@
+name: streamlit
+channels:
+  - snowflake
+dependencies:
+  - streamlit=1.35.0
+  - snowflake-snowpark-python
+  - pydeck
+  - branca
+  - pandas

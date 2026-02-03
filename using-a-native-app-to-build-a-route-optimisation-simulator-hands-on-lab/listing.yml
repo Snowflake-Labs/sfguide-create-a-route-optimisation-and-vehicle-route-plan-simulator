@@ -1,0 +1,21 @@
+listing_kind: event_solution
+name: "Fleet Intelligence - With Routing and advanced analytics"
+version: "v1"
+tier: 1
+description: "A sophisticated Fleet Intelligence solution with utilises a routing services powered by container services."
+creator: "Solution Innovation Showcase"
+use_case:
+  - "Snowflake"
+vertical_applicability:
+  - "Product Demos"
+snowflake_feature:
+  - "Snowsight"
+  - "H3"
+  - "Geojson"
+  - "Geospatial Datatypes"
+  - "Spatial Joins"
+snowflake_workload:
+  - "Geospatial"
+  - "Time Series"
+  - "Streamlit"
+  - "AI"

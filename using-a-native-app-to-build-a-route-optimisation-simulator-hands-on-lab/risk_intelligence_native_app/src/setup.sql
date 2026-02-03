@@ -1,0 +1,192 @@
+-- Risk Intelligence Native App Setup Script
+-- This script sets up the Risk Intelligence application with flood and wildfire risk assessment capabilities
+
+-- Create application roles
+CREATE APPLICATION ROLE IF NOT EXISTS RISK_ANALYST;
+CREATE APPLICATION ROLE IF NOT EXISTS RISK_ADMIN;
+
+-- Create application warehouse for compute
+CREATE WAREHOUSE IF NOT EXISTS APP_WAREHOUSE
+    WAREHOUSE_SIZE = 'SMALL'
+    AUTO_SUSPEND = 300
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    COMMENT = 'Warehouse for Risk Intelligence Native App';
+
+-- Create main schema for the application
+CREATE SCHEMA IF NOT EXISTS CORE;
+CREATE SCHEMA IF NOT EXISTS FLOOD_RISK;
+CREATE SCHEMA IF NOT EXISTS WILDFIRE_RISK;
+
+-- Grant schema usage to application roles
+GRANT USAGE ON SCHEMA CORE TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON SCHEMA CORE TO APPLICATION ROLE RISK_ADMIN;
+GRANT USAGE ON SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ADMIN;
+GRANT USAGE ON SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ADMIN;
+
+-- Grant warehouse usage
+GRANT USAGE ON WAREHOUSE APP_WAREHOUSE TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON WAREHOUSE APP_WAREHOUSE TO APPLICATION ROLE RISK_ADMIN;
+
+-- Create application stage for Streamlit files
+CREATE STAGE IF NOT EXISTS CORE.APP_STAGE
+    COMMENT = 'Stage for Risk Intelligence application files';
+
+-- Create file formats
+CREATE FILE FORMAT IF NOT EXISTS CORE.CSV_FORMAT
+    TYPE = CSV
+    FIELD_DELIMITER = ','
+    SKIP_HEADER = 1
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+    ENCODING = 'UTF8'
+    NULL_IF = ('\\N','NULL')
+    EMPTY_FIELD_AS_NULL = FALSE
+    TRIM_SPACE = FALSE
+    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+    REPLACE_INVALID_CHARACTERS = TRUE
+    MULTI_LINE = TRUE;
+
+CREATE FILE FORMAT IF NOT EXISTS CORE.GEOJSON_FORMAT
+    TYPE = JSON
+    STRIP_OUTER_ARRAY = FALSE
+    COMPRESSION = AUTO;
+
+-- ===== FLOOD RISK SETUP =====
+
+-- Create flood risk tables
+CREATE TABLE IF NOT EXISTS FLOOD_RISK.UK_STORMS (
+    NAME STRING,
+    DATES STRING,
+    DESCRIPTION STRING,
+    UK_FATALITIES STRING,
+    SOURCE STRING,
+    NEWS_SUMMARY STRING
+);
+
+CREATE TABLE IF NOT EXISTS FLOOD_RISK.FLOOD_RISK_AREAS (
+    FEATURE VARIANT,
+    PROPERTIES VARIANT,
+    GEOMETRY VARIANT,
+    GEOG GEOGRAPHY
+);
+
+CREATE TABLE IF NOT EXISTS FLOOD_RISK.FWS_HISTORIC_WARNINGS (
+    AREA_NAME STRING,
+    EVENT_TS TIMESTAMP,
+    SEVERITY STRING,
+    MESSAGE STRING
+);
+
+-- Create flood risk views
+CREATE VIEW IF NOT EXISTS FLOOD_RISK.FLOOD_RISK_AREAS_VIEW AS
+SELECT 
+    PROPERTIES:fra_id::STRING AS FRA_ID,
+    PROPERTIES:fra_name::STRING AS FRA_NAME,
+    PROPERTIES:frr_cycle::STRING AS FRR_CYCLE,
+    PROPERTIES:flood_source::STRING AS FLOOD_SOURCE,
+    GEOMETRY,
+    GEOG
+FROM FLOOD_RISK.FLOOD_RISK_AREAS;
+
+CREATE VIEW IF NOT EXISTS FLOOD_RISK.FWS_CLEAN AS
+SELECT
+    AREA_NAME,
+    EVENT_TS,
+    REGEXP_REPLACE(UPPER(AREA_NAME),'[^A-Z0-9 ]+',' ') AS NAME_CLEAN
+FROM FLOOD_RISK.FWS_HISTORIC_WARNINGS
+WHERE AREA_NAME IS NOT NULL;
+
+-- ===== WILDFIRE RISK SETUP =====
+
+-- Request access to marketplace data for wildfire analysis
+-- Note: This would need to be configured during app installation
+-- CALL SYSTEM$REQUEST_LISTING_AND_WAIT('ORGDATACLOUD$INTERNAL$LOCATION_ANALYTICS_-_MAKING_PEOPLE_SAFER', 20);
+
+-- Create wildfire risk views (these would reference marketplace data)
+CREATE VIEW IF NOT EXISTS WILDFIRE_RISK.CUSTOMER_LOYALTY_DETAILS AS
+SELECT 
+    'Placeholder - Connect to marketplace data during installation' AS NOTE,
+    NULL AS CUSTOMER_ID,
+    NULL AS LOYALTY_SCORE,
+    NULL AS RISK_LEVEL;
+
+CREATE VIEW IF NOT EXISTS WILDFIRE_RISK.CELL_TOWERS_WITH_RISK_SCORE AS
+SELECT 
+    'Placeholder - Connect to marketplace data during installation' AS NOTE,
+    NULL AS TOWER_ID,
+    NULL AS LATITUDE,
+    NULL AS LONGITUDE,
+    NULL AS RISK_SCORE;
+
+CREATE VIEW IF NOT EXISTS WILDFIRE_RISK.CALIFORNIA_FIRE_PERIMETER AS
+SELECT 
+    'Placeholder - Connect to marketplace data during installation' AS NOTE,
+    NULL AS FIRE_ID,
+    NULL AS FIRE_NAME,
+    NULL AS YEAR,
+    NULL AS GEOMETRY;
+
+-- ===== STREAMLIT APPLICATIONS =====
+
+-- Create Flood Risk Assessment Streamlit App
+CREATE STREAMLIT IF NOT EXISTS FLOOD_RISK."UK Flood Risk Assessment"
+    FROM '@CORE.APP_STAGE'
+    MAIN_FILE = 'flood_risk_areas.py'
+    QUERY_WAREHOUSE = 'APP_WAREHOUSE'
+    COMMENT = 'UK Flood Risk Assessment - Risk Intelligence Native App';
+
+-- Create Wildfire Risk Assessment Streamlit App  
+CREATE STREAMLIT IF NOT EXISTS WILDFIRE_RISK."California Wildfire Risk Assessment"
+    FROM '@CORE.APP_STAGE'
+    MAIN_FILE = 'wildfire_assessment.py'
+    QUERY_WAREHOUSE = 'APP_WAREHOUSE'
+    COMMENT = 'California Wildfire Risk Assessment - Risk Intelligence Native App';
+
+-- ===== PERMISSIONS =====
+
+-- Grant table permissions to roles
+GRANT SELECT ON ALL TABLES IN SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT SELECT ON ALL TABLES IN SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT SELECT ON ALL VIEWS IN SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ANALYST;
+
+GRANT ALL ON SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ADMIN;
+GRANT ALL ON SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ADMIN;
+GRANT ALL ON SCHEMA CORE TO APPLICATION ROLE RISK_ADMIN;
+
+-- Grant Streamlit permissions
+GRANT USAGE ON STREAMLIT FLOOD_RISK."UK Flood Risk Assessment" TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON STREAMLIT WILDFIRE_RISK."California Wildfire Risk Assessment" TO APPLICATION ROLE RISK_ANALYST;
+
+-- Create a procedure to load sample data (can be called post-installation)
+CREATE OR REPLACE PROCEDURE CORE.LOAD_SAMPLE_DATA()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    -- This procedure can be used to load sample data after installation
+    -- Data loading would be customized based on customer requirements
+    
+    INSERT INTO FLOOD_RISK.UK_STORMS (NAME, DATES, DESCRIPTION, UK_FATALITIES, SOURCE, NEWS_SUMMARY)
+    VALUES 
+        ('Storm Ciara', '2020-02-08 to 2020-02-10', 'Major winter storm affecting UK and Ireland', '8', 'Met Office', 'Widespread flooding and power outages'),
+        ('Storm Dennis', '2020-02-15 to 2020-02-17', 'Second major storm in February 2020', '5', 'Met Office', 'Record rainfall in Wales and flooding across England');
+    
+    RETURN 'Sample data loaded successfully';
+END;
+$$;
+
+-- Grant execution permission on the procedure
+GRANT USAGE ON PROCEDURE CORE.LOAD_SAMPLE_DATA() TO APPLICATION ROLE RISK_ADMIN;
+
+-- Create application info view
+CREATE VIEW IF NOT EXISTS CORE.APPLICATION_INFO AS
+SELECT 
+    'Risk Intelligence' AS APP_NAME,
+    '1.0.0' AS VERSION,
+    'Comprehensive risk assessment platform for flood and wildfire analysis' AS DESCRIPTION,
+    CURRENT_TIMESTAMP() AS INSTALLED_AT,
+    CURRENT_USER() AS INSTALLED_BY;

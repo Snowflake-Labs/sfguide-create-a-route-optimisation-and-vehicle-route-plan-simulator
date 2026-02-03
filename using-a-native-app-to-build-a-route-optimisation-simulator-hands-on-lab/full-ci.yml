@@ -1,0 +1,17 @@
+include:
+  - /pipelines/includes/bootstrap.yml
+
+  ## Build Event Instructions Homepage
+  - /pipelines/includes/local_includes/build_homepage.yml
+
+  ## Configure Attendee Account
+  - /pipelines/includes/local_includes/configure_attendee_account.yml
+
+  ## Deploy Example Notebook
+  - /pipelines/includes/local_includes/deploy_notebooks.yml
+
+  ## Deploy Example Streamlit App
+  - /pipelines/includes/local_includes/deploy_streamlit.yml
+
+  ## Deploy OpenStreetMap Generator Native App
+  - /pipelines/includes/local_includes/deploy_osm_native_app.yml

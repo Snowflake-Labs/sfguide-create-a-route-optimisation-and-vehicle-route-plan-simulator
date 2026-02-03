@@ -1,0 +1,10 @@
+name: app_environment
+channels:
+  - snowflake
+dependencies:
+  - branca=0.6.0
+  - pydeck=0.9.1
+  - python=3.11.*
+  - snowflake-snowpark-python=
+  - streamlit=
+  - typing=3.10.0.0

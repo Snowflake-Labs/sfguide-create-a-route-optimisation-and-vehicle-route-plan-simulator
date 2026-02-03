@@ -1,0 +1,32 @@
+# OpenStreetMap Generator Native App Manifest
+# This manifest defines the structure and requirements for the OSM Generator Native App
+
+manifest_version: 1
+
+artifacts:
+  setup_script: setup.sql
+  readme: README.md
+  default_streamlit: core.map_generator_app
+
+references:
+  - external_access_integration_ref:
+      label: "External Network Access"
+      description: "Required for accessing OpenStreetMap APIs (Overpass API, Nominatim)"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_external_access
+      configuration_callback: core.get_external_access_config
+      required_at_setup: true
+
+configuration:
+  log_level: INFO
+  trace_level: ON_EVENT
+  
+privileges:
+  - CREATE EXTERNAL ACCESS INTEGRATION:
+      description: "Permission to create external access integrations for OSM APIs"
+  - CREATE NETWORK RULE:
+      description: "Permission to create network rules for external API access"
+  - CREATE STAGE:
+      description: "Permission to create stages for storing generated map files"

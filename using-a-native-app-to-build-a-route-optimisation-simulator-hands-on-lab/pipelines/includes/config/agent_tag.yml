@@ -1,0 +1,3 @@
+.agent_tag:
+  tags:
+    - $AGENT_TAG

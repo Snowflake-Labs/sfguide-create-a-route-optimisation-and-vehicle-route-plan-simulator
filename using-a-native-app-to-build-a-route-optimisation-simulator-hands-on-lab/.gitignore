@@ -1,0 +1,22 @@
+logs/
+snowflake.log
+snowflake-provider/
+vault-content/vault.yml
+dataops/event/homepage/__pycache__/**
+local_sandbox/snowflake_config.py
+
+# Virtual environments
+snowflake_env/
+venv/
+env/
+.env/
+.venv/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Testing and development files
+test_snowflake_connection.py

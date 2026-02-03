@@ -1,0 +1,27 @@
+Deploy OSM Native App:
+  extends:
+    - .agent_tag
+  stage: "Additional Configuration"
+  needs:
+    - job: "Initialise Pipeline"
+    - job: "Configure Attendee Account"
+  rules:
+    - if: $EVENT_DEPLOY_OSM_NATIVE_APP == "true"
+  image: $DATAOPS_SNOWFLAKE_RUNNER_IMAGE
+  variables:
+    DATAOPS_SNOWSQL_USER: $DATAOPS_SNOWFLAKE_USER
+    DATAOPS_SNOWSQL_ACCOUNT: $DATAOPS_SNOWFLAKE_ACCOUNT
+    DATAOPS_SNOWSQL_ROLE: ACCOUNTADMIN
+    DATAOPS_SNOWSQL_WAREHOUSE: ""
+    DATAOPS_SNOWFLAKE_AUTH: KEY_PAIR
+    DATAOPS_RUN_SQL: $CI_PROJECT_DIR/dataops/event/deploy_osm_native_app.sql
+  script:
+    - /dataops
+  icon: ${SNOWFLAKE_ICON}
+  artifacts:
+    reports:
+      junit: dataops/logs/junit.xml
+    paths:
+      - dataops/logs/
+    expire_in: 1 week
+  allow_failure: false

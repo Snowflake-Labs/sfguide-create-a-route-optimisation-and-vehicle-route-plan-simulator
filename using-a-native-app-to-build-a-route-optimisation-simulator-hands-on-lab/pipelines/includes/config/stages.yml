@@ -1,0 +1,14 @@
+stages:
+  - Pipeline Initialisation
+  - Vault Initialisation
+  - Data Sharing
+  - Attendee Account Setup
+  - Pre Snowflake Setup
+  - Snowflake Setup
+  - Additional Configuration
+  - Data Ingestion
+  - Source Testing
+  - Data Transformation
+  - Transformation Testing
+  - Generate Docs
+  - Clean Up

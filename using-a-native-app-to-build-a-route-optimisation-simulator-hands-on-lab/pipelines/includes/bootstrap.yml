@@ -1,0 +1,20 @@
+workflow:
+  name: $_PIPELINE_FILE_NAME
+
+include:
+  - project: reference-template-projects/dataops-template/dataops-reference
+    ref: 5-stable
+    file: /pipelines/includes/base_bootstrap.yml
+
+  - /pipelines/includes/config/agent_tag.yml
+  - /pipelines/includes/config/variables.yml
+  - /dataops/event/variables.yml
+  - /pipelines/includes/config/stages.yml
+
+  # Historic Flood Outlines deploy step
+  - /pipelines/includes/local_includes/deploy_historic_flood_outlines.yml
+
+  ## Job to initialise the pipeline (applies to all pipelines so that's why it's here in the bootstrap!)
+  - project: reference-template-projects/dataops-template/dataops-reference
+    ref: 5-stable
+    file: /pipelines/includes/default/initialise_pipeline.yml

@@ -1,0 +1,9 @@
+# Local development requirements for Streamlit apps (Python 3.13 compatible)
+streamlit>=1.31.0
+snowflake-snowpark-python>=1.35.0
+pandas>=2.0.0
+pydeck>=0.9.0
+altair>=5.0.0
+requests>=2.30.0
+snowflake-connector-python>=3.0.0
+python-dotenv>=1.0.0

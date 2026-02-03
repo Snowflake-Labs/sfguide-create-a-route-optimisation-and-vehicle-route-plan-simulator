@@ -58,7 +58,26 @@ ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
 
 Wait 15-30 seconds for services to start before proceeding.
 
-### Step 2: Create TOOL_DIRECTIONS Procedure
+### Step 2: Get Carto Overture Dataset from Marketplace
+
+**Goal:** Acquire the Overture Maps Places dataset for point-of-interest data (useful for location-based queries).
+
+**Actions:**
+
+1. **Execute** the following SQL commands to get the dataset:
+   ```sql
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
+   ```
+
+2. **Verify** the dataset is accessible:
+   ```sql
+   SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
+   ```
+
+**Output:** Carto Overture Places dataset available in your account as `OVERTURE_MAPS__PLACES`
+
+### Step 3: Create TOOL_DIRECTIONS Procedure
 
 **Goal:** Wrap DIRECTIONS with AI geocoding for natural language input.
 
@@ -111,7 +130,7 @@ END;
 $$;
 ```
 
-### Step 3: Create TOOL_ISOCHRONE Procedure
+### Step 4: Create TOOL_ISOCHRONE Procedure
 
 **Goal:** Wrap ISOCHRONES with AI geocoding.
 
@@ -158,7 +177,7 @@ END;
 $$;
 ```
 
-### Step 4: Create TOOL_OPTIMIZATION Procedure
+### Step 5: Create TOOL_OPTIMIZATION Procedure
 
 **Goal:** Wrap OPTIMIZATION with AI geocoding for multi-stop routing.
 
@@ -247,7 +266,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
 $$;
 ```
 
-### Step 5: Create the Agent
+### Step 6: Create the Agent
 
 **Goal:** Create Cortex Agent with tools pointing to procedures.
 
@@ -351,7 +370,7 @@ tool_resources:
 $;
 ```
 
-### Step 6: Register Agent with Snowflake Intelligence
+### Step 7: Register Agent with Snowflake Intelligence
 
 **Goal:** Make agent visible in Snowsight UI.
 
@@ -360,7 +379,7 @@ ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT
 ADD AGENT OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_AGENT;
 ```
 
-### Step 7: Test the Agent
+### Step 8: Test the Agent
 
 **Goal:** Verify agent works.
 
@@ -401,7 +420,7 @@ Wait 15-30 seconds for services to reach RUNNING status before testing.
 
 **CRITICAL:** Use central city locations as depots.
 
-### Step 8: Open Snowflake Intelligence UI
+### Step 9: Open Snowflake Intelligence UI
 
 **Goal:** Open the Snowflake Intelligence interface in the browser so the user can interact with the agent.
 
@@ -421,8 +440,9 @@ Then construct and open the URL with the actual values.
 ## Stopping Points
 
 - **Step 1**: Verify ORS functions exist before proceeding
-- **Step 5**: Review agent spec before creation
-- **Step 7**: Confirm all 3 tools work correctly
+- **Step 2**: After getting Marketplace data - verify dataset accessible
+- **Step 6**: Review agent spec before creation
+- **Step 8**: Confirm all 3 tools work correctly
 
 ## Output
 
