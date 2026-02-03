@@ -410,7 +410,17 @@ All scripts are in: `oss-deploy-a-fleet-intelligence-solution-for-taxis/scripts/
 
 ## Workflow
 
-### Step 1: Verify ORS Configuration
+### Step 1: Set Query Tag for Tracking
+
+**Goal:** Set session query tag for attribution tracking.
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+**Output:** Query tag set for session tracking
+
+### Step 2: Verify ORS Configuration
 
 **Goal:** Ensure OpenRouteService can route in your target location
 
@@ -445,7 +455,7 @@ If the query returns a route geometry, your ORS is configured for that region. I
 
 ---
 
-### Step 2: Configure Database and Warehouse
+### Step 3: Configure Database and Warehouse
 
 **Goal:** Create appropriately sized warehouse for data generation
 
@@ -457,7 +467,7 @@ See [Recommended Warehouse Sizes](#recommended-warehouse-sizes) table above.
 
 ---
 
-### Step 3: Create Base Locations
+### Step 4: Create Base Locations
 
 **Goal:** Load locations from Overture Maps for your target city
 
@@ -469,7 +479,7 @@ See [Location Configuration in Scripts](#location-configuration-in-scripts) abov
 
 ---
 
-### Step 4: Create Drivers with Shift Patterns
+### Step 5: Create Drivers with Shift Patterns
 
 **Goal:** Create drivers distributed across shifts
 
@@ -506,7 +516,7 @@ SELECT 5, 'Evening', 15, 23, 35
 
 ---
 
-### Step 5: Generate Trips
+### Step 6: Generate Trips
 
 **Goal:** Create trip assignments for each day
 
@@ -518,7 +528,7 @@ For multiple days, modify the script to include a days generator (see scripts/RE
 
 ---
 
-### Step 6: Generate ORS Routes
+### Step 7: Generate ORS Routes
 
 **Goal:** Generate actual road routes using OpenRouteService
 
@@ -533,7 +543,7 @@ For multiple days, modify the script to include a days generator (see scripts/RE
 
 ---
 
-### Step 7: Create Driver Locations
+### Step 8: Create Driver Locations
 
 **Goal:** Interpolate driver positions along routes with realistic speeds
 
@@ -560,7 +570,7 @@ This creates 15 points per trip with driver states:
 
 ---
 
-### Step 8: Create Analytics Views
+### Step 9: Create Analytics Views
 
 **Goal:** Create views for Streamlit consumption
 
@@ -570,7 +580,7 @@ This creates 15 points per trip with driver states:
 
 ---
 
-### Step 9: Deploy Streamlit App
+### Step 10: Deploy Streamlit App
 
 **Goal:** Upload and deploy the Streamlit application
 

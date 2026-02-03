@@ -23,7 +23,17 @@ This skill uses the following values:
 
 ## Workflow
 
-### Step 1: Verify ORS Functions and Services
+### Step 1: Set Query Tag for Tracking
+
+**Goal:** Set session query tag for attribution tracking.
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+**Output:** Query tag set for session tracking
+
+### Step 2: Verify ORS Functions and Services
 
 **Goal:** Confirm OpenRouteService functions are available AND services are running.
 
@@ -58,7 +68,7 @@ ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
 
 Wait 15-30 seconds for services to start before proceeding.
 
-### Step 2: Get Carto Overture Dataset from Marketplace
+### Step 3: Get Carto Overture Dataset from Marketplace
 
 **Goal:** Acquire the Overture Maps Places dataset for point-of-interest data (useful for location-based queries).
 
@@ -77,7 +87,7 @@ Wait 15-30 seconds for services to start before proceeding.
 
 **Output:** Carto Overture Places dataset available in your account as `OVERTURE_MAPS__PLACES`
 
-### Step 3: Create TOOL_DIRECTIONS Procedure
+### Step 4: Create TOOL_DIRECTIONS Procedure
 
 **Goal:** Wrap DIRECTIONS with AI geocoding for natural language input.
 
@@ -130,7 +140,7 @@ END;
 $$;
 ```
 
-### Step 4: Create TOOL_ISOCHRONE Procedure
+### Step 5: Create TOOL_ISOCHRONE Procedure
 
 **Goal:** Wrap ISOCHRONES with AI geocoding.
 
@@ -177,7 +187,7 @@ END;
 $$;
 ```
 
-### Step 5: Create TOOL_OPTIMIZATION Procedure
+### Step 6: Create TOOL_OPTIMIZATION Procedure
 
 **Goal:** Wrap OPTIMIZATION with AI geocoding for multi-stop routing.
 
@@ -266,7 +276,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
 $$;
 ```
 
-### Step 6: Create the Agent
+### Step 7: Create the Agent
 
 **Goal:** Create Cortex Agent with tools pointing to procedures.
 
@@ -370,7 +380,7 @@ tool_resources:
 $;
 ```
 
-### Step 7: Register Agent with Snowflake Intelligence
+### Step 8: Register Agent with Snowflake Intelligence
 
 **Goal:** Make agent visible in Snowsight UI.
 
@@ -379,7 +389,7 @@ ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT
 ADD AGENT OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_AGENT;
 ```
 
-### Step 8: Test the Agent
+### Step 9: Test the Agent
 
 **Goal:** Verify agent works.
 
@@ -420,7 +430,7 @@ Wait 15-30 seconds for services to reach RUNNING status before testing.
 
 **CRITICAL:** Use central city locations as depots.
 
-### Step 9: Open Snowflake Intelligence UI
+### Step 10: Open Snowflake Intelligence UI
 
 **Goal:** Open the Snowflake Intelligence interface in the browser so the user can interact with the agent.
 
@@ -439,10 +449,10 @@ Then construct and open the URL with the actual values.
 
 ## Stopping Points
 
-- **Step 1**: Verify ORS functions exist before proceeding
-- **Step 2**: After getting Marketplace data - verify dataset accessible
-- **Step 6**: Review agent spec before creation
-- **Step 8**: Confirm all 3 tools work correctly
+- **Step 2**: Verify ORS functions exist before proceeding
+- **Step 3**: After getting Marketplace data - verify dataset accessible
+- **Step 7**: Review agent spec before creation
+- **Step 9**: Confirm all 3 tools work correctly
 
 ## Output
 

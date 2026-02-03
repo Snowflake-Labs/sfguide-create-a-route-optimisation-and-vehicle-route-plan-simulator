@@ -23,7 +23,17 @@ Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, 
 
 ## Workflow
 
-### Step 1: Verify OpenRouteService Installation
+### Step 1: Set Query Tag for Tracking
+
+**Goal:** Set session query tag for attribution tracking.
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-retail-catchment-analysis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+**Output:** Query tag set for session tracking
+
+### Step 2: Verify OpenRouteService Installation
 
 **Goal:** Confirm OpenRouteService Native App is installed and services are running.
 
@@ -56,7 +66,7 @@ Wait 15-30 seconds for services to start.
 
 **Output:** ORS verified and running
 
-### Step 2: Get Carto Overture Datasets from Marketplace
+### Step 3: Get Carto Overture Datasets from Marketplace
 
 **Goal:** Acquire Overture Maps Places and Addresses datasets for POI and density data.
 
@@ -80,7 +90,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 **Output:** Marketplace datasets available
 
-### Step 3: Create Database and Warehouse
+### Step 4: Create Database and Warehouse
 
 **Goal:** Set up the demo database, schema, and warehouse.
 
@@ -102,7 +112,7 @@ CREATE STAGE IF NOT EXISTS RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE
 
 **Output:** Database `RETAIL_CATCHMENT_DEMO` created with stage
 
-### Step 4: Upload Streamlit Files
+### Step 5: Upload Streamlit Files
 
 **Goal:** Upload all Streamlit app files to the stage.
 
@@ -122,7 +132,7 @@ LIST @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE;
 
 **Output:** 4 files uploaded to stage
 
-### Step 5: Create Streamlit App
+### Step 6: Create Streamlit App
 
 **Goal:** Create the Streamlit application in Snowflake.
 
@@ -130,12 +140,13 @@ LIST @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE;
 CREATE OR REPLACE STREAMLIT RETAIL_CATCHMENT_DEMO.PUBLIC.RETAIL_CATCHMENT_APP
     ROOT_LOCATION = '@RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE'
     MAIN_FILE = 'retail_catchment.py'
-    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS';
+    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 ```
 
 **Output:** Streamlit app created
 
-### Step 6: Verify Deployment
+### Step 7: Verify Deployment
 
 **Goal:** Confirm the app is deployed and accessible.
 
@@ -145,7 +156,7 @@ SHOW STREAMLITS IN SCHEMA RETAIL_CATCHMENT_DEMO.PUBLIC;
 
 **Output:** `RETAIL_CATCHMENT_APP` visible in results
 
-### Step 7: Launch the App
+### Step 8: Launch the App
 
 **Goal:** Open the Streamlit app in Snowsight.
 
@@ -174,9 +185,9 @@ The deployed app provides:
 
 ## Stopping Points
 
-- ✋ Step 1: Verify ORS is installed before proceeding
-- ✋ Step 2: Confirm marketplace data is accessible
-- ✋ Step 7: Verify app loads without errors
+- ✋ Step 2: Verify ORS is installed before proceeding
+- ✋ Step 3: Confirm marketplace data is accessible
+- ✋ Step 8: Verify app loads without errors
 
 ## Troubleshooting
 

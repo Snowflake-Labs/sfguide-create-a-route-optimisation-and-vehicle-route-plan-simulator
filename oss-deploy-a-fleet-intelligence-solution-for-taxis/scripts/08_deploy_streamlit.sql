@@ -8,6 +8,9 @@
 --   - Streamlit files uploaded to stage (use deploy_streamlit.py)
 -- =============================================================================
 
+-- Set query tag for tracking
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+
 USE DATABASE FLEET_INTELLIGENCE;
 USE SCHEMA PUBLIC;
 USE WAREHOUSE COMPUTE_WH;
@@ -17,7 +20,8 @@ CREATE OR REPLACE STREAMLIT SF_TAXI_CONTROL_CENTER
   ROOT_LOCATION = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/sf_taxi'
   MAIN_FILE = 'SF_Taxi_Control_Center.py'
   QUERY_WAREHOUSE = COMPUTE_WH
-  TITLE = 'SF Taxi Control Center';
+  TITLE = 'SF Taxi Control Center'
+  COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 -- Show Streamlit URL
 SHOW STREAMLITS LIKE 'SF_TAXI_CONTROL_CENTER';

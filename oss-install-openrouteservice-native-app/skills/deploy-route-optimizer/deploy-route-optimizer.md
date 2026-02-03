@@ -16,7 +16,17 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 ## Workflow
 
-### Step 1: Detect Container Runtime
+### Step 1: Set Query Tag for Tracking
+
+**Goal:** Set session query tag for attribution tracking.
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-install-openrouteservice-native-app","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+**Output:** Query tag set for session tracking
+
+### Step 2: Detect Container Runtime
 
 **Goal:** Identify available container runtime and let user choose
 
@@ -45,7 +55,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Next:** Proceed to Step 2
 
-### Step 2: Setup Database and Stages
+### Step 3: Setup Database and Stages
 
 **Goal:** Create required Snowflake infrastructure
 
@@ -65,7 +75,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Next:** Proceed to Step 3
 
-### Step 3: Upload Configuration Files
+### Step 4: Upload Configuration Files
 
 **Goal:** Stage required configuration and map files
 
@@ -87,7 +97,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Next:** Proceed to Step 4
 
-### Step 4: Build and Push Container Images
+### Step 5: Build and Push Container Images
 
 **Goal:** Build 4 container images and push to Snowflake image repository
 
@@ -157,7 +167,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Next:** Proceed to Step 5
 
-### Step 5: Deploy Native App
+### Step 6: Deploy Native App
 
 **Goal:** Create and deploy the native application
 
@@ -180,7 +190,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 **Output:** Native app deployed and accessible via Snowsight URL
 
-### Step 6: User Confirmation (Required)
+### Step 7: User Confirmation (Required)
 
 **Goal:** Ensure user has completed UI setup before marking skill as complete
 
@@ -200,9 +210,9 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 ## Stopping Points
 
-- ✋ Step 1: After detecting container runtime - confirm user's choice if both available
-- ✋ Step 4: After starting container build - monitor for authentication errors
-- ✋ Step 5: After deployment - verify application created successfully
+- ✋ Step 2: After detecting container runtime - confirm user's choice if both available
+- ✋ Step 5: After starting container build - monitor for authentication errors
+- ✋ Step 6: After deployment - verify application created successfully
 
 ## Common Issues
 

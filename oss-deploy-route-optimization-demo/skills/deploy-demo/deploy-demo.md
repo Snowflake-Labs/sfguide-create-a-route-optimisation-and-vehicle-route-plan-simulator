@@ -14,7 +14,17 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 ## Workflow
 
-### Step 1: Verify OpenRouteService Installation
+### Step 1: Set Query Tag for Tracking
+
+**Goal:** Set session query tag for attribution tracking.
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-optimization-demo","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+**Output:** Query tag set for session tracking
+
+### Step 2: Verify OpenRouteService Installation
 
 **Goal:** Check that the OpenRouteService Native App is installed and running before proceeding
 
@@ -52,7 +62,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 2
 
-### Step 2: Read Current ORS Configuration
+### Step 3: Read Current ORS Configuration
 
 **Goal:** Detect the current map region and vehicle profiles from the ORS configuration to customize the demo accordingly
 
@@ -92,7 +102,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 3
 
-### Step 3: Get Carto Overture Dataset from Marketplace
+### Step 4: Get Carto Overture Dataset from Marketplace
 
 **Goal:** Acquire the Overture Maps Places dataset for point-of-interest data
 
@@ -108,7 +118,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 4
 
-### Step 4: Setup Database and Schemas
+### Step 5: Setup Database and Schemas
 
 **Goal:** Create required database infrastructure for the demo
 
@@ -130,7 +140,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 5
 
-### Step 5: Deploy and Run the Notebook to add Carto data
+### Step 6: Deploy and Run the Notebook to add Carto data
 
 **Goal:** Create and execute notebook that will add Carto data to the database.
 
@@ -171,7 +181,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 6
 
-### Step 6: Check for Latest Claude Model
+### Step 7: Check for Latest Claude Model
 
 **Goal:** Verify the latest Claude Sonnet model available in Snowflake Cortex
 
@@ -198,7 +208,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 7
 
-### Step 7: Deploy the AISQL Notebook (Customized for Region)
+### Step 8: Deploy the AISQL Notebook (Customized for Region)
 
 **Goal:** Create the AISQL exploration notebook, customized for the detected region
 
@@ -233,7 +243,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 8
 
-### Step 8: Deploy the Streamlit Application (Customized for Region)
+### Step 9: Deploy the Streamlit Application (Customized for Region)
 
 **Goal:** Deploy the route simulator Streamlit app, customized for the detected region
 
@@ -276,7 +286,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
    ROOT_LOCATION = '@VEHICLE_ROUTING_SIMULATOR.STREAMLITS.streamlit'
    MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
-   COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"Streamlit"}}';
+   COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
    ```
 
 **Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-road`.
@@ -287,7 +297,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Next:** Proceed to Step 9
 
-### Step 9: Run the Demo
+### Step 10: Run the Demo
 
 **Goal:** Access and use the route simulator
 
@@ -323,11 +333,11 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 ## Stopping Points
 
-- Step 2: After reading ORS config - confirm detected region and city with user
-- Step 3: After getting Marketplace data - verify dataset accessible
-- Step 5: After Carto notebook - verify data is populated
-- Step 6: After checking Claude model - verify model is available
-- Step 9: After accessing Streamlit - verify app loads correctly with correct region
+- Step 3: After reading ORS config - confirm detected region and city with user
+- Step 4: After getting Marketplace data - verify dataset accessible
+- Step 6: After Carto notebook - verify data is populated
+- Step 7: After checking Claude model - verify model is available
+- Step 10: After accessing Streamlit - verify app loads correctly with correct region
 
 ## Common Issues
 
