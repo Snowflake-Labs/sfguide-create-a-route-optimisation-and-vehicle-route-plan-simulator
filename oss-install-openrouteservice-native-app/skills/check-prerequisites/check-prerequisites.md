@@ -99,9 +99,8 @@ None - this skill helps you install prerequisites!
 - **Verify:** `code --version`
 
 #### Cortex Code CLI Installation
-- **Status:** Currently in Private Preview
-- **Instructions:** Contact your Snowflake account team for access
-- **Note:** Installation instructions will be provided upon receiving access
+- **Installation:** See [Cortex Code documentation](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli)
+- **Verify:** `cortex --version`
 
 #### Container Runtime Installation (Podman or Docker)
 

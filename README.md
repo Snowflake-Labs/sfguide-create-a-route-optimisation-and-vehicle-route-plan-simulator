@@ -146,10 +146,8 @@ Before getting started, ensure you have the following installed:
 - Open this project folder in VS Code before running Cortex Code commands
 
 ### 2. Cortex Code CLI
-- **Status:** Currently in Private Preview
-- **Installation:** TBA (To Be Announced)
+- **Installation:** See [Cortex Code documentation](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-code)
 - Cortex Code is Snowflake's AI-powered CLI that enables natural language interactions with your codebase and Snowflake resources
-- Contact your Snowflake account team for access during Private Preview
 
 ### 3. Container Runtime (Docker or Podman)
 - **Required for:** Building and pushing container images to Snowflake
