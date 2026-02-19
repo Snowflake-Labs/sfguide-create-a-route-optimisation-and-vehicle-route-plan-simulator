@@ -259,7 +259,7 @@ with st.sidebar:
     
     test_function = st.selectbox(
         "🧪 Choose Function to Test:",
-        ["🗺️ DIRECTIONS", "🚚 OPTIMIZATION", "⏰ ISOCHRONES"],
+        ["🗺️ DIRECTIONS", "🚚 OPTIMIZATION", "⏰ ISOCHRONES", "📊 MATRIX"],
         index=0
     )
     
@@ -1396,6 +1396,318 @@ Explain what this catchment area represents and its practical applications."""
             except Exception as e:
                 st.error(f"❌ Error calling ISOCHRONES function: {str(e)}")
 
+elif test_function == "📊 MATRIX":
+    st.markdown('<h1sub>📊 MATRIX FUNCTION TESTING</h1sub>', unsafe_allow_html=True)
+    
+    with st.expander("📚 **What is the MATRIX function?**", expanded=False):
+        st.markdown("""
+        **🎯 Purpose:** Calculate travel time and distance matrices between multiple locations.
+        
+        **📊 What it does:**
+        - **Duration matrix**: Travel time between all pairs of locations
+        - **Distance matrix**: Travel distance between all pairs of locations
+        - **Many-to-many**: Calculate routes from multiple sources to multiple destinations
+        - **Symmetric or asymmetric**: Full matrix or subset (sources/destinations)
+        
+        **🚗 Routing Profiles:**
+        - **driving-car**: Standard passenger vehicle routing
+        - **driving-hgv**: Heavy goods vehicle with truck restrictions
+        - **cycling-road**: Bicycle routing on roads and bike paths
+        
+        **💡 Use Cases:**
+        - **Nearest neighbor analysis**: Find closest facilities to customers
+        - **Clustering**: Group locations by travel time proximity
+        - **Optimization input**: Pre-calculate matrices for VRP solvers
+        - **Service area analysis**: Identify locations within time thresholds
+        - **Logistics planning**: Compare delivery routes and travel times
+        """)
+    
+    with st.expander("🧪 **MATRIX Test Configuration**", expanded=True):
+        st.markdown(f"**📍 Select Locations for Matrix Calculation ({MAP_CONFIG['city_name']})**")
+        
+        num_matrix_locations = st.number_input(
+            "Number of Locations:", 
+            min_value=2, 
+            max_value=10, 
+            value=4, 
+            key="num_matrix_locations",
+            help="Select 2-10 locations to calculate the time/distance matrix"
+        )
+        
+        # Generate matrix locations from waypoints
+        import math
+        from random import shuffle
+        
+        available_matrix_addresses = SF_WAYPOINT_ADDRESSES.copy()
+        
+        # Calculate distances and select well-distributed locations
+        def matrix_calculate_distance(lat1, lon1, lat2, lon2):
+            R = 6371
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = (math.sin(dlat / 2) * math.sin(dlat / 2) + 
+                 math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
+                 math.sin(dlon / 2) * math.sin(dlon / 2))
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            return R * c
+        
+        # Select distributed locations
+        selected_matrix_locations = []
+        remaining_addresses = available_matrix_addresses.copy()
+        shuffle(remaining_addresses)
+        
+        max_locs = min(num_matrix_locations, len(remaining_addresses))
+        
+        for i in range(max_locs):
+            if not remaining_addresses:
+                break
+            
+            if i == 0:
+                # First location: pick randomly
+                best_address = remaining_addresses[0]
+            else:
+                # Subsequent locations: pick one that's well-distributed
+                best_address = None
+                best_min_dist = -1
+                
+                for addr in remaining_addresses:
+                    min_dist_from_selected = float('inf')
+                    for selected in selected_matrix_locations:
+                        dist = matrix_calculate_distance(
+                            selected['lat'], selected['lon'], 
+                            addr['lat'], addr['lon']
+                        )
+                        min_dist_from_selected = min(min_dist_from_selected, dist)
+                    
+                    # Prefer locations that are farther from already selected ones
+                    if min_dist_from_selected > best_min_dist:
+                        best_min_dist = min_dist_from_selected
+                        best_address = addr
+            
+            if best_address:
+                selected_matrix_locations.append(best_address)
+                remaining_addresses.remove(best_address)
+        
+        # Display selected locations
+        st.markdown("**📍 Selected Locations:**")
+        num_cols = 3 if num_matrix_locations > 3 else num_matrix_locations
+        location_cols = st.columns(num_cols)
+        
+        for i, loc in enumerate(selected_matrix_locations):
+            col_idx = i % num_cols
+            with location_cols[col_idx]:
+                st.markdown(f"**Location {i+1}:**")
+                st.caption(loc['name'])
+                st.caption(f"📍 {loc['lat']:.4f}, {loc['lon']:.4f}")
+    
+    if st.button("🧪 Test MATRIX Function", type="primary"):
+        with st.spinner("Calling ORS MATRIX function..."):
+            try:
+                # Build locations array
+                locations_array = [[loc['lon'], loc['lat']] for loc in selected_matrix_locations]
+                
+                # Create dataframe and call function
+                matrix_df = session.create_dataframe([{
+                    'PROFILE': routing_profile,
+                    'LOCATIONS': locations_array
+                }])
+                
+                matrix_result = matrix_df.select(
+                    call_function(
+                        'OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX',
+                        col('PROFILE'),
+                        col('LOCATIONS')
+                    ).alias('MATRIX_RESULT')
+                )
+                
+                result = matrix_result.collect()
+                
+                if result and result[0][0]:
+                    matrix_raw = result[0][0]
+                    st.success("✅ MATRIX function executed successfully!")
+                    
+                    if isinstance(matrix_raw, str):
+                        try:
+                            matrix_data = json.loads(matrix_raw)
+                        except json.JSONDecodeError:
+                            matrix_data = matrix_raw
+                    else:
+                        matrix_data = matrix_raw
+                    
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        st.markdown('<h1sub>📊 Matrix Analysis</h1sub>', unsafe_allow_html=True)
+                        
+                        # Display duration matrix
+                        if 'durations' in matrix_data:
+                            st.markdown("**⏱️ Duration Matrix (minutes):**")
+                            durations = matrix_data['durations']
+                            
+                            # Convert to minutes and create DataFrame
+                            duration_minutes = [[round(d/60, 1) if d is not None else None for d in row] for row in durations]
+                            location_labels = [f"Loc {i+1}" for i in range(len(selected_matrix_locations))]
+                            
+                            duration_df = pd.DataFrame(
+                                duration_minutes,
+                                columns=location_labels,
+                                index=location_labels
+                            )
+                            
+                            st.dataframe(duration_df, use_container_width=True)
+                            
+                            # Summary statistics
+                            flat_durations = [d for row in duration_minutes for d in row if d is not None and d > 0]
+                            if flat_durations:
+                                col1a, col1b, col1c = st.columns(3)
+                                with col1a:
+                                    st.metric("Min Travel", f"{min(flat_durations):.1f} min")
+                                with col1b:
+                                    st.metric("Max Travel", f"{max(flat_durations):.1f} min")
+                                with col1c:
+                                    avg_duration = sum(flat_durations) / len(flat_durations)
+                                    st.metric("Avg Travel", f"{avg_duration:.1f} min")
+                        
+                        # Display distance matrix
+                        if 'distances' in matrix_data:
+                            st.markdown("**🛣️ Distance Matrix (km):**")
+                            distances = matrix_data['distances']
+                            
+                            # Convert to km and create DataFrame
+                            distance_km = [[round(d/1000, 2) if d is not None else None for d in row] for row in distances]
+                            
+                            distance_df = pd.DataFrame(
+                                distance_km,
+                                columns=location_labels,
+                                index=location_labels
+                            )
+                            
+                            st.dataframe(distance_df, use_container_width=True)
+                            
+                            # Summary statistics
+                            flat_distances = [d for row in distance_km for d in row if d is not None and d > 0]
+                            if flat_distances:
+                                col1a, col1b, col1c = st.columns(3)
+                                with col1a:
+                                    st.metric("Min Distance", f"{min(flat_distances):.2f} km")
+                                with col1b:
+                                    st.metric("Max Distance", f"{max(flat_distances):.2f} km")
+                                with col1c:
+                                    avg_distance = sum(flat_distances) / len(flat_distances)
+                                    st.metric("Avg Distance", f"{avg_distance:.2f} km")
+                        
+                        # AI Summary
+                        st.markdown("**🤖 AI Matrix Summary:**")
+                        try:
+                            location_names = [loc['name'] for loc in selected_matrix_locations]
+                            ai_prompt = f"""Summarize this travel time/distance matrix analysis in 2-3 sentences:
+
+Locations analyzed: {', '.join(location_names)}
+Number of locations: {len(selected_matrix_locations)}
+Routing profile: {routing_profile}
+Min travel time: {min(flat_durations):.1f} minutes
+Max travel time: {max(flat_durations):.1f} minutes
+Average travel time: {avg_duration:.1f} minutes
+
+Provide insights about connectivity and which locations are closest/farthest from each other."""
+
+                            ai_summary_df = session.create_dataframe([{'PROMPT': ai_prompt}])
+                            ai_result = ai_summary_df.select(
+                                call_function('AI_COMPLETE', 
+                                             lit('claude-3-5-sonnet'), 
+                                             col('PROMPT')).alias('AI_SUMMARY')
+                            ).collect()
+                            
+                            if ai_result and ai_result[0][0]:
+                                ai_summary = ai_result[0][0].strip()
+                                st.info(f"📊 {ai_summary}")
+                            else:
+                                st.caption("AI summary not available")
+                                
+                        except Exception as ai_error:
+                            st.caption(f"AI summary unavailable: {str(ai_error)[:50]}...")
+                    
+                    with col2:
+                        st.markdown("**🗺️ Matrix Locations:**")
+                        
+                        try:
+                            # Create points for visualization
+                            points_data = []
+                            snowflake_colors = [
+                                [29, 181, 232],
+                                [255, 158, 27],
+                                [106, 237, 199],
+                                [255, 90, 95],
+                                [149, 117, 238],
+                                [255, 206, 84],
+                                [56, 189, 248],
+                                [34, 197, 94],
+                                [239, 68, 68],
+                                [168, 85, 247]
+                            ]
+                            
+                            for i, loc in enumerate(selected_matrix_locations):
+                                points_data.append({
+                                    'lat': loc['lat'],
+                                    'lon': loc['lon'],
+                                    'type': f'Location {i+1}',
+                                    'color': snowflake_colors[i % len(snowflake_colors)],
+                                    'tooltip': f"📍 LOCATION {i+1}\n{loc['name']}\n{loc.get('full_address', loc['name'])}\n📍 {loc['lat']:.4f}, {loc['lon']:.4f}"
+                                })
+                            
+                            points_df = pd.DataFrame(points_data)
+                            
+                            # Calculate center for view
+                            center_lat = sum(loc['lat'] for loc in selected_matrix_locations) / len(selected_matrix_locations)
+                            center_lon = sum(loc['lon'] for loc in selected_matrix_locations) / len(selected_matrix_locations)
+                            
+                            view_state = pdk.ViewState(
+                                latitude=center_lat,
+                                longitude=center_lon,
+                                zoom=12,
+                                pitch=0
+                            )
+                            
+                            layers = [
+                                pdk.Layer(
+                                    'ScatterplotLayer',
+                                    points_df,
+                                    pickable=True,
+                                    get_position=['lon', 'lat'],
+                                    get_color='color',
+                                    get_radius=80,
+                                    radius_scale=1,
+                                    radius_min_pixels=10,
+                                    radius_max_pixels=40
+                                )
+                            ]
+                            
+                            st.pydeck_chart(pdk.Deck(
+                                map_style=None,
+                                initial_view_state=view_state,
+                                layers=layers,
+                                height=400,
+                                tooltip={'text': '{tooltip}'}
+                            ))
+                            
+                            # Location legend
+                            st.markdown("**📍 Location Reference:**")
+                            for i, loc in enumerate(selected_matrix_locations):
+                                st.caption(f"**{i+1}.** {loc['name']}")
+                                
+                        except Exception as viz_error:
+                            st.error(f"⚠️ Visualization error: {str(viz_error)}")
+                    
+                    # Show raw response
+                    with st.expander("🔍 Raw Matrix Response", expanded=False):
+                        st.json(matrix_data)
+                
+                else:
+                    st.error("❌ No results returned from MATRIX function")
+                    
+            except Exception as e:
+                st.error(f"❌ Error calling MATRIX function: {str(e)}")
+
 st.markdown("---")
 st.markdown('''
 <h1sub>📚 FUNCTION INFORMATION</h1sub>
@@ -1414,6 +1726,11 @@ st.markdown('''
 - **Purpose**: Time-based catchment area analysis
 - **Input**: Routing profile, center coordinates, time range (minutes)
 - **Output**: Polygon representing reachable area within time limit
+
+**📊 MATRIX Function:**
+- **Purpose**: Calculate time/distance matrices between multiple locations
+- **Input**: Routing profile, array of location coordinates
+- **Output**: Duration matrix (seconds), distance matrix (meters)
 
 **🚗 Default Profiles:**
 - `driving-car`: Standard car routing

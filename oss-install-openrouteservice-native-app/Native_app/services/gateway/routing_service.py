@@ -251,6 +251,72 @@ def post_isochrones(format="geojson"):
 
     return response
 
+@app.post("/matrix_tabular")
+@app.post("/matrix_tabular/<format>")
+def post_matrix_tabular(format="json"):
+    '''
+    Matrix Tabular Handler
+
+    MATRIX(method string, locations array)
+
+    row[1] - method/profile string (e.g., 'driving-car')
+    row[2] - locations array of [lon, lat] pairs
+    
+    Returns duration and distance matrix between all locations
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    if message is None or not message['data']:
+        logger.info('Received empty message')
+        return {}
+
+    input_rows = message['data']
+
+    output_rows = [[row[0], get_ors_response('matrix', row[1], {
+        'locations': row[2],
+        'metrics': ['distance', 'duration'],
+        'resolve_locations': True
+    }, format)] for row in input_rows]
+        
+    logger.info(f'Produced {len(output_rows)} rows')
+
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    logger.debug(f'Sending response: {response.json}')
+
+    return response
+
+@app.post("/matrix")
+@app.post("/matrix/<format>")
+def post_matrix(format="json"):
+    '''
+    Matrix Handler
+
+    MATRIX(method string, options variant)
+
+    row[1] - method/profile string (e.g., 'driving-car')
+    row[2] - full matrix options as JSON/variant (locations, metrics, sources, destinations, etc.)
+    
+    See: https://openrouteservice.org/dev/#/api-docs/v2/matrix/{profile}/post
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    if message is None or not message['data']:
+        logger.info('Received empty message')
+        return {}
+
+    input_rows = message['data']
+
+    output_rows = [[row[0], get_ors_response('matrix', row[1], row[2], format)] for row in input_rows]
+        
+    logger.info(f'Produced {len(output_rows)} rows')
+
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    logger.debug(f'Sending response: {response.json}')
+
+    return response
+
 def get_vroom_response(payload):
     '''
     Vroom Service Endpoint Abstraction

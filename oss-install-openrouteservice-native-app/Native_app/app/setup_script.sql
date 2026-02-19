@@ -258,6 +258,23 @@ BEGIN
       AS '/ors_status';
    GRANT USAGE ON FUNCTION core.ORS_STATUS() TO APPLICATION ROLE app_user;
 
+   -- Matrix API: Calculate time/distance matrices between multiple locations
+   CREATE OR REPLACE FUNCTION core.MATRIX(method varchar, locations ARRAY)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/matrix_tabular';
+   GRANT USAGE ON FUNCTION core.MATRIX(varchar, array) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX(method varchar, options VARIANT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/matrix';
+   GRANT USAGE ON FUNCTION core.MATRIX(varchar, variant) TO APPLICATION ROLE app_user;
+
    -- Create MAP_CONFIG table to store map metadata for the function tester
    CREATE TABLE IF NOT EXISTS core.MAP_CONFIG (
       city_name VARCHAR,
