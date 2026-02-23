@@ -1,5 +1,5 @@
 ---
-name: openrouteservice-intelligence-demo
+name: deploy_snowflake_intelligence_routing_agent
 description: "Create Snowflake Intelligence agent for OpenRouteService routing functions. Use when: setting up ORS demo, creating route planning agent, integrating directions/isochrones/optimization with Cortex. Triggers: openrouteservice demo, routing agent, ORS agent, routing intelligence."
 ---
 

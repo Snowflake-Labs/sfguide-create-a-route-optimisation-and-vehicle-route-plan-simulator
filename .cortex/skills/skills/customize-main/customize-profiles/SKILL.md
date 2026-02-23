@@ -1,9 +1,9 @@
 ---
-name: customize-vehicles
-description: "Configure vehicle routing profiles. Use when: enabling/disabling routing profiles like car, truck, bicycle, walking, wheelchair. Triggers: customize vehicles, change profiles, add walking, remove truck."
+name: customize-profiles
+description: "Configure routing profiles. Use when: enabling/disabling routing profiles like car, truck, bicycle, walking, wheelchair. Triggers: customize vehicles, change profiles, add walking, remove truck."
 ---
 
-# Customize Vehicle Types (Routing Profiles)
+# Customize Routing Profiles
 
 Configure which vehicle routing profiles are available in your OpenRouteService deployment.
 

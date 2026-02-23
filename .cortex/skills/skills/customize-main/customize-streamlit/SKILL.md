@@ -1,5 +1,5 @@
 ---
-name: update-demo-streamlit-coordinates
+name: customize-streamlit
 description: "Update ONLY the Simulator Streamlit coordinates after a location change has already been completed. This does NOT download maps or rebuild graphs. Use ONLY after running the location skill. Triggers: update simulator coordinates, refresh demo streamlit, update routing.py coordinates."
 ---
 

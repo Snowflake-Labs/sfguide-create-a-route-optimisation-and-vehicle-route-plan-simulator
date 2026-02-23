@@ -1,6 +1,6 @@
 ---
-name: deploy-demo
-description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the demo after native app deployment, running the demo end-to-end. Triggers: deploy demo, setup demo, run demo, deploy streamlit."
+name: deploy-route-optimization-demo
+description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the route optimization demo after native app deployment. Triggers: deploy route optimization demo demo, setup route optimization demo, run route optimization demo."
 ---
 
 # Deploy Route Optimization Demo

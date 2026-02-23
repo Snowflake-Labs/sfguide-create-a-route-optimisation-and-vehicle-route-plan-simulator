@@ -1,6 +1,6 @@
 ---
-name: check-prerequisites
-description: "Check and install prerequisites for the Route Optimizer project. Use when: setting up environment, verifying dependencies, troubleshooting installation issues. Triggers: check prerequisites, verify setup, install dependencies, setup environment."
+name: check-build-prerequisites
+description: "Check and install build prerequisites for the Route Optimizer project. Use when: setting up environment, verifying dependencies, troubleshooting installation issues. Triggers: check build prerequisites, verify setup, install dependencies, setup build environment."
 ---
 
 # Check Prerequisites

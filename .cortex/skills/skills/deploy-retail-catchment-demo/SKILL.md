@@ -1,6 +1,6 @@
 ---
 name: deploy-retail-catchment-demo
-description: "Deploy the Retail Catchment Analysis Streamlit app with Overture Maps data. Use when: setting up retail demo, deploying catchment analysis, creating retail location analysis app. Triggers: retail catchment, deploy retail demo, retail location analysis, catchment demo."
+description: "Deploy the Retail Catchment Analysis Streamlit app with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app. Triggers: retail demo catchment, deploy retail catchment demo"
 ---
 
 # Deploy Retail Catchment Demo
@@ -9,8 +9,8 @@ Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, 
 
 ## Configuration
 
-- **Database:** `RETAIL_CATCHMENT_DEMO`
-- **Schema:** `PUBLIC`
+- **Database:** `OPENROUTESERVICE_NATIVEAPP`
+- **Schema:** `RETAIL_CATCHMENT_DEMO`
 - **Warehouse:** `ROUTING_ANALYTICS`
 - **Streamlit App:** `RETAIL_CATCHMENT_APP`
 - **Stage:** `STREAMLIT_STAGE`
@@ -101,16 +101,15 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE;
 
--- Create database and schema
-CREATE DATABASE IF NOT EXISTS RETAIL_CATCHMENT_DEMO;
-CREATE SCHEMA IF NOT EXISTS RETAIL_CATCHMENT_DEMO.PUBLIC;
+-- Create and schema
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO;
 
 -- Create stage for Streamlit files
-CREATE STAGE IF NOT EXISTS RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE);
 ```
 
-**Output:** Database `RETAIL_CATCHMENT_DEMO` created with stage
+**Output:** Schema `OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO` created with stage
 
 ### Step 5: Upload Streamlit Files
 
@@ -119,15 +118,15 @@ CREATE STAGE IF NOT EXISTS RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE
 Run these commands from the `oss-retail-catchment-overture-maps` directory:
 
 ```bash
-snow stage copy Streamlit/retail_catchment.py @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE --overwrite
-snow stage copy Streamlit/environment.yml @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE --overwrite
-snow stage copy Streamlit/extra.css @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE --overwrite
-snow stage copy Streamlit/logo.svg @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE --overwrite
+snow stage copy Streamlit/retail_catchment.py @OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy Streamlit/environment.yml @OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy Streamlit/extra.css @OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy Streamlit/logo.svg @OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
 ```
 
 **Verify files uploaded:**
 ```sql
-LIST @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE;
+LIST @OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE;
 ```
 
 **Output:** 4 files uploaded to stage
@@ -137,8 +136,8 @@ LIST @RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE;
 **Goal:** Create the Streamlit application in Snowflake.
 
 ```sql
-CREATE OR REPLACE STREAMLIT RETAIL_CATCHMENT_DEMO.PUBLIC.RETAIL_CATCHMENT_APP
-    ROOT_LOCATION = '@RETAIL_CATCHMENT_DEMO.PUBLIC.STREAMLIT_STAGE'
+CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP
+    ROOT_LOCATION = '@OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE'
     MAIN_FILE = 'retail_catchment.py'
     QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
     COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
@@ -151,7 +150,7 @@ CREATE OR REPLACE STREAMLIT RETAIL_CATCHMENT_DEMO.PUBLIC.RETAIL_CATCHMENT_APP
 **Goal:** Confirm the app is deployed and accessible.
 
 ```sql
-SHOW STREAMLITS IN SCHEMA RETAIL_CATCHMENT_DEMO.PUBLIC;
+SHOW STREAMLITS IN SCHEMA OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO;
 ```
 
 **Output:** `RETAIL_CATCHMENT_APP` visible in results
@@ -165,7 +164,7 @@ Navigate to Snowsight > Projects > Streamlit > RETAIL_CATCHMENT_APP
 
 **Option B - Get app URL:**
 ```sql
-SELECT SYSTEM$GET_STREAMLIT_URL('RETAIL_CATCHMENT_DEMO.PUBLIC.RETAIL_CATCHMENT_APP');
+SELECT SYSTEM$GET_STREAMLIT_URL('OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP');
 ```
 
 **Output:** App launched and ready to use
@@ -201,7 +200,7 @@ The deployed app provides:
 ## Output
 
 Deployed resources:
-- Database: `RETAIL_CATCHMENT_DEMO`
+- Schema: `OPENROUTESERVICE_NATIVEAPP.RETAIL_CATCHMENT_DEMO`
 - Streamlit App: `RETAIL_CATCHMENT_APP`
 - Warehouse: `ROUTING_ANALYTICS`
 - Stage: `STREAMLIT_STAGE` (with 4 files)
