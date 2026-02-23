@@ -1,6 +1,6 @@
 ---
-name: deploy-route-optimizer
-description: "Deploy OpenRouteService route optimizer as Snowflake Native App with SPCS. Use when: deploying route optimizer, setting up OpenRouteService native app, building and pushing SPCS images. Triggers: deploy route optimizer, setup route optimizer, install openrouteservice app."
+name: build-routing-solution
+description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images. Triggers: build routing solution, install openrouteservice app."
 ---
 
 # Deploy Route Optimizer
@@ -21,7 +21,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 **Goal:** Set session query tag for attribution tracking.
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-install-openrouteservice-native-app","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-build-routing-solution-in-snowflake","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **Output:** Query tag set for session tracking

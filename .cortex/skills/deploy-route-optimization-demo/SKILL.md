@@ -118,9 +118,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Next:** Proceed to Step 4
 
-### Step 5: Setup Database and Schemas
+### Step 5: Setup Snowflake Objects
 
-**Goal:** Create required database infrastructure for the demo
+**Goal:** Create required snowflake objects for the demo
 
 **Actions:**
 
@@ -128,15 +128,11 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    ```sql
    ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
    
-   CREATE DATABASE IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR;
+   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR;
    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60;
-   
-   CREATE SCHEMA IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR.DATA;
-   CREATE OR REPLACE SCHEMA VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS;
-   CREATE OR REPLACE SCHEMA VEHICLE_ROUTING_SIMULATOR.STREAMLITS;
    ```
 
-**Output:** Database `VEHICLE_ROUTING_SIMULATOR` with DATA, NOTEBOOKS, and STREAMLITS schemas
+**Output:** Schema `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` created.
 
 **Next:** Proceed to Step 5
 
@@ -148,7 +144,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 1. **Create** the notebook stage:
    ```sql
-   CREATE STAGE IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook 
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
    ```
@@ -156,26 +152,26 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 2. **Upload** notebook files to stage:
    ```bash
    snow stage copy "Notebook/add_carto_data.ipynb" \
-     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    
    snow stage copy "Notebook/environment.yml" \
-     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    ```
 
 3. **Create** the notebook:
    ```sql
-   CREATE OR REPLACE NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ADD_CARTO_DATA
-   FROM '@VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.NOTEBOOK'
+   CREATE OR REPLACE OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA
+   FROM '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'add_carto_data.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
    ```
 
 4.  **Execute** notebook with three parameters:
    ```sql
-   EXECUTE NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ADD_CARTO_DATA()
+   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA()
 
 **Output:** Notebook deployed with standing data for the Streamlit app
 
@@ -222,21 +218,21 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 2. **Upload** notebook files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb" \
-     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
-     @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    ```
 
 3. **Create** the notebook:
    ```sql
-   CREATE OR REPLACE NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL
-   FROM '@VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.NOTEBOOK'
+   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL
+   FROM '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'routing_functions_aisql'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
    ```
 
 **Output:** Notebook created with AI prompts customized for `<NOTEBOOK_CITY>`
@@ -260,7 +256,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 2. **Create** the Streamlit stage:
    ```sql
-   CREATE STAGE IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT 
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
    ```
@@ -268,22 +264,22 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 3. **Upload** Streamlit files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" \
-     @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/extra.css" \
-     @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/environment.yml" \
-     @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/logo.svg" \
-     @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
    ```
 
 4. **Create** the Streamlit app:
    ```sql
-   CREATE OR REPLACE STREAMLIT VEHICLE_ROUTING_SIMULATOR.STREAMLITS.SIMULATOR
-   ROOT_LOCATION = '@VEHICLE_ROUTING_SIMULATOR.STREAMLITS.streamlit'
+   CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR
+   ROOT_LOCATION = '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.streamlit'
    MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
@@ -362,5 +358,5 @@ Access via: Projects > Streamlits > SIMULATOR
 
 Get Streamlit URL:
 ```sql
-SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/VEHICLE_ROUTING_SIMULATOR.STREAMLITS.SIMULATOR') AS streamlit_url;
+SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR') AS streamlit_url;
 ```

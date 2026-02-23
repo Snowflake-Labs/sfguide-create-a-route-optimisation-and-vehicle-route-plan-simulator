@@ -44,7 +44,7 @@ def get_hex_df(h3_res: int, h: int, m: int) -> pd.DataFrame:
         WITH latest AS (
             SELECT trip_id, point_geom,
             
-            FROM FLEET_INTELLIGENCE.ANALYTICS.DRIVER_LOCATIONS
+            FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
             QUALIFY ROW_NUMBER() OVER (
@@ -73,12 +73,12 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
             
             FROM 
             (SELECT A.*,B.TRIP_NAME,C.GEOMETRY FROM 
-            FLEET_INTELLIGENCE.ANALYTICS.DRIVER_LOCATIONS A
+            OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V A
             INNER JOIN 
-            FLEET_INTELLIGENCE.ANALYTICS.ROUTE_NAMES B ON A.TRIP_ID = B.TRIP_ID
+            OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES B ON A.TRIP_ID = B.TRIP_ID
             INNER JOIN
 
-            (SELECT TRIP_ID,GEOMETRY FROM FLEET_INTELLIGENCE.ANALYTICS.TRIPS_ASSIGNED_TO_DRIVERS) C
+            (SELECT TRIP_ID,GEOMETRY FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS) C
             ON A.TRIP_ID = C.TRIP_ID
             
             )
@@ -111,8 +111,8 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
 
 
 
-vehicle_plans = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIP_ROUTE_PLAN')
-route_names = session.table('FLEET_INTELLIGENCE.ANALYTICS.ROUTE_NAMES')
+vehicle_plans = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')
+route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')
 
 vehicle_plans = vehicle_plans.join(route_names,'TRIP_ID')
 
@@ -380,4 +380,4 @@ if isinstance(event, dict):
     ):
         st.session_state.selected_route = new_route
         st.session_state.selected_pos   = new_pos
-        st.rerun()          # immediate rerun to render the route
+        st.rerun(                                                

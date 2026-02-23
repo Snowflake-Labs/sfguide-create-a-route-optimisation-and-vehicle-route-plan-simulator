@@ -21,8 +21,8 @@
 --   - 05_generate_routes.sql executed
 -- =============================================================================
 
-USE DATABASE FLEET_INTELLIGENCE;
-USE SCHEMA PUBLIC;
+USE DATABASE OPENROUTESERVICE_NATIVE_APP;
+USE SCHEMA FLEET_INTELLIGENCE_TAXIS;
 USE WAREHOUSE COMPUTE_WH;
 
 -- Create DRIVER_LOCATIONS with realistic speeds and stationary periods

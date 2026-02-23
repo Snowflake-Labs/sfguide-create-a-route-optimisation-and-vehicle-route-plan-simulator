@@ -1,5 +1,5 @@
 ---
-name: demo-customizations
+name: customize-demo
 description: "Customize demo-specific settings like industries. NOT for changing location or vehicles - use oss-install-openrouteservice-native-app skills for that. Triggers: customize demo, change demo industries, customize industries."
 ---
 
@@ -13,17 +13,17 @@ Customize demo-specific settings. This skill is ONLY for demo components (indust
 > 
 > ✅ **To change location**, use:
 > ```
-> use the local skill from oss-install-openrouteservice-native-app/skills/customizations/location
+> $customize-main/location
 > ```
 > 
 > ✅ **To change vehicles**, use:
 > ```
-> use the local skill from oss-install-openrouteservice-native-app/skills/customizations/vehicles
+> $customize-main/routing-profiles
 > ```
 
 ## Prerequisites
 
-- Demo must be installed (`VEHICLE_ROUTING_SIMULATOR` database exists)
+- Demo must be installed (`OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` schema exists)
 - OpenRouteService Native App deployed and running
 
 ## Demo Customization Options

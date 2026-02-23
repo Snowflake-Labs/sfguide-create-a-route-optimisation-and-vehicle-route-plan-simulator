@@ -1,11 +1,11 @@
 ---
-name: customize-profiles
-description: "Configure routing profiles. Use when: enabling/disabling routing profiles like car, truck, bicycle, walking, wheelchair. Triggers: customize vehicles, change profiles, add walking, remove truck."
+name: routing-profiles
+description: "Change the Routing Solution routing profiles/vehicle types. To be used as part of customize-main skill"
 ---
 
 # Customize Routing Profiles
 
-Configure which vehicle routing profiles are available in your OpenRouteService deployment.
+Configure which routing profiles are available in your Routing Solution.
 
 ## Prerequisites
 
@@ -115,53 +115,6 @@ Configure which vehicle routing profiles are available in your OpenRouteService 
 
 **Output:** Configuration updated with new profiles
 
-### Step 4: Rebuild Graphs
-
-**Goal:** Restart services to rebuild routing graphs with new profiles
-
-**Actions:**
-
-1. **Resume** services to trigger graph rebuild:
-   ```sql
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
-   ```
-
-2. **Inform user** about rebuild time:
-   - Each profile adds to build time
-   - Larger maps take longer per profile
-   - Monitor service logs for progress
-
-**Output:** Services rebuilding with new profiles
-
-### Step 5: Update Dependent Components
-
-**Goal:** Inform user about components that need updating
-
-**Actions:**
-
-1. **Inform user** that the following should be updated to match:
-   - **Function Tester** (`streamlits.md`): Update ROUTING_PROFILES list
-   - **Simulator** (`streamlits.md`): Update available vehicle options
-
-2. **Suggest** running `streamlits.md` to update Streamlit apps
-
-**Output:** User informed about dependent updates
-
-## Common Profile Combinations
-
-| Use Case | Recommended Profiles |
-|----------|---------------------|
-| Delivery (urban) | driving-car, cycling-road, foot-walking |
-| Logistics (freight) | driving-car, driving-hgv |
-| Active transport | cycling-regular, cycling-electric, foot-walking |
-| Accessibility | driving-car, foot-walking, wheelchair |
-| Full coverage | All profiles (long build time) |
-
 ## Stopping Points
 
 - ✋ After Step 2: Confirm user selections before modifying config
-- ✋ After Step 4: Verify services are rebuilding
-
-## Output
-
-Vehicle routing profiles updated. Services rebuilding graphs with new profile configuration.

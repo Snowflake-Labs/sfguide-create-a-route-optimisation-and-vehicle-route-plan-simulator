@@ -1,6 +1,6 @@
 ---
-name: check-build-prerequisites
-description: "Check and install build prerequisites for the Route Optimizer project. Use when: setting up environment, verifying dependencies, troubleshooting installation issues. Triggers: check build prerequisites, verify setup, install dependencies, setup build environment."
+name: prerequisites-build-routing-solution 
+description: "Check and install build prerequisites for the Routing Solution project. Triggers: check build prerequisites, check build routing solution prerequisites."
 ---
 
 # Check Prerequisites
@@ -22,9 +22,6 @@ None - this skill helps you install prerequisites!
 1. **Run** the following checks in parallel and record results:
 
    ```bash
-   # Check VS Code
-   code --version 2>/dev/null && echo "VS Code: INSTALLED" || echo "VS Code: NOT FOUND"
-   
    # Check Cortex Code CLI
    cortex --version 2>/dev/null && echo "Cortex Code: INSTALLED" || echo "Cortex Code: NOT FOUND"
    
@@ -56,7 +53,6 @@ None - this skill helps you install prerequisites!
 
    | Prerequisite | Status | Required |
    |--------------|--------|----------|
-   | VS Code | ✅/❌ | Yes |
    | Cortex Code CLI | ✅/❌ | Yes |
    | Podman | ✅/❌ | Yes (or Docker) |
    | Docker | ✅/❌ | Yes (or Podman) |
@@ -81,22 +77,6 @@ None - this skill helps you install prerequisites!
 1. **Ask user** which missing prerequisites they want to install now.
 
 2. **For each selected prerequisite, provide installation guidance:**
-
-#### VS Code Installation
-- **macOS:** 
-  ```bash
-  brew install --cask visual-studio-code
-  ```
-  Or download from: https://code.visualstudio.com/download
-  
-- **Windows:** Download from https://code.visualstudio.com/download
-
-- **Linux:**
-  ```bash
-  sudo snap install code --classic
-  ```
-
-- **Verify:** `code --version`
 
 #### Cortex Code CLI Installation
 - **Installation:** See [Cortex Code documentation](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli)
@@ -248,7 +228,6 @@ None - this skill helps you install prerequisites!
 After completion, all these commands should succeed:
 
 ```bash
-code --version          # VS Code
 cortex --version        # Cortex Code CLI  
 podman --version        # Podman (or docker --version for Docker)
 podman info             # Podman running (or docker info for Docker)

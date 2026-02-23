@@ -1,6 +1,6 @@
 ---
-name: check-route-optimization-demo-prerequisite
-description: "Check if OpenRouteService Native App is installed before deploying demo. Use when: verifying ORS installation, checking prerequisites for demo. Triggers: check ors, verify ors is installed, check demo prerequisite."
+name: prerequisites-route-optimization-demo
+description: "Check prerequisites for the Route Optimization demo project. Triggers: check demo route optimization prerequisites, route optimization prerequisites."
 ---
 
 # Check ORS Prerequisite

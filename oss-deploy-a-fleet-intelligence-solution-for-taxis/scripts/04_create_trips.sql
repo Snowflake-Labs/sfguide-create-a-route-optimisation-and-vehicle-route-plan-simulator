@@ -16,8 +16,8 @@
 --   - 03_create_drivers.sql executed
 -- =============================================================================
 
-USE DATABASE FLEET_INTELLIGENCE;
-USE SCHEMA PUBLIC;
+USE DATABASE OPENROUTESERVICE_NATIVE_APP;
+USE SCHEMA FLEET_INTELLIGENCE_TAXIS;
 USE WAREHOUSE COMPUTE_WH;
 
 -- Create DRIVER_TRIPS with varied trip counts per driver

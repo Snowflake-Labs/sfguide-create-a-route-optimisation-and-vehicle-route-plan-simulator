@@ -16,8 +16,8 @@
 --   - 02_create_base_locations.sql executed
 -- =============================================================================
 
-USE DATABASE FLEET_INTELLIGENCE;
-USE SCHEMA PUBLIC;
+USE DATABASE OPENROUTESERVICE_NATIVE_APP;
+USE SCHEMA FLEET_INTELLIGENCE_TAXIS;
 USE WAREHOUSE COMPUTE_WH;
 
 -- Create TAXI_DRIVERS table with shift patterns

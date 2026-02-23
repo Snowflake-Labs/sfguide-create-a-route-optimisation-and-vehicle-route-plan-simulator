@@ -10,7 +10,7 @@ Configure industry categories for the Route Optimization Simulator demo.
 ## Prerequisites
 
 - Active Snowflake connection
-- Demo deployed with `VEHICLE_ROUTING_SIMULATOR` database
+- Demo deployed with `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` schema
 - Access to `Notebook/add_carto_data.ipynb`
 
 ## Default Industries
@@ -58,7 +58,7 @@ The demo includes three default industries:
 1. **Execute** category query:
    ```sql
    SELECT DISTINCT CATEGORY, COUNT(*) as COUNT 
-   FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+   FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
    GROUP BY CATEGORY 
    ORDER BY COUNT DESC 
    LIMIT 50;
@@ -145,7 +145,7 @@ SELECT
 
 2. **Complete INSERT statement format:**
    ```sql
-   CREATE TABLE IF NOT EXISTS VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP (
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP (
        INDUSTRY VARCHAR,
        PA VARCHAR,
        PB VARCHAR,
@@ -156,7 +156,7 @@ SELECT
        STYPE ARRAY
    );
    
-   INSERT INTO VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP
+   INSERT INTO OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
    SELECT 'Industry1', 'Product A', 'Product B', 'Product C', 
           ARRAY_CONSTRUCT('keywords'), ARRAY_CONSTRUCT('warehouse'),
           ARRAY_CONSTRUCT('customer_types'), ARRAY_CONSTRUCT('skills')
@@ -176,12 +176,12 @@ SELECT
 
 1. **Upload** modified notebook:
    ```bash
-   snow stage copy "Notebook/add_carto_data.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
+   snow stage copy "Notebook/add_carto_data.ipynb" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --overwrite
    ```
 
 2. **Recreate** LOOKUP table:
    ```sql
-   DROP TABLE IF EXISTS VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
+   DROP TABLE IF EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
    
    -- Execute the CREATE TABLE and INSERT from the notebook
    ```
@@ -189,7 +189,7 @@ SELECT
 3. **Verify** industries loaded:
    ```sql
    SELECT INDUSTRY, PA, PB, PC, CTYPE, STYPE 
-   FROM VEHICLE_ROUTING_SIMULATOR.DATA.LOOKUP;
+   FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
    ```
 
 **Output:** Industry configuration applied

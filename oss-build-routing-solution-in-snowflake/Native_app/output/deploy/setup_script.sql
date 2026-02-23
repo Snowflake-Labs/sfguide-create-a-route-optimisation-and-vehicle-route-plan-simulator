@@ -1,1 +1,1 @@
-/Users/boconnor/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator-2/oss-install-openrouteservice-native-app/Native_app/app/setup_script.sql
+/Users/ppaczewski/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/oss-build-routing-solution-in-snowflake/Native_app/app/setup_script.sql

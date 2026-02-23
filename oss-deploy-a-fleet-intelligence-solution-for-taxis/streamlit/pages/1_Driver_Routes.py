@@ -53,14 +53,14 @@ def bar_creation(dataframe, measure, attribute):
     return (bars + text).properties(height=200)
 
 # Load data from views
-vehicle_plans_poi = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIPS_ASSIGNED_TO_DRIVERS')
+vehicle_plans_poi = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS')
 vehicle_plans_poi = vehicle_plans_poi.with_column('DISTANCE', call_function('ST_LENGTH', col('GEOMETRY')))
-route_names = session.table('FLEET_INTELLIGENCE.ANALYTICS.ROUTE_NAMES')
+route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')
 routes = vehicle_plans_poi.select('GEOMETRY', 'TRIP_ID', 'DISTANCE', 'DRIVER_ID')
-trip_summary = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIP_SUMMARY')
+trip_summary = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
 
 # Join for driver locations
-all_driver_locations = session.table('FLEET_INTELLIGENCE.ANALYTICS.DRIVER_LOCATIONS')
+all_driver_locations = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V')
 all_driver_locations = all_driver_locations.with_column('POINT_TIME_STR', col('POINT_TIME').astype(StringType()))
 
 # Join with route info
@@ -240,7 +240,7 @@ if len(trips_df) > 0:
                 # Route geometry
                 route_geom = session.sql(f"""
                     SELECT ST_ASGEOJSON(GEOMETRY) AS GEOM 
-                    FROM FLEET_INTELLIGENCE.ANALYTICS.TRIP_SUMMARY 
+                    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY 
                     WHERE TRIP_ID = '{trip_id}'
                 """).collect()[0]['GEOM']
                 
@@ -386,6 +386,4 @@ if len(trips_df) > 0:
                             
                             st.info(str(result))
                         except Exception as e:
-                            st.error(f"Analysis failed: {e}")
-else:
-    st.warning("No trips found for this driver")
+                            st.error(f"Analys                                                                        

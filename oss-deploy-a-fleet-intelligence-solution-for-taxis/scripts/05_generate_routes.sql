@@ -13,8 +13,8 @@
 --   - OpenRouteService Native App installed and accessible
 -- =============================================================================
 
-USE DATABASE FLEET_INTELLIGENCE;
-USE SCHEMA PUBLIC;
+USE DATABASE OPENROUTESERVICE_NATIVE_APP;
+USE SCHEMA FLEET_INTELLIGENCE_TAXIS;
 USE WAREHOUSE COMPUTE_WH;
 
 -- Generate ORS routes for all trips

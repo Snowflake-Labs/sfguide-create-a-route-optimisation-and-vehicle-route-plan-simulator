@@ -33,8 +33,8 @@ def get_connection(args):
         user=args.user or os.environ.get('SNOWFLAKE_USER'),
         password=args.password or os.environ.get('SNOWFLAKE_PASSWORD'),
         warehouse=args.warehouse or os.environ.get('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH'),
-        database='FLEET_INTELLIGENCE',
-        schema='PUBLIC'
+        database='OPENROUTESERVICE_NATIVE_APP',
+        schema='FLEET_INTELLIGENCE_TAXIS'
     )
 
 
@@ -56,7 +56,7 @@ def upload_files(conn, base_path: Path):
         'pages/2_Fleet_Heat_Map.py'
     ]
     
-    stage_path = '@FLEET_INTELLIGENCE.PUBLIC.STREAMLIT_STAGE/sf_taxi'
+    stage_path = '@OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi'
     
     print("Uploading Streamlit files to Snowflake stage...")
     

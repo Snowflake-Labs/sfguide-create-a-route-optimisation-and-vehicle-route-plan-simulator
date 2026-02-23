@@ -9,8 +9,8 @@
 --   - Access to OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES shares
 -- =============================================================================
 
-USE DATABASE FLEET_INTELLIGENCE;
-USE SCHEMA PUBLIC;
+USE DATABASE OPENROUTESERVICE_NATIVE_APP;
+USE SCHEMA FLEET_INTELLIGENCE_TAXIS;
 USE WAREHOUSE COMPUTE_WH;
 
 -- Create base locations table from Overture Maps

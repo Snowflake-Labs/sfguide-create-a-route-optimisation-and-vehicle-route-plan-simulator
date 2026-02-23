@@ -22,7 +22,7 @@ with open('extra.css') as f:
 st.logo('logo.svg')
 
 # Industry lookup
-lookup_table = session.table('DATA.LOOKUP')
+lookup_table = session.table('VEHICLE_ROUTING_SIMULATOR.LOOKUP')
 industry_choices = lookup_table.select('INDUSTRY').to_pandas()['INDUSTRY'].tolist()
 
 with st.sidebar:
@@ -54,7 +54,7 @@ st.markdown('''
 methods = ['driving-car', 'driving-hgv', 'cycling-road']
 
 # Load points of interest data
-places_filtered = session.table('DATA.places')
+places_filtered = session.table('VEHICLE_ROUTING_SIMULATOR.PLACES')
 places_filtered = places_filtered.select(
     'GEOMETRY',
     call_function('ST_X', col('GEOMETRY')).alias('LON'),
@@ -131,7 +131,7 @@ places_1 = places_wholesalers.filter(expr(f'''search((CATEGORY,ALTERNATE,NAME),'
 places_1 = places_1.filter(expr(f'''search((CATEGORY,ALTERNATE,NAME),'{ind2_val}',analyzer=>'DEFAULT_ANALYZER')''')).cache_result()
 
 # Customize job template based on industry selection
-time_slots = session.table('DATA.JOB_TEMPLATE')
+time_slots = session.table('VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE')
 pa_slots = time_slots.filter(col('PRODUCT') == 'pa').join(filtered_lookup.select('PA'))
 pb_slots = time_slots.filter(col('PRODUCT') == 'pb').join(filtered_lookup.select('PB'))
 pc_slots = time_slots.filter(col('PRODUCT') == 'pc').join(filtered_lookup.select('PC'))

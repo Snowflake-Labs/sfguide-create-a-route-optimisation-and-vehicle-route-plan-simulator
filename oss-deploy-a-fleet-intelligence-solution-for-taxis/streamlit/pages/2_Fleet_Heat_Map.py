@@ -53,7 +53,7 @@ def get_locations_for_hour(hour):
             KMH,
             POINT_TIME,
             DRIVER_STATE
-        FROM FLEET_INTELLIGENCE.ANALYTICS.DRIVER_LOCATIONS
+        FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
         WHERE HOUR(POINT_TIME) = {hour}
     """).to_pandas()
     # Convert to native Python types

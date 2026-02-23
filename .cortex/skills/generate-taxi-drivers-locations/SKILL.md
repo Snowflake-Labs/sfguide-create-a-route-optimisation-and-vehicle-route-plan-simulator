@@ -1,5 +1,5 @@
 ---
-name: generate-driver-locations
+name: deploy-fleet-intelligence-taxis
 description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (San Francisco, New York, London, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
 ---
 
@@ -702,8 +702,8 @@ view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
 ## Data Model
 
 ```
-FLEET_INTELLIGENCE
-├── PUBLIC (schema)
+OPENROUTESERVICE_NATIVE_APP
+├── FLEET_INTELLIGENCE_TAXIS (schema)
 │   ├── SF_TAXI_LOCATIONS      # Location pool for target city
 │   ├── TAXI_DRIVERS           # Configured driver count
 │   ├── DRIVERS                # Driver display data
@@ -713,13 +713,11 @@ FLEET_INTELLIGENCE
 │   ├── DRIVER_ROUTES_PARSED   # Parsed route data
 │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
 │   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
-│
-└── ANALYTICS (schema)
-    ├── DRIVERS                # View
-    ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
-    ├── TRIPS_ASSIGNED_TO_DRIVERS # View
-    ├── ROUTE_NAMES            # View
-    └── TRIP_SUMMARY           # View
+│   ├── DRIVERS                # View
+│   ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
+│   ├── TRIPS_ASSIGNED_TO_DRIVERS # View
+│   ├── ROUTE_NAMES            # View
+│   └── TRIP_SUMMARY           # View
 ```
 
 ---
@@ -736,5 +734,3 @@ FLEET_INTELLIGENCE
 | Missing Overture data | Install shares from Snowflake Marketplace |
 | Streamlit not loading | Check all files uploaded to stage |
 | Map centered wrong | Update view_state coordinates in Streamlit files |
-
-See `scripts/README.md` for detailed troubleshooting.

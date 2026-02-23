@@ -37,9 +37,9 @@ col1, col2, col3, col4 = st.columns(4)
 
 # Get summary stats
 try:
-    trips_count = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIPS').count()
-    drivers_count = session.table('FLEET_INTELLIGENCE.ANALYTICS.TRIPS_ASSIGNED_TO_DRIVERS').select('DRIVER_ID').distinct().count()
-    routes_count = session.table('FLEET_INTELLIGENCE.ANALYTICS.ROUTE_NAMES').count()
+    trips_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS').count()
+    drivers_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS').select('DRIVER_ID').distinct().count()
+    routes_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES').count()
     
     with col1:
         st.metric("Total Trips", f"{trips_count:,}")
