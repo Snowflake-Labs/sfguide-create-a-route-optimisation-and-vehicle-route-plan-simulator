@@ -51,7 +51,7 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # Routing methods - must match enabled profiles in ors-config.yml
-methods = ['driving-car', 'driving-hgv', 'cycling-road']
+methods = ['driving-car', 'cycling-regular', 'foot-walking']
 
 # Load points of interest data
 places_filtered = session.table('VEHICLE_ROUTING_SIMULATOR.PLACES')
@@ -318,11 +318,12 @@ else:
 
     isochrone_pandas = isochrone_geo.select('GEO').to_pandas()
     isochrone_pandas["coordinates"] = isochrone_pandas["GEO"].apply(lambda row: json.loads(row)["coordinates"])
+    isochrone_pandas = isochrone_pandas.drop(columns=["GEO"])
 
     # Pydeck layers for map
     point_mark_layer = pdk.Layer(
         "ScatterplotLayer",
-        places_vehicles_df.to_pandas(),
+        places_vehicles_df.select('LON', 'LAT', 'NAME').to_pandas(),
         get_position=["LON", "LAT"],
         get_fill_color=[255, 0, 0, 200],
         get_radius=300,
@@ -477,8 +478,16 @@ else:
             optimized_route_geometry = optimized_route_geometry.with_column('NAME', concat(lit('Vehicle '), col('VEHICLE'), lit(' '), col('PROFILE')))
             optimized_route_line = optimization_lines_final.with_column('NAME', concat(lit('Vehicle '), col('VEHICLE'), lit(' '), col('PROFILE')))
 
-            data_for_map = optimized_route_geometry.select('GEO', 'PROFILE', 'NAME', 'VEHICLE', 'ID', 'R', 'G', 'B').to_pandas()
+            data_for_map = optimized_route_geometry.select(
+                col('GEO').astype(StringType()).alias('GEO'),
+                col('PROFILE').astype(StringType()).alias('PROFILE'),
+                col('NAME').astype(StringType()).alias('NAME'),
+                col('VEHICLE').astype(StringType()).alias('VEHICLE'),
+                col('ID').astype(StringType()).alias('ID'),
+                col('R').astype(IntegerType()), col('G').astype(IntegerType()), col('B').astype(IntegerType())
+            ).to_pandas()
             data_for_map["coordinates"] = data_for_map["GEO"].apply(lambda row: json.loads(row)["coordinates"])
+            data_for_map = data_for_map.drop(columns=["GEO"])
 
             job_details_pandas = job_details_display.with_column('NAME',
                                                                 concat(lit('<b>'), col('"Category"'), lit(':</b>'),
@@ -486,8 +495,15 @@ else:
                                                                        lit('<b>Address:</b> '), col('"Address"'), lit('<BR>'),
                                                                        lit('<b>Postcode:</b> '), col('"Postcode"'), lit('<BR>'),
                                                                        lit('<b>Phone Number:</b> '), col('"Phone Number"'), lit('<BR>'),
-                                                                       lit('<b>Cumulate Duration:</b> '), col('"Cumulative Duration"').astype(StringType()))).drop('TIME', '"Agreed Time"', '"Cumulative Duration"').to_pandas()
-            places_1_pandas = places_1.to_pandas()
+                                                                       lit('<b>Cumulate Duration:</b> '), col('"Cumulative Duration"').astype(StringType()))).select(
+                col('VEHICLE').astype(StringType()).alias('VEHICLE'),
+                col('R').astype(IntegerType()), col('G').astype(IntegerType()), col('B').astype(IntegerType()),
+                col('LON').astype(FloatType()).alias('LON'), col('LAT').astype(FloatType()).alias('LAT'),
+                col('NAME').astype(StringType()).alias('NAME'),
+                col('"Product"').astype(StringType()).alias('"Product"'),
+                col('JOB').astype(StringType()).alias('JOB')
+            ).to_pandas()
+            places_1_pandas = places_1.select('LON', 'LAT', 'NAME').to_pandas()
 
             # Pydeck layer for vehicle drops
             layer_end = pdk.Layer(

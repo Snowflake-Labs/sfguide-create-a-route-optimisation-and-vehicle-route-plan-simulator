@@ -1,6 +1,6 @@
 ---
 name: location
-description: "Change the Routing Solution location/map region. To be used as part of customize-main skill"
+description: "To be used as part of customize-main skill"
 ---
 
 # Customize Location (Map Region)
