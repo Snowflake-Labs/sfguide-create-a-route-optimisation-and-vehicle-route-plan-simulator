@@ -14,7 +14,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 ---
 
-## ⚠️ IMPORTANT: Location Must Match OpenRouteService Configuration
+## IMPORTANT: Location Must Match OpenRouteService Configuration
 
 > **Before selecting a location, verify your OpenRouteService Native App is configured for that region.**
 >
@@ -25,10 +25,10 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 > 2. Or test a route in your target city using the ORS function tester
 >
 > **Common configurations:**
-> - `SanFrancisco.osm.pbf` → Use **San Francisco** location
-> - `new-york.osm.pbf` → Use **New York** location
-> - `great-britain.osm.pbf` → Use **London** location
-> - `europe.osm.pbf` → Use any European city
+> - `SanFrancisco.osm.pbf` -> Use **San Francisco** location
+> - `new-york.osm.pbf` -> Use **New York** location
+> - `great-britain.osm.pbf` -> Use **London** location
+> - `europe.osm.pbf` -> Use any European city
 
 ---
 
@@ -46,18 +46,18 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 ## Supported Locations (Pre-configured)
 
-| Location | Bounding Box | Center Coords | Notes |
-|----------|--------------|---------------|-------|
-| **San Francisco** | -122.52 to -122.35, 37.70 to 37.82 | -122.42, 37.77 | Default |
-| **New York** | -74.05 to -73.90, 40.65 to 40.85 | -73.97, 40.75 | Manhattan focus |
-| **London** | -0.20 to 0.05, 51.45 to 51.55 | -0.12, 51.51 | Central London |
-| **Paris** | 2.25 to 2.42, 48.82 to 48.90 | 2.35, 48.86 | Central Paris |
-| **Chicago** | -87.75 to -87.55, 41.80 to 41.95 | -87.63, 41.88 | Downtown |
-| **Los Angeles** | -118.35 to -118.15, 33.95 to 34.15 | -118.25, 34.05 | Central LA |
-| **Seattle** | -122.45 to -122.25, 47.55 to 47.70 | -122.33, 47.61 | Downtown |
-| **Boston** | -71.15 to -70.95, 42.30 to 42.40 | -71.06, 42.36 | Central Boston |
-| **Sydney** | 151.15 to 151.30, -33.92 to -33.82 | 151.21, -33.87 | CBD area |
-| **Singapore** | 103.75 to 103.95, 1.25 to 1.40 | 103.85, 1.35 | Central |
+| Location | MIN_LON | MAX_LON | MIN_LAT | MAX_LAT | Center LON | Center LAT | Notes |
+|----------|---------|---------|---------|---------|------------|------------|-------|
+| **San Francisco** | -122.52 | -122.35 | 37.70 | 37.82 | -122.42 | 37.77 | Default |
+| **New York** | -74.05 | -73.90 | 40.65 | 40.85 | -73.97 | 40.75 | Manhattan focus |
+| **London** | -0.20 | 0.05 | 51.45 | 51.55 | -0.12 | 51.51 | Central London |
+| **Paris** | 2.25 | 2.42 | 48.82 | 48.90 | 2.35 | 48.86 | Central Paris |
+| **Chicago** | -87.75 | -87.55 | 41.80 | 41.95 | -87.63 | 41.88 | Downtown |
+| **Los Angeles** | -118.35 | -118.15 | 33.95 | 34.15 | -118.25 | 34.05 | Central LA |
+| **Seattle** | -122.45 | -122.25 | 47.55 | 47.70 | -122.33 | 47.61 | Downtown |
+| **Boston** | -71.15 | -70.95 | 42.30 | 42.40 | -71.06 | 42.36 | Central Boston |
+| **Sydney** | 151.15 | 151.30 | -33.92 | -33.82 | 151.21 | -33.87 | CBD area |
+| **Singapore** | 103.75 | 103.95 | 1.25 | 1.40 | 103.85 | 1.35 | Central |
 
 ---
 
@@ -65,7 +65,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 **The skill works with ANY city worldwide** - the pre-configured locations above are just examples. To use a different city:
 
-### Step 1: Find Your City's Bounding Box
+### Find Your City's Bounding Box
 
 Use one of these methods to get the bounding box coordinates (min/max longitude and latitude):
 
@@ -84,7 +84,7 @@ Use one of these methods to get the bounding box coordinates (min/max longitude 
 - [Bounding Box Tool](http://bboxfinder.com) - Draw a box and get coordinates
 - [Klokantech Bounding Box](https://boundingbox.klokantech.com/) - Multiple format outputs
 
-### Step 2: Calculate Your Values
+### Calculate Your Values
 
 For a city centered at `(CENTER_LON, CENTER_LAT)`:
 
@@ -100,62 +100,18 @@ Map Center:
   latitude = CENTER_LAT
 ```
 
-### Step 3: Apply to Scripts
+### Custom City Examples
 
-**In `02_create_base_locations.sql`:**
-```sql
-WHERE ST_X(GEOMETRY) BETWEEN <MIN_LON> AND <MAX_LON>
-  AND ST_Y(GEOMETRY) BETWEEN <MIN_LAT> AND <MAX_LAT>
-```
+**Tokyo** - Center: 139.69, 35.69
+- MIN_LON=139.60, MAX_LON=139.85, MIN_LAT=35.60, MAX_LAT=35.78
 
-**In Streamlit files:**
-```python
-view_state = pdk.ViewState(latitude=<CENTER_LAT>, longitude=<CENTER_LON>, zoom=12)
-```
+**Dubai** - Center: 55.27, 25.20
+- MIN_LON=55.15, MAX_LON=55.40, MIN_LAT=25.05, MAX_LAT=25.30
 
-### Example: Custom City (Tokyo)
+**Toronto** - Center: -79.38, 43.65
+- MIN_LON=-79.50, MAX_LON=-79.30, MIN_LAT=43.60, MAX_LAT=43.75
 
-```sql
--- Tokyo bounding box (central 23 wards)
--- Center: 139.69, 35.69
-
--- 02_create_base_locations.sql:
-WHERE ST_X(GEOMETRY) BETWEEN 139.60 AND 139.85
-  AND ST_Y(GEOMETRY) BETWEEN 35.60 AND 35.78
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=35.69, longitude=139.69, zoom=12)
-```
-
-### Example: Custom City (Dubai)
-
-```sql
--- Dubai bounding box (downtown + marina area)
--- Center: 55.27, 25.20
-
--- 02_create_base_locations.sql:
-WHERE ST_X(GEOMETRY) BETWEEN 55.15 AND 55.40
-  AND ST_Y(GEOMETRY) BETWEEN 25.05 AND 25.30
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=25.20, longitude=55.27, zoom=12)
-```
-
-### Example: Custom City (Toronto)
-
-```sql
--- Toronto bounding box (downtown + midtown)
--- Center: -79.38, 43.65
-
--- 02_create_base_locations.sql:
-WHERE ST_X(GEOMETRY) BETWEEN -79.50 AND -79.30
-  AND ST_Y(GEOMETRY) BETWEEN 43.60 AND 43.75
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=43.65, longitude=-79.38, zoom=12)
-```
-
-> **Remember:** Your OpenRouteService Native App must be configured with map data that covers your chosen city. If using a custom city, ensure you have the appropriate OSM PBF file loaded in ORS.
+> **Remember:** Your OpenRouteService Native App must be configured with map data that covers your chosen city.
 
 ---
 
@@ -183,9 +139,6 @@ st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence<
 
 # TO (example for New York):
 st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-
-# TO (example for London):
-st.markdown('<h0black>London Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
 ```
 
 **2. Driver Routes Page (`pages/1_Driver_Routes.py`)**
@@ -201,42 +154,16 @@ st.markdown(f'<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0b
 
 **3. Heat Map Page (`pages/2_Fleet_Heat_Map.py`)**
 
-Update headers:
-```python
-# FROM:
-st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
-
-# TO (your city):
-st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Heat Map</h0blue>')
-```
-
-Update map center coordinates:
+Update headers and map center coordinates:
 ```python
 # FROM (San Francisco):
-view_state = pdk.ViewState(
-    latitude=37.76,
-    longitude=-122.44,
-    zoom=12
-)
+view_state = pdk.ViewState(latitude=37.76, longitude=-122.44, zoom=12)
 
 # TO (New York):
-view_state = pdk.ViewState(
-    latitude=40.75,
-    longitude=-73.97,
-    zoom=12
-)
-
-# TO (London):
-view_state = pdk.ViewState(
-    latitude=51.51,
-    longitude=-0.12,
-    zoom=12
-)
+view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
 ```
 
 ### Quick Find & Replace
-
-For a quick update, use find and replace in your editor:
 
 | Find | Replace With (example: New York) |
 |------|----------------------------------|
@@ -249,130 +176,10 @@ For a quick update, use find and replace in your editor:
 You can also rename the main Streamlit file to match your city:
 
 ```bash
-# Rename file
 mv SF_Taxi_Control_Center.py NYC_Taxi_Control_Center.py
-
-# Update 08_deploy_streamlit.sql to use new filename:
-MAIN_FILE = 'NYC_Taxi_Control_Center.py'
 ```
 
----
-
-## Location Configuration in Scripts
-
-### Step 1: Modify `02_create_base_locations.sql`
-
-Change the bounding box to match your target location:
-
-```sql
--- ============================================
--- SAN FRANCISCO (Default)
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -122.52 AND -122.35
-  AND ST_Y(GEOMETRY) BETWEEN 37.70 AND 37.82
-
--- ============================================
--- NEW YORK
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -74.05 AND -73.90
-  AND ST_Y(GEOMETRY) BETWEEN 40.65 AND 40.85
-
--- ============================================
--- LONDON
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -0.20 AND 0.05
-  AND ST_Y(GEOMETRY) BETWEEN 51.45 AND 51.55
-
--- ============================================
--- PARIS
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN 2.25 AND 2.42
-  AND ST_Y(GEOMETRY) BETWEEN 48.82 AND 48.90
-
--- ============================================
--- CHICAGO
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -87.75 AND -87.55
-  AND ST_Y(GEOMETRY) BETWEEN 41.80 AND 41.95
-
--- ============================================
--- LOS ANGELES
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -118.35 AND -118.15
-  AND ST_Y(GEOMETRY) BETWEEN 33.95 AND 34.15
-
--- ============================================
--- SEATTLE
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -122.45 AND -122.25
-  AND ST_Y(GEOMETRY) BETWEEN 47.55 AND 47.70
-
--- ============================================
--- BOSTON
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN -71.15 AND -70.95
-  AND ST_Y(GEOMETRY) BETWEEN 42.30 AND 42.40
-
--- ============================================
--- SYDNEY
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN 151.15 AND 151.30
-  AND ST_Y(GEOMETRY) BETWEEN -33.92 AND -33.82
-
--- ============================================
--- SINGAPORE
--- ============================================
-WHERE ST_X(GEOMETRY) BETWEEN 103.75 AND 103.95
-  AND ST_Y(GEOMETRY) BETWEEN 1.25 AND 1.40
-```
-
-### Step 2: Update Streamlit Map Center
-
-Modify `SF_Taxi_Control_Center.py` and page files to center the map on your location:
-
-```python
-# San Francisco (default)
-view_state = pdk.ViewState(latitude=37.76, longitude=-122.44, zoom=12)
-
-# New York
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
-
-# London
-view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
-
-# Paris
-view_state = pdk.ViewState(latitude=48.86, longitude=2.35, zoom=12)
-
-# Chicago
-view_state = pdk.ViewState(latitude=41.88, longitude=-87.63, zoom=12)
-
-# Los Angeles
-view_state = pdk.ViewState(latitude=34.05, longitude=-118.25, zoom=12)
-
-# Seattle
-view_state = pdk.ViewState(latitude=47.61, longitude=-122.33, zoom=12)
-
-# Boston
-view_state = pdk.ViewState(latitude=42.36, longitude=-71.06, zoom=12)
-
-# Sydney
-view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
-
-# Singapore
-view_state = pdk.ViewState(latitude=1.35, longitude=103.85, zoom=12)
-```
-
-### Step 3: Rename App Title (Optional)
-
-Update headers in Streamlit files:
-
-```python
-# From:
-st.markdown('<h0black>San Francisco Taxi |</h0black>...')
-
-# To (example for New York):
-st.markdown('<h0black>New York Taxi |</h0black>...')
-```
+Then update Step 10 (Deploy Streamlit) to use the new filename in `MAIN_FILE`.
 
 ---
 
@@ -391,24 +198,56 @@ st.markdown('<h0black>New York Taxi |</h0black>...')
 
 ---
 
+## Shift Distribution Formula
+
+When scaling the number of drivers, distribute them across shifts proportionally:
+
+| Shift | % of Fleet | Purpose |
+|-------|------------|---------|
+| Graveyard (22:00-06:00) | 10% | Overnight |
+| Early (04:00-12:00) | 22.5% | Early morning |
+| Morning (06:00-14:00) | 27.5% | Peak AM rush |
+| Day (11:00-19:00) | 22.5% | Midday |
+| Evening (15:00-23:00) | 17.5% | PM rush |
+
+**Examples:**
+
+| Total | Graveyard | Early | Morning | Day | Evening |
+|-------|-----------|-------|---------|-----|---------|
+| 20 | 2 | 5 | 5 | 5 | 3 |
+| 50 | 5 | 11 | 14 | 11 | 9 |
+| 80 | 8 | 18 | 22 | 18 | 14 |
+| 100 | 10 | 22 | 28 | 22 | 18 |
+| 200 | 20 | 45 | 55 | 45 | 35 |
+
+---
+
 ## Prerequisites
 
 1. **Snowflake Account** with appropriate privileges
 2. **OpenRouteService Native App** installed from Snowflake Marketplace
-   - ⚠️ **Must be configured for your target location's region**
+   - Must be configured for your target location's region
 3. **Overture Maps Data** shares:
    - `OVERTURE_MAPS__PLACES`
    - `OVERTURE_MAPS__ADDRESSES`
 
 ---
 
-## Scripts Location
-
-All scripts are in: `oss-deploy-a-fleet-intelligence-solution-for-taxis/scripts/`
-
----
-
 ## Workflow
+
+Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLDER}` values based on the user's chosen configuration before executing.
+
+### CRITICAL: Execution Rules
+
+> **These rules MUST be followed to avoid silent failures:**
+>
+> 1. **One statement per `snowflake_sql_execute` call.** Never combine multiple SQL statements (CREATE, INSERT, SET, USE) in a single call. Multi-statement blocks can silently fail — tables may be created with 0 rows and no error is reported.
+>
+> 2. **Always use fully qualified object names.** Use `OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.<object>` instead of relying on `USE DATABASE` / `USE SCHEMA`. Session context from `USE` statements does not persist across `snowflake_sql_execute` calls.
+>
+> 3. **Never use `SET` session variables.** Variables set with `SET VAR = 'value'` do not persist across calls. Instead, substitute literal values directly into the SQL before execution.
+>
+> 4. **Verify row counts after each CTAS.** Run `SELECT COUNT(*) FROM <table>` after every `CREATE TABLE ... AS SELECT` to catch silent failures early.
 
 ### Step 1: Set Query Tag for Tracking
 
@@ -420,36 +259,23 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-
 
 **Output:** Query tag set for session tracking
 
+---
+
 ### Step 2: Verify ORS Configuration
 
-**Goal:** Ensure OpenRouteService can route in your target location
+**Goal:** Ensure OpenRouteService can route in your target location.
 
-**Action:** Test the ORS DIRECTIONS function with coordinates in your target city:
+**Action:** Test the ORS DIRECTIONS function with coordinates in the target city. Use the center coordinates from the Supported Locations table.
 
 ```sql
--- Test route in San Francisco
 SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
     'driving-car',
-    [-122.42, 37.77],  -- Origin (lon, lat)
-    [-122.40, 37.79]   -- Destination (lon, lat)
-);
-
--- Test route in New York
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
-    'driving-car',
-    [-73.99, 40.75],
-    [-73.97, 40.76]
-);
-
--- Test route in London
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
-    'driving-car',
-    [-0.13, 51.51],
-    [-0.10, 51.52]
+    [{CENTER_LON}, {CENTER_LAT}],
+    [{CENTER_LON} + 0.02, {CENTER_LAT} + 0.02]
 );
 ```
 
-If the query returns a route geometry, your ORS is configured for that region. If it fails or returns null, you need to reconfigure ORS with the appropriate map data.
+If the query returns a route geometry, ORS is configured for that region. If it fails or returns null, reconfigure ORS with the appropriate map data.
 
 **Output:** Confirmation that ORS can route in target location
 
@@ -457,106 +283,538 @@ If the query returns a route geometry, your ORS is configured for that region. I
 
 ### Step 3: Configure Database and Warehouse
 
-**Goal:** Create appropriately sized warehouse for data generation
+**Goal:** Create warehouse, schema, and stage.
 
-**Action:** Execute `scripts/01_setup_database.sql` with modified warehouse size
+```sql
+CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
-See [Recommended Warehouse Sizes](#recommended-warehouse-sizes) table above.
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
-**Output:** Warehouse and database infrastructure ready
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE
+    DIRECTORY = (ENABLE = TRUE);
+```
+
+**Output:** Warehouse `COMPUTE_WH`, schema `FLEET_INTELLIGENCE_TAXIS`, and stage `STREAMLIT_STAGE` created.
 
 ---
 
 ### Step 4: Create Base Locations
 
-**Goal:** Load locations from Overture Maps for your target city
+**Goal:** Load locations from Overture Maps for the target city.
 
-**Action:** Execute `scripts/02_create_base_locations.sql` with modified bounding box
+**Action:** Substitute `{MIN_LON}`, `{MAX_LON}`, `{MIN_LAT}`, `{MAX_LAT}` with the values from the Supported Locations table (or the user's custom bounding box).
 
-See [Location Configuration in Scripts](#location-configuration-in-scripts) above.
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS AS
+-- POIs from Overture Maps Places
+SELECT 
+    ID AS LOCATION_ID,
+    GEOMETRY AS POINT_GEOM,
+    NAMES:primary::STRING AS NAME,
+    CATEGORIES:primary::STRING AS CATEGORY,
+    'poi' AS SOURCE_TYPE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+WHERE 
+    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
+    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    AND NAMES:primary IS NOT NULL
 
-**Output:** Location pool for pickup/dropoff points in target city
+UNION ALL
+
+-- Addresses from Overture Maps Addresses
+SELECT 
+    ID AS LOCATION_ID,
+    GEOMETRY AS POINT_GEOM,
+    COALESCE(
+        ADDRESS_LEVELS[0]:value::STRING || ' ' || STREET,
+        STREET
+    ) AS NAME,
+    'address' AS CATEGORY,
+    'address' AS SOURCE_TYPE
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
+WHERE 
+    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
+    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    AND STREET IS NOT NULL;
+```
+
+Then verify:
+
+```sql
+SELECT 
+    SOURCE_TYPE,
+    COUNT(*) AS LOCATION_COUNT
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+GROUP BY SOURCE_TYPE;
+```
+
+**Output:** `SF_TAXI_LOCATIONS` table with POIs and addresses for the target city.
 
 ---
 
 ### Step 5: Create Drivers with Shift Patterns
 
-**Goal:** Create drivers distributed across shifts
+**Goal:** Create drivers distributed across shifts.
 
-**Action:** Execute `scripts/03_create_drivers.sql` with modified driver counts
-
-**Modify the `shift_patterns` CTE** to change total drivers:
+**Action:** Substitute `{GRAVEYARD_COUNT}`, `{EARLY_COUNT}`, `{MORNING_COUNT}`, `{DAY_COUNT}`, `{EVENING_COUNT}` using the Shift Distribution Formula. For the default 80 drivers: 8, 18, 22, 18, 14.
 
 ```sql
--- Default: 80 drivers
-SELECT 1 AS shift_id, 'Graveyard' AS shift_name, 22 AS shift_start, 6 AS shift_end, 8 AS driver_count UNION ALL
-SELECT 2, 'Early', 4, 12, 18 UNION ALL
-SELECT 3, 'Morning', 6, 14, 22 UNION ALL
-SELECT 4, 'Day', 11, 19, 18 UNION ALL
-SELECT 5, 'Evening', 15, 23, 14
-
--- Example: 200 drivers (proportionally scaled)
-SELECT 1 AS shift_id, 'Graveyard' AS shift_name, 22 AS shift_start, 6 AS shift_end, 20 AS driver_count UNION ALL
-SELECT 2, 'Early', 4, 12, 45 UNION ALL
-SELECT 3, 'Morning', 6, 14, 55 UNION ALL
-SELECT 4, 'Day', 11, 19, 45 UNION ALL
-SELECT 5, 'Evening', 15, 23, 35
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS AS
+WITH shift_patterns AS (
+    SELECT 1 AS shift_id, 'Graveyard' AS shift_name, 22 AS shift_start, 6 AS shift_end, {GRAVEYARD_COUNT} AS driver_count UNION ALL
+    SELECT 2, 'Early', 4, 12, {EARLY_COUNT} UNION ALL
+    SELECT 3, 'Morning', 6, 14, {MORNING_COUNT} UNION ALL
+    SELECT 4, 'Day', 11, 19, {DAY_COUNT} UNION ALL
+    SELECT 5, 'Evening', 15, 23, {EVENING_COUNT}
+),
+driver_assignments AS (
+    SELECT 
+        ROW_NUMBER() OVER (ORDER BY sp.shift_id, seq.seq) AS driver_num,
+        sp.shift_name AS shift_type,
+        sp.shift_start AS shift_start_hour,
+        sp.shift_end AS shift_end_hour,
+        CASE WHEN sp.shift_start > sp.shift_end THEN 'True' ELSE 'False' END AS shift_crosses_midnight
+    FROM shift_patterns sp
+    CROSS JOIN (SELECT SEQ4() + 1 AS seq FROM TABLE(GENERATOR(ROWCOUNT => {MORNING_COUNT}))) seq
+    WHERE seq.seq <= sp.driver_count
+),
+home_locations AS (
+    SELECT 
+        LOCATION_ID,
+        ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    WHERE SOURCE_TYPE = 'address'
+    LIMIT 100
+)
+SELECT 
+    'D-' || LPAD(da.driver_num::STRING, 4, '0') AS DRIVER_ID,
+    hl.LOCATION_ID AS HOME_LOCATION_ID,
+    da.shift_type AS SHIFT_TYPE,
+    da.shift_start_hour AS SHIFT_START_HOUR,
+    da.shift_end_hour AS SHIFT_END_HOUR,
+    da.shift_crosses_midnight AS SHIFT_CROSSES_MIDNIGHT
+FROM driver_assignments da
+JOIN home_locations hl ON da.driver_num = hl.rn;
 ```
 
-**Shift Distribution Formula:**
-| Shift | % of Fleet | Purpose |
-|-------|------------|---------|
-| Graveyard | 10% | Overnight |
-| Early | 22.5% | Early morning |
-| Morning | 27.5% | Peak AM rush |
-| Day | 22.5% | Midday |
-| Evening | 17.5% | PM rush |
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVERS AS
+SELECT 
+    DRIVER_ID,
+    'Driver ' || DRIVER_ID AS DRIVER_NAME,
+    SHIFT_TYPE,
+    SHIFT_START_HOUR,
+    SHIFT_END_HOUR,
+    SHIFT_CROSSES_MIDNIGHT
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS;
+```
 
-**Output:** Configured number of drivers with shift schedules
+Then verify:
+
+```sql
+SELECT 
+    SHIFT_TYPE,
+    COUNT(*) AS NUM_DRIVERS,
+    MIN(SHIFT_START_HOUR) || ':00 - ' || MIN(SHIFT_END_HOUR) || ':00' AS SHIFT_HOURS
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS
+GROUP BY SHIFT_TYPE
+ORDER BY NUM_DRIVERS DESC;
+```
+
+**Output:** `TAXI_DRIVERS` and `DRIVERS` tables with configured number of drivers.
 
 ---
 
 ### Step 6: Generate Trips
 
-**Goal:** Create trip assignments for each day
+**Goal:** Create trip assignments for each driver.
 
-**Action:** Execute `scripts/04_create_trips.sql`
+**Action:** Execute this SQL. Trip counts vary by shift type (Morning: 14-22, Day: 12-20, Early: 10-18, Evening: 10-16, Graveyard: 6-12).
 
-For multiple days, modify the script to include a days generator (see scripts/README.md for details).
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS AS
+WITH 
+driver_trip_counts AS (
+    SELECT 
+        d.DRIVER_ID,
+        d.SHIFT_TYPE,
+        d.SHIFT_START_HOUR,
+        d.SHIFT_END_HOUR,
+        d.SHIFT_CROSSES_MIDNIGHT,
+        CASE d.SHIFT_TYPE
+            WHEN 'Morning' THEN UNIFORM(14, 22, RANDOM())
+            WHEN 'Day' THEN UNIFORM(12, 20, RANDOM())
+            WHEN 'Early' THEN UNIFORM(10, 18, RANDOM())
+            WHEN 'Evening' THEN UNIFORM(10, 16, RANDOM())
+            WHEN 'Graveyard' THEN UNIFORM(6, 12, RANDOM())
+        END AS NUM_TRIPS
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS d
+),
+trip_sequence AS (
+    SELECT 
+        d.DRIVER_ID,
+        d.SHIFT_TYPE,
+        d.SHIFT_START_HOUR,
+        d.SHIFT_END_HOUR,
+        d.SHIFT_CROSSES_MIDNIGHT,
+        d.NUM_TRIPS,
+        ROW_NUMBER() OVER (PARTITION BY d.DRIVER_ID ORDER BY RANDOM()) AS TRIP_NUMBER
+    FROM driver_trip_counts d
+    CROSS JOIN TABLE(GENERATOR(ROWCOUNT => 25)) g
+    QUALIFY TRIP_NUMBER <= d.NUM_TRIPS
+),
+trips_with_hours AS (
+    SELECT 
+        ts.*,
+        CASE 
+            WHEN ts.SHIFT_CROSSES_MIDNIGHT = 'True' THEN
+                MOD(ts.SHIFT_START_HOUR + FLOOR((ts.TRIP_NUMBER - 1) * 8.0 / ts.NUM_TRIPS) + UNIFORM(0, 1, RANDOM()), 24)
+            ELSE
+                ts.SHIFT_START_HOUR + FLOOR((ts.TRIP_NUMBER - 1) * (ts.SHIFT_END_HOUR - ts.SHIFT_START_HOUR) / ts.NUM_TRIPS) + UNIFORM(0, 1, RANDOM())
+        END AS TRIP_HOUR
+    FROM trip_sequence ts
+),
+locations AS (
+    SELECT 
+        LOCATION_ID,
+        POINT_GEOM,
+        NAME,
+        ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
+)
+SELECT 
+    MD5(t.DRIVER_ID || '-' || t.TRIP_NUMBER || '-' || RANDOM()) AS TRIP_ID,
+    t.DRIVER_ID,
+    t.TRIP_HOUR::INT AS TRIP_HOUR,
+    t.TRIP_NUMBER::INT AS TRIP_NUMBER,
+    t.SHIFT_TYPE,
+    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'P')), (SELECT COUNT(*) FROM locations)) + 1 AS PICKUP_LOC_ID,
+    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'D')), (SELECT COUNT(*) FROM locations)) + 1 AS DROPOFF_LOC_ID
+FROM trips_with_hours t;
+```
 
-**Output:** Trips for all configured days
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS AS
+WITH locations AS (
+    SELECT 
+        LOCATION_ID,
+        POINT_GEOM,
+        NAME,
+        ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
+),
+pickup AS (
+    SELECT LOCATION_ID, POINT_GEOM, NAME, rn FROM locations
+),
+dropoff AS (
+    SELECT LOCATION_ID, POINT_GEOM, NAME, rn FROM locations
+)
+SELECT 
+    t.TRIP_ID,
+    t.DRIVER_ID,
+    t.TRIP_HOUR,
+    t.TRIP_NUMBER,
+    t.SHIFT_TYPE,
+    p.POINT_GEOM AS PICKUP_GEOM,
+    p.NAME AS PICKUP_NAME,
+    d.POINT_GEOM AS DROPOFF_GEOM,
+    d.NAME AS DROPOFF_NAME
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS t
+JOIN pickup p ON t.PICKUP_LOC_ID = p.rn
+JOIN dropoff d ON t.DROPOFF_LOC_ID = d.rn;
+```
+
+Then verify:
+
+```sql
+SELECT 
+    SHIFT_TYPE,
+    COUNT(DISTINCT DRIVER_ID) AS DRIVERS,
+    MIN(trips) AS MIN_TRIPS,
+    MAX(trips) AS MAX_TRIPS,
+    AVG(trips)::INT AS AVG_TRIPS
+FROM (
+    SELECT DRIVER_ID, SHIFT_TYPE, COUNT(*) AS trips
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS
+    GROUP BY DRIVER_ID, SHIFT_TYPE
+)
+GROUP BY SHIFT_TYPE
+ORDER BY AVG_TRIPS DESC;
+```
+
+**Output:** `DRIVER_TRIPS` and `DRIVER_TRIPS_WITH_COORDS` tables.
 
 ---
 
 ### Step 7: Generate ORS Routes
 
-**Goal:** Generate actual road routes using OpenRouteService
+**Goal:** Generate actual road routes using OpenRouteService.
 
-**Action:** Execute `scripts/05_generate_routes.sql`
+**Action:** Execute this SQL. Substitute `{START_DATE}` with the configured start date (default: `2015-06-24`).
 
-⚠️ **Time scales with trip count:**
+**WARNING:** This step makes many ORS API calls and may take several minutes depending on trip count.
 - 1,000 trips: ~3-5 minutes
-- 5,000 trips: ~15-20 minutes  
+- 5,000 trips: ~15-20 minutes
 - 10,000 trips: ~30-45 minutes
 
-**Output:** Road-following route geometries for all trips
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES AS
+SELECT 
+    DRIVER_ID,
+    TRIP_ID,
+    TRIP_HOUR,
+    TRIP_NUMBER,
+    SHIFT_TYPE,
+    PICKUP_GEOM,
+    PICKUP_NAME,
+    DROPOFF_GEOM,
+    DROPOFF_NAME,
+    OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+        'driving-car',
+        ARRAY_CONSTRUCT(ST_X(PICKUP_GEOM), ST_Y(PICKUP_GEOM)),
+        ARRAY_CONSTRUCT(ST_X(DROPOFF_GEOM), ST_Y(DROPOFF_GEOM))
+    ) AS ROUTE_RESPONSE
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS;
+```
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED AS
+SELECT 
+    DRIVER_ID,
+    TRIP_ID,
+    TRIP_HOUR,
+    TRIP_NUMBER,
+    SHIFT_TYPE,
+    PICKUP_GEOM AS ORIGIN,
+    PICKUP_NAME AS ORIGIN_ADDRESS,
+    DROPOFF_GEOM AS DESTINATION,
+    DROPOFF_NAME AS DESTINATION_ADDRESS,
+    TRY_TO_GEOGRAPHY(PARSE_JSON(ROUTE_RESPONSE):features[0]:geometry) AS ROUTE_GEOMETRY,
+    PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:distance::FLOAT AS ROUTE_DISTANCE_METERS,
+    PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:duration::FLOAT AS ROUTE_DURATION_SECS
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES
+WHERE ROUTE_RESPONSE IS NOT NULL;
+```
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES AS
+WITH trip_timing AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (PARTITION BY DRIVER_ID ORDER BY TRIP_HOUR, TRIP_NUMBER) AS DRIVER_TRIP_SEQ
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED
+    WHERE ROUTE_GEOMETRY IS NOT NULL
+),
+cumulative_timing AS (
+    SELECT 
+        t.*,
+        SUM(COALESCE(ROUTE_DURATION_SECS, 0) + 180) OVER (
+            PARTITION BY DRIVER_ID 
+            ORDER BY DRIVER_TRIP_SEQ 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS TIME_OFFSET_SECS
+    FROM trip_timing t
+)
+SELECT 
+    DRIVER_ID,
+    TRIP_ID,
+        DATEADD('second', COALESCE(TIME_OFFSET_SECS, 0), 
+        DATEADD('hour', TRIP_HOUR, '{START_DATE}'::TIMESTAMP_NTZ)
+    ) AS TRIP_START_TIME,
+    DATEADD('second', COALESCE(TIME_OFFSET_SECS, 0) + ROUTE_DURATION_SECS, 
+        DATEADD('hour', TRIP_HOUR, '{START_DATE}'::TIMESTAMP_NTZ)
+    ) AS TRIP_END_TIME,
+    ORIGIN_ADDRESS,
+    DESTINATION_ADDRESS,
+    ROUTE_DURATION_SECS,
+    ROUTE_DISTANCE_METERS,
+    ROUTE_GEOMETRY AS GEOMETRY,
+    ORIGIN,
+    DESTINATION,
+    SHIFT_TYPE
+FROM cumulative_timing;
+```
+
+Then verify:
+
+```sql
+SELECT 
+    COUNT(*) AS TOTAL_ROUTES,
+    COUNT(DISTINCT DRIVER_ID) AS DRIVERS,
+    ROUND(AVG(ROUTE_DISTANCE_METERS)/1000, 2) AS AVG_DISTANCE_KM,
+    ROUND(AVG(ROUTE_DURATION_SECS)/60, 1) AS AVG_DURATION_MINS,
+    ROUND(SUM(ROUTE_DISTANCE_METERS)/1000, 0) AS TOTAL_DISTANCE_KM
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
+```
+
+**Output:** `DRIVER_ROUTES`, `DRIVER_ROUTES_PARSED`, and `DRIVER_ROUTE_GEOMETRIES` tables.
 
 ---
 
 ### Step 8: Create Driver Locations
 
-**Goal:** Interpolate driver positions along routes with realistic speeds
+**Goal:** Interpolate driver positions along routes with realistic speeds.
 
-**Action:** Execute `scripts/06_create_driver_locations.sql`
+**Action:** Execute this SQL. Creates 15 points per trip with driver states:
+- `waiting` - Stationary, waiting for fare (point 0)
+- `pickup` - Stationary, passenger boarding (point 1)
+- `driving` - Variable speed based on time of day (points 2-12)
+- `dropoff` - Slow, passenger exiting (point 13)
+- `idle` - Stationary, post-trip (point 14)
 
-This creates 15 points per trip with driver states:
-- `waiting` - Stationary, waiting for fare
-- `pickup` - Stationary, passenger boarding
-- `driving` - Variable speed based on time of day
-- `dropoff` - Slow, passenger exiting
-- `idle` - Stationary, post-trip
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS AS
+WITH 
+route_info AS (
+    SELECT 
+        DRIVER_ID,
+        TRIP_ID,
+        TRIP_START_TIME,
+        TRIP_END_TIME,
+        ORIGIN AS PICKUP_LOCATION,
+        DESTINATION AS DROPOFF_LOCATION,
+        GEOMETRY AS ROUTE,
+        ROUTE_DURATION_SECS,
+        ROUTE_DISTANCE_METERS,
+        SHIFT_TYPE,
+        ST_NPOINTS(GEOMETRY)::NUMBER(10,0) AS NUM_POINTS,
+        UNIFORM(120, 480, RANDOM()) AS WAIT_BEFORE_SECS
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES
+    WHERE GEOMETRY IS NOT NULL
+),
+point_seq AS (
+    SELECT SEQ4()::NUMBER(10,0) AS POINT_INDEX FROM TABLE(GENERATOR(ROWCOUNT => 15))
+),
+expanded AS (
+    SELECT 
+        r.DRIVER_ID,
+        r.TRIP_ID,
+        r.TRIP_START_TIME,
+        r.TRIP_END_TIME,
+        r.PICKUP_LOCATION,
+        r.DROPOFF_LOCATION,
+        r.ROUTE,
+        r.NUM_POINTS,
+        r.ROUTE_DURATION_SECS,
+        r.WAIT_BEFORE_SECS,
+        p.POINT_INDEX,
+        UNIFORM(1, 100, RANDOM()) AS SPEED_ROLL,
+        CASE 
+            WHEN p.POINT_INDEX = 0 THEN 'waiting'
+            WHEN p.POINT_INDEX = 1 THEN 'pickup'
+            WHEN p.POINT_INDEX BETWEEN 2 AND 12 THEN 'driving'
+            WHEN p.POINT_INDEX = 13 THEN 'dropoff'
+            WHEN p.POINT_INDEX = 14 THEN 'idle'
+        END AS DRIVER_STATE,
+        CASE 
+            WHEN p.POINT_INDEX = 0 THEN 
+                DATEADD('second', -r.WAIT_BEFORE_SECS, r.TRIP_START_TIME)
+            WHEN p.POINT_INDEX = 1 THEN 
+                r.TRIP_START_TIME
+            WHEN p.POINT_INDEX BETWEEN 2 AND 12 THEN
+                DATEADD('second', 
+                    FLOOR(r.ROUTE_DURATION_SECS * (p.POINT_INDEX - 2) / 10.0)::INT,
+                    r.TRIP_START_TIME
+                )
+            WHEN p.POINT_INDEX = 13 THEN
+                r.TRIP_END_TIME
+            ELSE
+                DATEADD('second', 60, r.TRIP_END_TIME)
+        END AS CURR_TIME,
+        CASE 
+            WHEN p.POINT_INDEX IN (0, 1) THEN 1::NUMBER(10,0)
+            WHEN p.POINT_INDEX IN (13, 14) THEN r.NUM_POINTS
+            ELSE GREATEST(1::NUMBER(10,0), LEAST(r.NUM_POINTS, 
+                CEIL((p.POINT_INDEX - 2) * r.NUM_POINTS / 10.0)::NUMBER(10,0)))
+        END AS GEOM_IDX
+    FROM route_info r
+    CROSS JOIN point_seq p
+)
+SELECT 
+    TRIP_ID,
+    DRIVER_ID,
+    TRIP_START_TIME AS PICKUP_TIME,
+    TRIP_END_TIME AS DROPOFF_TIME,
+    PICKUP_LOCATION,
+    DROPOFF_LOCATION,
+    ROUTE,
+    ST_POINTN(ROUTE, GEOM_IDX::INT) AS POINT_GEOM,
+    CURR_TIME,
+    POINT_INDEX,
+    DRIVER_STATE,
+    CASE 
+        WHEN DRIVER_STATE = 'waiting' THEN 0
+        WHEN DRIVER_STATE = 'pickup' THEN 0
+        WHEN DRIVER_STATE = 'dropoff' THEN UNIFORM(0, 3, RANDOM())
+        WHEN DRIVER_STATE = 'idle' THEN 0
+        WHEN DRIVER_STATE = 'driving' THEN
+            CASE 
+                WHEN HOUR(CURR_TIME) BETWEEN 7 AND 9 THEN
+                    CASE 
+                        WHEN SPEED_ROLL <= 15 THEN UNIFORM(0, 5, RANDOM())
+                        WHEN SPEED_ROLL <= 35 THEN UNIFORM(5, 15, RANDOM())
+                        WHEN SPEED_ROLL <= 70 THEN UNIFORM(15, 30, RANDOM())
+                        ELSE UNIFORM(25, 40, RANDOM())
+                    END
+                WHEN HOUR(CURR_TIME) BETWEEN 17 AND 19 THEN
+                    CASE 
+                        WHEN SPEED_ROLL <= 20 THEN UNIFORM(0, 5, RANDOM())
+                        WHEN SPEED_ROLL <= 40 THEN UNIFORM(5, 15, RANDOM())
+                        WHEN SPEED_ROLL <= 75 THEN UNIFORM(15, 30, RANDOM())
+                        ELSE UNIFORM(25, 40, RANDOM())
+                    END
+                WHEN HOUR(CURR_TIME) BETWEEN 0 AND 5 THEN
+                    CASE 
+                        WHEN SPEED_ROLL <= 5  THEN UNIFORM(0, 10, RANDOM())
+                        WHEN SPEED_ROLL <= 20 THEN UNIFORM(20, 35, RANDOM())
+                        ELSE UNIFORM(35, 55, RANDOM())
+                    END
+                ELSE
+                    CASE 
+                        WHEN SPEED_ROLL <= 10 THEN UNIFORM(0, 8, RANDOM())
+                        WHEN SPEED_ROLL <= 25 THEN UNIFORM(8, 20, RANDOM())
+                        WHEN SPEED_ROLL <= 60 THEN UNIFORM(20, 35, RANDOM())
+                        ELSE UNIFORM(30, 50, RANDOM())
+                    END
+            END
+    END AS KMH
+FROM expanded;
+```
 
-**Speed Distribution:**
+Then verify:
+
+```sql
+SELECT 
+    COUNT(*) AS TOTAL_LOCATION_POINTS,
+    COUNT(DISTINCT DRIVER_ID) AS DRIVERS,
+    COUNT(DISTINCT TRIP_ID) AS TRIPS,
+    MIN(CURR_TIME) AS EARLIEST_TIME,
+    MAX(CURR_TIME) AS LATEST_TIME
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
+```
+
+```sql
+SELECT 
+    DRIVER_STATE,
+    COUNT(*) AS COUNT,
+    ROUND(AVG(KMH), 1) AS AVG_SPEED,
+    MIN(KMH) AS MIN_SPEED,
+    MAX(KMH) AS MAX_SPEED
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS
+GROUP BY DRIVER_STATE
+ORDER BY DRIVER_STATE;
+```
+
+**Output:** `DRIVER_LOCATIONS` table with interpolated positions and realistic speed patterns.
+
+**Expected Speed Distribution:**
 | Speed Band | Percentage |
 |------------|------------|
 | 0 km/h (Stationary) | ~23% |
@@ -566,160 +824,229 @@ This creates 15 points per trip with driver states:
 | 31-45 km/h (Normal) | ~20% |
 | 46+ km/h (Fast) | ~6% |
 
-**Output:** Location points for all trips with realistic speed patterns
-
 ---
 
 ### Step 9: Create Analytics Views
 
-**Goal:** Create views for Streamlit consumption
+**Goal:** Create views for Streamlit consumption.
 
-**Action:** Execute `scripts/07_create_analytics_views.sql`
+**Action:** Execute each view as a separate statement.
 
-**Output:** Analytics views ready for Streamlit
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVERS_V AS
+SELECT * FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVERS;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V AS
+SELECT 
+    TRIP_ID,
+    DRIVER_ID,
+    PICKUP_TIME,
+    DROPOFF_TIME,
+    PICKUP_LOCATION,
+    DROPOFF_LOCATION,
+    ROUTE,
+    POINT_GEOM,
+    ST_X(POINT_GEOM) AS LON,
+    ST_Y(POINT_GEOM) AS LAT,
+    CURR_TIME,
+    CURR_TIME AS POINT_TIME,
+    POINT_INDEX,
+    DRIVER_STATE,
+    KMH
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS AS
+SELECT 
+    DRIVER_ID,
+    TRIP_ID,
+    GEOMETRY,
+    ORIGIN,
+    DESTINATION,
+    ORIGIN_ADDRESS,
+    DESTINATION_ADDRESS,
+    TRIP_START_TIME AS PICKUP_TIME,
+    TRIP_END_TIME AS DROPOFF_TIME
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS AS
+SELECT 
+    rg.TRIP_ID,
+    rg.ORIGIN_ADDRESS,
+    rg.DESTINATION_ADDRESS,
+    rg.ORIGIN AS ORIGIN,
+    rg.DESTINATION AS DESTINATION,
+    rg.TRIP_START_TIME AS PICKUP_TIME,
+    rg.TRIP_END_TIME AS DROPOFF_TIME,
+    rg.ROUTE_DURATION_SECS / 60.0 AS TRIP_DURATION_MINS,
+    rg.ROUTE_DISTANCE_METERS AS DISTANCE_METERS,
+    rg.GEOMETRY,
+    rg.DRIVER_ID,
+    rg.SHIFT_TYPE
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES AS
+SELECT 
+    TRIP_ID,
+    ORIGIN_ADDRESS || ' -> ' || DESTINATION_ADDRESS AS TRIP_NAME
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN AS
+SELECT 
+    rg.TRIP_ID,
+    rg.DRIVER_ID,
+    rg.ORIGIN_ADDRESS,
+    rg.ORIGIN_ADDRESS AS ORIGIN_STREET,
+    rg.DESTINATION_ADDRESS,
+    rg.DESTINATION_ADDRESS AS DESTINATION_STREET,
+    rg.TRIP_START_TIME AS PICKUP_TIME,
+    rg.TRIP_END_TIME AS DROPOFF_TIME,
+    rg.ORIGIN,
+    rg.DESTINATION,
+    rg.GEOMETRY,
+    rg.ROUTE_DISTANCE_METERS AS DISTANCE_METERS,
+    rg.SHIFT_TYPE,
+    OBJECT_CONSTRUCT(
+        'features', ARRAY_CONSTRUCT(
+            OBJECT_CONSTRUCT(
+                'properties', OBJECT_CONSTRUCT(
+                    'summary', OBJECT_CONSTRUCT(
+                        'distance', rg.ROUTE_DISTANCE_METERS,
+                        'duration', rg.ROUTE_DURATION_SECS
+                    )
+                )
+            )
+        )
+    ) AS ROUTE
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
+```
+
+```sql
+CREATE OR REPLACE VIEW OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY AS
+WITH trip_stats AS (
+    SELECT 
+        TRIP_ID,
+        AVG(KMH) AS AVERAGE_KMH,
+        MAX(KMH) AS MAX_KMH
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS
+    GROUP BY TRIP_ID
+)
+SELECT 
+    *
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg
+LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
+```
+
+Then verify:
+
+```sql
+SELECT 'DRIVERS_V' AS VIEW_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVERS_V
+UNION ALL SELECT 'DRIVER_LOCATIONS_V', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+UNION ALL SELECT 'TRIPS_ASSIGNED_TO_DRIVERS', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS
+UNION ALL SELECT 'TRIPS', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS
+UNION ALL SELECT 'ROUTE_NAMES', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
+UNION ALL SELECT 'TRIP_ROUTE_PLAN', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
+UNION ALL SELECT 'TRIP_SUMMARY', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
+```
+
+**Output:** 7 analytics views created.
 
 ---
 
 ### Step 10: Deploy Streamlit App
 
-**Goal:** Upload and deploy the Streamlit application
+**Goal:** Upload Streamlit files to stage and deploy the application.
 
-**Action:** 
-1. Run `scripts/deploy_streamlit.py` to upload files
-2. Execute `scripts/08_deploy_streamlit.sql` to create the app
+**Action:** Upload the Streamlit files to the Snowflake stage, then create the Streamlit app.
 
-```bash
-python scripts/deploy_streamlit.py \
-    --account <account> \
-    --user <user> \
-    --password <password>
-```
-
-**Output:** Streamlit app deployed and accessible in Snowsight
-
----
-
-## Quick Start (Run All)
-
-For automated execution with default settings (San Francisco, 80 drivers, 1 day):
-
-```bash
-cd oss-deploy-a-fleet-intelligence-solution-for-taxis/scripts
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Run all SQL scripts (01-07)
-python run_all.py \
-    --account <account> \
-    --user <user> \
-    --password <password>
-
-# Deploy Streamlit files
-python deploy_streamlit.py \
-    --account <account> \
-    --user <user> \
-    --password <password>
-
-# Then run 08_deploy_streamlit.sql in Snowsight
-```
-
----
-
-## Configuration Examples
-
-### Example 1: New York, 100 drivers, 1 day
+**Upload files using PUT commands:**
 
 ```sql
--- 02_create_base_locations.sql - bounding box:
-WHERE ST_X(GEOMETRY) BETWEEN -74.05 AND -73.90
-  AND ST_Y(GEOMETRY) BETWEEN 40.65 AND 40.85
-
--- 03_create_drivers.sql - 100 drivers:
-SELECT 1, 'Graveyard', 22, 6, 10 UNION ALL
-SELECT 2, 'Early', 4, 12, 22 UNION ALL
-SELECT 3, 'Morning', 6, 14, 28 UNION ALL
-SELECT 4, 'Day', 11, 19, 22 UNION ALL
-SELECT 5, 'Evening', 15, 23, 18
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
-
--- Warehouse: MEDIUM
--- Estimated rows: ~22,000
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/SF_Taxi_Control_Center.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/extra.css' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/logo.svg' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/environment.yml' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/city_config.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/1_Driver_Routes.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/2_Fleet_Heat_Map.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 ```
 
-### Example 2: London, 50 drivers, 3 days
+**Verify files uploaded:**
 
 ```sql
--- 02_create_base_locations.sql - bounding box:
-WHERE ST_X(GEOMETRY) BETWEEN -0.20 AND 0.05
-  AND ST_Y(GEOMETRY) BETWEEN 51.45 AND 51.55
-
--- 03_create_drivers.sql - 50 drivers:
-SELECT 1, 'Graveyard', 22, 6, 5 UNION ALL
-SELECT 2, 'Early', 4, 12, 11 UNION ALL
-SELECT 3, 'Morning', 6, 14, 14 UNION ALL
-SELECT 4, 'Day', 11, 19, 11 UNION ALL
-SELECT 5, 'Evening', 15, 23, 9
-
--- 04_create_trips.sql - 3 days:
-FROM TABLE(GENERATOR(ROWCOUNT => 3))
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=51.51, longitude=-0.12, zoom=12)
-
--- Warehouse: LARGE
--- Estimated rows: ~33,000
+LIST @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/;
 ```
 
-### Example 3: Sydney, 200 drivers, 7 days
+**Deploy the Streamlit app:**
 
 ```sql
--- 02_create_base_locations.sql - bounding box:
-WHERE ST_X(GEOMETRY) BETWEEN 151.15 AND 151.30
-  AND ST_Y(GEOMETRY) BETWEEN -33.92 AND -33.82
-
--- 03_create_drivers.sql - 200 drivers:
-SELECT 1, 'Graveyard', 22, 6, 20 UNION ALL
-SELECT 2, 'Early', 4, 12, 45 UNION ALL
-SELECT 3, 'Morning', 6, 14, 55 UNION ALL
-SELECT 4, 'Day', 11, 19, 45 UNION ALL
-SELECT 5, 'Evening', 15, 23, 35
-
--- 04_create_trips.sql - 7 days:
-FROM TABLE(GENERATOR(ROWCOUNT => 7))
-
--- Streamlit map center:
-view_state = pdk.ViewState(latitude=-33.87, longitude=151.21, zoom=12)
-
--- Warehouse: XLARGE
--- Estimated rows: ~315,000
+CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER
+  FROM @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi
+  MAIN_FILE = '{MAIN_FILE}'
+  QUERY_WAREHOUSE = COMPUTE_WH
+  TITLE = '{CITY_NAME} Taxi Control Center'
+  COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 ```
+
+Where:
+- `{MAIN_FILE}` defaults to `SF_Taxi_Control_Center.py` (or renamed file if user changed it)
+- `{CITY_NAME}` is the chosen city name (e.g., "SF", "NYC", "London")
+
+**Verify deployment:**
+
+```sql
+SHOW STREAMLITS IN SCHEMA OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS;
+```
+
+**Get app URL:**
+
+```sql
+SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER') AS STREAMLIT_URL;
+```
+
+**Output:** Streamlit app deployed. Provide the user with the generated URL to open the app directly in Snowsight.
 
 ---
 
 ## Data Model
 
 ```
-FLEET_INTELLIGENCE
-├── PUBLIC (schema)
-│   ├── SF_TAXI_LOCATIONS      # Location pool for target city
-│   ├── TAXI_DRIVERS           # Configured driver count
-│   ├── DRIVERS                # Driver display data
-│   ├── DRIVER_TRIPS           # Trip assignments
-│   ├── DRIVER_TRIPS_WITH_COORDS # Trips with coordinates
-│   ├── DRIVER_ROUTES          # Raw ORS responses
-│   ├── DRIVER_ROUTES_PARSED   # Parsed route data
-│   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
-│   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
-│
-└── ANALYTICS (schema)
-    ├── DRIVERS                # View
-    ├── DRIVER_LOCATIONS       # View with LON/LAT and DRIVER_STATE
-    ├── TRIPS_ASSIGNED_TO_DRIVERS # View
-    ├── ROUTE_NAMES            # View
-    └── TRIP_SUMMARY           # View
+OPENROUTESERVICE_NATIVE_APP
+└── FLEET_INTELLIGENCE_TAXIS (schema)
+    ├── Tables
+    │   ├── SF_TAXI_LOCATIONS      # Location pool for target city
+    │   ├── TAXI_DRIVERS           # Configured driver count
+    │   ├── DRIVERS                # Driver display data
+    │   ├── DRIVER_TRIPS           # Trip assignments
+    │   ├── DRIVER_TRIPS_WITH_COORDS # Trips with coordinates
+    │   ├── DRIVER_ROUTES          # Raw ORS responses
+    │   ├── DRIVER_ROUTES_PARSED   # Parsed route data
+    │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
+    │   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
+    │
+    ├── Views
+    │   ├── DRIVERS_V              # Driver info with shift details
+    │   ├── DRIVER_LOCATIONS_V     # Positions with LON/LAT and DRIVER_STATE
+    │   ├── TRIPS_ASSIGNED_TO_DRIVERS # Trip details with route geometries
+    │   ├── TRIPS                  # Compatibility view with duration/distance
+    │   ├── ROUTE_NAMES            # Human-readable trip names
+    │   ├── TRIP_ROUTE_PLAN        # Route data for Heat Map page
+    │   └── TRIP_SUMMARY           # Comprehensive trip metrics with speed stats
+    │
+    ├── Stage
+    │   └── STREAMLIT_STAGE        # Streamlit application files
+    │
+    └── Streamlit
+        └── SF_TAXI_CONTROL_CENTER # Fleet Intelligence dashboard
 ```
 
 ---
@@ -734,7 +1061,6 @@ FLEET_INTELLIGENCE
 | Query timeout | Increase warehouse size |
 | Out of memory | Use larger warehouse or batch processing |
 | Missing Overture data | Install shares from Snowflake Marketplace |
-| Streamlit not loading | Check all files uploaded to stage |
+| Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/sf_taxi/` |
 | Map centered wrong | Update view_state coordinates in Streamlit files |
-
-See `scripts/README.md` for detailed troubleshooting.
+| PUT command fails | Ensure the file path is absolute and the file exists locally |

@@ -319,7 +319,17 @@ Open `oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb`
 
 **If they already match**: Skip modification and proceed directly to sub-step 8.3 (upload).
 
-**If they differ**: Update the following cells.
+**If they differ**: Update the following cells, observing the replacement rules below.
+
+#### 8.1.1: Text Replacement Rules
+
+> **IMPORTANT — follow these rules to avoid garbled text in notebook prompts.**
+
+1. **Never use bulk `sed` or `replace_all` on `.ipynb` files.** Notebooks are JSON with structured cell arrays. Use the Edit tool to make targeted replacements on specific cells identified by name.
+
+2. **Replace longer phrases before shorter ones.** When multiple patterns overlap (e.g., `"WROCLAW, POLAND"` and `"Wroclaw"`), always replace the longest/most-specific match first. Otherwise, partial replacements produce garbled text like `"San Francisco, POLAND"`.
+
+3. **Replace complete prompt strings, not individual words.** When a prompt contains a city in multiple forms (e.g., `"in Wroclaw IN WROCLAW, POLAND"`), rewrite the entire prompt phrase in one edit (e.g., `"in San Francisco"`) rather than doing separate word-level substitutions that can stack incorrectly.
 
 #### 8.2: Update AI Prompt Cells
 
@@ -346,6 +356,29 @@ Update these markdown cells:
 | `create_synthetic_jobs_and_vehicle` | Replace "San Francisco" with `<NOTEBOOK_CITY>` |
 | `head_multi_vehicles` | Replace "San Francisco" with `<NOTEBOOK_CITY>` |
 | `optimal_base_table` | Replace "SAN FRANCISCO" with `<NOTEBOOK_CITY>` in heading |
+
+#### 8.2.1: Post-Replacement Validation
+
+> **REQUIRED — run these checks before uploading the notebook.**
+
+1. **Verify JSON validity** of the modified `.ipynb` file:
+   ```bash
+   python3 -c "import json; json.load(open('oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb')); print('OK')"
+   ```
+
+2. **Search for remnants of the old city** in the notebook. Grep for the old city name (all case variants) and any associated country/region name (e.g., `POLAND`, `Germany`):
+   ```bash
+   grep -i '<OLD_CITY>' oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb
+   grep -i '<OLD_COUNTRY>' oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb
+   ```
+
+3. **Search for garbled patterns** — duplicate or stacked city references that indicate a bad replacement:
+   ```bash
+   grep -iE '<NOTEBOOK_CITY>.*(POLAND|Germany|Poland)' oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb
+   grep -i '<NOTEBOOK_CITY> IN' oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb
+   ```
+
+4. **If any artifacts are found**, fix them before proceeding to upload. Do not skip this step.
 
 #### 8.3: Upload and Create Notebook
 

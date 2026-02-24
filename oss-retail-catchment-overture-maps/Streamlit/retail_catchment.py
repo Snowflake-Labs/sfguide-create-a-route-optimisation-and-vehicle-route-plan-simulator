@@ -87,8 +87,8 @@ Once the services are running, refresh this page.
 """)
     st.stop()
 
-RETAIL_POIS = "RETAIL_CATCHMENT_DEMO.PUBLIC.RETAIL_POIS"
-REGIONAL_ADDRESSES = "RETAIL_CATCHMENT_DEMO.PUBLIC.REGIONAL_ADDRESSES"
+RETAIL_POIS = "OPENROUTESERVICE_NATIVE_APP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS"
+REGIONAL_ADDRESSES = "OPENROUTESERVICE_NATIVE_APP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES"
 
 RETAIL_CATEGORIES = [
     'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
@@ -401,8 +401,7 @@ with st.sidebar:
         st.warning(f"No {selected_display} stores found" + (f" matching '{search_term}'" if search_term else ""))
 
     st.markdown('<h1sub>Travel Mode</h1sub>', unsafe_allow_html=True)
-    mode_label = st.selectbox('Mode', ['Driving', 'Cycling'])
-    profile = 'driving-car' if mode_label == 'Driving' else 'cycling-road'
+    profile = st.selectbox('Mode', ['driving-car', 'cycling-regular', 'foot-walking'])
 
     st.markdown('<h1sub>Catchment Zones</h1sub>', unsafe_allow_html=True)
     num_rings = st.slider('Number of zones', min_value=1, max_value=5, value=3)
@@ -439,7 +438,6 @@ if build and selected_store is not None:
         'store_category_display': selected_display,
         'ring_minutes': ring_minutes,
         'max_minutes': max_minutes,
-        'mode_label': mode_label,
         'profile': profile,
         'show_isochrones': show_isochrones,
         'show_competitors': show_competitors,
@@ -458,7 +456,7 @@ if 'analysis' in st.session_state:
     with kpi1:
         st.metric("Selected Store", a['store_name'][:25] + "..." if len(a['store_name']) > 25 else a['store_name'])
     with kpi2:
-        st.metric("Travel Time", f"{a['max_minutes']} min ({a['mode_label']})")
+        st.metric("Travel Time", f"{a['max_minutes']} min ({a['profile']})")
     with kpi3:
         st.metric("Competitors", f"{competitor_count:,}")
     with kpi4:
@@ -479,7 +477,7 @@ with col_left:
         store_poi_id = a['store_poi_id']
         ring_minutes = a['ring_minutes']
         analysis_max_minutes = a['max_minutes']
-        analysis_mode = a['mode_label']
+        analysis_mode = a['profile']
         analysis_profile = a['profile']
         
         with st.spinner('Building isochrones...'):
@@ -667,7 +665,7 @@ with col_right:
         a = st.session_state['analysis']
         mins = sorted(a['ring_minutes'])
         palette = get_palette(len(mins))
-        analysis_mode = a['mode_label']
+        analysis_mode = a['profile']
         
         legend_html = f"""
         <div style='font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont, sans-serif; background:#f8f9fa; padding:15px 20px; border-radius:8px; border:1px solid #e9ecef;'>
@@ -727,7 +725,7 @@ with col_right:
         <div style='background:linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding:12px 16px; border-radius:8px; margin:8px 0; border-left:4px solid #7D44CF;'>
             <div style='color:#7D44CF; font-weight:600; font-size:0.85rem;'>CATCHMENT AREA INSIGHTS</div>
             <div style='color:#333; font-size:0.8rem; margin-top:6px; line-height:1.5;'>
-                Analysis covers <b>{len(a['ring_minutes'])} catchment zones</b> within {a['max_minutes']}-minute {a['mode_label'].lower()} radius with <b style='color:#7D44CF;'>{ma['address_count']:,} RESIDENTIAL ADDRESSES</b> and {ma['h3_cell_count']} H3 cells.
+                Analysis covers <b>{len(a['ring_minutes'])} catchment zones</b> within {a['max_minutes']}-minute {a['profile']} radius with <b style='color:#7D44CF;'>{ma['address_count']:,} RESIDENTIAL ADDRESSES</b> and {ma['h3_cell_count']} H3 cells.
             </div>
         </div>
         """, unsafe_allow_html=True)

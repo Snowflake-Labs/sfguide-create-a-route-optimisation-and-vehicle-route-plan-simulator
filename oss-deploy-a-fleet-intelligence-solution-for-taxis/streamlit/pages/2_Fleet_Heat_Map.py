@@ -1,5 +1,5 @@
 # SF Taxi Fleet Intelligence - Fleet Heat Map
-# View driver density across San Francisco
+# View driver density across the city
 
 import streamlit as st
 import pandas as pd
@@ -7,6 +7,9 @@ import pydeck as pdk
 import altair as alt
 from snowflake.snowpark.functions import *
 from snowflake.snowpark.context import get_active_session
+from city_config import get_city
+
+CITY = get_city("San Francisco")
 
 # Initialize session
 session = get_active_session()
@@ -20,8 +23,8 @@ with open('extra.css') as f:
 st.logo('logo.svg')
 
 # Main header
-st.markdown('''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
+st.markdown(f'''
+<h0black>{CITY["name"]} Taxi |</h0black><h0blue> Fleet Heat Map</h0blue><BR>
 <h1grey>Driver Location Density Analysis</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -127,11 +130,11 @@ try:
                 ]
             )
         
-        # View state centered on SF
+        # View state centered on city
         view_state = pdk.ViewState(
-            latitude=37.76,
-            longitude=-122.44,
-            zoom=12,
+            latitude=CITY["latitude"],
+            longitude=CITY["longitude"],
+            zoom=CITY["zoom"],
             pitch=45 if view_type == "H3 Hexagons" else 0,
             bearing=0
         )

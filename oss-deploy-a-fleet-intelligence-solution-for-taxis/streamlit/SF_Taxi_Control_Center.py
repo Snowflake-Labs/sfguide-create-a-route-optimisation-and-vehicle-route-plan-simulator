@@ -8,6 +8,9 @@ import altair as alt
 import json
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.functions import *
+from city_config import get_city, driver_color
+
+CITY = get_city("San Francisco")
 
 # Page configuration
 st.set_page_config(
@@ -87,22 +90,9 @@ try:
         lambda row: json.loads(row)["coordinates"] if row else []
     )
     
-    # Assign colors by driver
-    driver_colors = {
-        'D-0000': [125, 68, 207],   # Purple
-        'D-0001': [212, 91, 144],   # Pink
-        'D-0002': [255, 159, 54],   # Orange
-        'D-0003': [113, 221, 220],  # Teal
-        'D-0004': [41, 181, 232],   # Blue
-        'D-0005': [0, 53, 69],      # Dark teal
-        'D-0006': [60, 0, 69],      # Dark purple
-        'D-0007': [138, 153, 158],  # Gray
-        'D-0008': [17, 86, 127],    # Mid blue
-        'D-0009': [36, 50, 61],     # Dark gray
-    }
-    
+    # Assign colors by driver using golden-angle hue rotation
     routes_df['color'] = routes_df['DRIVER_ID'].apply(
-        lambda x: driver_colors.get(x, [41, 181, 232])
+        lambda x: driver_color(x)
     )
     
     # Create path layer
@@ -118,11 +108,11 @@ try:
         get_width=3
     )
     
-    # Set view to San Francisco
+    # Set view to city center
     view_state = pdk.ViewState(
-        latitude=37.76,
-        longitude=-122.44,
-        zoom=11.5,
+        latitude=CITY["latitude"],
+        longitude=CITY["longitude"],
+        zoom=CITY["zoom"] - 0.5,
         pitch=0
     )
     
@@ -252,7 +242,7 @@ st.markdown('''
 Use the sidebar to access different views:
 
 - **Driver Routes** - Track individual driver journeys with route visualization and AI insights
-- **Fleet Heat Map** - View driver density across San Francisco
+- **Fleet Heat Map** - View driver density across the city
 
 ### Data Sources
 

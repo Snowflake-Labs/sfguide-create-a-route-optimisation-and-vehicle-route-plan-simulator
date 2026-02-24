@@ -8,6 +8,9 @@ import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import altair as alt
 from snowflake.snowpark.functions import *
+from city_config import get_city
+
+CITY = get_city("New York")
 
 # ─────────────────────────────  PAGE CONFIG  ────────────────────────────────
 st.set_page_config(
@@ -261,9 +264,9 @@ def colourise(series, palette, vmin, vmax, stops):
 
 # ─────────────────────────────  SESSION STATE  ──────────────────────────────
 state_defaults = dict(
-    view_state=dict(latitude=40.74258515841464,
-                    longitude=-73.98452997207642,
-                    zoom=10, pitch=0, bearing=0),
+    view_state=dict(latitude=CITY["latitude"],
+                    longitude=CITY["longitude"],
+                    zoom=CITY["zoom"], pitch=0, bearing=0),
     selected_route=None,
     selected_pos=None,
     prev_filters={}
@@ -380,4 +383,4 @@ if isinstance(event, dict):
     ):
         st.session_state.selected_route = new_route
         st.session_state.selected_pos   = new_pos
-        st.rerun(                                                
+        st.rerun()

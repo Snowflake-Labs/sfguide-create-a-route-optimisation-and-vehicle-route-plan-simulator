@@ -4,6 +4,9 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.functions import *
+from city_config import get_city
+
+CITY = get_city("New York")
 
 # Page configuration
 st.set_page_config(

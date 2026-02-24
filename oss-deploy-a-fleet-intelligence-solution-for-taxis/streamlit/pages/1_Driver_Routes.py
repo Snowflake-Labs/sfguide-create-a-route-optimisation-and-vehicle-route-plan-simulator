@@ -12,6 +12,9 @@ from snowflake.snowpark.functions import *
 from snowflake.snowpark.types import *
 from snowflake.snowpark.window import Window
 from snowflake.snowpark.context import get_active_session
+from city_config import get_city
+
+CITY = get_city("San Francisco")
 
 # Initialize session
 session = get_active_session()
@@ -87,7 +90,7 @@ trip_summaryd = trip_summary.filter(col('DRIVER_ID') == driver)
 
 # Main header
 st.markdown(f'''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+<h0black>{CITY["name"]} Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Viewing Routes for Driver {driver}</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -376,7 +379,7 @@ if len(trips_df) > 0:
                 if st.checkbox("🤖 Show AI Trip Analysis"):
                     with st.spinner("Analyzing with Snowflake Cortex..."):
                         try:
-                            ai_prompt = f"Analyze this SF taxi trip from {origin_addr} to {dest_addr}, {distance_km:.2f}km in {duration_mins:.1f}min. Brief insights on trip purpose and traffic."
+                            ai_prompt = f"Analyze this {CITY['name']} taxi trip from {origin_addr} to {dest_addr}, {distance_km:.2f}km in {duration_mins:.1f}min. Brief insights on trip purpose and traffic."
                             
                             # Use Snowpark to avoid SQL injection issues
                             from snowflake.snowpark.functions import call_function, lit
@@ -386,4 +389,4 @@ if len(trips_df) > 0:
                             
                             st.info(str(result))
                         except Exception as e:
-                            st.error(f"Analys                                                                        
+                            st.error(f"Analysis failed: {e}")
