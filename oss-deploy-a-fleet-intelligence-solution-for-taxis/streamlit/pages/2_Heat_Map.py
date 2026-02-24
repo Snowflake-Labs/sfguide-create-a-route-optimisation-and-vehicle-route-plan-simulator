@@ -47,7 +47,7 @@ def get_hex_df(h3_res: int, h: int, m: int) -> pd.DataFrame:
         WITH latest AS (
             SELECT trip_id, point_geom,
             
-            FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
             QUALIFY ROW_NUMBER() OVER (
@@ -76,12 +76,12 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
             
             FROM 
             (SELECT A.*,B.TRIP_NAME,C.GEOMETRY FROM 
-            OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V A
+            OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V A
             INNER JOIN 
-            OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES B ON A.TRIP_ID = B.TRIP_ID
+            OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES B ON A.TRIP_ID = B.TRIP_ID
             INNER JOIN
 
-            (SELECT TRIP_ID,GEOMETRY FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS) C
+            (SELECT TRIP_ID,GEOMETRY FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS) C
             ON A.TRIP_ID = C.TRIP_ID
             
             )
@@ -115,15 +115,12 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
 
 
 
-vehicle_plans = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS')
-route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')\
-    .select('TRIP_ID', 'DRIVER_ID', 'ORIGIN_STREET', 'DESTINATION_STREET')
+vehicle_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')\
+    .with_column('TRIP_NAME', concat(col('ORIGIN_STREET'), lit(' -> '), col('DESTINATION_STREET')))
 
-vehicle_plans = vehicle_plans.join(route_names, ['TRIP_ID', 'DRIVER_ID'])
+longest_trips = vehicle_plans.order_by(col('DISTANCE_METERS').desc()).limit(5)
 
-longest_trips = vehicle_plans.order_by(col('DISTANCE').desc()).limit(5)
-
-shortest_trips = vehicle_plans.order_by(col('DISTANCE').asc()).limit(5)
+shortest_trips = vehicle_plans.order_by(col('DISTANCE_METERS').asc()).limit(5)
 
 top_pickup = vehicle_plans.group_by('ORIGIN_STREET').agg(count('*').alias('PICKUPS')).sort(col('PICKUPS').desc()).dropna().limit(5)
 top_dropoff = vehicle_plans.group_by('DESTINATION_STREET').agg(count('*').alias('DROPOFFS')).sort(col('DROPOFFS').desc()).dropna().limit(5)
@@ -192,12 +189,12 @@ with col2:
         st.markdown('<h1sub>Shortest Routes</h1sub>',unsafe_allow_html=True)
     
                                                                   
-        st.altair_chart(bar_creation(shortest_trips,'DISTANCE','TRIP_NAME'), use_container_width=True)
+        st.altair_chart(bar_creation(shortest_trips,'DISTANCE_METERS','TRIP_NAME'), use_container_width=True)
 
     with cold:
         st.markdown('<h1sub>Longest Routes</h1sub>',unsafe_allow_html=True)
     
-        st.altair_chart(bar_creation(longest_trips,'DISTANCE','TRIP_NAME'), use_container_width=True)
+        st.altair_chart(bar_creation(longest_trips,'DISTANCE_METERS','TRIP_NAME'), use_container_width=True)
 
 
 

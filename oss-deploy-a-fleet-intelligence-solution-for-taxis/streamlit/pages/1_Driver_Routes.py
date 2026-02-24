@@ -56,18 +56,16 @@ def bar_creation(dataframe, measure, attribute):
     return (bars + text).properties(height=200)
 
 # Load data from views
-vehicle_plans_poi = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS')
-route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')\
-    .select('TRIP_ID', 'DRIVER_ID', 'ROUTE_NAME')
-routes = vehicle_plans_poi.select('GEOMETRY', 'TRIP_ID', 'DISTANCE', 'DRIVER_ID')
-trip_summary = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
+vehicle_plans_poi = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')
+routes = vehicle_plans_poi.select('GEOMETRY', 'TRIP_ID', 'DISTANCE_METERS', 'DRIVER_ID')
+trip_summary = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
+
+# Add TRIP_NAME column
+vehicle_plans_poi = vehicle_plans_poi.with_column('TRIP_NAME', concat(col('ORIGIN_STREET'), lit(' -> '), col('DESTINATION_STREET')))
 
 # Join for driver locations
-all_driver_locations = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V')
+all_driver_locations = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V')
 all_driver_locations = all_driver_locations.with_column('POINT_TIME_STR', col('POINT_TIME').astype(StringType()))
-
-# Join with route info
-vehicle_plans_poi = vehicle_plans_poi.join(route_names, ['TRIP_ID', 'DRIVER_ID'])
 
 # Get unique drivers
 @st.cache_data
@@ -81,8 +79,8 @@ with st.sidebar:
 # Get trips for selected driver
 def get_trips(driver):
     return vehicle_plans_poi.filter(col('DRIVER_ID') == driver)\
-        .group_by('TRIP_ID', 'TRIP_NAME').agg(min('DISTANCE').alias('DISTANCE'))\
-        .sort(col('DISTANCE').desc()).to_pandas()
+        .group_by('TRIP_ID', 'TRIP_NAME').agg(min('DISTANCE_METERS').alias('DISTANCE_METERS'))\
+        .sort(col('DISTANCE_METERS').desc()).to_pandas()
 
 # Filter data for selected driver
 driver_day = vehicle_plans_poi.filter(col('DRIVER_ID') == driver)
@@ -96,14 +94,13 @@ st.markdown(f'''
 
 # Time analysis
 time_by_hour = all_driver_locations.filter(col('DRIVER_ID') == driver)\
-    .join(route_names.select('TRIP_ID', 'ROUTE_NAME'), 'TRIP_ID')\
-    .join(routes.select('TRIP_ID', 'DISTANCE'), 'TRIP_ID')\
+    .join(routes.select('TRIP_ID', 'DISTANCE_METERS'), 'TRIP_ID')\
     .with_column('HOUR', hour(to_timestamp('POINT_TIME')))\
-    .group_by('HOUR', 'ROUTE_NAME').agg(max('DISTANCE').alias('DISTANCE'))
+    .group_by('HOUR', 'TRIP_ID').agg(max('DISTANCE_METERS').alias('DISTANCE_METERS'))
 
 time_by_hour = time_by_hour.group_by('HOUR').agg(
     count('*').alias('TRIPS'),
-    sum('DISTANCE').alias('DISTANCE')
+    sum('DISTANCE_METERS').alias('DISTANCE')
 )
 
 try:
@@ -155,7 +152,7 @@ with st.sidebar:
         ).to_pandas()
         driver_stats = driver_day.agg(
             count('*').alias('A'),
-            sum('DISTANCE').alias('B')
+            sum('DISTANCE_METERS').alias('B')
         ).to_pandas()
         
         st.markdown(f'<h1grey style="font-size: 0.9em;">TRIPS TODAY<BR></h1grey><h0blue style="font-size: 1.5em;">{driver_stats.A.iloc[0]}</h0blue>', unsafe_allow_html=True)
@@ -173,13 +170,13 @@ try:
     
     with col1:
         st.markdown('<h1sub>Shortest Routes</h1sub>', unsafe_allow_html=True)
-        shortest = driver_day.sort(col('DISTANCE').asc()).limit(5)
-        st.altair_chart(bar_creation(shortest, 'DISTANCE', 'TRIP_NAME'))
+        shortest = driver_day.sort(col('DISTANCE_METERS').asc()).limit(5)
+        st.altair_chart(bar_creation(shortest, 'DISTANCE_METERS', 'TRIP_NAME'))
     
     with col2:
         st.markdown('<h1sub>Longest Routes</h1sub>', unsafe_allow_html=True)
-        longest = driver_day.sort(col('DISTANCE').desc()).limit(5)
-        st.altair_chart(bar_creation(longest, 'DISTANCE', 'TRIP_NAME'))
+        longest = driver_day.sort(col('DISTANCE_METERS').desc()).limit(5)
+        st.altair_chart(bar_creation(longest, 'DISTANCE_METERS', 'TRIP_NAME'))
 except Exception as e:
     st.warning(f"Could not load route charts: {e}")
 
@@ -243,7 +240,7 @@ if len(trips_df) > 0:
                 # Route geometry
                 route_geom = session.sql(f"""
                     SELECT ST_ASGEOJSON(GEOMETRY) AS GEOM 
-                    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY 
+                    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY 
                     WHERE TRIP_ID = '{trip_id}'
                 """).collect()[0]['GEOM']
                 
