@@ -14,7 +14,7 @@ from snowflake.snowpark.window import Window
 from snowflake.snowpark.context import get_active_session
 from city_config import get_city
 
-CITY = get_city("New York")
+CITY = get_city("Chicago")
 
 # Initialize session
 session = get_active_session()
@@ -57,8 +57,8 @@ def bar_creation(dataframe, measure, attribute):
 
 # Load data from views
 vehicle_plans_poi = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS')
-vehicle_plans_poi = vehicle_plans_poi.with_column('DISTANCE', call_function('ST_LENGTH', col('GEOMETRY')))
-route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')
+route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')\
+    .select('TRIP_ID', 'DRIVER_ID', 'ROUTE_NAME')
 routes = vehicle_plans_poi.select('GEOMETRY', 'TRIP_ID', 'DISTANCE', 'DRIVER_ID')
 trip_summary = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
 
@@ -67,7 +67,7 @@ all_driver_locations = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIG
 all_driver_locations = all_driver_locations.with_column('POINT_TIME_STR', col('POINT_TIME').astype(StringType()))
 
 # Join with route info
-vehicle_plans_poi = vehicle_plans_poi.join(route_names, 'TRIP_ID')
+vehicle_plans_poi = vehicle_plans_poi.join(route_names, ['TRIP_ID', 'DRIVER_ID'])
 
 # Get unique drivers
 @st.cache_data
@@ -96,10 +96,10 @@ st.markdown(f'''
 
 # Time analysis
 time_by_hour = all_driver_locations.filter(col('DRIVER_ID') == driver)\
-    .join(route_names, 'TRIP_ID')\
-    .join(routes, 'TRIP_ID')\
+    .join(route_names.select('TRIP_ID', 'ROUTE_NAME'), 'TRIP_ID')\
+    .join(routes.select('TRIP_ID', 'DISTANCE'), 'TRIP_ID')\
     .with_column('HOUR', hour(to_timestamp('POINT_TIME')))\
-    .group_by('HOUR', 'TRIP_NAME').agg(max('DISTANCE').alias('DISTANCE'))
+    .group_by('HOUR', 'ROUTE_NAME').agg(max('DISTANCE').alias('DISTANCE'))
 
 time_by_hour = time_by_hour.group_by('HOUR').agg(
     count('*').alias('TRIPS'),
@@ -151,7 +151,7 @@ with st.sidebar:
     try:
         speed_stats = trip_summaryd.agg(
             avg('AVERAGE_KMH').alias('AVG_KMH'),
-            max('MAX_KMH').alias('MAX_KMH')
+            max('AVERAGE_KMH').alias('MAX_KMH')
         ).to_pandas()
         driver_stats = driver_day.agg(
             count('*').alias('A'),

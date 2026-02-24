@@ -538,31 +538,7 @@ tool_resources:
 $$;
 ```
 
-### Step 8: Grant Permissions
-
-**Goal:** Grant access to the schema, procedures, and agent so other roles can use them.
-
-```sql
--- Grant usage on the schema
-GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT TO ROLE SYSADMIN;
-
--- Grant usage on procedures
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) TO ROLE SYSADMIN;
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
-
--- Grant usage on the agent
-GRANT USAGE ON AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT TO ROLE SYSADMIN;
-
--- Grant usage on the warehouse
-GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE SYSADMIN;
-```
-
-**Note:** Replace `SYSADMIN` with additional roles as needed. Repeat the GRANT statements for each role that should access the agent.
-
-**Output:** Permissions granted
-
-### Step 9: Register Agent with Snowflake Intelligence
+### Step 8: Register Agent with Snowflake Intelligence
 
 **Goal:** Make agent visible in Snowsight UI.
 
@@ -571,15 +547,18 @@ ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT
 ADD AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
 ```
 
-### Step 10: Test the Agent
+### Step 9: Test the Agent
 
 **Goal:** Verify agent works.
 
 **Important:** Test queries must use locations within the region configured in OpenRouteService. To determine the region:
-
-1. Check the ORS config file at `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
-2. Find the `source_file` value under `ors.engine.profile_default.build` (e.g., `SanFrancisco.osm.pbf`)
-3. Extract the region name from the filename (e.g., `SanFrancisco` → "San Francisco")
+1. **Extract** the current ORS configuration from the service definition:
+   ```sql
+   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
+   ```
+   - Parse the service spec from the output to find the configured '<REGION_NAME>' for the service: `/home/ors/files/<REGION_NAME>.osm.pbf`
+   - Extract `<REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
+   - This determines the `<REGION_NAME>` for the demo
 
 **BEFORE testing any ORS functions, ALWAYS verify all required services are running:**
 
@@ -634,7 +613,7 @@ open "https://ai.snowflake.com/<org_name>/<account_name>/#/ai"
 - **Step 2**: Verify ORS functions exist before proceeding
 - **Step 3**: After creating database, schema, and warehouse - verify objects exist
 - **Step 7**: Review agent spec before creation
-- **Step 10**: Confirm all 3 tools work correctly
+- **Step 9**: Confirm all 3 tools work correctly
 
 ## Output
 

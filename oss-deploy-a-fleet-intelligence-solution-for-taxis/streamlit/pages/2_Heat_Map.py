@@ -10,7 +10,7 @@ import altair as alt
 from snowflake.snowpark.functions import *
 from city_config import get_city
 
-CITY = get_city("New York")
+CITY = get_city("Chicago")
 
 # ─────────────────────────────  PAGE CONFIG  ────────────────────────────────
 st.set_page_config(
@@ -115,21 +115,15 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
 
 
 
-vehicle_plans = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')
-route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')
+vehicle_plans = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS')
+route_names = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES')\
+    .select('TRIP_ID', 'DRIVER_ID', 'ORIGIN_STREET', 'DESTINATION_STREET')
 
-vehicle_plans = vehicle_plans.join(route_names,'TRIP_ID')
-
-
-
-vehicle_plans = vehicle_plans.with_column('DISTANCE',col('ROUTE')['features'][0]['properties']['summary']['distance'].astype(FloatType()))
-vehicle_plans = vehicle_plans.filter(col('DISTANCE').is_not_null())
+vehicle_plans = vehicle_plans.join(route_names, ['TRIP_ID', 'DRIVER_ID'])
 
 longest_trips = vehicle_plans.order_by(col('DISTANCE').desc()).limit(5)
 
-
 shortest_trips = vehicle_plans.order_by(col('DISTANCE').asc()).limit(5)
-
 
 top_pickup = vehicle_plans.group_by('ORIGIN_STREET').agg(count('*').alias('PICKUPS')).sort(col('PICKUPS').desc()).dropna().limit(5)
 top_dropoff = vehicle_plans.group_by('DESTINATION_STREET').agg(count('*').alias('DROPOFFS')).sort(col('DROPOFFS').desc()).dropna().limit(5)
@@ -139,46 +133,34 @@ top_dropoff = vehicle_plans.group_by('DESTINATION_STREET').agg(count('*').alias(
 
 
 def bar_creation(dataframe, measure, attribute):
-    # before any charts are defined or rendered.
-
-    # Ensure the input is a pandas DataFrame, as Altair works with pandas DataFrames
-    # If dataframe is already a pandas DataFrame, .to_pandas() is redundant but harmless.
-    # If it's a Snowpark DataFrame, this correctly converts it.
+    # Ensure the input is a pandas DataFrame
     df = dataframe.to_pandas()
 
-    # Create the bars
+    # Create the bars - use :N for nominal type to handle special characters in strings
     bars = alt.Chart(df).mark_bar().encode(
-        y=alt.Y(attribute, sort=None, axis=None), # Hide the y-axis labels
-        x=alt.X(measure, axis=None),              # Hide the x-axis labels
-        color=alt.value("#29B5E8"),               # Set a fixed color for the bars
+        y=alt.Y(f'{attribute}:N', sort=None, axis=None),
+        x=alt.X(f'{measure}:Q', axis=None),
+        color=alt.value("#29B5E8"),
         
-        tooltip=[                                 # <--- MODIFIED HERE to add titles
-            alt.Tooltip(attribute, title=attribute.replace('_', ' ').title()), # Title from attribute name
-            alt.Tooltip(measure, title=measure.replace('_', ' ').title())    # Title from measure name
-        ]              # Add tooltip for interactivity
-    ).properties(height=300) # Set a fixed height for the bars chart
+        tooltip=[
+            alt.Tooltip(f'{attribute}:N', title=attribute.replace('_', ' ').title()),
+            alt.Tooltip(f'{measure}:Q', title=measure.replace('_', ' ').title())
+        ]
+    ).properties(height=300)
 
-    # Create the text layer for point values
-    # Properties like align, baseline, dx, color, and fontSize are part of mark_text()
     text = bars.mark_text(
-        align='right',    # Align text to the right side of its x-position (end of the bar)
+        align='right',
         baseline='middle',
-        dx=-10,            # Nudge text to the left (inside the bar) for better visibility
-         # Set text color to white
-        fontSize=18       # Set the font size for the text labels
+        dx=-10,
+        fontSize=18
     ).encode(
         color=alt.value("#FFFFFF"),
-        # These are the encoding channels that map data to visual properties
-        x=alt.X(measure), # X-position of the text (at the end of the bar)
-        y=alt.Y(attribute, sort=None), # Y-position of the text (aligned with the bar)
-        text=alt.Text(measure, format=",.0f") # The actual text to display (formatted measure value)
+        x=alt.X(f'{measure}:Q'),
+        y=alt.Y(f'{attribute}:N', sort=None),
+        text=alt.Text(f'{measure}:Q', format=",.0f")
     )
 
-    # Combine the bar chart and the text layer
-    # Note: The height property on the combined chart will override the individual chart heights
     final_chart = (bars + text).properties(height=200)
-
-
 
     return final_chart
 
