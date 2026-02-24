@@ -64,16 +64,38 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    ```sql
    DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
    ```
-   - Parse the service spec from the output to find the `source_file` setting
-   - Look for the map file path: `/home/ors/files/<REGION_NAME>.osm.pbf`
+   - Parse the service spec from the output to find the configured '<REGION_NAME>' for the service: `/home/ors/files/<REGION_NAME>.osm.pbf`
    - Extract `<REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
    - This determines the `<REGION_NAME>` for the demo
 
-2. **Extract** the enabled vehicle profiles from the same `DESCRIBE SERVICE` output:
-   - The `spec` column contains the full service YAML including the `ors-config.yml` content. Parse it for `profiles:` entries with `enabled: true`.
-   - **Do NOT** read the config file separately from the stage — the `DESCRIBE SERVICE` output already contains all the information needed.
+2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml`
+
+   > **CRITICAL: Stale File Prevention Protocol**
+   > 
+   > Previous sessions may leave stale config files in `/tmp`. These WILL cause incorrect region detection.
+   > 
+   > **ALWAYS follow this exact sequence:**
+   > ```bash
+   > # 1. Clean up ANY existing ors config files first
+   > rm -rf /tmp/ors* /tmp/*ors*
+   > 
+   > # 2. Create a fresh, uniquely-named directory
+   > mkdir -p /tmp/ors_fresh_$(date +%s)
+   > 
+   > # 3. Download to that specific directory
+   > cd /tmp/ors_fresh_* && snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml . --connection <ACTIVE_CONNECTION>
+   > 
+   > # 4. Verify the file exists at the expected location BEFORE reading
+   > ls -la /tmp/ors_fresh_*/ors-config.yml
+   > 
+   > # 5. Read ONLY from the verified path (use the exact path from step 4)
+   > ```
+   > 
+   > **NEVER** use glob patterns like `/tmp/**/ors-config.yml` to find the file — this may match stale files from previous sessions.
+
+   - Parse the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
-   - Store the list of enabled profiles
+   - This determines `<ENABLED_PROFILES>` for the demo
 
 3. **Determine the city for the demo:**
    - If map is a city (e.g., "SanFrancisco", "Paris", "London"): Use that city name
@@ -124,11 +146,20 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    ```sql
    ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
    
-   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR;
-   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60;
+   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+       COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR
+       COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+       WAREHOUSE_SIZE = 'XSMALL'
+       AUTO_SUSPEND = 60
+       AUTO_RESUME = TRUE
+       COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
    ```
 
-**Output:** Schema `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` created.
+**Output:** Schema `OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR` created.
 
 **Next:** Proceed to Step 6
 
@@ -186,7 +217,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 
 1. **Replace** the existing INSERT statement with the user's custom industries. The format is:
    ```sql
-   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP (
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP (
        INDUSTRY VARCHAR,
        PA VARCHAR,
        PB VARCHAR,
@@ -197,7 +228,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
        STYPE ARRAY
    );
    
-   INSERT INTO OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
+   INSERT INTO OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
    SELECT '<Industry1>', '<Product A>', '<Product B>', '<Product C>',
           ARRAY_CONSTRUCT('<keywords>'), ARRAY_CONSTRUCT('warehouse', 'distribution', 'depot'),
           ARRAY_CONSTRUCT('<customer_type1>', '<customer_type2>'),
@@ -227,7 +258,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 
 1. **Create** the notebook stage:
    ```sql
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook 
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
    ```
@@ -235,35 +266,35 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 2. **Upload** notebook files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Create** the notebook:
    ```sql
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA
-   FROM '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
+   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA
+   FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'add_carto_data.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
    ```
 
 4. **Execute** notebook:
    ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA();
+   EXECUTE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA();
    ```
 
 5. **Verify** notebook created the required tables:
    ```sql
-   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES
+   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.PLACES
    UNION ALL
-   SELECT 'LOOKUP', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
+   SELECT 'LOOKUP', COUNT(*) FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
    UNION ALL
-   SELECT 'JOB_TEMPLATE', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE;
+   SELECT 'JOB_TEMPLATE', COUNT(*) FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE;
    ```
    - `PLACES` should have a significant row count (typically 50K-500K depending on the region)
    - `LOOKUP` should have 3 rows (one per default industry) or the number of custom industries
@@ -273,7 +304,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 6. **If custom industries were configured**, verify them:
    ```sql
    SELECT INDUSTRY, PA, PB, PC, CTYPE, STYPE 
-   FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
+   FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
    ```
 
 **Output:** Notebook deployed and verified with standing data for `<NOTEBOOK_CITY>`
@@ -385,21 +416,21 @@ Update these markdown cells:
 1. **Upload** notebook files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 2. **Create** the notebook:
    ```sql
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL
-   FROM '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
+   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL
+   FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'routing_functions_aisql.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
    ```
 
 **Output:** Notebook created with AI prompts customized for `<NOTEBOOK_CITY>`
@@ -439,7 +470,7 @@ For other cities, choose a well-known central landmark.
 
 1. **Create** the Streamlit stage:
    ```sql
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT 
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
    ```
@@ -447,30 +478,30 @@ For other cities, choose a well-known central landmark.
 2. **Upload** Streamlit files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/extra.css" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/logo.svg" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
 
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/config.toml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
+     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Create** the Streamlit app:
    ```sql
-   CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR
-    FROM  @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT
+   CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR
+    FROM  @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT
     MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
-   ALTER STREAMLIT OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR ADD LIVE VERSION FROM LAST;
+   ALTER STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR ADD LIVE VERSION FROM LAST;
    ```
 
 **Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-road`.
@@ -563,7 +594,7 @@ SELECT 'Electronics', 'High-Value Items', 'Fragile Equipment', 'Standard Electro
 After the Carto notebook runs, query available Overture Maps categories to validate `CTYPE` values:
 ```sql
 SELECT DISTINCT CATEGORY, COUNT(*) AS COUNT 
-FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
+FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.PLACES 
 GROUP BY CATEGORY 
 ORDER BY COUNT DESC 
 LIMIT 50;
@@ -584,6 +615,7 @@ Recommend categories with 100+ POIs for reliable demo results.
 
 | Issue | Symptom | Solution |
 |-------|---------|----------|
+| **Stale config file (CRITICAL)** | Wrong region detected (e.g., detects "Wroclaw" when actual map is "NewYork") | Previous session left stale files in `/tmp`. Run `rm -rf /tmp/ors* /tmp/*ors*` before downloading config. See "Stale File Prevention Protocol" in Step 3. |
 | Marketplace access denied | `CALL SYSTEM$ACCEPT_LEGAL_TERMS` fails with insufficient privileges | Requires ACCOUNTADMIN role or IMPORT SHARE privilege |
 | Marketplace dataset not found | Cannot find Overture Maps dataset | Search for "Carto" in Marketplace, look for "Overture Maps - Places" |
 | Notebook execution fails | `EXECUTE NOTEBOOK` returns errors | Check notebook logs in Snowsight; verify `OVERTURE_MAPS__PLACES` database is accessible and `ROUTING_ANALYTICS` warehouse is active |
@@ -615,5 +647,5 @@ Complete Route Optimization demo with:
 
 Access app via Streamlit URL:
 ```sql
-SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR') AS streamlit_url;
+SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR') AS streamlit_url;
 ```

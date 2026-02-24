@@ -1,4 +1,4 @@
-# SF Taxi Fleet Intelligence Control Center
+# Taxi Fleet Intelligence Control Center
 # Main entry point for multi-page Streamlit app
 
 import streamlit as st
@@ -10,11 +10,11 @@ from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.functions import *
 from city_config import get_city, driver_color
 
-CITY = get_city("San Francisco")
+CITY = get_city("New York")
 
 # Page configuration
 st.set_page_config(
-    page_title="SF Taxi Control Center",
+    page_title=f"{CITY['name']} Taxi Control Center",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,8 +30,8 @@ st.logo('logo.svg')
 session = get_active_session()
 
 # Main page header
-st.markdown('''
-<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+st.markdown(f'''
+<h0black>{CITY["name"]} Taxi |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
 <h1grey>Real-time Fleet Control Center</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -46,7 +46,7 @@ col1, col2, col3, col4 = st.columns(4)
 try:
     trips_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS').count()
     drivers_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS').select('DRIVER_ID').distinct().count()
-    locations_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS').count()
+    locations_count = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS').count()
     
     # Get total distance
     total_distance = session.table('OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY').agg(
@@ -252,7 +252,7 @@ Use the sidebar to access different views:
 
 ### Features
 
-- **Real-time route tracking** with pickup/dropoff locations on actual SF roads
+- **Real-time route tracking** with pickup/dropoff locations on actual city roads
 - **AI-powered trip analysis** using Snowflake Cortex
 - **Interactive maps** with pydeck visualization
 - **Driver performance metrics** including speed and distance analytics
@@ -262,4 +262,4 @@ st.divider()
 
 st.markdown('''
 <h1grey>Powered by Snowflake, OpenRouteService & Overture Maps</h1grey>
-''', unsafe_allow_html=True)
+''', unsafe                  

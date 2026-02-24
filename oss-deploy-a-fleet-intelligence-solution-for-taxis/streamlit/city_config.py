@@ -35,9 +35,9 @@ CITIES = {
 }
 
 
-def get_city(name="San Francisco"):
-    """Return city config dict. Falls back to San Francisco if name not found."""
-    return CITIES.get(name, CITIES["San Francisco"])
+def get_city(name="New York"):
+    """Return city config dict. Falls back to New York if name not found."""
+    return CITIES.get(name, CITIES["New York"])
 
 
 def driver_color(driver_id, alpha=255):

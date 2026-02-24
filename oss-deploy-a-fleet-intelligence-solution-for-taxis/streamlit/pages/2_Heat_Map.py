@@ -26,8 +26,8 @@ with open('extra.css') as f:
 
 session = get_active_session()
 
-st.markdown('''
-<h0black>New York Taxi |</h0black><h0blue>Control Center</h0blue><BR>
+st.markdown(f'''
+<h0black>{CITY["name"]} Taxi |</h0black><h0blue>Control Center</h0blue><BR>
 <h1black>Vehicle Heat Map</h1black>
 ''', unsafe_allow_html=True)
 

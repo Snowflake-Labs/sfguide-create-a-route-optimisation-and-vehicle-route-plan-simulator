@@ -1,6 +1,6 @@
 ---
 name: deploy-fleet-intelligence-taxis
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (San Francisco, New York, London, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
+description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
 ---
 
 # Generate Driver Locations & Deploy Fleet Intelligence Dashboard
@@ -9,7 +9,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 - **Overture Maps Places & Addresses** - Points of interest and street addresses for pickup/dropoff locations
 - **OpenRouteService Native App** - Real road routing for actual driving paths
 - **Route Interpolation** - Driver positions along actual roads
-- **Configurable Location** - San Francisco, New York, London, Paris, and more
+- **Configurable Location** - New York, London, San Francisco, Paris, and more
 - **Configurable Fleet Size** - Set number of drivers and simulation days
 
 ---
@@ -18,17 +18,8 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 > **Before selecting a location, verify your OpenRouteService Native App is configured for that region.**
 >
-> The OpenRouteService app uses map data (OSM PBF files) for a specific geographic area. If you select a location that is **outside** the area configured in your ORS app, route generation will fail.
->
-> **To check your ORS configuration:**
-> 1. Look at the OSM PBF file used during ORS setup (e.g., `SanFrancisco.osm.pbf`, `NewYork.osm.pbf`)
-> 2. Or test a route in your target city using the ORS function tester
->
-> **Common configurations:**
-> - `SanFrancisco.osm.pbf` -> Use **San Francisco** location
-> - `new-york.osm.pbf` -> Use **New York** location
-> - `great-britain.osm.pbf` -> Use **London** location
-> - `europe.osm.pbf` -> Use any European city
+> The OpenRouteService app uses map data (OSM PBF files) for a specific geographic area. If you select a location that is **outside** the area configured in your ORS app, this requires changing a map. 
+> Read and follow the instructions in `.cortex/skills/customize-main/SKILL.md`
 
 ---
 
@@ -36,7 +27,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `LOCATION` | San Francisco | City/region for the simulation |
+| `LOCATION` | New York | City/region for the simulation |
 | `NUM_DRIVERS` | 80 | Total number of taxi drivers |
 | `NUM_DAYS` | 1 | Number of days to simulate |
 | `START_DATE` | 2015-06-24 | First day of simulation |
@@ -48,7 +39,7 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 | Location | MIN_LON | MAX_LON | MIN_LAT | MAX_LAT | Center LON | Center LAT | Notes |
 |----------|---------|---------|---------|---------|------------|------------|-------|
-| **San Francisco** | -122.52 | -122.35 | 37.70 | 37.82 | -122.42 | 37.77 | Default |
+| **San Francisco** | -122.52 | -122.35 | 37.70 | 37.82 | -122.42 | 37.77 | |
 | **New York** | -74.05 | -73.90 | 40.65 | 40.85 | -73.97 | 40.75 | Manhattan focus |
 | **London** | -0.20 | 0.05 | 51.45 | 51.55 | -0.12 | 51.51 | Central London |
 | **Paris** | 2.25 | 2.42 | 48.82 | 48.90 | 2.35 | 48.86 | Central Paris |
@@ -117,69 +108,28 @@ Map Center:
 
 ## Customizing Streamlit App for Your Location
 
-When changing the location, you need to update several files in the Streamlit app to reflect the new city name and map center.
+When changing the location, update the `CITY = get_city("New York")` call in each Streamlit file to use your target city name (must match a key in `city_config.py`). The app uses `CITY["name"]` for all headers and `CITY["latitude"]`/`CITY["longitude"]` for map centering, so no manual coordinate changes are needed.
 
 ### Files to Update
 
 | File | What to Change |
 |------|----------------|
-| `SF_Taxi_Control_Center.py` | Page title, headers |
-| `pages/1_Driver_Routes.py` | Headers, map center |
-| `pages/2_Fleet_Heat_Map.py` | Headers, map center |
+| `Taxi_Control_Center.py` | `get_city("New York")` -> `get_city("Your City")` |
+| `pages/1_Driver_Routes.py` | `get_city("New York")` -> `get_city("Your City")` |
+| `pages/2_Heat_Map.py` | `get_city("New York")` -> `get_city("Your City")` |
 
-### Step-by-Step: Update for New City
+### Adding a New City
 
-**1. Main App File (`SF_Taxi_Control_Center.py`)**
-
-Find and replace the city name in headers:
+If your city isn't in `city_config.py`, add it to the `CITIES` dictionary:
 
 ```python
-# FROM (San Francisco):
-st.markdown('<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-
-# TO (example for New York):
-st.markdown('<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
+"Tokyo": {
+    "name": "Tokyo",
+    "latitude": 35.69,
+    "longitude": 139.69,
+    "zoom": 12,
+},
 ```
-
-**2. Driver Routes Page (`pages/1_Driver_Routes.py`)**
-
-Update headers:
-```python
-# FROM:
-st.markdown(f'<h0black>San Francisco Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-
-# TO (your city):
-st.markdown(f'<h0black>New York Taxi |</h0black><h0blue> Fleet Intelligence</h0blue>')
-```
-
-**3. Heat Map Page (`pages/2_Fleet_Heat_Map.py`)**
-
-Update headers and map center coordinates:
-```python
-# FROM (San Francisco):
-view_state = pdk.ViewState(latitude=37.76, longitude=-122.44, zoom=12)
-
-# TO (New York):
-view_state = pdk.ViewState(latitude=40.75, longitude=-73.97, zoom=12)
-```
-
-### Quick Find & Replace
-
-| Find | Replace With (example: New York) |
-|------|----------------------------------|
-| `San Francisco Taxi` | `New York Taxi` |
-| `latitude=37.76` | `latitude=40.75` |
-| `longitude=-122.44` | `longitude=-73.97` |
-
-### Optional: Rename the Main File
-
-You can also rename the main Streamlit file to match your city:
-
-```bash
-mv SF_Taxi_Control_Center.py NYC_Taxi_Control_Center.py
-```
-
-Then update Step 10 (Deploy Streamlit) to use the new filename in `MAIN_FILE`.
 
 ---
 
@@ -286,7 +236,7 @@ If the query returns a route geometry, ORS is configured for that region. If it 
 **Goal:** Create warehouse, schema, and stage.
 
 ```sql
-CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
@@ -299,7 +249,7 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.
     DIRECTORY = (ENABLE = TRUE);
 ```
 
-**Output:** Warehouse `COMPUTE_WH`, schema `FLEET_INTELLIGENCE_TAXIS`, and stage `STREAMLIT_STAGE` created.
+**Output:** Warehouse `ROUTING_ANALYTICS`, schema `FLEET_INTELLIGENCE_TAXIS`, and stage `STREAMLIT_STAGE` created.
 
 ---
 
@@ -310,7 +260,7 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.
 **Action:** Substitute `{MIN_LON}`, `{MAX_LON}`, `{MIN_LAT}`, `{MAX_LAT}` with the values from the Supported Locations table (or the user's custom bounding box).
 
 ```sql
-CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS AS
+CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS AS
 -- POIs from Overture Maps Places
 SELECT 
     ID AS LOCATION_ID,
@@ -349,11 +299,11 @@ Then verify:
 SELECT 
     SOURCE_TYPE,
     COUNT(*) AS LOCATION_COUNT
-FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
 GROUP BY SOURCE_TYPE;
 ```
 
-**Output:** `SF_TAXI_LOCATIONS` table with POIs and addresses for the target city.
+**Output:** `TAXI_LOCATIONS` table with POIs and addresses for the target city.
 
 ---
 
@@ -387,7 +337,7 @@ home_locations AS (
     SELECT 
         LOCATION_ID,
         ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
     WHERE SOURCE_TYPE = 'address'
     LIMIT 100
 )
@@ -485,7 +435,7 @@ locations AS (
         POINT_GEOM,
         NAME,
         ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
     WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
 )
 SELECT 
@@ -507,7 +457,7 @@ WITH locations AS (
         POINT_GEOM,
         NAME,
         ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_LOCATIONS
+    FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
     WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
 ),
 pickup AS (
@@ -973,40 +923,40 @@ UNION ALL SELECT 'TRIP_SUMMARY', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.FLEET
 **Upload files using PUT commands:**
 
 ```sql
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/SF_Taxi_Control_Center.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/extra.css' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/logo.svg' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/environment.yml' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/city_config.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/1_Driver_Routes.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/2_Fleet_Heat_Map.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/Taxi_Control_Center.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/extra.css' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/logo.svg' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/environment.yml' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/city_config.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/1_Driver_Routes.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file://oss-deploy-a-fleet-intelligence-solution-for-taxis/Streamlit/pages/2_Heat_Map.py' @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 ```
 
 **Verify files uploaded:**
 
 ```sql
-LIST @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi/;
+LIST @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi/;
 ```
 
 **Deploy the Streamlit app:**
 
 ```sql
-CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER
-  FROM @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/sf_taxi
+CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_CONTROL_CENTER
+  FROM @OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE/taxi
   MAIN_FILE = '{MAIN_FILE}'
-  QUERY_WAREHOUSE = COMPUTE_WH
+  QUERY_WAREHOUSE = ROUTING_ANALYTICS
   TITLE = '{CITY_NAME} Taxi Control Center'
   COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 ```
 
 Where:
-- `{MAIN_FILE}` defaults to `SF_Taxi_Control_Center.py` (or renamed file if user changed it)
-- `{CITY_NAME}` is the chosen city name (e.g., "SF", "NYC", "London")
+- `{MAIN_FILE}` defaults to `Taxi_Control_Center.py` (or renamed file if user changed it)
+- `{CITY_NAME}` is the chosen city name (e.g., "New York", "London", "Chicago")
 
 **Set the live version so other users can access the app without edit mode:**
 
 ```sql
-ALTER STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER ADD LIVE VERSION FROM LAST;
+ALTER STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_CONTROL_CENTER ADD LIVE VERSION FROM LAST;
 ```
 
 **Verify deployment:**
@@ -1018,7 +968,7 @@ SHOW STREAMLITS IN SCHEMA OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS;
 **Get app URL:**
 
 ```sql
-SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER') AS STREAMLIT_URL;
+SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TAXI_CONTROL_CENTER') AS STREAMLIT_URL;
 ```
 
 **Output:** Streamlit app deployed. Provide the user with the generated URL to open the app directly in Snowsight.
@@ -1031,7 +981,7 @@ SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CU
 OPENROUTESERVICE_NATIVE_APP
 └── FLEET_INTELLIGENCE_TAXIS (schema)
     ├── Tables
-    │   ├── SF_TAXI_LOCATIONS      # Location pool for target city
+    │   ├── TAXI_LOCATIONS      # Location pool for target city
     │   ├── TAXI_DRIVERS           # Configured driver count
     │   ├── DRIVERS                # Driver display data
     │   ├── DRIVER_TRIPS           # Trip assignments
@@ -1054,7 +1004,7 @@ OPENROUTESERVICE_NATIVE_APP
     │   └── STREAMLIT_STAGE        # Streamlit application files
     │
     └── Streamlit
-        └── SF_TAXI_CONTROL_CENTER # Fleet Intelligence dashboard
+        └── TAXI_CONTROL_CENTER # Fleet Intelligence dashboard
 ```
 
 ---
@@ -1069,6 +1019,6 @@ OPENROUTESERVICE_NATIVE_APP
 | Query timeout | Increase warehouse size |
 | Out of memory | Use larger warehouse or batch processing |
 | Missing Overture data | Install shares from Snowflake Marketplace |
-| Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/sf_taxi/` |
+| Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/taxi/` |
 | Map centered wrong | Update view_state coordinates in Streamlit files |
 | PUT command fails | Ensure the file path is absolute and the file exists locally |

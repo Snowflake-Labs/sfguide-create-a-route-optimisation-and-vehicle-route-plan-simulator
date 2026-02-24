@@ -6,7 +6,7 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/ile-de-france-latest.osm.pbf
+        source_file: /home/ors/files/NewYork.osm.pbf
         instructions: false
         service:
         maximum_visited_nodes: 100000000

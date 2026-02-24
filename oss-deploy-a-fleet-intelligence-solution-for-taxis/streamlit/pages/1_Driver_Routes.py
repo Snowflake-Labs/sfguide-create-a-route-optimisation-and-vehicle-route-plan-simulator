@@ -1,4 +1,4 @@
-# SF Taxi Fleet Intelligence - Driver Routes
+# Taxi Fleet Intelligence - Driver Routes
 # Track individual driver journeys with route visualization
 
 import streamlit as st
@@ -14,7 +14,7 @@ from snowflake.snowpark.window import Window
 from snowflake.snowpark.context import get_active_session
 from city_config import get_city
 
-CITY = get_city("San Francisco")
+CITY = get_city("New York")
 
 # Initialize session
 session = get_active_session()
