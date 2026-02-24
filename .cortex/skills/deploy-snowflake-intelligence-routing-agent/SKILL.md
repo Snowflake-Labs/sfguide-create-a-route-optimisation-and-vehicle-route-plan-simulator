@@ -10,7 +10,7 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 ## Configuration
 
 This skill uses the following values:
-- **Database:** `OPENROUTESERVICE_NATIVE_APP`
+- **Database:** `OPENROUTESERVICE_SETUP`
 - **Schema:** `SI_ROUTING_AGENT`
 - **Warehouse:** `ROUTING_ANALYTICS`
 - **Agent Name:** `ROUTING_AGENT`
@@ -68,13 +68,17 @@ ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
 
 Wait 15-30 seconds for services to start before proceeding.
 
-### Step 3: Create Schema and Warehouse
+### Step 3: Create Database, Schema, and Warehouse
 
-**Goal:** Create the dedicated schema for routing agent objects and ensure the warehouse exists.
+**Goal:** Create the dedicated database and schema for routing agent objects and ensure the warehouse exists.
 
 ```sql
--- Create schema for routing agent objects (separate from the native app's CORE schema)
-CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT
+-- Create database for routing agent objects (separate from the native app)
+CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+-- Create schema for routing agent objects
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT
     COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 -- Create warehouse if not exists
@@ -85,14 +89,14 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-**Output:** Schema `OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT` and warehouse `ROUTING_ANALYTICS` ready
+**Output:** Schema `OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT` and warehouse `ROUTING_ANALYTICS` ready
 
 ### Step 4: Create TOOL_DIRECTIONS Procedure
 
 **Goal:** Wrap DIRECTIONS with AI geocoding for natural language input.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
@@ -183,7 +187,7 @@ $$;
 **Goal:** Wrap ISOCHRONES with AI geocoding.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -266,7 +270,7 @@ $$;
 **Goal:** Wrap OPTIMIZATION with AI geocoding for multi-stop routing.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -405,7 +409,7 @@ $$;
 **Goal:** Create Cortex Agent with tools pointing to procedures.
 
 ```sql
-CREATE OR REPLACE AGENT OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.ROUTING_AGENT
+CREATE OR REPLACE AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT
 COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
@@ -518,17 +522,17 @@ tools:
 tool_resources:
   tool_directions:
     type: procedure
-    identifier: OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_DIRECTIONS
+    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_isochrone:
     type: procedure
-    identifier: OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_ISOCHRONE
+    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION
+    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;
@@ -540,15 +544,15 @@ $$;
 
 ```sql
 -- Grant usage on the schema
-GRANT USAGE ON SCHEMA OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT TO ROLE SYSADMIN;
+GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT TO ROLE SYSADMIN;
 
 -- Grant usage on procedures
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) TO ROLE SYSADMIN;
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
-GRANT USAGE ON PROCEDURE OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
+GRANT USAGE ON PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) TO ROLE SYSADMIN;
 
 -- Grant usage on the agent
-GRANT USAGE ON AGENT OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.ROUTING_AGENT TO ROLE SYSADMIN;
+GRANT USAGE ON AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT TO ROLE SYSADMIN;
 
 -- Grant usage on the warehouse
 GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE SYSADMIN;
@@ -564,7 +568,7 @@ GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO ROLE SYSADMIN;
 
 ```sql
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
-ADD AGENT OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT.ROUTING_AGENT;
+ADD AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
 ```
 
 ### Step 10: Test the Agent
@@ -628,13 +632,14 @@ open "https://ai.snowflake.com/<org_name>/<account_name>/#/ai"
 ## Stopping Points
 
 - **Step 2**: Verify ORS functions exist before proceeding
-- **Step 3**: After creating schema and warehouse - verify objects exist
+- **Step 3**: After creating database, schema, and warehouse - verify objects exist
 - **Step 7**: Review agent spec before creation
 - **Step 10**: Confirm all 3 tools work correctly
 
 ## Output
 
-- 1 schema: `OPENROUTESERVICE_NATIVE_APP.SI_ROUTING_AGENT`
+- 1 database: `OPENROUTESERVICE_SETUP`
+- 1 schema: `OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT`
 - 1 warehouse: `ROUTING_ANALYTICS`
 - 3 stored procedures with AI geocoding and error handling
 - 1 Cortex Agent registered in Snowflake Intelligence

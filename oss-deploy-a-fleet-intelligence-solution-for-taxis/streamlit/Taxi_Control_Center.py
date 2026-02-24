@@ -262,4 +262,4 @@ st.divider()
 
 st.markdown('''
 <h1grey>Powered by Snowflake, OpenRouteService & Overture Maps</h1grey>
-''', unsafe                  
+''', unsafe_allow_html=True)

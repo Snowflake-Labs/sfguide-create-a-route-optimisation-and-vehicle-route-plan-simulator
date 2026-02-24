@@ -104,10 +104,11 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
         FROM latest
     """
     df = session.sql(sql).to_pandas()
+    df.columns = df.columns.str.lower()  # Normalize column names to lowercase
     df["POSITION"] = df[["lon", "lat"]].values.tolist()
     df["ROUTE"] = df["route_gj"].apply(
         lambda g: json.loads(g)["coordinates"] if isinstance(g, str) else [])
-    df["TOOLTIP"] = "Route: " + df["TRIP_NAME"].astype(str)
+    df["TOOLTIP"] = "Route: " + df["trip_name"].astype(str)
     return df[["trip_id", "POSITION", "ROUTE", "TOOLTIP"]]
     
 # ─────────────────────────────  Vehicle Stats  ────────────────────────────────
@@ -359,28 +360,4 @@ deck = pdk.Deck(
     layers=layers,
     tooltip=tooltip,
 )
-event = st.pydeck_chart(
-    deck, on_select="rerun",
-    selection_mode="single-object",
-    use_container_width=True,
-    key="drivers-map",
-)
-
-# ─────────────────────────────  HANDLE CLICK  ──────────────────────────────
-if isinstance(event, dict):
-    obj = event.get("object")
-    sel = event.get("selection", {}).get("objects", {}).get("drivers", [])
-    if obj and "ROUTE" in obj:
-        new_route, new_pos = obj["ROUTE"], obj["POSITION"]
-    elif sel:
-        new_route, new_pos = sel[0]["ROUTE"], sel[0]["POSITION"]
-    else:
-        new_route = new_pos = None
-
-    if new_route and (
-        new_route != st.session_state.selected_route
-        or new_pos  != st.session_state.selected_pos
-    ):
-        st.session_state.selected_route = new_route
-        st.session_state.selected_pos   = new_pos
-        st.rerun()
+st.pydeck_chart(deck, use_container_width=True)
