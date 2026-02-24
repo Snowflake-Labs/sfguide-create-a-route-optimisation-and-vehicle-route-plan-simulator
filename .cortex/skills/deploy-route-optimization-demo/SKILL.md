@@ -12,6 +12,8 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 - OpenRouteService Native App deployed and activated
 - Active Snowflake connection
 
+> **Note:** All `snow stage copy` commands use `--connection <ACTIVE_CONNECTION>`. Replace `<ACTIVE_CONNECTION>` with the name of your currently active Snowflake connection (e.g., run `cortex connections list` or `snow connection list` to find it).
+
 ## Workflow
 
 ### Step 1: Set Query Tag for Tracking
@@ -138,10 +140,10 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 2. **Upload** notebook files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Create** the notebook:
@@ -155,11 +157,25 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
    ```
 
-4.  **Execute** notebook with three parameters:
+4.  **Execute** notebook:
    ```sql
    EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA();
+   ```
 
-**Output:** Notebook deployed with standing data for the Streamlit app
+5. **Verify** notebook created the required tables:
+   ```sql
+   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES
+   UNION ALL
+   SELECT 'LOOKUP', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
+   UNION ALL
+   SELECT 'JOB_TEMPLATE', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE;
+   ```
+   - `PLACES` should have a significant row count (typically 50K-500K depending on the region)
+   - `LOOKUP` should have 3 rows (one per default industry)
+   - `JOB_TEMPLATE` should have 29 rows
+   - **STOP** if any table has 0 rows — the notebook execution likely failed. Check notebook logs before proceeding.
+
+**Output:** Notebook deployed and verified with standing data for the Streamlit app
 
 **Next:** Proceed to Step 7
 
@@ -196,18 +212,20 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Actions:**
 
-1. **Before uploading**, update the notebook with region-specific prompts:
+1. **Before uploading**, check whether the notebook already matches the target city:
    - Open `oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb`
-   - Update AI prompts in the notebook to use `<NOTEBOOK_CITY>` in case needed"
-   - Example: Change "Generate a restaurant in San Francisco" to "Generate a restaurant in `<NOTEBOOK_CITY>`"
+   - Search AI prompt cells for city references (e.g., "San Francisco", "Wroclaw", "London")
+   - **If the notebook's city references already match `<NOTEBOOK_CITY>`**: Skip modification and proceed directly to upload (sub-step 2)
+   - **If they differ**: Apply the `customize-aisql-notebook` sub-skill to replace all city references with `<NOTEBOOK_CITY>`
+   - Example: Change "Return 10 restaurants in Wroclaw, Poland." to "Return 10 restaurants in `<NOTEBOOK_CITY>`."
 
 2. **Upload** notebook files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Create** the notebook:
@@ -250,19 +268,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 3. **Upload** Streamlit files to stage:
    ```bash
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/extra.css" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/environment.yml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/logo.svg" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
 
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/config.toml" \
-     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 4. **Create** the Streamlit app:
@@ -322,7 +340,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 - Step 2: Wait for user to activate app if services not running
 - Step 3: After reading ORS config - confirm detected region and city with user
 - Step 4: After getting Marketplace data - verify dataset accessible
-- Step 6: After Carto notebook - verify data is populated
+- Step 6: After Carto notebook - verify PLACES, LOOKUP, and JOB_TEMPLATE tables are populated (Step 6.5)
 - Step 7: After checking Claude model - verify model is available
 - Step 10: After accessing Streamlit - verify app loads correctly with correct region
 
@@ -335,6 +353,16 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 ### Streamlit App Errors
 **Symptom:** App fails to load or shows errors
 **Solution:** Verify notebook was run successfully to create required tables/views
+
+## Recovery
+
+If deployment fails mid-way, re-running the skill is safe:
+- All `CREATE STAGE` and `CREATE SCHEMA` statements use `IF NOT EXISTS`
+- All `CREATE NOTEBOOK` and `CREATE STREAMLIT` statements use `OR REPLACE`
+- `snow stage copy` uses `--overwrite` for idempotent uploads
+- The Marketplace listing (`CREATE DATABASE IF NOT EXISTS ... FROM LISTING`) is also safe to re-run
+
+No manual cleanup is needed. Simply fix the underlying issue (e.g., permissions, service state) and re-run from the failed step onward.
 
 ## Output
 

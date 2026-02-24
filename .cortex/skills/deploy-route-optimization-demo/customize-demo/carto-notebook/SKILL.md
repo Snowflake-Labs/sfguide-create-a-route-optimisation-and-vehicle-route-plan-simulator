@@ -10,9 +10,9 @@ Updates the add_carto_data.ipynb notebook to load Overture Maps POI data for you
 ## Prerequisites
 
 - Active Snowflake connection
-- Demo deployed with `VEHICLE_ROUTING_SIMULATOR` database
+- Demo deployed with `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` schema
 - Access to Carto Overture Maps data in Marketplace
-- Access to `Notebook/add_carto_data.ipynb`
+- Access to `oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb`
 
 ## Input Parameters
 
@@ -72,7 +72,7 @@ A geohash is a spatial encoding that divides the world into grid cells. Using a 
 
 **Actions:**
 
-1. **Edit** the `add_carto_data` cell in `Notebook/add_carto_data.ipynb`:
+1. **Edit** the `add_carto_data` cell in `oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb`:
 
    **Find** the geohash filter:
    ```sql
@@ -101,7 +101,7 @@ A geohash is a spatial encoding that divides the world into grid cells. Using a 
 
 1. **Upload** to stage:
    ```bash
-   snow stage copy "Notebook/add_carto_data.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Notebook deployed
@@ -114,44 +114,44 @@ A geohash is a spatial encoding that divides the world into grid cells. Using a 
 
 1. **Create** region data table:
    ```sql
-   CREATE OR REPLACE TABLE VEHICLE_ROUTING_SIMULATOR.DATA.REGION_DATA AS 
+   CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.REGION_DATA AS 
    SELECT * FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
    WHERE ST_GEOHASH(GEOMETRY, 2) = '<GEOHASH>';
    ```
 
 2. **Create** places table:
    ```sql
-   CREATE OR REPLACE TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES AS 
+   CREATE OR REPLACE TABLE OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES AS 
    SELECT 
        GEOMETRY,
-       PHONES:list[0]['element']::text AS PHONES,
+       PHONES[0]::text AS PHONES,
        CATEGORIES:primary::text AS CATEGORY,
        NAMES:primary::text AS NAME,
-       ADDRESSES:list[0]['element'] AS ADDRESS,
+       ADDRESSES[0] AS ADDRESS,
        COALESCE(categories:alternate:list, ARRAY_CONSTRUCT()) AS ALTERNATE
-   FROM VEHICLE_ROUTING_SIMULATOR.DATA.REGION_DATA
+   FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.REGION_DATA
    WHERE CATEGORIES:primary IS NOT NULL;
    ```
 
 3. **Add** search optimization:
    ```sql
-   ALTER TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+   ALTER TABLE OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
    ADD SEARCH OPTIMIZATION ON EQUALITY(ALTERNATE);
    
-   ALTER TABLE VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+   ALTER TABLE OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
    ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
    ```
 
 4. **Verify** data loaded:
    ```sql
-   SELECT COUNT(*) as poi_count FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES;
+   SELECT COUNT(*) as poi_count FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES;
    ```
    - Should return significant POI count (typically 50K-500K for major cities)
 
 5. **Check** available categories:
    ```sql
    SELECT CATEGORY, COUNT(*) as count 
-   FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+   FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
    GROUP BY CATEGORY 
    ORDER BY count DESC 
    LIMIT 20;
@@ -166,7 +166,7 @@ A geohash is a spatial encoding that divides the world into grid cells. Using a 
 
 **Actions:**
 
-1. **Edit** `Streamlit/routing.py`:
+1. **Edit** `oss-deploy-route-optimization-demo/Streamlit/routing.py`:
 
    **Find:**
    ```python
@@ -186,7 +186,7 @@ A geohash is a spatial encoding that divides the world into grid cells. Using a 
 
 2. **Upload** updated Streamlit:
    ```bash
-   snow stage copy "Streamlit/routing.py" @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --overwrite
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Simulator updated with new default location
@@ -198,7 +198,7 @@ After loading data, verify quality:
 ```sql
 -- Check POI distribution by category
 SELECT CATEGORY, COUNT(*) 
-FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES 
+FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES 
 GROUP BY CATEGORY 
 HAVING COUNT(*) > 100
 ORDER BY COUNT(*) DESC;
@@ -209,7 +209,7 @@ SELECT
     MAX(ST_X(GEOMETRY)) as max_lon,
     MIN(ST_Y(GEOMETRY)) as min_lat,
     MAX(ST_Y(GEOMETRY)) as max_lat
-FROM VEHICLE_ROUTING_SIMULATOR.DATA.PLACES;
+FROM OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.PLACES;
 ```
 
 ## Stopping Points

@@ -11,7 +11,7 @@ Configure industry categories for the Route Optimization Simulator demo.
 
 - Active Snowflake connection
 - Demo deployed with `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` schema
-- Access to `Notebook/add_carto_data.ipynb`
+- Access to `oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb`
 
 ## Default Industries
 
@@ -139,7 +139,7 @@ SELECT
 
 **Actions:**
 
-1. **Edit** Cell 15 in `Notebook/add_carto_data.ipynb`:
+1. **Edit** Cell 15 in `oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb`:
    - Replace the existing INSERT statement with new industries
    - Include all user-defined industries
 
@@ -176,7 +176,7 @@ SELECT
 
 1. **Upload** modified notebook:
    ```bash
-   snow stage copy "Notebook/add_carto_data.ipynb" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --overwrite
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 2. **Recreate** LOOKUP table:

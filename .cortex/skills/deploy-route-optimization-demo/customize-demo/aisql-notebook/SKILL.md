@@ -136,7 +136,7 @@ All generated coordinates must be within the routing map boundaries. If the map 
 
 1. **Upload** to stage:
    ```bash
-   snow stage copy "Notebook/routing_functions_aisql.ipynb" @VEHICLE_ROUTING_SIMULATOR.NOTEBOOKS.notebook --overwrite
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 2. **Verify** upload succeeded

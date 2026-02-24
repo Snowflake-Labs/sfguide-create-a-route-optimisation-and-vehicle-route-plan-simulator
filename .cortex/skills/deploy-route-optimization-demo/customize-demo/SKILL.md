@@ -30,9 +30,9 @@ Customize demo-specific settings. This skill is ONLY for demo components (indust
 
 | Component | Skill | Description |
 |-----------|-------|-------------|
-| **Industries** | `industries.md` | Customize industry categories (product types, customers) |
-| **AISQL Notebook** | `aisql-notebook.md` | Update AI prompts for sample data generation |
-| **Carto Notebook** | `carto-notebook.md` | Update POI data source |
+| **Industries** | `industries/` | Customize industry categories (product types, customers) |
+| **AISQL Notebook** | `aisql-notebook/` | Update AI prompts for sample data generation |
+| **Carto Notebook** | `carto-notebook/` | Update POI data source |
 
 ## Workflow
 
@@ -46,27 +46,27 @@ Customize demo-specific settings. This skill is ONLY for demo components (indust
 
    **Question 1: "Do you want to customize the LOCATION (map region)?"**
    - Examples: Change from San Francisco to Paris, London, Tokyo, etc.
-   - If YES → Will run: `location.md`, `vehicles.md`
+   - If YES → Will run: `location`, `vehicles`
    
    **Question 2: "Do you want to customize VEHICLE TYPES (routing profiles)?"**
    - Examples: Add walking, wheelchair, electric bicycle; remove truck
-   - If YES → Will run: `vehicles.md`
+   - If YES → Will run: `vehicles`
    
    **Question 3: "Do you want to customize INDUSTRIES for the demo?"**
    - Examples: Change from Food/Healthcare/Cosmetics to Beverages/Electronics/Pharmaceuticals
-   - If YES → Will run: `industries.md`
+   - If YES → Will run: `industries/`
 
    **For ANY customization (Location, Vehicles, or Industries = YES):**
-   - Will ALWAYS run: `streamlits.md`, `aisql-notebook.md`, `carto-notebook.md`
+   - Will ALWAYS run: `streamlit/`, `aisql-notebook/`, `carto-notebook/`
    - Will ALWAYS require: `deploy-demo` to apply changes to Snowflake
 
 2. **Determine the execution plan based on answers:**
 
    | User Choice | Sub-Skills to Run |
    |-------------|-------------------|
-   | Location = YES | `location.md` → `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → **deploy-route-optimizer** → `deploy-demo` |
-   | Vehicles = YES | `vehicles.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → **deploy-route-optimizer** → `deploy-demo` |
-   | Industries only = YES | `industries.md` → `streamlits.md` → `aisql-notebook.md` → `carto-notebook.md` → `deploy-demo` |
+   | Location = YES | `location` → `vehicles` → `streamlit/` → `aisql-notebook/` → `carto-notebook/` → **deploy-route-optimizer** → `deploy-demo` |
+   | Vehicles = YES | `vehicles` → `streamlit/` → `aisql-notebook/` → `carto-notebook/` → **deploy-route-optimizer** → `deploy-demo` |
+   | Industries only = YES | `industries/` → `streamlit/` → `aisql-notebook/` → `carto-notebook/` → `deploy-demo` |
    | Location OR Vehicles + Industries | All relevant sub-skills → **deploy-route-optimizer** → `deploy-demo` |
    | ALL = NO | Inform user nothing to customize, exit |
 
@@ -104,19 +104,19 @@ Execute the sub-skills in this order:
    - This configures routing profiles in ors-config.yml and triggers graph rebuild
 
 3. **If Industries = YES:**
-   - Run `oss-deploy-route-optimization-demo/skills/customizations/industries.md`
+   - Run `customize-demo/industries/` sub-skill
    - This customizes industry categories in the demo
 
 4. **ALWAYS run (for any customization):**
-   - Run `oss-deploy-route-optimization-demo/skills/customizations/streamlits.md` with `<REGION_NAME>` and `<NOTEBOOK_CITY>`
+   - Run `customize-demo/streamlit/` sub-skill with `<REGION_NAME>` and `<NOTEBOOK_CITY>`
    - This updates Function Tester and Simulator with region-specific coordinates
 
 5. **ALWAYS run (for any customization):**
-   - Run `oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook.md` with `<NOTEBOOK_CITY>`
+   - Run `customize-demo/aisql-notebook/` sub-skill with `<NOTEBOOK_CITY>`
    - This updates AI prompts in the AISQL notebook
 
 6. **ALWAYS run (for any customization):**
-   - Run `oss-deploy-route-optimization-demo/skills/customizations/carto-notebook.md` with `<NOTEBOOK_CITY>`
+   - Run `customize-demo/carto-notebook/` sub-skill with `<NOTEBOOK_CITY>`
    - This updates POI data source and geohash filter
 
 **Output:** All relevant sub-skills executed
@@ -152,13 +152,13 @@ use the local skill from oss-install-openrouteservice-native-app/skills/customiz
 
 **Demo Skills (app and notebook changes):**
 ```
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/industries
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/streamlits
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/aisql-notebook
-use the local skill from oss-deploy-route-optimization-demo/skills/customizations/carto-notebook
+$customize-demo/industries
+$customize-demo/streamlit
+$customize-demo/aisql-notebook
+$customize-demo/carto-notebook
 ```
 
-> **_WARNING:_** If you run `location` or `vehicles` individually, you MUST also run the `streamlits` skill afterward to update the Streamlit apps with the new configuration.
+> **_WARNING:_** If you run `location` or `vehicles` individually, you MUST also run the `streamlit/` skill afterward to update the Streamlit apps with the new configuration.
 
 ## Output
 

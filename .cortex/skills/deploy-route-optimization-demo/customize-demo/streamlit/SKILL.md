@@ -149,7 +149,7 @@ Updates the Simulator Streamlit app (`routing.py`) with region-specific coordina
 
 2. **Upload** Simulator:
    ```bash
-   snow stage copy "Streamlit/routing.py" @VEHICLE_ROUTING_SIMULATOR.STREAMLITS.STREAMLIT --overwrite
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/routing.py" @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Upgrade** Native App:
