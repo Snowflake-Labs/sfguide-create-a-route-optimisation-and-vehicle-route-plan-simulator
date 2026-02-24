@@ -72,7 +72,7 @@ with st.sidebar:
     st.markdown('##### Cortex Powered Map Filter')
     st.info('Give me the LAT and LON which centers the following place')
     model_choice = 'claude-sonnet-4-5'
-    place_input = st.text_input('Choose Input', 'Golden Gate Bridge, San Francisco')
+    place_input = st.text_input('Choose Input', 'Rynek, Wroclaw')
     distance_input = st.number_input('Distance from location in KM', 1, 300, 15)
 
 @st.cache_data

@@ -1,5 +1,5 @@
 ---
-name: generate-taxi-driver-locations
+name: deploy-fleet-intelligence-taxis
 description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (San Francisco, New York, London, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
 ---
 

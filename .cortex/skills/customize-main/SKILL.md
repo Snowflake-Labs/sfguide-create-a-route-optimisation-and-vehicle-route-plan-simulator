@@ -30,37 +30,20 @@ This skill routes customization requests to the correct skill based on what you 
 **If user wants to change LOCATION or MAP:**
 
 > This requires changing a map. 
-
-Run the location skill (this handles everything for the Native App):
-```
-$customize-main/location
-```
-
-This skill will:
-- Download the new map
-- Update ors-config.yml
-- Update service specifications
-- Update Function Tester with new addresses
-- Upgrade the Native App
----
+> Read and follow the instructions in `.cortex/skills/customize-main/location/SKILL.md`
 
 **If user wants to change ROUTING PROFILES:**
 
 > This updates which routing profiles are available.
+> Read and follow the instructions in `.cortex/skills/customize-main/routing-profiles/SKILL.md`
 
-Run the vehicles skill:
-```
-$customize-main/routing-profiles
-```
-
-
-### Step 5: Update Routing Graphs
+### Step 3: Update Routing Graphs
 
 **Goal:** Restart services to update routing graphs with new location
 
 **Actions:**
 
-1. **Ask user** if they want to rebuild graphs for the map:
+1. **Only if the map existed and user selected to re-download** ask the user:
    - "Do you want to rebuild the routing graphs for this region? This will clear existing cached graphs and elevation data, forcing a fresh rebuild."
 
 2. **If user confirms YES**, clear existing graphs and elevation cache:
@@ -94,18 +77,18 @@ $customize-main/routing-profiles
 
 **Output:** Services rebuilding with new map
 
-### Step 6: Update and Deploy Function Tester
+### Step 4: Update and Deploy Function Tester
 
 **Goal:** Update the Function Tester Streamlit with region-specific addresses and deploy to the Native App
 
 **Actions:**
 
-1. **Generate** region-specific sample addresses for the Function Tester:
+1. **Generate** region-specific sample addresses within 5km distance to each other for the Function Tester:
    - 5 START addresses (landmarks, transport hubs in `<REGION_NAME>`)
    - 5 END addresses (different locations)
    - 20 WAYPOINT addresses spread across the region
 
-2. **Edit** `oss-install-openrouteservice-native-app/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
+2. **Edit** `oss-build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
    - Update page title to: `page_title="ORS Function Tester For <REGION_NAME> Map"`
    - Replace `SF_ADDRESSES` with region-specific addresses
    - Replace `SF_WAYPOINT_ADDRESSES` with region waypoints
@@ -113,7 +96,7 @@ $customize-main/routing-profiles
 
 3. **Upload** updated Function Tester to stage:
    ```bash
-   snow stage copy oss-install-openrouteservice-native-app/Native_app/code_artifacts/streamlit/pages/function_tester.py \
+   snow stage copy oss-build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py \
      @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
    ```
 
@@ -124,7 +107,7 @@ $customize-main/routing-profiles
 
 **Output:** Function Tester deployed with region-specific addresses
 
-### Step 7: Update MAP_CONFIG Table
+### Step 5: Update MAP_CONFIG Table
 
 **Goal:** Store map configuration so Function Tester can dynamically load settings
 
@@ -168,6 +151,6 @@ $customize-main/routing-profiles
 ## Stopping Points
 
 - ✋ After Step 2: Confirm map download completed
-- ✋ After Step 5: Verify services are rebuilding graphs
-- ✋ After Step 6: Verify Function Tester shows new region addresses
-- ✋ After Step 7: Verify MAP_CONFIG table has correct bounds
+- ✋ After Step 3: Verify services are rebuilding graphs
+- ✋ After Step 4: Verify Function Tester shows new region addresses
+- ✋ After Step 5: Verify MAP_CONFIG table has correct bounds

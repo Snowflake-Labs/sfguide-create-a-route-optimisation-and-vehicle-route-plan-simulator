@@ -15,7 +15,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 ## Input Parameters
 
-- `<REGION_NAME>`: Current region name (for stage path)
+- `<REGION_NAME>`: Target region name (e.g., "great-britain", "switzerland", "new-york")
 
 ## Available Profiles
 

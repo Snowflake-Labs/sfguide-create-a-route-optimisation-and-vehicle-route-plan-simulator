@@ -1,6 +1,6 @@
 ---
 name: deploy-route-optimization-demo
-description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the route optimization demo after native app deployment. Triggers: deploy route optimization demo demo, setup route optimization demo, run route optimization demo."
+description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the route optimization demo after native app deployment. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
 ---
 
 # Deploy Route Optimization Demo
@@ -24,74 +24,60 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Output:** Query tag set for session tracking
 
-### Step 2: Verify OpenRouteService Installation
+### Step 2: Verify Services are Running
 
-**Goal:** Check that the OpenRouteService Native App is installed and running before proceeding
+**Goal:** Confirm the ORS services are active
 
 **Actions:**
 
-1. **Check** if the OpenRouteService Native App exists:
-   ```sql
-   SHOW APPLICATIONS LIKE 'OPENROUTESERVICE_NATIVE_APP';
-   ```
-
-2. **If the application does NOT exist:**
-   - **STOP** and inform the user:
-     > ⚠️ **OpenRouteService Native App is not installed.**
-     > 
-     > The demo requires the OpenRouteService Native App to provide routing functions.
-     > 
-     > Please install it first using the skill from the `openrouteservice/` directory:
-     > ```
-     > use the local skill from oss-install-openrouteservice-native-app/skills/deploy-route-optimizer
-     > ```
-     > 
-     > After installation, return and run this demo deployment skill again.
-   - **Do NOT proceed** with the remaining steps
-
-3. **If the application EXISTS**, verify services are running:
+1. **Check** services status:
    ```sql
    SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
    ```
 
-4. **If services are not running:**
-   - Inform user to activate the app via Snowsight (Data Products > Apps > OPENROUTESERVICE_NATIVE_APP)
-   - Wait for user confirmation before proceeding
+2. **Verify** all 4 services are running:
+   - `OPENROUTESERVICE` - Main routing engine
+   - `ROUTING_REVERSE_PROXY` - API gateway
+   - `VROOM` - Vehicle routing optimization
+   - `DOWNLOADER` - Map download service
 
+3. **If services are not running, resume them:**
+   ```sql
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
+   ```
 **Output:** OpenRouteService Native App verified as installed and running
 
-**Next:** Proceed to Step 2
+**Next:** ORS prerequisite check complete - ready for demo deployment. Proceed to Step 3. 
 
 ### Step 3: Read Current ORS Configuration
 
-**Goal:** Detect the current map region and vehicle profiles from the ORS configuration to customize the demo accordingly
+**Goal:** Detect the current map region and routing profiles from the ORS configuration to customize the demo accordingly
 
 **Actions:**
 
-1. **Read** the current ORS configuration from the stage:
+1. **Extract** the current ORS configuration from the service definition:
    ```sql
-   SELECT $1 AS config_content
-   FROM @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE
-   WHERE METADATA$FILENAME LIKE '%ors-config.yml'
-   LIMIT 1;
+   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
    ```
-
-2. **Extract** the current map region from `source_file`:
-   - Look for the line: `source_file: /home/ors/files/<MAP_NAME>.osm.pbf`
-   - Extract `<MAP_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
+   - Parse the service spec from the output to find the `source_file` setting
+   - Look for the map file path: `/home/ors/files/<REGION_NAME>.osm.pbf`
+   - Extract `<REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
    - This determines the `<REGION_NAME>` for the demo
 
-3. **Extract** the enabled vehicle profiles:
+2. **Extract** the enabled vehicle profiles:
    - Look for profiles with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
    - Store the list of enabled profiles
 
-4. **Determine the city for the demo:**
+3. **Determine the city for the demo:**
    - If map is a city (e.g., "SanFrancisco", "Paris", "London"): Use that city name
    - If map is a region/country (e.g., "great-britain", "germany"): Ask user which city within that region to use for sample data
 
-5. **Store configuration for later steps:**
-   - `<REGION_NAME>`: The map region name
+4. **Store configuration for later steps:**
+   - `<REGION_NAME>`: The region name
    - `<NOTEBOOK_CITY>`: The city to use for AI-generated sample data
    - `<ENABLED_PROFILES>`: List of enabled vehicle profiles
 
@@ -100,7 +86,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 - Demo City: `<NOTEBOOK_CITY>`
 - Vehicle Profiles: `<ENABLED_PROFILES>`
 
-**Next:** Proceed to Step 3
+**Next:** Proceed to Step 4
 
 ### Step 4: Get Carto Overture Dataset from Marketplace
 
@@ -116,7 +102,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Output:** Carto Overture Places dataset available in your account as `OVERTURE_MAPS__PLACES`
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 5
 
 ### Step 5: Setup Snowflake Objects
 
@@ -134,7 +120,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Output:** Schema `OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR` created.
 
-**Next:** Proceed to Step 5
+**Next:** Proceed to Step 6
 
 ### Step 6: Deploy and Run the Notebook to add Carto data
 
@@ -151,10 +137,10 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 2. **Upload** notebook files to stage:
    ```bash
-   snow stage copy "Notebook/add_carto_data.ipynb" \
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/add_carto_data.ipynb" \
      @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    
-   snow stage copy "Notebook/environment.yml" \
+   snow stage copy "oss-deploy-route-optimization-demo/Notebook/environment.yml" \
      @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <connection> --overwrite
    ```
 
@@ -171,11 +157,11 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 4.  **Execute** notebook with three parameters:
    ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA()
+   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA();
 
 **Output:** Notebook deployed with standing data for the Streamlit app
 
-**Next:** Proceed to Step 6
+**Next:** Proceed to Step 7
 
 ### Step 7: Check for Latest Claude Model
 
@@ -202,7 +188,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Output:** Confirmed latest Claude Sonnet model for use in the notebook
 
-**Next:** Proceed to Step 7
+**Next:** Proceed to Step 8
 
 ### Step 8: Deploy the AISQL Notebook (Customized for Region)
 
@@ -212,7 +198,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 1. **Before uploading**, update the notebook with region-specific prompts:
    - Open `oss-deploy-route-optimization-demo/Notebook/routing_functions_aisql.ipynb`
-   - Update AI prompts to use `<NOTEBOOK_CITY>` instead of "San Francisco"
+   - Update AI prompts in the notebook to use `<NOTEBOOK_CITY>` in case needed"
    - Example: Change "Generate a restaurant in San Francisco" to "Generate a restaurant in `<NOTEBOOK_CITY>`"
 
 2. **Upload** notebook files to stage:
@@ -228,7 +214,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    ```sql
    CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL
    FROM '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
-   MAIN_FILE = 'routing_functions_aisql'
+   MAIN_FILE = 'routing_functions_aisql.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
@@ -237,7 +223,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Output:** Notebook created with AI prompts customized for `<NOTEBOOK_CITY>`
 
-**Next:** Proceed to Step 8
+**Next:** Proceed to Step 9
 
 ### Step 9: Deploy the Streamlit Application (Customized for Region)
 
@@ -274,13 +260,16 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
    
    snow stage copy "oss-deploy-route-optimization-demo/Streamlit/logo.svg" \
      @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
+
+   snow stage copy "oss-deploy-route-optimization-demo/Streamlit/config.toml" \
+     @OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT --connection <connection> --overwrite
    ```
 
 4. **Create** the Streamlit app:
    ```sql
    CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR
-   ROOT_LOCATION = '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.streamlit'
-   MAIN_FILE = 'routing.py'
+    ROOT_LOCATION = '@OPENROUTESERVICE_NATIVE_APP.VEHICLE_ROUTING_SIMULATOR.streamlit/streamlit'
+    MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
    ```
@@ -291,7 +280,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 - Default search location set to `<NOTEBOOK_CITY>`
 - Vehicle profiles matching the ORS configuration (`<ENABLED_PROFILES>`)
 
-**Next:** Proceed to Step 9
+**Next:** Proceed to Step 10
 
 ### Step 10: Run the Demo
 
@@ -329,6 +318,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 ## Stopping Points
 
+- Step 1: STOP if OpenRouteService Native App is not installed
+- Step 2: Wait for user to activate app if services not running
 - Step 3: After reading ORS config - confirm detected region and city with user
 - Step 4: After getting Marketplace data - verify dataset accessible
 - Step 6: After Carto notebook - verify data is populated
