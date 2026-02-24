@@ -133,7 +133,7 @@ try:
         height=500
     )
     
-    st.pydeck_chart(deck, use_container_width=True, height=500)
+    st.pydeck_chart(deck, use_container_width=True)
     
 except Exception as e:
     st.error(f"Error loading map: {e}")
@@ -195,11 +195,11 @@ st.markdown('<h1sub>Fleet Activity by Hour</h1sub>', unsafe_allow_html=True)
 try:
     hourly_stats = session.sql("""
         SELECT 
-            HOUR(PICKUP_TIME) AS HOUR,
+            HOUR(TRIP_START_TIME) AS HOUR,
             COUNT(*) AS TRIPS,
             ROUND(SUM(ROUTE_DISTANCE_METERS)/1000, 0) AS TOTAL_KM
         FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY
-        GROUP BY HOUR(PICKUP_TIME)
+        GROUP BY HOUR(TRIP_START_TIME)
         ORDER BY HOUR
     """).to_pandas()
     

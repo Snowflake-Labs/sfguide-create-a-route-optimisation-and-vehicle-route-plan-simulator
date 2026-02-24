@@ -212,7 +212,7 @@ if len(trips_df) > 0:
         with col3:
             st.metric("Avg Speed", f"{trip_data['AVERAGE_KMH'].iloc[0]:.1f} km/h")
         with col4:
-            st.metric("Pickup Time", trip_data['PICKUP_TIME'].iloc[0].strftime('%H:%M'))
+            st.metric("Pickup Time", trip_data['TRIP_START_TIME'].iloc[0].strftime('%H:%M'))
         
         # Get driver positions for this trip, sorted by POINT_INDEX for correct route order
         trip_locations = all_driver_locations.filter(col('TRIP_ID') == trip_id)
@@ -350,8 +350,8 @@ if len(trips_df) > 0:
                     st.markdown('<h1sub>Trip Details</h1sub>', unsafe_allow_html=True)
                     
                     # Extract values as native Python types
-                    pickup_time = trip_data['PICKUP_TIME'].iloc[0]
-                    dropoff_time = trip_data['ACTUAL_DROPOFF_TIME'].iloc[0]
+                    pickup_time = trip_data['TRIP_START_TIME'].iloc[0]
+                    dropoff_time = trip_data['TRIP_END_TIME'].iloc[0]
                     distance_km = float(trip_data['ROUTE_DISTANCE_METERS'].iloc[0]) / 1000
                     duration_mins = float(trip_data['ROUTE_DURATION_SECS'].iloc[0]) / 60
                     avg_speed = float(trip_data['AVERAGE_KMH'].iloc[0])

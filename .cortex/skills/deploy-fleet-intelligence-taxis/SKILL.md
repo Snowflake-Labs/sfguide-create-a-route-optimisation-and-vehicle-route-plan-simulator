@@ -399,7 +399,7 @@ SELECT
     da.shift_end_hour AS SHIFT_END_HOUR,
     da.shift_crosses_midnight AS SHIFT_CROSSES_MIDNIGHT
 FROM driver_assignments da
-JOIN home_locations hl ON da.driver_num = hl.rn;
+LEFT JOIN home_locations hl ON da.driver_num = hl.rn;
 ```
 
 ```sql
@@ -941,7 +941,9 @@ WITH trip_stats AS (
     GROUP BY TRIP_ID
 )
 SELECT 
-    *
+    rg.*,
+    ts.AVERAGE_KMH,
+    ts.MAX_KMH
 FROM OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg
 LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
 ```
@@ -1000,6 +1002,12 @@ CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS
 Where:
 - `{MAIN_FILE}` defaults to `SF_Taxi_Control_Center.py` (or renamed file if user changed it)
 - `{CITY_NAME}` is the chosen city name (e.g., "SF", "NYC", "London")
+
+**Set the live version so other users can access the app without edit mode:**
+
+```sql
+ALTER STREAMLIT OPENROUTESERVICE_NATIVE_APP.FLEET_INTELLIGENCE_TAXIS.SF_TAXI_CONTROL_CENTER ADD LIVE VERSION FROM LAST;
+```
 
 **Verify deployment:**
 
