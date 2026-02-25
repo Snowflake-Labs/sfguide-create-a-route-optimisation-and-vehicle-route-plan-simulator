@@ -1,6 +1,7 @@
 USE APPLICATION PACKAGE <% ctx.entities.pkg.identifier %>;
 
-CREATE SCHEMA IF NOT EXISTS SHARED_SCHEMA;
+CREATE SCHEMA IF NOT EXISTS SHARED_SCHEMA
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 USE SCHEMA SHARED_SCHEMA;
 
 CREATE OR REPLACE SECURE VIEW OSM_DATA AS (

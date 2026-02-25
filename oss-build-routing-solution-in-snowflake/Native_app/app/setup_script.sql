@@ -1,5 +1,6 @@
 CREATE APPLICATION ROLE IF NOT EXISTS app_user;
-CREATE SCHEMA IF NOT EXISTS core;
+CREATE SCHEMA IF NOT EXISTS core
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 GRANT USAGE ON SCHEMA core TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.version_init()
@@ -323,6 +324,7 @@ GRANT USAGE ON PROCEDURE core.grant_callback(array) TO APPLICATION ROLE app_user
 
 CREATE OR REPLACE STREAMLIT core.control_app
      FROM '/streamlit'
-     MAIN_FILE = '/app.py';
+     MAIN_FILE = '/app.py'
+     COMMENT = '{"origin":"sf_sit-is", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 GRANT USAGE ON STREAMLIT core.control_app TO APPLICATION ROLE app_user;
