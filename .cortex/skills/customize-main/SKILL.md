@@ -18,12 +18,14 @@ This skill routes customization requests to the correct skill based on what you 
 
 ### Step 1: Determine What to Customize
 
-**Ask the user:**
+**Ask the user (allow multiple selections):**
 
-"What would you like to customize?"
+"What would you like to customize? You can select both."
 
 1. **Location/Map** - Change the geographic region (e.g., San Francisco → Paris)
-2. **Routing Profiles** - Enable/disable routing profiles (car, truck, bicycle, walking)
+2. **Routing Profiles** - Enable/disable routing profiles (driving-car, foot-walking, cycling-road)
+
+**IMPORTANT:** Use multi-select so the user can choose one or both options. If both are selected, run the location skill first, then the routing profiles skill, before proceeding to Step 3.
 
 ### Step 2: Route to Correct Skill
 
@@ -88,7 +90,7 @@ This skill routes customization requests to the correct skill based on what you 
    - 5 END addresses (different locations)
    - 20 WAYPOINT addresses spread across the region
 
-2. **Edit** `oss-build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
+2. **Edit** `oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
    - Update page title to: `page_title="ORS Function Tester For <REGION_NAME> Map"`
    - Replace `SF_ADDRESSES` with region-specific addresses
    - Replace `SF_WAYPOINT_ADDRESSES` with region waypoints
@@ -96,7 +98,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 3. **Upload** updated Function Tester to stage:
    ```bash
-   snow stage copy oss-build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py \
+   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py \
      @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
    ```
 
