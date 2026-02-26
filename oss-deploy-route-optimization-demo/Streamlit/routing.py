@@ -22,7 +22,7 @@ with open('extra.css') as f:
 st.logo('logo.svg')
 
 # Industry lookup
-lookup_table = session.table('DATA.LOOKUP')
+lookup_table = session.table('VEHICLE_ROUTING_SIMULATOR.LOOKUP')
 industry_choices = lookup_table.select('INDUSTRY').to_pandas()['INDUSTRY'].tolist()
 
 with st.sidebar:
@@ -54,7 +54,7 @@ st.markdown('''
 methods = ['driving-car', 'driving-hgv', 'cycling-road']
 
 # Load points of interest data
-places_filtered = session.table('DATA.places')
+places_filtered = session.table('VEHICLE_ROUTING_SIMULATOR.PLACES')
 places_filtered = places_filtered.select(
     'GEOMETRY',
     call_function('ST_X', col('GEOMETRY')).alias('LON'),
@@ -67,12 +67,22 @@ places_filtered = places_filtered.select(
     col('GEOMETRY').alias('POINT')
 )
 
+# Derive default location from ORS map configuration
+@st.cache_data
+def get_default_place():
+    result = session.sql(
+        "SELECT CITY_NAME FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG LIMIT 1"
+    ).collect()
+    if result and result[0]['CITY_NAME']:
+        return f"{result[0]['CITY_NAME']} city center"
+    return 'Golden Gate Bridge, San Francisco'
+
 # Cortex powered map filter in sidebar
 with st.sidebar:
     st.markdown('##### Cortex Powered Map Filter')
     st.info('Give me the LAT and LON which centers the following place')
     model_choice = 'claude-sonnet-4-5'
-    place_input = st.text_input('Choose Input', 'Golden Gate Bridge, San Francisco')
+    place_input = st.text_input('Choose Input', get_default_place())
     distance_input = st.number_input('Distance from location in KM', 1, 300, 15)
 
 @st.cache_data
@@ -131,7 +141,7 @@ places_1 = places_wholesalers.filter(expr(f'''search((CATEGORY,ALTERNATE,NAME),'
 places_1 = places_1.filter(expr(f'''search((CATEGORY,ALTERNATE,NAME),'{ind2_val}',analyzer=>'DEFAULT_ANALYZER')''')).cache_result()
 
 # Customize job template based on industry selection
-time_slots = session.table('DATA.JOB_TEMPLATE')
+time_slots = session.table('VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE')
 pa_slots = time_slots.filter(col('PRODUCT') == 'pa').join(filtered_lookup.select('PA'))
 pb_slots = time_slots.filter(col('PRODUCT') == 'pb').join(filtered_lookup.select('PB'))
 pc_slots = time_slots.filter(col('PRODUCT') == 'pc').join(filtered_lookup.select('PC'))
@@ -317,12 +327,13 @@ else:
     isochrone_geo = isochrone_result.select(to_geography(col('ISOCHRONE')['features'][0]['geometry']).alias('GEO')).cache_result()
 
     isochrone_pandas = isochrone_geo.select('GEO').to_pandas()
-    isochrone_pandas["coordinates"] = isochrone_pandas["GEO"].apply(lambda row: json.loads(row)["coordinates"])
+    isochrone_pandas["coordinates"] = isochrone_pandas["GEO"].apply(lambda row: json.loads(row)["coordinates"] if row is not None else [])
+    isochrone_pandas = isochrone_pandas.drop(columns=["GEO"])
 
     # Pydeck layers for map
     point_mark_layer = pdk.Layer(
         "ScatterplotLayer",
-        places_vehicles_df.to_pandas(),
+        places_vehicles_df.select('LON', 'LAT', 'NAME').to_pandas(),
         get_position=["LON", "LAT"],
         get_fill_color=[255, 0, 0, 200],
         get_radius=300,
@@ -477,8 +488,16 @@ else:
             optimized_route_geometry = optimized_route_geometry.with_column('NAME', concat(lit('Vehicle '), col('VEHICLE'), lit(' '), col('PROFILE')))
             optimized_route_line = optimization_lines_final.with_column('NAME', concat(lit('Vehicle '), col('VEHICLE'), lit(' '), col('PROFILE')))
 
-            data_for_map = optimized_route_geometry.select('GEO', 'PROFILE', 'NAME', 'VEHICLE', 'ID', 'R', 'G', 'B').to_pandas()
+            data_for_map = optimized_route_geometry.select(
+                col('GEO').astype(StringType()).alias('GEO'),
+                col('PROFILE').astype(StringType()).alias('PROFILE'),
+                col('NAME').astype(StringType()).alias('NAME'),
+                col('VEHICLE').astype(StringType()).alias('VEHICLE'),
+                col('ID').astype(StringType()).alias('ID'),
+                col('R').astype(IntegerType()), col('G').astype(IntegerType()), col('B').astype(IntegerType())
+            ).to_pandas()
             data_for_map["coordinates"] = data_for_map["GEO"].apply(lambda row: json.loads(row)["coordinates"])
+            data_for_map = data_for_map.drop(columns=["GEO"])
 
             job_details_pandas = job_details_display.with_column('NAME',
                                                                 concat(lit('<b>'), col('"Category"'), lit(':</b>'),
@@ -486,8 +505,15 @@ else:
                                                                        lit('<b>Address:</b> '), col('"Address"'), lit('<BR>'),
                                                                        lit('<b>Postcode:</b> '), col('"Postcode"'), lit('<BR>'),
                                                                        lit('<b>Phone Number:</b> '), col('"Phone Number"'), lit('<BR>'),
-                                                                       lit('<b>Cumulate Duration:</b> '), col('"Cumulative Duration"').astype(StringType()))).drop('TIME', '"Agreed Time"', '"Cumulative Duration"').to_pandas()
-            places_1_pandas = places_1.to_pandas()
+                                                                       lit('<b>Cumulate Duration:</b> '), col('"Cumulative Duration"').astype(StringType()))).select(
+                col('VEHICLE').astype(StringType()).alias('VEHICLE'),
+                col('R').astype(IntegerType()), col('G').astype(IntegerType()), col('B').astype(IntegerType()),
+                col('LON').astype(FloatType()).alias('LON'), col('LAT').astype(FloatType()).alias('LAT'),
+                col('NAME').astype(StringType()).alias('NAME'),
+                col('"Product"').astype(StringType()).alias('"Product"'),
+                col('JOB').astype(StringType()).alias('JOB')
+            ).to_pandas()
+            places_1_pandas = places_1.select('LON', 'LAT', 'NAME').to_pandas()
 
             # Pydeck layer for vehicle drops
             layer_end = pdk.Layer(
