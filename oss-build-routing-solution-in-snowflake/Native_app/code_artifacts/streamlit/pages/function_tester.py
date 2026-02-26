@@ -174,7 +174,7 @@ st.markdown(f'''
 
 ROUTING_PROFILES = [
     'driving-car',
-    'driving-hgv', 
+    'driving-hgv',
     'cycling-road',
 ]
 

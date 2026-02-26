@@ -13,29 +13,7 @@ This skill routes customization requests to the correct subskills based on what 
 
 **Goal:** Detect the initial map region and routing profiles from the ORS configuration and display to the user
 
-**Actions:**
-
-1. **Extract** the initial ORS configuration from the service definition:
-   ```sql
-   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
-   ```
-   - Parse the service spec from the output to find the configured '<INITIAL_REGION_NAME>' for the service: `/home/ors/files/<INITIAL_REGION_NAME>.osm.pbf`
-   - Extract `<INITIAL_REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
-
-2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml`
-
-   ```bash
-   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
-   ```
-   Then read `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`.
-
-   - Parse the downloaded file for `profiles:` entries with `enabled: true`
-   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
-   - This determines `<INITIAL_PROFILES>` for the demo
-
-3. **Store configuration for later steps:**
-   - `<INITIAL_REGION_NAME>`: The initially configured region name
-   - `<INITIAL_PROFILES>`: List of initially enabled vehicle profiles
+> Read and follow the instructions in `.cortex/skills/customize-main/read-ors-configuration/SKILL.md`
 
 **Output:** ORS configuration displayed to the user:
 - Initially configured Map Region: `<INITIAL_REGION_NAME>`

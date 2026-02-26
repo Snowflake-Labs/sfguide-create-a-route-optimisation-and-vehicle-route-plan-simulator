@@ -58,38 +58,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 **Goal:** Detect the current map region and routing profiles from the ORS configuration, and gather customization preferences from the user
 
-**Actions:**
+1. **Read current ORS configuration:**
+   - Read and follow the instructions in `.cortex/skills/customize-main/read-ors-configuration/SKILL.md`
 
-1. **Extract** the current ORS configuration from the service definition:
-   ```sql
-   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
-   ```
-   - Parse the service spec from the output to find the configured '<REGION_NAME>' for the service: `/home/ors/files/<REGION_NAME>.osm.pbf`
-   - Extract `<REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
-   - This determines the `<REGION_NAME>` for the demo
-
-2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml`
-
-   ```bash
-   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
-   ```
-
-   Then read `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`.
-
-   - Parse the downloaded file for `profiles:` entries with `enabled: true`
-   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
-   - This determines `<ENABLED_PROFILES>` for the demo
-
-3. **Determine the city for the demo:**
+2. **Determine the city for the demo:**
    - If map is a city (e.g., "SanFrancisco", "Paris", "London"): Use that city name
    - If map is a region/country (e.g., "great-britain", "germany"): Ask user which city within that region to use for sample data
 
-4. **Ask user about industry customization:**
+3. **Ask user about industry customization:**
    - "Do you want to customize industries? Default industries are: **Food**, **Healthcare**, **Cosmetics**."
    - If YES: Gather industry specifications (see Industry Customization Reference below)
    - If NO: Use defaults — proceed with no changes to the notebook
 
-5. **Store configuration for later steps:**
+3. **Store configuration for later steps:**
    - `<REGION_NAME>`: The region name
    - `<NOTEBOOK_CITY>`: The city to use for AI-generated sample data
    - `<ENABLED_PROFILES>`: List of enabled vehicle profiles
