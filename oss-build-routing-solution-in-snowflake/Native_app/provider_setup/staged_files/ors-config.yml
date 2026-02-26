@@ -6,7 +6,7 @@ ors:
   engine:
     profile_default:
       build:  
-        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        source_file: /home/ors/files/Paris.osm.pbf
         instructions: false
         service:
         maximum_visited_nodes: 100000000
@@ -22,7 +22,7 @@ ors:
       cycling-road:
         enabled: false
       cycling-mountain:
-        enabled: false
+        enabled: true
       cycling-electric:
         enabled: false
 # Foot profiles

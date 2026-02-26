@@ -11,7 +11,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 | What You Want to Change | Correct Skill | What It Does |
 |------------------------|---------------|--------------|
-| **Map/Location** | `.cortex/skills/customize-main/location` | Changes map map |
+| **Map/Location** | `.cortex/skills/customize-main/location` | Changes map region |
 | **Routing Profiles** | `.cortex/skills/customize-main/routing-profiles` | Changes routing profiles |
 
 ## Workflow
@@ -45,10 +45,14 @@ This skill routes customization requests to the correct skill based on what you 
 
 **Actions:**
 
-1. **Only if the map existed and user selected to re-download** ask the user:
-   - "Do you want to rebuild the routing graphs for this region? This will clear existing cached graphs and elevation data, forcing a fresh rebuild."
+1. **Determine if this is a new region or an existing region re-download:**
 
-2. **If user confirms YES**, clear existing graphs and elevation cache:
+   - **New region** (no prior graphs exist): Skip the REMOVE commands and proceed directly to resuming services. The graphs stage paths won't exist yet.
+   
+   - **Existing region re-download** (map existed and user selected to re-download): Ask the user:
+     - "Do you want to rebuild the routing graphs for this region? This will clear existing cached graphs and elevation data, forcing a fresh rebuild."
+
+2. **If existing region and user confirms YES**, clear existing graphs and elevation cache:
    ```sql
    REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/;
    REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/;
@@ -56,7 +60,12 @@ This skill routes customization requests to the correct skill based on what you 
    
    > **_NOTE:_** This ensures graphs are rebuilt from scratch with the new map data rather than using potentially stale cached data.
 
-3. **Resume** all services:
+3. **Resume** the compute pool (required if it was suspended during location change):
+   ```sql
+   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL RESUME;
+   ```
+
+4. **Resume** all services:
    ```sql
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
@@ -64,12 +73,12 @@ This skill routes customization requests to the correct skill based on what you 
    ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
    ```
 
-4. **Verify** services are running:
+5. **Verify** services are running:
    ```sql
    SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
    ```
 
-5. **Monitor** ORS_SERVICE logs for graph building progress:
+6. **Monitor** ORS_SERVICE logs for graph building progress:
    ```sql
    CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 100);
    ```
@@ -79,37 +88,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 **Output:** Services rebuilding with new map
 
-### Step 4: Update and Deploy Function Tester
-
-**Goal:** Update the Function Tester Streamlit with region-specific addresses and deploy to the Native App
-
-**Actions:**
-
-1. **Generate** region-specific sample addresses within 5km distance to each other for the Function Tester:
-   - 5 START addresses (landmarks, transport hubs in `<REGION_NAME>`)
-   - 5 END addresses (different locations)
-   - 20 WAYPOINT addresses spread across the region
-
-2. **Edit** `oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py`:
-   - Update page title to: `page_title="ORS Function Tester For <REGION_NAME> Map"`
-   - Replace `SF_ADDRESSES` with region-specific addresses
-   - Replace `SF_WAYPOINT_ADDRESSES` with region waypoints
-   - Update map center coordinates
-
-3. **Upload** updated Function Tester to stage:
-   ```bash
-   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py \
-     @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
-   ```
-
-4. **Upgrade** the Native App to apply changes:
-   ```sql
-   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING '@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE';
-   ```
-
-**Output:** Function Tester deployed with region-specific addresses
-
-### Step 5: Update MAP_CONFIG Table
+### Step 4: Update MAP_CONFIG Table
 
 **Goal:** Store map configuration so Function Tester can dynamically load settings
 
@@ -150,9 +129,30 @@ This skill routes customization requests to the correct skill based on what you 
 
 **Output:** MAP_CONFIG table updated with new region bounds
 
+### Step 5: Redeploy Function Tester
+
+**Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
+
+**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 4) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed — just redeploy.
+
+**Actions:**
+
+1. **Upload** Function Tester to stage:
+   ```bash
+   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py \
+     @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/streamlit/pages/ --overwrite
+   ```
+
+2. **Upgrade** the Native App to apply changes:
+   ```sql
+   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING '@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE';
+   ```
+
+**Output:** Function Tester redeployed, now showing addresses for the new region
+
 ## Stopping Points
 
 - ✋ After Step 2: Confirm map download completed
 - ✋ After Step 3: Verify services are rebuilding graphs
-- ✋ After Step 4: Verify Function Tester shows new region addresses
-- ✋ After Step 5: Verify MAP_CONFIG table has correct bounds
+- ✋ After Step 4: Verify MAP_CONFIG table has correct bounds
+- ✋ After Step 5: Verify Function Tester shows new region addresses

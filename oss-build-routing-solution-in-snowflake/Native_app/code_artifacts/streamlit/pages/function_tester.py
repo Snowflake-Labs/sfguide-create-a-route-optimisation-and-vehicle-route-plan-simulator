@@ -187,11 +187,11 @@ SKILL_DISPLAY_MAP = {
 
 # Check if we have custom addresses from config, otherwise generate them
 if MAP_CONFIG.get('sample_addresses'):
-    SF_ADDRESSES = MAP_CONFIG['sample_addresses'].get('addresses', {})
-    SF_WAYPOINT_ADDRESSES = MAP_CONFIG['sample_addresses'].get('waypoints', [])
+    SAMPLE_ADDRESSES = MAP_CONFIG['sample_addresses'].get('addresses', {})
+    WAYPOINT_ADDRESSES = MAP_CONFIG['sample_addresses'].get('waypoints', [])
 elif MAP_CONFIG['city_name'] == 'San Francisco':
     # Default San Francisco addresses (original hardcoded values)
-    SF_ADDRESSES = {
+    SAMPLE_ADDRESSES = {
         'start': {
             'Union Square, SF': {'lat': 37.7879, 'lon': -122.4074, 'name': 'Union Square, SF', 'full_address': 'Union Square, San Francisco, CA 94108'},
             'Fishermans Wharf, SF': {'lat': 37.8080, 'lon': -122.4177, 'name': 'Fishermans Wharf, SF', 'full_address': 'Fishermans Wharf, San Francisco, CA 94133'},
@@ -207,7 +207,7 @@ elif MAP_CONFIG['city_name'] == 'San Francisco':
             'Castro, SF': {'lat': 37.7609, 'lon': -122.4350, 'name': 'Castro, SF', 'full_address': 'Castro District, San Francisco, CA 94114'},
         }
     }
-    SF_WAYPOINT_ADDRESSES = [
+    WAYPOINT_ADDRESSES = [
         {'name': 'Embarcadero, SF', 'lat': 37.7955, 'lon': -122.3937, 'full_address': 'Embarcadero, San Francisco, CA 94105'},
         {'name': 'Chinatown, SF', 'lat': 37.7941, 'lon': -122.4078, 'full_address': 'Chinatown, San Francisco, CA 94108'},
         {'name': 'North Beach, SF', 'lat': 37.8060, 'lon': -122.4103, 'full_address': 'North Beach, San Francisco, CA 94133'},
@@ -231,7 +231,7 @@ elif MAP_CONFIG['city_name'] == 'San Francisco':
     ]
 else:
     # Generate addresses dynamically for non-San Francisco maps
-    SF_ADDRESSES = generate_sample_addresses_for_bounds(
+    SAMPLE_ADDRESSES = generate_sample_addresses_for_bounds(
         MAP_CONFIG['center_lat'],
         MAP_CONFIG['center_lon'],
         MAP_CONFIG.get('min_lat'),
@@ -240,7 +240,7 @@ else:
         MAP_CONFIG.get('max_lon'),
         MAP_CONFIG['city_name']
     )
-    SF_WAYPOINT_ADDRESSES = generate_waypoint_addresses(
+    WAYPOINT_ADDRESSES = generate_waypoint_addresses(
         MAP_CONFIG['center_lat'],
         MAP_CONFIG['center_lon'],
         MAP_CONFIG.get('min_lat'),
@@ -250,8 +250,8 @@ else:
         MAP_CONFIG['city_name']
     )
 
-start_address_names = list(SF_ADDRESSES['start'].keys())
-end_address_names = list(SF_ADDRESSES['end'].keys())
+start_address_names = list(SAMPLE_ADDRESSES['start'].keys())
+end_address_names = list(SAMPLE_ADDRESSES['end'].keys())
 all_address_names = start_address_names + end_address_names
 
 with st.sidebar:
@@ -304,13 +304,13 @@ if test_function == "🗺️ DIRECTIONS":
         with col1:
             st.markdown("**📍 Start Location**")
             start_address = st.selectbox("Choose start address:", start_address_names, key="start_address")
-            start_coords = SF_ADDRESSES['start'][start_address]
+            start_coords = SAMPLE_ADDRESSES['start'][start_address]
             st.caption(f"**Address:** {start_coords['full_address']}")
             
         with col2:
             st.markdown("**🎯 End Location**")
             end_address = st.selectbox("Choose end address:", end_address_names, key="end_address")
-            end_coords = SF_ADDRESSES['end'][end_address]
+            end_coords = SAMPLE_ADDRESSES['end'][end_address]
             st.caption(f"**Address:** {end_coords['full_address']}")
             
         with col3:
@@ -327,7 +327,7 @@ if test_function == "🗺️ DIRECTIONS":
             import math
             from random import shuffle
             
-            available_addresses = SF_WAYPOINT_ADDRESSES.copy()
+            available_addresses = WAYPOINT_ADDRESSES.copy()
             
             start_lat, start_lon = start_coords['lat'], start_coords['lon']
             end_lat, end_lon = end_coords['lat'], end_coords['lon']
@@ -739,10 +739,10 @@ elif test_function == "🚚 OPTIMIZATION":
                     key=f"veh_{i}_start"
                 )
                 
-                if vehicle_start_address in SF_ADDRESSES['start']:
-                    coords = SF_ADDRESSES['start'][vehicle_start_address]
+                if vehicle_start_address in SAMPLE_ADDRESSES['start']:
+                    coords = SAMPLE_ADDRESSES['start'][vehicle_start_address]
                 else:
-                    coords = SF_ADDRESSES['end'][vehicle_start_address]
+                    coords = SAMPLE_ADDRESSES['end'][vehicle_start_address]
                 
                 vehicle_configs.append({
                     'id': i + 1,
@@ -794,7 +794,7 @@ elif test_function == "🚚 OPTIMIZATION":
                 import math
                 from random import shuffle
                 
-                job_addresses = SF_WAYPOINT_ADDRESSES.copy()
+                job_addresses = WAYPOINT_ADDRESSES.copy()
                 
                 if vehicle_configs:
                     center_lat = sum(v['coords']['lat'] for v in vehicle_configs) / len(vehicle_configs)
@@ -1212,10 +1212,10 @@ elif test_function == "⏰ ISOCHRONES":
         with col1:
             st.markdown("**📍 Center Location**")
             center_address = st.selectbox("Choose center address:", all_address_names, index=0, key="center_address")
-            if center_address in SF_ADDRESSES['start']:
-                center_coords = SF_ADDRESSES['start'][center_address]
+            if center_address in SAMPLE_ADDRESSES['start']:
+                center_coords = SAMPLE_ADDRESSES['start'][center_address]
             else:
-                center_coords = SF_ADDRESSES['end'][center_address]
+                center_coords = SAMPLE_ADDRESSES['end'][center_address]
             
             st.caption(f"**Address:** {center_coords['full_address']}")
             
@@ -1438,7 +1438,7 @@ elif test_function == "📊 MATRIX":
         import math
         from random import shuffle
         
-        available_matrix_addresses = SF_WAYPOINT_ADDRESSES.copy()
+        available_matrix_addresses = WAYPOINT_ADDRESSES.copy()
         
         # Calculate distances and select well-distributed locations
         def matrix_calculate_distance(lat1, lon1, lat2, lon2):

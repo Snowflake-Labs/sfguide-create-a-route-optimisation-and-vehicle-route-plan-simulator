@@ -11,7 +11,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 - Active Snowflake connection
 - OpenRouteService Native App deployed
-- Access to `Native_app/provider_setup/staged_files/ors-config.yml`
+- Access to `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
 
 ## Input Parameters
 
@@ -39,7 +39,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 **Actions:**
 
-1. **Read** `Native_app/provider_setup/staged_files/ors-config.yml`
+1. **Read** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
 
 2. **Present** current configuration in table format:
 
@@ -80,7 +80,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 **Actions:**
 
-1. **Edit** `Native_app/provider_setup/staged_files/ors-config.yml`:
+1. **Edit** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`:
    - For each profile, set `enabled: true` or `enabled: false`
    
    Example structure:
@@ -88,9 +88,9 @@ Configure which routing profiles are available in your Routing Solution.
    ors:
      engine:
        profiles:
-         car:
+         driving-car:
            enabled: true
-         hgv:
+         driving-hgv:
            enabled: false
          cycling-regular:
            enabled: false
@@ -100,9 +100,9 @@ Configure which routing profiles are available in your Routing Solution.
            enabled: false
          cycling-electric:
            enabled: false
-         walking:
+         foot-walking:
            enabled: true
-         hiking:
+         foot-hiking:
            enabled: false
          wheelchair:
            enabled: false
@@ -110,7 +110,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 2. **Upload** modified file:
    ```sql
-   PUT file://provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   PUT file://oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
 **Output:** Configuration updated with new profiles

@@ -134,13 +134,13 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 **Actions:**
 
-1. **Edit** `Native_app/provider_setup/staged_files/ors-config.yml`:
+1. **Edit** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`
    - To: `source_file: /home/ors/files/<MAP_NAME>`
 
 2. **Upload** to stage:
    ```sql
-   PUT file://provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   PUT file://oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
 **Output:** Configuration updated
@@ -151,7 +151,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 **Actions:**
 
-1. **Edit** `Native_app/services/openrouteservice/openrouteservice.yaml`:
+1. **Edit** `oss-build-routing-solution-in-snowflake/Native_app/services/openrouteservice/openrouteservice.yaml`:
    
    - **Update all volume source paths** to new region:
      ```yaml
@@ -166,7 +166,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 2. **Upload** specification:
    ```sql
-   PUT file:///services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   PUT file://oss-build-routing-solution-in-snowflake/Native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
    ```
 
 3. **Update** service with new specification:
