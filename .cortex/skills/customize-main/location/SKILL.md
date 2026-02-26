@@ -12,8 +12,6 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 2. Updating ors-config.yml with the new map path
 3. Updating service specifications for the new region
 4. Restarting services to rebuild routing graphs
-5. **Updating Function Tester with new sample addresses**
-6. **Upgrading the Native App to deploy the changes**
 
 ## Prerequisites
 

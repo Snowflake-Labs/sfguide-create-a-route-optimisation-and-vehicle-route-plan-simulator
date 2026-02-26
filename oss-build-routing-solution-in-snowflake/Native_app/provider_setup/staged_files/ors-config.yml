@@ -13,7 +13,7 @@ ors:
     profiles:   
 ## Driving profiles
       driving-car: 
-        enabled: true
+        enabled: false
       driving-hgv: 
         enabled: false
 ## Cycling profiles
@@ -22,12 +22,12 @@ ors:
       cycling-road:
         enabled: false
       cycling-mountain:
-        enabled: true
+        enabled: false
       cycling-electric:
         enabled: false
 # Foot profiles
       foot-walking:
-        enabled: true
+        enabled: false
       foot-hiking:
         enabled: false
 # Wheelchair profiles

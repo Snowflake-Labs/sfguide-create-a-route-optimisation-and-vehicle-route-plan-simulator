@@ -11,7 +11,6 @@ Configure which routing profiles are available in your Routing Solution.
 
 - Active Snowflake connection
 - OpenRouteService Native App deployed
-- Access to `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
 
 ## Input Parameters
 
@@ -33,31 +32,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 ## Workflow
 
-### Step 1: Review Current Configuration
-
-**Goal:** Show user current profile settings
-
-**Actions:**
-
-1. **Read** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
-
-2. **Present** current configuration in table format:
-
-   | Profile | Status |
-   |---------|--------|
-   | driving-car | Enabled/Disabled |
-   | driving-hgv | Enabled/Disabled |
-   | cycling-regular | Enabled/Disabled |
-   | cycling-road | Enabled/Disabled |
-   | cycling-mountain | Enabled/Disabled |
-   | cycling-electric | Enabled/Disabled |
-   | foot-walking | Enabled/Disabled |
-   | foot-hiking | Enabled/Disabled |
-   | wheelchair | Enabled/Disabled |
-
-**Output:** User understands current profile configuration
-
-### Step 2: Get User Preferences
+### Step 1: Get User Preferences
 
 **Goal:** Determine which profiles to enable/disable
 
@@ -74,7 +49,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 **Output:** User selections recorded
 
-### Step 3: Update Configuration
+### Step 2: Update Configuration
 
 **Goal:** Modify ors-config.yml with new profile settings
 
@@ -117,4 +92,4 @@ Configure which routing profiles are available in your Routing Solution.
 
 ## Stopping Points
 
-- ✋ After Step 2: Confirm user selections before modifying config
+- ✋ After Step 1: Confirm user selections before modifying config

@@ -70,28 +70,11 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-route-op
 
 2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml`
 
-   > **CRITICAL: Stale File Prevention Protocol**
-   > 
-   > Previous sessions may leave stale config files in `/tmp`. These WILL cause incorrect region detection.
-   > 
-   > **ALWAYS follow this exact sequence:**
-   > ```bash
-   > # 1. Clean up ANY existing ors config files first
-   > rm -rf /tmp/ors* /tmp/*ors*
-   > 
-   > # 2. Create a fresh, uniquely-named directory
-   > mkdir -p /tmp/ors_fresh_$(date +%s)
-   > 
-   > # 3. Download to that specific directory
-   > cd /tmp/ors_fresh_* && snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml . --connection <ACTIVE_CONNECTION>
-   > 
-   > # 4. Verify the file exists at the expected location BEFORE reading
-   > ls -la /tmp/ors_fresh_*/ors-config.yml
-   > 
-   > # 5. Read ONLY from the verified path (use the exact path from step 4)
-   > ```
-   > 
-   > **NEVER** use glob patterns like `/tmp/**/ors-config.yml` to find the file — this may match stale files from previous sessions.
+   ```bash
+   rm -f /tmp/ors-config.yml && snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml /tmp/ --connection <ACTIVE_CONNECTION>
+   ```
+
+   Then read `/tmp/ors-config.yml`. Always delete before downloading to prevent reading stale files from previous sessions.
 
    - Parse the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`

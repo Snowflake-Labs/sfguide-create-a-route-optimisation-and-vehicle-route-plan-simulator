@@ -1,33 +1,58 @@
 ---
 name: customize-main
-description: "Route customization requests to the correct skill. Use when: changing location, changing map, changing vehicle Triggers: change location, change map, change vehicle, change routing profile"
+description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle Triggers: change location, change map, change vehicle, change routing profile"
 ---
 
 # Customization Router
 
-This skill routes customization requests to the correct skill based on what you want to customize.
-
-## Quick Reference
-
-| What You Want to Change | Correct Skill | What It Does |
-|------------------------|---------------|--------------|
-| **Map/Location** | `.cortex/skills/customize-main/location` | Changes map region |
-| **Routing Profiles** | `.cortex/skills/customize-main/routing-profiles` | Changes routing profiles |
+This skill routes customization requests to the correct subskills based on what you want to customize.
 
 ## Workflow
 
-### Step 1: Determine What to Customize
+### Step 1: Read Current ORS Configuration and Gather Customization Options
+
+**Goal:** Detect the current map region and routing profiles from the ORS configuration and display to the user
+
+**Actions:**
+
+1. **Extract** the current ORS configuration from the service definition:
+   ```sql
+   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
+   ```
+   - Parse the service spec from the output to find the configured '<INITIAL_REGION_NAME>' for the service: `/home/ors/files/<INITIAL_REGION_NAME>.osm.pbf`
+   - Extract `<INITIAL_REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
+
+2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml`
+
+   ```bash
+   rm -f /tmp/ors-config.yml && snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml /tmp/ --connection <ACTIVE_CONNECTION>
+   ```
+   Then read `/tmp/ors-config.yml`. Always delete before downloading to prevent reading stale files from previous sessions.
+
+   - Parse the downloaded file for `profiles:` entries with `enabled: true`
+   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
+   - This determines `<INITIAL_PROFILES>` for the demo
+
+3. **Store configuration for later steps:**
+   - `<INITIAL_REGION_NAME>`: The initially configured region name
+   - `<INITIAL_PROFILES>`: List of initially enabled vehicle profiles
+
+**Output:** Current ORS configuration displayed to the user:
+- Initially configured Map Region: `<INITIAL_REGION_NAME>`
+- Initially configured Vehicle profiles: `<INITIAL_PROFILES>`
+
+### Step 2: Determine What to Customize
 
 **Ask the user (allow multiple selections):**
 
-"What would you like to customize? You can select both."
+"What would you like to customize? Multiple selection is allowed."
 
 1. **Location/Map** - Change the geographic region (e.g., San Francisco → Paris)
 2. **Routing Profiles** - Enable/disable routing profiles (driving-car, foot-walking, cycling-road)
 
-**IMPORTANT:** Use multi-select so the user can choose one or both options. If both are selected, run the location skill first, then the routing profiles skill, before proceeding to Step 3.
+**IMPORTANT:** Use multi-select so the user can choose one or both options. If both are selected, run the location skill first, then the routing profiles skill, before proceeding to Step 4.
 
-### Step 2: Route to Correct Skill
+### Step 3: Route to Correct Skill
 
 **If user wants to change LOCATION or MAP:**
 
@@ -39,7 +64,7 @@ This skill routes customization requests to the correct skill based on what you 
 > This updates which routing profiles are available.
 > Read and follow the instructions in `.cortex/skills/customize-main/routing-profiles/SKILL.md`
 
-### Step 3: Update Routing Graphs
+### Step 4: Update Routing Graphs
 
 **Goal:** Restart services to update routing graphs with new location
 
@@ -88,7 +113,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 **Output:** Services rebuilding with new map
 
-### Step 4: Update MAP_CONFIG Table
+### Step 5: Update MAP_CONFIG Table
 
 **Goal:** Store map configuration so Function Tester can dynamically load settings
 
@@ -129,7 +154,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 **Output:** MAP_CONFIG table updated with new region bounds
 
-### Step 5: Redeploy Function Tester
+### Step 6: Redeploy Function Tester
 
 **Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
 
@@ -152,7 +177,7 @@ This skill routes customization requests to the correct skill based on what you 
 
 ## Stopping Points
 
-- ✋ After Step 2: Confirm map download completed
-- ✋ After Step 3: Verify services are rebuilding graphs
-- ✋ After Step 4: Verify MAP_CONFIG table has correct bounds
-- ✋ After Step 5: Verify Function Tester shows new region addresses
+- ✋ After Step 3: Confirm map download completed
+- ✋ After Step 4: Verify services are rebuilding graphs
+- ✋ After Step 5: Verify MAP_CONFIG table has correct bounds
+- ✋ After Step 6: Verify Function Tester shows new region addresses
