@@ -69,19 +69,19 @@ def generate_sample_addresses_for_bounds(center_lat, center_lon, min_lat, max_la
     ]
     
     for i, (lat_off, lon_off, direction) in enumerate(start_offsets):
-        lat = center_lat + (lat_off * lat_range * 5)
-        lon = center_lon + (lon_off * lon_range * 5)
+        lat = center_lat + (lat_off * lat_range * 2)
+        lon = center_lon + (lon_off * lon_range * 2)
         if min_lat and max_lat:
-            lat = max(min_lat + 0.01, min(max_lat - 0.01, lat))
+            lat = max(min_lat + 0.05, min(max_lat - 0.05, lat))
         if min_lon and max_lon:
-            lon = max(min_lon + 0.01, min(max_lon - 0.01, lon))
+            lon = max(min_lon + 0.05, min(max_lon - 0.05, lon))
         
-        name = f"{direction} {city_name}"
+        name = f"{direction} of {city_name} city center"
         addresses['start'][name] = {
             'lat': round(lat, 4),
             'lon': round(lon, 4),
             'name': name,
-            'full_address': f"{direction} area of {city_name}"
+            'full_address': f"{direction} of {city_name} city center"
         }
     
     end_offsets = [
@@ -93,19 +93,19 @@ def generate_sample_addresses_for_bounds(center_lat, center_lon, min_lat, max_la
     ]
     
     for i, (lat_off, lon_off, direction) in enumerate(end_offsets):
-        lat = center_lat + (lat_off * lat_range * 5)
-        lon = center_lon + (lon_off * lon_range * 5)
+        lat = center_lat + (lat_off * lat_range * 2)
+        lon = center_lon + (lon_off * lon_range * 2)
         if min_lat and max_lat:
-            lat = max(min_lat + 0.01, min(max_lat - 0.01, lat))
+            lat = max(min_lat + 0.05, min(max_lat - 0.05, lat))
         if min_lon and max_lon:
-            lon = max(min_lon + 0.01, min(max_lon - 0.01, lon))
+            lon = max(min_lon + 0.05, min(max_lon - 0.05, lon))
         
-        name = f"{direction} {city_name}"
+        name = f"{direction} of {city_name} city center"
         addresses['end'][name] = {
             'lat': round(lat, 4),
             'lon': round(lon, 4),
             'name': name,
-            'full_address': f"{direction} area of {city_name}"
+            'full_address': f"{direction} of {city_name} city center"
         }
     
     return addresses
@@ -145,15 +145,15 @@ def generate_waypoint_addresses(center_lat, center_lon, min_lat, max_lat, min_lo
         lon = center_lon + (lon_off * lon_range)
         
         if min_lat and max_lat:
-            lat = max(min_lat + 0.005, min(max_lat - 0.005, lat))
+            lat = max(min_lat + 0.05, min(max_lat - 0.05, lat))
         if min_lon and max_lon:
-            lon = max(min_lon + 0.005, min(max_lon - 0.005, lon))
+            lon = max(min_lon + 0.05, min(max_lon - 0.05, lon))
         
         waypoints.append({
-            'name': f'{area_name} District, {city_name}',
+            'name': f'{area_name} of {city_name} city center',
             'lat': round(lat, 4),
             'lon': round(lon, 4),
-            'full_address': f'{area_name} area of {city_name}'
+            'full_address': f'{area_name} of {city_name} city center'
         })
     
     return waypoints

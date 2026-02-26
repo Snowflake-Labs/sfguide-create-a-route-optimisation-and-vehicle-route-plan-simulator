@@ -72,7 +72,7 @@ with st.sidebar:
     st.markdown('##### Cortex Powered Map Filter')
     st.info('Give me the LAT and LON which centers the following place')
     model_choice = 'claude-sonnet-4-5'
-    place_input = st.text_input('Choose Input', 'Empire State Building, New York')
+    place_input = st.text_input('Choose Input', 'Willis Tower, Chicago')
     distance_input = st.number_input('Distance from location in KM', 1, 300, 15)
 
 @st.cache_data
@@ -317,7 +317,7 @@ else:
     isochrone_geo = isochrone_result.select(to_geography(col('ISOCHRONE')['features'][0]['geometry']).alias('GEO')).cache_result()
 
     isochrone_pandas = isochrone_geo.select('GEO').to_pandas()
-    isochrone_pandas["coordinates"] = isochrone_pandas["GEO"].apply(lambda row: json.loads(row)["coordinates"])
+    isochrone_pandas["coordinates"] = isochrone_pandas["GEO"].apply(lambda row: json.loads(row)["coordinates"] if row is not None else [])
     isochrone_pandas = isochrone_pandas.drop(columns=["GEO"])
 
     # Pydeck layers for map

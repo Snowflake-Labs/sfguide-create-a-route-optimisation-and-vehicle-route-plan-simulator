@@ -211,11 +211,63 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-
 
 ---
 
-### Step 2: Verify ORS Configuration
+### Step 2: Verify ORS Configuration and Service Status
 
-**Goal:** Ensure OpenRouteService can route in your target location.
+**Goal:** Read the current ORS configuration, verify it matches the user's target location, check service status in database OPENROUTESERVICE_NATIVE_APP and ensure they are all running.
 
-**Action:** Test the ORS DIRECTIONS function with coordinates in the target city. Use the center coordinates from the Supported Locations table.
+> Read and follow the instructions in `.cortex/skills/customize-main/read-ors-configuration/SKILL.md` to detect the current region and enabled routing profiles.
+
+**Sub-step 2a: Read Current ORS Configuration**
+
+1. **Describe** the ORS service to extract the configured region name:
+   ```sql
+   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
+   ```
+   - Parse the service spec to find the configured `<REGION_NAME>` from the volume source path: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>`
+   - Extract `<REGION_NAME>` (e.g., "Chicago", "SanFrancisco", "great-britain-latest")
+
+2. **Download** the ORS config file from stage to read enabled profiles:
+   ```bash
+   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
+   ```
+
+3. **Read** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml` and parse for `profiles:` entries with `enabled: true`
+
+4. **Display** the current configuration to the user:
+   - Configured Map Region: `<REGION_NAME>`
+   - Configured Vehicle Profiles: `<ENABLED_PROFILES>`
+
+**Sub-step 2b: Check Region Match**
+
+Compare the detected `<REGION_NAME>` with the user's selected `{LOCATION}`:
+
+- **If the region matches:** Proceed to Sub-step 2c.
+- **If the region does NOT match:** Warn the user that ORS is configured for a different region. The user must reconfigure ORS for their target location before continuing. Read and follow the instructions in `.cortex/skills/customize-main/SKILL.md` to change the map, then return here to continue.
+
+**Sub-step 2c: Check Service Status and Resume if Needed**
+
+1. **Check** the status of all ORS services:
+   ```sql
+   SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
+   ```
+   - Verify the status of: `ORS_SERVICE`, `DOWNLOADER`, `ROUTING_GATEWAY_SERVICE`, `VROOM_SERVICE`
+
+2. **If any services are SUSPENDED**, resume them:
+   ```sql
+   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL RESUME;
+   ```
+   ```sql
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
+   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
+   ```
+
+3. **If all services are RUNNING**, skip resuming.
+
+**Sub-step 2d: Test ORS Routing**
+
+Test the ORS DIRECTIONS function with coordinates in the target city to confirm routing works:
 
 ```sql
 SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
@@ -225,9 +277,13 @@ SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
 );
 ```
 
-If the query returns a route geometry, ORS is configured for that region. If it fails or returns null, reconfigure ORS with the appropriate map data.
+If the query returns a route geometry, ORS is ready. If it fails or returns null, check the ORS_SERVICE logs for errors:
 
-**Output:** Confirmation that ORS can route in target location
+```sql
+CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 50);
+```
+
+**Output:** ORS configuration displayed, region match confirmed, all services running, routing verified
 
 ---
 
@@ -325,6 +381,9 @@ WITH shift_patterns AS (
     SELECT 4, 'Day', 11, 19, {DAY_COUNT} UNION ALL
     SELECT 5, 'Evening', 15, 23, {EVENING_COUNT}
 ),
+max_per_shift AS (
+    SELECT MAX(driver_count) AS max_count FROM shift_patterns
+),
 driver_assignments AS (
     SELECT 
         ROW_NUMBER() OVER (ORDER BY sp.shift_id, seq.seq) AS driver_num,
@@ -333,7 +392,8 @@ driver_assignments AS (
         sp.shift_end AS shift_end_hour,
         CASE WHEN sp.shift_start > sp.shift_end THEN 'True' ELSE 'False' END AS shift_crosses_midnight
     FROM shift_patterns sp
-    CROSS JOIN (SELECT SEQ4() + 1 AS seq FROM TABLE(GENERATOR(ROWCOUNT => {MORNING_COUNT}))) seq
+    CROSS JOIN (SELECT SEQ4() + 1 AS seq FROM TABLE(GENERATOR(ROWCOUNT => 1000))) seq
+    CROSS JOIN max_per_shift m
     WHERE seq.seq <= sp.driver_count
 ),
 home_locations AS (
@@ -389,6 +449,21 @@ ORDER BY NUM_DRIVERS DESC;
 
 **Action:** Execute this SQL. Trip counts vary by shift type (Morning: 14-22, Day: 12-20, Early: 10-18, Evening: 10-16, Graveyard: 6-12).
 
+First, materialize the location pool with stable row numbers. This table is used by both the trip assignment and coordinate lookup steps, ensuring deterministic joins.
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED AS
+SELECT 
+    LOCATION_ID,
+    POINT_GEOM,
+    NAME,
+    ROW_NUMBER() OVER (ORDER BY HASH(LOCATION_ID)) AS rn
+FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
+WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3;
+```
+
+Then generate the trips:
+
 ```sql
 CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS AS
 WITH 
@@ -432,14 +507,8 @@ trips_with_hours AS (
         END AS TRIP_HOUR
     FROM trip_sequence ts
 ),
-locations AS (
-    SELECT 
-        LOCATION_ID,
-        POINT_GEOM,
-        NAME,
-        ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
-    WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
+loc_count AS (
+    SELECT COUNT(*) AS cnt FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED
 )
 SELECT 
     MD5(t.DRIVER_ID || '-' || t.TRIP_NUMBER || '-' || RANDOM()) AS TRIP_ID,
@@ -447,28 +516,14 @@ SELECT
     t.TRIP_HOUR::INT AS TRIP_HOUR,
     t.TRIP_NUMBER::INT AS TRIP_NUMBER,
     t.SHIFT_TYPE,
-    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'P')), (SELECT COUNT(*) FROM locations)) + 1 AS PICKUP_LOC_ID,
-    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'D')), (SELECT COUNT(*) FROM locations)) + 1 AS DROPOFF_LOC_ID
-FROM trips_with_hours t;
+    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'P')), lc.cnt) + 1 AS PICKUP_LOC_ID,
+    MOD(ABS(HASH(t.DRIVER_ID || t.TRIP_NUMBER || 'D')), lc.cnt) + 1 AS DROPOFF_LOC_ID
+FROM trips_with_hours t
+CROSS JOIN loc_count lc;
 ```
 
 ```sql
 CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS AS
-WITH locations AS (
-    SELECT 
-        LOCATION_ID,
-        POINT_GEOM,
-        NAME,
-        ROW_NUMBER() OVER (ORDER BY RANDOM()) AS rn
-    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
-    WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3
-),
-pickup AS (
-    SELECT LOCATION_ID, POINT_GEOM, NAME, rn FROM locations
-),
-dropoff AS (
-    SELECT LOCATION_ID, POINT_GEOM, NAME, rn FROM locations
-)
 SELECT 
     t.TRIP_ID,
     t.DRIVER_ID,
@@ -480,8 +535,8 @@ SELECT
     d.POINT_GEOM AS DROPOFF_GEOM,
     d.NAME AS DROPOFF_NAME
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS t
-JOIN pickup p ON t.PICKUP_LOC_ID = p.rn
-JOIN dropoff d ON t.DROPOFF_LOC_ID = d.rn;
+JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED p ON t.PICKUP_LOC_ID = p.rn
+JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED d ON t.DROPOFF_LOC_ID = d.rn;
 ```
 
 Then verify:
@@ -981,6 +1036,7 @@ OPENROUTESERVICE_SETUP
 └── FLEET_INTELLIGENCE_TAXIS (schema)
     ├── Tables
     │   ├── TAXI_LOCATIONS      # Location pool for target city
+    │   ├── TAXI_LOCATIONS_NUMBERED # Locations with stable row numbers for joins
     │   ├── TAXI_DRIVERS           # Configured driver count
     │   ├── DRIVERS                # Driver display data
     │   ├── DRIVER_TRIPS           # Trip assignments
