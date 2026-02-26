@@ -51,7 +51,7 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # Routing methods - must match enabled profiles in ors-config.yml
-methods = ['driving-car', 'cycling-regular', 'foot-walking']
+methods = ['driving-car', 'driving-hgv', 'cycling-road']
 
 # Load points of interest data
 places_filtered = session.table('VEHICLE_ROUTING_SIMULATOR.PLACES')
@@ -67,12 +67,22 @@ places_filtered = places_filtered.select(
     col('GEOMETRY').alias('POINT')
 )
 
+# Derive default location from ORS map configuration
+@st.cache_data
+def get_default_place():
+    result = session.sql(
+        "SELECT CITY_NAME FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG LIMIT 1"
+    ).collect()
+    if result and result[0]['CITY_NAME']:
+        return f"{result[0]['CITY_NAME']} city center"
+    return 'Golden Gate Bridge, San Francisco'
+
 # Cortex powered map filter in sidebar
 with st.sidebar:
     st.markdown('##### Cortex Powered Map Filter')
     st.info('Give me the LAT and LON which centers the following place')
     model_choice = 'claude-sonnet-4-5'
-    place_input = st.text_input('Choose Input', 'Willis Tower, Chicago')
+    place_input = st.text_input('Choose Input', get_default_place())
     distance_input = st.number_input('Distance from location in KM', 1, 300, 15)
 
 @st.cache_data

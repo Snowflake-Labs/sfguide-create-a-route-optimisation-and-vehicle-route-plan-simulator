@@ -10,7 +10,7 @@ import altair as alt
 from snowflake.snowpark.functions import *
 from city_config import get_city
 
-CITY = get_city("Chicago")
+CITY = get_city("San Francisco")
 
 # ─────────────────────────────  PAGE CONFIG  ────────────────────────────────
 st.set_page_config(

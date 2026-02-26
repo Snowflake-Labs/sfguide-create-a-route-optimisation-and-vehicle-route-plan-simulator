@@ -52,60 +52,6 @@ Generates realistic taxi driver location data for the Fleet Intelligence solutio
 
 ---
 
-## Using a Custom Location (Any City)
-
-**The skill works with ANY city worldwide** - the pre-configured locations above are just examples. To use a different city:
-
-### Find Your City's Bounding Box
-
-Use one of these methods to get the bounding box coordinates (min/max longitude and latitude):
-
-**Option A: Use OpenStreetMap**
-1. Go to [OpenStreetMap](https://www.openstreetmap.org)
-2. Navigate to your city and zoom to the area you want
-3. Click "Export" in the top menu
-4. The bounding box coordinates are shown (or click "Manually select a different area")
-
-**Option B: Use Google Maps**
-1. Navigate to your city center
-2. Note the coordinates from the URL (e.g., `@51.5074,-0.1278,12z`)
-3. Add/subtract ~0.1-0.15 degrees for the bounding box
-
-**Option C: Use a Bounding Box Tool**
-- [Bounding Box Tool](http://bboxfinder.com) - Draw a box and get coordinates
-- [Klokantech Bounding Box](https://boundingbox.klokantech.com/) - Multiple format outputs
-
-### Calculate Your Values
-
-For a city centered at `(CENTER_LON, CENTER_LAT)`:
-
-```
-Bounding Box (typical city coverage ~15-20km):
-  MIN_LON = CENTER_LON - 0.10
-  MAX_LON = CENTER_LON + 0.10
-  MIN_LAT = CENTER_LAT - 0.08
-  MAX_LAT = CENTER_LAT + 0.08
-
-Map Center:
-  longitude = CENTER_LON
-  latitude = CENTER_LAT
-```
-
-### Custom City Examples
-
-**Tokyo** - Center: 139.69, 35.69
-- MIN_LON=139.60, MAX_LON=139.85, MIN_LAT=35.60, MAX_LAT=35.78
-
-**Dubai** - Center: 55.27, 25.20
-- MIN_LON=55.15, MAX_LON=55.40, MIN_LAT=25.05, MAX_LAT=25.30
-
-**Toronto** - Center: -79.38, 43.65
-- MIN_LON=-79.50, MAX_LON=-79.30, MIN_LAT=43.60, MAX_LAT=43.75
-
-> **Remember:** Your OpenRouteService Native App must be configured with map data that covers your chosen city.
-
----
-
 ## Customizing Streamlit App for Your Location
 
 When changing the location, update the `CITY = get_city("New York")` call in each Streamlit file to use your target city name (must match a key in `city_config.py`). The app uses `CITY["name"]` for all headers and `CITY["latitude"]`/`CITY["longitude"]` for map centering, so no manual coordinate changes are needed.
@@ -143,32 +89,6 @@ If your city isn't in `city_config.py`, add it to the `CITIES` dictionary:
 | 200 | 1 | ~45,000 | LARGE | 15-20 min |
 | 200 | 7 | ~315,000 | XLARGE | 45-60 min |
 | 500 | 7 | ~800,000 | XLARGE | 2-3 hours |
-
-*Note: Rows estimated at 15 location points per trip (includes waiting, pickup, driving, dropoff, idle states)*
-
----
-
-## Shift Distribution Formula
-
-When scaling the number of drivers, distribute them across shifts proportionally:
-
-| Shift | % of Fleet | Purpose |
-|-------|------------|---------|
-| Graveyard (22:00-06:00) | 10% | Overnight |
-| Early (04:00-12:00) | 22.5% | Early morning |
-| Morning (06:00-14:00) | 27.5% | Peak AM rush |
-| Day (11:00-19:00) | 22.5% | Midday |
-| Evening (15:00-23:00) | 17.5% | PM rush |
-
-**Examples:**
-
-| Total | Graveyard | Early | Morning | Day | Evening |
-|-------|-----------|-------|---------|-----|---------|
-| 20 | 2 | 5 | 5 | 5 | 3 |
-| 50 | 5 | 11 | 14 | 11 | 9 |
-| 80 | 8 | 18 | 22 | 18 | 14 |
-| 100 | 10 | 22 | 28 | 22 | 18 |
-| 200 | 20 | 45 | 55 | 45 | 35 |
 
 ---
 
@@ -211,9 +131,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-
 
 ---
 
-### Step 2: Verify ORS Configuration and Service Status
+### Step 2: Detect ORS Configuration, Choose Location, and Verify Services
 
-**Goal:** Read the current ORS configuration, verify it matches the user's target location, check service status in database OPENROUTESERVICE_NATIVE_APP and ensure they are all running.
+**Goal:** Detect the current ORS configuration, present it to the user, let them choose a location (proposing the currently configured region first), then verify services are running.
 
 > Read and follow the instructions in `.cortex/skills/customize-main/read-ors-configuration/SKILL.md` to detect the current region and enabled routing profiles.
 
@@ -237,14 +157,27 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-
    - Configured Map Region: `<REGION_NAME>`
    - Configured Vehicle Profiles: `<ENABLED_PROFILES>`
 
-**Sub-step 2b: Check Region Match**
+**Sub-step 2b: Ask User to Choose Location**
+
+Based on the detected `<REGION_NAME>`, identify the matching city from the Supported Locations table (e.g., "SanFrancisco" → "San Francisco", "great-britain-latest" → "London").
+
+**Ask the user which location they want to use for the fleet simulation.** Present the currently configured ORS region as the **first/recommended choice**, since it requires no ORS reconfiguration. Include a few other pre-configured locations as alternatives, noting they would require an ORS map change.
+
+Example prompt structure:
+- **`<MATCHING_CITY>` (recommended)** — Matches your current ORS configuration (`<REGION_NAME>`). No map change needed.
+- **Other pre-configured cities** — Requires changing the ORS map before proceeding.
+- **Custom location** — Any city worldwide (requires ORS map to cover that area).
+
+Store the user's selection as `{LOCATION}`.
+
+**Sub-step 2c: Check Region Match**
 
 Compare the detected `<REGION_NAME>` with the user's selected `{LOCATION}`:
 
-- **If the region matches:** Proceed to Sub-step 2c.
+- **If the region matches:** Proceed to Sub-step 2d.
 - **If the region does NOT match:** Warn the user that ORS is configured for a different region. The user must reconfigure ORS for their target location before continuing. Read and follow the instructions in `.cortex/skills/customize-main/SKILL.md` to change the map, then return here to continue.
 
-**Sub-step 2c: Check Service Status and Resume if Needed**
+**Sub-step 2d: Check Service Status and Resume if Needed**
 
 1. **Check** the status of all ORS services:
    ```sql
@@ -265,7 +198,7 @@ Compare the detected `<REGION_NAME>` with the user's selected `{LOCATION}`:
 
 3. **If all services are RUNNING**, skip resuming.
 
-**Sub-step 2d: Test ORS Routing**
+**Sub-step 2e: Test ORS Routing**
 
 Test the ORS DIRECTIONS function with coordinates in the target city to confirm routing works:
 
@@ -283,7 +216,7 @@ If the query returns a route geometry, ORS is ready. If it fails or returns null
 CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 50);
 ```
 
-**Output:** ORS configuration displayed, region match confirmed, all services running, routing verified
+**Output:** ORS configuration displayed, location chosen, region match confirmed, all services running, routing verified
 
 ---
 
@@ -370,7 +303,7 @@ GROUP BY SOURCE_TYPE;
 
 **Goal:** Create drivers distributed across shifts.
 
-**Action:** Substitute `{GRAVEYARD_COUNT}`, `{EARLY_COUNT}`, `{MORNING_COUNT}`, `{DAY_COUNT}`, `{EVENING_COUNT}` using the Shift Distribution Formula. For the default 80 drivers: 8, 18, 22, 18, 14.
+**Action:** Substitute `{GRAVEYARD_COUNT}`, `{EARLY_COUNT}`, `{MORNING_COUNT}`, `{DAY_COUNT}`, `{EVENING_COUNT}`. For the default 80 drivers: 8, 18, 22, 18, 14.
 
 ```sql
 CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS AS
@@ -415,18 +348,6 @@ FROM driver_assignments da
 LEFT JOIN home_locations hl ON da.driver_num = hl.rn;
 ```
 
-```sql
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVERS AS
-SELECT 
-    DRIVER_ID,
-    'Driver ' || DRIVER_ID AS DRIVER_NAME,
-    SHIFT_TYPE,
-    SHIFT_START_HOUR,
-    SHIFT_END_HOUR,
-    SHIFT_CROSSES_MIDNIGHT
-FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS;
-```
-
 Then verify:
 
 ```sql
@@ -439,7 +360,7 @@ GROUP BY SHIFT_TYPE
 ORDER BY NUM_DRIVERS DESC;
 ```
 
-**Output:** `TAXI_DRIVERS` and `DRIVERS` tables with configured number of drivers.
+**Output:** `TAXI_DRIVERS` table with configured number of drivers.
 
 ---
 
@@ -822,28 +743,11 @@ ORDER BY DRIVER_STATE;
 
 **Output:** `DRIVER_LOCATIONS` table with interpolated positions and realistic speed patterns.
 
-**Expected Speed Distribution:**
-| Speed Band | Percentage |
-|------------|------------|
-| 0 km/h (Stationary) | ~23% |
-| 1-5 km/h (Crawling) | ~11% |
-| 6-15 km/h (Slow) | ~14% |
-| 16-30 km/h (Moderate) | ~26% |
-| 31-45 km/h (Normal) | ~20% |
-| 46+ km/h (Fast) | ~6% |
-
----
-
 ### Step 9: Create Analytics Views
 
 **Goal:** Create views for Streamlit consumption.
 
 **Action:** Execute each view as a separate statement.
-
-```sql
-CREATE OR REPLACE VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVERS_V AS
-SELECT * FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVERS;
-```
 
 ```sql
 CREATE OR REPLACE VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V AS
@@ -879,24 +783,6 @@ SELECT
     TRIP_START_TIME AS PICKUP_TIME,
     TRIP_END_TIME AS DROPOFF_TIME
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
-```
-
-```sql
-CREATE OR REPLACE VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS AS
-SELECT 
-    rg.TRIP_ID,
-    rg.ORIGIN_ADDRESS,
-    rg.DESTINATION_ADDRESS,
-    rg.ORIGIN AS ORIGIN,
-    rg.DESTINATION AS DESTINATION,
-    rg.TRIP_START_TIME AS PICKUP_TIME,
-    rg.TRIP_END_TIME AS DROPOFF_TIME,
-    rg.ROUTE_DURATION_SECS / 60.0 AS TRIP_DURATION_MINS,
-    rg.ROUTE_DISTANCE_METERS AS DISTANCE_METERS,
-    rg.GEOMETRY,
-    rg.DRIVER_ID,
-    rg.SHIFT_TYPE
-FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
 ```
 
 ```sql
@@ -959,16 +845,14 @@ LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
 Then verify:
 
 ```sql
-SELECT 'DRIVERS_V' AS VIEW_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVERS_V
-UNION ALL SELECT 'DRIVER_LOCATIONS_V', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+SELECT 'DRIVER_LOCATIONS_V' AS VIEW_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
 UNION ALL SELECT 'TRIPS_ASSIGNED_TO_DRIVERS', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS
-UNION ALL SELECT 'TRIPS', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS
 UNION ALL SELECT 'ROUTE_NAMES', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
 UNION ALL SELECT 'TRIP_ROUTE_PLAN', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
 UNION ALL SELECT 'TRIP_SUMMARY', COUNT(*) FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 ```
 
-**Output:** 7 analytics views created.
+**Output:** 5 analytics views created.
 
 ---
 
@@ -1029,41 +913,6 @@ SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CU
 
 ---
 
-## Data Model
-
-```
-OPENROUTESERVICE_SETUP
-└── FLEET_INTELLIGENCE_TAXIS (schema)
-    ├── Tables
-    │   ├── TAXI_LOCATIONS      # Location pool for target city
-    │   ├── TAXI_LOCATIONS_NUMBERED # Locations with stable row numbers for joins
-    │   ├── TAXI_DRIVERS           # Configured driver count
-    │   ├── DRIVERS                # Driver display data
-    │   ├── DRIVER_TRIPS           # Trip assignments
-    │   ├── DRIVER_TRIPS_WITH_COORDS # Trips with coordinates
-    │   ├── DRIVER_ROUTES          # Raw ORS responses
-    │   ├── DRIVER_ROUTES_PARSED   # Parsed route data
-    │   ├── DRIVER_ROUTE_GEOMETRIES # Routes with timing
-    │   └── DRIVER_LOCATIONS       # Interpolated positions with driver states
-    │
-    ├── Views
-    │   ├── DRIVERS_V              # Driver info with shift details
-    │   ├── DRIVER_LOCATIONS_V     # Positions with LON/LAT and DRIVER_STATE
-    │   ├── TRIPS_ASSIGNED_TO_DRIVERS # Trip details with route geometries
-    │   ├── TRIPS                  # Compatibility view with duration/distance
-    │   ├── ROUTE_NAMES            # Human-readable trip names
-    │   ├── TRIP_ROUTE_PLAN        # Route data for Heat Map page
-    │   └── TRIP_SUMMARY           # Comprehensive trip metrics with speed stats
-    │
-    ├── Stage
-    │   └── STREAMLIT_STAGE        # Streamlit application files
-    │
-    └── Streamlit
-        └── TAXI_CONTROL_CENTER # Fleet Intelligence dashboard
-```
-
----
-
 ## Troubleshooting
 
 | Issue | Solution |
@@ -1071,7 +920,6 @@ OPENROUTESERVICE_SETUP
 | ORS routes returning NULL | Location outside ORS configured region - verify map data |
 | ORS routes failing | Verify OpenRouteService Native App is installed and running |
 | No locations found | Bounding box may be too restrictive or outside Overture coverage |
-| Query timeout | Increase warehouse size |
 | Out of memory | Use larger warehouse or batch processing |
 | Missing Overture data | Install shares from Snowflake Marketplace |
 | Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/taxi/` |

@@ -460,9 +460,10 @@ For other cities, choose a well-known central landmark.
 3. **Create** the Streamlit app:
    ```sql
    CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR
-    FROM  @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT
-    MAIN_FILE = 'routing.py'
+   FROM  @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT
+   MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
+   TITLE = 'Simulator'
    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
    ALTER STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR ADD LIVE VERSION FROM LAST;

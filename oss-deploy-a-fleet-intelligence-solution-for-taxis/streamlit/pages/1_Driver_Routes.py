@@ -14,7 +14,7 @@ from snowflake.snowpark.window import Window
 from snowflake.snowpark.context import get_active_session
 from city_config import get_city
 
-CITY = get_city("Chicago")
+CITY = get_city("San Francisco")
 
 # Initialize session
 session = get_active_session()

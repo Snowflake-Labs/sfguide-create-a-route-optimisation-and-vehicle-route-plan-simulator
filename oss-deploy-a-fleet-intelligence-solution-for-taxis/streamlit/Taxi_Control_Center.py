@@ -10,7 +10,7 @@ from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark.functions import *
 from city_config import get_city, driver_color
 
-CITY = get_city("Chicago")
+CITY = get_city("San Francisco")
 
 # Page configuration
 st.set_page_config(

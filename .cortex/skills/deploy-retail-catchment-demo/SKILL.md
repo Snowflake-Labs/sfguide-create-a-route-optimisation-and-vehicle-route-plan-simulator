@@ -277,7 +277,7 @@ CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_
     FROM @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE
     MAIN_FILE = 'retail_catchment.py'
     QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
-    TITLE = 'RETAIL CATCHMENT APP'
+    TITLE = 'Retail Catchment Application'
     COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 ALTER STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP ADD LIVE VERSION FROM LAST;
