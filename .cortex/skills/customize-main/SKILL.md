@@ -1,6 +1,6 @@
 ---
 name: customize-main
-description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle Triggers: change location, change map, change vehicle, change routing profile"
+description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile Triggers: change location, change map, change vehicle, change routing profile, change routing profiles"
 ---
 
 # Customization Router
@@ -9,13 +9,13 @@ This skill routes customization requests to the correct subskills based on what 
 
 ## Workflow
 
-### Step 1: Read Current ORS Configuration and Gather Customization Options
+### Step 1: Read Initial ORS Configuration and Gather Customization Options
 
-**Goal:** Detect the current map region and routing profiles from the ORS configuration and display to the user
+**Goal:** Detect the initial map region and routing profiles from the ORS configuration and display to the user
 
 **Actions:**
 
-1. **Extract** the current ORS configuration from the service definition:
+1. **Extract** the initial ORS configuration from the service definition:
    ```sql
    DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
    ```
@@ -25,9 +25,9 @@ This skill routes customization requests to the correct subskills based on what 
 2. **Extract** the enabled vehicle profiles from the config file in stage `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml`
 
    ```bash
-   rm -f /tmp/ors-config.yml && snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml /tmp/ --connection <ACTIVE_CONNECTION>
+   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<INITIAL_REGION_NAME>/ors-config.yml oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
-   Then read `/tmp/ors-config.yml`. Always delete before downloading to prevent reading stale files from previous sessions.
+   Then read `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`.
 
    - Parse the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
@@ -37,7 +37,7 @@ This skill routes customization requests to the correct subskills based on what 
    - `<INITIAL_REGION_NAME>`: The initially configured region name
    - `<INITIAL_PROFILES>`: List of initially enabled vehicle profiles
 
-**Output:** Current ORS configuration displayed to the user:
+**Output:** ORS configuration displayed to the user:
 - Initially configured Map Region: `<INITIAL_REGION_NAME>`
 - Initially configured Vehicle profiles: `<INITIAL_PROFILES>`
 
@@ -127,22 +127,24 @@ This skill routes customization requests to the correct subskills based on what 
 2. **Insert** the new map configuration:
    ```sql
    INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
-   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
-   VALUES ('<CITY_NAME>', <CENTER_LAT>, <CENTER_LON>, <MIN_LAT>, <MAX_LAT>, <MIN_LON>, <MAX_LON>, '<MAP_NAME>');
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
+   VALUES ('<CITY_NAME>', <CENTER_LAT>, <CENTER_LON>, <MIN_LAT>, <MAX_LAT>, <MIN_LON>, <MAX_LON>, '<MAP_NAME>', CURRENT_TIMESTAMP());
    ```
+   
+   > **_NOTE:_** The `updated_at` column is required -- the Function Tester uses `ORDER BY updated_at DESC LIMIT 1` to load the latest config.
    
    **Example for Paris:**
    ```sql
    INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
-   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
-   VALUES ('Paris', 48.8566, 2.3522, 48.80, 48.92, 2.22, 2.42, 'Paris.osm.pbf');
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
+   VALUES ('Paris', 48.8566, 2.3522, 48.80, 48.92, 2.22, 2.42, 'Paris.osm.pbf', CURRENT_TIMESTAMP());
    ```
    
    **Example for Berlin:**
    ```sql
    INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
-   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name)
-   VALUES ('Berlin', 52.5200, 13.4050, 52.35, 52.70, 13.08, 13.77, 'Berlin.osm.pbf');
+   (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
+   VALUES ('Berlin', 52.5200, 13.4050, 52.35, 52.70, 13.08, 13.77, 'Berlin.osm.pbf', CURRENT_TIMESTAMP());
    ```
 
 3. **Verify** the configuration was saved:
@@ -158,7 +160,9 @@ This skill routes customization requests to the correct subskills based on what 
 
 **Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
 
-**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 4) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed — just redeploy.
+**Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses — just redeploy.
+
+> **_IMPORTANT:_** The `ROUTING_PROFILES` list in `function_tester.py` is **hardcoded** to `['driving-car', 'driving-hgv', 'cycling-road']`. If routing profiles were changed in Step 3, you **must** also edit `oss-build-routing-solution-in-snowflake/Native_app/code_artifacts/streamlit/pages/function_tester.py` and update the `ROUTING_PROFILES` list (around line 175) to match the profiles enabled in `ors-config.yml` before uploading.
 
 **Actions:**
 

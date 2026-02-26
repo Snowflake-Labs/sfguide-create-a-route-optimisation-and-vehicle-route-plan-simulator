@@ -5,6 +5,8 @@ description: "Change the Routing Solution routing profiles/vehicle types. To be 
 
 # Customize Routing Profiles
 
+> **WARNING: This subskill cannot be run independently.** It must be invoked from the `customize-main` router. It only updates the config file -- it does NOT restart services or rebuild routing graphs. The router handles service restarts, graph rebuilding, MAP_CONFIG updates, and Function Tester redeployment in Steps 4-6 after this subskill completes.
+
 Configure which routing profiles are available in your Routing Solution.
 
 ## Prerequisites
@@ -14,7 +16,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 ## Input Parameters
 
-- `<REGION_NAME>`: Target region name (e.g., "great-britain", "switzerland", "new-york")
+- `<REGION_NAME>`: Target region name selected by user (e.g., "great-britain", "switzerland", "new-york")
 
 ## Available Profiles
 
@@ -84,11 +86,15 @@ Configure which routing profiles are available in your Routing Solution.
    ```
 
 2. **Upload** modified file:
-   ```sql
-   PUT file://oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```bash
+   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated with new profiles
+
+## Return to Router
+
+After completing all steps in this subskill, return to the **customize-main** router and continue from **Step 4: Update Routing Graphs**. This subskill does NOT restart services or rebuild graphs -- the router handles that.
 
 ## Stopping Points
 

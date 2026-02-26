@@ -5,13 +5,14 @@ description: "To be used as part of customize-main skill"
 
 # Customize Location (Map Region)
 
+> **WARNING: This subskill cannot be run independently.** It must be invoked from the `customize-main` router. It does not restart services, rebuild graphs, update MAP_CONFIG, or redeploy the Function Tester -- the router handles all of those in Steps 4-6 after this subskill completes.
+
 Downloads a new OpenStreetMap region map and update the configuration files.
 
 **This skill handles:**
 1. Downloading the map data from Geofabrik or BBBike
 2. Updating ors-config.yml with the new map path
 3. Updating service specifications for the new region
-4. Restarting services to rebuild routing graphs
 
 ## Prerequisites
 
@@ -21,7 +22,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 ## Input Parameters
 
-- `<REGION_NAME>`: Target region name (e.g., "great-britain", "switzerland", "new-york")
+- `<REGION_NAME>`: Target region name selected by user (e.g., "great-britain", "switzerland", "new-york")
 - `<MAP_NAME>`: OSM file name (e.g., "great-britain-latest.osm.pbf")
 - `<URL>`: Download URL from geofabrik.de or bbbike.org
 
@@ -137,8 +138,8 @@ Downloads a new OpenStreetMap region map and update the configuration files.
    - To: `source_file: /home/ors/files/<MAP_NAME>`
 
 2. **Upload** to stage:
-   ```sql
-   PUT file://oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME> OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```bash
+   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated
@@ -163,8 +164,8 @@ Downloads a new OpenStreetMap region map and update the configuration files.
      ```
 
 2. **Upload** specification:
-   ```sql
-   PUT file://oss-build-routing-solution-in-snowflake/Native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE
+   ```bash
+   snow stage copy oss-build-routing-solution-in-snowflake/Native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Update** service with new specification:
@@ -220,6 +221,10 @@ For full country or region coverage, use **Geofabrik**:
 | California | `https://download.geofabrik.de/north-america/us/california-latest.osm.pbf` | ~1GB |
 
 > **_TIP:_** Browse all regions at: https://download.geofabrik.de/
+
+## Return to Router
+
+After completing all steps in this subskill, return to the **customize-main** router and continue from **Step 4: Update Routing Graphs**. This subskill does NOT restart services or rebuild graphs -- the router handles that.
 
 ## Output
 
