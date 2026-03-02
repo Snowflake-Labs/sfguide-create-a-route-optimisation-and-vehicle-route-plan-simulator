@@ -8,9 +8,8 @@ import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import altair as alt
 import snowflake.snowpark.functions as F
-from city_config import get_city, get_company
+from city_config import get_city, get_company, get_california_cities
 
-CITY = get_city("San Francisco")
 COMPANY = get_company()
 
 st.set_page_config(
@@ -23,6 +22,11 @@ with open('extra.css') as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 session = get_active_session()
+
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
+CITY = get_city(selected_city)
 
 st.markdown(f'''
 <h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> Delivery Density</h0blue><BR>

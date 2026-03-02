@@ -8,9 +8,8 @@ import altair as alt
 import json
 from snowflake.snowpark.context import get_active_session
 import snowflake.snowpark.functions as F
-from city_config import get_city, get_company, driver_color
+from city_config import get_city, get_company, get_california_cities, driver_color
 
-CITY = get_city("San Francisco")
 COMPANY = get_company()
 
 st.set_page_config(
@@ -26,8 +25,13 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
+CITY = get_city(selected_city)
+
 st.markdown(f'''
-<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> Fleet Intelligence</h0blue><BR>
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Fleet Intelligence</h0blue><BR>
 <h1grey>{COMPANY["tagline"]} - {CITY["name"]} Operations</h1grey>
 ''', unsafe_allow_html=True)
 

@@ -1,14 +1,13 @@
 # SwiftBite Food Delivery - Travel Time Matrix Visualization
-# Explore pre-computed travel times between H3 hexagons across San Francisco
+# Explore pre-computed travel times between H3 hexagons across California
 
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import altair as alt
 from snowflake.snowpark.context import get_active_session
-from city_config import get_city, get_company
+from city_config import get_city, get_company, get_california_cities
 
-CITY = get_city("San Francisco")
 COMPANY = get_company()
 
 st.set_page_config(layout="wide", page_title=f"{COMPANY['name']} - Travel Time Matrix")
@@ -20,8 +19,13 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
+CITY = get_city(selected_city)
+
 st.markdown(f'''
-<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> Travel Time Matrix</h0blue><BR>
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Travel Time Matrix</h0blue><BR>
 <h1grey>Pre-computed driving times across {CITY["name"]} (H3 Resolution 9)</h1grey>
 ''', unsafe_allow_html=True)
 

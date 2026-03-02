@@ -1,24 +1,42 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
+import altair as alt
 import json
 from snowflake.snowpark.context import get_active_session
+from city_config import get_city, get_company, get_california_cities
 
-st.set_page_config(page_title="Travel Time Analysis", page_icon="🗺️", layout="wide")
+COMPANY = get_company()
 
-try:
-    from city_config import get_city
-    CITY = get_city("San Francisco")
-except:
-    CITY = {"name": "San Francisco", "latitude": 37.77, "longitude": -122.42, "zoom": 12}
+st.set_page_config(
+    page_title=f"{COMPANY['name']} - Travel Time Analysis",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+with open('extra.css') as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+st.logo('logo.svg')
 
 session = get_active_session()
 
-st.title("🗺️ Travel Time Analysis")
-st.markdown("Visualize reachable areas using ORS isochrones overlaid with H3 hexagon travel times.")
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
+CITY = get_city(selected_city)
+
+st.markdown(f'''
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Travel Time Analysis</h0blue><BR>
+<h1grey>Visualize reachable areas using ORS isochrones overlaid with H3 hexagon travel times — {CITY["name"]}</h1grey>
+''', unsafe_allow_html=True)
+
+st.divider()
+
+res_table_map = {7: "CA_H3_RES7", 8: "CA_H3_RES8", 9: "CA_H3_RES9"}
 
 with st.sidebar:
-    st.header("Settings")
+    st.header("Controls")
 
     resolution = st.selectbox(
         "H3 Resolution",
@@ -27,7 +45,6 @@ with st.sidebar:
         help="9 = last mile (~174m), 8 = delivery zone (~460m), 7 = long range (~1.2km)"
     )
 
-    res_table_map = {7: "CA_H3_RES7", 8: "CA_H3_RES8", 9: "CA_H3_RES9"}
     hex_table = res_table_map[resolution]
 
     travel_mode = st.selectbox(
@@ -43,6 +60,8 @@ with st.sidebar:
         value=10,
         help="Max travel time boundary from origin (ORS limit: 60 min)"
     )
+
+    show_isochrone_boundary = st.checkbox("Show Isochrone Boundary", value=True)
 
     @st.cache_data(ttl=300)
     def get_sample_hexagons(table_name, center_lon, center_lat, limit=100):
@@ -63,29 +82,22 @@ with st.sidebar:
     if not sample_hexes.empty:
         hex_options = sample_hexes["H3_INDEX"].tolist()
         selected_hex = st.selectbox(
-            "Select Origin Hexagon",
+            "Origin Hexagon",
             options=hex_options,
             index=0,
             help="Choose a hexagon as the origin point"
         )
     else:
-        st.warning(f"No hexagons found in {hex_table}. Run the matrix pipeline first.")
+        st.warning(f"No hexagons found in {hex_table}.")
         selected_hex = None
 
-    show_isochrone_boundary = st.checkbox("Show Isochrone Boundary", value=True)
-
     st.divider()
-    st.subheader("Travel Time Legend")
-    legend_items = [
-        ("#00ff00", "0-5 min (Fast)"),
-        ("#ffff00", "5-10 min"),
-        ("#ffa500", "10-15 min"),
-        ("#ff4500", "15-20 min"),
-        ("#8b0000", "20+ min (Slow)"),
-    ]
+    st.subheader("Legend")
+    colors = ["#2ECC71", "#F39C12", "#FF6B35", "#E63946", "#8B0000"]
+    labels = ["0-5 min", "5-10 min", "10-15 min", "15-20 min", "20+ min"]
     legend_html = ""
-    for color, label in legend_items:
-        legend_html += f'<div style="display:flex;align-items:center;margin-bottom:5px;"><div style="width:20px;height:20px;background-color:{color};margin-right:10px;border-radius:3px;"></div><span>{label}</span></div>'
+    for color, label in zip(colors, labels):
+        legend_html += f'<div style="display:flex;align-items:center;margin-bottom:4px;"><div style="width:16px;height:16px;background-color:{color};margin-right:8px;border-radius:3px;"></div><span style="font-size:0.85rem;color:#6b7b86;">{label}</span></div>'
     st.markdown(legend_html, unsafe_allow_html=True)
 
 if selected_hex:
@@ -237,28 +249,34 @@ if selected_hex:
     if not df.empty:
         def get_color(travel_mins):
             if travel_mins <= 5:
-                return [0, 255, 0, 180]
+                return [46, 204, 113, 180]
             elif travel_mins <= 10:
-                return [255, 255, 0, 180]
+                return [243, 156, 18, 180]
             elif travel_mins <= 15:
-                return [255, 165, 0, 180]
+                return [255, 107, 53, 180]
             elif travel_mins <= 20:
-                return [255, 69, 0, 180]
+                return [230, 57, 70, 180]
             else:
                 return [139, 0, 0, 180]
 
         df["color"] = df["TRAVEL_TIME_MINS"].apply(get_color)
 
+        st.markdown('<h1sub>Coverage Summary</h1sub>', unsafe_allow_html=True)
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Reachable Hexagons", len(df))
+            st.metric("Reachable Hexagons", f"{len(df):,}")
         with col2:
             st.metric("Avg Travel Time", f"{df['TRAVEL_TIME_MINS'].mean():.1f} min")
         with col3:
             st.metric("Max Travel Time", f"{df['TRAVEL_TIME_MINS'].max():.1f} min")
         with col4:
             area_per_hex = {9: 0.03, 8: 0.18, 7: 1.3}
-            st.metric("Coverage Area", f"{len(df) * area_per_hex[resolution]:.1f} km²")
+            st.metric("Coverage Area", f"{len(df) * area_per_hex[resolution]:.1f} km\u00b2")
+
+        st.divider()
+
+        st.markdown('<h1sub>Isochrone Reachability Map</h1sub>', unsafe_allow_html=True)
 
         layers = []
 
@@ -271,8 +289,9 @@ if selected_hex:
             extruded=False,
             get_hexagon="H3_INDEX",
             get_fill_color="color",
-            get_line_color=[255, 255, 255, 100],
+            get_line_color=[255, 255, 255, 80],
             line_width_min_pixels=1,
+            opacity=0.7,
         )
         layers.append(h3_layer)
 
@@ -290,7 +309,7 @@ if selected_hex:
             filled=True,
             extruded=False,
             get_hexagon="H3_INDEX",
-            get_fill_color=[0, 100, 0, 220],
+            get_fill_color=[41, 181, 232, 220],
             get_line_color=[0, 0, 0, 255],
             line_width_min_pixels=3,
         )
@@ -301,8 +320,8 @@ if selected_hex:
                 "PolygonLayer",
                 iso_coords,
                 get_polygon="polygon",
-                get_fill_color=[100, 100, 255, 30],
-                get_line_color=[50, 50, 200, 200],
+                get_fill_color=[41, 181, 232, 20],
+                get_line_color=[17, 86, 127, 200],
                 line_width_min_pixels=2,
                 stroked=True,
                 filled=True,
@@ -318,27 +337,27 @@ if selected_hex:
         )
 
         tooltip = {
-            "html": """
-            <div style="background-color:white;padding:10px;border-radius:5px;color:black;">
-                <b>Hexagon:</b> {H3_INDEX}<br/>
-                <b>Travel Time:</b> {TRAVEL_TIME_MINS} min<br/>
-                <b>Distance:</b> {TRAVEL_DISTANCE_KM} km<br/>
-                <b>Ring:</b> {RING_DISTANCE}
-            </div>
-            """,
-            "style": {"backgroundColor": "white", "color": "black"}
+            "html": "<b>Hex:</b> {H3_INDEX}<br/><b>Travel Time:</b> {TRAVEL_TIME_MINS} min<br/><b>Distance:</b> {TRAVEL_DISTANCE_KM} km<br/><b>Ring:</b> {RING_DISTANCE}",
+            "style": {
+                "backgroundColor": "#24323D",
+                "color": "white"
+            }
         }
 
         deck = pdk.Deck(
+            map_provider="carto",
+            map_style="light",
             layers=layers,
             initial_view_state=view_state,
             tooltip=tooltip,
-            map_style="mapbox://styles/mapbox/light-v10"
         )
 
-        st.pydeck_chart(deck)
+        st.pydeck_chart(deck, use_container_width=True)
 
-        st.subheader("📈 Travel Time Distribution")
+        st.divider()
+
+        st.markdown('<h1sub>Travel Time Distribution</h1sub>', unsafe_allow_html=True)
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -353,12 +372,20 @@ if selected_hex:
         with col2:
             max_val = max(df["TRAVEL_TIME_MINS"].max(), 20)
             bins = [0, 5, 10, 15, 20, max_val + 1]
-            time_bins = pd.cut(df["TRAVEL_TIME_MINS"], bins=bins,
-                              labels=["0-5 min", "5-10 min", "10-15 min", "15-20 min", "20+ min"])
-            time_distribution = time_bins.value_counts().sort_index()
-            st.bar_chart(time_distribution)
+            bin_labels = ["0-5 min", "5-10 min", "10-15 min", "15-20 min", "20+ min"]
+            df["time_bucket"] = pd.cut(df["TRAVEL_TIME_MINS"], bins=bins, labels=bin_labels)
+            bucket_df = df["time_bucket"].value_counts().sort_index().reset_index()
+            bucket_df.columns = ["Time Bucket", "Count"]
 
-        with st.expander("📊 View Detailed Data"):
+            chart = alt.Chart(bucket_df).mark_bar().encode(
+                x=alt.X("Time Bucket:N", sort=bin_labels, title=None),
+                y=alt.Y("Count:Q", title="Hexagons"),
+                color=alt.value("#FF6B35"),
+                tooltip=["Time Bucket", "Count"]
+            ).properties(height=300)
+            st.altair_chart(chart, use_container_width=True)
+
+        with st.expander("View Detailed Data"):
             st.dataframe(
                 df[["H3_INDEX", "RING_DISTANCE", "TRAVEL_TIME_MINS", "TRAVEL_DISTANCE_KM"]].sort_values("TRAVEL_TIME_MINS"),
                 use_container_width=True,
@@ -370,4 +397,7 @@ else:
     st.info("Select an origin hexagon from the sidebar to begin analysis.")
 
 st.divider()
-st.caption(f"Isochrone: {isochrone_minutes} min | Mode: {travel_mode} | H3 Resolution: {resolution}")
+
+st.markdown(f'''
+<h1grey>Isochrone: {isochrone_minutes} min | Mode: {travel_mode} | H3 Resolution: {resolution} | Powered by Snowflake & OpenRouteService</h1grey>
+''', unsafe_allow_html=True)

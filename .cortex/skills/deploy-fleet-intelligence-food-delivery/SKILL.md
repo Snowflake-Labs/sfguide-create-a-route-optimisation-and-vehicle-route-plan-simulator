@@ -1,17 +1,18 @@
 ---
 name: deploy-fleet-intelligence-food-delivery
-description: "Generate realistic food delivery courier location data for the SwiftBite Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (San Francisco, New York, Chicago, etc.), number of couriers (default 50), days of simulation (default 1), and shift patterns. Use when: setting up food delivery data, generating route-based simulation, deploying fleet dashboard. Triggers: generate courier locations, create delivery data, setup food delivery fleet, deploy streamlit, swiftbite dashboard, food delivery intelligence."
+description: "Generate realistic food delivery courier location data for the SwiftBite Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. California statewide coverage with city-level filtering. Configurable location, number of couriers (default 50), days of simulation (default 1), and shift patterns. Use when: setting up food delivery data, generating route-based simulation, deploying fleet dashboard. Triggers: generate courier locations, create delivery data, setup food delivery fleet, deploy streamlit, swiftbite dashboard, food delivery intelligence."
 ---
 
-# Generate Food Delivery Courier Locations & Deploy SwiftBite Fleet Intelligence Dashboard
+# Generate Food Delivery Courier Locations & Deploy SwiftBite California Fleet Intelligence Dashboard
 
 Generates realistic food delivery courier location data for the SwiftBite Fleet Intelligence solution using:
-- **Overture Maps Places** - Restaurant locations (food_and_beverage category)
-- **Overture Maps Addresses** - Customer delivery addresses
-- **OpenRouteService Native App** - Real road routing for actual delivery paths
+- **Overture Maps Places** - Restaurant locations (food_and_beverage category) — California statewide
+- **Overture Maps Addresses** - Customer delivery addresses — 14.2M+ California addresses
+- **OpenRouteService Native App** - Real road routing with California statewide graph (4.1M nodes, 5.2M edges)
 - **Route Interpolation** - Courier positions along actual roads
-- **Configurable Location** - San Francisco, New York, Chicago, Austin, and more
+- **City-level Filtering** - San Francisco, Los Angeles, San Diego, San Jose, Sacramento, and more
 - **Configurable Fleet Size** - Set number of couriers and simulation days
+- **Pre-computed Travel Time Matrix** - 1.1M+ H3 hex-pair travel times for instant ETA lookups
 
 ---
 
@@ -28,7 +29,7 @@ Generates realistic food delivery courier location data for the SwiftBite Fleet 
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `LOCATION` | San Francisco | City/region for the simulation |
+| `LOCATION` | San Francisco | California city for the simulation |
 | `NUM_COURIERS` | 50 | Total number of delivery couriers |
 | `NUM_DAYS` | 1 | Number of days to simulate |
 | `START_DATE` | 2025-01-15 | First day of simulation |
@@ -36,43 +37,54 @@ Generates realistic food delivery courier location data for the SwiftBite Fleet 
 
 ---
 
-## Supported Locations (Pre-configured)
+## Supported Locations (California Cities)
 
-| Location | MIN_LON | MAX_LON | MIN_LAT | MAX_LAT | Center LON | Center LAT | Notes |
-|----------|---------|---------|---------|---------|------------|------------|-------|
-| **San Francisco** | -122.52 | -122.35 | 37.70 | 37.82 | -122.42 | 37.77 | |
-| **New York** | -74.05 | -73.90 | 40.65 | 40.85 | -73.97 | 40.75 | Manhattan focus |
-| **Chicago** | -87.75 | -87.55 | 41.80 | 41.95 | -87.63 | 41.88 | Downtown |
-| **Austin** | -97.82 | -97.66 | 30.22 | 30.35 | -97.74 | 30.27 | Central |
-| **Los Angeles** | -118.35 | -118.15 | 33.95 | 34.15 | -118.25 | 34.05 | Central LA |
-| **Seattle** | -122.45 | -122.25 | 47.55 | 47.70 | -122.33 | 47.61 | Downtown |
+> **Data Scope:** Overture Maps data is loaded for **all of California** (COUNTRY='US', region='CA'). The city selector in the Streamlit app filters the statewide dataset to the selected city.
+
+| Location | Center LON | Center LAT | Zoom | Notes |
+|----------|------------|------------|------|-------|
+| **San Francisco** | -122.44 | 37.76 | 12 | Default |
+| **Los Angeles** | -118.24 | 34.05 | 11 | Largest CA city |
+| **San Diego** | -117.16 | 32.72 | 12 | |
+| **San Jose** | -121.89 | 37.34 | 12 | |
+| **Sacramento** | -121.49 | 38.58 | 12 | State capital |
+| **Fresno** | -119.77 | 36.74 | 12 | Central Valley |
+| **Oakland** | -122.27 | 37.80 | 12 | East Bay |
+| **Long Beach** | -118.19 | 33.77 | 12 | LA metro |
+| **Santa Barbara** | -119.70 | 34.42 | 13 | |
+| **Bakersfield** | -119.02 | 35.37 | 12 | Central Valley |
 
 ---
 
-## Customizing Streamlit App for Your Location
+## City Selection in the Streamlit App
 
-When changing the location, update the `CITY = get_city("San Francisco")` call in each Streamlit file to use your target city name (must match a key in `city_config.py`). The app uses `CITY["name"]` for all headers and `CITY["latitude"]`/`CITY["longitude"]` for map centering, so no manual coordinate changes are needed.
+The Streamlit app includes a **sidebar city selector** on every page. Users select a California city from a dropdown, and the app dynamically re-centers maps, filters data, and updates headers.
 
-### Files to Update
-
-| File | What to Change |
-|------|----------------|
-| `Delivery_Control_Center.py` | `get_city("San Francisco")` -> `get_city("Your City")` |
-| `pages/1_Courier_Routes.py` | `get_city("San Francisco")` -> `get_city("Your City")` |
-| `pages/2_Heat_Map.py` | `get_city("San Francisco")` -> `get_city("Your City")` |
-
-### Adding a New City
-
-If your city isn't in `city_config.py`, add it to the `CITIES` dictionary:
+All California cities are defined in `city_config.py` with `CALIFORNIA_CITIES` list and `get_california_cities()` helper. Each page imports this and creates the selector:
 
 ```python
-"Miami": {
-    "name": "Miami",
-    "latitude": 25.76,
-    "longitude": -80.19,
+from city_config import get_city, get_company, get_california_cities
+
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
+CITY = get_city(selected_city)
+```
+
+### Adding a New California City
+
+Add to both `CITIES` dict and `CALIFORNIA_CITIES` list in `city_config.py`:
+
+```python
+"Riverside": {
+    "name": "Riverside",
+    "latitude": 33.95,
+    "longitude": -117.40,
     "zoom": 12,
 },
 ```
+
+Then add `"Riverside"` to the `CALIFORNIA_CITIES` list.
 
 ---
 
@@ -247,11 +259,11 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVE
 
 ---
 
-### Step 4: Create Restaurant Locations
+### Step 4: Create Restaurant Locations (California-wide)
 
-**Goal:** Load restaurant locations from Overture Maps for the target city.
+**Goal:** Load restaurant locations from Overture Maps for all of California using the state-level filter.
 
-**Action:** Substitute `{MIN_LON}`, `{MAX_LON}`, `{MIN_LAT}`, `{MAX_LAT}` with the values from the Supported Locations table.
+> **Filter Strategy:** Instead of a bounding box (`ST_X BETWEEN...`), we filter by `COUNTRY='US'` and `region='CA'` in the Overture Maps address metadata. This captures the entire state without missing coastal/border areas and leverages Overture's partition pruning for fast queries.
 
 ```sql
 CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS AS
@@ -260,11 +272,13 @@ SELECT
     GEOMETRY AS LOCATION,
     NAMES:primary::STRING AS NAME,
     CATEGORIES:primary::STRING AS CUISINE_TYPE,
-    ADDRESSES[0]:freeform::STRING AS ADDRESS
+    ADDRESSES[0]:freeform::STRING AS ADDRESS,
+    ADDRESSES[0]:locality::STRING AS CITY,
+    ADDRESSES[0]:region::STRING AS STATE
 FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
 WHERE 
-    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
-    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    ADDRESSES[0]:country::STRING = 'US'
+    AND ADDRESSES[0]:region::STRING = 'CA'
     AND NAMES:primary IS NOT NULL
     AND (
         CATEGORIES:primary::STRING ILIKE '%restaurant%'
@@ -292,21 +306,28 @@ Then verify:
 
 ```sql
 SELECT 
-    CUISINE_TYPE,
+    CITY,
     COUNT(*) AS RESTAURANT_COUNT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
-GROUP BY CUISINE_TYPE
+GROUP BY CITY
 ORDER BY RESTAURANT_COUNT DESC
 LIMIT 15;
 ```
 
-**Output:** `RESTAURANTS` table with food establishments for the target city.
+**Enable Search Optimization** for fast city-level lookups:
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
+    ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
+```
+
+**Output:** `RESTAURANTS` table with 120K+ food establishments across California, with CITY column for filtering.
 
 ---
 
-### Step 5: Create Customer Delivery Addresses
+### Step 5: Create Customer Delivery Addresses (California-wide)
 
-**Goal:** Load customer addresses from Overture Maps for the target city.
+**Goal:** Load customer addresses from Overture Maps for all of California.
 
 ```sql
 CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES AS
@@ -318,21 +339,36 @@ SELECT
         STREET
     ) AS FULL_ADDRESS,
     STREET,
-    POSTCODE
+    POSTCODE,
+    ADDRESS_LEVELS[0]:value::STRING AS STATE,
+    ADDRESS_LEVELS[1]:value::STRING AS CITY
 FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
 WHERE 
-    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
-    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    COUNTRY = 'US'
+    AND ADDRESS_LEVELS[0]:value::STRING = 'CA'
     AND STREET IS NOT NULL;
 ```
 
 Then verify:
 
 ```sql
-SELECT COUNT(*) AS ADDRESS_COUNT FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES;
+SELECT 
+    CITY,
+    COUNT(*) AS ADDRESS_COUNT
+FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
+GROUP BY CITY
+ORDER BY ADDRESS_COUNT DESC
+LIMIT 15;
 ```
 
-**Output:** `CUSTOMER_ADDRESSES` table with delivery addresses.
+**Enable Search Optimization** for fast city-level lookups:
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
+    ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
+```
+
+**Output:** `CUSTOMER_ADDRESSES` table with 14.2M+ delivery addresses across California.
 
 ---
 
@@ -1202,6 +1238,93 @@ When configuring ORS for California statewide routing (required for DoorDash-sty
 | 8 (Delivery Zone) | 144,636 | 10 mi | ~45M | 5-6 hrs |
 | 7 (Long Range) | 38,239 | 50 mi | ~45M | 3-4 hrs |
 | **TOTAL** | - | - | ~102M pairs | **11-14 hrs** |
+
+---
+
+## Matrix Scaling Performance
+
+### San Francisco Proof of Concept (Measured)
+
+The SF travel time matrix demonstrates the speed of the ORS MATRIX function in Snowflake:
+
+| Metric | Value |
+|--------|-------|
+| **Hexagons** | 1,065 (H3 Resolution 9) |
+| **Total Pairs** | 1,134,225 (1,065 × 1,065) |
+| **ORS MATRIX Computation** | **36 seconds** (single SQL call, all 1,065 origins processed) |
+| **INSERT into Snowflake** | 2.4 seconds |
+| **End-to-end pipeline** | ~3 minutes (hex creation → matrix INSERT) |
+| **Table** | `OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX` |
+
+The ORS MATRIX function accepts an array of origin/destination coordinates and returns a full NxN distance/duration matrix in a single call. For 1,065 hexagons, this means computing 1.1M+ travel time pairs in just 36 seconds.
+
+### California Scaling Projection
+
+Scaling from San Francisco to all of California:
+
+| Scope | Hexagons (Res 9) | All-Pairs | Sparse Pairs (distance cutoff) | Projected Time |
+|-------|-------------------|-----------|--------------------------------|----------------|
+| **San Francisco** | 1,065 | 1.1M | 1.1M (no cutoff) | 3 min (measured) |
+| **Single CA city** | ~5,000-20,000 | 25M-400M | ~500K-2M (2mi cutoff) | 10-30 min |
+| **All CA cities** | ~480,000 | 230B | ~12M (2mi cutoff) | 3-4 hrs |
+| **Full CA (all res)** | 630,000+ | - | **~102M** | **11-14 hrs** |
+
+> **Key Insight:** The 1.8 billion+ theoretical all-pairs matrix is not needed. By using distance-based cutoffs (last-mile: 2mi, delivery zone: 10mi, long-range: 50mi) the sparse matrix reduces to ~102M practical pairs — a 95% reduction that completes in under 14 hours.
+
+### Stored Procedure Approach (Alternative)
+
+For automated/scheduled builds, the `BUILD_TRAVEL_TIME_MATRIX_RES7` stored procedure completed in **41 minutes** for the SF area. This approach processes origins in batches with progress tracking and is suitable for Snowflake Task scheduling.
+
+---
+
+## Search Optimization for Large Tables
+
+Enable Snowflake Search Optimization on large tables for fast point lookups. This is critical for the H3 hexagon tables and travel time matrices.
+
+### H3 Hexagon Tables
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES7
+    ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
+
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES8
+    ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
+
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES9
+    ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
+```
+
+### Travel Time Matrix Tables
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7
+    ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
+
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8
+    ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
+
+ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9
+    ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
+```
+
+### SF Travel Time Matrix
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_HEX_ID, DESTINATION_HEX_ID);
+```
+
+### Overture Maps-derived Tables
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
+    ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
+    ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
+```
+
+> **Note:** Search Optimization is a serverless feature billed separately. It dramatically improves lookup performance on tables with millions of rows by maintaining an access path index.
 
 ---
 
