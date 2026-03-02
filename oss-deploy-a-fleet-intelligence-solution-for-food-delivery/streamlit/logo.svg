@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100">
+  <defs>
+    <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FF6B35"/>
+      <stop offset="100%" style="stop-color:#E63946"/>
+    </linearGradient>
+  </defs>
+  <circle cx="40" cy="50" r="30" fill="url(#brandGradient)"/>
+  <path d="M25 45 L40 35 L55 45 L55 60 L40 70 L25 60 Z" fill="white" opacity="0.9"/>
+  <circle cx="40" cy="52" r="8" fill="url(#brandGradient)"/>
+  <path d="M36 52 L40 48 L44 52 L40 56 Z" fill="white"/>
+  <text x="85" y="60" font-family="Arial, sans-serif" font-size="36" font-weight="bold" fill="#FF6B35">Swift</text>
+  <text x="175" y="60" font-family="Arial, sans-serif" font-size="36" font-weight="bold" fill="#003545">Bite</text>
+  <text x="85" y="78" font-family="Arial, sans-serif" font-size="12" fill="#8A999E" letter-spacing="2">FRESH FOOD, FAST DELIVERY</text>
+</svg>
