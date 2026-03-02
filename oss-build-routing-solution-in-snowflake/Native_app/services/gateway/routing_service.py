@@ -99,8 +99,11 @@ def post_optimization_tabular():
 
     Easy Optimization problem solver
 
-    row[1] - j  obs array
+    row[1] - jobs array
     row[2] - vehicles array
+    row[3] - matrices object (optional) - pre-computed cost matrices per profile
+             Format: {"profile_name": {"durations": [[...]], "distances": [[...]]}}
+             When provided, jobs/vehicles should use location_index instead of location
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
@@ -110,7 +113,19 @@ def post_optimization_tabular():
 
     input_rows = message['data']
 
-    output_rows = [[row[0], get_vroom_response({'jobs': row[1], 'vehicles': row[2]})]for row in input_rows]
+    def build_vroom_payload(row):
+        payload = {'jobs': row[1], 'vehicles': row[2]}
+        if len(row) > 3 and row[3]:
+            matrices = row[3]
+            if isinstance(matrices, dict) and len(matrices) > 0:
+                payload['matrices'] = matrices
+                payload['options'] = {'g': False}
+            elif isinstance(matrices, list) and len(matrices) > 0:
+                payload['matrices'] = matrices[0] if len(matrices) == 1 and isinstance(matrices[0], dict) else matrices
+                payload['options'] = {'g': False}
+        return payload
+
+    output_rows = [[row[0], get_vroom_response(build_vroom_payload(row))] for row in input_rows]
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -326,11 +341,12 @@ def get_vroom_response(payload):
     downstream_headers ={"Content-Type":"application/json"}
     r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
     vroom_r = r.json()
-    # Process the result to include GeoJSON geometry. Reverse the coordinates
-    for route in vroom_r['routes']:
-        if 'geometry' in route:
-            decoded_geometry = decode(route['geometry'])
-            route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
+    logger.debug(f'VROOM response: {vroom_r}')
+    if 'routes' in vroom_r:
+        for route in vroom_r['routes']:
+            if 'geometry' in route:
+                decoded_geometry = decode(route['geometry'])
+                route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
 def get_ors_response(function, profile, payload, format):

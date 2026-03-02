@@ -42,8 +42,11 @@ def post_optimization_tabular():
 
     Easy Optimization problem solver
 
-    row[1] - j  obs array
+    row[1] - jobs array
     row[2] - vehicles array
+    row[3] - matrices array (optional) - pre-computed cost matrices per profile
+             Format: {"profile_name": {"durations": [[...]], "distances": [[...]]}}
+             When provided, jobs/vehicles should use location_index instead of location
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
@@ -53,7 +56,19 @@ def post_optimization_tabular():
 
     input_rows = message['data']
 
-    output_rows = [[row[0], get_vroom_response({'jobs': row[1], 'vehicles': row[2]})]for row in input_rows]
+    def build_vroom_payload(row):
+        payload = {'jobs': row[1], 'vehicles': row[2]}
+        if len(row) > 3 and row[3]:
+            matrices = row[3]
+            if isinstance(matrices, dict) and len(matrices) > 0:
+                payload['matrices'] = matrices
+                payload['options'] = {'g': False}
+            elif isinstance(matrices, list) and len(matrices) > 0:
+                payload['matrices'] = matrices[0] if len(matrices) == 1 and isinstance(matrices[0], dict) else matrices
+                payload['options'] = {'g': False}
+        return payload
+
+    output_rows = [[row[0], get_vroom_response(build_vroom_payload(row))] for row in input_rows]
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -194,6 +209,111 @@ def post_isochrones(format="geojson"):
 
     return response
 
+@app.post("/matrix")
+def post_matrix():
+    '''
+    Matrix Handler - calculates travel time/distance matrix between multiple locations
+
+    MATRIX(method varchar, locations array, metrics array)
+
+    row[1] - method (profile) e.g. 'driving-car'
+    row[2] - locations array of [lon, lat] pairs
+    row[3] - metrics array e.g. ['duration', 'distance']
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    if message is None or not message['data']:
+        logger.info('Received empty message')
+        return {}
+
+    input_rows = message['data']
+    output_rows = []
+    
+    for row in input_rows:
+        profile = row[1]
+        locations = row[2]
+        metrics = row[3] if len(row) > 3 and row[3] else ['duration', 'distance']
+        
+        payload = {
+            'locations': locations,
+            'metrics': metrics
+        }
+        
+        result = get_ors_matrix_response(profile, payload)
+        output_rows.append([row[0], result])
+        
+    logger.info(f'Produced {len(output_rows)} rows')
+
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    logger.debug(f'Sending response: {response.json}')
+
+    return response
+
+@app.post("/matrix_tabular")
+def post_matrix_tabular():
+    '''
+    Matrix Tabular Handler - calculates travel time/distance between origin and destinations
+
+    MATRIX_TABULAR(method varchar, origin array, destinations array)
+
+    row[1] - method (profile) e.g. 'driving-car'
+    row[2] - origin [lon, lat]
+    row[3] - destinations array of [lon, lat] pairs
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    if message is None or not message['data']:
+        logger.info('Received empty message')
+        return {}
+
+    input_rows = message['data']
+    output_rows = []
+    
+    for row in input_rows:
+        profile = row[1]
+        origin = row[2]
+        destinations = row[3]
+        
+        locations = [origin] + destinations
+        sources = [0]
+        destinations_idx = list(range(1, len(locations)))
+        
+        payload = {
+            'locations': locations,
+            'sources': sources,
+            'destinations': destinations_idx,
+            'metrics': ['duration', 'distance']
+        }
+        
+        result = get_ors_matrix_response(profile, payload)
+        output_rows.append([row[0], result])
+        
+    logger.info(f'Produced {len(output_rows)} rows')
+
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    logger.debug(f'Sending response: {response.json}')
+
+    return response
+
+def get_ors_matrix_response(profile, payload):
+    '''
+    ORS Matrix Endpoint abstraction
+    '''
+    endpoint = f'{ORS_API_PATH}/matrix/{profile}'
+    if not endpoint.startswith('/'):
+        endpoint = '/' + endpoint
+
+    downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+    downstream_headers = {"Content-Type": "application/json"}
+    logger.info(f'Calling: {downstream_url}')
+    logger.info(f'Payload: {payload}')
+    
+    r = requests.post(url=downstream_url, headers=downstream_headers, json=payload)
+    logger.debug(r.json())
+    return r.json()
+
 def get_vroom_response(payload):
     '''
     Vroom Service Endpoint Abstraction
@@ -203,11 +323,12 @@ def get_vroom_response(payload):
     downstream_headers ={"Content-Type":"application/json"}
     r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
     vroom_r = r.json()
-    # Process the result to include GeoJSON geometry. Reverse the coordinates
-    for route in vroom_r['routes']:
-        if 'geometry' in route:
-            decoded_geometry = decode(route['geometry'])
-            route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
+    logger.debug(f'VROOM response: {vroom_r}')
+    if 'routes' in vroom_r:
+        for route in vroom_r['routes']:
+            if 'geometry' in route:
+                decoded_geometry = decode(route['geometry'])
+                route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
 def get_ors_response(function, profile, payload, format):

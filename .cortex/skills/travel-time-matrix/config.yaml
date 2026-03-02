@@ -1,0 +1,45 @@
+name: travel-time-matrix
+description: |
+  Calculate travel time and distance matrices between geographic locations using 
+  OpenRouteService (ORS) Native App in Snowflake. Uses the MATRIX function for 
+  efficient bulk calculations and H3 hexagons for spatial aggregation.
+  
+  IMPORTANT: Requires ORS Native App v0.6.0+ with MATRIX function. If MATRIX 
+  function is not available, the skill provides upgrade instructions and a 
+  fallback approach using DIRECTIONS.
+  
+  Use when: building travel time matrices, calculating all-pairs routing, 
+  H3 hexagon-based routing analysis, ORS MATRIX bulk processing,
+  origin-destination matrices, accessibility analysis.
+  
+  Triggers: travel time matrix, distance matrix, H3 routing, ORS MATRIX,
+  ORS DIRECTIONS, all-pairs routing, hexagon routing, batch route calculation, 
+  accessibility matrix, origin-destination, OD matrix, upgrade ORS, 
+  MATRIX function not found.
+
+triggers:
+  - travel time matrix
+  - distance matrix
+  - H3 routing
+  - ORS MATRIX
+  - ORS DIRECTIONS
+  - all-pairs routing
+  - hexagon routing
+  - batch route calculation
+  - accessibility matrix
+  - origin-destination
+  - OD matrix
+  - route matrix
+  - calculate routes between hexagons
+  - MATRIX function
+  - upgrade ORS
+  - bulk routing
+
+tags:
+  - openrouteservice
+  - routing
+  - h3
+  - spatial
+  - batch-processing
+  - travel-time
+  - matrix

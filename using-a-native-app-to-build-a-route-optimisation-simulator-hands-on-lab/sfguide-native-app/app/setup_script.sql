@@ -249,6 +249,30 @@ BEGIN
       AS '/optimization';
    GRANT USAGE ON FUNCTION core.optimization (VARIANT) TO APPLICATION ROLE app_user; 
 
+   CREATE OR REPLACE FUNCTION core.MATRIX (method varchar, locations array, metrics array)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/matrix';
+   GRANT USAGE ON FUNCTION core.MATRIX (varchar, array, array) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX (method varchar, locations array)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/matrix';
+   GRANT USAGE ON FUNCTION core.MATRIX (varchar, array) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX_TABULAR (method varchar, origin array, destinations array)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/matrix_tabular';
+   GRANT USAGE ON FUNCTION core.MATRIX_TABULAR (varchar, array, array) TO APPLICATION ROLE app_user;
+
    RETURN 'Functions successfully created';
 END;
 $$;
