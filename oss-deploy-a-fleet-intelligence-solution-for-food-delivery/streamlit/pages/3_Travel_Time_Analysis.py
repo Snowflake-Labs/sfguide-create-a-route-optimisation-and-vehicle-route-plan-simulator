@@ -113,18 +113,26 @@ if selected_hex:
 
     @st.cache_data(ttl=120)
     def get_hexagons_in_polygon(origin_hex, geojson_str, resolution, hex_table_name, travel_table_name, has_travel):
-        escaped = geojson_str.replace("'", "''")
         geojson_obj = json.loads(geojson_str)
         geom_str = json.dumps(geojson_obj["features"][0]["geometry"])
         escaped_geom = geom_str.replace("'", "''")
 
+        max_k = {9: 60, 8: 25, 7: 10}.get(resolution, 60)
+
         if has_travel:
             query = f"""
-            WITH hexagons_in_isochrone AS (
-                SELECT h.h3_index, h.lon, h.lat,
+            WITH candidates AS (
+                SELECT h.h3_index, h.lon, h.lat, h.centroid,
                        H3_GRID_DISTANCE('{origin_hex}', h.h3_index) AS ring_distance
                 FROM {hex_table_name} h
-                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), h.centroid)
+                WHERE h.h3_index IN (
+                    SELECT VALUE::VARCHAR FROM TABLE(FLATTEN(H3_GRID_DISK('{origin_hex}', {max_k})))
+                )
+            ),
+            hexagons_in_isochrone AS (
+                SELECT h3_index, lon, lat, ring_distance
+                FROM candidates
+                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), centroid)
             ),
             with_travel_times AS (
                 SELECT hx.*,
@@ -150,11 +158,18 @@ if selected_hex:
             """
         else:
             query = f"""
-            WITH hexagons_in_isochrone AS (
-                SELECT h.h3_index, h.lon, h.lat,
+            WITH candidates AS (
+                SELECT h.h3_index, h.lon, h.lat, h.centroid,
                        H3_GRID_DISTANCE('{origin_hex}', h.h3_index) AS ring_distance
                 FROM {hex_table_name} h
-                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), h.centroid)
+                WHERE h.h3_index IN (
+                    SELECT VALUE::VARCHAR FROM TABLE(FLATTEN(H3_GRID_DISK('{origin_hex}', {max_k})))
+                )
+            ),
+            hexagons_in_isochrone AS (
+                SELECT h3_index, lon, lat, ring_distance
+                FROM candidates
+                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), centroid)
             )
             SELECT h3_index, lon, lat, ring_distance,
                    ring_distance * 60 * CASE {resolution}
