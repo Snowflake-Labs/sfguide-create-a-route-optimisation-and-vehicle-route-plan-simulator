@@ -45,8 +45,12 @@ ors:
     isochrones:
       maximum_locations: 2
       maximum_intervals: 10
-      maximum_range_distance_default: 1500000
-      maximum_range_time_default: 18000
+      maximum_range_distance: 
+        - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
+          value: 1500000
+      maximum_range_time:
+        - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
+          value: 18000
 #      maximum_distance: 100000
 #      maximum_distance_dynamic_weights: 100000
 #      maximum_distance_avoid_areas: 100000
