@@ -1,0 +1,22 @@
+name: risk_intelligence_env
+channels:
+  - conda-forge
+  - pyviz
+  - snowflake
+dependencies:
+  - python=3.11
+  - snowflake-snowpark-python
+  - streamlit
+  - pandas
+  - numpy
+  - pydeck
+  - plotly
+  - folium
+  - geopandas
+  - shapely
+  - requests
+  - altair
+  - pip
+  - pip:
+    - streamlit-folium
+    - streamlit-option-menu

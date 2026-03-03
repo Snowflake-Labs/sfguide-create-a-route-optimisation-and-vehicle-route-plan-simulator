@@ -1,0 +1,11 @@
+testing:
+  # SnowCLI connection name reserved for testing purposes
+  connection_name: connection_name_testing_purposes
+  account: SFSEHOL-DRY_RUN_FLEET_INTELLIGENCE_NOV_BDTTVY
+  user: user
+  password: sn0wf@ll
+  role: ATTENDEE_ROLE
+  warehouse: DEFAULT_WH
+  database: FLEET_INTELLIGENCE
+  schema: FLEET_INTELLIGENCE
+

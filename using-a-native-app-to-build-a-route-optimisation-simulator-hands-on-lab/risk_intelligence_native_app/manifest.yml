@@ -1,0 +1,75 @@
+manifest_version: 1
+
+version:
+  name: "1.0.0"
+  label: "Risk Intelligence v1.0"
+  comment: "Comprehensive risk assessment platform for flood and wildfire analysis"
+
+artifacts:
+  setup_script: src/setup.sql
+  readme: README.md
+
+configuration:
+  log_level: INFO
+  trace_level: OFF
+
+privileges:
+  - EXECUTE MANAGED TASK
+  - EXECUTE TASK
+  - CREATE COMPUTE POOL
+  - CREATE WAREHOUSE
+  - CREATE DATABASE
+  - CREATE SCHEMA
+  - CREATE TABLE
+  - CREATE VIEW
+  - CREATE STAGE
+  - CREATE FILE FORMAT
+  - CREATE STREAMLIT
+  - IMPORTED PRIVILEGES
+
+references:
+  - consumer_database:
+      label: "Risk Intelligence Database"
+      description: "Main database for risk assessment data and analytics"
+      privileges:
+        - CREATE SCHEMA
+        - CREATE TABLE
+        - CREATE VIEW
+        - CREATE STAGE
+        - CREATE FILE FORMAT
+        - CREATE STREAMLIT
+        - USAGE
+        - MONITOR
+
+application_roles:
+  - name: RISK_ANALYST
+    label: "Risk Analyst"
+    comment: "Role for users performing risk analysis"
+  - name: RISK_ADMIN
+    label: "Risk Administrator" 
+    comment: "Administrative role for managing risk intelligence app"
+
+streamlit:
+  - name: "Flood Risk Assessment"
+    identifier: flood_risk_app
+    file: streamlit/flood_risk_areas.py
+    stage: app_stage
+    title: "UK Flood Risk Assessment"
+    query_warehouse: app_warehouse
+  - name: "California Wildfire Risk Assessment"
+    identifier: wildfire_risk_app
+    file: streamlit/wildfire_assessment.py
+    stage: app_stage
+    title: "California Wildfire Risk Assessment"
+    query_warehouse: app_warehouse
+
+data_content:
+  - name: uk_storms_data
+    source: data/uk_storms.csv
+    description: "Historical UK storm data"
+  - name: flood_risk_areas
+    source: data/Flood_Risk_Areas.geojson
+    description: "UK flood risk area boundaries"
+  - name: fws_historic_warnings
+    source: data/fws_historic_warnings.csv
+    description: "Historic flood warning system data"

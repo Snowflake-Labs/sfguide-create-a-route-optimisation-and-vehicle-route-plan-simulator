@@ -1,0 +1,23 @@
+# OpenStreetMap Generator Native App Manifest
+manifest_version: 1
+
+artifacts:
+  setup_script: setup.sql
+  readme: README.md
+  default_streamlit: core.map_generator_app
+
+references:
+  - external_access_integration_ref:
+      label: "External Network Access"
+      description: "Required for accessing OpenStreetMap APIs (Overpass API, Nominatim)"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: true
+
+configuration:
+  log_level: INFO
+  trace_level: ON_EVENT
+  grant_callback: core.grant_callback

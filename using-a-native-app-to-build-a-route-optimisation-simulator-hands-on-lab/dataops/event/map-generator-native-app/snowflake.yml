@@ -1,0 +1,20 @@
+# Snowflake CLI Project Configuration for OpenStreetMap Generator Native App
+
+definition_version: 1.1
+
+native_app:
+  name: osm_generator_test_app
+  source_stage: app_src.app_stage
+  
+  artifacts:
+    - src: app/*
+      dest: ./
+    - src: streamlit/*
+      dest: streamlit/
+  
+  package:
+    name: osm_generator_test_package
+    
+  application:
+    name: osm_generator_test_app
+    warehouse: DEFAULT_WH

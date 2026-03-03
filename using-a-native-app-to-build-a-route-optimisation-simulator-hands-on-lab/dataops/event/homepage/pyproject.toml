@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "snowflake-solution-center-documentation"
+version = "0.7.0"
+description = ""
+authors = ["Luke Crumley <luke.crumley@dataops.live>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+mkdocs-material = "^9.2.3"
+mkdocs-macros-plugin = "^1.0.4"
+mkdocs-dataopslive = "^0.10.0"
+mkdocs-glightbox = "^0.4.0"
+
+
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+
+[[tool.poetry.source]]
+name = "dataops"
+url = "https://app.dataops.live/api/v4/projects/5844/packages/pypi/simple"
+priority = "supplemental"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

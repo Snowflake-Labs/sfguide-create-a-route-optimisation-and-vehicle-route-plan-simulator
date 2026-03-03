@@ -1,0 +1,158 @@
+-- Risk Intelligence Native App - Marketplace Data Configuration
+-- This script configures access to Snowflake Marketplace data for enhanced risk analysis
+
+-- Note: This script should be run by the application administrator after installation
+-- to connect to required marketplace listings
+
+USE APPLICATION RISK_INTELLIGENCE_TEST;
+USE ROLE RISK_ADMIN;
+
+-- ===== WILDFIRE DATA CONFIGURATION =====
+
+-- Request access to Location Analytics - Making People Safer marketplace listing
+-- This provides wildfire, customer, and infrastructure data for California
+CALL SYSTEM$REQUEST_LISTING_AND_WAIT('ORGDATACLOUD$INTERNAL$LOCATION_ANALYTICS_-_MAKING_PEOPLE_SAFER', 20);
+
+-- Update wildfire risk views to use actual marketplace data
+CREATE OR REPLACE VIEW WILDFIRE_RISK.CUSTOMER_LOYALTY_DETAILS AS 
+SELECT * FROM "ORGDATACLOUD$INTERNAL$LOCATION_ANALYTICS_-_MAKING_PEOPLE_SAFER".TELCO_GEOSPATIAL_HANDS_ON_LAB.CUSTOMER_LOYALITY_DETAILS;
+
+CREATE OR REPLACE VIEW WILDFIRE_RISK.CELL_TOWERS_WITH_RISK_SCORE AS 
+SELECT * FROM "ORGDATACLOUD$INTERNAL$LOCATION_ANALYTICS_-_MAKING_PEOPLE_SAFER".TELCO_GEOSPATIAL_HANDS_ON_LAB.CELL_TOWERS_WITH_RISK_SCORE;
+
+CREATE OR REPLACE VIEW WILDFIRE_RISK.CALIFORNIA_FIRE_PERIMETER AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$LOCATION_ANALYTICS_-_MAKING_PEOPLE_SAFER".TELCO_GEOSPATIAL_HANDS_ON_LAB.CALIFORNIA_FIRE_PERIMITER;
+
+-- ===== UK BUILDING DATA CONFIGURATION =====
+
+-- Request access to OS Building Sample Data for enhanced UK analysis
+CALL SYSTEM$REQUEST_LISTING_AND_WAIT('ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA', 20);
+
+-- Create UK building and geographic data views
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_BUILDINGS AS
+SELECT * FROM ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA.ORDNANCE_SURVEY_SAMPLE_DATA.PRS_BUILDING_TBL_V2;
+
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_BUILT_UP_AREAS AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA".ORDNANCE_SURVEY_SAMPLE_DATA.OS_OPEN_BUILT_UP_AREAS;
+
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_STREETS AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA".ORDNANCE_SURVEY_SAMPLE_DATA.STREETS;
+
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_UK_ADDRESSES AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA".ORDNANCE_SURVEY_SAMPLE_DATA.UK_ADDRESSES;
+
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_UK_HYDRO_NODE AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA".ORDNANCE_SURVEY_SAMPLE_DATA.UK_HYDRO_NODE;
+
+CREATE OR REPLACE VIEW FLOOD_RISK.OS_UK_WATERCOURSE_LINK AS
+SELECT * FROM "ORGDATACLOUD$INTERNAL$OS_BUILDING_SAMPLE_DATA".ORDNANCE_SURVEY_SAMPLE_DATA.UK_WATERCOURSE_LINK;
+
+-- ===== ENHANCED ANALYTICS VIEWS =====
+
+-- Create enhanced flood risk analysis view combining multiple data sources
+CREATE OR REPLACE VIEW FLOOD_RISK.ENHANCED_FLOOD_RISK_ANALYSIS AS
+SELECT 
+    fra.fra_id,
+    fra.fra_name,
+    fra.flood_source,
+    fra.geog AS flood_area_geometry,
+    COUNT(DISTINCT b.uprn) AS buildings_at_risk,
+    AVG(ST_AREA(b.geometry)) AS avg_building_size,
+    COUNT(DISTINCT s.identifier) AS streets_affected
+FROM FLOOD_RISK.FLOOD_RISK_AREAS_VIEW fra
+LEFT JOIN FLOOD_RISK.OS_BUILDINGS b 
+    ON ST_INTERSECTS(fra.geog, b.geometry)
+LEFT JOIN FLOOD_RISK.OS_STREETS s 
+    ON ST_INTERSECTS(fra.geog, s.geometry)
+GROUP BY fra.fra_id, fra.fra_name, fra.flood_source, fra.geog;
+
+-- Create wildfire infrastructure risk summary
+CREATE OR REPLACE VIEW WILDFIRE_RISK.INFRASTRUCTURE_RISK_SUMMARY AS
+SELECT 
+    ct.tower_id,
+    ct.latitude,
+    ct.longitude,
+    ct.risk_score,
+    COUNT(DISTINCT cl.customer_id) AS customers_affected,
+    AVG(cl.loyalty_score) AS avg_customer_loyalty,
+    ST_DISTANCE(
+        ST_POINT(ct.longitude, ct.latitude),
+        (SELECT ST_CENTROID(ST_COLLECT(geometry)) FROM WILDFIRE_RISK.CALIFORNIA_FIRE_PERIMETER WHERE year >= 2020)
+    ) AS distance_to_recent_fires
+FROM WILDFIRE_RISK.CELL_TOWERS_WITH_RISK_SCORE ct
+LEFT JOIN WILDFIRE_RISK.CUSTOMER_LOYALTY_DETAILS cl
+    ON ST_DWITHIN(
+        ST_POINT(ct.longitude, ct.latitude),
+        ST_POINT(cl.longitude, cl.latitude),
+        5000  -- 5km radius
+    )
+GROUP BY ct.tower_id, ct.latitude, ct.longitude, ct.risk_score;
+
+-- ===== DATA LOADING PROCEDURES =====
+
+-- Create procedure to load flood risk data from application stage
+CREATE OR REPLACE PROCEDURE CORE.LOAD_FLOOD_RISK_DATA()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    -- Load UK storms data
+    COPY INTO FLOOD_RISK.UK_STORMS
+    FROM '@CORE.APP_STAGE/data/uk_storms.csv'
+    FILE_FORMAT = (FORMAT_NAME = 'CORE.CSV_FORMAT')
+    ON_ERROR = 'CONTINUE'
+    FORCE = TRUE;
+    
+    -- Load flood risk areas from GeoJSON
+    CREATE OR REPLACE TEMPORARY TABLE FLOOD_RISK_RAW (RAW VARIANT);
+    
+    COPY INTO FLOOD_RISK_RAW
+    FROM '@CORE.APP_STAGE/data/Flood_Risk_Areas.geojson'
+    FILE_FORMAT = (FORMAT_NAME = 'CORE.GEOJSON_FORMAT')
+    ON_ERROR = 'ABORT_STATEMENT'
+    FORCE = TRUE;
+    
+    -- Process GeoJSON into structured table
+    INSERT OVERWRITE INTO FLOOD_RISK.FLOOD_RISK_AREAS (FEATURE, PROPERTIES, GEOMETRY, GEOG)
+    SELECT
+        feature AS FEATURE,
+        feature:properties AS PROPERTIES,
+        feature:geometry AS GEOMETRY,
+        TO_GEOGRAPHY(
+            ST_TRANSFORM(
+                ST_SETSRID(TO_GEOMETRY(feature:geometry), 27700),
+                4326
+            )
+        ) AS GEOG
+    FROM FLOOD_RISK_RAW,
+        LATERAL FLATTEN(input => RAW:features) f,
+        LATERAL (SELECT f.value AS feature);
+    
+    -- Load historic flood warnings
+    COPY INTO FLOOD_RISK.FWS_HISTORIC_WARNINGS
+    FROM '@CORE.APP_STAGE/data/fws_historic_warnings.csv'
+    FILE_FORMAT = (FORMAT_NAME = 'CORE.CSV_FORMAT')
+    ON_ERROR = 'CONTINUE'
+    FORCE = TRUE;
+    
+    DROP TABLE FLOOD_RISK_RAW;
+    
+    RETURN 'Flood risk data loaded successfully';
+END;
+$$;
+
+-- Grant permissions on new objects
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLOOD_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT SELECT ON ALL VIEWS IN SCHEMA WILDFIRE_RISK TO APPLICATION ROLE RISK_ANALYST;
+GRANT USAGE ON PROCEDURE CORE.LOAD_FLOOD_RISK_DATA() TO APPLICATION ROLE RISK_ADMIN;
+
+-- Load the flood risk data
+CALL CORE.LOAD_FLOOD_RISK_DATA();
+
+-- Verify marketplace data configuration
+SELECT 'Marketplace data configured successfully!' AS STATUS,
+       (SELECT COUNT(*) FROM WILDFIRE_RISK.CUSTOMER_LOYALTY_DETAILS) AS CUSTOMER_RECORDS,
+       (SELECT COUNT(*) FROM WILDFIRE_RISK.CELL_TOWERS_WITH_RISK_SCORE) AS TOWER_RECORDS,
+       (SELECT COUNT(*) FROM FLOOD_RISK.FLOOD_RISK_AREAS) AS FLOOD_AREAS,
+       (SELECT COUNT(*) FROM FLOOD_RISK.UK_STORMS) AS STORM_RECORDS;

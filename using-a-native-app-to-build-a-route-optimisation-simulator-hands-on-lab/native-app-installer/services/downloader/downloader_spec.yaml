@@ -1,0 +1,22 @@
+spec:
+  containers:
+    - name: downloader
+      image: /openrouteservice_setup/public/image_repository/downloader:v0.0.3
+      volumeMounts:
+        - name: ors-spcs-stage
+          mountPath: /downloads/ors_spcs_stage
+        - name: ors-graphs-spcs-stage
+          mountPath: /downloads/ors_graphs_spcs_stage
+        - name: ors-elevation-cache-spcs-stage
+          mountPath: /downloads/ors_elevation_cache_spcs_stage
+  endpoints:
+    - name: downloader
+      port: 8081
+      public: false
+  volumes:
+    - name: ors-spcs-stage
+      source: "@CORE.ORS_SPCS_STAGE"
+    - name: ors-graphs-spcs-stage
+      source: "@CORE.ORS_GRAPHS_SPCS_STAGE"
+    - name: ors-elevation-cache-spcs-stage
+      source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE"

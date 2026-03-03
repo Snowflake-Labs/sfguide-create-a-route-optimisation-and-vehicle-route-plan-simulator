@@ -1,0 +1,24 @@
+# This job renders the homepage from the MkDocs assets and envrionment variables.
+Build Homepage:
+  extends:
+    - .agent_tag
+  image: python:3
+  stage: "Pipeline Initialisation"
+  needs: ["Initialise Pipeline"]
+  variables:
+    PORTAL_LOGO_PATH: assets/taxi.png
+    PORTAL_LOGO_ALT: Event homepage for $EVENT_NAME
+    PORTAL_NAME: $EVENT_NAME Event
+  script:
+    - env
+    - pip config set global.index-url https://__token__:$PIP_REPO_ACCESS_TOKEN@app.dataops.live/api/v4/projects/5844/packages/pypi/simple
+    - cd $CI_PROJECT_DIR/dataops/event/homepage
+    - pip install -U -r requirements.txt
+    - mkdocs build
+  artifacts:
+    paths:
+      - $CI_PROJECT_DIR/dataops/event/homepage/site
+    expose_as: "dataopsreport"
+    name: "Homepage"
+    expire_in: 4 weeks
+  icon: ${SNOWFLAKE_ICON}

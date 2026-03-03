@@ -1,0 +1,13 @@
+name: osm_generator
+channels:
+  - conda-forge
+  - pyviz
+  - snowflake
+dependencies:
+  - python=3.8
+  - snowflake-snowpark-python
+  - requests
+  - pandas
+  - streamlit
+  - pydeck
+  - altair

@@ -1,0 +1,30 @@
+## Note: commented lines with double curly braces will still be rendered and can throw errors if these keys are not defined.
+## Therefore, in comments these have been swapped for [[ ]].
+## If uncommenting a line, please change these back to double cirly braces
+
+## The default configuration here uses a single user account (defined from SNOWFLAKE.SOLE.USERNAME)
+## for all sections i.e. a single username which will change to different roles for different functions.
+
+SNOWFLAKE:
+  ACCOUNT: "{{ env.DATAOPS_SNOWFLAKE_ACCOUNT }}"
+
+  MASTER:
+    USERNAME: "{{ env.DATAOPS_SNOWFLAKE_USER }}"
+    ROLE: "ACCOUNTADMIN"
+  TRANSFORM:
+    USERNAME: "{{ env.DATAOPS_SNOWFLAKE_USER }}"
+    ROLE: "ACCOUNTADMIN"
+    WAREHOUSE: "{{ env.DATAOPS_PREFIX }}_BUILD_WH"
+    THREADS: 8
+  INGESTION:
+    USERNAME: "{{ env.DATAOPS_SNOWFLAKE_USER }}"
+    ROLE: "ACCOUNTADMIN"
+    WAREHOUSE: "{{ env.DATAOPS_PREFIX }}_BUILD_WH"
+    THREADS: 8
+
+  SOLE:
+    ACCOUNT: "{{ env.DATAOPS_SNOWFLAKE_ACCOUNT }}"
+    USERNAME: "{{ env.DATAOPS_SNOWFLAKE_USER }}"
+    ROLE: "ACCOUNTADMIN"
+    KEY_PAIR: "{{ env.DATAOPS_SNOWFLAKE_KEY_PAIR }}"
+    WAREHOUSE: "{{ env.DATAOPS_SNOWFLAKE_WAREHOUSE }}"
