@@ -66,7 +66,22 @@ Wait 15-30 seconds for services to start.
 
 **Output:** ORS verified and running
 
-### Step 3: Get Carto Overture Datasets from Marketplace
+### Step 3: Read Current ORS Configuration
+
+**Goal:** Detect the current routing profiles from the ORS configuration so the Streamlit app uses the correct travel modes.
+
+1. **Read current ORS configuration:**
+   - Read and follow the instructions in `.cortex/skills/customize-main/read-ors-configuration/SKILL.md`
+
+2. **Store configuration for later steps:**
+   - `<ENABLED_PROFILES>`: List of enabled vehicle profiles (e.g., `['driving-car', 'cycling-electric', 'foot-walking']`)
+
+**Output:** Current ORS configuration detected:
+- Vehicle Profiles: `<ENABLED_PROFILES>`
+
+**Next:** Proceed to Step 4
+
+### Step 4: Get Carto Overture Datasets from Marketplace
 
 **Goal:** Acquire Overture Maps Places and Addresses datasets for POI and density data.
 
@@ -90,7 +105,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 **Output:** Marketplace datasets available
 
-### Step 4: Create Database, Schema, and Warehouse
+### Step 5: Create Database, Schema, and Warehouse
 
 **Goal:** Set up the demo database, schema, and warehouse.
 
@@ -118,7 +133,7 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLI
 
 **Output:** Database `OPENROUTESERVICE_SETUP`, schema `RETAIL_CATCHMENT_DEMO` created with stage
 
-### Step 5: Create Optimized Data Tables
+### Step 6: Create Optimized Data Tables
 
 **Goal:** Create pre-filtered, performance-optimized tables from Overture Maps marketplace data. These tables are required by the Streamlit app.
 
@@ -247,9 +262,27 @@ SELECT 'REGIONAL_ADDRESSES', COUNT(*) FROM OPENROUTESERVICE_SETUP.RETAIL_CATCHME
 
 **Output:** 4 optimized tables created with search optimization and clustering
 
-### Step 6: Upload Streamlit Files
+### Step 7: Upload Streamlit Files
 
-**Goal:** Upload all Streamlit app files to the stage.
+**Goal:** Update travel modes to match the ORS configuration, then upload all Streamlit app files to the stage.
+
+#### 7a: Update Travel Modes
+
+Open `oss-retail-catchment-overture-maps/Streamlit/retail_catchment.py` and find the `TRAVEL_MODES` variable near the top of the file:
+```python
+# Travel modes - must match enabled profiles in ors-config.yml
+TRAVEL_MODES = ['driving-car', 'cycling-electric', 'foot-walking']
+```
+
+**If it already matches `<ENABLED_PROFILES>`**: Skip modification.
+
+**If it differs**: Update `TRAVEL_MODES` to match `<ENABLED_PROFILES>`:
+```python
+# Travel modes - must match enabled profiles in ors-config.yml
+TRAVEL_MODES = [<ENABLED_PROFILES>]
+```
+
+#### 7b: Upload Files
 
 Run these commands:
 
@@ -268,7 +301,7 @@ LIST @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE;
 
 **Output:** 5 files uploaded to stage
 
-### Step 7: Create Streamlit App
+### Step 8: Create Streamlit App
 
 **Goal:** Create the Streamlit application in Snowflake.
 
@@ -283,9 +316,11 @@ CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_
 ALTER STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP ADD LIVE VERSION FROM LAST;
 ```
 
+**Note:** The Streamlit app uses travel modes defined in the `TRAVEL_MODES` variable, which must match the enabled profiles in `ors-config.yml`. The deploying agent should update `TRAVEL_MODES` in Step 7a before uploading. If the config cannot be read, the defaults are: `driving-car`, `cycling-electric`, `foot-walking`.
+
 **Output:** Streamlit app created
 
-### Step 8: Verify Deployment
+### Step 9: Verify Deployment
 
 **Goal:** Confirm the app is deployed and accessible.
 
@@ -295,7 +330,7 @@ SHOW STREAMLITS IN SCHEMA OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO;
 
 **Output:** `RETAIL_CATCHMENT_APP` visible in results
 
-### Step 9: Launch the App
+### Step 10: Launch the App
 
 **Goal:** Open the Streamlit app in Snowsight.
 
@@ -325,9 +360,9 @@ The deployed app provides:
 ## Stopping Points
 
 - ✋ Step 2: Verify ORS is installed before proceeding
-- ✋ Step 3: Confirm marketplace data is accessible
-- ✋ Step 5: Verify optimized tables have data before uploading Streamlit files
-- ✋ Step 9: Verify app loads without errors
+- ✋ Step 4: Confirm marketplace data is accessible
+- ✋ Step 6: Verify optimized tables have data before uploading Streamlit files
+- ✋ Step 10: Verify app loads without errors
 
 ## Troubleshooting
 

@@ -469,7 +469,7 @@ For other cities, choose a well-known central landmark.
    ALTER STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR ADD LIVE VERSION FROM LAST;
    ```
 
-**Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-road`.
+**Note:** The Streamlit app automatically detects available routing methods by reading the `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts which profiles have `enabled: true` and populates the "Choose Method" dropdowns accordingly. If the config cannot be read, it falls back to defaults: `driving-car`, `driving-hgv`, `cycling-electric`.
 
 **Output:** Streamlit application deployed with:
 - Default search location set to `<NOTEBOOK_CITY>`

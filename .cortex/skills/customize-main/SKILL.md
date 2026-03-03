@@ -26,7 +26,7 @@ This skill routes customization requests to the correct subskills based on what 
 "What would you like to customize? Multiple selection is allowed."
 
 1. **Location/Map** - Change the geographic region (e.g., San Francisco → Paris)
-2. **Routing Profiles** - Enable/disable routing profiles (driving-car, foot-walking, cycling-road)
+2. **Routing Profiles** - Enable/disable routing profiles (driving-car, foot-walking, cycling-electric)
 
 **IMPORTANT:** Use multi-select so the user can choose one or both options. If both are selected, run the location skill first, then the routing profiles skill, before proceeding to Step 4.
 

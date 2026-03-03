@@ -36,6 +36,9 @@ session = get_active_session()
 
 ORS_APP_NAME = "OPENROUTESERVICE_NATIVE_APP"
 
+# Travel modes - must match enabled profiles in ors-config.yml
+TRAVEL_MODES = ['driving-car', 'driving-hgv', 'cycling-electric']
+
 @st.cache_data(ttl=300)
 def check_ors_service_status():
     try:
@@ -401,7 +404,7 @@ with st.sidebar:
         st.warning(f"No {selected_display} stores found" + (f" matching '{search_term}'" if search_term else ""))
 
     st.markdown('<h1sub>Travel Mode</h1sub>', unsafe_allow_html=True)
-    profile = st.selectbox('Mode', ['driving-car', 'cycling-regular', 'foot-walking'])
+    profile = st.selectbox('Mode', TRAVEL_MODES)
 
     st.markdown('<h1sub>Catchment Zones</h1sub>', unsafe_allow_html=True)
     num_rings = st.slider('Number of zones', min_value=1, max_value=5, value=3)

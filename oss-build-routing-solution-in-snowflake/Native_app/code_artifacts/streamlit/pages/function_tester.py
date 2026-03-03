@@ -175,7 +175,7 @@ st.markdown(f'''
 ROUTING_PROFILES = [
     'driving-car',
     'driving-hgv',
-    'cycling-road',
+    'cycling-electric',
 ]
 
 SKILL_DISPLAY_MAP = {
@@ -290,7 +290,7 @@ if test_function == "🗺️ DIRECTIONS":
         **🚗 Routing Profiles:**
         - **driving-car**: Standard passenger vehicle routing
         - **driving-hgv**: Heavy goods vehicle with truck restrictions
-        - **cycling-road**: Bicycle routing on roads and bike paths
+        - **cycling-electric**: E-bike routing with electric bicycle support
         
         **💡 Use Cases:**
         - **Navigation systems** for turn-by-turn directions
@@ -1412,7 +1412,7 @@ elif test_function == "📊 MATRIX":
         **🚗 Routing Profiles:**
         - **driving-car**: Standard passenger vehicle routing
         - **driving-hgv**: Heavy goods vehicle with truck restrictions
-        - **cycling-road**: Bicycle routing on roads and bike paths
+        - **cycling-electric**: E-bike routing with electric bicycle support
         
         **💡 Use Cases:**
         - **Nearest neighbor analysis**: Find closest facilities to customers
@@ -1735,6 +1735,6 @@ st.markdown('''
 **🚗 Default Profiles:**
 - `driving-car`: Standard car routing
 - `driving-hgv`: Heavy goods vehicle routing  
-- `cycling-road`: Road bicycle routing
+- `cycling-electric`: Electric bicycle routing
 
-''', unsafe_allow_html=True)
+''', unsafe_allow_html=True) 
