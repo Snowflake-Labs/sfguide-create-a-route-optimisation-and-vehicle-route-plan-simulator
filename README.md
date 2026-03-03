@@ -60,17 +60,18 @@ FROM (
 
 ### DIRECTIONS (with options)
 
-Pass additional ORS parameters via an options object.
+Pass additional ORS parameters via the VARIANT overload.
 
-**Signature:** `DIRECTIONS(method VARCHAR, start ARRAY, end ARRAY, options OBJECT) → VARIANT`
+**Signature:** `DIRECTIONS(method VARCHAR, options VARIANT) → VARIANT`
 
 ```sql
 -- Route avoiding highways
 SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
     'driving-car',
-    [-122.4075, 37.7881],
-    [-122.4169, 37.8080],
-    {'avoid_features': ['highways']}
+    PARSE_JSON('{
+        "coordinates": [[-122.4075, 37.7881], [-122.4169, 37.8080]],
+        "options": {"avoid_features": ["highways"]}
+    }')
 ) AS DIRECTIONS;
 ```
 
@@ -80,14 +81,17 @@ SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
 
 Generate travel-time reachability polygons from a center point.
 
-**Signature:** `ISOCHRONES(method TEXT, center ARRAY, minutes INT) → VARIANT`
+**Signature:** `ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, minutes INT) → VARIANT`
+
+> **Note:** Longitude and latitude are passed as separate `FLOAT` values, not as an array.
 
 ```sql
--- 10-minute walking isochrone from Ferry Building
+-- 10-minute driving isochrone from Ferry Building
 SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
-    'foot-walking',
-    [-122.3936, 37.7956],   -- Ferry Building
-    10                       -- minutes
+    'driving-car',
+    -122.3936,   -- lon (Ferry Building)
+    37.7956,     -- lat
+    10           -- minutes
 ) AS ISOCHRONE;
 ```
 
@@ -100,27 +104,12 @@ SELECT
     TO_GEOGRAPHY(i:features[0]:geometry) AS iso_geo
 FROM (
     SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
-        'foot-walking',
-        [-122.3936, 37.7956],
+        'driving-car',
+        -122.3936,
+        37.7956,
         10
     ) AS i
 );
-```
-
----
-
-### ISOCHRONES (with options)
-
-**Signature:** `ISOCHRONES(method TEXT, center ARRAY, minutes INT, options OBJECT) → VARIANT`
-
-```sql
--- 5 and 10 minute driving isochrones with smoothing
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
-    'driving-car',
-    [-122.3936, 37.7956],
-    10,
-    {'range': [300, 600], 'smoothing': 25}
-) AS ISOCHRONE;
 ```
 
 ---
@@ -166,19 +155,22 @@ FROM (
 
 ### MATRIX (with options)
 
-**Signature:** `MATRIX(method VARCHAR, locations ARRAY, options OBJECT) → VARIANT`
+**Signature:** `MATRIX(method VARCHAR, options VARIANT) → VARIANT`
 
 ```sql
 -- Asymmetric matrix: 1 origin to 3 destinations
 SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX(
     'driving-car',
-    [
-        [-122.4075, 37.7881],   -- Union Square (origin)
-        [-122.3936, 37.7956],   -- Ferry Building (dest)
-        [-122.4169, 37.8080],   -- Fisherman's Wharf (dest)
-        [-122.4786, 37.8199]    -- Golden Gate Bridge (dest)
-    ],
-    {'sources': [0], 'destinations': [1, 2, 3]}
+    PARSE_JSON('{
+        "locations": [
+            [-122.4075, 37.7881],
+            [-122.3936, 37.7956],
+            [-122.4169, 37.8080],
+            [-122.4786, 37.8199]
+        ],
+        "sources": [0],
+        "destinations": [1, 2, 3]
+    }')
 ) AS MATRIX;
 ```
 
@@ -201,7 +193,7 @@ SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
     ],
     -- Vehicles
     [
-        {'id': 1, 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}  -- Union Square depot
+        {'id': 1, 'profile': 'driving-car', 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}  -- Union Square depot
     ]
 ) AS OPTIMIZATION;
 ```
@@ -223,7 +215,7 @@ FROM (
             {'id': 3, 'location': [-122.4786, 37.8199]}
         ],
         [
-            {'id': 1, 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}
+            {'id': 1, 'profile': 'driving-car', 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}
         ]
     ) AS opt
 ), LATERAL FLATTEN(input => opt:routes) f;
@@ -246,7 +238,7 @@ SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
             {'id': 2, 'location': [-122.4169, 37.8080], 'service': 300}
         ],
         'vehicles': [
-            {'id': 1, 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}
+            {'id': 1, 'profile': 'driving-car', 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]}
         ]
     }
 ) AS OPTIMIZATION;
@@ -298,15 +290,16 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
 
 ### DIRECTIONS_GEO (with options)
 
-**Signature:** `DIRECTIONS_GEO(method VARCHAR, start ARRAY, end ARRAY, options OBJECT) → TABLE(RESPONSE, GEOJSON, GEO, DISTANCE, DURATION)`
+**Signature:** `DIRECTIONS_GEO(method VARCHAR, options VARIANT) → TABLE(RESPONSE, GEOJSON, GEO, DISTANCE, DURATION)`
 
 ```sql
 SELECT *
 FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
     'driving-car',
-    [-122.4075, 37.7881],
-    [-122.4169, 37.8080],
-    {'avoid_features': ['highways']}
+    PARSE_JSON('{
+        "coordinates": [[-122.4075, 37.7881], [-122.4169, 37.8080]],
+        "options": {"avoid_features": ["highways"]}
+    }')
 ));
 ```
 
@@ -314,7 +307,7 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
 
 ### ISOCHRONES_GEO
 
-**Signature:** `ISOCHRONES_GEO(method TEXT, center ARRAY, minutes INT) → TABLE(RESPONSE, GEOJSON, GEO)`
+**Signature:** `ISOCHRONES_GEO(method TEXT, lon FLOAT, lat FLOAT, minutes INT) → TABLE(RESPONSE, GEOJSON, GEO)`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -323,11 +316,12 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
 | GEO | GEOGRAPHY | Native Snowflake geography |
 
 ```sql
--- Get walking isochrone with native geography
+-- Get driving isochrone with native geography
 SELECT *
 FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO(
-    'foot-walking',
-    [-122.3936, 37.7956],   -- Ferry Building
+    'driving-car',
+    -122.3936::FLOAT,   -- lon (Ferry Building)
+    37.7956::FLOAT,     -- lat
     10
 ));
 ```
@@ -338,25 +332,10 @@ SELECT
     GEO,
     ROUND(ST_AREA(GEO) / 1000000, 3) AS area_sq_km
 FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO(
-    'foot-walking',
-    [-122.3936, 37.7956],
-    10
-));
-```
-
----
-
-### ISOCHRONES_GEO (with options)
-
-**Signature:** `ISOCHRONES_GEO(method TEXT, center ARRAY, minutes INT, options OBJECT) → TABLE(RESPONSE, GEOJSON, GEO)`
-
-```sql
-SELECT *
-FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO(
     'driving-car',
-    [-122.3936, 37.7956],
-    10,
-    {'range': [300, 600], 'smoothing': 25}
+    -122.3936::FLOAT,
+    37.7956::FLOAT,
+    10
 ));
 ```
 
@@ -389,8 +368,8 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION_GEO(
     ],
     -- Vehicles
     [
-        {'id': 1, 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]},
-        {'id': 2, 'start': [-122.4194, 37.7749], 'end': [-122.4194, 37.7749]}
+        {'id': 1, 'profile': 'driving-car', 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]},
+        {'id': 2, 'profile': 'driving-car', 'start': [-122.4194, 37.7749], 'end': [-122.4194, 37.7749]}
     ]
 ));
 ```
@@ -410,8 +389,8 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION_GEO(
         {'id': 4, 'location': [-122.4098, 37.7786]}
     ],
     [
-        {'id': 1, 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]},
-        {'id': 2, 'start': [-122.4194, 37.7749], 'end': [-122.4194, 37.7749]}
+        {'id': 1, 'profile': 'driving-car', 'start': [-122.4075, 37.7881], 'end': [-122.4075, 37.7881]},
+        {'id': 2, 'profile': 'driving-car', 'start': [-122.4194, 37.7749], 'end': [-122.4194, 37.7749]}
     ]
 ));
 ```
@@ -422,17 +401,19 @@ FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION_GEO(
 
 All functions that accept a `method` parameter support these profiles:
 
-| Profile | Description |
-|---------|-------------|
-| `driving-car` | Standard car routing |
-| `driving-hgv` | Heavy goods vehicle (truck) |
-| `cycling-regular` | Standard bicycle |
-| `cycling-mountain` | Mountain bike |
-| `cycling-road` | Road cycling |
-| `cycling-electric` | E-bike |
-| `foot-walking` | Pedestrian walking |
-| `foot-hiking` | Hiking trails |
-| `wheelchair` | Wheelchair accessible |
+| Profile | Description | Default |
+|---------|-------------|:-------:|
+| `driving-car` | Standard car routing | Enabled |
+| `driving-hgv` | Heavy goods vehicle (truck) | Enabled |
+| `cycling-regular` | Standard bicycle | Disabled |
+| `cycling-mountain` | Mountain bike | Disabled |
+| `cycling-road` | Road cycling | Enabled |
+| `cycling-electric` | E-bike | Disabled |
+| `foot-walking` | Pedestrian walking | Disabled |
+| `foot-hiking` | Hiking trails | Disabled |
+| `wheelchair` | Wheelchair accessible | Disabled |
+
+> **Note:** Disabled profiles can be enabled in `ors-config.yml` before building the native app. Using a disabled profile returns an "unknown profile" error.
 
 ---
 
