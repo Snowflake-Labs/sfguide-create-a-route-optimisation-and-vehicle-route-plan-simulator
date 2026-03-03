@@ -48,7 +48,7 @@ Detects the map region/location and routing profiles from the ORS configuration 
 2. **Read** `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`
 
 3. **Parse** the downloaded file for `profiles:` entries with `enabled: true`
-   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
+   - Common profiles: `driving-car`, `driving-hgv`, `cycling-electric`, `cycling-regular`, `foot-walking`
 
 **Output:** `<ENABLED_PROFILES>` extracted
 

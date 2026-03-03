@@ -51,7 +51,7 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # Routing methods - must match enabled profiles in ors-config.yml
-methods = ['driving-car', 'driving-hgv', 'cycling-road']
+methods = ['driving-car', 'driving-hgv', 'cycling-electric']
 
 # Load points of interest data
 places_filtered = session.table('VEHICLE_ROUTING_SIMULATOR.PLACES')

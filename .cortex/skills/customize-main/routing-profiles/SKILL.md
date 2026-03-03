@@ -47,7 +47,7 @@ Configure which routing profiles are available in your Routing Solution.
 2. **Warn about resource impact:**
    - More profiles = longer graph build time
    - More profiles = more memory usage
-   - Default (car, cycling-road, walking) covers most use cases
+    - Default (car, cycling-electric, walking) covers most use cases
 
 **Output:** User selections recorded
 
@@ -72,11 +72,11 @@ Configure which routing profiles are available in your Routing Solution.
          cycling-regular:
            enabled: false
          cycling-road:
-           enabled: true
+           enabled: false
          cycling-mountain:
            enabled: false
          cycling-electric:
-           enabled: false
+           enabled: true
          foot-walking:
            enabled: true
          foot-hiking:

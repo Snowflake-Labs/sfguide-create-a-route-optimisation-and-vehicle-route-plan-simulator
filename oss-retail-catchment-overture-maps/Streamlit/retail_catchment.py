@@ -401,7 +401,7 @@ with st.sidebar:
         st.warning(f"No {selected_display} stores found" + (f" matching '{search_term}'" if search_term else ""))
 
     st.markdown('<h1sub>Travel Mode</h1sub>', unsafe_allow_html=True)
-    profile = st.selectbox('Mode', ['driving-car', 'cycling-regular', 'foot-walking'])
+    profile = st.selectbox('Mode', ['driving-car', 'cycling-electric', 'foot-walking'])
 
     st.markdown('<h1sub>Catchment Zones</h1sub>', unsafe_allow_html=True)
     num_rings = st.slider('Number of zones', min_value=1, max_value=5, value=3)

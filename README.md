@@ -407,8 +407,8 @@ All functions that accept a `method` parameter support these profiles:
 | `driving-hgv` | Heavy goods vehicle (truck) | Enabled |
 | `cycling-regular` | Standard bicycle | Disabled |
 | `cycling-mountain` | Mountain bike | Disabled |
-| `cycling-road` | Road cycling | Enabled |
-| `cycling-electric` | E-bike | Disabled |
+| `cycling-road` | Road cycling | Disabled |
+| `cycling-electric` | E-bike | Enabled |
 | `foot-walking` | Pedestrian walking | Disabled |
 | `foot-hiking` | Hiking trails | Disabled |
 | `wheelchair` | Wheelchair accessible | Disabled |

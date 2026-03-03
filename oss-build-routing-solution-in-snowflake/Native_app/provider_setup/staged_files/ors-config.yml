@@ -25,11 +25,11 @@ ors:
       cycling-regular:
         enabled: false
       cycling-road:
-        enabled: true
+        enabled: false
       cycling-mountain:
         enabled: false
       cycling-electric:
-        enabled: false
+        enabled: true
 # Foot profiles
       foot-walking:
         enabled: false

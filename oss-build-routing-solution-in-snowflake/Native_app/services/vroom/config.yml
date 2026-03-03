@@ -38,10 +38,10 @@ routingServers:
     cycling-mountain:
       host: 'ors-service/ors/v2'
       port: '8082'
-    cycling-road:
+    cycling-electric:
       host: 'ors-service/ors/v2'
       port: '8082'
-    cycling-electric:
+    cycling-road:
       host: 'ors-service/ors/v2'
       port: '8082'
     foot-walking:
