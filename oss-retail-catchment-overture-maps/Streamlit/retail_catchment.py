@@ -37,7 +37,7 @@ session = get_active_session()
 ORS_APP_NAME = "OPENROUTESERVICE_NATIVE_APP"
 
 # Travel modes - must match enabled profiles in ors-config.yml
-TRAVEL_MODES = ['driving-car', 'cycling-electric', 'foot-walking']
+TRAVEL_MODES = ['driving-car', 'driving-hgv', 'cycling-electric']
 
 @st.cache_data(ttl=300)
 def check_ors_service_status():
