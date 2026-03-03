@@ -282,18 +282,13 @@ BEGIN
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON VARIANT, GEO GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
       LANGUAGE SQL
       AS
-      $$
-         WITH raw AS (
-            SELECT core.DIRECTIONS(method, jstart, jend) AS resp
-         )
-         SELECT
+      'SELECT
             resp AS RESPONSE,
             resp:features[0]:geometry AS GEOJSON,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEO,
             resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
-         FROM raw
-      $$;
+         FROM (SELECT core.DIRECTIONS(method, jstart, jend) AS resp)';
    GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
    -- DIRECTIONS_GEO (raw overload with locations variant)
@@ -301,18 +296,13 @@ BEGIN
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON VARIANT, GEO GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
       LANGUAGE SQL
       AS
-      $$
-         WITH raw AS (
-            SELECT core.DIRECTIONS(method, locations) AS resp
-         )
-         SELECT
+      'SELECT
             resp AS RESPONSE,
             resp:features[0]:geometry AS GEOJSON,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEO,
             resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
-         FROM raw
-      $$;
+         FROM (SELECT core.DIRECTIONS(method, locations) AS resp)';
    GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
 
    -- ISOCHRONES_GEO
@@ -320,16 +310,11 @@ BEGIN
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON VARIANT, GEO GEOGRAPHY)
       LANGUAGE SQL
       AS
-      $$
-         WITH raw AS (
-            SELECT core.ISOCHRONES(method, lon, lat, range) AS resp
-         )
-         SELECT
+      'SELECT
             resp AS RESPONSE,
             resp:features[0]:geometry AS GEOJSON,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEO
-         FROM raw
-      $$;
+         FROM (SELECT core.ISOCHRONES(method, lon, lat, range) AS resp)';
    GRANT USAGE ON FUNCTION core.ISOCHRONES_GEO(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
 
    -- OPTIMIZATION_GEO (tabular overload) - flattens routes with geometry
@@ -337,22 +322,15 @@ BEGIN
       RETURNS TABLE (RESPONSE VARIANT, VEHICLE INT, GEOJSON VARIANT, DURATION INT, STEPS VARIANT)
       LANGUAGE SQL
       AS
-      $$
-         WITH raw AS (
-            SELECT core.OPTIMIZATION(jobs, vehicles, matrices) AS resp
-         ),
-         routes AS (
-            SELECT resp AS RESPONSE, f.value AS route
-            FROM raw, LATERAL FLATTEN(input => resp:routes) f
-         )
-         SELECT
-            RESPONSE,
-            route:vehicle::INT AS VEHICLE,
-            OBJECT_CONSTRUCT('type', 'LineString', 'coordinates', route:geometry) AS GEOJSON,
-            route:duration::INT AS DURATION,
-            route:steps AS STEPS
-         FROM routes
-      $$;
+      'SELECT
+            resp AS RESPONSE,
+            f.value:vehicle::INT AS VEHICLE,
+            OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry) AS GEOJSON,
+            f.value:duration::INT AS DURATION,
+            f.value:steps AS STEPS
+         FROM
+            (SELECT core.OPTIMIZATION(jobs, vehicles, matrices) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
    GRANT USAGE ON FUNCTION core.OPTIMIZATION_GEO(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
    -- OPTIMIZATION_GEO (raw overload with challenge variant)
@@ -360,22 +338,15 @@ BEGIN
       RETURNS TABLE (RESPONSE VARIANT, VEHICLE INT, GEOJSON VARIANT, DURATION INT, STEPS VARIANT)
       LANGUAGE SQL
       AS
-      $$
-         WITH raw AS (
-            SELECT core.OPTIMIZATION(challenge) AS resp
-         ),
-         routes AS (
-            SELECT resp AS RESPONSE, f.value AS route
-            FROM raw, LATERAL FLATTEN(input => resp:routes) f
-         )
-         SELECT
-            RESPONSE,
-            route:vehicle::INT AS VEHICLE,
-            OBJECT_CONSTRUCT('type', 'LineString', 'coordinates', route:geometry) AS GEOJSON,
-            route:duration::INT AS DURATION,
-            route:steps AS STEPS
-         FROM routes
-      $$;
+      'SELECT
+            resp AS RESPONSE,
+            f.value:vehicle::INT AS VEHICLE,
+            OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry) AS GEOJSON,
+            f.value:duration::INT AS DURATION,
+            f.value:steps AS STEPS
+         FROM
+            (SELECT core.OPTIMIZATION(challenge) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
    GRANT USAGE ON FUNCTION core.OPTIMIZATION_GEO(VARIANT) TO APPLICATION ROLE app_user;
 
    -- Create MAP_CONFIG table to store map metadata for the function tester
