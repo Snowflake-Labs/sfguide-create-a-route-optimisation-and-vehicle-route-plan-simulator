@@ -43,7 +43,8 @@ with st.sidebar:
     )
 
 @st.cache_resource(ttl="2d")
-def get_hex_df(h3_res: int, h: int, m: int) -> pd.DataFrame:
+def get_hex_df(h3_res: int, h: int, m: int, city: str = '') -> pd.DataFrame:
+    city_filter = f"AND CITY = '{city}'" if city else ''
     sql = f"""
         WITH latest AS (
             SELECT order_id, point_geom,
@@ -51,6 +52,7 @@ def get_hex_df(h3_res: int, h: int, m: int) -> pd.DataFrame:
             FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
+              {city_filter}
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY order_id ORDER BY CURR_TIME DESC
             ) = 1
@@ -66,33 +68,26 @@ def get_hex_df(h3_res: int, h: int, m: int) -> pd.DataFrame:
 
 
 @st.cache_resource(ttl="2d")
-def get_point_df(h: int, m: int) -> pd.DataFrame:
+def get_point_df(h: int, m: int, city: str = '') -> pd.DataFrame:
+    city_filter = f"AND CITY = '{city}'" if city else ''
     sql = f"""
         WITH latest AS (
             SELECT order_id,
                    DELIVERY_NAME, 
                    point_geom,
                    ST_SIMPLIFY(GEOMETRY, 10) AS route_simpl
-            
-            
             FROM 
             (SELECT A.*,B.DELIVERY_NAME,C.GEOMETRY FROM 
             OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V A
             INNER JOIN 
             OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_NAMES B ON A.ORDER_ID = B.ORDER_ID
             INNER JOIN
-
             (SELECT ORDER_ID,GEOMETRY FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS) C
             ON A.ORDER_ID = C.ORDER_ID
-            
             )
-            
-            
-            
-            
-            
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
+              {city_filter}
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY order_id ORDER BY CURR_TIME DESC
             ) = 1
@@ -113,6 +108,7 @@ def get_point_df(h: int, m: int) -> pd.DataFrame:
     return df[["order_id", "POSITION", "ROUTE", "TOOLTIP"]]
 
 delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN')\
+    .filter(F.col('CITY') == selected_city)\
     .with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
 
 longest_deliveries = delivery_plans.order_by(F.col('DISTANCE_METERS').desc()).limit(5)
@@ -259,8 +255,8 @@ if curr_filters != st.session_state.prev_filters:
     st.session_state.selected_pos   = None
 st.session_state.prev_filters = curr_filters
 
-hex_df   = get_hex_df(h3_res, hour, minute)
-point_df = get_point_df(hour, minute)
+hex_df   = get_hex_df(h3_res, hour, minute, selected_city)
+point_df = get_point_df(hour, minute, selected_city)
 
 qs, colors = (
     (hex_df["COUNT"].quantile([0, .25, .5, .75, 1]),
