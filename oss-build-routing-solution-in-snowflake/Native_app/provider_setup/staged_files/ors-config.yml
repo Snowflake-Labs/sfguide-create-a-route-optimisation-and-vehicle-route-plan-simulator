@@ -9,7 +9,12 @@ ors:
         source_file: /home/ors/files/SanFrancisco.osm.pbf
         instructions: false
         service:
-        maximum_visited_nodes: 100000000
+          maximum_distance: 1500000
+          maximum_distance_dynamic_weights: 1500000
+          maximum_distance_avoid_areas: 1500000
+          maximum_distance_alternative_routes: 1500000
+          maximum_distance_round_trip_routes: 1500000
+          maximum_visited_nodes: 100000000
     profiles:   
 ## Driving profiles
       driving-car: 
@@ -37,6 +42,11 @@ ors:
     matrix:
       maximum_visited_nodes: 100000000
       maximum_routes: 250000
+    isochrones:
+      maximum_locations: 2
+      maximum_intervals: 10
+      maximum_range_distance_default: 1500000
+      maximum_range_time_default: 18000
 #      maximum_distance: 100000
 #      maximum_distance_dynamic_weights: 100000
 #      maximum_distance_avoid_areas: 100000
