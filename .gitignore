@@ -27,6 +27,9 @@ env/
 *.swo
 .DS_Store
 
+# Node
+node_modules/
+
 # Distribution
 dist/
 build/

@@ -1,0 +1,36 @@
+manifest_version: 1
+
+artifacts:
+  setup_script: setup_script.sql
+  readme: README.md
+  container_services:
+    images:
+      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.0
+  default_streamlit: core.status_app
+
+references:
+  - external_access_ref:
+      label: "External access for map basemap tiles"
+      description: "Required for the app to load Carto basemap tiles in the web UI"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: false
+
+lifecycle_callbacks:
+  version_initializer: core.version_init
+
+configuration:
+  log_level: DEBUG
+  trace_level: ALWAYS
+  grant_callback: core.grant_callback
+
+privileges:
+  - CREATE COMPUTE POOL:
+      description: "Create compute pool for running the Fleet Intelligence web application"
+  - CREATE WAREHOUSE:
+      description: "Create a warehouse for running SQL queries"
+  - BIND SERVICE ENDPOINT:
+      description: "Allow the app to expose a public endpoint for the web application"

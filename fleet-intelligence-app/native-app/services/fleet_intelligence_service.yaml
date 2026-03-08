@@ -1,0 +1,16 @@
+spec:
+  containers:
+    - name: fleet-intelligence
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.0
+      env:
+        SNOWFLAKE_DATABASE: OPENROUTESERVICE_SETUP
+        SNOWFLAKE_SCHEMA: FLEET_INTELLIGENCE_FOOD_DELIVERY
+        SNOWFLAKE_WAREHOUSE: FLEET_INTEL_WH
+        PORT: "8080"
+      readinessProbe:
+        path: /health
+        port: 8080
+  endpoints:
+    - name: fleet-intel-ui
+      port: 8080
+      public: true
