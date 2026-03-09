@@ -77,7 +77,7 @@ const REGIONS: RegionOption[] = [
   {
     id: 'all_california',
     label: 'All California (Statewide)',
-    description: 'Full statewide coverage — every H3 hex across CA. 1.95B pairs. Measured: ~6 hours with X-Small warehouse scaled out + 10 ORS instances.',
+    description: 'Full statewide coverage — every H3 hex across CA. 1.95B pairs. Measured: ~6.5 hours, 132 credits. X-Small warehouse × 10 clusters + 10 ORS nodes + X-Large flatten.',
     hexEstimates: [
       { res: 9, hexagons: 8562468, pairs: 1133551374 },
       { res: 8, hexagons: 1202530, pairs: 526323579 },
@@ -98,7 +98,10 @@ const RATE_PAIRS_PER_SEC = 31500;
 const RATE_PAIRS_PER_SEC_PARALLEL = 90000;
 const CREDIT_PER_HOUR_XSMALL = 1;
 const CREDIT_PER_HOUR_SMALL = 2;
-const CREDIT_PER_HOUR_ORS_COMPUTE = 3;
+const STATEWIDE_WH_CREDITS_PER_HR = 10;
+const STATEWIDE_COMPUTE_POOL_PER_HR = 10;
+const STATEWIDE_FLATTEN_CREDITS = 2;
+const STATEWIDE_TOTAL_CREDITS = 132;
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
@@ -146,9 +149,8 @@ export default function MatrixBuilder({ open, onClose }: Props) {
 
   const isStatewide = selectedRegion === 'all_california';
   const effectiveRate = isStatewide ? RATE_PAIRS_PER_SEC_PARALLEL : RATE_PAIRS_PER_SEC;
-  const creditRate = isStatewide ? CREDIT_PER_HOUR_XSMALL : CREDIT_PER_HOUR_SMALL;
-  const orsComputeRate = isStatewide ? CREDIT_PER_HOUR_ORS_COMPUTE : 0;
-  const warehouseSize = isStatewide ? 'X-Small (scaled out, 8 parallel workers)' : 'Small';
+  const creditRate = isStatewide ? STATEWIDE_WH_CREDITS_PER_HR : CREDIT_PER_HOUR_SMALL;
+  const warehouseSize = isStatewide ? 'X-Small × 10 multi-cluster' : 'Small';
 
   const estimate = React.useMemo(() => {
     const resolutions = region.hexEstimates
@@ -171,9 +173,9 @@ export default function MatrixBuilder({ open, onClose }: Props) {
     const totalTime = isStatewide
       ? resolutions.reduce((s, r) => s + r.est_time_minutes, 0) * 0.35
       : resolutions.reduce((s, r) => s + r.est_time_minutes, 0);
-    const whCredits = (totalTime / 60) * creditRate;
-    const orsCredits = (totalTime / 60) * orsComputeRate;
-    const totalCredits = whCredits + orsCredits;
+    const totalCredits = isStatewide
+      ? STATEWIDE_TOTAL_CREDITS
+      : (totalTime / 60) * creditRate;
 
     const apiComparisons = [
       {
@@ -205,7 +207,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
       snowflake_cost: totalCredits * 2.5,
       api_comparison: apiComparisons,
     } as MatrixEstimate;
-  }, [region, selectedRes, effectiveRate, creditRate, orsComputeRate, isStatewide]);
+  }, [region, selectedRes, effectiveRate, creditRate, isStatewide]);
 
   const toggleRes = (res: number) => {
     setSelectedRes((prev) => {
@@ -423,8 +425,8 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               </tbody>
             </table>
             <div className="matrix-comparison-footnote">
-              Snowflake cost based on {warehouseSize} warehouse ({creditRate} credit/hr) at $2.50/credit.
-              {isStatewide && ` Statewide build uses X-Small warehouse (1 credit/hr) with 10 ORS service instances scaled out, running 8 parallel workers per resolution. ORS compute pool adds ~${orsComputeRate} credits/hr. Workers scale back as resolutions complete. Measured: ~6 hours for 1.95B pairs. `}
+              Snowflake cost based on {warehouseSize} warehouse ({creditRate} credits/hr) at $2.50/credit.
+              {isStatewide && ` Measured: 132 credits (~$396) for 1.95B pairs in ~6.5 hours. Infrastructure: X-Small warehouse × 10 multi-cluster (10 cr/hr) for parallel workers, 10-node compute pool (10 cr/hr) for ORS routing engine, plus X-Large warehouse (~2 credits) for FLATTEN post-processing. Workers scale back as resolutions complete. `}
               External API costs are per-element pricing from public rate cards. Snowflake processes the matrix
               in-platform with no data egress, using the ORS Native App MATRIX function.
             </div>
