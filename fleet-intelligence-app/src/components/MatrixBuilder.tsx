@@ -123,6 +123,22 @@ function formatCost(cost: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
+type ModalView = 'main' | 'confirm-remove' | 'removing' | 'removed' | 'confirm-restore' | 'restoring' | 'restored';
+
+interface RemoveResult {
+  table: string;
+  rows_before: number;
+  status: string;
+  sql: string;
+}
+
+interface RestoreResult {
+  table: string;
+  rows_restored: number;
+  status: string;
+  sql: string;
+}
+
 export default function MatrixBuilder({ open, onClose }: Props) {
   const [selectedRegion, setSelectedRegion] = useState<string>('san_francisco');
   const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([9, 8, 7]));
@@ -132,9 +148,12 @@ export default function MatrixBuilder({ open, onClose }: Props) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [existingCounts, setExistingCounts] = useState<Record<string, number>>({});
   const [loadingExisting, setLoadingExisting] = useState(false);
+  const [modalView, setModalView] = useState<ModalView>('main');
+  const [removeResults, setRemoveResults] = useState<Record<number, RemoveResult>>({});
+  const [restoreResults, setRestoreResults] = useState<Record<number, RestoreResult>>({});
+  const [restoreMinutes, setRestoreMinutes] = useState(5);
 
-  useEffect(() => {
-    if (!open) return;
+  const refreshExisting = useCallback(() => {
     setLoadingExisting(true);
     fetch('/api/matrix/existing')
       .then((r) => r.json())
@@ -143,7 +162,48 @@ export default function MatrixBuilder({ open, onClose }: Props) {
         setLoadingExisting(false);
       })
       .catch(() => setLoadingExisting(false));
-  }, [open]);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    setModalView('main');
+    refreshExisting();
+  }, [open, refreshExisting]);
+
+  const hasExistingData = Object.values(existingCounts).some((v) => (v as number) > 0);
+  const totalExisting = Object.values(existingCounts).reduce((s, v) => s + (v as number), 0);
+
+  const executeRemove = useCallback(async () => {
+    setModalView('removing');
+    try {
+      const resp = await fetch(`/api/matrix/remove?resolutions=7,8,9`, { method: 'DELETE' });
+      const data = await resp.json();
+      setRemoveResults(data.resolutions || {});
+      setModalView('removed');
+      refreshExisting();
+    } catch (err: any) {
+      setRemoveResults({ 0: { table: 'error', rows_before: 0, status: 'error', sql: err.message } });
+      setModalView('removed');
+    }
+  }, [refreshExisting]);
+
+  const executeRestore = useCallback(async () => {
+    setModalView('restoring');
+    try {
+      const resp = await fetch('/api/matrix/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolutions: [7, 8, 9], offset_minutes: restoreMinutes }),
+      });
+      const data = await resp.json();
+      setRestoreResults(data.resolutions || {});
+      setModalView('restored');
+      refreshExisting();
+    } catch (err: any) {
+      setRestoreResults({ 0: { table: 'error', rows_restored: 0, status: 'error', sql: err.message } });
+      setModalView('restored');
+    }
+  }, [restoreMinutes, refreshExisting]);
 
   const region = REGIONS.find((r) => r.id === selectedRegion)!;
 
@@ -468,6 +528,155 @@ export default function MatrixBuilder({ open, onClose }: Props) {
           )}
         </div>
 
+        {modalView === 'confirm-remove' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">⚠️</div>
+              <div className="matrix-danger-title">Remove All Matrix Data</div>
+              <div className="matrix-danger-text">
+                This will <strong>TRUNCATE</strong> all three travel time tables, removing <strong>{formatNumber(totalExisting)}</strong> rows.
+                This data took ~6.5 hours and 132 credits (~$396) to compute.
+              </div>
+              <div className="matrix-sql-preview">
+                <div className="matrix-sql-label">SQL to be executed:</div>
+                <pre className="matrix-sql-code">{`TRUNCATE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7;
+TRUNCATE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8;
+TRUNCATE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9;`}</pre>
+              </div>
+              <div className="matrix-danger-note">
+                You can restore this data using <strong>Snowflake Time Travel</strong> (up to 90 days) — see the Restore option after removal.
+              </div>
+              <div className="matrix-danger-actions">
+                <button className="matrix-btn secondary" onClick={() => setModalView('main')}>Cancel</button>
+                <button className="matrix-btn danger" onClick={executeRemove}>Remove All Matrix Data</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {modalView === 'removing' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">⟳</div>
+              <div className="matrix-danger-title">Removing matrix data...</div>
+              <div className="matrix-danger-text">Truncating tables. This should only take a few seconds.</div>
+            </div>
+          </div>
+        )}
+
+        {modalView === 'removed' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">{Object.values(removeResults).every((r) => r.status === 'removed') ? '✓' : '✕'}</div>
+              <div className="matrix-danger-title">Matrix Data Removed</div>
+              <div className="matrix-results-list">
+                {Object.entries(removeResults).map(([res, r]) => (
+                  <div key={res} className={`matrix-result-row ${r.status}`}>
+                    <span className="matrix-result-table">{r.table.split('.').pop()}</span>
+                    <span className="matrix-result-detail">
+                      {r.status === 'removed' ? `${formatNumber(r.rows_before)} rows removed` : r.sql}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="matrix-sql-preview">
+                <div className="matrix-sql-label">Executed:</div>
+                <pre className="matrix-sql-code">{Object.values(removeResults).map((r) => r.sql).join('\n')}</pre>
+              </div>
+              <div className="matrix-danger-actions">
+                <button className="matrix-btn secondary" onClick={() => setModalView('main')}>Back to Builder</button>
+                <button className="matrix-btn restore" onClick={() => setModalView('confirm-restore')}>Restore with Time Travel</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {modalView === 'confirm-restore' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">⏪</div>
+              <div className="matrix-danger-title">Restore Matrix via Time Travel</div>
+              <div className="matrix-danger-text">
+                Snowflake <strong>Time Travel</strong> lets you query historical table data.
+                This will INSERT all rows from the table state <strong>{restoreMinutes} minutes ago</strong> back into the current (empty) table.
+              </div>
+              <div className="matrix-restore-offset">
+                <label>Restore from how many minutes ago?</label>
+                <div className="matrix-restore-slider">
+                  <input
+                    type="range"
+                    min={1}
+                    max={1440}
+                    value={restoreMinutes}
+                    onChange={(e) => setRestoreMinutes(Number(e.target.value))}
+                  />
+                  <span className="matrix-restore-value">{restoreMinutes < 60 ? `${restoreMinutes} min` : `${(restoreMinutes / 60).toFixed(1)} hrs`}</span>
+                </div>
+              </div>
+              <div className="matrix-sql-preview">
+                <div className="matrix-sql-label">SQL to be executed (Time Travel):</div>
+                <pre className="matrix-sql-code">{`-- Snowflake Time Travel: OFFSET => seconds before present
+-- Restores data from ${restoreMinutes} minutes ago
+
+INSERT INTO OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7
+  SELECT * FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7
+  AT(OFFSET => -${restoreMinutes * 60});
+
+INSERT INTO OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8
+  SELECT * FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8
+  AT(OFFSET => -${restoreMinutes * 60});
+
+INSERT INTO OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9
+  SELECT * FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9
+  AT(OFFSET => -${restoreMinutes * 60});`}</pre>
+              </div>
+              <div className="matrix-danger-note">
+                Time Travel is available for up to <strong>90 days</strong> (default retention). The offset should be set to a time <em>before</em> the TRUNCATE was executed.
+              </div>
+              <div className="matrix-danger-actions">
+                <button className="matrix-btn secondary" onClick={() => setModalView('removed')}>Back</button>
+                <button className="matrix-btn restore" onClick={executeRestore}>Restore Data</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {modalView === 'restoring' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">⟳</div>
+              <div className="matrix-danger-title">Restoring matrix data...</div>
+              <div className="matrix-danger-text">Inserting historical rows via Time Travel. This may take a minute for large tables.</div>
+            </div>
+          </div>
+        )}
+
+        {modalView === 'restored' && (
+          <div className="matrix-danger-overlay">
+            <div className="matrix-danger-modal">
+              <div className="matrix-danger-icon">{Object.values(restoreResults).every((r) => r.status === 'restored') ? '✓' : '✕'}</div>
+              <div className="matrix-danger-title">Matrix Data Restored</div>
+              <div className="matrix-results-list">
+                {Object.entries(restoreResults).map(([res, r]) => (
+                  <div key={res} className={`matrix-result-row ${r.status}`}>
+                    <span className="matrix-result-table">{r.table.split('.').pop()}</span>
+                    <span className="matrix-result-detail">
+                      {r.status === 'restored' ? `${formatNumber(r.rows_restored)} rows restored` : r.sql}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="matrix-sql-preview">
+                <div className="matrix-sql-label">Executed:</div>
+                <pre className="matrix-sql-code">{Object.values(restoreResults).map((r) => r.sql).join('\n')}</pre>
+              </div>
+              <div className="matrix-danger-actions">
+                <button className="matrix-btn primary" onClick={() => setModalView('main')}>Back to Builder</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="matrix-footer">
           <div className="matrix-footer-info">
             {!loadingExisting && existingCounts && Object.keys(existingCounts).length > 0 && (
@@ -479,6 +688,23 @@ export default function MatrixBuilder({ open, onClose }: Props) {
             )}
           </div>
           <div className="matrix-footer-actions">
+            {hasExistingData && (
+              <button
+                className="matrix-btn danger-outline"
+                onClick={() => setModalView('confirm-remove')}
+                disabled={isBuilding}
+              >
+                Remove Matrix
+              </button>
+            )}
+            {!hasExistingData && (
+              <button
+                className="matrix-btn restore-outline"
+                onClick={() => setModalView('confirm-restore')}
+              >
+                Restore Matrix
+              </button>
+            )}
             <button className="matrix-btn secondary" onClick={onClose}>Cancel</button>
             <button
               className="matrix-btn primary"

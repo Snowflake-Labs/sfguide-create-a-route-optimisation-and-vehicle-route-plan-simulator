@@ -629,6 +629,54 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode: IS_SPCS ? 'spcs' : 'local' });
 });
 
+app.delete('/api/matrix/remove', async (req, res) => {
+  try {
+    const resolutions = (req.query.resolutions as string || '7,8,9').split(',').map(Number);
+    const results: Record<number, { table: string; rows_before: number; status: string; sql: string }> = {};
+
+    for (const r of resolutions) {
+      const tableName = `OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES${r}`;
+      try {
+        const countRows = await snowSql(`SELECT COUNT(*) as CNT FROM ${tableName}`);
+        const rowsBefore = Number(countRows[0]?.CNT || 0);
+        const truncateSql = `TRUNCATE TABLE ${tableName}`;
+        await snowSql(truncateSql);
+        results[r] = { table: tableName, rows_before: rowsBefore, status: 'removed', sql: truncateSql };
+      } catch (err: any) {
+        results[r] = { table: tableName, rows_before: 0, status: 'error', sql: err.message?.slice(0, 200) };
+      }
+    }
+
+    res.json({ status: 'removed', resolutions: results });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/matrix/restore', async (req, res) => {
+  try {
+    const { resolutions = [7, 8, 9], offset_minutes = 5 } = req.body;
+    const results: Record<number, { table: string; rows_restored: number; status: string; sql: string }> = {};
+
+    for (const r of resolutions) {
+      const tableName = `OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES${r}`;
+      try {
+        const restoreSql = `INSERT INTO ${tableName} SELECT * FROM ${tableName} AT(OFFSET => -${offset_minutes * 60})`;
+        await snowSql(restoreSql);
+        const countRows = await snowSql(`SELECT COUNT(*) as CNT FROM ${tableName}`);
+        const rowsRestored = Number(countRows[0]?.CNT || 0);
+        results[r] = { table: tableName, rows_restored: rowsRestored, status: 'restored', sql: restoreSql };
+      } catch (err: any) {
+        results[r] = { table: tableName, rows_restored: 0, status: 'error', sql: err.message?.slice(0, 200) };
+      }
+    }
+
+    res.json({ status: 'restored', resolutions: results });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 if (IS_SPCS) {
   app.get('*', (_req, res) => {
     const indexPath = join(process.cwd(), 'dist', 'index.html');

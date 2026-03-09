@@ -444,3 +444,87 @@ body {
 .matrix-btn.primary { background: var(--sb-orange); color: var(--sb-white); }
 .matrix-btn.primary:hover { background: #E55A28; }
 .matrix-btn.primary:disabled { background: var(--sb-mid-gray); cursor: not-allowed; }
+.matrix-btn.danger { background: #D32F2F; color: var(--sb-white); }
+.matrix-btn.danger:hover { background: #B71C1C; }
+.matrix-btn.danger-outline { background: transparent; border: 1.5px solid #D32F2F; color: #FF5252; }
+.matrix-btn.danger-outline:hover { background: rgba(211, 47, 47, 0.15); }
+.matrix-btn.danger-outline:disabled { opacity: 0.4; cursor: not-allowed; }
+.matrix-btn.restore { background: #1976D2; color: var(--sb-white); }
+.matrix-btn.restore:hover { background: #1565C0; }
+.matrix-btn.restore-outline { background: transparent; border: 1.5px solid #1976D2; color: #42A5F5; }
+.matrix-btn.restore-outline:hover { background: rgba(25, 118, 210, 0.15); }
+
+.matrix-danger-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; border-radius: 12px;
+}
+.matrix-danger-modal {
+  background: #1A2A3A; border-radius: 12px;
+  border: 1px solid rgba(255, 82, 82, 0.3);
+  padding: 32px; max-width: 600px; width: 90%;
+  max-height: 80vh; overflow-y: auto;
+}
+.matrix-danger-icon { font-size: 40px; text-align: center; margin-bottom: 12px; }
+.matrix-danger-title {
+  font-size: 18px; font-weight: 700; color: var(--sb-white);
+  text-align: center; margin-bottom: 16px;
+}
+.matrix-danger-text {
+  font-size: 13px; color: var(--sb-text-secondary); line-height: 1.6;
+  margin-bottom: 16px; text-align: center;
+}
+.matrix-danger-text strong { color: var(--sb-white); }
+.matrix-danger-note {
+  font-size: 12px; color: var(--sb-text-secondary); line-height: 1.5;
+  margin: 16px 0; padding: 10px 14px;
+  background: rgba(25, 118, 210, 0.1); border-radius: 6px;
+  border-left: 3px solid #1976D2;
+}
+.matrix-danger-note strong { color: #42A5F5; }
+.matrix-danger-actions {
+  display: flex; gap: 10px; justify-content: center; margin-top: 20px;
+}
+
+.matrix-sql-preview {
+  background: #0D1B2A; border-radius: 8px; padding: 14px;
+  margin: 16px 0; border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.matrix-sql-label {
+  font-size: 11px; font-weight: 600; color: var(--sb-text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}
+.matrix-sql-code {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px; color: #42A5F5; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-all;
+  margin: 0; padding: 0;
+}
+
+.matrix-results-list { margin: 16px 0; }
+.matrix-result-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-radius: 6px; margin-bottom: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.matrix-result-row.removed .matrix-result-table { color: #FF5252; }
+.matrix-result-row.restored .matrix-result-table { color: #42A5F5; }
+.matrix-result-row.error .matrix-result-table { color: #FF5252; }
+.matrix-result-table { font-weight: 600; font-size: 13px; color: var(--sb-white); }
+.matrix-result-detail { font-size: 12px; color: var(--sb-text-secondary); }
+
+.matrix-restore-offset { margin: 16px 0; }
+.matrix-restore-offset label {
+  font-size: 12px; color: var(--sb-text-secondary); display: block; margin-bottom: 8px;
+}
+.matrix-restore-slider {
+  display: flex; align-items: center; gap: 12px;
+}
+.matrix-restore-slider input[type="range"] {
+  flex: 1; accent-color: #1976D2; height: 4px;
+}
+.matrix-restore-value {
+  font-size: 14px; font-weight: 600; color: #42A5F5;
+  min-width: 60px; text-align: right;
+}
