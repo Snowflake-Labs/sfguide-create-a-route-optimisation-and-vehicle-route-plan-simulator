@@ -11,5 +11,6 @@ COPY --from=builder /app/package.json /app/package-lock.json* ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
-EXPOSE 3001
+ENV PORT=8080
+EXPOSE 8080
 CMD ["node", "dist/server/index.js"]

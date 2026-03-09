@@ -128,6 +128,58 @@ export const CALIFORNIA_CENTER: CityConfig = {
 
 export const CITY_NAMES = Object.keys(CITIES);
 
+export interface MatrixRegion {
+  id: string;
+  name: string;
+  hex_count_res9: number;
+  hex_count_res8: number;
+  hex_count_res7: number;
+  pairs_res9: number;
+  pairs_res8: number;
+  pairs_res7: number;
+  total_pairs: number;
+  built_res9: number;
+  built_res8: number;
+  built_res7: number;
+}
+
+export interface MatrixEstimate {
+  region: string;
+  resolutions: {
+    res: number;
+    label: string;
+    hexagons: number;
+    cutoff_miles: number;
+    sparse_pairs: number;
+    est_time_minutes: number;
+    est_credits: number;
+  }[];
+  total_pairs: number;
+  total_time_minutes: number;
+  total_credits: number;
+  api_comparison: {
+    provider: string;
+    cost_per_call: number;
+    calls_needed: number;
+    total_cost: number;
+  }[];
+  snowflake_cost: number;
+}
+
+export interface MatrixBuildStatus {
+  region: string;
+  resolution: number;
+  status: 'idle' | 'building' | 'complete' | 'error';
+  total_origins: number;
+  processed_origins: number;
+  total_pairs: number;
+  built_pairs: number;
+  percent_complete: number;
+  elapsed_seconds: number;
+  est_remaining_seconds: number;
+  error?: string;
+}
+
 export function courierColor(courierId: string): [number, number, number, number] {
   let n: number;
   const parts = courierId.split('-');

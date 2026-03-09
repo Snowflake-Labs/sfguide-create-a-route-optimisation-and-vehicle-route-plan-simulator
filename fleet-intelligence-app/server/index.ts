@@ -348,36 +348,36 @@ Keep queries efficient. Use fully qualified table names.`;
     let mapAction: any = null;
 
     if (IS_SPCS) {
-      const { host, token } = getSpcsConfig();
-      const sqlGenRes = await fetch(`https://${host}/api/v2/cortex/inference:complete`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-Snowflake-Authorization-Token-Type': 'OAUTH',
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'llama3.1-70b',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userQuestion },
-          ],
-          max_tokens: 1024,
-        }),
-      });
-      if (sqlGenRes.ok) {
-        const data: any = await sqlGenRes.json();
-        const content = data.choices?.[0]?.messages?.[0]?.content || data.choices?.[0]?.message?.content || '';
-        try {
-          const jsonMatch = content.match(/\{[\s\S]*"sql"[\s\S]*\}/);
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            sqlStatement = parsed.sql || '';
-            sqlExplanation = parsed.explanation || '';
-            mapAction = parsed.map_action || null;
+      try {
+        const escapedSystem = systemPrompt.replace(/'/g, "\\'");
+        const escapedUser = userQuestion.replace(/'/g, "\\'");
+        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', [{'role':'system','content':'${escapedSystem}'},{'role':'user','content':'${escapedUser}'}], {'max_tokens':1024}) as RESPONSE`;
+        console.log('Calling CORTEX.COMPLETE via SQL for SQL gen...');
+        const rows = await snowSqlSpcs(cortexSql);
+        console.log('CORTEX.COMPLETE SQL gen returned rows:', rows.length);
+        if (rows.length > 0) {
+          const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
+          console.log('CORTEX.COMPLETE SQL gen raw preview:', String(raw).slice(0, 300));
+          let content = '';
+          try {
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.choices?.[0]?.content || (typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
+          } catch {
+            content = String(raw);
           }
-        } catch {}
+          console.log('CORTEX.COMPLETE SQL gen content preview:', content.slice(0, 300));
+          try {
+            const jsonMatch = content.match(/\{[\s\S]*"sql"[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsedJson = JSON.parse(jsonMatch[0]);
+              sqlStatement = parsedJson.sql || '';
+              sqlExplanation = parsedJson.explanation || '';
+              mapAction = parsedJson.map_action || null;
+            }
+          } catch {}
+        }
+      } catch (cortexErr: any) {
+        console.error('CORTEX.COMPLETE SQL gen exception:', cortexErr.name, cortexErr.message);
       }
     } else {
       const result = cortexCompleteLocalFile([
@@ -403,6 +403,7 @@ Keep queries efficient. Use fully qualified table names.`;
     let queryError = '';
 
     if (sqlStatement) {
+      console.log('Generated SQL:', sqlStatement.slice(0, 300));
       send({ type: 'thinking_delta', text: `Generated SQL query. Executing...\n` });
       const toolResult: any = { type: 'tool_result', tool_name: 'fleet_data', status: 'complete', sql: sqlStatement };
       if (sqlExplanation) toolResult.sql_explanation = sqlExplanation;
@@ -461,49 +462,33 @@ Rules for charts:
     }
 
     if (IS_SPCS) {
-      const { host, token } = getSpcsConfig();
-      const completionRes = await fetch(`https://${host}/api/v2/cortex/inference:complete`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-Snowflake-Authorization-Token-Type': 'OAUTH',
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-        },
-        body: JSON.stringify({
-          model: 'llama3.1-70b',
-          messages: [
-            { role: 'system', content: responsePrompt },
-            { role: 'user', content: `${userQuestion}${dataContext}` },
-          ],
-          stream: true,
-          max_tokens: 2048,
-        }),
-      });
-
-      if (!completionRes.ok) {
-        send({ type: 'text_delta', text: sqlExplanation || 'I encountered an error generating a response.' });
-      } else {
-        const reader = completionRes.body!.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split('\n');
-          buf = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
-            const dataStr = line.slice(5).trim();
-            if (!dataStr || dataStr === '[DONE]') continue;
-            try {
-              const data = JSON.parse(dataStr);
-              const delta = data.choices?.[0]?.delta?.content;
-              if (delta) send({ type: 'text_delta', text: delta });
-            } catch {}
+      try {
+        const escapedSys = responsePrompt.replace(/'/g, "\\'");
+        const userContent = `${userQuestion}${dataContext}`.replace(/'/g, "\\'");
+        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', [{'role':'system','content':'${escapedSys}'},{'role':'user','content':'${userContent}'}], {'max_tokens':2048}) as RESPONSE`;
+        console.log('Calling CORTEX.COMPLETE via SQL for response gen...');
+        const rows = await snowSqlSpcs(cortexSql);
+        console.log('CORTEX.COMPLETE response gen returned rows:', rows.length);
+        if (rows.length > 0) {
+          const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
+          let content = '';
+          try {
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.choices?.[0]?.content || (typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
+          } catch {
+            content = String(raw);
           }
+          if (content) {
+            send({ type: 'text_delta', text: content });
+          } else {
+            send({ type: 'text_delta', text: sqlExplanation || 'I was unable to generate a response.' });
+          }
+        } else {
+          send({ type: 'text_delta', text: sqlExplanation || 'I was unable to generate a response.' });
         }
+      } catch (cortexErr: any) {
+        console.error('CORTEX.COMPLETE response gen exception:', cortexErr.name, cortexErr.message);
+        send({ type: 'text_delta', text: sqlExplanation || 'I encountered an error generating a response.' });
       }
     } else {
       const result = cortexCompleteLocalFile([
@@ -527,6 +512,116 @@ Rules for charts:
       res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
       res.end();
     }
+  }
+});
+
+const matrixBuildJobs: Record<string, { region: string; resolutions: number[]; started: number; statuses: Record<number, any> }> = {};
+
+app.get('/api/matrix/existing', async (_req, res) => {
+  try {
+    const counts: Record<string, number> = {};
+    for (const tbl of ['CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9']) {
+      try {
+        const rows = await snowSql(`SELECT COUNT(*) as CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.${tbl}`);
+        counts[tbl] = Number(rows[0]?.CNT || 0);
+      } catch {
+        counts[tbl] = 0;
+      }
+    }
+    res.json(counts);
+  } catch (err: any) {
+    res.json({});
+  }
+});
+
+app.post('/api/matrix/build', async (req, res) => {
+  try {
+    const { region, resolutions } = req.body;
+    if (!region || !resolutions?.length) {
+      return res.status(400).json({ error: 'region and resolutions required' });
+    }
+
+    const jobId = `${region}_${Date.now()}`;
+    const statuses: Record<number, any> = {};
+    for (const r of resolutions) {
+      statuses[r] = {
+        resolution: r,
+        status: 'building',
+        total_origins: 0,
+        processed_origins: 0,
+        total_pairs: 0,
+        built_pairs: 0,
+        percent_complete: 0,
+        elapsed_seconds: 0,
+        est_remaining_seconds: 0,
+      };
+    }
+    matrixBuildJobs[region] = { region, resolutions, started: Date.now(), statuses };
+
+    for (const r of resolutions) {
+      const tableName = `CA_TRAVEL_TIME_RES${r}`;
+      const pairsTable = `CA_H3_RES${r}_PAIRS`;
+      const procName = `BUILD_TRAVEL_TIME_MATRIX_RES${r}`;
+
+      (async () => {
+        try {
+          const pairsCount = await snowSql(`SELECT COUNT(*) as CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.${pairsTable}`);
+          const totalPairs = Number(pairsCount[0]?.CNT || 0);
+          statuses[r].total_pairs = totalPairs;
+
+          await snowSql(`CALL OPENROUTESERVICE_SETUP.PUBLIC.${procName}()`);
+
+          statuses[r].status = 'complete';
+          statuses[r].built_pairs = totalPairs;
+          statuses[r].percent_complete = 100;
+        } catch (err: any) {
+          statuses[r].status = 'error';
+          statuses[r].error = err.message?.slice(0, 200);
+        }
+      })();
+    }
+
+    res.json({ status: 'started', jobId, region });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/matrix/status', async (req, res) => {
+  try {
+    const region = req.query.region as string;
+    const job = matrixBuildJobs[region];
+    if (!job) {
+      return res.json({ region, resolutions: [] });
+    }
+
+    for (const r of job.resolutions) {
+      if (job.statuses[r].status === 'building') {
+        try {
+          const tableName = `CA_TRAVEL_TIME_RES${r}`;
+          const rows = await snowSql(`SELECT COUNT(*) as CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.${tableName}`);
+          const builtPairs = Number(rows[0]?.CNT || 0);
+          job.statuses[r].built_pairs = builtPairs;
+          const elapsed = (Date.now() - job.started) / 1000;
+          job.statuses[r].elapsed_seconds = elapsed;
+          if (job.statuses[r].total_pairs > 0) {
+            job.statuses[r].percent_complete = (builtPairs / job.statuses[r].total_pairs) * 100;
+            if (builtPairs > 0) {
+              const rate = builtPairs / elapsed;
+              const remaining = (job.statuses[r].total_pairs - builtPairs) / rate;
+              job.statuses[r].est_remaining_seconds = remaining;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    res.json({
+      region,
+      resolutions: Object.values(job.statuses),
+    });
+  } catch (err: any) {
+    res.json({ region: req.query.region, resolutions: [] });
   }
 });
 

@@ -247,7 +247,76 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE core.get_status() TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE core.check_grants()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    db_ok BOOLEAN DEFAULT FALSE;
+    cortex_ok BOOLEAN DEFAULT FALSE;
+    app_name STRING;
+BEGIN
+    app_name := (SELECT CURRENT_DATABASE());
+
+    BEGIN
+        LET r RESULTSET := (SELECT 1 FROM OPENROUTESERVICE_SETUP.INFORMATION_SCHEMA.TABLES LIMIT 1);
+        db_ok := TRUE;
+    EXCEPTION
+        WHEN OTHER THEN
+            db_ok := FALSE;
+    END;
+
+    BEGIN
+        LET r2 RESULTSET := (SHOW DATABASE ROLES IN DATABASE SNOWFLAKE);
+        cortex_ok := TRUE;
+    EXCEPTION
+        WHEN OTHER THEN
+            cortex_ok := FALSE;
+    END;
+
+    RETURN OBJECT_CONSTRUCT(
+        'database_access', :db_ok,
+        'cortex_role', :cortex_ok,
+        'app_name', :app_name
+    )::STRING;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.check_grants() TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE STREAMLIT core.status_app
     FROM '/streamlit'
     MAIN_FILE = '/status.py';
 GRANT USAGE ON STREAMLIT core.status_app TO APPLICATION ROLE app_user;
+
+-- =============================================================================
+-- POST-INSTALL GRANTS (run as ACCOUNTADMIN after CREATE APPLICATION)
+-- =============================================================================
+-- The following grants must be applied OUTSIDE the setup script by the installer:
+--
+-- 1. Account-level privileges:
+--    GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT CREATE WAREHOUSE ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
+--
+-- 2. Cortex AI access (REQUIRED for the AI agent):
+--    GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTELLIGENCE_APP;
+--
+-- 3. Data access:
+--    GRANT USAGE ON DATABASE OPENROUTESERVICE_SETUP TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT SELECT ON ALL TABLES IN SCHEMA OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT SELECT ON ALL VIEWS IN SCHEMA OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTELLIGENCE_APP;
+--
+-- 4. External access for map tiles:
+--    GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    CALL FLEET_INTELLIGENCE_APP.core.register_single_callback(
+--        'EXTERNAL_ACCESS_REF', 'ADD',
+--        SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'FLEET_INTEL_MAP_TILES_EAI', 'PERSISTENT', 'USAGE'));
+--
+-- 5. App role to user roles:
+--    GRANT APPLICATION ROLE FLEET_INTELLIGENCE_APP.APP_USER TO ROLE <YOUR_ROLE>;
+--
+-- 6. Deploy:
+--    CALL FLEET_INTELLIGENCE_APP.core.deploy();
+-- =============================================================================

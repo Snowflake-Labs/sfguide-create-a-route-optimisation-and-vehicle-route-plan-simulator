@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import Header from './components/Header';
 import FleetMap from './components/FleetMap';
 import ChatPanel from './components/ChatPanel';
+import MatrixBuilder from './components/MatrixBuilder';
 import { useFleetStats, useActiveStats, useAgent } from './hooks/useData';
 import { CITIES, CALIFORNIA_CENTER, CITY_NAMES } from './types';
 import type { CityConfig, MapMode, StatusFilter } from './types';
@@ -10,6 +11,7 @@ export default function App() {
   const [selectedCity, setSelectedCity] = useState('Los Angeles');
   const [mapMode, setMapMode] = useState<MapMode>('routes');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [matrixBuilderOpen, setMatrixBuilderOpen] = useState(false);
   const { stats, loading: statsLoading } = useFleetStats();
   const { activeStats } = useActiveStats();
   const agent = useAgent();
@@ -29,7 +31,7 @@ export default function App() {
 
   return (
     <div className="app-layout">
-      <Header />
+      <Header onMatrixBuilder={() => setMatrixBuilderOpen(true)} />
       <div className="main-content">
         <div className="sidebar">
           <div className="sidebar-city-selector">
@@ -66,6 +68,10 @@ export default function App() {
           onMapZoomComplete={agent.clearMapZoom}
         />
       </div>
+      <MatrixBuilder
+        open={matrixBuilderOpen}
+        onClose={() => setMatrixBuilderOpen(false)}
+      />
     </div>
   );
 }
