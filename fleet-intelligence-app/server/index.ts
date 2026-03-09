@@ -520,11 +520,15 @@ const matrixBuildJobs: Record<string, { region: string; resolutions: number[]; s
 app.get('/api/matrix/existing', async (_req, res) => {
   try {
     const counts: Record<string, number> = {};
-    for (const tbl of ['CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9']) {
-      try {
-        const rows = await snowSql(`SELECT COUNT(*) as CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.${tbl}`);
-        counts[tbl] = Number(rows[0]?.CNT || 0);
-      } catch {
+    try {
+      const rows = await snowSql(
+        `SELECT TABLE_NAME, ROW_COUNT FROM OPENROUTESERVICE_SETUP.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'PUBLIC' AND TABLE_NAME IN ('CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9')`
+      );
+      for (const row of rows) {
+        counts[row.TABLE_NAME] = Number(row.ROW_COUNT || 0);
+      }
+    } catch {
+      for (const tbl of ['CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9']) {
         counts[tbl] = 0;
       }
     }

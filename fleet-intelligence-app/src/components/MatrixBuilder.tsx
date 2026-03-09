@@ -688,23 +688,21 @@ INSERT INTO OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9
             )}
           </div>
           <div className="matrix-footer-actions">
-            {hasExistingData && (
-              <button
-                className="matrix-btn danger-outline"
-                onClick={() => setModalView('confirm-remove')}
-                disabled={isBuilding}
-              >
-                Remove Matrix
-              </button>
-            )}
-            {!hasExistingData && (
-              <button
-                className="matrix-btn restore-outline"
-                onClick={() => setModalView('confirm-restore')}
-              >
-                Restore Matrix
-              </button>
-            )}
+            <button
+              className="matrix-btn danger-outline"
+              onClick={() => setModalView('confirm-remove')}
+              disabled={isBuilding || !hasExistingData}
+              title={hasExistingData ? 'Remove all matrix data' : 'No matrix data to remove'}
+            >
+              Remove Matrix
+            </button>
+            <button
+              className="matrix-btn restore-outline"
+              onClick={() => setModalView('confirm-restore')}
+              disabled={isBuilding}
+            >
+              Restore Matrix
+            </button>
             <button className="matrix-btn secondary" onClick={onClose}>Cancel</button>
             <button
               className="matrix-btn primary"
