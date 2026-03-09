@@ -344,16 +344,20 @@ body {
   padding-bottom: 6px; border-bottom: 1px solid rgba(255,107,53,0.15);
 }
 
-.matrix-region-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.matrix-region-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .matrix-region-card {
   background: rgba(0,0,0,0.25); border: 1px solid rgba(255,107,53,0.12);
   border-radius: 8px; padding: 10px 12px; cursor: pointer;
-  transition: all 0.15s; text-align: left;
+  transition: all 0.15s; text-align: left; position: relative;
 }
 .matrix-region-card:hover { border-color: rgba(255,107,53,0.4); background: rgba(255,107,53,0.06); }
 .matrix-region-card.active { border-color: var(--sb-orange); background: rgba(255,107,53,0.12); }
+.matrix-region-card.statewide { grid-column: span 4; border-color: rgba(41,181,232,0.3); background: rgba(41,181,232,0.06); }
+.matrix-region-card.statewide:hover { border-color: rgba(41,181,232,0.6); background: rgba(41,181,232,0.1); }
+.matrix-region-card.statewide.active { border-color: var(--sb-blue); background: rgba(41,181,232,0.15); }
 .matrix-region-name { font-size: 13px; font-weight: 700; color: var(--sb-white); margin-bottom: 4px; }
 .matrix-region-desc { font-size: 10px; color: var(--sb-text-secondary); line-height: 1.4; }
+.matrix-region-badge { display: inline-block; margin-top: 6px; background: rgba(41,181,232,0.2); border: 1px solid rgba(41,181,232,0.4); border-radius: 10px; padding: 2px 8px; font-size: 10px; font-weight: 700; color: var(--sb-blue); }
 
 .matrix-res-grid { display: flex; flex-direction: column; gap: 6px; }
 .matrix-res-card {

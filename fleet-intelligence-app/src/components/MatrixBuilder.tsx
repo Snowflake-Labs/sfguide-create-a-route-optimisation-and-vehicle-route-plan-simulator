@@ -17,7 +17,7 @@ const REGIONS: RegionOption[] = [
   {
     id: 'san_francisco',
     label: 'San Francisco',
-    description: 'Single city — ideal for testing. ~1,065 hexagons at res 9.',
+    description: 'Single city — ideal for testing. ~1,065 hexagons at res 9. Measured: 3 min.',
     hexEstimates: [
       { res: 9, hexagons: 1065, pairs: 1134225 },
       { res: 8, hexagons: 180, pairs: 32400 },
@@ -65,13 +65,23 @@ const REGIONS: RegionOption[] = [
     ],
   },
   {
-    id: 'all_california',
-    label: 'All California',
-    description: 'Full statewide matrix — 20 cities, 480K+ hexagons. Takes 11-14 hours.',
+    id: 'all_cities',
+    label: 'All 20 Cities',
+    description: 'City-scoped matrices for all 20 California delivery cities only.',
     hexEstimates: [
-      { res: 9, hexagons: 480621, pairs: 12000000 },
-      { res: 8, hexagons: 144636, pairs: 45000000 },
-      { res: 7, hexagons: 38239, pairs: 45000000 },
+      { res: 9, hexagons: 250000, pairs: 25000000 },
+      { res: 8, hexagons: 42000, pairs: 35000000 },
+      { res: 7, hexagons: 7000, pairs: 15000000 },
+    ],
+  },
+  {
+    id: 'all_california',
+    label: 'All California (Statewide)',
+    description: 'Full statewide coverage — every H3 hex across CA. 1.95B pairs. Measured: ~6 hours with 8 parallel workers and X-Large warehouse.',
+    hexEstimates: [
+      { res: 9, hexagons: 8562468, pairs: 1133551374 },
+      { res: 8, hexagons: 1202530, pairs: 526323579 },
+      { res: 7, hexagons: 177365, pairs: 277834651 },
     ],
   },
 ];
@@ -85,8 +95,10 @@ const RES_LABELS: Record<number, string> = {
 const RES_CUTOFFS: Record<number, number> = { 9: 2, 8: 10, 7: 50 };
 
 const RATE_PAIRS_PER_SEC = 31500;
+const RATE_PAIRS_PER_SEC_PARALLEL = 90000;
 const CREDIT_PER_HOUR_XSMALL = 1;
 const CREDIT_PER_HOUR_SMALL = 2;
+const CREDIT_PER_HOUR_XLARGE = 16;
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
@@ -132,12 +144,17 @@ export default function MatrixBuilder({ open, onClose }: Props) {
 
   const region = REGIONS.find((r) => r.id === selectedRegion)!;
 
+  const isStatewide = selectedRegion === 'all_california';
+  const effectiveRate = isStatewide ? RATE_PAIRS_PER_SEC_PARALLEL : RATE_PAIRS_PER_SEC;
+  const creditRate = isStatewide ? CREDIT_PER_HOUR_XLARGE : CREDIT_PER_HOUR_SMALL;
+  const warehouseSize = isStatewide ? 'X-Large (8 parallel workers, 10 ORS instances)' : 'Small';
+
   const estimate = React.useMemo(() => {
     const resolutions = region.hexEstimates
       .filter((h) => selectedRes.has(h.res))
       .map((h) => {
-        const timeMin = h.pairs / RATE_PAIRS_PER_SEC / 60;
-        const credits = (timeMin / 60) * CREDIT_PER_HOUR_SMALL;
+        const timeMin = h.pairs / effectiveRate / 60;
+        const credits = (timeMin / 60) * creditRate;
         return {
           res: h.res,
           label: RES_LABELS[h.res],
@@ -150,8 +167,10 @@ export default function MatrixBuilder({ open, onClose }: Props) {
       });
 
     const totalPairs = resolutions.reduce((s, r) => s + r.sparse_pairs, 0);
-    const totalTime = resolutions.reduce((s, r) => s + r.est_time_minutes, 0);
-    const totalCredits = resolutions.reduce((s, r) => s + r.est_credits, 0);
+    const totalTime = isStatewide
+      ? resolutions.reduce((s, r) => s + r.est_time_minutes, 0) * 0.35
+      : resolutions.reduce((s, r) => s + r.est_time_minutes, 0);
+    const totalCredits = (totalTime / 60) * creditRate;
 
     const apiComparisons = [
       {
@@ -183,7 +202,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
       snowflake_cost: totalCredits * 2.5,
       api_comparison: apiComparisons,
     } as MatrixEstimate;
-  }, [region, selectedRes]);
+  }, [region, selectedRes, effectiveRate, creditRate, isStatewide]);
 
   const toggleRes = (res: number) => {
     setSelectedRes((prev) => {
@@ -278,11 +297,14 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               {REGIONS.map((r) => (
                 <button
                   key={r.id}
-                  className={`matrix-region-card ${selectedRegion === r.id ? 'active' : ''}`}
+                  className={`matrix-region-card ${selectedRegion === r.id ? 'active' : ''} ${r.id === 'all_california' ? 'statewide' : ''}`}
                   onClick={() => setSelectedRegion(r.id)}
                 >
                   <div className="matrix-region-name">{r.label}</div>
                   <div className="matrix-region-desc">{r.description}</div>
+                  {r.id === 'all_california' && (
+                    <div className="matrix-region-badge">1.95B pairs</div>
+                  )}
                 </button>
               ))}
             </div>
@@ -398,9 +420,10 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               </tbody>
             </table>
             <div className="matrix-comparison-footnote">
-              Snowflake cost based on SMALL warehouse ({CREDIT_PER_HOUR_SMALL} credit/hr) at $2.50/credit.
+              Snowflake cost based on {warehouseSize} warehouse ({creditRate} credits/hr) at $2.50/credit.
+              {isStatewide && ' Statewide build uses 8 parallel workers with 10 ORS service instances. Measured: ~6 hours for 1.95B pairs. '}
               External API costs are per-element pricing from public rate cards. Snowflake processes the matrix
-              in-platform with no data egress, using the ORS Native App MATRIX function at ~31,500 pairs/sec.
+              in-platform with no data egress, using the ORS Native App MATRIX function.
             </div>
           </div>
 
