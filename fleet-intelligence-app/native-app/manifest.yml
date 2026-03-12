@@ -1,17 +1,30 @@
-manifest_version: 1
+manifest_version: 2
 
 artifacts:
   setup_script: setup_script.sql
   readme: README.md
   container_services:
     images:
-      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.0
+      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.8.9
+      - /openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0
+      - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
+      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.8.1
+      - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
   default_streamlit: core.status_app
 
 references:
   - external_access_ref:
       label: "External access for map basemap tiles"
       description: "Required for the app to load Carto basemap tiles in the web UI"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: false
+  - external_access_download_ref:
+      label: "External access for OSM map downloads"
+      description: "Required to download OpenStreetMap PBF files from BBBike and Geofabrik for per-city routing"
       privileges:
         - USAGE
       object_type: EXTERNAL ACCESS INTEGRATION
@@ -29,8 +42,10 @@ configuration:
 
 privileges:
   - CREATE COMPUTE POOL:
-      description: "Create compute pool for running the Fleet Intelligence web application"
+      description: "Create compute pools for the Fleet Intelligence UI and OpenRouteService routing engine"
   - CREATE WAREHOUSE:
       description: "Create a warehouse for running SQL queries"
   - BIND SERVICE ENDPOINT:
       description: "Allow the app to expose a public endpoint for the web application"
+  - IMPORTED PRIVILEGES ON SNOWFLAKE DB:
+      description: "Access to Snowflake Cortex AI for the Fleet Intelligence Agent (natural language queries)"

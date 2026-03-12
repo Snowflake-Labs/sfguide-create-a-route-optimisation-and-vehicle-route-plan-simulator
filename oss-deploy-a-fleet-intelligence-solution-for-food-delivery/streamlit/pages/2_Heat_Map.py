@@ -24,8 +24,10 @@ with open('extra.css') as f:
 session = get_active_session()
 
 with st.sidebar:
-    selected_city = st.selectbox("City", get_california_cities(), index=0)
+    city_options = ["All Cities"] + get_california_cities()
+    selected_city = st.selectbox("City", city_options, index=0)
 
+city_query_filter = '' if selected_city == 'All Cities' else selected_city
 CITY = get_city(selected_city)
 
 st.markdown(f'''
@@ -46,24 +48,46 @@ with st.sidebar:
 def get_hex_df(h3_res: int, h: int, m: int, city: str = '') -> pd.DataFrame:
     city_filter = f"AND CITY = '{city}'" if city else ''
     sql = f"""
-        WITH latest AS (
-            SELECT order_id, point_geom,
-            
+        WITH active AS (
+            SELECT order_id, courier_id, point_geom, courier_state
             FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
+              AND courier_state != 'available'
               {city_filter}
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY order_id ORDER BY CURR_TIME DESC
             ) = 1
+        ),
+        avail_candidates AS (
+            SELECT order_id, courier_id, point_geom, courier_state
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
+            WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
+              AND minute(TO_TIMESTAMP(CURR_TIME)) <= {m}
+              {city_filter}
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY courier_id ORDER BY CURR_TIME DESC
+            ) = 1
+        ),
+        avail AS (
+            SELECT * FROM avail_candidates
+            WHERE courier_state = 'available'
+              AND courier_id NOT IN (SELECT courier_id FROM active)
+        ),
+        combined AS (
+            SELECT point_geom, courier_state FROM active
+            UNION ALL
+            SELECT point_geom, courier_state FROM avail
         )
         SELECT h3_point_to_cell_string(point_geom, {h3_res}) AS h3,
-               COUNT(*) AS count
-        FROM latest
+               COUNT(*) AS count,
+               SUM(CASE WHEN courier_state = 'available' THEN 1 ELSE 0 END) AS available_count
+        FROM combined
         GROUP BY ALL
     """
     df = session.sql(sql).to_pandas()
-    df["TOOLTIP"] = "Couriers in cell: " + df["COUNT"].astype(str)
+    active = df['COUNT'] - df['AVAILABLE_COUNT']
+    df["TOOLTIP"] = "Active: " + active.astype(str) + " | Available: " + df["AVAILABLE_COUNT"].astype(str)
     return df
 
 
@@ -71,45 +95,58 @@ def get_hex_df(h3_res: int, h: int, m: int, city: str = '') -> pd.DataFrame:
 def get_point_df(h: int, m: int, city: str = '') -> pd.DataFrame:
     city_filter = f"AND CITY = '{city}'" if city else ''
     sql = f"""
-        WITH latest AS (
-            SELECT order_id,
-                   DELIVERY_NAME, 
-                   point_geom,
-                   ST_SIMPLIFY(GEOMETRY, 10) AS route_simpl
-            FROM 
-            (SELECT A.*,B.DELIVERY_NAME,C.GEOMETRY FROM 
-            OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V A
-            INNER JOIN 
-            OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_NAMES B ON A.ORDER_ID = B.ORDER_ID
-            INNER JOIN
-            (SELECT ORDER_ID,GEOMETRY FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS) C
-            ON A.ORDER_ID = C.ORDER_ID
-            )
-            WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
-              AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
+        WITH active_couriers AS (
+            SELECT A.order_id, A.courier_id, A.point_geom, A.courier_state,
+                   B.DELIVERY_NAME, C.GEOMETRY
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V A
+            INNER JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_NAMES B ON A.ORDER_ID = B.ORDER_ID
+            INNER JOIN (SELECT ORDER_ID, GEOMETRY FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS) C ON A.ORDER_ID = C.ORDER_ID
+            WHERE hour(TO_TIMESTAMP(A.CURR_TIME)) = {h}
+              AND minute(TO_TIMESTAMP(A.CURR_TIME)) = {m}
+              AND A.COURIER_STATE != 'available'
               {city_filter}
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY order_id ORDER BY CURR_TIME DESC
-            ) = 1
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY A.order_id ORDER BY A.CURR_TIME DESC) = 1
+        ),
+        available_couriers AS (
+            SELECT order_id, courier_id, point_geom, courier_state,
+                   'Available' AS DELIVERY_NAME, NULL AS GEOMETRY
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
+            WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
+              AND minute(TO_TIMESTAMP(CURR_TIME)) <= {m}
+              {city_filter}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY courier_id ORDER BY CURR_TIME DESC) = 1
+        ),
+        available_filtered AS (
+            SELECT * FROM available_couriers
+            WHERE courier_state = 'available'
+              AND courier_id NOT IN (SELECT courier_id FROM active_couriers)
+        ),
+        combined AS (
+            SELECT order_id, courier_state, DELIVERY_NAME,
+                   ST_X(point_geom)::FLOAT AS lon, ST_Y(point_geom)::FLOAT AS lat,
+                   ST_ASGEOJSON(ST_SIMPLIFY(GEOMETRY, 10)) AS route_gj
+            FROM active_couriers
+            UNION ALL
+            SELECT order_id, courier_state, DELIVERY_NAME,
+                   ST_X(point_geom)::FLOAT AS lon, ST_Y(point_geom)::FLOAT AS lat,
+                   NULL AS route_gj
+            FROM available_filtered
         )
-        SELECT order_id                        AS "order_id",
-               DELIVERY_NAME                   AS DELIVERY_NAME,
-               ST_X(point_geom)::FLOAT        AS "lon",
-               ST_Y(point_geom)::FLOAT        AS "lat",
-               ST_ASGEOJSON(route_simpl)      AS "route_gj"
-        FROM latest
+        SELECT * FROM combined
     """
     df = session.sql(sql).to_pandas()
     df.columns = df.columns.str.lower()
     df["POSITION"] = df[["lon", "lat"]].values.tolist()
     df["ROUTE"] = df["route_gj"].apply(
         lambda g: json.loads(g)["coordinates"] if isinstance(g, str) else [])
-    df["TOOLTIP"] = "Delivery: " + df["delivery_name"].astype(str)
-    return df[["order_id", "POSITION", "ROUTE", "TOOLTIP"]]
+    df["is_available"] = df["courier_state"] == 'available'
+    df["TOOLTIP"] = df.apply(lambda r: "Available Courier" if r["is_available"] else "Delivery: " + str(r["delivery_name"]), axis=1)
+    return df[["order_id", "POSITION", "ROUTE", "TOOLTIP", "is_available"]]
 
-delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN')\
-    .filter(F.col('CITY') == selected_city)\
-    .with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
+delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN')
+if selected_city != 'All Cities':
+    delivery_plans = delivery_plans.filter(F.col('CITY') == selected_city)
+delivery_plans = delivery_plans.with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
 
 longest_deliveries = delivery_plans.order_by(F.col('DISTANCE_METERS').desc()).limit(5)
 
@@ -194,10 +231,21 @@ def make_hex_layer(df):
     )
 
 def make_point_layer(df):
+    active = df[~df["is_available"]] if "is_available" in df.columns else df
     return pdk.Layer(
-        "ScatterplotLayer", df, id="couriers",
-        get_position="POSITION", get_fill_color=[0, 0, 0, 160],
-        get_radius=30, pickable=True, auto_highlight=True, opacity=0.8,
+        "ScatterplotLayer", active, id="couriers",
+        get_position="POSITION", get_fill_color=[0, 53, 69, 200],
+        get_radius=40, pickable=True, auto_highlight=True, opacity=0.9,
+    )
+
+def make_available_layer(df):
+    available = df[df["is_available"]] if "is_available" in df.columns else pd.DataFrame()
+    if available.empty:
+        return None
+    return pdk.Layer(
+        "ScatterplotLayer", available, id="available",
+        get_position="POSITION", get_fill_color=[46, 204, 113, 200],
+        get_radius=50, pickable=True, auto_highlight=True, opacity=0.9,
     )
 
 def make_route_layer(path):
@@ -234,11 +282,21 @@ state_defaults = dict(
                     zoom=CITY["zoom"], pitch=0, bearing=0),
     selected_route=None,
     selected_pos=None,
-    prev_filters={}
+    prev_filters={},
+    prev_city=selected_city,
 )
 for k, v in state_defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+if st.session_state.get("prev_city") != selected_city:
+    st.session_state.view_state = dict(
+        latitude=CITY["latitude"], longitude=CITY["longitude"],
+        zoom=CITY["zoom"], pitch=0, bearing=0,
+    )
+    st.session_state.selected_route = None
+    st.session_state.selected_pos = None
+    st.session_state.prev_city = selected_city
 
 with st.sidebar:
     st.header("Controls")
@@ -255,8 +313,8 @@ if curr_filters != st.session_state.prev_filters:
     st.session_state.selected_pos   = None
 st.session_state.prev_filters = curr_filters
 
-hex_df   = get_hex_df(h3_res, hour, minute, selected_city)
-point_df = get_point_df(hour, minute, selected_city)
+hex_df   = get_hex_df(h3_res, hour, minute, city_query_filter)
+point_df = get_point_df(hour, minute, city_query_filter)
 
 qs, colors = (
     (hex_df["COUNT"].quantile([0, .25, .5, .75, 1]),
@@ -271,6 +329,8 @@ hex_df["COLOR"] = colourise(
 min_count = int(hex_df["COUNT"].min()) if not hex_df.empty else 0
 max_count = int(hex_df["COUNT"].max()) if not hex_df.empty else 0
 gradient = ", ".join(colors)
+active_count = len(point_df[~point_df['is_available']]) if 'is_available' in point_df.columns else len(point_df)
+available_count = len(point_df[point_df['is_available']]) if 'is_available' in point_df.columns else 0
 legend_html = f"""
 <div style="margin-top:8px;">
   <div style="font-size: 0.85rem; margin-bottom: 6px; color: #6b7b86;">Legend (Couriers per cell)</div>
@@ -279,6 +339,16 @@ legend_html = f"""
     <span>{min_count}</span>
     <span>{max_count}</span>
   </div>
+  <div style="margin-top:10px; font-size: 0.85rem;">
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+      <div style="width:12px; height:12px; border-radius:50%; background:#003545;"></div>
+      <span style="color:#6b7b86;">Active ({active_count})</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px;">
+      <div style="width:12px; height:12px; border-radius:50%; background:#2ECC71;"></div>
+      <span style="color:#6b7b86;">Available ({available_count})</span>
+    </div>
+  </div>
 </div>
 """
 st.sidebar.markdown(legend_html, unsafe_allow_html=True)
@@ -286,6 +356,9 @@ st.sidebar.markdown(legend_html, unsafe_allow_html=True)
 layers = [make_hex_layer(hex_df)]
 if show_dots:
     layers.append(make_point_layer(point_df))
+    avail_layer = make_available_layer(point_df)
+    if avail_layer:
+        layers.append(avail_layer)
 
 route, pos = st.session_state.selected_route, st.session_state.selected_pos
 if route:

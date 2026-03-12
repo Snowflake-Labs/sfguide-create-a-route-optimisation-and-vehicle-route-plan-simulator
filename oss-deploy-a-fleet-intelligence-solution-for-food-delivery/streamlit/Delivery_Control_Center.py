@@ -122,6 +122,25 @@ st.divider()
 st.markdown(f'<h1sub>{CITY["name"]} Live Delivery Routes</h1sub>', unsafe_allow_html=True)
 
 try:
+    @st.cache_data
+    def get_city_couriers(city):
+        return session.sql(f"""
+            SELECT DISTINCT COURIER_ID
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+            WHERE CITY = '{city}'
+            ORDER BY COURIER_ID
+        """).to_pandas()['COURIER_ID'].tolist()
+
+    city_couriers = get_city_couriers(selected_city)
+
+    map_col, legend_col = st.columns([0.85, 0.15])
+
+    with legend_col:
+        filter_options = ['All Couriers'] + city_couriers
+        selected_courier = st.selectbox('Filter by Courier', filter_options, index=0)
+
+    courier_filter = f"AND COURIER_ID = '{selected_courier}'" if selected_courier != 'All Couriers' else ''
+
     routes_df = session.sql(f"""
         SELECT
             COURIER_ID,
@@ -134,7 +153,8 @@ try:
             ORDER_STATUS
         FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
         WHERE CITY = '{selected_city}'
-        LIMIT 100
+          {courier_filter}
+        LIMIT 200
     """).to_pandas()
 
     routes_df["coordinates"] = routes_df["GEOMETRY_JSON"].apply(
@@ -143,6 +163,36 @@ try:
 
     routes_df['color'] = routes_df['COURIER_ID'].apply(
         lambda x: driver_color(x)
+    )
+
+    routes_df['TOOLTIP'] = routes_df.apply(
+        lambda r: f"Courier: {r['COURIER_ID']}<br/>From: {r['RESTAURANT_NAME']}<br/>To: {r['CUSTOMER_ADDRESS']}<br/>ETA: {r['ETA_MINS']:.0f} min<br/>Status: {r['ORDER_STATUS']}", axis=1
+    )
+
+    routes_df['start'] = routes_df['coordinates'].apply(lambda c: c[0] if c else None)
+    routes_df['end'] = routes_df['coordinates'].apply(lambda c: c[-1] if c else None)
+
+    endpoints_df = routes_df.dropna(subset=['start', 'end']).copy()
+    pickup_df = endpoints_df[['COURIER_ID', 'RESTAURANT_NAME', 'start', 'color']].copy()
+    pickup_df.rename(columns={'start': 'pos', 'RESTAURANT_NAME': 'label'}, inplace=True)
+    pickup_df['TOOLTIP'] = pickup_df.apply(lambda r: f"Pickup: {r['label']} ({r['COURIER_ID']})", axis=1)
+    dropoff_df = endpoints_df[['COURIER_ID', 'CUSTOMER_ADDRESS', 'end', 'color']].copy()
+    dropoff_df.rename(columns={'end': 'pos', 'CUSTOMER_ADDRESS': 'label'}, inplace=True)
+    dropoff_df['TOOLTIP'] = dropoff_df.apply(lambda r: f"Dropoff: {r['label']} ({r['COURIER_ID']})", axis=1)
+
+    pickup_layer = pdk.Layer(
+        'ScatterplotLayer', pickup_df,
+        get_position='pos', get_fill_color='color',
+        get_radius=60, radius_min_pixels=4, radius_max_pixels=10,
+        pickable=True, id='pickups',
+    )
+
+    dropoff_layer = pdk.Layer(
+        'ScatterplotLayer', dropoff_df,
+        get_position='pos', get_fill_color='color',
+        get_radius=60, radius_min_pixels=4, radius_max_pixels=10,
+        get_line_color=[255, 255, 255, 200], line_width_min_pixels=2,
+        stroked=True, pickable=True, id='dropoffs',
     )
 
     path_layer = pdk.Layer(
@@ -165,7 +215,7 @@ try:
     )
 
     tooltip = {
-        "html": "<b>Courier:</b> {COURIER_ID}<br/><b>From:</b> {RESTAURANT_NAME}<br/><b>To:</b> {CUSTOMER_ADDRESS}<br/><b>ETA:</b> {ETA_MINS:.0f} min<br/><b>Status:</b> {ORDER_STATUS}",
+        "html": "<b>{TOOLTIP}</b>",
         "style": {
             "backgroundColor": "#24323D",
             "color": "white"
@@ -176,12 +226,26 @@ try:
         map_provider="carto",
         map_style="light",
         initial_view_state=view_state,
-        layers=[path_layer],
+        layers=[path_layer, pickup_layer, dropoff_layer],
         tooltip=tooltip,
         height=500
     )
 
-    st.pydeck_chart(deck, use_container_width=True)
+    with map_col:
+        st.pydeck_chart(deck, use_container_width=True)
+
+    with legend_col:
+        visible_couriers = routes_df['COURIER_ID'].unique()
+        route_count = len(routes_df)
+        st.markdown(f'**{route_count} routes** from **{len(visible_couriers)} couriers**')
+        st.markdown('<div style="font-size:0.8rem; color:#6b7b86; margin-top:6px;">Each colour = unique courier<br/>● Solid dot = Pickup<br/>◉ Ringed dot = Dropoff</div>', unsafe_allow_html=True)
+        legend_items = ''.join(
+            f'<div style="display:flex;align-items:center;gap:5px;margin:2px 0;">'
+            f'<div style="width:10px;height:10px;border-radius:50%;background:rgb({c[0]},{c[1]},{c[2]});"></div>'
+            f'<span style="font-size:0.75rem;color:#6b7b86;">{cid}</span></div>'
+            for cid, c in sorted(set((cid, tuple(driver_color(cid)[:3])) for cid in visible_couriers))
+        )
+        st.markdown(f'<div style="max-height:300px;overflow-y:auto;margin-top:4px;">{legend_items}</div>', unsafe_allow_html=True)
 
 except Exception as e:
     st.error(f"Error loading map: {e}")

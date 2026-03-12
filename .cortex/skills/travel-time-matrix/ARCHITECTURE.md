@@ -1,0 +1,261 @@
+# Travel Time Matrix — Architecture Diagram
+
+## End-to-End Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          SNOWFLAKE ACCOUNT                                  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                     STEP 1: H3 GRID GENERATION                       │  │
+│  │                                                                       │  │
+│  │   California GeoJSON ──► H3_COVERAGE_STRINGS() ──► H3 Hex Tables     │  │
+│  │                           at RES 7, 8, 9          (with lat/lon)     │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                     STEP 2: WORK QUEUE BUILD                         │  │
+│  │                                                                       │  │
+│  │   For each origin hex:                                                │  │
+│  │   ┌──────────┐    H3_GRID_DISK()    ┌──────────────────────────┐     │  │
+│  │   │ Origin   │ ──────────────────►   │ Neighbor destinations    │     │  │
+│  │   │ H3 hex   │   (radius by res)    │ + packed coord arrays    │     │  │
+│  │   └──────────┘                       │ + SEQ_ID for chunking   │     │  │
+│  │                                      └──────────────────────────┘     │  │
+│  │                                                                       │  │
+│  │   CA_WORK_QUEUE_RES7: 177,346 rows (1,567 dests/origin)              │  │
+│  │   CA_WORK_QUEUE_RES8: 1,202,348 rows (438 dests/origin)              │  │
+│  │   CA_WORK_QUEUE_RES9: 8,557,513 rows (132 dests/origin)              │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                STEP 3: PARALLEL WORKER EXECUTION                     │  │
+│  │                                                                       │  │
+│  │   ROUTING_ANALYTICS Warehouse (XSMALL × 10 multi-cluster)            │  │
+│  │   ┌─────────┐ ┌─────────┐ ┌─────────┐           ┌─────────┐         │  │
+│  │   │Worker 01│ │Worker 02│ │Worker 03│    ...    │Worker 10│         │  │
+│  │   │seq 1-N  │ │seq N-2N │ │seq 2N-3N│           │seq 9N-T │         │  │
+│  │   └────┬────┘ └────┬────┘ └────┬────┘           └────┬────┘         │  │
+│  │        │            │            │                     │              │  │
+│  │        │     Each worker calls MATRIX_TABULAR()        │              │  │
+│  │        │     in batches with retry + backoff            │              │  │
+│  │        ▼            ▼            ▼                     ▼              │  │
+│  │   ┌──────────────────────────────────────────────────────┐           │  │
+│  │   │              ORS NATIVE APP                          │           │  │
+│  │   │   ┌──────────────────────────────────────────────┐   │           │  │
+│  │   │   │  COMPUTE POOL (10× HIGHMEM_X64_M nodes)     │   │           │  │
+│  │   │   │                                              │   │           │  │
+│  │   │   │  ┌─────────┐  ┌─────────┐     ┌─────────┐   │   │           │  │
+│  │   │   │  │ ORS #1  │  │ ORS #2  │ ... │ ORS #10 │   │   │           │  │
+│  │   │   │  │(routing │  │(routing │     │(routing │   │   │           │  │
+│  │   │   │  │ engine) │  │ engine) │     │ engine) │   │   │           │  │
+│  │   │   │  └────┬────┘  └────┬────┘     └────┬────┘   │   │           │  │
+│  │   │   │       │            │                │        │   │           │  │
+│  │   │   │  ┌────┴────┐  ┌────┴────┐     ┌────┴────┐   │   │           │  │
+│  │   │   │  │  GW #1  │  │  GW #2  │ ... │  GW #10 │   │   │           │  │
+│  │   │   │  │(gateway)│  │(gateway)│     │(gateway)│   │   │           │  │
+│  │   │   │  └─────────┘  └─────────┘     └─────────┘   │   │           │  │
+│  │   │   └──────────────────────────────────────────────┘   │           │  │
+│  │   │                                                      │           │  │
+│  │   │  MATRIX_TABULAR('driving-car', origin, dests)        │           │  │
+│  │   │  Returns: { durations: [[...]], distances: [[...]] } │           │  │
+│  │   └──────────────────────────────────────────────────────┘           │  │
+│  │        │            │            │                     │              │  │
+│  │        ▼            ▼            ▼                     ▼              │  │
+│  │   ┌──────────────────────────────────────────────────────┐           │  │
+│  │   │            RAW STAGING TABLES (VARIANT)              │           │  │
+│  │   │                                                      │           │  │
+│  │   │  CA_MATRIX_RAW_RES7  (177K rows, VARIANT payload)   │           │  │
+│  │   │  CA_MATRIX_RAW_RES8  (1.2M rows, VARIANT payload)   │           │  │
+│  │   │  CA_MATRIX_RAW_RES9  (8.6M rows, VARIANT payload)   │           │  │
+│  │   └──────────────────────────────────────────────────────┘           │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    STEP 4: FLATTEN (Post-Processing)                  │  │
+│  │                                                                       │  │
+│  │   FLATTEN_WH (XLARGE, auto-suspend 60s)                               │  │
+│  │                                                                       │  │
+│  │   Raw VARIANT ──► LATERAL FLATTEN() ──► Structured travel time rows   │  │
+│  │                                                                       │  │
+│  │   { durations: [[120,340,...]]    ORIGIN_H3 │ DEST_H3 │ TIME │ DIST  │  │
+│  │     distances: [[5000,12000,...]] ──────────┼─────────┼──────┼─────── │  │
+│  │     destinations: [...] }          8928... │ 8928.. │ 120  │ 5000  │  │
+│  │                                    8928... │ 8928.. │ 340  │ 12000 │  │
+│  │                                                                       │  │
+│  │   CA_TRAVEL_TIME_RES7:  285,566,876 pairs  (~2 min flatten)          │  │
+│  │   CA_TRAVEL_TIME_RES8:  519,528,661 pairs  (~2 min flatten)          │  │
+│  │   CA_TRAVEL_TIME_RES9:  ~1.13B pairs       (~2 min flatten)          │  │
+│  └───────────────────────────┬───────────────────────────────────────────┘  │
+│                              │                                              │
+│                              ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    CONSUMPTION LAYER                                  │  │
+│  │                                                                       │  │
+│  │   ┌─────────────────────┐    ┌─────────────────────────────────┐     │  │
+│  │   │  Streamlit Dashboard │    │  VROOM Route Optimization       │     │  │
+│  │   │  (COMPUTE_WH)       │    │  (1 instance)                   │     │  │
+│  │   │                     │    │                                   │     │  │
+│  │   │  Sub-second lookups │    │  Reads pre-computed matrices     │     │  │
+│  │   │  from travel time   │    │  to solve VRP in milliseconds    │     │  │
+│  │   │  tables via SQL     │    │                                   │     │  │
+│  │   └─────────────────────┘    └─────────────────────────────────┘     │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Task DAG (Automated Pipeline)
+
+```
+                    EXECUTE TASK (trigger)
+                           │
+            ┌──────────────┼──────────────┐
+            ▼              ▼              ▼
+   ┌────────────────┐ ┌────────────┐ ┌────────────────┐
+   │ BUILD_QUEUE    │ │ BUILD_QUEUE│ │ BUILD_QUEUE    │
+   │ RES7 (root)   │ │ RES8 (root)│ │ RES9 (root)   │
+   └───────┬────────┘ └─────┬──────┘ └───────┬────────┘
+           │                │                 │
+     ┌─────┼─────┐    ┌────┼────┐      ┌────┼────┐
+     ▼     ▼     ▼    ▼    ▼    ▼      ▼    ▼    ▼
+   ┌───┐ ┌───┐ ┌───┐┌───┐┌───┐┌───┐ ┌───┐┌───┐┌───┐
+   │W01│ │W02│…│W10││W01││W02│…│W10│ │W01││W02│…│W10│  ← 30 workers
+   └─┬─┘ └─┬─┘ └─┬─┘└─┬─┘└─┬─┘└─┬─┘ └─┬─┘└─┬─┘└─┬─┘    (10 per res)
+     │     │     │    │    │    │     │    │    │
+     └─────┼─────┘    └────┼────┘     └────┼────┘
+           │                │                │
+           ▼                ▼                ▼
+   ┌────────────────┐ ┌────────────┐ ┌────────────────┐
+   │ FLATTEN_RES7   │ │FLATTEN_RES8│ │ FLATTEN_RES9   │  ← Fan-in: fires
+   │ (XLARGE WH)    │ │(XLARGE WH) │ │ (XLARGE WH)    │    when ALL 10
+   └────────────────┘ └────────────┘ └────────────────┘    workers done
+```
+
+## Data Flow Summary
+
+```
+  California         H3 Grid           Work Queue          ORS API
+  GeoJSON     ──►   Coverage    ──►   (origin +     ──►   MATRIX_TABULAR
+  boundary          at 3 res         neighbor dests       (driving-car)
+                                      + coords)
+
+       │                                                      │
+       │                                                      ▼
+       │
+       │              Flattened              Raw VARIANT
+       │              Travel Time    ◄──    Staging Tables
+       │              Tables                (bulk FLATTEN
+       │              (1.94B rows)           on XLARGE)
+       │
+       │                  │
+       ▼                  ▼
+                                            
+  ┌──────────┐    ┌──────────────┐    ┌───────────────┐
+  │ Streamlit │◄───│ SQL Lookups  │    │ VROOM Route   │
+  │ Dashboard │    │ (sub-second) │───►│ Optimization  │
+  └──────────┘    └──────────────┘    └───────────────┘
+```
+
+## Infrastructure Layout
+
+```
+  WAREHOUSES                          COMPUTE POOL
+  ══════════                          ════════════
+  
+  ROUTING_ANALYTICS                   HIGHMEM_X64_M × 10 nodes
+  ├── XSMALL × 10 clusters           ├── ORS Service × 10 instances
+  ├── Multi-cluster (MIN=MAX=10)      ├── Gateway × 10 instances
+  ├── Workers are I/O bound           ├── VROOM Service × 1 instance
+  └── AUTO_SUSPEND = 300s             └── Graphs loaded in memory
+  
+  FLATTEN_WH                          
+  ├── XLARGE (single cluster)         COST: ~132 credits total
+  ├── Bulk FLATTEN needs compute      ├── Warehouse: 65 credits
+  └── AUTO_SUSPEND = 60s              ├── Compute Pool: 65 credits
+                                      └── Flatten: 2 credits
+  COMPUTE_WH
+  ├── Streamlit dashboard
+  └── Ad-hoc queries
+```
+
+## Timing Breakdown (California — 1.94B pairs)
+
+### Reference Run: 10 ORS instances, XSMALL × 10 clusters
+
+**Estimated clean run (no failures): ~6.5 hours end-to-end**
+
+```
+Time ──►  0h        1h        2h        3h        4h        5h        6h    6.5h
+          │         │         │         │         │         │         │      │
+  RES7    ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+          177K origins │ ~2 hrs │ Done
+          (shared ORS)
+                       │
+  RES8    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+          1.2M origins │ ~1.5 hrs │ Done
+          (shared ORS)
+                                 │
+  RES9    ████████████████████████████████████████████████████████████████░░
+          8.6M origins                                              │~6 hrs│
+          (shared ORS 0-1.5h, then full ORS capacity)
+                                                                           │
+  FLAT7   ░░░░░░░░░░░░░░░░░░░░██                                          │
+                               │2min│                                      │
+  FLAT8   ░░░░░░░░░░░░░░░░██░░░░░░░░                                      │
+                            │2min│                                         │
+  FLAT9   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░██░
+                                                                       │2m│
+          █ = Active    ░ = Waiting/Idle
+```
+
+### Per-Step Timing
+
+| Step | Duration | Warehouse | Notes |
+|---|---|---|---|
+| **H3 Grid Generation** | ~5 min | COMPUTE_WH | H3_COVERAGE_STRINGS at 3 resolutions |
+| **Work Queue Build** | ~10 min | COMPUTE_WH | H3_GRID_DISK + coordinate packing, 3 tables |
+| **Raw Table + Target Table Creation** | ~1 min | COMPUTE_WH | DDL only |
+| **Infrastructure Scaling** | ~5 min | — | Warehouse + compute pool + ORS resize |
+| **ORS Warm-Up** | ~1 min | — | Graph rebuild after service restart |
+| **Worker Execution (all 3 res)** | ~6 hrs | ROUTING_ANALYTICS | Bottleneck: ORS API throughput |
+| **Flatten RES7** | ~2 min | FLATTEN_WH (XL) | 285M rows |
+| **Flatten RES8** | ~2 min | FLATTEN_WH (XL) | 519M rows |
+| **Flatten RES9** | ~2 min | FLATTEN_WH (XL) | ~1.13B rows |
+| **Scale Down** | ~2 min | — | Reduce clusters, nodes |
+| **Total** | **~6.5 hrs** | | |
+
+### Per-Resolution Timing
+
+| Resolution | Origins | Pairs | Ingestion Rate | Ingestion Time | Flatten Time |
+|---|---|---|---|---|---|
+| RES7 | 177,346 | 285M | ~1,500/min | ~2 hrs | 2 min |
+| RES8 | 1,202,348 | 519M | ~13,000/min | ~1.5 hrs | 2 min |
+| RES9 | 8,557,513 | ~1.13B | ~24,000/min | ~6 hrs | 2 min |
+
+RES7 is slowest per-origin because each origin has ~1,567 destinations (large matrix element count per API call). RES9 is fastest per-origin (132 dests) but has 48× more origins.
+
+### Throughput Observations
+
+| Metric | Value |
+|---|---|
+| ORS MATRIX_TABULAR calls/sec (10 instances) | ~200-400 |
+| Rows inserted/min (RES9, full ORS capacity) | ~24,000 |
+| Rows inserted/min (RES9, shared with RES7+RES8) | ~13,000 |
+| Matrix elements processed/sec | ~50,000 |
+| Peak concurrent workers | 30 (10 per resolution) |
+
+### What Affects Duration
+
+| Factor | Impact | Recommendation |
+|---|---|---|
+| ORS instance count | Linear speedup up to ~10 | Match to compute pool nodes |
+| Gateway instance count | Must match ORS count | Was a bottleneck at 3 when ORS had 10 |
+| Warehouse size | No impact (I/O bound) | XSMALL is sufficient |
+| Warehouse cluster count | Must match worker count | 10 clusters for 10 workers per res |
+| Batch size | Affects error rate, not speed | RES7=100, RES8=1000, RES9=2000 |
+| ORS graph rebuild | ~60s after restart | Wait before launching workers |
+| ORS auto-suspend | Can kill long runs | Set auto_suspend_secs > total run time |

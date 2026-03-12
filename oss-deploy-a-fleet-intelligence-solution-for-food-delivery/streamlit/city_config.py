@@ -59,6 +59,66 @@ CITIES = {
         "longitude": -119.02,
         "zoom": 12,
     },
+    "Anaheim": {
+        "name": "Anaheim",
+        "latitude": 33.84,
+        "longitude": -117.91,
+        "zoom": 12,
+    },
+    "Santa Ana": {
+        "name": "Santa Ana",
+        "latitude": 33.75,
+        "longitude": -117.87,
+        "zoom": 13,
+    },
+    "Irvine": {
+        "name": "Irvine",
+        "latitude": 33.68,
+        "longitude": -117.83,
+        "zoom": 12,
+    },
+    "Riverside": {
+        "name": "Riverside",
+        "latitude": 33.95,
+        "longitude": -117.40,
+        "zoom": 12,
+    },
+    "Stockton": {
+        "name": "Stockton",
+        "latitude": 37.96,
+        "longitude": -121.29,
+        "zoom": 12,
+    },
+    "Modesto": {
+        "name": "Modesto",
+        "latitude": 37.64,
+        "longitude": -120.99,
+        "zoom": 12,
+    },
+    "Pasadena": {
+        "name": "Pasadena",
+        "latitude": 34.15,
+        "longitude": -118.14,
+        "zoom": 13,
+    },
+    "Huntington Beach": {
+        "name": "Huntington Beach",
+        "latitude": 33.66,
+        "longitude": -117.99,
+        "zoom": 13,
+    },
+    "Torrance": {
+        "name": "Torrance",
+        "latitude": 33.84,
+        "longitude": -118.34,
+        "zoom": 13,
+    },
+    "Berkeley": {
+        "name": "Berkeley",
+        "latitude": 37.87,
+        "longitude": -122.27,
+        "zoom": 13,
+    },
     "New York": {
         "name": "New York",
         "latitude": 40.75,
@@ -86,9 +146,11 @@ CITIES = {
 }
 
 CALIFORNIA_CITIES = [
-    "San Francisco", "Los Angeles", "San Diego", "San Jose",
+    "Los Angeles", "San Francisco", "San Diego", "San Jose",
     "Sacramento", "Fresno", "Oakland", "Long Beach",
-    "Santa Barbara", "Bakersfield",
+    "Anaheim", "Santa Ana", "Irvine", "Riverside",
+    "Stockton", "Modesto", "Pasadena", "Huntington Beach",
+    "Torrance", "Berkeley", "Santa Barbara", "Bakersfield",
 ]
 
 CALIFORNIA_CENTER = {
@@ -106,6 +168,8 @@ COMPANY = {
 
 def get_city(name="San Francisco"):
     """Return city config dict. Falls back to San Francisco if name not found."""
+    if name == "All Cities":
+        return CALIFORNIA_CENTER
     return CITIES.get(name, CITIES["San Francisco"])
 
 

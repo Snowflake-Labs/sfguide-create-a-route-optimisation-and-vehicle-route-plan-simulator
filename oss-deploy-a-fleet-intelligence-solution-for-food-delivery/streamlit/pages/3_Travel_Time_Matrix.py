@@ -25,9 +25,15 @@ with st.sidebar:
 CITY = get_city(selected_city)
 
 st.markdown(f'''
-<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Travel Time Matrix</h0blue><BR>
-<h1grey>Pre-computed driving times across {CITY["name"]} (H3 Resolution 9)</h1grey>
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> Travel Time Matrix</h0blue><BR>
+<h1grey>Pre-computed ORS driving times across {CITY["name"]} (H3 Resolution 9)</h1grey>
 ''', unsafe_allow_html=True)
+
+if CITY["name"] != "San Francisco":
+    st.warning(f"The pre-computed travel time matrix is currently only available for San Francisco. Select San Francisco from the city dropdown to explore the matrix data.")
+    st.info("To build a matrix for other cities, use the ORS MATRIX function to compute travel times between H3 hexagons.")
+    st.stop()
+
 
 st.divider()
 

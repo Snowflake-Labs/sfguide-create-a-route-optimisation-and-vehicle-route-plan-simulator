@@ -3,6 +3,7 @@ import pandas as pd
 import pydeck as pdk
 import altair as alt
 import json
+import math
 from snowflake.snowpark.context import get_active_session
 from city_config import get_city, get_company, get_california_cities
 
@@ -21,19 +22,43 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
+TRAVEL_MATRIX_TABLE = "OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX"
+SF_HEXAGONS_TABLE = "OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS"
+ORS_APP = "OPENROUTESERVICE_NATIVE_APP"
+
+BAND_COLORS = [
+    [46, 204, 113],
+    [41, 181, 232],
+    [243, 156, 18],
+    [255, 107, 53],
+    [230, 57, 70],
+    [139, 0, 0],
+    [125, 68, 207],
+    [212, 91, 144],
+    [0, 53, 69],
+    [100, 100, 100],
+]
+
 with st.sidebar:
     selected_city = st.selectbox("City", get_california_cities(), index=0)
 
 CITY = get_city(selected_city)
 
 st.markdown(f'''
-<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Travel Time Analysis</h0blue><BR>
-<h1grey>Visualize reachable areas using ORS isochrones overlaid with H3 hexagon travel times — {CITY["name"]}</h1grey>
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> Travel Time Analysis</h0blue><BR>
+<h1grey>Isochrone bands with real ORS travel times overlaid on H3 hexagons — {CITY["name"]}</h1grey>
 ''', unsafe_allow_html=True)
 
 st.divider()
 
-res_table_map = {7: "CA_H3_RES7", 8: "CA_H3_RES8", 9: "CA_H3_RES9"}
+def minutes_breakpoints(max_mins, n):
+    if n <= 1:
+        return [max_mins]
+    step = max(1, math.floor(max_mins / n))
+    values = [step * i for i in range(1, n + 1)]
+    if values[-1] != max_mins:
+        values[-1] = max_mins
+    return values
 
 with st.sidebar:
     st.header("Controls")
@@ -45,30 +70,37 @@ with st.sidebar:
         help="9 = last mile (~174m), 8 = delivery zone (~460m), 7 = long range (~1.2km)"
     )
 
-    hex_table = res_table_map[resolution]
-
-    travel_mode = st.selectbox(
-        "Travel Mode",
-        options=["driving-car", "cycling-regular", "foot-walking"],
-        index=0
-    )
+    travel_mode = "driving-car"
 
     isochrone_minutes = st.slider(
-        "Isochrone Range (minutes)",
-        min_value=1,
+        "Max Travel Time (minutes)",
+        min_value=2,
         max_value=60,
         value=10,
         help="Max travel time boundary from origin (ORS limit: 60 min)"
     )
 
-    show_isochrone_boundary = st.checkbox("Show Isochrone Boundary", value=True)
+    num_bands = st.slider(
+        "Number of Time Bands",
+        min_value=2,
+        max_value=10,
+        value=5,
+        help="How many concentric isochrone bands to generate"
+    )
+
+    show_isochrone_boundary = st.checkbox("Show Isochrone Boundaries", value=True)
+
+    band_minutes = minutes_breakpoints(isochrone_minutes, num_bands)
+
+    res_table_map = {7: "CA_H3_RES7", 8: "CA_H3_RES8", 9: "CA_H3_RES9"}
 
     @st.cache_data(ttl=300)
-    def get_sample_hexagons(table_name, center_lon, center_lat, limit=100):
+    def get_origin_hexagons(center_lon, center_lat, res, limit=100):
+        table = f"OPENROUTESERVICE_SETUP.PUBLIC.{res_table_map[res]}"
         query = f"""
-        SELECT h3_index, lon, lat,
+        SELECT h3_index AS HEX_ID, lon AS LON, lat AS LAT,
                ST_DISTANCE(centroid, ST_MAKEPOINT({center_lon}, {center_lat})) AS dist
-        FROM OPENROUTESERVICE_SETUP.PUBLIC.{table_name}
+        FROM {table}
         ORDER BY dist
         LIMIT {limit}
         """
@@ -77,10 +109,10 @@ with st.sidebar:
         except:
             return pd.DataFrame()
 
-    sample_hexes = get_sample_hexagons(hex_table, CITY["longitude"], CITY["latitude"])
+    sample_hexes = get_origin_hexagons(CITY["longitude"], CITY["latitude"], resolution)
 
     if not sample_hexes.empty:
-        hex_options = sample_hexes["H3_INDEX"].tolist()
+        hex_options = sample_hexes["HEX_ID"].tolist()
         selected_hex = st.selectbox(
             "Origin Hexagon",
             options=hex_options,
@@ -88,20 +120,22 @@ with st.sidebar:
             help="Choose a hexagon as the origin point"
         )
     else:
-        st.warning(f"No hexagons found in {hex_table}.")
+        st.warning("No SF hexagons found.")
         selected_hex = None
 
     st.divider()
     st.subheader("Legend")
-    colors = ["#2ECC71", "#F39C12", "#FF6B35", "#E63946", "#8B0000"]
-    labels = ["0-5 min", "5-10 min", "10-15 min", "15-20 min", "20+ min"]
-    legend_html = ""
-    for color, label in zip(colors, labels):
-        legend_html += f'<div style="display:flex;align-items:center;margin-bottom:4px;"><div style="width:16px;height:16px;background-color:{color};margin-right:8px;border-radius:3px;"></div><span style="font-size:0.85rem;color:#6b7b86;">{label}</span></div>'
+    legend_html = '<div style="display:flex;align-items:center;margin-bottom:4px;"><div style="width:16px;height:16px;background-color:rgb(41,181,232);margin-right:8px;border-radius:3px;border:2px solid black;"></div><span style="font-size:0.85rem;color:#6b7b86;">Origin</span></div>'
+    prev = 0
+    for i, mins in enumerate(band_minutes):
+        c = BAND_COLORS[i % len(BAND_COLORS)]
+        label = f"{prev}-{mins} min"
+        legend_html += f'<div style="display:flex;align-items:center;margin-bottom:4px;"><div style="width:16px;height:16px;background-color:rgb({c[0]},{c[1]},{c[2]});margin-right:8px;border-radius:3px;"></div><span style="font-size:0.85rem;color:#6b7b86;">{label}</span></div>'
+        prev = mins
     st.markdown(legend_html, unsafe_allow_html=True)
 
 if selected_hex:
-    origin_row = sample_hexes[sample_hexes["H3_INDEX"] == selected_hex]
+    origin_row = sample_hexes[sample_hexes["HEX_ID"] == selected_hex]
     if not origin_row.empty:
         origin_lon = float(origin_row.iloc[0]["LON"])
         origin_lat = float(origin_row.iloc[0]["LAT"])
@@ -110,294 +144,283 @@ if selected_hex:
         origin_lat = CITY["latitude"]
 
     @st.cache_data(ttl=120)
-    def get_isochrone_geojson(origin_lon, origin_lat, iso_minutes, mode):
+    def build_isochrone(mode, lon, lat, minutes):
         try:
             result = session.sql(f"""
-                SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
-                    '{mode}', {origin_lon}, {origin_lat}, {iso_minutes}
+                SELECT {ORS_APP}.CORE.ISOCHRONES(
+                    '{mode}', {lon}, {lat}, {minutes}
                 )::VARCHAR AS geojson
             """).to_pandas()
-            if not result.empty:
-                return result.iloc[0]["GEOJSON"]
+            if not result.empty and result.iloc[0]["GEOJSON"]:
+                geojson = json.loads(result.iloc[0]["GEOJSON"])
+                geom = geojson["features"][0]["geometry"]
+                return geom
         except Exception as e:
-            st.error(f"ORS Isochrone error: {e}")
+            st.error(f"ORS Isochrone error ({minutes} min): {e}")
         return None
 
     @st.cache_data(ttl=120)
-    def get_hexagons_in_polygon(origin_hex, geojson_str, resolution, hex_table_name, travel_table_name, has_travel):
-        geojson_obj = json.loads(geojson_str)
-        geom_str = json.dumps(geojson_obj["features"][0]["geometry"])
-        escaped_geom = geom_str.replace("'", "''")
-
-        max_k = {9: 60, 8: 25, 7: 10}.get(resolution, 60)
-
-        if has_travel:
-            query = f"""
-            WITH candidates AS (
-                SELECT h.h3_index, h.lon, h.lat, h.centroid,
-                       H3_GRID_DISTANCE('{origin_hex}', h.h3_index) AS ring_distance
-                FROM {hex_table_name} h
-                WHERE h.h3_index IN (
-                    SELECT VALUE::VARCHAR FROM TABLE(FLATTEN(H3_GRID_DISK('{origin_hex}', {max_k})))
-                )
-            ),
-            hexagons_in_isochrone AS (
-                SELECT h3_index, lon, lat, ring_distance
-                FROM candidates
-                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), centroid)
-            ),
-            with_travel_times AS (
-                SELECT hx.*,
-                    COALESCE(tt.travel_time_seconds,
-                        hx.ring_distance * 60 * CASE {resolution}
-                            WHEN 9 THEN 0.35 WHEN 8 THEN 0.9 WHEN 7 THEN 2.4 END
-                    ) AS travel_time_seconds,
-                    COALESCE(tt.travel_distance_meters,
-                        hx.ring_distance * CASE {resolution}
-                            WHEN 9 THEN 174 WHEN 8 THEN 460 WHEN 7 THEN 1220 END
-                    ) AS travel_distance_meters
-                FROM hexagons_in_isochrone hx
-                LEFT JOIN {travel_table_name} tt
-                    ON (tt.origin_h3 = '{origin_hex}' AND tt.dest_h3 = hx.h3_index)
-                    OR (tt.dest_h3 = '{origin_hex}' AND tt.origin_h3 = hx.h3_index)
-            )
-            SELECT h3_index, lon, lat, ring_distance, travel_time_seconds,
-                   ROUND(travel_time_seconds / 60, 1) AS travel_time_mins,
-                   travel_distance_meters,
-                   ROUND(travel_distance_meters / 1000, 2) AS travel_distance_km
-            FROM with_travel_times
-            ORDER BY travel_time_seconds
-            """
-        else:
-            query = f"""
-            WITH candidates AS (
-                SELECT h.h3_index, h.lon, h.lat, h.centroid,
-                       H3_GRID_DISTANCE('{origin_hex}', h.h3_index) AS ring_distance
-                FROM {hex_table_name} h
-                WHERE h.h3_index IN (
-                    SELECT VALUE::VARCHAR FROM TABLE(FLATTEN(H3_GRID_DISK('{origin_hex}', {max_k})))
-                )
-            ),
-            hexagons_in_isochrone AS (
-                SELECT h3_index, lon, lat, ring_distance
-                FROM candidates
-                WHERE ST_CONTAINS(TO_GEOGRAPHY('{escaped_geom}'), centroid)
-            )
-            SELECT h3_index, lon, lat, ring_distance,
-                   ring_distance * 60 * CASE {resolution}
-                       WHEN 9 THEN 0.35 WHEN 8 THEN 0.9 WHEN 7 THEN 2.4 END
-                   AS travel_time_seconds,
-                   ROUND(ring_distance * 60 * CASE {resolution}
-                       WHEN 9 THEN 0.35 WHEN 8 THEN 0.9 WHEN 7 THEN 2.4 END / 60, 1)
-                   AS travel_time_mins,
-                   ring_distance * CASE {resolution}
-                       WHEN 9 THEN 174 WHEN 8 THEN 460 WHEN 7 THEN 1220 END
-                   AS travel_distance_meters,
-                   ROUND(ring_distance * CASE {resolution}
-                       WHEN 9 THEN 174 WHEN 8 THEN 460 WHEN 7 THEN 1220 END / 1000, 2)
-                   AS travel_distance_km
-            FROM hexagons_in_isochrone
-            ORDER BY travel_time_seconds
-            """
+    def get_h3_coverage(geom_json, res):
+        escaped = json.dumps(geom_json).replace("'", "''")
+        query = f"""
+        SELECT f.VALUE::VARCHAR AS h3_index
+        FROM TABLE(FLATTEN(
+            H3_COVERAGE_STRINGS(TO_GEOGRAPHY('{escaped}'), {res})
+        )) f
+        """
         try:
             return session.sql(query).to_pandas()
         except Exception as e:
-            st.error(f"Query error: {e}")
+            st.error(f"H3 coverage error: {e}")
             return pd.DataFrame()
 
-    def parse_iso_coords(geojson_str):
+    @st.cache_data(ttl=120)
+    def get_travel_times_for_origin(origin_hex):
+        query = f"""
+        SELECT DESTINATION_HEX_ID AS H3_INDEX,
+               TRAVEL_TIME_SECONDS,
+               ROUND(TRAVEL_TIME_SECONDS / 60, 1) AS TRAVEL_TIME_MINS,
+               DISTANCE_METERS,
+               ROUND(DISTANCE_METERS / 1000, 2) AS TRAVEL_DISTANCE_KM
+        FROM {TRAVEL_MATRIX_TABLE}
+        WHERE ORIGIN_HEX_ID = '{origin_hex}'
+        """
+        try:
+            return session.sql(query).to_pandas()
+        except Exception as e:
+            st.error(f"Matrix query error: {e}")
+            return pd.DataFrame()
+
+    def parse_iso_coords(geom):
         iso_coords = []
         try:
-            geojson = json.loads(geojson_str)
-            if "features" in geojson and len(geojson["features"]) > 0:
-                coords = geojson["features"][0]["geometry"]["coordinates"]
-                if geojson["features"][0]["geometry"]["type"] == "Polygon":
-                    iso_coords = [{"polygon": [{"lng": c[0], "lat": c[1]} for c in ring]} for ring in coords]
-                elif geojson["features"][0]["geometry"]["type"] == "MultiPolygon":
-                    for poly in coords:
-                        for ring in poly:
-                            iso_coords.append({"polygon": [{"lng": c[0], "lat": c[1]} for c in ring]})
+            coords = geom["coordinates"]
+            if geom["type"] == "Polygon":
+                iso_coords = [{"polygon": [{"lng": c[0], "lat": c[1]} for c in ring]} for ring in coords]
+            elif geom["type"] == "MultiPolygon":
+                for poly in coords:
+                    for ring in poly:
+                        iso_coords.append({"polygon": [{"lng": c[0], "lat": c[1]} for c in ring]})
         except:
             pass
         return iso_coords
 
-    def get_isochrone_and_hexagons(origin_hex, origin_lon, origin_lat, resolution, iso_minutes, mode):
-        hex_table = f"OPENROUTESERVICE_SETUP.PUBLIC.{res_table_map[resolution]}"
-        travel_table_map = {7: "CA_TRAVEL_TIME_RES7", 8: "CA_TRAVEL_TIME_RES8", 9: "CA_TRAVEL_TIME_RES9"}
-        travel_table = f"OPENROUTESERVICE_SETUP.PUBLIC.{travel_table_map[resolution]}"
+    with st.spinner(f"Computing {num_bands} isochrone bands up to {isochrone_minutes} min..."):
+        isochrone_geoms = {}
+        for mins in band_minutes:
+            geom = build_isochrone(travel_mode, origin_lon, origin_lat, mins)
+            if geom:
+                isochrone_geoms[mins] = geom
 
-        has_travel_table = False
-        try:
-            session.sql(f"SELECT 1 FROM {travel_table} LIMIT 0").collect()
-            has_travel_table = True
-        except:
-            pass
+    if not isochrone_geoms:
+        st.warning("No isochrones could be computed. Check ORS service availability.")
+        st.stop()
 
-        geojson_str = get_isochrone_geojson(origin_lon, origin_lat, iso_minutes, mode)
-        if not geojson_str:
-            return pd.DataFrame(), []
-
-        iso_coords = parse_iso_coords(geojson_str)
-        df = get_hexagons_in_polygon(origin_hex, geojson_str, resolution, hex_table, travel_table, has_travel_table)
-        return df, iso_coords
-
-    with st.spinner(f"Computing {isochrone_minutes}-min isochrone and filtering hexagons..."):
-        df, iso_coords = get_isochrone_and_hexagons(
-            selected_hex, origin_lon, origin_lat, resolution, isochrone_minutes, travel_mode
-        )
-
-    if not df.empty:
-        def get_color(travel_mins):
-            if travel_mins <= 5:
-                return [46, 204, 113, 180]
-            elif travel_mins <= 10:
-                return [243, 156, 18, 180]
-            elif travel_mins <= 15:
-                return [255, 107, 53, 180]
-            elif travel_mins <= 20:
-                return [230, 57, 70, 180]
+    with st.spinner("Filling isochrone bands with H3 hexagons..."):
+        band_hex_sets = {}
+        for mins in sorted(isochrone_geoms.keys()):
+            coverage_df = get_h3_coverage(isochrone_geoms[mins], resolution)
+            if not coverage_df.empty:
+                band_hex_sets[mins] = set(coverage_df["H3_INDEX"].tolist())
             else:
-                return [139, 0, 0, 180]
+                band_hex_sets[mins] = set()
 
-        df["color"] = df["TRAVEL_TIME_MINS"].apply(get_color)
+    with st.spinner("Loading real travel times from ORS matrix..."):
+        travel_df = get_travel_times_for_origin(selected_hex)
 
-        st.markdown('<h1sub>Coverage Summary</h1sub>', unsafe_allow_html=True)
+    sorted_bands = sorted(band_hex_sets.keys())
+    assigned = set()
+    hex_band_map = {}
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Reachable Hexagons", f"{len(df):,}")
-        with col2:
-            st.metric("Avg Travel Time", f"{df['TRAVEL_TIME_MINS'].mean():.1f} min")
-        with col3:
-            st.metric("Max Travel Time", f"{df['TRAVEL_TIME_MINS'].max():.1f} min")
-        with col4:
-            area_per_hex = {9: 0.03, 8: 0.18, 7: 1.3}
-            st.metric("Coverage Area", f"{len(df) * area_per_hex[resolution]:.1f} km\u00b2")
+    for mins in sorted_bands:
+        new_hexes = band_hex_sets[mins] - assigned
+        for h in new_hexes:
+            hex_band_map[h] = mins
+        assigned |= new_hexes
 
-        st.divider()
+    if selected_hex in hex_band_map:
+        del hex_band_map[selected_hex]
 
-        st.markdown('<h1sub>Isochrone Reachability Map</h1sub>', unsafe_allow_html=True)
+    all_hexes = list(hex_band_map.keys())
+    hex_df = pd.DataFrame({"H3_INDEX": all_hexes, "BAND_MINUTES": [hex_band_map[h] for h in all_hexes]})
 
-        layers = []
-
-        h3_layer = pdk.Layer(
-            "H3HexagonLayer",
-            df,
-            pickable=True,
-            stroked=True,
-            filled=True,
-            extruded=False,
-            get_hexagon="H3_INDEX",
-            get_fill_color="color",
-            get_line_color=[255, 255, 255, 80],
-            line_width_min_pixels=1,
-            opacity=0.7,
-        )
-        layers.append(h3_layer)
-
-        origin_df = df[df["H3_INDEX"] == selected_hex]
-        if origin_df.empty:
-            origin_df = pd.DataFrame([{
-                "H3_INDEX": selected_hex, "LON": origin_lon, "LAT": origin_lat,
-                "TRAVEL_TIME_MINS": 0, "TRAVEL_DISTANCE_KM": 0, "RING_DISTANCE": 0
-            }])
-        origin_layer = pdk.Layer(
-            "H3HexagonLayer",
-            origin_df,
-            pickable=True,
-            stroked=True,
-            filled=True,
-            extruded=False,
-            get_hexagon="H3_INDEX",
-            get_fill_color=[41, 181, 232, 220],
-            get_line_color=[0, 0, 0, 255],
-            line_width_min_pixels=3,
-        )
-        layers.append(origin_layer)
-
-        if show_isochrone_boundary and iso_coords:
-            iso_layer = pdk.Layer(
-                "PolygonLayer",
-                iso_coords,
-                get_polygon="polygon",
-                get_fill_color=[41, 181, 232, 20],
-                get_line_color=[17, 86, 127, 200],
-                line_width_min_pixels=2,
-                stroked=True,
-                filled=True,
-                pickable=False,
-            )
-            layers.append(iso_layer)
-
-        view_state = pdk.ViewState(
-            latitude=origin_lat,
-            longitude=origin_lon,
-            zoom=12 if resolution == 9 else (11 if resolution == 8 else 10),
-            pitch=0
-        )
-
-        tooltip = {
-            "html": "<b>Hex:</b> {H3_INDEX}<br/><b>Travel Time:</b> {TRAVEL_TIME_MINS} min<br/><b>Distance:</b> {TRAVEL_DISTANCE_KM} km<br/><b>Ring:</b> {RING_DISTANCE}",
-            "style": {
-                "backgroundColor": "#24323D",
-                "color": "white"
-            }
-        }
-
-        deck = pdk.Deck(
-            map_provider="carto",
-            map_style="light",
-            layers=layers,
-            initial_view_state=view_state,
-            tooltip=tooltip,
-        )
-
-        st.pydeck_chart(deck, use_container_width=True)
-
-        st.divider()
-
-        st.markdown('<h1sub>Travel Time Distribution</h1sub>', unsafe_allow_html=True)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            ring_stats = df.groupby("RING_DISTANCE").agg({
-                "TRAVEL_TIME_MINS": ["mean", "min", "max", "count"]
-            }).round(2)
-            ring_stats.columns = ["Avg Time (min)", "Min Time", "Max Time", "Hexagons"]
-            ring_stats = ring_stats.reset_index()
-            ring_stats.columns = ["Ring", "Avg Time (min)", "Min Time", "Max Time", "Hexagons"]
-            st.dataframe(ring_stats, use_container_width=True, hide_index=True)
-
-        with col2:
-            max_val = max(df["TRAVEL_TIME_MINS"].max(), 20)
-            bins = [0, 5, 10, 15, 20, max_val + 1]
-            bin_labels = ["0-5 min", "5-10 min", "10-15 min", "15-20 min", "20+ min"]
-            df["time_bucket"] = pd.cut(df["TRAVEL_TIME_MINS"], bins=bins, labels=bin_labels)
-            bucket_df = df["time_bucket"].value_counts().sort_index().reset_index()
-            bucket_df.columns = ["Time Bucket", "Count"]
-
-            chart = alt.Chart(bucket_df).mark_bar().encode(
-                x=alt.X("Time Bucket:N", sort=bin_labels, title=None),
-                y=alt.Y("Count:Q", title="Hexagons"),
-                color=alt.value("#FF6B35"),
-                tooltip=["Time Bucket", "Count"]
-            ).properties(height=300)
-            st.altair_chart(chart, use_container_width=True)
-
-        with st.expander("View Detailed Data"):
-            st.dataframe(
-                df[["H3_INDEX", "RING_DISTANCE", "TRAVEL_TIME_MINS", "TRAVEL_DISTANCE_KM"]].sort_values("TRAVEL_TIME_MINS"),
-                use_container_width=True,
-                hide_index=True
-            )
+    if not hex_df.empty and not travel_df.empty:
+        hex_df = hex_df.merge(travel_df, on="H3_INDEX", how="left")
     else:
-        st.warning("No hexagons found within the isochrone. Try increasing the range or check if hexagon data exists.")
+        hex_df["TRAVEL_TIME_SECONDS"] = None
+        hex_df["TRAVEL_TIME_MINS"] = None
+        hex_df["DISTANCE_METERS"] = None
+        hex_df["TRAVEL_DISTANCE_KM"] = None
+
+    band_idx_map = {mins: i for i, mins in enumerate(sorted_bands)}
+
+    def get_band_color(band_mins):
+        idx = band_idx_map.get(band_mins, 0)
+        c = BAND_COLORS[idx % len(BAND_COLORS)]
+        return [c[0], c[1], c[2], 180]
+
+    hex_df["color"] = hex_df["BAND_MINUTES"].apply(get_band_color)
+
+    has_travel = hex_df["TRAVEL_TIME_MINS"].notna().sum()
+    missing_travel = hex_df["TRAVEL_TIME_MINS"].isna().sum()
+
+    st.markdown('<h1sub>Coverage Summary</h1sub>', unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Reachable Hexagons", f"{len(hex_df):,}")
+    with col2:
+        if has_travel > 0:
+            avg_time = hex_df["TRAVEL_TIME_MINS"].mean()
+            st.metric("Avg Travel Time", f"{avg_time:.1f} min")
+        else:
+            st.metric("Avg Travel Time", "N/A")
+    with col3:
+        if has_travel > 0:
+            max_time = hex_df["TRAVEL_TIME_MINS"].max()
+            st.metric("Max Travel Time", f"{max_time:.1f} min")
+        else:
+            st.metric("Max Travel Time", "N/A")
+    with col4:
+        area_per_hex = {9: 0.03, 8: 0.18, 7: 1.3}
+        st.metric("Coverage Area", f"{len(hex_df) * area_per_hex.get(resolution, 0.03):.1f} km\u00b2")
+
+    if missing_travel > 0:
+        st.caption(f"Travel times from ORS matrix: {has_travel:,} hexagons matched, {missing_travel:,} outside matrix coverage (shown by band only)")
+
+    st.divider()
+    st.markdown('<h1sub>Isochrone Reachability Map</h1sub>', unsafe_allow_html=True)
+
+    layers = []
+
+    h3_layer = pdk.Layer(
+        "H3HexagonLayer",
+        hex_df,
+        pickable=True,
+        stroked=True,
+        filled=True,
+        extruded=False,
+        get_hexagon="H3_INDEX",
+        get_fill_color="color",
+        get_line_color=[255, 255, 255, 80],
+        line_width_min_pixels=1,
+        opacity=0.7,
+    )
+    layers.append(h3_layer)
+
+    origin_df = pd.DataFrame([{
+        "H3_INDEX": selected_hex,
+        "TRAVEL_TIME_MINS": 0,
+        "TRAVEL_DISTANCE_KM": 0,
+        "BAND_MINUTES": 0,
+    }])
+    origin_layer = pdk.Layer(
+        "H3HexagonLayer",
+        origin_df,
+        pickable=True,
+        stroked=True,
+        filled=True,
+        extruded=False,
+        get_hexagon="H3_INDEX",
+        get_fill_color=[41, 181, 232, 220],
+        get_line_color=[0, 0, 0, 255],
+        line_width_min_pixels=3,
+    )
+    layers.append(origin_layer)
+
+    if show_isochrone_boundary:
+        for mins in sorted(isochrone_geoms.keys()):
+            idx = band_idx_map.get(mins, 0)
+            c = BAND_COLORS[idx % len(BAND_COLORS)]
+            iso_coords = parse_iso_coords(isochrone_geoms[mins])
+            if iso_coords:
+                iso_layer = pdk.Layer(
+                    "PolygonLayer",
+                    iso_coords,
+                    get_polygon="polygon",
+                    get_fill_color=[c[0], c[1], c[2], 15],
+                    get_line_color=[c[0], c[1], c[2], 200],
+                    line_width_min_pixels=2,
+                    stroked=True,
+                    filled=True,
+                    pickable=False,
+                )
+                layers.append(iso_layer)
+
+    view_state = pdk.ViewState(
+        latitude=origin_lat,
+        longitude=origin_lon,
+        zoom=12 if resolution == 9 else (11 if resolution == 8 else 10),
+        pitch=0
+    )
+
+    tooltip_html = "<b>Hex:</b> {H3_INDEX}<br/><b>Band:</b> {BAND_MINUTES} min"
+    if has_travel > 0:
+        tooltip_html += "<br/><b>Real Travel Time:</b> {TRAVEL_TIME_MINS} min<br/><b>Distance:</b> {TRAVEL_DISTANCE_KM} km"
+
+    tooltip = {
+        "html": tooltip_html,
+        "style": {"backgroundColor": "#24323D", "color": "white"}
+    }
+
+    deck = pdk.Deck(
+        map_provider="carto",
+        map_style="light",
+        layers=layers,
+        initial_view_state=view_state,
+        tooltip=tooltip,
+    )
+
+    st.pydeck_chart(deck, use_container_width=True)
+
+    st.divider()
+    st.markdown('<h1sub>Travel Time Distribution</h1sub>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        band_stats_rows = []
+        prev = 0
+        for mins in sorted_bands:
+            band_df = hex_df[hex_df["BAND_MINUTES"] == mins]
+            row = {"Band": f"{prev}-{mins} min", "Hexagons": len(band_df)}
+            if band_df["TRAVEL_TIME_MINS"].notna().any():
+                row["Avg Time (min)"] = round(band_df["TRAVEL_TIME_MINS"].mean(), 1)
+                row["Min Time"] = round(band_df["TRAVEL_TIME_MINS"].min(), 1)
+                row["Max Time"] = round(band_df["TRAVEL_TIME_MINS"].max(), 1)
+            else:
+                row["Avg Time (min)"] = None
+                row["Min Time"] = None
+                row["Max Time"] = None
+            band_stats_rows.append(row)
+            prev = mins
+        band_stats_df = pd.DataFrame(band_stats_rows)
+        st.dataframe(band_stats_df, use_container_width=True, hide_index=True)
+
+    with col2:
+        chart_data = pd.DataFrame(band_stats_rows)
+        chart = alt.Chart(chart_data).mark_bar().encode(
+            x=alt.X("Band:N", sort=[f"{minutes_breakpoints(isochrone_minutes, num_bands)}" for _ in sorted_bands], title=None),
+            y=alt.Y("Hexagons:Q", title="Hexagons"),
+            color=alt.value("#FF6B35"),
+            tooltip=["Band", "Hexagons"]
+        ).properties(height=300)
+        st.altair_chart(chart, use_container_width=True)
+
+    with st.expander("View Detailed Data"):
+        display_cols = ["H3_INDEX", "BAND_MINUTES"]
+        if has_travel > 0:
+            display_cols.extend(["TRAVEL_TIME_MINS", "TRAVEL_DISTANCE_KM"])
+        st.dataframe(
+            hex_df[display_cols].sort_values("BAND_MINUTES"),
+            use_container_width=True,
+            hide_index=True
+        )
 else:
     st.info("Select an origin hexagon from the sidebar to begin analysis.")
 
 st.divider()
 
 st.markdown(f'''
-<h1grey>Isochrone: {isochrone_minutes} min | Mode: {travel_mode} | H3 Resolution: {resolution} | Powered by Snowflake & OpenRouteService</h1grey>
+<h1grey>Bands: {num_bands} | Max: {isochrone_minutes} min | Mode: {travel_mode} | H3 Res: {resolution} | Powered by Snowflake & OpenRouteService</h1grey>
 ''', unsafe_allow_html=True)

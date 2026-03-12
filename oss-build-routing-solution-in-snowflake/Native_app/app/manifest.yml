@@ -13,6 +13,7 @@ artifacts:
       - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
       - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.7.2
       - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
+      - /openrouteservice_setup/public/image_repository/nominatim:v5.2.0
   default_streamlit: core.control_app
 references:
   - external_access_integration_ref:

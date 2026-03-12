@@ -15,8 +15,6 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
-NOMINATIM_HOST = os.getenv('NOMINATIM_HOST', 'nominatim-service')
-NOMINATIM_PORT = os.getenv('NOMINATIM_PORT', 8080)
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -37,63 +35,6 @@ app = Flask(__name__)
 def readiness_probe():
     return "OK"
 
-@app.get("/ors_status")
-def get_ors_status():
-    '''
-    Get ORS Status including graph bounds
-    Returns service status with bounding box information for available profiles
-    '''
-    try:
-        # Query ORS status endpoint
-        status_url = f'http://{ORS_HOST}:{ORS_PORT}{ORS_API_PATH}/status'
-        logger.info(f'Querying ORS status: {status_url}')
-        r = requests.get(url=status_url, timeout=10)
-        status_data = r.json()
-        
-        # Try to get bounds by making a test isochrone request at the center
-        # This helps determine if the service is ready and where the graph covers
-        bounds_info = {}
-        
-        if 'profiles' in status_data:
-            for profile_name, profile_data in status_data['profiles'].items():
-                bounds_info[profile_name] = {
-                    'ready': True,
-                    'encoder_name': profile_data.get('encoder_name', profile_name),
-                    'graph_build_date': profile_data.get('graph_build_date'),
-                    'osm_date': profile_data.get('osm_date')
-                }
-        
-        status_data['bounds_info'] = bounds_info
-        status_data['service_ready'] = len(bounds_info) > 0
-        
-        return status_data
-    except requests.exceptions.Timeout:
-        logger.error('ORS status request timed out - graphs may still be building')
-        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False}
-    except Exception as e:
-        logger.error(f'Error getting ORS status: {str(e)}')
-        return {'error': str(e), 'service_ready': False}
-
-@app.post("/ors_status")
-def post_ors_status():
-    '''
-    ORS Status Handler for Snowflake External Function
-    Returns service status with graph information
-    '''
-    message = request.json
-    logger.debug(f'Received status request: {message}')
-    
-    if message is None or not message.get('data'):
-        return {"data": [[0, get_ors_status()]]}
-    
-    input_rows = message['data']
-    status = get_ors_status()
-    output_rows = [[row[0], status] for row in input_rows]
-    
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
-
 @app.post("/optimization_tabular")
 def post_optimization_tabular():
     '''
@@ -103,7 +44,7 @@ def post_optimization_tabular():
 
     row[1] - jobs array
     row[2] - vehicles array
-    row[3] - matrices object (optional) - pre-computed cost matrices per profile
+    row[3] - matrices array (optional) - pre-computed cost matrices per profile
              Format: {"profile_name": {"durations": [[...]], "distances": [[...]]}}
              When provided, jobs/vehicles should use location_index instead of location
     '''
@@ -268,53 +209,16 @@ def post_isochrones(format="geojson"):
 
     return response
 
-@app.post("/matrix_tabular")
-@app.post("/matrix_tabular/<format>")
-def post_matrix_tabular(format="json"):
-    '''
-    Matrix Tabular Handler
-
-    MATRIX(method string, locations array)
-
-    row[1] - method/profile string (e.g., 'driving-car')
-    row[2] - locations array of [lon, lat] pairs
-    
-    Returns duration and distance matrix between all locations
-    '''
-    message = request.json
-    logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_ors_response('matrix', row[1], {
-        'locations': row[2],
-        'metrics': ['distance', 'duration'],
-        'resolve_locations': True
-    }, format)] for row in input_rows]
-        
-    logger.info(f'Produced {len(output_rows)} rows')
-
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
-
-    return response
-
 @app.post("/matrix")
-@app.post("/matrix/<format>")
-def post_matrix(format="json"):
+def post_matrix():
     '''
-    Matrix Handler
+    Matrix Handler - calculates travel time/distance matrix between multiple locations
 
-    MATRIX(method string, options variant)
+    MATRIX(method varchar, locations array, metrics array)
 
-    row[1] - method/profile string (e.g., 'driving-car')
-    row[2] - full matrix options as JSON/variant (locations, metrics, sources, destinations, etc.)
-    
-    See: https://openrouteservice.org/dev/#/api-docs/v2/matrix/{profile}/post
+    row[1] - method (profile) e.g. 'driving-car'
+    row[2] - locations array of [lon, lat] pairs
+    row[3] - metrics array e.g. ['duration', 'distance']
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
@@ -323,8 +227,20 @@ def post_matrix(format="json"):
         return {}
 
     input_rows = message['data']
-
-    output_rows = [[row[0], get_ors_response('matrix', row[1], row[2], format)] for row in input_rows]
+    output_rows = []
+    
+    for row in input_rows:
+        profile = row[1]
+        locations = row[2]
+        metrics = row[3] if len(row) > 3 and row[3] else ['duration', 'distance']
+        
+        payload = {
+            'locations': locations,
+            'metrics': metrics
+        }
+        
+        result = get_ors_matrix_response(profile, payload)
+        output_rows.append([row[0], result])
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -333,6 +249,70 @@ def post_matrix(format="json"):
     logger.debug(f'Sending response: {response.json}')
 
     return response
+
+@app.post("/matrix_tabular")
+def post_matrix_tabular():
+    '''
+    Matrix Tabular Handler - calculates travel time/distance between origin and destinations
+
+    MATRIX_TABULAR(method varchar, origin array, destinations array)
+
+    row[1] - method (profile) e.g. 'driving-car'
+    row[2] - origin [lon, lat]
+    row[3] - destinations array of [lon, lat] pairs
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    if message is None or not message['data']:
+        logger.info('Received empty message')
+        return {}
+
+    input_rows = message['data']
+    output_rows = []
+    
+    for row in input_rows:
+        profile = row[1]
+        origin = row[2]
+        destinations = row[3]
+        
+        locations = [origin] + destinations
+        sources = [0]
+        destinations_idx = list(range(1, len(locations)))
+        
+        payload = {
+            'locations': locations,
+            'sources': sources,
+            'destinations': destinations_idx,
+            'metrics': ['duration', 'distance']
+        }
+        
+        result = get_ors_matrix_response(profile, payload)
+        output_rows.append([row[0], result])
+        
+    logger.info(f'Produced {len(output_rows)} rows')
+
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    logger.debug(f'Sending response: {response.json}')
+
+    return response
+
+def get_ors_matrix_response(profile, payload):
+    '''
+    ORS Matrix Endpoint abstraction
+    '''
+    endpoint = f'{ORS_API_PATH}/matrix/{profile}'
+    if not endpoint.startswith('/'):
+        endpoint = '/' + endpoint
+
+    downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+    downstream_headers = {"Content-Type": "application/json"}
+    logger.info(f'Calling: {downstream_url}')
+    logger.info(f'Payload: {payload}')
+    
+    r = requests.post(url=downstream_url, headers=downstream_headers, json=payload)
+    logger.debug(r.json())
+    return r.json()
 
 def get_vroom_response(payload):
     '''
@@ -351,153 +331,6 @@ def get_vroom_response(payload):
                 route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
-def get_nominatim_response(endpoint, params):
-    '''
-    Nominatim Endpoint abstraction
-    '''
-    downstream_url = f'http://{NOMINATIM_HOST}:{NOMINATIM_PORT}/{endpoint}'
-    params['format'] = 'jsonv2'
-    logger.info(f'Calling: {downstream_url} with params: {params}')
-    try:
-        r = requests.get(url=downstream_url, params=params, timeout=30)
-        return r.json()
-    except Exception as e:
-        logger.error(f'Nominatim error: {str(e)}')
-        return {'error': str(e)}
-
-@app.post("/geocode")
-def post_geocode():
-    '''
-    Forward Geocode Handler
-
-    GEOCODE(address varchar)
-
-    row[1] - address string
-    '''
-    message = request.json
-    logger.debug(f'Received geocode request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_nominatim_response('search', {
-        'q': row[1],
-        'limit': 1,
-        'addressdetails': 1
-    })] for row in input_rows]
-
-    logger.info(f'Produced {len(output_rows)} rows')
-
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
-
-@app.post("/geocode_detailed")
-def post_geocode_detailed():
-    '''
-    Forward Geocode with options
-
-    GEOCODE(address varchar, options variant)
-
-    row[1] - address string
-    row[2] - options variant (limit, countrycodes, viewbox, bounded, etc.)
-    '''
-    message = request.json
-    logger.debug(f'Received geocode_detailed request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
-
-    input_rows = message['data']
-
-    def build_params(row):
-        params = {'q': row[1], 'addressdetails': 1}
-        if len(row) > 2 and row[2]:
-            opts = row[2] if isinstance(row[2], dict) else json.loads(row[2])
-            params.update(opts)
-        return params
-
-    output_rows = [[row[0], get_nominatim_response('search', build_params(row))] for row in input_rows]
-
-    logger.info(f'Produced {len(output_rows)} rows')
-
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
-
-@app.post("/reverse_geocode")
-def post_reverse_geocode():
-    '''
-    Reverse Geocode Handler
-
-    REVERSE_GEOCODE(lon float, lat float)
-
-    row[1] - longitude
-    row[2] - latitude
-    '''
-    message = request.json
-    logger.debug(f'Received reverse geocode request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_nominatim_response('reverse', {
-        'lon': row[1],
-        'lat': row[2],
-        'addressdetails': 1
-    })] for row in input_rows]
-
-    logger.info(f'Produced {len(output_rows)} rows')
-
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
-
-@app.post("/geocode_lookup")
-def post_geocode_lookup():
-    '''
-    Lookup by OSM ID Handler
-
-    GEOCODE_LOOKUP(osm_ids varchar)
-
-    row[1] - osm_ids string (e.g., 'R146656,W104393803,N240109189')
-    '''
-    message = request.json
-    logger.debug(f'Received lookup request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_nominatim_response('lookup', {
-        'osm_ids': row[1],
-        'addressdetails': 1
-    })] for row in input_rows]
-
-    logger.info(f'Produced {len(output_rows)} rows')
-
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
-
-@app.get("/nominatim_status")
-def get_nominatim_status():
-    '''
-    Check Nominatim service health
-    '''
-    try:
-        status_url = f'http://{NOMINATIM_HOST}:{NOMINATIM_PORT}/status'
-        r = requests.get(url=status_url, timeout=10)
-        return {'status': 'ready', 'details': r.json() if r.headers.get('content-type', '').startswith('application/json') else r.text}
-    except Exception as e:
-        logger.error(f'Nominatim status error: {str(e)}')
-        return {'status': 'unavailable', 'error': str(e)}
-
 def get_ors_response(function, profile, payload, format):
     '''
     ORS Endpoint abstraction
@@ -514,6 +347,28 @@ def get_ors_response(function, profile, payload, format):
     r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
     logger.debug(r.json())
     return r.json()
+
+@app.post("/ors_status")
+def post_ors_status():
+    message = request.json
+    if message is None or not message['data']:
+        return {}
+    input_rows = message['data']
+    output_rows = []
+    for row in input_rows:
+        endpoint = f'{ORS_API_PATH}/health'
+        if not endpoint.startswith('/'):
+            endpoint = '/' + endpoint
+        downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+        try:
+            r = requests.get(url=downstream_url, timeout=10)
+            result = r.json()
+        except Exception as e:
+            result = {'error': str(e)}
+        output_rows.append([row[0], result])
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    return response
 
 if __name__ == '__main__':
     app.run(host=SERVICE_HOST, port=SERVICE_PORT)

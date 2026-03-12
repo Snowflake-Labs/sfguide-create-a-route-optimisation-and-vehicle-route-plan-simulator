@@ -39,9 +39,11 @@ BEGIN
    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
       INSTANCE_FAMILY = HIGHMEM_X64_S
       MIN_NODES = 1
-      MAX_NODES = 1
+      MAX_NODES = 10
       AUTO_RESUME = true
       AUTO_SUSPEND_SECS = 600;
+
+   ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET MIN_NODES = 10 MAX_NODES = 10;
 
    RETURN 'Compute Pool Created Successfully';
 
@@ -58,6 +60,7 @@ BEGIN
    CREATE OR ALTER STAGE core.ORS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_elevation_cache_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
+   CREATE OR ALTER STAGE core.NOMINATIM_DB_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
 
    GRANT READ ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT READ ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
@@ -66,6 +69,9 @@ BEGIN
    GRANT WRITE ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_elevation_cache_SPCS_STAGE TO APPLICATION ROLE app_user;
+
+   GRANT READ ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
+   GRANT WRITE ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
 
    RETURN 'Stages Created Successfully';
 END;
@@ -117,6 +123,8 @@ BEGIN
    -- account-level compute pool object prefixed with app name to prevent clashes
    LET pool_name := (SELECT CURRENT_DATABASE()) || '_compute_pool';
 
+   ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
+
    ALTER SERVICE IF EXISTS core.ors_service
       FROM SPECIFICATION_FILE='services/openrouteservice/openrouteservice.yaml';
 
@@ -129,8 +137,8 @@ BEGIN
    CREATE SERVICE IF NOT EXISTS core.ors_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/openrouteservice/openrouteservice.yaml'
-      MIN_INSTANCES = 1
-      MAX_INSTANCES = 1
+      MIN_INSTANCES = 10
+      MAX_INSTANCES = 10
       AUTO_SUSPEND_SECS = 14400;
 
    CREATE SERVICE IF NOT EXISTS core.vroom_service
@@ -143,9 +151,27 @@ BEGIN
    CREATE SERVICE IF NOT EXISTS core.routing_gateway_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/gateway/routing-gateway-service.yaml'
-      MIN_INSTANCES = 1
-      MAX_INSTANCES = 1
+      MIN_INSTANCES = 10
+      MAX_INSTANCES = 10
       AUTO_SUSPEND_SECS = 14400;
+
+   ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
+
+   BEGIN
+      ALTER SERVICE IF EXISTS core.nominatim_service
+         FROM SPECIFICATION_FILE='services/nominatim/nominatim-service.yaml';
+   EXCEPTION WHEN OTHER THEN NULL;
+   END;
+
+   BEGIN
+      CREATE SERVICE IF NOT EXISTS core.nominatim_service
+         IN COMPUTE POOL identifier(:pool_name)
+         FROM spec='services/nominatim/nominatim-service.yaml'
+         MIN_INSTANCES = 1
+         MAX_INSTANCES = 1
+         AUTO_SUSPEND_SECS = 14400;
+   EXCEPTION WHEN OTHER THEN NULL;
+   END;
 
    GRANT OPERATE ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
@@ -153,6 +179,12 @@ BEGIN
    GRANT MONITOR ON SERVICE core.vroom_service TO APPLICATION ROLE app_user;
    GRANT OPERATE ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
+
+   BEGIN
+      GRANT OPERATE ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
+      GRANT MONITOR ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
+   EXCEPTION WHEN OTHER THEN NULL;
+   END;
 
    RETURN 'Service successfully created';
 END;
@@ -264,7 +296,7 @@ BEGIN
       RETURNS VARIANT
       SERVICE=core.routing_gateway_service
       ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 100
+      MAX_BATCH_ROWS = 1000
       AS '/matrix_tabular';
    GRANT USAGE ON FUNCTION core.MATRIX(varchar, array) TO APPLICATION ROLE app_user;
 
@@ -275,6 +307,46 @@ BEGIN
       MAX_BATCH_ROWS = 100
       AS '/matrix';
    GRANT USAGE ON FUNCTION core.MATRIX(varchar, variant) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX_TABULAR(method varchar, origin ARRAY, destinations ARRAY)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 1000
+      AS '/matrix_tabular';
+   GRANT USAGE ON FUNCTION core.MATRIX_TABULAR(varchar, array, array) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.GEOCODE(address VARCHAR)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/geocode';
+   GRANT USAGE ON FUNCTION core.GEOCODE(varchar) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.GEOCODE(address VARCHAR, options VARIANT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/geocode_detailed';
+   GRANT USAGE ON FUNCTION core.GEOCODE(varchar, variant) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.REVERSE_GEOCODE(lon FLOAT, lat FLOAT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/reverse_geocode';
+   GRANT USAGE ON FUNCTION core.REVERSE_GEOCODE(float, float) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.GEOCODE_LOOKUP(osm_ids VARCHAR)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/geocode_lookup';
+   GRANT USAGE ON FUNCTION core.GEOCODE_LOOKUP(varchar) TO APPLICATION ROLE app_user;
 
    -- Create MAP_CONFIG table to store map metadata for the function tester
    CREATE TABLE IF NOT EXISTS core.MAP_CONFIG (

@@ -1,0 +1,36 @@
+################################################################################################
+### ORS Config for California-wide routing (travel time matrix at scale)                     ###
+### Upload this to the ORS stage along with a California OSM extract (.osm.pbf)              ###
+### https://giscience.github.io/openrouteservice/run-instance/configuration/                 ###
+################################################################################################
+ors:
+  engine:
+    profile_default:
+      build:  
+        source_file: /home/ors/files/california-latest.osm.pbf
+        instructions: false
+        service:
+        maximum_visited_nodes: 100000000
+    profiles:   
+      driving-car: 
+        enabled: true
+      driving-hgv: 
+        enabled: false
+      cycling-regular:
+        enabled: false
+      cycling-road:
+        enabled: false
+      cycling-mountain:
+        enabled: false
+      cycling-electric:
+        enabled: false
+      foot-walking:
+        enabled: false
+      foot-hiking:
+        enabled: false
+      wheelchair:
+        enabled: false
+  endpoints:
+    matrix:
+      maximum_visited_nodes: 100000000
+      maximum_routes: 250000

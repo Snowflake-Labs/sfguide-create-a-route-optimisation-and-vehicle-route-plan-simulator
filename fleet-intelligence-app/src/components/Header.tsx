@@ -2,9 +2,10 @@ import React from 'react';
 
 interface Props {
   onMatrixBuilder?: () => void;
+  onDataBuilder?: () => void;
 }
 
-export default function Header({ onMatrixBuilder }: Props) {
+export default function Header({ onMatrixBuilder, onDataBuilder }: Props) {
   return (
     <div className="header">
       <div className="header-logo">
@@ -18,6 +19,15 @@ export default function Header({ onMatrixBuilder }: Props) {
         <span className="header-subtitle">California Delivery Operations</span>
       </div>
       <div className="header-actions">
+        {onDataBuilder && (
+          <button className="header-matrix-btn" onClick={onDataBuilder}>
+            <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
+              <path d="M3 3h14v14H3z" stroke="#FF6B35" strokeWidth="1.5" fill="none" />
+              <path d="M7 10h6M10 7v6" stroke="#FF6B35" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Data Builder
+          </button>
+        )}
         {onMatrixBuilder && (
           <button className="header-matrix-btn" onClick={onMatrixBuilder}>
             <svg viewBox="0 0 20 20" fill="none" width="16" height="16">

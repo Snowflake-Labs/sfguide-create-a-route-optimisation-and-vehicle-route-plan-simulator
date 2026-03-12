@@ -1,0 +1,27 @@
+spec:
+  containers:
+    - name: nominatim
+      image: /openrouteservice_setup/public/image_repository/nominatim:v5.2.0
+      volumeMounts:
+        - name: files
+          mountPath: /nominatim/data
+        - name: nominatim-db
+          mountPath: /var/lib/postgresql/16/main
+      env:
+        PBF_PATH: /nominatim/data/SanFrancisco.osm.pbf
+        IMPORT_STYLE: full
+        FREEZE: "true"
+        THREADS: "4"
+        POSTGRES_SHARED_BUFFERS: 2GB
+        POSTGRES_MAINTENANCE_WORK_MEM: 4GB
+        POSTGRES_EFFECTIVE_CACHE_SIZE: 8GB
+        NOMINATIM_PASSWORD: nominatim_pwd
+  endpoints:
+    - name: nominatim
+      port: 8080
+      public: false
+  volumes:
+    - name: files
+      source: "@CORE.ORS_SPCS_STAGE/SanFrancisco"
+    - name: nominatim-db
+      source: "@CORE.NOMINATIM_DB_STAGE/SanFrancisco"

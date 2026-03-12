@@ -6,7 +6,7 @@ import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import type { Working, ChatMessage, FileAttachment, FleetStats, ActiveStats, StatusFilter } from '../types';
+import type { Working, ChatMessage, FileAttachment, FleetStats, ActiveStats, StatusFilter, MatrixSelection } from '../types';
 
 const QUICK_QUESTIONS = [
   'Show me all active deliveries right now',
@@ -128,6 +128,7 @@ interface CompactStatsProps {
   selectedCity: string;
   statusFilter: StatusFilter;
   onStatusFilter: (f: StatusFilter) => void;
+  matrixSelection?: MatrixSelection | null;
 }
 
 function CompactStats({ stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter }: CompactStatsProps) {
@@ -145,17 +146,18 @@ function CompactStats({ stats, activeStats, statsLoading, selectedCity, statusFi
     ? null
     : stats.cities.find((c) => c.city === selectedCity);
 
-  const displayOrders = cityStats ? cityStats.orders : stats.total_orders;
-  const displayCouriers = cityStats ? cityStats.couriers : stats.total_couriers;
-  const displayAvgMins = cityStats ? cityStats.avg_mins : stats.avg_delivery_mins;
-  const displayKm = cityStats ? cityStats.total_km : stats.total_km;
+  const isFiltered = selectedCity !== 'All Cities';
+  const displayOrders = isFiltered ? (cityStats?.orders || 0) : stats.total_orders;
+  const displayCouriers = isFiltered ? (cityStats?.couriers || 0) : stats.total_couriers;
+  const displayAvgMins = isFiltered ? (cityStats?.avg_mins || 0) : stats.avg_delivery_mins;
+  const displayKm = isFiltered ? (cityStats?.total_km || 0) : stats.total_km;
 
-  const cityActive = activeStats && selectedCity !== 'All Cities'
+  const cityActive = activeStats && isFiltered
     ? activeStats.cities.find((c) => c.city === selectedCity)
     : null;
-  const activeCount = cityActive ? cityActive.active : (activeStats?.active || 0);
-  const inTransitCount = cityActive ? cityActive.in_transit : (activeStats?.in_transit || 0);
-  const pickedUpCount = cityActive ? cityActive.picked_up : (activeStats?.picked_up || 0);
+  const activeCount = isFiltered ? (cityActive?.active || 0) : (activeStats?.active || 0);
+  const inTransitCount = isFiltered ? (cityActive?.in_transit || 0) : (activeStats?.in_transit || 0);
+  const pickedUpCount = isFiltered ? (cityActive?.picked_up || 0) : (activeStats?.picked_up || 0);
 
   return (
     <div className="compact-stats">
@@ -301,12 +303,14 @@ interface ChatPanelProps {
   selectedCity: string;
   statusFilter: StatusFilter;
   onStatusFilter: (f: StatusFilter) => void;
+  matrixSelection?: MatrixSelection | null;
 }
 
-export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter }: ChatPanelProps) {
+export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter, matrixSelection }: ChatPanelProps) {
   const { messages, loading, sendMessage, currentWorkings, streamingText, currentStatus } = agent;
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevSelectionRef = useRef<string | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -319,12 +323,40 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
     }
   }, [onStatusFilter]);
 
+  useEffect(() => {
+    const originHex = matrixSelection?.origin_hex || null;
+    if (originHex && originHex !== prevSelectionRef.current && !loading) {
+      const ctx = `[Matrix Context: Origin ${matrixSelection!.origin_hex} at Res ${matrixSelection!.resolution}, ` +
+        `${matrixSelection!.destinations.length} reachable destinations, ` +
+        `max travel time ${(matrixSelection!.max_travel_time_secs / 60).toFixed(1)} min, ` +
+        `max distance ${(matrixSelection!.max_distance_meters / 1000).toFixed(1)} km, ` +
+        `lat ${matrixSelection!.origin_lat.toFixed(4)}, lon ${matrixSelection!.origin_lon.toFixed(4)}]\n\n` +
+        `I selected hexagon ${matrixSelection!.origin_hex} as the origin on the map. ` +
+        `It can reach ${matrixSelection!.destinations.length} destinations with a max travel time of ${(matrixSelection!.max_travel_time_secs / 60).toFixed(0)} minutes. ` +
+        `What can you tell me about this area?`;
+      sendMessage(ctx, undefined, handleMapFilterFromAgent);
+    }
+    prevSelectionRef.current = originHex;
+  }, [matrixSelection?.origin_hex, loading]);
+
   const handleSend = useCallback((text?: string) => {
     const msg = text || input.trim();
     if (!msg || loading) return;
-    sendMessage(msg, undefined, handleMapFilterFromAgent);
+    let enriched = msg;
+    if (matrixSelection) {
+      const ctx = `[Matrix Context: Origin ${matrixSelection.origin_hex} at Res ${matrixSelection.resolution}, ` +
+        `${matrixSelection.destinations.length} reachable destinations, ` +
+        `max travel time ${(matrixSelection.max_travel_time_secs / 60).toFixed(1)} min, ` +
+        `max distance ${(matrixSelection.max_distance_meters / 1000).toFixed(1)} km, ` +
+        `lat ${matrixSelection.origin_lat.toFixed(4)}, lon ${matrixSelection.origin_lon.toFixed(4)}]\n\n`;
+      enriched = ctx + msg;
+    }
+    if (selectedCity && selectedCity !== 'All Cities') {
+      enriched = `[City Context: ${selectedCity}]\n\n` + enriched;
+    }
+    sendMessage(enriched, undefined, handleMapFilterFromAgent);
     if (!text) setInput('');
-  }, [input, loading, sendMessage, handleMapFilterFromAgent]);
+  }, [input, loading, sendMessage, handleMapFilterFromAgent, matrixSelection, selectedCity]);
 
   return (
     <div className="chat-container">

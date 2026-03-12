@@ -1,39 +1,40 @@
 name: travel-time-matrix
 description: |
-  Calculate travel time and distance matrices between geographic locations using 
-  OpenRouteService (ORS) Native App in Snowflake. Uses the MATRIX function for 
-  efficient bulk calculations and H3 hexagons for spatial aggregation.
+  Calculate travel time and distance matrices at scale using ORS MATRIX_TABULAR 
+  in Snowflake. Proven pattern for billions of pairs across multiple H3 resolutions.
   
-  IMPORTANT: Requires ORS Native App v0.6.0+ with MATRIX function. If MATRIX 
-  function is not available, the skill provides upgrade instructions and a 
-  fallback approach using DIRECTIONS.
+  Core pattern: Raw dump VARIANT payloads → bulk FLATTEN post-processing.
+  Includes infrastructure scaling (multi-cluster warehouses, ORS/gateway instance 
+  scaling), adaptive batch sizing, resume-safe parallel workers, and retry logic.
   
-  Use when: building travel time matrices, calculating all-pairs routing, 
-  H3 hexagon-based routing analysis, ORS MATRIX bulk processing,
-  origin-destination matrices, accessibility analysis.
+  Use when: building travel time matrices at scale, bulk routing with ORS, 
+  H3 hexagon-based OD matrices, scaling ORS native app, pre-computing matrices 
+  for VROOM optimization, large-scale origin-destination analysis.
   
-  Triggers: travel time matrix, distance matrix, H3 routing, ORS MATRIX,
-  ORS DIRECTIONS, all-pairs routing, hexagon routing, batch route calculation, 
-  accessibility matrix, origin-destination, OD matrix, upgrade ORS, 
-  MATRIX function not found.
+  Triggers: travel time matrix, distance matrix, H3 routing, ORS MATRIX, 
+  MATRIX_TABULAR, all-pairs routing, bulk routing, scale ORS, raw dump flatten, 
+  work queue, parallel workers, route optimization matrix, VROOM matrices,
+  billion pairs, statewide routing, California matrix.
 
 triggers:
   - travel time matrix
   - distance matrix
   - H3 routing
   - ORS MATRIX
-  - ORS DIRECTIONS
+  - MATRIX_TABULAR
   - all-pairs routing
-  - hexagon routing
+  - bulk routing at scale
   - batch route calculation
-  - accessibility matrix
-  - origin-destination
+  - origin-destination matrix
   - OD matrix
-  - route matrix
-  - calculate routes between hexagons
-  - MATRIX function
-  - upgrade ORS
-  - bulk routing
+  - scale ORS
+  - raw dump flatten
+  - work queue pattern
+  - parallel workers
+  - VROOM matrices
+  - pre-computed matrix
+  - statewide routing
+  - billion pairs
 
 tags:
   - openrouteservice
@@ -43,3 +44,5 @@ tags:
   - batch-processing
   - travel-time
   - matrix
+  - scale
+  - vroom

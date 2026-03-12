@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.7.2
+      image: /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.8.1
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000
@@ -10,8 +10,6 @@ spec:
         ORS_HOST: ors-service
         ORS_PORT: 8082
         ORS_API_PATH: /ors/v2
-        NOMINATIM_HOST: nominatim-service
-        NOMINATIM_PORT: 8080
   endpoints:
     - name: gateway
       port: 8000

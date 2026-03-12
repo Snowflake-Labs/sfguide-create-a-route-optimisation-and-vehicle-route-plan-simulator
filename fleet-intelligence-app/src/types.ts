@@ -96,34 +96,85 @@ export interface HexMatrixData {
   lon: number;
 }
 
+export interface TravelTimeHexData {
+  hex_id: string;
+  lat: number;
+  lon: number;
+  dest_count: number;
+  avg_travel_time_secs: number;
+  min_travel_time_secs: number;
+  max_travel_time_secs: number;
+  avg_distance_meters: number;
+  max_distance_meters: number;
+}
+
+export type MatrixResolution = 7 | 8 | 9;
+
+export interface ReachabilityHexData {
+  hex_id: string;
+  lat: number;
+  lon: number;
+  travel_time_secs: number;
+  distance_meters: number;
+}
+
+export interface MatrixSelection {
+  origin_hex: string;
+  origin_lat: number;
+  origin_lon: number;
+  resolution: MatrixResolution;
+  destinations: ReachabilityHexData[];
+  max_travel_time_secs: number;
+  max_distance_meters: number;
+}
+
+export interface CatchmentRestaurant {
+  name: string;
+  cuisine: string;
+  city: string;
+  lon: number;
+  lat: number;
+  drive_mins: number;
+  orders: number;
+  active: number;
+}
+
+export interface CatchmentCustomer {
+  lon: number;
+  lat: number;
+  status: string;
+  restaurant: string;
+  drive_mins: number;
+}
+
+export interface CatchmentData {
+  origin: string;
+  resolution: number;
+  max_minutes: number;
+  total_deliveries: number;
+  restaurants: CatchmentRestaurant[];
+  customers: CatchmentCustomer[];
+}
+
 export const CITIES: Record<string, CityConfig> = {
+  'London': { name: 'London', latitude: 51.51, longitude: -0.13, zoom: 11 },
+  'Paris': { name: 'Paris', latitude: 48.86, longitude: 2.35, zoom: 12 },
+  'Berlin': { name: 'Berlin', latitude: 52.52, longitude: 13.40, zoom: 11 },
+  'New York': { name: 'New York', latitude: 40.71, longitude: -74.01, zoom: 11 },
+  'Chicago': { name: 'Chicago', latitude: 41.88, longitude: -87.63, zoom: 11 },
   'Los Angeles': { name: 'Los Angeles', latitude: 34.05, longitude: -118.24, zoom: 11 },
   'San Francisco': { name: 'San Francisco', latitude: 37.76, longitude: -122.44, zoom: 12 },
-  'San Diego': { name: 'San Diego', latitude: 32.72, longitude: -117.16, zoom: 12 },
   'San Jose': { name: 'San Jose', latitude: 37.34, longitude: -121.89, zoom: 12 },
   'Sacramento': { name: 'Sacramento', latitude: 38.58, longitude: -121.49, zoom: 12 },
-  'Fresno': { name: 'Fresno', latitude: 36.74, longitude: -119.77, zoom: 12 },
-  'Oakland': { name: 'Oakland', latitude: 37.80, longitude: -122.27, zoom: 12 },
-  'Long Beach': { name: 'Long Beach', latitude: 33.77, longitude: -118.19, zoom: 12 },
   'Santa Barbara': { name: 'Santa Barbara', latitude: 34.42, longitude: -119.70, zoom: 13 },
-  'Bakersfield': { name: 'Bakersfield', latitude: 35.37, longitude: -119.02, zoom: 12 },
-  'Anaheim': { name: 'Anaheim', latitude: 33.84, longitude: -117.91, zoom: 12 },
-  'Santa Ana': { name: 'Santa Ana', latitude: 33.75, longitude: -117.87, zoom: 13 },
-  'Irvine': { name: 'Irvine', latitude: 33.68, longitude: -117.83, zoom: 12 },
-  'Riverside': { name: 'Riverside', latitude: 33.95, longitude: -117.40, zoom: 12 },
   'Stockton': { name: 'Stockton', latitude: 37.96, longitude: -121.29, zoom: 12 },
-  'Modesto': { name: 'Modesto', latitude: 37.64, longitude: -120.99, zoom: 12 },
-  'Pasadena': { name: 'Pasadena', latitude: 34.15, longitude: -118.14, zoom: 13 },
-  'Huntington Beach': { name: 'Huntington Beach', latitude: 33.66, longitude: -117.99, zoom: 13 },
-  'Torrance': { name: 'Torrance', latitude: 33.84, longitude: -118.34, zoom: 13 },
-  'Berkeley': { name: 'Berkeley', latitude: 37.87, longitude: -122.27, zoom: 13 },
 };
 
-export const CALIFORNIA_CENTER: CityConfig = {
+export const US_CENTER: CityConfig = {
   name: 'All Cities',
-  latitude: 37.27,
-  longitude: -119.27,
-  zoom: 6,
+  latitude: 39.83,
+  longitude: -98.58,
+  zoom: 4,
 };
 
 export const CITY_NAMES = Object.keys(CITIES);
@@ -170,6 +221,7 @@ export interface MatrixBuildStatus {
   region: string;
   resolution: number;
   status: 'idle' | 'building' | 'complete' | 'error';
+  stage: string;
   total_origins: number;
   processed_origins: number;
   total_pairs: number;
@@ -177,6 +229,10 @@ export interface MatrixBuildStatus {
   percent_complete: number;
   elapsed_seconds: number;
   est_remaining_seconds: number;
+  hexagons: number;
+  work_queue: number;
+  raw_ingested: number;
+  flattened: number;
   error?: string;
 }
 
