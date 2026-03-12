@@ -1286,7 +1286,7 @@ function updateCityState(city: string, update: Partial<CityProvisionState>) {
   Object.assign(cityProvisionStates[city], update);
 }
 
-function updateCityDataStep(city: string, step: string, update: Partial<CityProvisionState['dataSteps'][0]>) {
+function updateCityDataStep(city: string, step: string, update: Partial<{ step: string; status: string; message?: string; rows?: number; elapsed_seconds?: number; started_at?: number }>) {
   const state = getCityProvisionState(city);
   if (!state.dataSteps) return;
   const s = state.dataSteps.find((x) => x.step === step);
