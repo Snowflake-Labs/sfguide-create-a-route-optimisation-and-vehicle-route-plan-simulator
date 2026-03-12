@@ -5,10 +5,10 @@ artifacts:
   readme: README.md
   container_services:
     images:
-      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.8.9
+      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.9.0
       - /openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0
       - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
-      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.8.1
+      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.7.2
       - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
   default_streamlit: core.status_app
 

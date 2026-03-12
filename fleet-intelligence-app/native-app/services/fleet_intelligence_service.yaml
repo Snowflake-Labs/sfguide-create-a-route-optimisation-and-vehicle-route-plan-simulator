@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: fleet-intelligence
-      image: /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.8.9
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.9.0
       env:
         SNOWFLAKE_SCHEMA: DATA
         SNOWFLAKE_WAREHOUSE: FLEET_INTEL_WH
