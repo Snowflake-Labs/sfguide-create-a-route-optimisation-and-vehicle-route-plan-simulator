@@ -51,7 +51,7 @@ export default function App() {
     }
     const limit = Math.ceil(matrixSelection.max_travel_time_secs / 60);
     setCatchmentLoading(true);
-    fetch(`/api/matrix/catchment?origin=${encodeURIComponent(matrixSelection.origin_hex)}&resolution=${matrixSelection.resolution}&max_minutes=${limit}`)
+    fetch(`/api/matrix/catchment?origin=${encodeURIComponent(matrixSelection.origin_hex)}&resolution=${matrixSelection.resolution}&max_minutes=${limit}&city=${encodeURIComponent(selectedCity)}`)
       .then((r) => r.json())
       .then((data) => { setCatchment(data); setCatchmentLoading(false); })
       .catch(() => { setCatchment(null); setCatchmentLoading(false); });

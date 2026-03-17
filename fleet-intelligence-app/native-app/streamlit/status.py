@@ -267,17 +267,38 @@ try:
             """, unsafe_allow_html=True)
             st.link_button("Chat in App", app_url, type="secondary", use_container_width=True)
     else:
-        st.markdown(f"""
-        <div class="launch-card">
-            <div class="launch-card-title">⏳ Please Wait</div>
-            <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 0.5rem;">Fleet Intelligence is starting up. This page will refresh automatically.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.info("Checking service status...")
-        if ui_status in ("NOT_FOUND", "UNKNOWN"):
-            session.sql("CALL core.deploy()").collect()
-        time.sleep(10)
-        st.rerun()
+        if ui_status == "SUSPENDED":
+            st.markdown(f"""
+            <div class="launch-card">
+                <div class="launch-card-title">🔄 Resuming Services</div>
+                <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 0.5rem;">Fleet Intelligence services were suspended to save costs. Resuming now — this usually takes 1-2 minutes.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.spinner("Resuming services..."):
+                session.sql("CALL core.resume_services()").collect()
+            time.sleep(10)
+            st.rerun()
+        elif ui_status in ("NOT_FOUND", "UNKNOWN"):
+            st.markdown(f"""
+            <div class="launch-card">
+                <div class="launch-card-title">🚀 Deploying</div>
+                <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 0.5rem;">Fleet Intelligence is being deployed for the first time. This may take a few minutes.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.spinner("Deploying services..."):
+                session.sql("CALL core.deploy()").collect()
+            time.sleep(10)
+            st.rerun()
+        else:
+            st.markdown(f"""
+            <div class="launch-card">
+                <div class="launch-card-title">⏳ Please Wait</div>
+                <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 0.5rem;">Fleet Intelligence is starting up. This page will refresh automatically.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            st.info(f"Current status: {ui_status}")
+            time.sleep(10)
+            st.rerun()
 
     st.markdown(f"""
     <div class="section-header">
@@ -329,7 +350,7 @@ try:
 
         all_privs = [
             "CREATE COMPUTE POOL", "CREATE WAREHOUSE", "BIND SERVICE ENDPOINT",
-            "CREATE DATABASE", "CREATE EXTERNAL ACCESS INTEGRATION",
+            "CREATE DATABASE",
             "EXECUTE TASK", "EXECUTE MANAGED TASK",
             "IMPORTED PRIVILEGES ON SNOWFLAKE DB"
         ]
@@ -339,7 +360,6 @@ try:
             "CREATE WAREHOUSE": "Warehouse",
             "BIND SERVICE ENDPOINT": "Service Endpoint",
             "CREATE DATABASE": "Create Database",
-            "CREATE EXTERNAL ACCESS INTEGRATION": "External Access",
             "EXECUTE TASK": "Execute Task",
             "EXECUTE MANAGED TASK": "Managed Task",
             "IMPORTED PRIVILEGES ON SNOWFLAKE DB": "Cortex AI"

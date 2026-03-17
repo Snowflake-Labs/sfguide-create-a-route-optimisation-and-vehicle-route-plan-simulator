@@ -292,6 +292,7 @@ interface ChatPanelProps {
     messages: ChatMessage[];
     loading: boolean;
     sendMessage: (text: string, attachments?: FileAttachment[], onMapFilter?: (f: string) => void) => void;
+    clearChat: () => void;
     currentWorkings: Working[];
     streamingText: string;
     currentStatus: string;
@@ -307,7 +308,7 @@ interface ChatPanelProps {
 }
 
 export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter, matrixSelection }: ChatPanelProps) {
-  const { messages, loading, sendMessage, currentWorkings, streamingText, currentStatus } = agent;
+  const { messages, loading, sendMessage, clearChat, currentWorkings, streamingText, currentStatus } = agent;
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevSelectionRef = useRef<string | null>(null);
@@ -432,6 +433,18 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
         <div ref={messagesEndRef} />
       </div>
       <div className="chat-input-container">
+        {messages.length > 0 && (
+          <button
+            className="chat-clear"
+            onClick={clearChat}
+            disabled={loading}
+            title="Clear chat history"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </button>
+        )}
         <input
           className="chat-input"
           value={input}

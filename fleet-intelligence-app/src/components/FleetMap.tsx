@@ -1,11 +1,11 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import Map from 'react-map-gl/maplibre';
 import DeckGL from '@deck.gl/react';
-import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
+import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { useRoutes } from '../hooks/useData';
 import type { MapZoomTarget } from '../hooks/useData';
-import type { RouteData, CityConfig, MapMode, TravelTimeHexData, StatusFilter, MatrixResolution, MatrixSelection, ReachabilityHexData, CatchmentRestaurant, CatchmentCustomer } from '../types';
+import type { RouteData, CityConfig, MapMode, TravelTimeHexData, StatusFilter, MatrixResolution, MatrixSelection, ReachabilityHexData, CatchmentRestaurant, CatchmentCustomer, AnimatedRoute } from '../types';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const BASEMAP: any = {
@@ -58,6 +58,44 @@ const CUISINE_EMOJI: Record<string, string> = {
   restaurant: '🍽️',
 };
 
+const CUISINE_COLORS: Record<string, [number, number, number]> = {
+  pizza: [255, 165, 0],
+  coffee: [139, 90, 43],
+  cafe: [139, 90, 43],
+  bakery: [210, 180, 140],
+  chinese: [220, 20, 60],
+  japanese: [255, 99, 71],
+  sushi: [255, 99, 71],
+  thai: [255, 215, 0],
+  vietnamese: [255, 215, 0],
+  korean: [255, 215, 0],
+  asian: [255, 215, 0],
+  mexican: [0, 200, 83],
+  burger: [244, 164, 96],
+  fast_food: [255, 69, 0],
+  italian: [60, 179, 113],
+  indian: [255, 140, 0],
+  seafood: [0, 191, 255],
+  sandwich: [222, 184, 135],
+  food_truck: [128, 128, 128],
+  american: [70, 130, 180],
+  chicken: [218, 165, 32],
+  vegetarian: [50, 205, 50],
+  vegan: [50, 205, 50],
+  ice_cream: [255, 182, 193],
+  dessert: [255, 105, 180],
+  bar: [186, 85, 211],
+};
+
+function getCuisineColor(cuisine: string): [number, number, number] {
+  if (!cuisine) return [255, 255, 255];
+  const lower = cuisine.toLowerCase();
+  for (const [key, color] of Object.entries(CUISINE_COLORS)) {
+    if (lower.includes(key)) return color;
+  }
+  return [255, 255, 255];
+}
+
 function getCuisineEmoji(cuisine: string): string {
   if (!cuisine) return '📍';
   const lower = cuisine.toLowerCase();
@@ -66,6 +104,20 @@ function getCuisineEmoji(cuisine: string): string {
     if (lower.includes(key.split('_')[0])) return emoji;
   }
   return '🍽️';
+}
+
+function formatDateLabel(dateStr: string, long = false): string {
+  if (!dateStr) return '?';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    if (!isNaN(d.getTime())) {
+      return long
+        ? d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  }
+  return dateStr;
 }
 
 interface Props {
@@ -83,7 +135,10 @@ interface Props {
 }
 
 export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, statusFilter, mapZoomTarget, onMapZoomComplete, onMatrixSelection, catchmentRestaurants, catchmentCustomers, hoveredRestaurant }: Props) {
-  const { routes, loading } = useRoutes(city, statusFilter);
+  const [availableDates, setAvailableDates] = useState<{date: string; count: number}[]>([]);
+  const [selectedDateIdx, setSelectedDateIdx] = useState<number>(-1);
+  const selectedDate = selectedDateIdx >= 0 && selectedDateIdx < availableDates.length ? availableDates[selectedDateIdx].date : '';
+  const { routes, loading } = useRoutes(city, statusFilter, selectedDate);
   const [viewState, setViewState] = useState({
     longitude: cityConfig.longitude,
     latitude: cityConfig.latitude,
@@ -108,6 +163,16 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
   const [allRestaurants, setAllRestaurants] = useState<any[]>([]);
   const [restaurantsLoading, setRestaurantsLoading] = useState(false);
 
+  const [animatedRoute, setAnimatedRoute] = useState<AnimatedRoute | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeLoadingMsg, setRouteLoadingMsg] = useState('');
+  const [animProgress, setAnimProgress] = useState(0);
+  const animRef = useRef<number | null>(null);
+  const animStartRef = useRef<number>(0);
+  const animProgressRef = useRef(0);
+  const ANIM_DURATION_MS = 8000;
+  const ANIM_FPS = 20;
+
   const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({
     routes: true,
     pickups: true,
@@ -126,6 +191,16 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       zoom: cityConfig.zoom,
     }));
   }, [cityConfig]);
+
+  useEffect(() => {
+    fetch(`/api/routes/dates?city=${encodeURIComponent(city)}`)
+      .then((r) => r.json())
+      .then((dates) => {
+        setAvailableDates(dates);
+        setSelectedDateIdx(dates.length > 0 ? dates.length - 1 : -1);
+      })
+      .catch(() => setAvailableDates([]));
+  }, [city]);
 
   useEffect(() => {
     if (!mapZoomTarget) return;
@@ -163,7 +238,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     setSelectedOrigin(null);
     setReachData([]);
     if (onMatrixSelection) onMatrixSelection(null);
-    fetch(`/api/matrix/travel-times?resolution=${matrixResolution}`)
+    fetch(`/api/matrix/travel-times?resolution=${matrixResolution}&city=${encodeURIComponent(city)}`)
       .then((r) => r.json())
       .then((data) => {
         setMatrixTotalPairs(data.total_pairs || 0);
@@ -181,13 +256,13 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         setMatrixLoading(false);
       })
       .catch(() => setMatrixLoading(false));
-  }, [mapMode, matrixResolution]);
+  }, [mapMode, matrixResolution, city]);
 
   useEffect(() => {
     if (mapMode !== 'matrix') return;
-    if (allRestaurants.length > 0) return;
     setRestaurantsLoading(true);
-    fetch('/api/restaurants')
+    setAllRestaurants([]);
+    fetch(`/api/restaurants?city=${encodeURIComponent(city)}`)
       .then((r) => r.json())
       .then((rows) => {
         setAllRestaurants(rows.map((r: any) => ({
@@ -201,12 +276,12 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         setRestaurantsLoading(false);
       })
       .catch(() => setRestaurantsLoading(false));
-  }, [mapMode]);
+  }, [mapMode, city]);
 
   useEffect(() => {
     if (!selectedOrigin || mapMode !== 'matrix') return;
     setReachLoading(true);
-    fetch(`/api/matrix/reachability?origin=${encodeURIComponent(selectedOrigin)}&resolution=${matrixResolution}`)
+    fetch(`/api/matrix/reachability?origin=${encodeURIComponent(selectedOrigin)}&resolution=${matrixResolution}&city=${encodeURIComponent(city)}`)
       .then((r) => r.json())
       .then((data) => {
         const dests: ReachabilityHexData[] = (data.destinations || []).map((r: any) => ({
@@ -226,13 +301,76 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         setReachLoading(false);
       })
       .catch(() => setReachLoading(false));
-  }, [selectedOrigin, matrixResolution, mapMode]);
+  }, [selectedOrigin, matrixResolution, mapMode, city]);
+
+  useEffect(() => {
+    if (!animatedRoute) {
+      if (animRef.current) { clearInterval(animRef.current); animRef.current = null; }
+      return;
+    }
+    animStartRef.current = performance.now();
+    animProgressRef.current = 0;
+    setAnimProgress(0);
+    const interval = setInterval(() => {
+      const elapsed = performance.now() - animStartRef.current;
+      const t = Math.min(elapsed / ANIM_DURATION_MS, 1);
+      animProgressRef.current = t;
+      setAnimProgress(t);
+      if (t >= 1) {
+        clearInterval(interval);
+        animRef.current = null;
+      }
+    }, 1000 / ANIM_FPS);
+    animRef.current = interval as any;
+    return () => { clearInterval(interval); animRef.current = null; };
+  }, [animatedRoute]);
+
+  const fetchRouteToRestaurant = useCallback((restaurant: CatchmentRestaurant) => {
+    if (!selectedOrigin || !originCoords.lat) return;
+    setRouteLoading(true);
+    setRouteLoadingMsg('Connecting to routing service...');
+    setAnimatedRoute(null);
+    const params = new URLSearchParams({
+      start_lon: String(originCoords.lon),
+      start_lat: String(originCoords.lat),
+      end_lon: String(restaurant.lon),
+      end_lat: String(restaurant.lat),
+      city: city,
+      profile: 'driving-car',
+    });
+    fetch(`/api/matrix/directions?${params}`)
+      .then(async (r) => {
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${r.status}`);
+        }
+        return r.json();
+      })
+      .then((data) => {
+        setAnimatedRoute({ ...data, restaurant });
+        setRouteLoading(false);
+        setRouteLoadingMsg('');
+      })
+      .catch((err) => {
+        console.error('Route fetch error:', err);
+        setRouteLoading(false);
+        setRouteLoadingMsg('');
+      });
+  }, [selectedOrigin, originCoords, city]);
 
   const handleMatrixClick = useCallback((info: any) => {
     if (mapMode !== 'matrix') return;
-    if (info?.layer?.id === 'catchment-restaurants-icons' || info?.layer?.id === 'all-restaurants') {
+    if (info?.layer?.id === 'catchment-restaurants-icons') {
+      const r = info.object;
+      if (r && r.name) {
+        fetchRouteToRestaurant(r);
+      }
       return;
     }
+    if (info?.layer?.id === 'all-restaurants') {
+      return;
+    }
+    if (info?.layer?.id === 'animated-car') return;
     if (!info?.object?.hex_id) return;
     const clickedHex = info.object.hex_id;
     if (clickedHex === selectedOrigin) {
@@ -253,7 +391,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         }));
       }
     }
-  }, [mapMode, selectedOrigin, onMatrixSelection, matrixData, matrixResolution]);
+  }, [mapMode, selectedOrigin, onMatrixSelection, matrixData, matrixResolution, fetchRouteToRestaurant]);
 
   const routesWithCoords = useMemo(
     () => routes.filter((r) => r.coordinates.length > 1),
@@ -473,26 +611,132 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
   const restaurantIconLayer = useMemo(
     () =>
       mapMode === 'matrix' && selectedOrigin && nearbyRestaurants.length > 0
-        ? new TextLayer({
+        ? new ScatterplotLayer({
             id: 'catchment-restaurants-icons',
             data: nearbyRestaurants,
             pickable: true,
             getPosition: (d: any) => [d.lon, d.lat],
-            getText: (d: any) => d.emoji,
-            getSize: (d: any) =>
-              hoveredRestaurant && d.name === hoveredRestaurant.name ? 28 : 20,
-            getColor: [255, 255, 255, 255],
-            fontFamily: 'Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif',
-            fontSettings: { sdf: false },
-            billboard: true,
-            sizeScale: 1,
-            sizeUnits: 'pixels' as any,
+            getFillColor: (d: any) => {
+              const c = getCuisineColor(d.cuisine);
+              return hoveredRestaurant && d.name === hoveredRestaurant.name
+                ? [255, 255, 255, 255]
+                : [c[0], c[1], c[2], 230];
+            },
+            getLineColor: [255, 255, 255, 200],
+            getRadius: (d: any) =>
+              hoveredRestaurant && d.name === hoveredRestaurant.name ? 120 : 80,
+            lineWidthMinPixels: 2,
+            stroked: true,
+            radiusMinPixels: 5,
+            radiusMaxPixels: 12,
             updateTriggers: {
-              getSize: [hoveredRestaurant?.name],
+              getFillColor: [hoveredRestaurant?.name],
+              getRadius: [hoveredRestaurant?.name],
             },
           })
         : null,
     [nearbyRestaurants, selectedOrigin, mapMode, hoveredRestaurant]
+  );
+
+  const carPosition = useMemo(() => {
+    if (!animatedRoute) return null;
+    const coords = animatedRoute.coordinates;
+    if (!coords || coords.length < 2) return null;
+    const totalLen = coords.length - 1;
+    const idx = animProgress * totalLen;
+    const i = Math.min(Math.floor(idx), totalLen - 1);
+    const frac = idx - i;
+    const lon = coords[i][0] + (coords[i + 1][0] - coords[i][0]) * frac;
+    const lat = coords[i][1] + (coords[i + 1][1] - coords[i][1]) * frac;
+    const bearing = Math.atan2(
+      coords[Math.min(i + 1, totalLen)][0] - coords[i][0],
+      coords[Math.min(i + 1, totalLen)][1] - coords[i][1]
+    ) * (180 / Math.PI);
+    return { lon, lat, bearing };
+  }, [animatedRoute, animProgress]);
+
+  const animatedPathData = useMemo(() => {
+    if (!animatedRoute) return [];
+    const coords = animatedRoute.coordinates;
+    const endIdx = Math.floor(animProgress * (coords.length - 1)) + 1;
+    return [{ path: coords.slice(0, Math.min(endIdx + 1, coords.length)) }];
+  }, [animatedRoute, animProgress]);
+
+  const animatedRouteLayer = useMemo(
+    () =>
+      animatedRoute && animatedPathData.length > 0
+        ? new PathLayer({
+            id: 'animated-route',
+            data: animatedPathData,
+            pickable: false,
+            getPath: (d: any) => d.path,
+            getColor: [0, 230, 118, 220],
+            getWidth: 5,
+            widthMinPixels: 3,
+            widthMaxPixels: 8,
+            capRounded: true,
+            jointRounded: true,
+          })
+        : null,
+    [animatedRoute, animatedPathData]
+  );
+
+  const routeTrailLayer = useMemo(
+    () =>
+      animatedRoute
+        ? new PathLayer({
+            id: 'route-trail',
+            data: [{ path: animatedRoute.coordinates }],
+            pickable: false,
+            getPath: (d: any) => d.path,
+            getColor: [0, 230, 118, 60],
+            getWidth: 3,
+            widthMinPixels: 1,
+            widthMaxPixels: 4,
+            capRounded: true,
+            jointRounded: true,
+          })
+        : null,
+    [animatedRoute]
+  );
+
+  const carLayer = useMemo(
+    () =>
+      carPosition
+        ? new ScatterplotLayer({
+            id: 'animated-car',
+            data: [carPosition],
+            pickable: true,
+            getPosition: (d: any) => [d.lon, d.lat],
+            getFillColor: [255, 255, 255, 255],
+            getLineColor: [0, 230, 118, 255],
+            getRadius: 120,
+            radiusMinPixels: 7,
+            radiusMaxPixels: 12,
+            stroked: true,
+            lineWidthMinPixels: 3,
+          })
+        : null,
+    [carPosition]
+  );
+
+  const carFallbackLayer = useMemo(
+    () =>
+      carPosition
+        ? new ScatterplotLayer({
+            id: 'animated-car-dot',
+            data: [carPosition],
+            pickable: false,
+            getPosition: (d: any) => [d.lon, d.lat],
+            getFillColor: [0, 230, 118, 255],
+            getRadius: 200,
+            radiusMinPixels: 10,
+            radiusMaxPixels: 16,
+            stroked: false,
+            opacity: 0.3,
+          })
+        : null,
+    [carPosition]
   );
 
   const layers = useMemo(() => {
@@ -503,6 +747,10 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         if (reachLayer) result.push(reachLayer);
         if (originLayer) result.push(originLayer);
         if (restaurantIconLayer) result.push(restaurantIconLayer);
+        if (routeTrailLayer) result.push(routeTrailLayer);
+        if (animatedRouteLayer) result.push(animatedRouteLayer);
+        if (carFallbackLayer) result.push(carFallbackLayer);
+        if (carLayer) result.push(carLayer);
       } else {
         if (matrixHexPickLayer) result.push(matrixHexPickLayer);
         if (allRestaurantLayer) result.push(allRestaurantLayer);
@@ -514,7 +762,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     if (layerVisibility.pickups) routeLayers.push(pickupLayer);
     if (layerVisibility.dropoffs) routeLayers.push(dropoffLayer);
     return routeLayers;
-  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility]);
+  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
@@ -613,23 +861,42 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       return {
         html: `
           <div class="tooltip-container matrix-tooltip">
-            <div class="tooltip-title">${object.emoji} ${object.name}</div>
+            <div class="tooltip-title">${getCuisineEmoji(object.cuisine)} ${object.name}</div>
             <div class="tooltip-divider"></div>
             <div class="tooltip-row"><span class="tooltip-label">Cuisine</span><span class="tooltip-value">${(object.cuisine || '').replace(/_/g, ' ')}</span></div>
             <div class="tooltip-row"><span class="tooltip-label">Drive Time</span><span class="tooltip-value highlight">${object.drive_mins} min</span></div>
             <div class="tooltip-row"><span class="tooltip-label">Orders</span><span class="tooltip-value">${object.orders}</span></div>
             ${object.active > 0 ? `<div class="tooltip-row"><span class="tooltip-label">Active</span><span class="tooltip-value highlight">${object.active}</span></div>` : ''}
+            <div class="tooltip-row dim" style="margin-top:4px"><span class="tooltip-label">Click to show route</span></div>
+          </div>
+        `,
+        style: { background: 'transparent', border: 'none', padding: '0' },
+      };
+    }
+    if (layer?.id === 'animated-car' || layer?.id === 'animated-car-dot') {
+      const r = animatedRoute?.restaurant;
+      const dist = animatedRoute ? (animatedRoute.distance_meters / 1000).toFixed(1) : '?';
+      const dur = animatedRoute ? Math.round(animatedRoute.duration_seconds / 60) : '?';
+      return {
+        html: `
+          <div class="tooltip-container matrix-tooltip">
+            <div class="tooltip-title">🚗 Route to ${r?.name || 'Restaurant'}</div>
+            <div class="tooltip-divider"></div>
+            <div class="tooltip-row"><span class="tooltip-label">Distance</span><span class="tooltip-value">${dist} km</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">Drive Time</span><span class="tooltip-value highlight">${dur} min</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">Progress</span><span class="tooltip-value">${Math.round(animProgress * 100)}%</span></div>
           </div>
         `,
         style: { background: 'transparent', border: 'none', padding: '0' },
       };
     }
     return null;
-  }, [reachData.length, hoveredRestaurant]);
+  }, [reachData.length, hoveredRestaurant, animatedRoute, animProgress]);
 
   const clearSelection = useCallback(() => {
     setSelectedOrigin(null);
     setReachData([]);
+    setAnimatedRoute(null);
     if (onMatrixSelection) onMatrixSelection(null);
   }, [onMatrixSelection]);
 
@@ -701,6 +968,32 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         </div>
       )}
 
+      {mapMode === 'routes' && availableDates.length > 1 && (
+        <div className="date-slider-panel">
+          <div className="date-slider-header">
+            <span className="date-slider-label">Day</span>
+            <span className="date-slider-value">
+              {selectedDateIdx === -1 ? 'All Days' : formatDateLabel(availableDates[selectedDateIdx].date, true)}
+              {selectedDateIdx >= 0 && ` (${availableDates[selectedDateIdx].count} orders)`}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={-1}
+            max={availableDates.length - 1}
+            value={selectedDateIdx}
+            onChange={(e) => setSelectedDateIdx(Number(e.target.value))}
+            className="date-slider-input"
+          />
+          <div className="date-slider-ticks">
+            <span>All</span>
+            {availableDates.map((d) => (
+              <span key={d.date}>{formatDateLabel(d.date)}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {mapMode === 'matrix' && (
         <div className="matrix-resolution-selector">
           <span className="matrix-res-label">Resolution</span>
@@ -758,6 +1051,26 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
 
       {(loading || (mapMode === 'heatmap' && heatLoading) || (mapMode === 'matrix' && (matrixLoading || restaurantsLoading))) && (
         <div className="map-loading">Loading fleet data...</div>
+      )}
+
+      {routeLoading && (
+        <div className="map-loading" style={{ top: 'auto', bottom: 80 }}>
+          🚗 {routeLoadingMsg || 'Fetching route...'}
+        </div>
+      )}
+
+      {animatedRoute && !routeLoading && (
+        <div className="animated-route-info">
+          <div className="animated-route-header">
+            <span>🚗 Route to {animatedRoute.restaurant?.name || 'Restaurant'}</span>
+            <button className="matrix-origin-clear" onClick={() => setAnimatedRoute(null)}>&times;</button>
+          </div>
+          <div className="animated-route-stats">
+            <span>{(animatedRoute.distance_meters / 1000).toFixed(1)} km</span>
+            <span>&middot;</span>
+            <span>{Math.round(animatedRoute.duration_seconds / 60)} min drive</span>
+          </div>
+        </div>
       )}
 
       <div className="color-legend">

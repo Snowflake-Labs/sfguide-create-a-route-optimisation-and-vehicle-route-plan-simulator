@@ -1,20 +1,23 @@
 name: travel-time-matrix
 description: |
   Calculate travel time and distance matrices at scale using ORS MATRIX_TABULAR 
-  in Snowflake. Proven pattern for billions of pairs across multiple H3 resolutions.
+  in Snowflake. Works for any geography — from a single city to an entire country.
   
   Core pattern: Raw dump VARIANT payloads → bulk FLATTEN post-processing.
   Includes infrastructure scaling (multi-cluster warehouses, ORS/gateway instance 
   scaling), adaptive batch sizing, resume-safe parallel workers, and retry logic.
   
-  Use when: building travel time matrices at scale, bulk routing with ORS, 
+  Supports parameterized regions with presets for city, metro, state, and country.
+  
+  Use when: building travel time matrices at any scale, bulk routing with ORS, 
   H3 hexagon-based OD matrices, scaling ORS native app, pre-computing matrices 
-  for VROOM optimization, large-scale origin-destination analysis.
+  for VROOM optimization, origin-destination analysis for any region size.
   
   Triggers: travel time matrix, distance matrix, H3 routing, ORS MATRIX, 
   MATRIX_TABULAR, all-pairs routing, bulk routing, scale ORS, raw dump flatten, 
   work queue, parallel workers, route optimization matrix, VROOM matrices,
-  billion pairs, statewide routing, California matrix.
+  city routing, metro routing, statewide routing, country routing,
+  small city matrix, delivery zone matrix, last mile matrix.
 
 triggers:
   - travel time matrix
@@ -33,8 +36,15 @@ triggers:
   - parallel workers
   - VROOM matrices
   - pre-computed matrix
+  - city routing matrix
+  - metro routing matrix
   - statewide routing
+  - country routing matrix
+  - small city matrix
+  - delivery zone matrix
+  - last mile matrix
   - billion pairs
+  - million pairs
 
 tags:
   - openrouteservice
@@ -46,3 +56,6 @@ tags:
   - matrix
   - scale
   - vroom
+  - city
+  - metro
+  - country

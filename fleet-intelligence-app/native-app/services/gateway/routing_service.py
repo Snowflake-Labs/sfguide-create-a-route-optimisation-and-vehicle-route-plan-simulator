@@ -15,6 +15,7 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
+ORS_SCHEMA = os.getenv('ORS_SCHEMA', 'routing')
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -31,23 +32,18 @@ logger = get_logger('routing-service')
 
 app = Flask(__name__)
 
+def resolve_ors_host(region=None):
+    if not region:
+        return ORS_HOST
+    return f'ors-service-{region.lower()}'
+
 @app.get("/health")
 def readiness_probe():
     return "OK"
 
 @app.post("/optimization_tabular")
-def post_optimization_tabular():
-    '''
-    Tabular Optimization Handler
-
-    Easy Optimization problem solver
-
-    row[1] - jobs array
-    row[2] - vehicles array
-    row[3] - matrices array (optional) - pre-computed cost matrices per profile
-             Format: {"profile_name": {"durations": [[...]], "distances": [[...]]}}
-             When provided, jobs/vehicles should use location_index instead of location
-    '''
+@app.post("/city/<region>/optimization_tabular")
+def post_optimization_tabular(region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
@@ -79,14 +75,8 @@ def post_optimization_tabular():
     return response
 
 @app.post("/optimization")
-def post_optimization():
-    '''
-    Optimization Handler
-
-    Takes raw Optimization problem, according to the https://openrouteservice.org/dev/#/api-docs/optimization
-
-    row[1] - problem varchar
-    '''
+@app.post("/city/<region>/optimization")
+def post_optimization(region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
@@ -106,18 +96,18 @@ def post_optimization():
 
 @app.post("/directions_tabular")
 @app.post("/directions_tabular/<format>")
-def post_directions_tabular_with_format(format="geojson"):
-    '''
-    Directions Handler with format option
-    '''
+@app.post("/city/<region>/directions_tabular")
+@app.post("/city/<region>/directions_tabular/<format>")
+def post_directions_tabular_with_format(format="geojson", region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
 
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
-    output_rows = [[row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format)] for row in input_rows]
+    output_rows = [[row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format, ors_host)] for row in input_rows]
 
     response = make_response({"data": output_rows})
     response.headers['Content-type'] = 'application/json'
@@ -127,18 +117,18 @@ def post_directions_tabular_with_format(format="geojson"):
 
 @app.post("/directions")
 @app.post("/directions/<format>")
-def post_directions_with_format(format="geojson"):
-    '''
-    Directions Handler with format option
-    '''
+@app.post("/city/<region>/directions")
+@app.post("/city/<region>/directions/<format>")
+def post_directions_with_format(format="geojson", region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
     
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
-    output_rows = [[row[0], get_ors_response('directions', row[1], row[2], format)] for row in input_rows]
+    output_rows = [[row[0], get_ors_response('directions', row[1], row[2], format, ors_host)] for row in input_rows]
 
     response = make_response({"data": output_rows})
     response.headers['Content-type'] = 'application/json'
@@ -148,29 +138,22 @@ def post_directions_with_format(format="geojson"):
 
 @app.post("/isochrones_tabular")
 @app.post("/isochrones_tabular/<format>")
-def post_isochrones_tabular(format="geojson"):
-    '''
-    Isochrones Tabular Handler
-
-    ISOCHRONES(method string, lon float, lat float, range int)
-
-    row[1] - method string, 
-    row[2] - lon float 
-    row[3] - lat float
-    row[4] - range int
-    '''
+@app.post("/city/<region>/isochrones_tabular")
+@app.post("/city/<region>/isochrones_tabular/<format>")
+def post_isochrones_tabular(format="geojson", region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
 
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
 
     output_rows = [[row[0], get_ors_response('isochrones', row[1], {'locations': [[row[2], row[3]]], 'range':[row[4]*60],
                     'location_type':'start',
                     'range_type':'time',
-                    'smoothing':10}, format)]for row in input_rows]
+                    'smoothing':10}, format, ors_host)]for row in input_rows]
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -183,23 +166,19 @@ def post_isochrones_tabular(format="geojson"):
 
 @app.post("/isochrones")
 @app.post("/isochrones/<format>")
-def post_isochrones(format="geojson"):
-    '''
-    Isochrones Tabular Handler
-
-    ISOCHRONES(method string, lon float, lat float, range int)
-
-    row[1] - problem varchar
-    '''
+@app.post("/city/<region>/isochrones")
+@app.post("/city/<region>/isochrones/<format>")
+def post_isochrones(format="geojson", region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
 
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
 
-    output_rows = [[row[0], get_ors_response('isochrones', row[1], json.loads(row[2]), format)]for row in input_rows]
+    output_rows = [[row[0], get_ors_response('isochrones', row[1], json.loads(row[2]), format, ors_host)]for row in input_rows]
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -210,22 +189,15 @@ def post_isochrones(format="geojson"):
     return response
 
 @app.post("/matrix")
-def post_matrix():
-    '''
-    Matrix Handler - calculates travel time/distance matrix between multiple locations
-
-    MATRIX(method varchar, locations array, metrics array)
-
-    row[1] - method (profile) e.g. 'driving-car'
-    row[2] - locations array of [lon, lat] pairs
-    row[3] - metrics array e.g. ['duration', 'distance']
-    '''
+@app.post("/city/<region>/matrix")
+def post_matrix(region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
 
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
     output_rows = []
     
@@ -239,7 +211,7 @@ def post_matrix():
             'metrics': metrics
         }
         
-        result = get_ors_matrix_response(profile, payload)
+        result = get_ors_matrix_response(profile, payload, ors_host)
         output_rows.append([row[0], result])
         
     logger.info(f'Produced {len(output_rows)} rows')
@@ -251,22 +223,15 @@ def post_matrix():
     return response
 
 @app.post("/matrix_tabular")
-def post_matrix_tabular():
-    '''
-    Matrix Tabular Handler - calculates travel time/distance between origin and destinations
-
-    MATRIX_TABULAR(method varchar, origin array, destinations array)
-
-    row[1] - method (profile) e.g. 'driving-car'
-    row[2] - origin [lon, lat]
-    row[3] - destinations array of [lon, lat] pairs
-    '''
+@app.post("/city/<region>/matrix_tabular")
+def post_matrix_tabular(region=None):
     message = request.json
     logger.debug(f'Received request: {message}')
     if message is None or not message['data']:
         logger.info('Received empty message')
         return {}
 
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
     output_rows = []
     
@@ -286,7 +251,7 @@ def post_matrix_tabular():
             'metrics': ['duration', 'distance']
         }
         
-        result = get_ors_matrix_response(profile, payload)
+        result = get_ors_matrix_response(profile, payload, ors_host)
         output_rows.append([row[0], result])
         
     logger.info(f'Produced {len(output_rows)} rows')
@@ -297,15 +262,14 @@ def post_matrix_tabular():
 
     return response
 
-def get_ors_matrix_response(profile, payload):
-    '''
-    ORS Matrix Endpoint abstraction
-    '''
+def get_ors_matrix_response(profile, payload, ors_host=None):
+    if not ors_host:
+        ors_host = ORS_HOST
     endpoint = f'{ORS_API_PATH}/matrix/{profile}'
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
 
-    downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+    downstream_url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
     downstream_headers = {"Content-Type": "application/json"}
     logger.info(f'Calling: {downstream_url}')
     logger.info(f'Payload: {payload}')
@@ -315,9 +279,6 @@ def get_ors_matrix_response(profile, payload):
     return r.json()
 
 def get_vroom_response(payload):
-    '''
-    Vroom Service Endpoint Abstraction
-    '''
     logger.info(payload)
     downstream_url = f'http://{VROOM_HOST}:{VROOM_PORT}'
     downstream_headers ={"Content-Type":"application/json"}
@@ -331,15 +292,14 @@ def get_vroom_response(payload):
                 route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
-def get_ors_response(function, profile, payload, format):
-    '''
-    ORS Endpoint abstraction
-    '''
+def get_ors_response(function, profile, payload, format, ors_host=None):
+    if not ors_host:
+        ors_host = ORS_HOST
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
 
-    downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+    downstream_url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
     downstream_headers ={"Content-Type":"application/json"}
     logger.info(f'Calling: {downstream_url}')
     logger.info(f'Payload: {payload}')
@@ -349,17 +309,19 @@ def get_ors_response(function, profile, payload, format):
     return r.json()
 
 @app.post("/ors_status")
-def post_ors_status():
+@app.post("/city/<region>/ors_status")
+def post_ors_status(region=None):
     message = request.json
     if message is None or not message['data']:
         return {}
+    ors_host = resolve_ors_host(region)
     input_rows = message['data']
     output_rows = []
     for row in input_rows:
         endpoint = f'{ORS_API_PATH}/health'
         if not endpoint.startswith('/'):
             endpoint = '/' + endpoint
-        downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
+        downstream_url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
         try:
             r = requests.get(url=downstream_url, timeout=10)
             result = r.json()
@@ -371,4 +333,4 @@ def post_ors_status():
     return response
 
 if __name__ == '__main__':
-    app.run(host=SERVICE_HOST, port=SERVICE_PORT)
+    app.run(host=SERVICE_HOST, port=int(SERVICE_PORT), threaded=True)

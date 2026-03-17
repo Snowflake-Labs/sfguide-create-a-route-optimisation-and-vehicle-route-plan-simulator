@@ -9,7 +9,7 @@ export interface MapZoomTarget {
   area: string;
 }
 
-export function useRoutes(city: string, statusFilter: StatusFilter = 'all') {
+export function useRoutes(city: string, statusFilter: StatusFilter = 'all', dateFilter: string = '') {
   const [routes, setRoutes] = useState<RouteData[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -17,6 +17,7 @@ export function useRoutes(city: string, statusFilter: StatusFilter = 'all') {
     setLoading(true);
     const params = new URLSearchParams({ city });
     if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (dateFilter) params.set('date', dateFilter);
     fetch(`/api/routes?${params.toString()}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -50,7 +51,7 @@ export function useRoutes(city: string, statusFilter: StatusFilter = 'all') {
         setRoutes([]);
         setLoading(false);
       });
-  }, [city, statusFilter]);
+  }, [city, statusFilter, dateFilter]);
 
   return { routes, loading };
 }
@@ -230,10 +231,18 @@ export function useAgent() {
     [messages]
   );
 
+  const clearChat = useCallback(() => {
+    setMessages([]);
+    setCurrentWorkings([]);
+    setStreamingText('');
+    setCurrentStatus('');
+  }, []);
+
   return {
     messages,
     loading,
     sendMessage,
+    clearChat,
     currentWorkings,
     streamingText,
     currentStatus,

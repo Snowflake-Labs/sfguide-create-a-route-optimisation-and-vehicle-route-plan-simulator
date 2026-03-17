@@ -408,14 +408,8 @@ LANGUAGE SQL
 AS
 $$
 BEGIN
-    LET pool_name := (SELECT CURRENT_DATABASE()) || '_' || UPPER(:P_REGION) || '_ORS_POOL';
-    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
-        INSTANCE_FAMILY = HIGHMEM_X64_S
-        MIN_NODES = 1
-        MAX_NODES = 1
-        AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 3600;
-    RETURN 'City ORS pool created: ' || pool_name;
+    CALL routing.create_routing_pool();
+    RETURN 'Using shared routing pool for region ' || :P_REGION;
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_city_pool(VARCHAR) TO APPLICATION ROLE app_user;
@@ -429,24 +423,19 @@ DECLARE
     db_name VARCHAR;
     pool_name VARCHAR;
     svc_name VARCHAR;
-    gw_name VARCHAR;
-    ors_dns VARCHAR;
     ors_spec VARCHAR;
-    gw_spec VARCHAR;
     create_sql VARCHAR;
 BEGIN
     db_name := (SELECT CURRENT_DATABASE());
-    pool_name := db_name || '_' || UPPER(:P_REGION) || '_ORS_POOL';
+    pool_name := db_name || '_routing_pool';
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    gw_name := 'ROUTING_GATEWAY_' || UPPER(:P_REGION);
-    ors_dns := LOWER(REPLACE(svc_name, '_', '-'));
 
     CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
         INSTANCE_FAMILY = HIGHMEM_X64_S
         MIN_NODES = 1
-        MAX_NODES = 1
+        MAX_NODES = 10
         AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 3600;
+        AUTO_SUSPEND_SECS = 14400;
 
     ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
@@ -454,18 +443,12 @@ BEGIN
     create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
     EXECUTE IMMEDIATE :create_sql;
 
-    gw_spec := '{"spec":{"containers":[{"name":"reverse-proxy","image":"/openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.8.1","env":{"SERVER_HOST":"0.0.0.0","SERVER_PORT":"8000","VROOM_HOST":"vroom-service","VROOM_PORT":"3000","ORS_HOST":"' || ors_dns || '","ORS_PORT":"8082","ORS_API_PATH":"/ors/v2"}}],"endpoints":[{"name":"gateway","port":8000,"public":false}]}}';
 
-    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS routing.' || gw_name;
-    create_sql := 'CREATE SERVICE routing.' || gw_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || gw_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
-    EXECUTE IMMEDIATE :create_sql;
 
     EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE routing.' || svc_name || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT MONITOR ON SERVICE routing.' || svc_name || ' TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE routing.' || gw_name || ' TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT MONITOR ON SERVICE routing.' || gw_name || ' TO APPLICATION ROLE app_user';
 
-    RETURN 'City ORS services created for region ' || :P_REGION || ': ' || svc_name || ', ' || gw_name;
+    RETURN 'City ORS service created for region ' || :P_REGION || ': ' || svc_name || ' (shared pool and gateway)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_city_ors_service(VARCHAR) TO APPLICATION ROLE app_user;
@@ -476,37 +459,37 @@ LANGUAGE SQL
 AS
 $$
 BEGIN
-    LET gw_name VARCHAR := 'ROUTING_GATEWAY_' || UPPER(:P_REGION);
     LET fn_dir VARCHAR := 'DIRECTIONS_' || UPPER(:P_REGION);
+    LET city_path VARCHAR := '/city/' || :P_REGION;
 
     EXECUTE IMMEDIATE '
     CREATE OR REPLACE FUNCTION routing.' || fn_dir || '(method VARCHAR, jstart ARRAY, jend ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.' || gw_name || '
+        SERVICE=routing.routing_gateway_service
         ENDPOINT=''gateway''
         MAX_BATCH_ROWS = 1000
-        AS ''/directions_tabular''';
+        AS ''' || city_path || '/directions_tabular''';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
     EXECUTE IMMEDIATE '
     CREATE OR REPLACE FUNCTION routing.' || fn_dir || '(method VARCHAR, locations VARIANT)
         RETURNS VARIANT
-        SERVICE=routing.' || gw_name || '
+        SERVICE=routing.routing_gateway_service
         ENDPOINT=''gateway''
         MAX_BATCH_ROWS = 1000
-        AS ''/directions''';
+        AS ''' || city_path || '/directions''';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir || '(VARCHAR, VARIANT) TO APPLICATION ROLE app_user';
 
     EXECUTE IMMEDIATE '
     CREATE OR REPLACE FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(method VARCHAR, origin ARRAY, destinations ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.' || gw_name || '
+        SERVICE=routing.routing_gateway_service
         ENDPOINT=''gateway''
         MAX_BATCH_ROWS = 1000
-        AS ''/matrix_tabular''';
+        AS ''' || city_path || '/matrix_tabular''';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
-    RETURN 'City routing functions created for region ' || :P_REGION;
+    RETURN 'City routing functions created for region ' || :P_REGION || ' (shared gateway with /city/ prefix)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;
@@ -517,11 +500,13 @@ LANGUAGE SQL
 AS
 $$
 BEGIN
+    CALL routing.create_routing_pool();
     CALL routing.create_stages();
     CALL routing.create_city_ors_service(:P_REGION);
+    CALL routing.create_services();
     SELECT SYSTEM$WAIT(30);
     CALL routing.create_city_functions(:P_REGION);
-    RETURN 'City ORS deployed for region: ' || :P_REGION;
+    RETURN 'City ORS deployed for region: ' || :P_REGION || ' (shared pool and gateway)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.setup_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
@@ -533,10 +518,9 @@ AS
 $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    LET gw_name VARCHAR := 'ROUTING_GATEWAY_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'ALTER SERVICE routing.' || svc_name || ' RESUME';
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE routing.' || gw_name || ' RESUME';
+        ALTER SERVICE IF EXISTS routing.routing_gateway_service RESUME;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     RETURN 'Resumed ORS services for ' || :P_REGION;
@@ -1157,28 +1141,31 @@ BEGIN
     queue_table := 'data.CA_WORK_QUEUE_' || P_RES;
     travel_table := 'data.CA_TRAVEL_TIME_' || P_RES;
 
-    count_sql := 'SELECT COUNT(*) AS CNT FROM ' || hex_table;
-    rs := (EXECUTE IMMEDIATE :count_sql);
-    LET c1 CURSOR FOR rs;
-    FOR r IN c1 DO hex_count := r.CNT; END FOR;
-
-    IF (hex_count = 0) THEN
-        CALL data.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON);
+    BEGIN
+        ALTER SERVICE IF EXISTS routing.routing_gateway_service RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    IF (P_REGION = 'SanFrancisco') THEN
+        BEGIN
+            ALTER SERVICE IF EXISTS routing.ors_service RESUME;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    ELSE
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS routing.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
     END IF;
+    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+
+    CALL data.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON);
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || hex_table;
     rs := (EXECUTE IMMEDIATE :count_sql);
     LET c2 CURSOR FOR rs;
     FOR r IN c2 DO hex_count := r.CNT; END FOR;
 
-    count_sql := 'SELECT COUNT(*) AS CNT FROM ' || queue_table;
-    rs := (EXECUTE IMMEDIATE :count_sql);
-    LET c3 CURSOR FOR rs;
-    FOR r IN c3 DO queue_count := r.CNT; END FOR;
-
-    IF (queue_count = 0) THEN
-        CALL data.BUILD_WORK_QUEUE(:P_RES);
-    END IF;
+    CALL data.BUILD_WORK_QUEUE(:P_RES);
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || queue_table;
     rs := (EXECUTE IMMEDIATE :count_sql);
@@ -1541,6 +1528,88 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.deploy_full() TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.resume_services()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    pool_name STRING;
+    pool_status STRING DEFAULT 'UNKNOWN';
+    ui_status STRING DEFAULT 'NOT_FOUND';
+    resumed_items ARRAY DEFAULT ARRAY_CONSTRUCT();
+BEGIN
+    pool_name := (SELECT CURRENT_DATABASE()) || '_compute_pool';
+
+    BEGIN
+        SHOW COMPUTE POOLS LIKE :pool_name;
+        SELECT "state" INTO :pool_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN pool_status := 'NOT_FOUND'; END;
+
+    IF (pool_status IN ('SUSPENDED', 'STOPPING')) THEN
+        ALTER COMPUTE POOL IDENTIFIER(:pool_name) RESUME;
+        resumed_items := ARRAY_APPEND(resumed_items, 'compute_pool:' || pool_name);
+    END IF;
+
+    BEGIN
+        SHOW SERVICES LIKE 'FLEET_INTELLIGENCE_SERVICE' IN SCHEMA core;
+        SELECT "status" INTO :ui_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN ui_status := 'NOT_FOUND'; END;
+
+    IF (ui_status = 'SUSPENDED') THEN
+        ALTER SERVICE core.fleet_intelligence_service RESUME;
+        resumed_items := ARRAY_APPEND(resumed_items, 'service:fleet_intelligence_service');
+    END IF;
+
+    BEGIN
+        LET routing_pool STRING := pool_name || '_routing';
+        LET rp_status STRING := 'NOT_FOUND';
+        SHOW COMPUTE POOLS LIKE :routing_pool;
+        SELECT "state" INTO :rp_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+        IF (rp_status IN ('SUSPENDED', 'STOPPING')) THEN
+            ALTER COMPUTE POOL IDENTIFIER(:routing_pool) RESUME;
+            resumed_items := ARRAY_APPEND(resumed_items, 'compute_pool:' || routing_pool);
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL; END;
+
+    BEGIN
+        LET ors_status STRING := 'NOT_FOUND';
+        SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA routing;
+        SELECT "status" INTO :ors_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+        IF (ors_status = 'SUSPENDED') THEN
+            ALTER SERVICE routing.ors_service RESUME;
+            resumed_items := ARRAY_APPEND(resumed_items, 'service:ors_service');
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL; END;
+
+    BEGIN
+        LET gw_status STRING := 'NOT_FOUND';
+        SHOW SERVICES LIKE 'ROUTING_GATEWAY_SERVICE' IN SCHEMA routing;
+        SELECT "status" INTO :gw_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+        IF (gw_status = 'SUSPENDED') THEN
+            ALTER SERVICE routing.routing_gateway_service RESUME;
+            resumed_items := ARRAY_APPEND(resumed_items, 'service:routing_gateway_service');
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL; END;
+
+    BEGIN
+        LET vroom_status STRING := 'NOT_FOUND';
+        SHOW SERVICES LIKE 'VROOM_SERVICE' IN SCHEMA routing;
+        SELECT "status" INTO :vroom_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+        IF (vroom_status = 'SUSPENDED') THEN
+            ALTER SERVICE routing.vroom_service RESUME;
+            resumed_items := ARRAY_APPEND(resumed_items, 'service:vroom_service');
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL; END;
+
+    IF (ARRAY_SIZE(resumed_items) = 0) THEN
+        RETURN 'All services already running';
+    END IF;
+    RETURN 'Resumed ' || ARRAY_SIZE(resumed_items) || ' items: ' || ARRAY_TO_STRING(resumed_items, ', ');
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.resume_services() TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.check_grants()
 RETURNS STRING

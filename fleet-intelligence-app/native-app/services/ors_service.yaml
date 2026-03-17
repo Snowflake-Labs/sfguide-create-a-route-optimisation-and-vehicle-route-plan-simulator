@@ -20,8 +20,8 @@ spec:
       public: false
   volumes:
     - name: files
-      source: "@ROUTING.ORS_SPCS_STAGE/California"
+      source: "@ROUTING.ORS_SPCS_STAGE/SanFrancisco"
     - name: graphs
-      source: "@ROUTING.ORS_GRAPHS_SPCS_STAGE/California"
+      source: "@ROUTING.ORS_GRAPHS_SPCS_STAGE/SanFrancisco"
     - name: elevation-cache
-      source: "@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/California"
+      source: "@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/SanFrancisco"

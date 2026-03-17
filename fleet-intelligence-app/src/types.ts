@@ -156,6 +156,16 @@ export interface CatchmentData {
   customers: CatchmentCustomer[];
 }
 
+export interface AnimatedRoute {
+  coordinates: [number, number][];
+  timestamps: number[];
+  distance_meters: number;
+  duration_seconds: number;
+  start: [number, number];
+  end: [number, number];
+  restaurant?: CatchmentRestaurant;
+}
+
 export const CITIES: Record<string, CityConfig> = {
   'London': { name: 'London', latitude: 51.51, longitude: -0.13, zoom: 11 },
   'Paris': { name: 'Paris', latitude: 48.86, longitude: 2.35, zoom: 12 },

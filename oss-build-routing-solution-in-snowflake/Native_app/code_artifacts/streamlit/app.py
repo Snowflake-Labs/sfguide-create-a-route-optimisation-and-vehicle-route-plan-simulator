@@ -35,8 +35,39 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # Service database and schema configuration
-SERVICE_DATABASE = 'OPENROUTESERVICE_NATIVE_APP'
+SERVICE_DATABASE = session.sql("SELECT CURRENT_DATABASE()").collect()[0][0]
 SERVICE_SCHEMA = 'CORE'
+
+def auto_resume_suspended_services():
+    try:
+        result = session.sql(f"SHOW SERVICES IN SCHEMA {SERVICE_DATABASE}.{SERVICE_SCHEMA}").collect()
+        if not result:
+            return False
+        rows = [row.as_dict() for row in result]
+        has_suspended = any(
+            r.get('status', '').upper() == 'SUSPENDED'
+            for r in rows
+            if str(r.get('is_job', 'false')).lower() == 'false'
+        )
+        if has_suspended:
+            session.sql(f"CALL {SERVICE_DATABASE}.{SERVICE_SCHEMA}.RESUME_SERVICES()").collect()
+            return True
+        all_running = all(
+            r.get('status', '').upper() == 'RUNNING'
+            for r in rows
+            if str(r.get('is_job', 'false')).lower() == 'false'
+        )
+        if not all_running:
+            return True
+        return False
+    except Exception:
+        return False
+
+starting_up = auto_resume_suspended_services()
+if starting_up:
+    st.info("Services are starting up. This page will refresh automatically...")
+    time.sleep(15)
+    st.rerun()
 
 def get_service_display_info(service_name):
     """Get display information for a service based on its name"""

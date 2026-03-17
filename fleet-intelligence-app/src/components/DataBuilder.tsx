@@ -110,6 +110,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (open && initialCity && initialCity !== 'All Cities') {
@@ -138,6 +139,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+      if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
     };
   }, [open, city, fetchStatus]);
 
@@ -158,6 +160,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
       });
       const data = await resp.json();
       if (data.status === 'started' || data.error?.includes('already in progress')) {
+        statusPollRef.current = setInterval(() => { fetchStatus(); }, 10000);
         pollRef.current = setInterval(async () => {
           try {
             const pr = await fetch(`/api/city/${encodeURIComponent(city)}/progress`);
@@ -166,6 +169,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
             if (pd.status === 'complete' || pd.status === 'error') {
               if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
               if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+              if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
               setIsBuilding(false);
               fetchStatus();
             }
@@ -355,11 +359,9 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
 
           {isActive && (
             <div className="matrix-section">
-              <div className="matrix-section-title">
-                {provPhaseIdx < 7 ? 'Provisioning ORS...' : waitingForOrsStep ? `Waiting for ORS — Steps 1-4 complete` : `Building Data — Step ${runningDataStep ? DATA_STEPS.findIndex((s) => s.id === runningDataStep.step) + 1 : completedDataSteps} / ${DATA_STEPS.length}`}
-              </div>
-
               {provPhaseIdx > 0 && provPhaseIdx < 7 && (
+                <>
+                <div className="matrix-section-title">Provisioning ORS...</div>
                 <div style={{ marginBottom: 12 }}>
                   {PROVISION_PHASES.map((phase) => {
                     const phIdx = PROVISION_STATUS_ORDER.indexOf(phase.id);
@@ -388,10 +390,14 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
                     );
                   })}
                 </div>
+                </>
               )}
 
-              {provPhaseIdx >= 7 && dataSteps.length > 0 && (
+              {dataSteps.length > 0 && (
                 <>
+                  <div className="matrix-section-title">
+                    {waitingForOrsStep ? `Waiting for ORS \u2014 Steps 1-4 complete` : `Building Data \u2014 Step ${runningDataStep ? DATA_STEPS.findIndex((s) => s.id === runningDataStep.step) + 1 : completedDataSteps} / ${DATA_STEPS.length}`}
+                  </div>
                   <div className="build-step-bar">
                     {DATA_STEPS.map((step) => {
                       const prog = dataSteps.find((s) => s.step === step.id);
@@ -453,12 +459,23 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
             </div>
           )}
 
-          {(provStatus === 'complete' || hasData) && !isActive && (
+          {hasData && !isActive && (
             <div className="matrix-section">
               <div className="data-complete-banner">
                 <div className="data-complete-icon">✓</div>
                 <div className="data-complete-text">
                   {city} is ready! Delivery routes and courier locations are now visible on the map.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!hasData && provStatus === 'complete' && !isActive && (
+            <div className="matrix-section">
+              <div className="data-complete-banner" style={{ background: 'rgba(255, 149, 0, 0.08)', border: '1px solid rgba(255, 149, 0, 0.2)' }}>
+                <div className="data-complete-icon" style={{ color: '#FF9500' }}>⚠</div>
+                <div className="data-complete-text" style={{ color: '#FF9500' }}>
+                  Previous build completed but no delivery data was generated. This usually means the route generation timed out. Click Build to retry.
                 </div>
               </div>
             </div>
@@ -503,7 +520,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
             <button className="matrix-btn secondary" onClick={onClose}>
               {hasData || provStatus === 'complete' ? 'Done' : 'Cancel'}
             </button>
-            {!hasData && provStatus !== 'complete' && (
+            {!hasData && (
               <button
                 className="matrix-btn primary"
                 onClick={startProvision}

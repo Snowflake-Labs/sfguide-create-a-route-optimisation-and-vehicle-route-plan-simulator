@@ -394,6 +394,48 @@ $$;
 
 GRANT USAGE ON PROCEDURE core.grant_callback(array) TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE core.resume_services()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    resumed_count INTEGER DEFAULT 0;
+    already_running INTEGER DEFAULT 0;
+    svc_name VARCHAR;
+    svc_status VARCHAR;
+BEGIN
+    SHOW SERVICES IN SCHEMA core;
+
+    LET rs RESULTSET := (
+        SELECT "name" AS svc_name, "status" AS svc_status
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "is_job" = 'false'
+    );
+    LET cur CURSOR FOR rs;
+
+    FOR rec IN cur DO
+        IF (rec.svc_status = 'SUSPENDED') THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE core.' || rec.svc_name || ' RESUME';
+                resumed_count := resumed_count + 1;
+            EXCEPTION
+                WHEN OTHER THEN NULL;
+            END;
+        ELSE
+            already_running := already_running + 1;
+        END IF;
+    END FOR;
+
+    RETURN OBJECT_CONSTRUCT(
+        'resumed', resumed_count,
+        'already_running', already_running
+    )::STRING;
+END;
+$$;
+
+GRANT USAGE ON PROCEDURE core.resume_services() TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE STREAMLIT core.control_app
      FROM '/streamlit'
      MAIN_FILE = '/app.py'
