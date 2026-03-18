@@ -107,6 +107,23 @@ Then add `"Riverside"` to the `CALIFORNIA_CITIES` list.
    - `OVERTURE_MAPS__PLACES`
    - `OVERTURE_MAPS__ADDRESSES`
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates FLEET_INTELLIGENCE_FOOD_DELIVERY schema |
+| CREATE TABLE | Schema | Creates restaurant, courier, order, and route tables |
+| CREATE VIEW | Schema | Creates 5 analytics views |
+| CREATE STAGE | Schema | Creates STREAMLIT_STAGE for app deployment |
+| CREATE STREAMLIT | Schema | Deploys SWIFTBITE_DELIVERY_DASHBOARD |
+| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls DIRECTIONS function for routing |
+| IMPORTED PRIVILEGES ON OVERTURE_MAPS__PLACES | Database | Reads restaurant locations |
+| IMPORTED PRIVILEGES ON OVERTURE_MAPS__ADDRESSES | Database | Reads customer delivery addresses |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges.
+
 ---
 
 ## Workflow

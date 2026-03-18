@@ -102,7 +102,7 @@ def load_catchment_for_store(store_id):
                ROUND(TRAVEL_DISTANCE_METERS / 1000, 2) AS DISTANCE_KM,
                TIME_BAND
         FROM {CATCHMENT_TABLE}
-        WHERE STORE_ID = {store_id}
+        WHERE STORE_ID = {int(store_id)}
     """).to_pandas()
 
 

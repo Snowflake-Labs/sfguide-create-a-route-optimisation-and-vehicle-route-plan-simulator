@@ -11,7 +11,7 @@ SCHEMA = "FLEET_INTELLIGENCE.DWELL_ANALYSIS"
 @st.cache_resource
 def get_connection():
     return snowflake.connector.connect(
-        connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME") or "airpublic"
+        connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME")
     )
 
 def run_query(sql):

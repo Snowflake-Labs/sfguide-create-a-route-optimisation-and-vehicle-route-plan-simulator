@@ -4,6 +4,9 @@
 -- Source: SYNTHETIC_DATASETS.FLEET_INTELLIGENCE
 -- =============================================================================
 
+-- Query Tag (set at the start of every session)
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Step 1: Infrastructure
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;

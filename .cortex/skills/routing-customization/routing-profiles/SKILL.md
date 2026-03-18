@@ -1,6 +1,10 @@
 ---
 name: routing-profiles
 description: "Enable or disable ORS routing profiles (driving-car, driving-hgv, cycling, walking, wheelchair). Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing vehicle types as part of customization workflow. Do NOT use for: standalone execution, changing map region, or deploying demo apps. Triggers: change routing profile, change vehicle type, enable profile, disable profile."
+metadata:
+  author: Snowflake SIT-IS
+  version: 1.0.0
+  category: configuration
 ---
 
 # Customize Routing Profiles

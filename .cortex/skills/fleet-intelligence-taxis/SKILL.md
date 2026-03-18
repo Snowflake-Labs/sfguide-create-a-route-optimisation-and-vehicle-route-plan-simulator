@@ -85,6 +85,23 @@ To add a new city, add an entry to the `CITIES` dictionary in `city_config.py` w
 2. **OpenRouteService Native App** installed from Snowflake Marketplace (configured for target region)
 3. **Overture Maps Data** shares: `OVERTURE_MAPS__PLACES`, `OVERTURE_MAPS__ADDRESSES`
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates FLEET_INTELLIGENCE_TAXIS schema |
+| CREATE TABLE | Schema | Creates location, driver, trip, and route tables |
+| CREATE VIEW | Schema | Creates 5 analytics views |
+| CREATE STAGE | Schema | Creates STREAMLIT_STAGE for app deployment |
+| CREATE STREAMLIT | Schema | Deploys TAXI_CONTROL_CENTER |
+| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls DIRECTIONS function for routing |
+| IMPORTED PRIVILEGES ON OVERTURE_MAPS__PLACES | Database | Reads POI locations |
+| IMPORTED PRIVILEGES ON OVERTURE_MAPS__ADDRESSES | Database | Reads address data |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges.
+
 ---
 
 ## Workflow

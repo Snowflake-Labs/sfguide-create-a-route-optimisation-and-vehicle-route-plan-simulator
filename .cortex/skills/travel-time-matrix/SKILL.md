@@ -86,6 +86,22 @@ Every run is parameterized by a **region config**. Choose resolutions and scalin
 2. OSM data loaded for target region
 3. ORS graph built for `driving-car` profile (disable unused profiles to save RAM)
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates target database for matrix tables |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS and FLATTEN_WH warehouses |
+| CREATE TABLE | Schema | Creates H3 hex, work queue, raw staging, and travel time tables |
+| CREATE PROCEDURE | Schema | Creates worker and DAG management procedures |
+| CREATE TASK | Schema | Creates parallel worker tasks |
+| EXECUTE TASK | Account | Enables scheduled task execution |
+| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls MATRIX_TABULAR function |
+| ALTER SERVICE | Application | Scales ORS/gateway instances |
+| ALTER COMPUTE POOL | Compute Pool | Scales compute pool nodes |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges.
+
 ```sql
 SHOW FUNCTIONS LIKE 'MATRIX_TABULAR' IN SCHEMA <P_ORS_APP>.CORE;
 SELECT <P_ORS_APP>.CORE.ORS_STATUS();
@@ -94,6 +110,14 @@ SELECT <P_ORS_APP>.CORE.ORS_STATUS();
 ---
 
 ## Workflow
+
+### Query Tag
+
+Set at the start of every session:
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 1: Generate H3 Hexagons
 

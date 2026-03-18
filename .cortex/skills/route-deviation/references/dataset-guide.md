@@ -8,7 +8,7 @@ The synthetic fleet telemetry dataset is at `s3://fleet-intelligence/` and conta
 
 | S3 Path | Table Name | Rows | Description |
 |---------|------------|------|-------------|
-| `fact_truck_telemetry/` | FACT_TRUCK_TELEMETRY | ~15.1M | GPS telemetry with speed, heading, status, geometry |
+| `fact_truck_telemetry/` | FACT_TRUCK_TELEMETRY | ~15.1M | GPS telemetry with speed, heading, status, geometry (GEOGRAPHY from GEOMETRY_WKT) |
 | `trip_schedule/` | TRIP_SCHEDULE | 9,343 | 2-week trip schedule with OD pairs and deviation factors |
 | `truck_fleet/` | TRUCK_FLEET | 500 | Fleet metadata: truck type, driver profile, home city |
 | `germany_destinations/` | GERMANY_DESTINATIONS | 75,242 | Warehouses + retail stores with geometry |

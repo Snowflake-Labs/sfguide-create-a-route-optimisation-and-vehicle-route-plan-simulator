@@ -1,6 +1,10 @@
 ---
 name: location
 description: "Change the OpenRouteService map region by downloading new OSM data and updating service configuration. Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing ORS map region as part of customization workflow. Do NOT use for: standalone execution, reading current config, or changing routing profiles. Triggers: change location, change map, download map, new region."
+metadata:
+  author: Snowflake SIT-IS
+  version: 1.0.0
+  category: configuration
 ---
 
 # Customize Location (Map Region)

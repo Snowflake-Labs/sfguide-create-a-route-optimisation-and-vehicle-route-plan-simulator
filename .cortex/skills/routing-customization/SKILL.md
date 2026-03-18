@@ -1,6 +1,8 @@
 ---
 name: routing-customization
 description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile. Do NOT use for: initial ORS deployment (use build-routing-solution), deploying demo apps, or reading ORS config only (use read-ors-configuration subskill directly). Triggers: change location, change map, change vehicle, change routing profile, change routing profiles."
+depends_on:
+  - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -11,9 +13,29 @@ metadata:
 
 This skill routes customization requests to the correct subskills based on what you want to customize.
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Reads and modifies ORS configuration |
+| WRITE ON STAGE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE | Stage | Uploads updated config files |
+| WRITE ON STAGE @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE | Stage | Uploads service specs and Function Tester |
+| ALTER COMPUTE POOL | Compute Pool | Suspends/resumes compute pool for config changes |
+| ALTER SERVICE | Application | Suspends/resumes ORS services and updates specs |
+| INSERT/DELETE ON OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG | Table | Updates map configuration for Function Tester |
+| ALTER APPLICATION | Application | Upgrades native app to apply changes |
+
 ## Workflow
 
 > All file paths in subskills (e.g., `build-routing-solution/Native_app/...`) are relative to the repository root directory.
+
+### Query Tag
+
+Set at the start of every session:
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-customization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 1: Read Initial ORS Configuration and Gather Customization Options
 
@@ -169,3 +191,13 @@ This skill routes customization requests to the correct subskills based on what 
 - ✋ After Step 4: Verify services are rebuilding graphs
 - ✋ After Step 5: Verify MAP_CONFIG table has correct bounds
 - ✋ After Step 6: Verify Function Tester shows new region addresses
+
+## Cleanup
+
+This skill modifies ORS configuration but does not create persistent objects. To revert changes:
+
+1. Re-run the location subskill to change back to the original region
+2. Re-run the routing-profiles subskill to restore original profile settings
+3. Restart services via Step 4
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

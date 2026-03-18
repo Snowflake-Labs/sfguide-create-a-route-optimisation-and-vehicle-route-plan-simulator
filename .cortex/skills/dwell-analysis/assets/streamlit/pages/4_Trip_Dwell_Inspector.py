@@ -12,12 +12,12 @@ SCHEMA = "FLEET_INTELLIGENCE.DWELL_ANALYSIS"
 @st.cache_resource
 def get_connection():
     return snowflake.connector.connect(
-        connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME") or "airpublic"
+        connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME")
     )
 
-def run_query(sql):
+def run_query(sql, params=None):
     conn = get_connection()
-    return pd.read_sql(sql, conn)
+    return pd.read_sql(sql, conn, params=params)
 
 st.title("Trip Dwell Inspector")
 st.caption("Explore individual truck dwell sessions on a map")
@@ -34,9 +34,9 @@ with col1:
     dates = run_query(f"""
         SELECT DISTINCT DATE_TRUNC('day', SESSION_START)::DATE AS D 
         FROM {SCHEMA}.DT_DWELL_ENRICHED
-        WHERE TRUCK_ID = '{selected_truck}' AND STATUS LIKE 'DWELL%'
+        WHERE TRUCK_ID = %s AND STATUS LIKE 'DWELL%%'
         ORDER BY D
-    """)
+    """, params=[selected_truck])
     if len(dates) > 0:
         selected_date = st.selectbox("Select Date", dates['D'].tolist())
     else:
@@ -55,12 +55,12 @@ with col2:
                    SESSION_START, SESSION_END, DWELL_MINUTES, PING_COUNT,
                    AVG_LAT, AVG_LNG, H3_CELL_R7, DRIVER_PROFILE
             FROM {SCHEMA}.DT_DWELL_ENRICHED
-            WHERE TRUCK_ID = '{selected_truck}'
-              AND DATE_TRUNC('day', SESSION_START)::DATE = '{selected_date}'
+            WHERE TRUCK_ID = %s
+              AND DATE_TRUNC('day', SESSION_START)::DATE = %s
               AND STATUS IN ({stat_str})
               AND DWELL_MINUTES > 0
             ORDER BY SESSION_START
-        """)
+        """, params=[selected_truck, str(selected_date)])
 
         if len(sessions) == 0:
             st.info("No dwell sessions for the selected truck/date combination.")

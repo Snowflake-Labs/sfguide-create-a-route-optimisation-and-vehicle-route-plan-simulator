@@ -16,6 +16,19 @@ Generates realistic GPS telemetry data for HGV truck fleets using real POI locat
 
 ---
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates SYNTHETIC_DATASETS database |
+| USAGE ON WAREHOUSE | Warehouse | Data generation and COPY INTO operations |
+| CREATE SCHEMA | Database (SYNTHETIC_DATASETS) | Creates FLEET_INTELLIGENCE schema |
+| CREATE TABLE | Schema | Creates dimension and fact tables |
+| CREATE STAGE | Schema | Creates TELEMETRY_STAGE for Parquet uploads |
+| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls DIRECTIONS function for route generation |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges.
+
 ## Important
 
 Before running the generator, verify these prerequisites:
@@ -64,7 +77,7 @@ Two config presets are available in `scripts/config/`:
 3. After every CTAS or COPY INTO, verify row counts with `SELECT COUNT(*)`.
 4. Set the query tag at the start of every session:
    ```sql
-   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"synthetic-datasets-genertor","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"synthetic-datasets-generator","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
 5. Never use `SET` variables. Substitute values directly into SQL.
 6. All Python scripts live in `scripts/` within this skill folder. Run them from that directory.
@@ -230,3 +243,22 @@ Full DDL and column details in `references/architecture.md`.
 **Solution**: Reduce `time.chunk_size_days` from 7 to 3, or reduce `fleet.num_trucks`.
 
 For more issues, consult `references/troubleshooting.md`.
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: fact tables first, then dimensions, stage, schema, database
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.FACT_VIOLATION;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.FACT_TRIP;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.FACT_TRUCK_TELEMETRY;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.DIM_DRIVER;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.DIM_TRUCK;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.DIM_STOP;
+DROP TABLE IF EXISTS {DATABASE}.{SCHEMA}.DIM_WAREHOUSE;
+DROP STAGE IF EXISTS {DATABASE}.{SCHEMA}.TELEMETRY_STAGE;
+DROP SCHEMA IF EXISTS {DATABASE}.{SCHEMA};
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.
