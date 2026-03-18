@@ -437,7 +437,7 @@ BEGIN
         AUTO_RESUME = TRUE
         AUTO_SUSPEND_SECS = 14400;
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS routing.' || svc_name;
     create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
@@ -1634,12 +1634,12 @@ BEGIN
     EXCEPTION WHEN OTHER THEN overture_addresses := FALSE; END;
 
     BEGIN
-        SELECT 1 INTO :ors_db FROM OPENROUTESERVICE_SETUP.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PUBLIC' LIMIT 1;
+        SELECT 1 INTO :ors_db FROM FLEET_INTELLIGENCE_SETUP.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PUBLIC' LIMIT 1;
         ors_db := TRUE;
     EXCEPTION WHEN OTHER THEN ors_db := FALSE; END;
 
     BEGIN
-        SHOW IMAGE REPOSITORIES LIKE 'IMAGE_REPOSITORY' IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
+        SHOW IMAGE REPOSITORIES LIKE 'FLEET_INTEL_REPO' IN SCHEMA FLEET_INTELLIGENCE_SETUP.PUBLIC;
         ors_repo := TRUE;
     EXCEPTION WHEN OTHER THEN ors_repo := FALSE; END;
 
@@ -1734,9 +1734,9 @@ GRANT USAGE ON STREAMLIT core.status_app TO APPLICATION ROLE app_user;
 --    GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION FLEET_INTELLIGENCE_APP;
 --
 -- 2. Image repository access (for ORS Docker images):
---    GRANT USAGE ON DATABASE OPENROUTESERVICE_SETUP TO APPLICATION FLEET_INTELLIGENCE_APP;
---    GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.PUBLIC TO APPLICATION FLEET_INTELLIGENCE_APP;
---    GRANT READ ON IMAGE REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT USAGE ON DATABASE FLEET_INTELLIGENCE_SETUP TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE_SETUP.PUBLIC TO APPLICATION FLEET_INTELLIGENCE_APP;
+--    GRANT READ ON IMAGE REPOSITORY FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO TO APPLICATION FLEET_INTELLIGENCE_APP;
 --
 -- 3. Overture Maps access (for food delivery data generation):
 --    GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION FLEET_INTELLIGENCE_APP;
