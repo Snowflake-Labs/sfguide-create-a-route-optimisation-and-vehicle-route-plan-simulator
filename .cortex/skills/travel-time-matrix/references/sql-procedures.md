@@ -103,6 +103,8 @@ BEGIN
            ' (resumed from seq ' || max_done || ')';
 END;
 $$;
+
+ALTER PROCEDURE <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 **Adaptive batch sizing rationale:**
@@ -166,6 +168,8 @@ BEGIN
     RETURN P_REGION || ' ' || res_label || ' flatten complete: ' || row_count || ' travel time pairs';
 END;
 $$;
+
+ALTER PROCEDURE <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(VARCHAR, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -278,6 +282,8 @@ BEGIN
     RETURN 'DAG created for ' || P_REGION || ': ' || ARRAY_SIZE(P_RESOLUTIONS) || ' resolutions, ' || total_tasks || ' total tasks';
 END;
 $$;
+
+ALTER PROCEDURE <P_DB>.PUBLIC.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -331,6 +337,8 @@ BEGIN
     RETURN 'DAG started for ' || P_REGION || ': all tasks resumed and root tasks executed';
 END;
 $$;
+
+ALTER PROCEDURE <P_DB>.PUBLIC.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -378,6 +386,8 @@ BEGIN
     RETURN 'DAG stopped for ' || P_REGION || ': all tasks suspended';
 END;
 $$;
+
+ALTER PROCEDURE <P_DB>.PUBLIC.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---

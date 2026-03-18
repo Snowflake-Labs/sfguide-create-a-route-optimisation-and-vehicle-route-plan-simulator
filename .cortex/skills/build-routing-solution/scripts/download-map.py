@@ -34,7 +34,7 @@ print(f"File size: {os.path.getsize(local_file):,} bytes")
 
 session = Session.builder.getOrCreate()
 
-session.query_tag = {"origin":"sf_sit-is", 
+session.query_tag = {"origin":"sf_sit-is-fleet", 
                      "name":"oss-install-openrouteservice-native-app", 
                      "version":{"major":1, "minor":0},
                      "attributes":{"is_quickstart":1, "source":"notebook"}}

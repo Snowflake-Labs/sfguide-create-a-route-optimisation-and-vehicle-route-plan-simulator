@@ -7,7 +7,7 @@ All SQL below must be executed **one statement per `snowflake_sql_execute` call*
 ## Step 1: Set Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ---
@@ -71,7 +71,7 @@ CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 
 
 ```sql
 CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
@@ -79,17 +79,18 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE
-    DIRECTORY = (ENABLE = TRUE);
+    DIRECTORY = (ENABLE = TRUE)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -130,6 +131,11 @@ WHERE
     ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
     AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
     AND STREET IS NOT NULL;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -191,6 +197,11 @@ FROM driver_assignments da
 LEFT JOIN home_locations hl ON da.driver_num = hl.rn;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### Verify
 
 ```sql
@@ -218,6 +229,11 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY HASH(LOCATION_ID)) AS rn
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
 WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 6b — Create Trip Assignments (DRIVER_TRIPS)
@@ -282,6 +298,11 @@ FROM trips_with_hours t
 CROSS JOIN loc_count lc;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### 6c — Attach Coordinates (DRIVER_TRIPS_WITH_COORDS)
 
 ```sql
@@ -299,6 +320,11 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS t
 JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED p ON t.PICKUP_LOC_ID = p.rn
 JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED d ON t.DROPOFF_LOC_ID = d.rn;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -349,6 +375,11 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### 7b — Parse Route Responses (DRIVER_ROUTES_PARSED)
 
 ```sql
@@ -368,6 +399,11 @@ SELECT
     PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:duration::FLOAT AS ROUTE_DURATION_SECS
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES
 WHERE ROUTE_RESPONSE IS NOT NULL;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 7c — Build Route Geometries with Timing (DRIVER_ROUTE_GEOMETRIES)
@@ -409,6 +445,11 @@ SELECT
     DESTINATION,
     SHIFT_TYPE
 FROM cumulative_timing;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -548,6 +589,11 @@ SELECT
 FROM expanded;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### Verify
 
 ```sql
@@ -601,6 +647,11 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
 ```
 
+```sql
+ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### TRIPS_ASSIGNED_TO_DRIVERS
 
 ```sql
@@ -618,6 +669,11 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
 ```
 
+```sql
+ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### ROUTE_NAMES
 
 ```sql
@@ -626,6 +682,11 @@ SELECT
     TRIP_ID,
     ORIGIN_ADDRESS || ' -> ' || DESTINATION_ADDRESS AS TRIP_NAME
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
+```
+
+```sql
+ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### TRIP_ROUTE_PLAN
@@ -661,6 +722,11 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
 ```
 
+```sql
+ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### TRIP_SUMMARY
 
 ```sql
@@ -679,6 +745,11 @@ SELECT
     ts.MAX_KMH
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg
 LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
+```
+
+```sql
+ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify All Views
@@ -721,7 +792,7 @@ CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI
   MAIN_FILE = 'Taxi_Control_Center.py'
   QUERY_WAREHOUSE = ROUTING_ANALYTICS
   TITLE =  'Taxi Control Center'
-  COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-a-fleet-intelligence-solution-for-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 ```
 
 ### Set Live Version

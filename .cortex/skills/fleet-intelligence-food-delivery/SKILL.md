@@ -125,7 +125,7 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 ### Step 1: Set Query Tag for Tracking
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ### Step 2: Detect ORS Configuration, Choose Location, and Verify Services

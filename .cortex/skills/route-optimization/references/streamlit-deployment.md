@@ -29,7 +29,8 @@ For other cities, choose a well-known central landmark.
    ```sql
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT 
    DIRECTORY = (ENABLE = TRUE) 
-   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
    ```
 
 2. Upload files:
@@ -57,7 +58,7 @@ For other cities, choose a well-known central landmark.
    MAIN_FILE = 'routing.py'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    TITLE = 'Simulator'
-   COMMENT = '{"origin":"sf_sit-is", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
    ALTER STREAMLIT OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR ADD LIVE VERSION FROM LAST;
    ```

@@ -1,4 +1,4 @@
-ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
+ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
 
 use role {{ env.EVENT_ATTENDEE_ROLE }};
 
@@ -15,7 +15,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_1
     MAIN_FILE = 'routing.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 
 
@@ -36,7 +36,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_2
     MAIN_FILE = 'NYC_taxis.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 
 -- Create stage and deploy NYC Beauty Supply Chain Fleet Optimizer (Simplified Version)
@@ -52,7 +52,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_3
     MAIN_FILE = 'nyc_beauty_routing_simple.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 
 -- Create stage and deploy ORS Service Manager
@@ -69,7 +69,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_4
     MAIN_FILE = 'service_manager.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 SELECT 'ORS Service Manager deployed!' as status;
 
@@ -86,7 +86,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_5
     MAIN_FILE = 'nyc_food_delivery_optimizer.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 SELECT 'NYC Food Delivery Optimizer deployed!' as status;
 
@@ -103,7 +103,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_ISOCHRONES
     MAIN_FILE = 'isochrones.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 SELECT 'Retail Catchment Analysis deployed!' as status;
 
@@ -123,7 +123,7 @@ CREATE OR REPLACE STREAMLIT WILDFIRES_DB.STREAMLIT."California Wildfire Risk Ass
     FROM @WILDFIRES_DB.STREAMLIT.STREAMLIT_WILDFIRE
     MAIN_FILE = 'app.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"California Wildfire Risk Assessment - Making People Safer", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"California Wildfire Risk Assessment - Making People Safer", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 SELECT 'California Wildfire Risk Assessment deployed!' as status;
 
@@ -142,6 +142,6 @@ CREATE OR REPLACE STREAMLIT UK_STORMS_DB.STREAMLIT."Uk Flood Risk Areas"
     FROM @UK_STORMS_DB.STREAMLIT.STREAMLIT_FLOOD_RISK
     MAIN_FILE = 'flood_risk_areas.py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"UK Flood Risk Areas - Building Flood Risk Analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"UK Flood Risk Areas - Building Flood Risk Analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 
 SELECT 'UK Flood Risk Areas deployed!' as status;

@@ -86,7 +86,11 @@ Key rules:
 - **Inline large SQL blocks in SKILL.md** — put them in `references/*.md` and link
 - **Skip the query tag** — every skill must set the session query tag for attribution tracking:
   ```sql
-  ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+  ```
+- **Skip the object COMMENT** — every CREATE statement must include a COMMENT tracking tag (or `ALTER ... SET COMMENT` for CTAS):
+  ```sql
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|streamlit|notebook|native-app>"}}';
   ```
 - **Assume ORS is running** — always verify with `SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;` (all 4 services must be RUNNING)
 - **Hardcode city/region** — skills must be configurable via parameters, not baked-in coordinates
@@ -99,6 +103,7 @@ Key rules:
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
 - **Streamlit deployment**: CREATE stage → upload files via `snow stage copy` → `CREATE OR REPLACE STREAMLIT` → `ALTER STREAMLIT ... ADD LIVE VERSION FROM LAST`.
+- **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 
 ## Documentation
 

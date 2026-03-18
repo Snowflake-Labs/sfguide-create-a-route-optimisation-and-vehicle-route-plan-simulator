@@ -2,7 +2,7 @@
 -- This script validates that the OSM Native App was deployed correctly
 
 -- Set query tag for tracking
-ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is", "name":"OSM Native App Validation", "version":{"major":1, "minor":0}}''';
+ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is-fleet", "name":"OSM Native App Validation", "version":{"major":1, "minor":0}}''';
 
 -- Use the attendee role
 USE ROLE ATTENDEE_ROLE;

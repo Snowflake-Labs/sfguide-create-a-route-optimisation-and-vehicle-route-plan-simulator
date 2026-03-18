@@ -61,7 +61,7 @@ Two config presets are available in `scripts/config/`:
 3. After every CTAS or COPY INTO, verify row counts with `SELECT COUNT(*)`.
 4. Set the query tag at the start of every session:
    ```sql
-   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"synthetic-datasets-genertor","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"synthetic-datasets-genertor","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
 5. Never use `SET` variables. Substitute values directly into SQL.
 6. All Python scripts live in `scripts/` within this skill folder. Run them from that directory.

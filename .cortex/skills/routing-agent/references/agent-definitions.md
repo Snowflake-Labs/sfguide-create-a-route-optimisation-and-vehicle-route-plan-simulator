@@ -95,6 +95,10 @@ END;
 $$;
 ```
 
+```sql
+ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ---
 
 ## TOOL_ISOCHRONE Procedure
@@ -178,6 +182,10 @@ EXCEPTION
         RETURN OBJECT_CONSTRUCT('error', 'TOOL_ISOCHRONE failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
 END;
 $$;
+```
+
+```sql
+ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -319,6 +327,10 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
     except Exception as e:
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
+```
+
+```sql
+ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---

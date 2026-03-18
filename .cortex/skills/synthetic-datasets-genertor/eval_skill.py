@@ -258,8 +258,8 @@ def test_functional():
         result(f"Workflow {step_id}: {step_name}", found)
 
     # 3.3 Query tag present and correct
-    query_tag_present = '"origin":"sf_sit-is"' in body
-    result("Query tag with sf_sit-is origin present", query_tag_present)
+    query_tag_present = '"origin":"sf_sit-is-fleet"' in body
+    result("Query tag with sf_sit-is-fleet origin present", query_tag_present)
 
     query_tag_name = '"name":"synthetic-datasets-genertor"' in body
     result("Query tag name matches skill name", query_tag_name)

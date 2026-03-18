@@ -117,6 +117,8 @@ SELECT h3_index,
        ST_X(H3_CELL_TO_POINT(h3_index)) AS lon,
        ST_Y(H3_CELL_TO_POINT(h3_index)) AS lat
 FROM h3_cells;
+
+ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_H3_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Grid step sizes: RES 6=0.05, RES 7=0.02, RES 8=0.008, RES 9=0.003, RES 10=0.001.
@@ -148,6 +150,8 @@ SELECT ROW_NUMBER() OVER (ORDER BY origin_h3) AS seq_id,
 FROM grouped;
 
 ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> CLUSTER BY (SEQ_ID);
+
+ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 3: Create Raw Staging Tables
@@ -157,7 +161,9 @@ Raw tables store VARIANT payloads from MATRIX_TABULAR with zero transformation.
 ```sql
 CREATE OR REPLACE TABLE <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N> (
     SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT
-);
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+;
 ```
 
 **Why raw dump beats inline FLATTEN:** INSERT...SELECT with FLATTEN blocks until the ENTIRE batch completes. Raw dump inserts immediately as each batch returns.
@@ -187,7 +193,8 @@ CREATE OR REPLACE WAREHOUSE ROUTING_ANALYTICS
     MAX_CLUSTER_COUNT = <P_ORS_INSTANCES>
     SCALING_POLICY = 'STANDARD'
     AUTO_SUSPEND = 300
-    AUTO_RESUME = TRUE;
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ALTER SERVICE IF EXISTS <P_ORS_APP>.CORE.ORS_SERVICE
     SET MIN_INSTANCES = <P_ORS_INSTANCES> MAX_INSTANCES = <P_ORS_INSTANCES>;
@@ -236,7 +243,8 @@ Run on a dedicated XLARGE warehouse:
 
 ```sql
 CREATE WAREHOUSE IF NOT EXISTS FLATTEN_WH
-    WITH WAREHOUSE_SIZE = 'XLARGE' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE;
+    WITH WAREHOUSE_SIZE = 'XLARGE' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 USE WAREHOUSE FLATTEN_WH;
 CALL FLATTEN_MATRIX_RAW('<P_REGION>', <N>);
 ```

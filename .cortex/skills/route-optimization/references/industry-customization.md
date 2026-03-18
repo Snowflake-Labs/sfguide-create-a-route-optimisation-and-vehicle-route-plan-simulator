@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOK
     IND2 ARRAY,
     CTYPE ARRAY,
     STYPE ARRAY
-);
+)
+COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 INSERT INTO OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
 SELECT '<Industry1>', '<Product A>', '<Product B>', '<Product C>',

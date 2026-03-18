@@ -3,7 +3,7 @@
 Use this exact JSON comment in all Streamlit deployments:
 ```json
 {
-  "origin": "sf_sit-is",
+  "origin": "sf_sit-is-fleet",
   "name": "Using A Native App To Build A Route Optimisation Simulator Hands On Lab",
   "version": {"major": 1, "minor": 0},
   "attributes": {"is_quickstart": 0, "source": "streamlit"}

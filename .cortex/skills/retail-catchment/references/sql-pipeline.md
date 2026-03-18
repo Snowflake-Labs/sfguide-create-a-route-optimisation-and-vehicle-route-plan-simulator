@@ -3,7 +3,7 @@
 ## Step 1: Set Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-retail-catchment-analysis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment-analysis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## Step 2: Verify OpenRouteService Installation
@@ -57,17 +57,17 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE)
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## Step 5: Create Optimized Data Tables
@@ -117,6 +117,10 @@ AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
 AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
 **5c. Create pre-aggregated cities table:**
 
 ```sql
@@ -130,6 +134,10 @@ WHERE CITY IS NOT NULL
 GROUP BY STATE, CITY
 HAVING COUNT(*) > 10
 ORDER BY STATE, POI_COUNT DESC;
+```
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **5d. Create addresses table within bounding box:**
@@ -150,6 +158,10 @@ AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
 AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
 **5e. Store region configuration:**
 
 ```sql
@@ -163,10 +175,13 @@ SELECT
     CURRENT_TIMESTAMP() AS CREATED_AT;
 ```
 
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGION_CONFIG SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
 **5f. Add search optimization:**
 
 ```sql
-ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
 ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS ADD SEARCH OPTIMIZATION ON EQUALITY(STATE, CITY, BASIC_CATEGORY);
 ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
 ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE ADD SEARCH OPTIMIZATION ON EQUALITY(STATE);
@@ -213,7 +228,7 @@ CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_
     MAIN_FILE = 'retail_catchment.py'
     QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
     TITLE = 'Retail Catchment Application'
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 ALTER STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP ADD LIVE VERSION FROM LAST;
 ```

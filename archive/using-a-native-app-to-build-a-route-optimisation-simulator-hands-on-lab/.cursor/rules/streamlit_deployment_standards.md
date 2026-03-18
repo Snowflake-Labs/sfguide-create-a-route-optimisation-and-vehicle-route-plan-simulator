@@ -15,7 +15,7 @@ This rule ensures all Streamlit applications follow the deployment template patt
 
 ### Mandatory Template Structure
 ```sql
-ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is", "name":"[APP_NAME]", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
+ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is-fleet", "name":"[APP_NAME]", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
 
 USE ROLE {{ env.EVENT_ATTENDEE_ROLE }};
 CREATE SCHEMA IF NOT EXISTS {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }};
@@ -32,7 +32,7 @@ CREATE OR REPLACE STREAMLIT {{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.
     FROM @{{ env.EVENT_DATABASE }}.{{ env.STREAMLIT_SCHEMA }}.STREAMLIT_[N]
     MAIN_FILE = '[MAIN_FILE].py'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"[DESCRIPTIVE_NAME]", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"[DESCRIPTIVE_NAME]", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"streamlit"}}';
 ```
 
 ### Critical Requirements

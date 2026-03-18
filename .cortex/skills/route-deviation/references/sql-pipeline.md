@@ -5,7 +5,7 @@ All SQL for the Route Deviation Analysis ETL pipeline. Execute statements one at
 ## Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## ORS Verification
@@ -40,35 +40,40 @@ SELECT * FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
 
 ```sql
 CREATE DATABASE IF NOT EXISTS {SOURCE_DB}
-    COMMENT = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 CREATE SCHEMA IF NOT EXISTS {SOURCE_DB}.{SOURCE_SCHEMA}
-    COMMENT = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 CREATE DATABASE IF NOT EXISTS {TARGET_DB}
-    COMMENT = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 CREATE SCHEMA IF NOT EXISTS {TARGET_DB}.{TARGET_SCHEMA}
-    COMMENT = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
-CREATE DATABASE IF NOT EXISTS {ROUTE_CACHE_DB};
-CREATE SCHEMA IF NOT EXISTS {ROUTE_CACHE_DB}.{ROUTE_CACHE_SCHEMA};
+CREATE DATABASE IF NOT EXISTS {ROUTE_CACHE_DB}
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+CREATE SCHEMA IF NOT EXISTS {ROUTE_CACHE_DB}.{ROUTE_CACHE_SCHEMA}
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 CREATE WAREHOUSE IF NOT EXISTS {WAREHOUSE}
     WAREHOUSE_SIZE = 'MEDIUM'
     AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE;
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 ## S3 Stage and File Format
 
 ```sql
 CREATE OR REPLACE FILE FORMAT {SOURCE_DB}.{SOURCE_SCHEMA}.PARQUET_FF
-    TYPE = PARQUET;
+    TYPE = PARQUET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 CREATE OR REPLACE STAGE {SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE
     URL = '{S3_BUCKET}'
-    FILE_FORMAT = {SOURCE_DB}.{SOURCE_SCHEMA}.PARQUET_FF;
+    FILE_FORMAT = {SOURCE_DB}.{SOURCE_SCHEMA}.PARQUET_FF
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify files:
@@ -102,6 +107,9 @@ FROM (
     FROM @{SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE/germany_destinations/
 )
 FILE_FORMAT = (TYPE = PARQUET);
+
+ALTER TABLE {SOURCE_DB}.{SOURCE_SCHEMA}.GERMANY_DESTINATIONS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {SOURCE_DB}.{SOURCE_SCHEMA}.GERMANY_DESTINATIONS;` -- expect ~75,242
@@ -134,6 +142,9 @@ FROM (
     FROM @{SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE/GERMANY_REST_STOPS/
 )
 FILE_FORMAT = (TYPE = PARQUET);
+
+ALTER TABLE {SOURCE_DB}.{SOURCE_SCHEMA}.GERMANY_REST_STOPS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {SOURCE_DB}.{SOURCE_SCHEMA}.GERMANY_REST_STOPS;` -- expect ~6,315
@@ -166,6 +177,9 @@ FROM (
     FROM @{SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE/truck_fleet/
 )
 FILE_FORMAT = (TYPE = PARQUET);
+
+ALTER TABLE {SOURCE_DB}.{SOURCE_SCHEMA}.TRUCK_FLEET SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {SOURCE_DB}.{SOURCE_SCHEMA}.TRUCK_FLEET;` -- expect 500
@@ -200,6 +214,9 @@ FROM (
     FROM @{SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE/trip_schedule/
 )
 FILE_FORMAT = (TYPE = PARQUET);
+
+ALTER TABLE {SOURCE_DB}.{SOURCE_SCHEMA}.TRIP_SCHEDULE SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {SOURCE_DB}.{SOURCE_SCHEMA}.TRIP_SCHEDULE;` -- expect 9,343
@@ -256,6 +273,9 @@ FROM (
     FROM @{SOURCE_DB}.{SOURCE_SCHEMA}.FLEET_INTEL_STAGE/fact_truck_telemetry/
 )
 FILE_FORMAT = (TYPE = PARQUET);
+
+ALTER TABLE {SOURCE_DB}.{SOURCE_SCHEMA}.FACT_TRUCK_TELEMETRY SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {SOURCE_DB}.{SOURCE_SCHEMA}.FACT_TRUCK_TELEMETRY;` -- expect ~15.1M
@@ -282,7 +302,8 @@ CREATE TABLE IF NOT EXISTS {ROUTE_CACHE_DB}.{ROUTE_CACHE_SCHEMA}.ROUTE_CACHE (
     DURATION_SECONDS FLOAT,
     ROUTE_LINE GEOGRAPHY,
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-);
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 ### Check Missing OD Pairs
@@ -427,6 +448,9 @@ SELECT
     m.ACTUAL_PATH
 FROM trip_meta m
 JOIN trip_durations d ON m.TRIP_ID = d.TRIP_ID;
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_ACTUAL_METRICS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Timing: 3-8 minutes on MEDIUM warehouse (processes 15M rows with window functions).
@@ -462,6 +486,9 @@ SELECT
 FROM unique_od_pairs p
 JOIN {ROUTE_CACHE_DB}.{ROUTE_CACHE_SCHEMA}.ROUTE_CACHE c 
     ON p.ORIGIN_ID = c.ORIGIN_ID AND p.DEST_ID = c.DEST_ID;
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.OD_EXPECTED_ROUTES SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.OD_EXPECTED_ROUTES;` -- expect 9,343
@@ -522,6 +549,9 @@ JOIN {SOURCE_DB}.{SOURCE_SCHEMA}.TRIP_SCHEDULE s
     AND s.DEST_ID = od.dest_loc_id
 JOIN {TARGET_DB}.{TARGET_SCHEMA}.OD_EXPECTED_ROUTES e 
     ON s.ORIGIN_ID = e.ORIGIN_ID AND s.DEST_ID = e.DEST_ID;
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS;` -- expect ~3,500-3,600
@@ -553,6 +583,9 @@ FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS d
 JOIN {SOURCE_DB}.{SOURCE_SCHEMA}.TRUCK_FLEET f
     ON 'TRK-' || LPAD(REPLACE(d.TRUCK_ID, 'TRK-', ''), 5, '0') = f.TRUCK_ID
 GROUP BY d.TRUCK_ID, d.DRIVER_ID, f.DRIVER_PROFILE, f.TRUCK_TYPE, f.HOME_CITY;
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY;` -- expect 500
@@ -573,6 +606,9 @@ SELECT
     ROUND(AVG(DURATION_DEVIATION_PCT), 2) AS AVG_DURATION_DEVIATION_PCT
 FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS
 GROUP BY TRIP_DATE;
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS;` -- expect 14
@@ -598,7 +634,8 @@ Deploy by uploading to a stage and creating the Streamlit object:
 
 ```sql
 CREATE STAGE IF NOT EXISTS {TARGET_DB}.{TARGET_SCHEMA}.STREAMLIT
-    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 PUT file://dashboard/pages/Route_Deviations.py @{TARGET_DB}.{TARGET_SCHEMA}.STREAMLIT/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 PUT file://dashboard/pages/Route_Inspector.py @{TARGET_DB}.{TARGET_SCHEMA}.STREAMLIT/pages/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
@@ -609,7 +646,7 @@ CREATE OR REPLACE STREAMLIT {TARGET_DB}.{TARGET_SCHEMA}.ROUTE_DEVIATION_DASHBOAR
     MAIN_FILE = 'pages/Route_Deviations.py'
     QUERY_WAREHOUSE = '{WAREHOUSE}'
     TITLE = 'Route Deviation Analysis'
-    COMMENT = '{"origin":"sf_sit-is","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
 
 ALTER STREAMLIT {TARGET_DB}.{TARGET_SCHEMA}.ROUTE_DEVIATION_DASHBOARD ADD LIVE VERSION FROM LAST;
 ```

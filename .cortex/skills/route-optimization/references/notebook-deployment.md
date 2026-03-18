@@ -55,7 +55,8 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
    ```sql
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook 
    DIRECTORY = (ENABLE = TRUE) 
-   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    ```
 
 2. Upload notebook files:
@@ -73,7 +74,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
    FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'add_carto_data.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
-   COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
    ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
    ```
@@ -189,7 +190,7 @@ Markdown cells to update:
    FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
    MAIN_FILE = 'routing_functions_aisql.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
-   COMMENT = '{"origin":"sf_sit-is", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
    ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
    ```

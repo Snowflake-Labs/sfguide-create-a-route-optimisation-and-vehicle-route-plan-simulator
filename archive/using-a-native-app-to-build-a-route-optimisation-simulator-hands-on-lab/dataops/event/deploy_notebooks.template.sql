@@ -1,4 +1,4 @@
-ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
+ALTER SESSION SET QUERY_TAG = '''{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0},"attributes":{"is_quickstart":0, "source":"sql"}}''';
 
 use role {{ env.EVENT_ATTENDEE_ROLE }};
 
@@ -13,7 +13,7 @@ CREATE OR REPLACE NOTEBOOK {{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}."
     FROM '@{{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}.NOTEBOOK_1'
     MAIN_FILE = 'routing_setup.ipynb'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"notebook"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"notebook"}}';
 
 ALTER NOTEBOOK {{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}."Routing With Open Routes With AISQL" ADD LIVE VERSION FROM LAST;
 
@@ -27,6 +27,6 @@ CREATE OR REPLACE NOTEBOOK {{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}."
     FROM '@{{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}.NOTEBOOK_2'
     MAIN_FILE = 'Fleet_Management_Setup.ipynb'
     QUERY_WAREHOUSE = '{{ env.EVENT_WAREHOUSE }}'
-    COMMENT = '{"origin":"sf_sit-is", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"notebook"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Fleet Intelligence Lab", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":0, "source":"notebook"}}';
 
 ALTER NOTEBOOK {{ env.EVENT_DATABASE }}.{{ env.NOTEBOOKS_SCHEMA }}."Fleet Intelligence Setup" ADD LIVE VERSION FROM LAST;

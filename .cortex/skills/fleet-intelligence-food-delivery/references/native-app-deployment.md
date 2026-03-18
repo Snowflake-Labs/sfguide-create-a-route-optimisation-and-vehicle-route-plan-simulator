@@ -40,8 +40,10 @@ This takes ~1-2 minutes. The multi-stage build compiles the React frontend (`npm
 #### Sub-step 12c: Create Image Repository in Snowflake
 
 ```sql
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP;
-CREATE IMAGE REPOSITORY IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO;
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
+CREATE IMAGE REPOSITORY IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
 Then get the repository URL:
@@ -75,11 +77,14 @@ Where `{REPO_URL}` is the `repository_url` from the previous step.
 #### Sub-step 12e: Create Application Package
 
 ```sql
-CREATE APPLICATION PACKAGE IF NOT EXISTS FLEET_INTELLIGENCE_PKG;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE_PKG.stage_content;
+CREATE APPLICATION PACKAGE IF NOT EXISTS FLEET_INTELLIGENCE_PKG
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE_PKG.stage_content
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 CREATE OR REPLACE STAGE FLEET_INTELLIGENCE_PKG.stage_content.app_code
     DIRECTORY = (ENABLE = TRUE)
-    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
 ---
@@ -131,7 +136,8 @@ Install the application:
 ```sql
 CREATE APPLICATION FLEET_INTELLIGENCE_APP
     FROM APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG
-    USING VERSION v1_0;
+    USING VERSION v1_0
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
 > **Note:** If an object named `FLEET_INTELLIGENCE` already exists (e.g., a database), use `FLEET_INTELLIGENCE_APP` as the application name to avoid conflicts.
@@ -177,11 +183,13 @@ The React app uses Carto basemap tiles and needs egress network access:
 CREATE OR REPLACE NETWORK RULE fleet_intel_map_tiles_rule
     MODE = EGRESS
     TYPE = HOST_PORT
-    VALUE_LIST = ('a.basemaps.cartocdn.com:443', 'b.basemaps.cartocdn.com:443', 'c.basemaps.cartocdn.com:443', 'd.basemaps.cartocdn.com:443');
+    VALUE_LIST = ('a.basemaps.cartocdn.com:443', 'b.basemaps.cartocdn.com:443', 'c.basemaps.cartocdn.com:443', 'd.basemaps.cartocdn.com:443')
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 
 CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION fleet_intel_map_tiles_eai
     ALLOWED_NETWORK_RULES = (fleet_intel_map_tiles_rule)
-    ENABLED = TRUE;
+    ENABLED = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
 Grant the EAI to the application and bind the reference:

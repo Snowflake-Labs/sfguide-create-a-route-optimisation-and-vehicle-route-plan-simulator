@@ -33,7 +33,7 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 Set session query tag for attribution tracking. This step is optional and only affects session-level tracking.
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ### Step 2: Verify ORS Functions and Services
@@ -59,10 +59,13 @@ Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTIN
 Create dedicated objects for the routing agent.
 
 ```sql
-CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP;
-CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT;
+CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
-    WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE;
+    WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ### Step 4: Create TOOL_DIRECTIONS Procedure

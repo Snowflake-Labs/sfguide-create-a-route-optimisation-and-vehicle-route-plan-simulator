@@ -43,6 +43,8 @@ WHERE
         OR CATEGORIES:primary::STRING ILIKE '%sandwich%'
         OR CATEGORIES:primary::STRING ILIKE '%fast_food%'
     );
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -90,6 +92,8 @@ WHERE
     COUNTRY = 'US'
     AND ADDRESS_LEVELS[0]:value::STRING = 'CA'
     AND STREET IS NOT NULL;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -166,6 +170,8 @@ SELECT
     END AS VEHICLE_TYPE
 FROM courier_assignments ca
 LEFT JOIN home_locations hl ON ca.courier_num = hl.rn;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -203,6 +209,8 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY HASH(RESTAURANT_ID)) AS rn
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
 WHERE NAME IS NOT NULL AND LENGTH(NAME) > 2;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -214,6 +222,8 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY HASH(ADDRESS_ID)) AS rn
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
 WHERE FULL_ADDRESS IS NOT NULL AND LENGTH(FULL_ADDRESS) > 3;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then generate the orders:
@@ -287,6 +297,8 @@ SELECT
 FROM orders_with_hours o
 CROSS JOIN rest_count rc
 CROSS JOIN addr_count ac;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -311,6 +323,8 @@ SELECT
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS o
 JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED r ON o.RESTAURANT_IDX = r.rn
 JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED a ON o.CUSTOMER_IDX = a.rn;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -375,6 +389,8 @@ SELECT
         ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
     ) AS ROUTE_RESPONSE
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -401,6 +417,8 @@ SELECT
     PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:duration::FLOAT AS ROUTE_DURATION_SECS
 FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES
 WHERE ROUTE_RESPONSE IS NOT NULL;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES_PARSED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -450,6 +468,8 @@ SELECT
     SHIFT_TYPE,
     VEHICLE_TYPE
 FROM cumulative_timing;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -607,6 +627,8 @@ SELECT
             END
     END AS KMH
 FROM expanded;
+
+ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:

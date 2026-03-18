@@ -113,7 +113,8 @@ Multi-page app with 7 pages + main. This version has 3 additional pages compared
 ```sql
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE)
-    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-dwell-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 ```
 
 Upload files:
@@ -151,7 +152,7 @@ CREATE OR REPLACE STREAMLIT FLEET_INTELLIGENCE.DWELL_ANALYSIS.DWELL_ANALYTICS_AP
     MAIN_FILE = 'streamlit_app.py'
     QUERY_WAREHOUSE = 'COMPUTE_WH'
     TITLE = 'Dwell & Congestion Analytics'
-    COMMENT = '{"origin":"sf_sit-is", "name":"oss-dwell-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-dwell-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 ALTER STREAMLIT FLEET_INTELLIGENCE.DWELL_ANALYSIS.DWELL_ANALYTICS_APP ADD LIVE VERSION FROM LAST;
 ```
