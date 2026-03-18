@@ -1,6 +1,8 @@
 ---
 name: route-optimization
 description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the route optimization demo after native app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
+depends_on:
+  - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -14,9 +16,36 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 ## Prerequisites
 
 - OpenRouteService Native App deployed and activated
-- Active Snowflake connection
+- Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
+
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES from Marketplace |
+| USAGE ON DATABASE OPENROUTESERVICE_SETUP | Database | Uses the setup database |
+| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates VEHICLE_ROUTING_SIMULATOR schema |
+| CREATE STAGE | Schema (OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR) | Creates NOTEBOOK and STREAMLIT stages |
+| CREATE NOTEBOOK | Schema (OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR) | Deploys Carto data and AISQL notebooks |
+| CREATE STREAMLIT | Schema (OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR) | Deploys route simulator app |
+| USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
+| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS routing functions |
+| EXECUTE MANAGED TASK | Account | Enables ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION (optional) |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
 > All `snow stage copy` commands use `--connection <ACTIVE_CONNECTION>`. Replace `<ACTIVE_CONNECTION>` with the name of your currently active Snowflake connection.
+
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| DATABASE | `OPENROUTESERVICE_SETUP` | Database for demo objects |
+| SCHEMA | `VEHICLE_ROUTING_SIMULATOR` | Schema for VRP tables and notebooks |
+| WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
+| MARKETPLACE_CARTO | `CARTO Academy` | CARTO Academy Marketplace listing name |
 
 ## Execution Rules
 
@@ -133,7 +162,7 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 | Issue | Symptom | Solution |
 |-------|---------|----------|
 | **Stale config file** | Wrong region detected | Run `rm -rf /tmp/ors* /tmp/*ors*` before downloading config |
-| Marketplace access denied | `CALL SYSTEM$ACCEPT_LEGAL_TERMS` fails | Requires ACCOUNTADMIN or IMPORT SHARE privilege |
+| Marketplace access denied | `CALL SYSTEM$ACCEPT_LEGAL_TERMS` fails | Requires IMPORT SHARE privilege (see Required Privileges section) |
 | Notebook execution fails | `EXECUTE NOTEBOOK` errors | Check logs in Snowsight; verify `OVERTURE_MAPS__PLACES` accessible and warehouse active |
 | Cortex model unavailable | "model not found" error | Try fallback model or set `CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION'` |
 | Services not starting | SUSPENDED or FAILED status | `ALTER SERVICE ... RESUME`; check compute pool capacity |
@@ -158,3 +187,20 @@ Complete Route Optimization demo with:
 ```sql
 SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR') AS streamlit_url;
 ```
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: streamlit/notebooks first, then tables, stages, schema
+DROP STREAMLIT IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.SIMULATOR;
+DROP NOTEBOOK IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL;
+DROP NOTEBOOK IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.STREAMLIT;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK;
+DROP SCHEMA IF EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

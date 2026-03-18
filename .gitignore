@@ -27,49 +27,15 @@ env/
 *.swo
 .DS_Store
 
-# Node
+# Node / React
 node_modules/
+package-lock.json
+tsconfig.tsbuildinfo
 
 # Distribution
 dist/
 build/
 *.egg-info/
-build-routing-solution/Native_app/output/deploy/streamlit/pages/function_tester.py
-build-routing-solution/Native_app/output/deploy/streamlit/logo.svg
-build-routing-solution/Native_app/output/deploy/streamlit/extra.css
-build-routing-solution/Native_app/output/deploy/streamlit/environment.yml
-build-routing-solution/Native_app/output/deploy/streamlit/config.toml
-build-routing-solution/Native_app/output/deploy/streamlit/app.py
-build-routing-solution/Native_app/output/deploy/setup_script.sql
-build-routing-solution/Native_app/output/deploy/services/vroom/vroom-service.yaml
-build-routing-solution/Native_app/output/deploy/services/openrouteservice/openrouteservice.yaml
-build-routing-solution/Native_app/output/deploy/services/gateway/routing-gateway-service.yaml
-build-routing-solution/Native_app/output/deploy/services/downloader/downloader_spec.yaml
-build-routing-solution/Native_app/output/deploy/README.md
-build-routing-solution/Native_app/output/deploy/manifest.yml
-build-routing-solution/Native_app/output/deploy/streamlit/pages/function_tester.py
-build-routing-solution/Native_app/output/deploy/streamlit/logo.svg
-build-routing-solution/Native_app/output/deploy/streamlit/extra.css
-build-routing-solution/Native_app/output/deploy/streamlit/environment.yml
-build-routing-solution/Native_app/output/deploy/streamlit/config.toml
-build-routing-solution/Native_app/output/deploy/streamlit/app.py
-build-routing-solution/Native_app/output/deploy/setup_script.sql
-build-routing-solution/Native_app/output/deploy/services/vroom/vroom-service.yaml
-build-routing-solution/Native_app/output/deploy/services/openrouteservice/openrouteservice.yaml
-build-routing-solution/Native_app/output/deploy/services/gateway/routing-gateway-service.yaml
-build-routing-solution/Native_app/output/deploy/services/downloader/downloader_spec.yaml
-build-routing-solution/Native_app/output/deploy/README.md
-build-routing-solution/Native_app/output/deploy/manifest.yml
-build-routing-solution/Native_app/output/deploy/manifest.yml
-build-routing-solution/Native_app/output/deploy/README.md
-build-routing-solution/Native_app/output/deploy/services/downloader/downloader_spec.yaml
-build-routing-solution/Native_app/output/deploy/services/gateway/routing-gateway-service.yaml
-build-routing-solution/Native_app/output/deploy/services/openrouteservice/openrouteservice.yaml
-build-routing-solution/Native_app/output/deploy/services/vroom/vroom-service.yaml
-build-routing-solution/Native_app/output/deploy/setup_script.sql
-build-routing-solution/Native_app/output/deploy/streamlit/app.py
-build-routing-solution/Native_app/output/deploy/streamlit/config.toml
-build-routing-solution/Native_app/output/deploy/streamlit/environment.yml
-build-routing-solution/Native_app/output/deploy/streamlit/extra.css
-build-routing-solution/Native_app/output/deploy/streamlit/logo.svg
-build-routing-solution/Native_app/output/deploy/streamlit/pages/function_tester.py
+
+# Native app build output
+build-routing-solution/Native_app/output/

@@ -1,6 +1,9 @@
 ---
 name: dwell-analysis
 description: "Deploy the Dwell & Congestion Analysis demo: create a 12-step Dynamic Table pipeline for state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Includes local Streamlit dashboard and Snowflake-native SiS app. Uses FACT_TRUCK_TELEMETRY from the synthetic fleet dataset. Use when: setting up dwell analysis demo, congestion analytics, SLA breach monitoring, facility utilization tracking. Do NOT use for: route deviation analysis (use route-deviation), food delivery fleet (use fleet-intelligence-food-delivery), taxi fleet (use fleet-intelligence-taxis). Triggers: deploy dwell analysis, dwell analytics, congestion analysis, SLA alerts, facility utilization, dwell demo, H3 heatmap."
+depends_on:
+  - route-deviation
+  - synthetic-datasets-generator
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -19,7 +22,26 @@ Deploys a 12-step Dynamic Table pipeline that transforms raw truck telemetry int
    - `GERMANY_REST_STOPS` -- rest stop locations
    - `TRUCK_FLEET` -- truck metadata and driver profiles
 2. `COMPUTE_WH` warehouse available
-3. ACCOUNTADMIN or equivalent privileges
+3. A role with privileges listed in the Required Privileges section below
+
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
+| USAGE ON WAREHOUSE COMPUTE_WH | Warehouse | Used by all Dynamic Tables and tasks |
+| USAGE ON DATABASE SYNTHETIC_DATASETS | Database | Reads source telemetry and fleet tables |
+| USAGE ON SCHEMA SYNTHETIC_DATASETS.FLEET_INTELLIGENCE | Schema | Reads FACT_TRUCK_TELEMETRY, GERMANY_DESTINATIONS, GERMANY_REST_STOPS, TRUCK_FLEET |
+| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates DWELL_ANALYSIS schema |
+| CREATE TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates GEOFENCE_POLYGONS, SLA_THRESHOLDS, SLA_ALERT_LOG |
+| CREATE DYNAMIC TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates 8 Dynamic Tables (DT_STATE_CHANGES through DT_DAILY_TRENDS) |
+| CREATE STREAM | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates TELEMETRY_STREAM |
+| CREATE TASK | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates LOG_SLA_ALERTS task |
+| EXECUTE TASK | Account | Enables scheduled task execution |
+| CREATE STAGE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates STREAMLIT_STAGE for SiS deployment |
+| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Deploys DWELL_ANALYTICS_APP |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
 ## Configuration
 
@@ -203,3 +225,30 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 | H3 cells NULL | Ensure latitude/longitude values are valid (not NULL or 0) |
 | Task not running | Run `ALTER TASK ... RESUME` and verify COMPUTE_WH is active |
 | Dynamic Tables stale | Check `SHOW DYNAMIC TABLES` for refresh status and errors |
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: task/stream first, then dynamic tables (leaf to root), tables, stage, schema
+ALTER TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS SUSPEND;
+DROP TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS;
+DROP STREAM IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.TELEMETRY_STREAM;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
+DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DWELL_ANALYTICS_APP;
+DROP STAGE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.STREAMLIT_STAGE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

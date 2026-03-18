@@ -1,6 +1,8 @@
 ---
 name: travel-time-matrix
 description: "Compute travel time matrices across H3 resolutions using ORS MATRIX_TABULAR in Snowflake. Covers H3 hexagon generation, work queue batching, raw VARIANT staging, parallel workers, FLATTEN post-processing, Task DAG orchestration, and VROOM integration. Use when: building travel time matrices, computing H3-based routing distances, scaling ORS matrix calls, setting up parallel matrix ingestion. Do NOT use for: single point-to-point routing (use ORS DIRECTIONS), fleet simulation data generation, or Streamlit deployment. Triggers: travel time matrix, H3 matrix, matrix tabular, ORS matrix, compute travel times, H3 travel time."
+depends_on:
+  - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -383,3 +385,25 @@ FROM (
 - ✋ Step 7: Monitor progress to >95% before FLATTEN
 - ✋ Step 8: Verify FLATTEN row count matches expected pairs
 - ✋ Step 9: Confirm infrastructure scaled back down to avoid runaway costs
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: procedures first, then tables, warehouses
+-- Replace <P_REGION> and <N> with your actual region and resolution values (e.g., SF, 9)
+DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(VARCHAR, NUMBER, NUMBER, NUMBER, VARCHAR);
+DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_H3_RES<N>;
+DROP WAREHOUSE IF EXISTS FLATTEN_WH;
+DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

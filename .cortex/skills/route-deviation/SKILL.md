@@ -1,6 +1,9 @@
 ---
 name: route-deviation
 description: "Deploy the Route Deviation Analysis demo: load synthetic truck telemetry from S3, populate ORS route cache, run 5-step ETL pipeline, and deploy Streamlit dashboards. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
+depends_on:
+  - build-routing-solution
+  - routing-customization
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -15,8 +18,23 @@ End-to-end deployment of a Route Deviation Analysis demo comparing actual truck 
 
 CRITICAL: Verify these before starting:
 - OpenRouteService Native App deployed, activated, and configured for **Germany** map
-- Active Snowflake connection with ACCOUNTADMIN or sufficient privileges
+- Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
 - Compute warehouse available (MEDIUM recommended for 15M-row telemetry ETL)
+
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates SYNTHETIC_DATASETS, FLEET_INTELLIGENCE, and FLEET_DEMOS databases |
+| CREATE WAREHOUSE | Account | Creates COMPUTE_WH warehouse |
+| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS_GEO for route cache |
+| CREATE SCHEMA | Database (SYNTHETIC_DATASETS, FLEET_INTELLIGENCE, FLEET_DEMOS) | Creates source, target, and route cache schemas |
+| CREATE TABLE | Schema (multiple) | Creates source tables, ETL tables, route cache |
+| CREATE STAGE | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE, FLEET_INTELLIGENCE.DEVIATION_ANALYSIS) | Creates S3 external stage and Streamlit stage |
+| CREATE FILE FORMAT | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE) | Creates PARQUET_FF file format |
+| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.DEVIATION_ANALYSIS) | Deploys ROUTE_DEVIATION_DASHBOARD |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
 ## Configuration
 
@@ -179,3 +197,36 @@ Complete Route Deviation Analysis demo with:
 - Route cache with ~9,343 OD pairs computed via ORS
 - 5 ETL analytics tables (trip metrics, expected routes, deviation analysis, driver summary, daily trends)
 - Streamlit dashboard with driver rankings, daily trends, and interactive route maps
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: streamlit first, then ETL tables, route cache, source tables, stages, schemas, warehouses, databases
+DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.ROUTE_DEVIATION_DASHBOARD;
+DROP STAGE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.STREAMLIT;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.DAILY_DEVIATION_TRENDS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.DRIVER_DEVIATION_SUMMARY;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.TRIP_DEVIATION_ANALYSIS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.OD_EXPECTED_ROUTES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.TRIP_ACTUAL_METRICS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS;
+DROP TABLE IF EXISTS FLEET_DEMOS.ROUTING.ROUTE_CACHE;
+DROP SCHEMA IF EXISTS FLEET_DEMOS.ROUTING;
+DROP DATABASE IF EXISTS FLEET_DEMOS;
+DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FACT_TRUCK_TELEMETRY;
+DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRIP_SCHEDULE;
+DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRUCK_FLEET;
+DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_REST_STOPS;
+DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_DESTINATIONS;
+DROP FILE FORMAT IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.PARQUET_FF;
+DROP STAGE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FLEET_INTEL_STAGE;
+DROP SCHEMA IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE;
+DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS;
+DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
+DROP WAREHOUSE IF EXISTS COMPUTE_WH;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

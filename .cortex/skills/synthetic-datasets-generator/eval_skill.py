@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Eval Suite for synthetic-datasets-genertor skill.
+Eval Suite for synthetic-datasets-generator skill.
 
 Tests three areas per skill-optimiser testing-checklist.md:
   1. Structural validation (file structure, naming, YAML, size limits)

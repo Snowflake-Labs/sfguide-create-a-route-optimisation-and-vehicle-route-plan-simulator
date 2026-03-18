@@ -718,7 +718,7 @@
         }
       },
       {
-        "skill": "synthetic-datasets-genertor",
+        "skill": "synthetic-datasets-generator",
         "status": "pass",
         "should_trigger": {
           "total": 5,
@@ -1511,15 +1511,15 @@
         }
       },
       {
-        "skill": "synthetic-datasets-genertor",
-        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-genertor/SKILL.md",
+        "skill": "synthetic-datasets-generator",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-generator/SKILL.md",
         "score": "10/11",
         "passed": 10,
         "total": 11,
         "checks": {
           "check_1": {
             "status": "pass",
-            "message": "Folder 'synthetic-datasets-genertor' is kebab-case"
+            "message": "Folder 'synthetic-datasets-generator' is kebab-case"
           },
           "check_2": {
             "status": "pass",
@@ -1531,7 +1531,7 @@
           },
           "check_4": {
             "status": "pass",
-            "message": "Frontmatter OK, name='synthetic-datasets-genertor'"
+            "message": "Frontmatter OK, name='synthetic-datasets-generator'"
           },
           "check_5": {
             "status": "pass",
@@ -1757,8 +1757,8 @@
         "issues": []
       },
       {
-        "skill": "synthetic-datasets-genertor",
-        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-genertor/SKILL.md",
+        "skill": "synthetic-datasets-generator",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-generator/SKILL.md",
         "status": "pass",
         "issue_count": 0,
         "issues": []

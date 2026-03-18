@@ -1,6 +1,9 @@
 ---
 name: fleet-intelligence-taxis
 description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
+depends_on:
+  - build-routing-solution
+  - routing-customization
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -175,3 +178,30 @@ Verify all view row counts.
 | Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/taxi/` |
 | Map centered wrong | Update view_state coordinates in Streamlit files |
 | PUT command fails | Ensure the file path is absolute and the file exists locally |
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: streamlit first, then views, tables, stage, schema
+DROP STREAMLIT IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_CONTROL_CENTER;
+DROP VIEW IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
+DROP VIEW IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN;
+DROP VIEW IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES;
+DROP VIEW IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS;
+DROP VIEW IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE;
+DROP SCHEMA IF EXISTS OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

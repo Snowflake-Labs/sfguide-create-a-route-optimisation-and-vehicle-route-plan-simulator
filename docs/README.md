@@ -10,6 +10,11 @@
 ## Dev Docs
 
 - [Skill Audit Report](dev/AUDIT-REPORT.md) - Full audit of all Cortex Code skills (2026-03-17)
+- [Shared Infrastructure Map](dev/SHARED-INFRASTRUCTURE.md) - Database/warehouse ownership across skills
+
+## Guides
+
+- [Quickstart](guides/QUICKSTART.md) - Deploy your first routing solution in 4 steps
 
 ## See Also
 

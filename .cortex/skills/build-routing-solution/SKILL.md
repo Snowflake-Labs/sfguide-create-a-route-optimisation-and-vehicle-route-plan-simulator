@@ -15,10 +15,35 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 - Container runtime (Podman or Docker) installed and running
 - Snowflake CLI (`snow`) installed
-- Active Snowflake connection with ACCOUNTADMIN role
+- Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
 - Repository cloned; working directory set to repo root
 
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| CREATE APPLICATION | Account | Deploys OPENROUTESERVICE_NATIVE_APP |
+| CREATE APPLICATION PACKAGE | Account | Creates OPENROUTESERVICE_NATIVE_APP_PKG |
+| CREATE COMPUTE POOL | Account | Required for SPCS container services |
+| USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Runs deployment queries |
+| CREATE STAGE | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE |
+| CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates IMAGE_REPOSITORY for container images |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
+
 > All relative paths (e.g., `Native_app/`, `Notebook/`) are relative to the repository root directory.
+
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| DATABASE | `OPENROUTESERVICE_SETUP` | Database for ORS infrastructure objects |
+| WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for ORS operations (MEDIUM) |
+| WAREHOUSE_SIZE | `MEDIUM` | Size of the routing warehouse |
+| IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
+| COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
 
 ## Workflow
 
@@ -256,3 +281,21 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - 4 SPCS services running (downloader, openrouteservice, gateway, vroom)
 
 Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It make take a minute or two.
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: application first, then images, stages, warehouse, database
+DROP APPLICATION IF EXISTS OPENROUTESERVICE_NATIVE_APP CASCADE;
+DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_NATIVE_APP_PKG;
+DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE;
+DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

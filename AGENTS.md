@@ -50,10 +50,11 @@ No global build/lint step — each skill is independently deployable via its own
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
 | `route-deviation` | demo | Detour detection ETL pipeline + Streamlit dashboards |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
-| `synthetic-datasets-genertor` | fleet-intelligence | Synthetic HGV truck GPS telemetry generator |
+| `synthetic-datasets-generator` | fleet-intelligence | Synthetic HGV truck GPS telemetry generator |
 | `travel-time-matrix` | advanced | H3-based travel time matrices via ORS MATRIX_TABULAR |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
+| `cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
 
 ## Skill Conventions (Quick Reference)
 
@@ -71,6 +72,10 @@ Key rules:
   ```
 - Subskills nest as child folders; parent SKILL.md acts as a router
 - All skills use `metadata.author: Snowflake SIT-IS` and `metadata.version: 1.0.0`
+- Deployment skills must include `depends_on` in frontmatter listing prerequisite skills
+- Deployment skills must include a `## Configuration` table with parameterized defaults
+- Deployment skills must include a `## Required Privileges` table (no ACCOUNTADMIN assumptions)
+- Deployment skills must include a `## Cleanup` section with DROP statements
 
 ## Creating a New Skill
 
@@ -97,6 +102,37 @@ Key rules:
 - **Add README.md inside skill folders** — all docs go in SKILL.md or `references/`
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Deploy Streamlit without `OR REPLACE`** — always use `CREATE OR REPLACE STREAMLIT`
+- **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
+- **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
+
+## Skill Dependency Graph
+
+```mermaid
+graph TD
+    RP[routing-prerequisites] --> BRS[build-routing-solution]
+    BRS --> RC[routing-customization]
+    BRS --> RO[route-optimization]
+    BRS --> FIT[fleet-intelligence-taxis]
+    BRS --> FIFD[fleet-intelligence-food-delivery]
+    BRS --> RET[retail-catchment]
+    BRS --> RD[route-deviation]
+    BRS --> TTM[travel-time-matrix]
+    BRS --> RA[routing-agent]
+    RC --> FIT
+    RC --> FIFD
+    RC --> RD
+    RC --> SDG[synthetic-datasets-generator]
+    RD --> DA[dwell-analysis]
+    SDG --> DA
+
+    style BRS fill:#f96,stroke:#333
+    style RP fill:#9cf,stroke:#333
+    style RC fill:#9cf,stroke:#333
+```
+
+**Legend:** Orange = core infrastructure. Blue = configuration/prerequisites. White = demo/feature skills.
+
+Deploy order (top → bottom). Teardown order (bottom → top). See `docs/dev/SHARED-INFRASTRUCTURE.md` for shared object details.
 
 ## Common Patterns
 
@@ -108,5 +144,6 @@ Key rules:
 ## Documentation
 
 - `docs/dev/` — Development notes, audit reports, architecture decisions
-- `docs/guides/` — User-facing tutorials and walkthroughs
+- `docs/dev/SHARED-INFRASTRUCTURE.md` — Database/warehouse ownership map across skills
+- `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
 - `docs/README.md` — Full index

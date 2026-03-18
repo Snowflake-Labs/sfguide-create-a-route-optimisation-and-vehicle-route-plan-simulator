@@ -1,6 +1,8 @@
 ---
 name: routing-agent
 description: "Create Snowflake Intelligence agent for OpenRouteService routing functions. Use when: setting up ORS demo, creating route planning agent, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing agent, ORS agent, routing intelligence."
+depends_on:
+  - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -22,7 +24,22 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 - OpenRouteService Native App installed with functions: `DIRECTIONS`, `ISOCHRONES`, `OPTIMIZATION`
 - Cortex AI access (claude-sonnet-4-5 for geocoding)
-- ACCOUNTADMIN or equivalent role for agent creation
+- A role with privileges listed in the Required Privileges section below
+
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| USAGE ON DATABASE OPENROUTESERVICE_SETUP | Database | Uses the setup database |
+| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates SI_ROUTING_AGENT schema |
+| CREATE PROCEDURE | Schema (OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION |
+| CREATE CORTEX AGENT | Schema (OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT) | Creates ROUTING_AGENT |
+| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
+| SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
 ## Workflow
 
@@ -176,3 +193,20 @@ Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
 | Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_NATIVE_APP.CORE;` and resume suspended services |
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: agent first, then procedures, schema, warehouse, database
+DROP CORTEX AGENT IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
+DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+DROP SCHEMA IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT;
+DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

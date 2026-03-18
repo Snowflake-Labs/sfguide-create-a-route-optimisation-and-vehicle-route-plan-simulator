@@ -1,6 +1,9 @@
 ---
-name: synthetic-datasets-genertor
+name: synthetic-datasets-generator
 description: "Generate realistic synthetic GPS telemetry datasets for HGV truck fleets operating in configurable regions. Creates road-following routes via ORS, realistic driver behavior profiles (COMPLIANT/MILD/OUTLIER), EU HOS compliance, variable telemetry intervals, and loads data into Snowflake star schema (7 tables). Supports 10-500+ trucks over 1-3 months. Use when: generating synthetic fleet data, creating test telemetry datasets, populating fleet demo tables, benchmarking fleet analytics. Do NOT use for: deploying route deviation demo (use route-deviation), real-time fleet tracking, food delivery data (use fleet-intelligence-food-delivery). Triggers: generate synthetic telemetry, create fleet data, synthetic truck data, generate GPS data, populate telemetry tables, synthetic dataset."
+depends_on:
+  - build-routing-solution
+  - routing-customization
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0

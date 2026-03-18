@@ -172,7 +172,7 @@ skill-optimiser:
     - "non-skill markdown editing"
     - "MCP server development"
 
-synthetic-datasets-genertor:
+synthetic-datasets-generator:
   should_trigger:
     - "generate synthetic telemetry"
     - "create fleet data"

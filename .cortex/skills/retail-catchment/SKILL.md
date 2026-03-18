@@ -1,6 +1,8 @@
 ---
 name: retail-catchment
 description: "Deploy the Retail Catchment Analysis Streamlit app with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis or fleet-intelligence-food-delivery), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
+depends_on:
+  - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -22,8 +24,26 @@ Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, 
 ## Prerequisites
 
 - OpenRouteService Native App installed (e.g., `OPENROUTESERVICE_NATIVE_APP`)
-- ACCOUNTADMIN role or equivalent privileges
+- A role with privileges listed in the Required Privileges section below
 - snow CLI installed and configured
+
+## Required Privileges
+
+| Privilege | Scope | Reason |
+|-----------|-------|--------|
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
+| IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES from Marketplace |
+| USAGE ON DATABASE OPENROUTESERVICE_SETUP | Database | Uses the setup database |
+| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates RETAIL_CATCHMENT_DEMO schema |
+| CREATE STAGE | Schema (OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO) | Creates STREAMLIT_STAGE |
+| CREATE TABLE | Schema (OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO) | Creates RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
+| CREATE STREAMLIT | Schema (OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO) | Deploys RETAIL_CATCHMENT_APP |
+| USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
+| USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
+| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS isochrone functions |
+
+> **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
 ## Workflow
 
@@ -142,3 +162,20 @@ Deployed resources:
 ```sql
 SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP') AS streamlit_url;
 ```
+
+## Cleanup
+
+To remove all objects created by this skill:
+
+```sql
+-- Reverse dependency order: streamlit first, then tables, stage, schema
+DROP STREAMLIT IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGION_CONFIG;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE;
+DROP TABLE IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE;
+DROP SCHEMA IF EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO;
+```
+
+> **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.
