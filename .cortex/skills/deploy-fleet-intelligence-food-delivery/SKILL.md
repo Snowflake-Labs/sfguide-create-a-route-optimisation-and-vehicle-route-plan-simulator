@@ -41,9 +41,9 @@ The solution supports multiple vehicle types via OpenRouteService routing profil
 
 The native app supports cities worldwide. ORS routing uses PBF map files downloaded automatically per-city from BBBike (`https://download.bbbike.org/osm/bbbike/`).
 
-### Default Supported Maps
+### Default Supported Maps (Built Into the App)
 
-These 11 cities are pre-configured with verified BBBike PBF URLs, bounding boxes, and Overture Maps filters:
+These 11 cities are **pre-configured and built into the native app**. You only need to choose **one city** for the initial deployment (data generation in Steps 4-9). The other 10 cities remain available inside the app — when you select a new city later, the app will **automatically provision the ORS routing service and download the map** for that city on demand. No redeployment is needed to use any of these 11 cities:
 
 | Location | Country | State | Center LON | Center LAT | ORS Region | BBBike PBF Name |
 |----------|---------|-------|------------|------------|------------|-----------------|
@@ -61,10 +61,12 @@ These 11 cities are pre-configured with verified BBBike PBF URLs, bounding boxes
 
 ### Adding Additional Maps (Before Native App Deployment)
 
-Before building and deploying the React native app (Step 12), the user may want to add support for cities not in the default list. Follow this workflow:
+The 11 default cities above are already built into the app and require no extra configuration. However, if the user wants to add support for cities **not in the default list**, this must be done **before** building the Docker image in Step 12. Follow this workflow:
 
-**1. Show the user the default maps above and ask:**
-> "Would you like to add any additional city maps beyond the 11 defaults?"
+**1. Show the user the default maps above and explain:**
+> "The app ships with 11 pre-configured cities. When you select any of these cities in the app, it will automatically download the map and provision routing — no extra setup needed.
+>
+> Would you like to add any **extra** cities beyond these 11 defaults? (This requires adding them to the code before we build the Docker image.)"
 
 **2. If the user requests a city, verify it exists on the BBBike download server:**
 
