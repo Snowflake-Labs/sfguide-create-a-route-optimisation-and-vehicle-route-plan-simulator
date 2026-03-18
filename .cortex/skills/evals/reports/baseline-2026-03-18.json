@@ -1,0 +1,1775 @@
+{
+  "timestamp": "2026-03-18T10:42:52.124304",
+  "summary": {
+    "passed": 43,
+    "total": 48
+  },
+  "results": {
+    "trigger": [
+      {
+        "skill": "build-routing-solution",
+        "status": "fail",
+        "should_trigger": {
+          "total": 5,
+          "matched": 2,
+          "pct": 40,
+          "details": [
+            {
+              "prompt": "build routing solution",
+              "matched": true
+            },
+            {
+              "prompt": "set up OpenRouteService native app",
+              "matched": false
+            },
+            {
+              "prompt": "build and push SPCS images",
+              "matched": false
+            },
+            {
+              "prompt": "install openrouteservice app",
+              "matched": true
+            },
+            {
+              "prompt": "deploy the ORS native app to Snowflake",
+              "matched": false
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "change the map region",
+              "matched": false
+            },
+            {
+              "prompt": "deploy route optimization demo",
+              "matched": false
+            },
+            {
+              "prompt": "generate driver locations",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "routing-prerequisites",
+        "status": "fail",
+        "should_trigger": {
+          "total": 5,
+          "matched": 4,
+          "pct": 80,
+          "details": [
+            {
+              "prompt": "check build prerequisites",
+              "matched": true
+            },
+            {
+              "prompt": "am I ready to build",
+              "matched": true
+            },
+            {
+              "prompt": "what do I need installed",
+              "matched": true
+            },
+            {
+              "prompt": "verify environment setup",
+              "matched": true
+            },
+            {
+              "prompt": "check if Docker is installed",
+              "matched": false
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 1,
+          "details": [
+            {
+              "prompt": "build routing solution",
+              "matched": true
+            },
+            {
+              "prompt": "deploy the demo app",
+              "matched": false
+            },
+            {
+              "prompt": "change routing profile",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "routing-customization",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "change location",
+              "matched": true
+            },
+            {
+              "prompt": "change map",
+              "matched": true
+            },
+            {
+              "prompt": "change vehicle",
+              "matched": true
+            },
+            {
+              "prompt": "change routing profile",
+              "matched": true
+            },
+            {
+              "prompt": "change routing profiles",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "build routing solution",
+              "matched": false
+            },
+            {
+              "prompt": "deploy route optimization demo",
+              "matched": false
+            },
+            {
+              "prompt": "read ORS configuration",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "location",
+        "status": "pass",
+        "should_trigger": {
+          "total": 4,
+          "matched": 4,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "change location",
+              "matched": true
+            },
+            {
+              "prompt": "change map",
+              "matched": true
+            },
+            {
+              "prompt": "download map",
+              "matched": true
+            },
+            {
+              "prompt": "new region",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "read ORS config",
+              "matched": false
+            },
+            {
+              "prompt": "change routing profiles",
+              "matched": false
+            },
+            {
+              "prompt": "deploy demo app",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "routing-profiles",
+        "status": "pass",
+        "should_trigger": {
+          "total": 4,
+          "matched": 4,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "change routing profile",
+              "matched": true
+            },
+            {
+              "prompt": "change vehicle type",
+              "matched": true
+            },
+            {
+              "prompt": "enable profile",
+              "matched": true
+            },
+            {
+              "prompt": "disable profile",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "change map region",
+              "matched": false
+            },
+            {
+              "prompt": "deploy fleet dashboard",
+              "matched": false
+            },
+            {
+              "prompt": "read current configuration",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "read-ors-configuration",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 3,
+          "pct": 60,
+          "details": [
+            {
+              "prompt": "ors configuration",
+              "matched": true
+            },
+            {
+              "prompt": "current map region",
+              "matched": false
+            },
+            {
+              "prompt": "what routing profiles are enabled",
+              "matched": false
+            },
+            {
+              "prompt": "routing simulator configuration",
+              "matched": true
+            },
+            {
+              "prompt": "current vehicle types",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "change location",
+              "matched": false
+            },
+            {
+              "prompt": "build routing solution",
+              "matched": false
+            },
+            {
+              "prompt": "deploy demo",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "route-optimization",
+        "status": "pass",
+        "should_trigger": {
+          "total": 3,
+          "matched": 3,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "deploy route optimization demo",
+              "matched": true
+            },
+            {
+              "prompt": "setup route optimization demo",
+              "matched": true
+            },
+            {
+              "prompt": "run route optimization demo",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "generate driver locations",
+              "matched": false
+            },
+            {
+              "prompt": "route deviation analysis",
+              "matched": false
+            },
+            {
+              "prompt": "retail catchment analysis",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "route-deviation",
+        "status": "fail",
+        "should_trigger": {
+          "total": 4,
+          "matched": 4,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "deploy route deviation",
+              "matched": true
+            },
+            {
+              "prompt": "deploy detour analytics",
+              "matched": true
+            },
+            {
+              "prompt": "setup deviation analysis",
+              "matched": true
+            },
+            {
+              "prompt": "route deviation demo",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 1,
+          "details": [
+            {
+              "prompt": "general fleet tracking",
+              "matched": false
+            },
+            {
+              "prompt": "real-time GPS monitoring",
+              "matched": false
+            },
+            {
+              "prompt": "deploy route optimization demo",
+              "matched": true
+            }
+          ]
+        }
+      },
+      {
+        "skill": "retail-catchment",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "retail demo catchment",
+              "matched": true
+            },
+            {
+              "prompt": "deploy retail catchment demo",
+              "matched": true
+            },
+            {
+              "prompt": "retail isochrone analysis",
+              "matched": true
+            },
+            {
+              "prompt": "competitor mapping demo",
+              "matched": true
+            },
+            {
+              "prompt": "trade area analysis",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "generate driver locations",
+              "matched": false
+            },
+            {
+              "prompt": "route optimization",
+              "matched": false
+            },
+            {
+              "prompt": "dwell analysis",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "fleet-intelligence-taxis",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 4,
+          "pct": 80,
+          "details": [
+            {
+              "prompt": "generate driver locations",
+              "matched": true
+            },
+            {
+              "prompt": "create driver data",
+              "matched": true
+            },
+            {
+              "prompt": "setup fleet data",
+              "matched": true
+            },
+            {
+              "prompt": "fleet intelligence dashboard",
+              "matched": true
+            },
+            {
+              "prompt": "taxi fleet simulation",
+              "matched": false
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "food delivery simulation",
+              "matched": false
+            },
+            {
+              "prompt": "route deviation analysis",
+              "matched": false
+            },
+            {
+              "prompt": "route optimization demo",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "fleet-intelligence-food-delivery",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "generate courier locations",
+              "matched": true
+            },
+            {
+              "prompt": "create delivery data",
+              "matched": true
+            },
+            {
+              "prompt": "setup food delivery fleet",
+              "matched": true
+            },
+            {
+              "prompt": "deploy native app",
+              "matched": true
+            },
+            {
+              "prompt": "swiftbite dashboard",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "taxi fleet simulation",
+              "matched": false
+            },
+            {
+              "prompt": "route deviation analysis",
+              "matched": false
+            },
+            {
+              "prompt": "route optimization demo",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "dwell-analysis",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "deploy dwell analysis",
+              "matched": true
+            },
+            {
+              "prompt": "dwell analytics",
+              "matched": true
+            },
+            {
+              "prompt": "congestion analysis",
+              "matched": true
+            },
+            {
+              "prompt": "SLA alerts",
+              "matched": true
+            },
+            {
+              "prompt": "H3 heatmap",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "route deviation analysis",
+              "matched": false
+            },
+            {
+              "prompt": "food delivery fleet",
+              "matched": false
+            },
+            {
+              "prompt": "taxi fleet simulation",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "travel-time-matrix",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "travel time matrix",
+              "matched": true
+            },
+            {
+              "prompt": "H3 matrix",
+              "matched": true
+            },
+            {
+              "prompt": "matrix tabular",
+              "matched": true
+            },
+            {
+              "prompt": "ORS matrix",
+              "matched": true
+            },
+            {
+              "prompt": "compute travel times",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "single point-to-point routing",
+              "matched": false
+            },
+            {
+              "prompt": "fleet simulation data",
+              "matched": false
+            },
+            {
+              "prompt": "Streamlit deployment",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "routing-agent",
+        "status": "pass",
+        "should_trigger": {
+          "total": 4,
+          "matched": 4,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "openrouteservice demo",
+              "matched": true
+            },
+            {
+              "prompt": "routing agent",
+              "matched": true
+            },
+            {
+              "prompt": "ORS agent",
+              "matched": true
+            },
+            {
+              "prompt": "routing intelligence",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "deploy fleet intelligence",
+              "matched": false
+            },
+            {
+              "prompt": "route deviation analysis",
+              "matched": false
+            },
+            {
+              "prompt": "change ORS configuration",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "skill-optimiser",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "optimize skill",
+              "matched": true
+            },
+            {
+              "prompt": "audit skill",
+              "matched": true
+            },
+            {
+              "prompt": "review skill",
+              "matched": true
+            },
+            {
+              "prompt": "improve skill",
+              "matched": true
+            },
+            {
+              "prompt": "fix skill triggers",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "general code review",
+              "matched": false
+            },
+            {
+              "prompt": "non-skill markdown editing",
+              "matched": false
+            },
+            {
+              "prompt": "MCP server development",
+              "matched": false
+            }
+          ]
+        }
+      },
+      {
+        "skill": "synthetic-datasets-genertor",
+        "status": "pass",
+        "should_trigger": {
+          "total": 5,
+          "matched": 5,
+          "pct": 100,
+          "details": [
+            {
+              "prompt": "generate synthetic telemetry",
+              "matched": true
+            },
+            {
+              "prompt": "create fleet data",
+              "matched": true
+            },
+            {
+              "prompt": "synthetic truck data",
+              "matched": true
+            },
+            {
+              "prompt": "generate GPS data",
+              "matched": true
+            },
+            {
+              "prompt": "populate telemetry tables",
+              "matched": true
+            }
+          ]
+        },
+        "should_not_trigger": {
+          "total": 3,
+          "false_triggers": 0,
+          "details": [
+            {
+              "prompt": "deploy route deviation demo",
+              "matched": false
+            },
+            {
+              "prompt": "real-time fleet tracking",
+              "matched": false
+            },
+            {
+              "prompt": "food delivery data",
+              "matched": false
+            }
+          ]
+        }
+      }
+    ],
+    "quality": [
+      {
+        "skill": "build-routing-solution",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/build-routing-solution/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'build-routing-solution' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='build-routing-solution'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (387 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1049 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "fail",
+            "message": "No error handling section"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=1049w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "dwell-analysis",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/dwell-analysis/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'dwell-analysis' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='dwell-analysis'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (742 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1011 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=1011w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "fleet-intelligence-food-delivery",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/fleet-intelligence-food-delivery/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'fleet-intelligence-food-delivery' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='fleet-intelligence-food-delivery'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (898 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1254 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "fail",
+            "message": "No examples or stopping points"
+          },
+          "check_11": {
+            "status": "skipped",
+            "message": "Progressive disclosure OK (body=1254w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "fleet-intelligence-taxis",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/fleet-intelligence-taxis/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'fleet-intelligence-taxis' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='fleet-intelligence-taxis'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (683 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1165 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "fail",
+            "message": "No examples or stopping points"
+          },
+          "check_11": {
+            "status": "skipped",
+            "message": "Progressive disclosure OK (body=1165w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "retail-catchment",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/retail-catchment/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'retail-catchment' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='retail-catchment'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (644 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 604 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=604w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "route-deviation",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/route-deviation/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'route-deviation' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='route-deviation'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (457 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1142 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=1142w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "route-optimization",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/route-optimization/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'route-optimization' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='route-optimization'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (422 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 909 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "skipped",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=909w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "routing-agent",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-agent/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'routing-agent' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='routing-agent'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (387 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 817 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=817w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "routing-customization",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'routing-customization' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='routing-customization'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (410 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 824 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "fail",
+            "message": "No error handling section"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=824w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "location",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/location/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'location' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='location'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (416 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 925 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "fail",
+            "message": "No error handling section"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=925w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "read-ors-configuration",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/read-ors-configuration/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'read-ors-configuration' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='read-ors-configuration'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (477 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 308 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=308w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "routing-profiles",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/routing-profiles/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'routing-profiles' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='routing-profiles'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (423 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 447 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=447w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "routing-prerequisites",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-prerequisites/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'routing-prerequisites' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='routing-prerequisites'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (492 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 934 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "fail",
+            "message": "No error handling section"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=934w, refs=no)"
+          }
+        }
+      },
+      {
+        "skill": "skill-optimiser",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/skill-optimiser/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'skill-optimiser' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='skill-optimiser'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (611 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 515 words <= 5000"
+          },
+          "check_8": {
+            "status": "fail",
+            "message": "Vague phrases found: ['validate things properly']"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=515w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "synthetic-datasets-genertor",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-genertor/SKILL.md",
+        "score": "10/11",
+        "passed": 10,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'synthetic-datasets-genertor' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='synthetic-datasets-genertor'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (789 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1024 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "fail",
+            "message": "No examples or stopping points"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=1024w, refs=yes)"
+          }
+        }
+      },
+      {
+        "skill": "travel-time-matrix",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/travel-time-matrix/SKILL.md",
+        "score": "11/11",
+        "passed": 11,
+        "total": 11,
+        "checks": {
+          "check_1": {
+            "status": "pass",
+            "message": "Folder 'travel-time-matrix' is kebab-case"
+          },
+          "check_2": {
+            "status": "pass",
+            "message": "Filename is 'SKILL.md'"
+          },
+          "check_3": {
+            "status": "pass",
+            "message": "No README.md"
+          },
+          "check_4": {
+            "status": "pass",
+            "message": "Frontmatter OK, name='travel-time-matrix'"
+          },
+          "check_5": {
+            "status": "pass",
+            "message": "No XML in frontmatter"
+          },
+          "check_6": {
+            "status": "pass",
+            "message": "Description OK (628 chars, has_triggers=True)"
+          },
+          "check_7": {
+            "status": "pass",
+            "message": "Body 1947 words <= 5000"
+          },
+          "check_8": {
+            "status": "pass",
+            "message": "No vague phrases"
+          },
+          "check_9": {
+            "status": "pass",
+            "message": "Error handling section found"
+          },
+          "check_10": {
+            "status": "pass",
+            "message": "Examples or stopping points found"
+          },
+          "check_11": {
+            "status": "pass",
+            "message": "Progressive disclosure OK (body=1947w, refs=yes)"
+          }
+        }
+      }
+    ],
+    "xref": [
+      {
+        "skill": "build-routing-solution",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/build-routing-solution/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "dwell-analysis",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/dwell-analysis/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "fleet-intelligence-food-delivery",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/fleet-intelligence-food-delivery/SKILL.md",
+        "status": "fail",
+        "issue_count": 30,
+        "issues": [
+          "Orphaned asset: assets/react-app/server/index.ts not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/streamlit/environment.yml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/streamlit/status.py not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/ors_service.yaml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/fleet_intelligence_service.yaml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/routing_gateway_service.yaml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/vroom_service.yaml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/downloader/downloader_spec.yaml not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/downloader/Dockerfile not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/downloader/downloader_service.py not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/gateway/routing_service.py not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/native-app/services/gateway/Dockerfile not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/App.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/main.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/types.ts not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/vite-env.d.ts not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/styles/global.css not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/DataBuilder.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/StatsPanel.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/MatrixBuilder.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/FleetMap.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/CatchmentPanel.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/Header.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/components/ChatPanel.tsx not referenced in SKILL.md",
+          "Orphaned asset: assets/react-app/src/hooks/useData.ts not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/pages/3_Travel_Time_Analysis.py not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/pages/2_Heat_Map.py not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/pages/1_Courier_Routes.py not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/pages/3_Travel_Time_Matrix.py not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/pages/4_Retail_Catchment.py not referenced in SKILL.md"
+        ]
+      },
+      {
+        "skill": "fleet-intelligence-taxis",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/fleet-intelligence-taxis/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "retail-catchment",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/retail-catchment/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "route-deviation",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/route-deviation/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "route-optimization",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/route-optimization/SKILL.md",
+        "status": "fail",
+        "issue_count": 8,
+        "issues": [
+          "Orphaned asset: assets/streamlit/extra.css not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/environment.yml not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/routing.py not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/config.toml not referenced in SKILL.md",
+          "Orphaned asset: assets/streamlit/logo.svg not referenced in SKILL.md",
+          "Orphaned asset: assets/notebooks/add_carto_data.ipynb not referenced in SKILL.md",
+          "Orphaned asset: assets/notebooks/environment.yml not referenced in SKILL.md",
+          "Orphaned asset: assets/notebooks/routing_functions_aisql.ipynb not referenced in SKILL.md"
+        ]
+      },
+      {
+        "skill": "routing-agent",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-agent/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "routing-customization",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "location",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/location/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "read-ors-configuration",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/read-ors-configuration/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "routing-profiles",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-customization/routing-profiles/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "routing-prerequisites",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/routing-prerequisites/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "skill-optimiser",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/skill-optimiser/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "synthetic-datasets-genertor",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/synthetic-datasets-genertor/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      },
+      {
+        "skill": "travel-time-matrix",
+        "path": "/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/travel-time-matrix/SKILL.md",
+        "status": "pass",
+        "issue_count": 0,
+        "issues": []
+      }
+    ]
+  }
+}

@@ -1,6 +1,10 @@
 ---
 name: build-routing-solution
-description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images. Triggers: build routing solution, install openrouteservice app."
+description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images, deploy ORS native app to Snowflake. Do NOT use for: changing maps or routing profiles (use customize-main), deploying demo apps (use deploy-route-optimization-demo or deploy-fleet-intelligence-taxis). Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS native app, SPCS image build, OpenRouteService deployment."
+metadata:
+  author: Snowflake SIT-IS
+  version: 1.0.0
+  category: infrastructure
 ---
 
 # Deploy Route Optimizer
@@ -12,7 +16,9 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 - Container runtime (Podman or Docker) installed and running
 - Snowflake CLI (`snow`) installed
 - Active Snowflake connection with ACCOUNTADMIN role
-- Repository cloned at: `/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator`
+- Repository cloned; working directory set to repo root
+
+> All relative paths (e.g., `Native_app/`, `Notebook/`) are relative to the repository root directory.
 
 ## Workflow
 
@@ -53,7 +59,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-build-routing-s
 
 **Output:** Container runtime selected and verified running
 
-**Next:** Proceed to Step 2
+**Next:** Proceed to Step 3
 
 ### Step 3: Setup Database and Stages
 
@@ -68,14 +74,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-build-routing-s
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE);
-   CREATE IMAGE IF NOT EXISTS REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+   CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60
        COMMENT = '{"origin":"sf_sit-is", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
    ```
 
 **Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created
 
-**Next:** Proceed to Step 3
+**Next:** Proceed to Step 4
 
 ### Step 4: Upload Configuration Files
 
@@ -97,7 +103,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-build-routing-s
 
 **Output:** Configuration files uploaded to Snowflake stage
 
-**Next:** Proceed to Step 4
+**Next:** Proceed to Step 5
 
 ### Step 5: Build and Push Container Images
 
@@ -167,7 +173,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-build-routing-s
 - Docker daemon not running: Start Docker Desktop
 - Build failures: Check container runtime status and retry
 
-**Next:** Proceed to Step 5
+**Next:** Proceed to Step 6
 
 ### Step 6: Deploy Native App
 

@@ -1,0 +1,227 @@
+# Retail Catchment SQL Pipeline
+
+## Step 1: Set Query Tag
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is","name":"oss-retail-catchment-analysis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+## Step 2: Verify OpenRouteService Installation
+
+**2a. Check ORS application exists:**
+
+```sql
+SHOW APPLICATIONS LIKE '%OPENROUTESERVICE%';
+```
+
+**2b. Verify services are running:**
+
+```sql
+SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+```
+
+**2c. Resume suspended services:**
+
+```sql
+ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
+```
+
+## Step 3: Get Carto Overture Datasets
+
+**3a. Get Overture Maps Places (POI data):**
+
+```sql
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
+```
+
+**3b. Get Overture Maps Addresses (for H3 density):**
+
+```sql
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
+```
+
+**3c. Verify datasets:**
+
+```sql
+SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
+SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US' LIMIT 1;
+```
+
+## Step 4: Create Database, Schema, and Warehouse
+
+```sql
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE
+    DIRECTORY = (ENABLE = TRUE)
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+## Step 5: Create Optimized Data Tables
+
+**5a. Set bounding box configuration (customize for your region):**
+
+```sql
+SET BBOX_MIN_LON = -123.0;
+SET BBOX_MIN_LAT = 36.8;
+SET BBOX_MAX_LON = -121.5;
+SET BBOX_MAX_LAT = 38.5;
+SET REGION_NAME = 'San Francisco Bay Area';
+```
+
+Common bounding boxes:
+- San Francisco Bay Area: (-123.0, 36.8, -121.5, 38.5)
+- New York Metro: (-74.5, 40.4, -73.5, 41.2)
+- Los Angeles: (-118.8, 33.5, -117.5, 34.5)
+- Chicago: (-88.5, 41.5, -87.2, 42.2)
+- London: (-0.6, 51.2, 0.4, 51.8)
+
+**5b. Create filtered POI table:**
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS AS
+SELECT 
+    ID AS POI_ID,
+    NAMES:primary::VARCHAR AS POI_NAME,
+    BASIC_CATEGORY,
+    ST_X(GEOMETRY) AS LONGITUDE,
+    ST_Y(GEOMETRY) AS LATITUDE,
+    GEOMETRY,
+    COALESCE(ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
+    ADDRESSES[0]:locality::VARCHAR AS CITY,
+    ADDRESSES[0]:region::VARCHAR AS STATE,
+    ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+WHERE BASIC_CATEGORY IN (
+    'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+    'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+    'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+    'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
+)
+AND GEOMETRY IS NOT NULL
+AND ADDRESSES[0]:region IS NOT NULL
+AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
+AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
+```
+
+**5c. Create pre-aggregated cities table:**
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE AS
+SELECT 
+    STATE,
+    CITY,
+    COUNT(*) AS POI_COUNT
+FROM OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS
+WHERE CITY IS NOT NULL
+GROUP BY STATE, CITY
+HAVING COUNT(*) > 10
+ORDER BY STATE, POI_COUNT DESC;
+```
+
+**5d. Create addresses table within bounding box:**
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES AS
+SELECT 
+    ID,
+    GEOMETRY,
+    ST_X(GEOMETRY) AS LONGITUDE,
+    ST_Y(GEOMETRY) AS LATITUDE,
+    POSTAL_CITY AS CITY,
+    POSTCODE
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
+WHERE COUNTRY = 'US'
+AND GEOMETRY IS NOT NULL
+AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
+AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
+```
+
+**5e. Store region configuration:**
+
+```sql
+CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGION_CONFIG AS
+SELECT 
+    $REGION_NAME AS REGION_NAME,
+    $BBOX_MIN_LON AS BBOX_MIN_LON,
+    $BBOX_MIN_LAT AS BBOX_MIN_LAT,
+    $BBOX_MAX_LON AS BBOX_MAX_LON,
+    $BBOX_MAX_LAT AS BBOX_MAX_LAT,
+    CURRENT_TIMESTAMP() AS CREATED_AT;
+```
+
+**5f. Add search optimization:**
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS ADD SEARCH OPTIMIZATION ON EQUALITY(STATE, CITY, BASIC_CATEGORY);
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE ADD SEARCH OPTIMIZATION ON EQUALITY(STATE);
+```
+
+**5g. Add clustering:**
+
+```sql
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS CLUSTER BY (STATE, CITY, BASIC_CATEGORY);
+ALTER TABLE OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES CLUSTER BY (LONGITUDE, LATITUDE);
+```
+
+**5h. Verify tables:**
+
+```sql
+SELECT 'RETAIL_POIS' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_POIS
+UNION ALL
+SELECT 'CITIES_BY_STATE', COUNT(*) FROM OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.CITIES_BY_STATE
+UNION ALL
+SELECT 'REGIONAL_ADDRESSES', COUNT(*) FROM OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.REGIONAL_ADDRESSES;
+```
+
+## Step 6: Upload Streamlit Files
+
+```bash
+snow stage copy assets/streamlit/retail_catchment.py @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy assets/streamlit/environment.yml @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy assets/streamlit/extra.css @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy assets/streamlit/logo.svg @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+snow stage copy assets/streamlit/config.toml @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE --overwrite
+```
+
+Verify:
+
+```sql
+LIST @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE;
+```
+
+## Step 7: Create Streamlit App
+
+```sql
+CREATE OR REPLACE STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP
+    FROM @OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.STREAMLIT_STAGE
+    MAIN_FILE = 'retail_catchment.py'
+    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
+    TITLE = 'Retail Catchment Application'
+    COMMENT = '{"origin":"sf_sit-is", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+
+ALTER STREAMLIT OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP ADD LIVE VERSION FROM LAST;
+```
+
+## Step 8: Verify and Launch
+
+```sql
+SHOW STREAMLITS IN SCHEMA OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO;
+
+SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/OPENROUTESERVICE_SETUP.RETAIL_CATCHMENT_DEMO.RETAIL_CATCHMENT_APP') AS streamlit_url;
+```

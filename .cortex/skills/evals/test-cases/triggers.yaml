@@ -1,0 +1,185 @@
+build-routing-solution:
+  should_trigger:
+    - "build routing solution"
+    - "set up OpenRouteService native app"
+    - "build and push SPCS images"
+    - "install openrouteservice app"
+    - "deploy the ORS native app to Snowflake"
+  should_not_trigger:
+    - "change the map region"
+    - "deploy route optimization demo"
+    - "generate driver locations"
+
+routing-prerequisites:
+  should_trigger:
+    - "check build prerequisites"
+    - "am I ready to build"
+    - "what do I need installed"
+    - "verify environment setup"
+    - "check if Docker is installed"
+  should_not_trigger:
+    - "build routing solution"
+    - "deploy the demo app"
+    - "change routing profile"
+
+routing-customization:
+  should_trigger:
+    - "change location"
+    - "change map"
+    - "change vehicle"
+    - "change routing profile"
+    - "change routing profiles"
+  should_not_trigger:
+    - "build routing solution"
+    - "deploy route optimization demo"
+    - "read ORS configuration"
+
+location:
+  should_trigger:
+    - "change location"
+    - "change map"
+    - "download map"
+    - "new region"
+  should_not_trigger:
+    - "read ORS config"
+    - "change routing profiles"
+    - "deploy demo app"
+
+routing-profiles:
+  should_trigger:
+    - "change routing profile"
+    - "change vehicle type"
+    - "enable profile"
+    - "disable profile"
+  should_not_trigger:
+    - "change map region"
+    - "deploy fleet dashboard"
+    - "read current configuration"
+
+read-ors-configuration:
+  should_trigger:
+    - "ors configuration"
+    - "current map region"
+    - "what routing profiles are enabled"
+    - "routing simulator configuration"
+    - "current vehicle types"
+  should_not_trigger:
+    - "change location"
+    - "build routing solution"
+    - "deploy demo"
+
+route-optimization:
+  should_trigger:
+    - "deploy route optimization demo"
+    - "setup route optimization demo"
+    - "run route optimization demo"
+  should_not_trigger:
+    - "generate driver locations"
+    - "route deviation analysis"
+    - "retail catchment analysis"
+
+route-deviation:
+  should_trigger:
+    - "deploy route deviation"
+    - "deploy detour analytics"
+    - "setup deviation analysis"
+    - "route deviation demo"
+  should_not_trigger:
+    - "general fleet tracking"
+    - "real-time GPS monitoring"
+    - "deploy route optimization demo"
+
+retail-catchment:
+  should_trigger:
+    - "retail demo catchment"
+    - "deploy retail catchment demo"
+    - "retail isochrone analysis"
+    - "competitor mapping demo"
+    - "trade area analysis"
+  should_not_trigger:
+    - "generate driver locations"
+    - "route optimization"
+    - "dwell analysis"
+
+fleet-intelligence-taxis:
+  should_trigger:
+    - "generate driver locations"
+    - "create driver data"
+    - "setup fleet data"
+    - "fleet intelligence dashboard"
+    - "taxi fleet simulation"
+  should_not_trigger:
+    - "food delivery simulation"
+    - "route deviation analysis"
+    - "route optimization demo"
+
+fleet-intelligence-food-delivery:
+  should_trigger:
+    - "generate courier locations"
+    - "create delivery data"
+    - "setup food delivery fleet"
+    - "deploy native app"
+    - "swiftbite dashboard"
+  should_not_trigger:
+    - "taxi fleet simulation"
+    - "route deviation analysis"
+    - "route optimization demo"
+
+dwell-analysis:
+  should_trigger:
+    - "deploy dwell analysis"
+    - "dwell analytics"
+    - "congestion analysis"
+    - "SLA alerts"
+    - "H3 heatmap"
+  should_not_trigger:
+    - "route deviation analysis"
+    - "food delivery fleet"
+    - "taxi fleet simulation"
+
+travel-time-matrix:
+  should_trigger:
+    - "travel time matrix"
+    - "H3 matrix"
+    - "matrix tabular"
+    - "ORS matrix"
+    - "compute travel times"
+  should_not_trigger:
+    - "single point-to-point routing"
+    - "fleet simulation data"
+    - "Streamlit deployment"
+
+routing-agent:
+  should_trigger:
+    - "openrouteservice demo"
+    - "routing agent"
+    - "ORS agent"
+    - "routing intelligence"
+  should_not_trigger:
+    - "deploy fleet intelligence"
+    - "route deviation analysis"
+    - "change ORS configuration"
+
+skill-optimiser:
+  should_trigger:
+    - "optimize skill"
+    - "audit skill"
+    - "review skill"
+    - "improve skill"
+    - "fix skill triggers"
+  should_not_trigger:
+    - "general code review"
+    - "non-skill markdown editing"
+    - "MCP server development"
+
+synthetic-datasets-genertor:
+  should_trigger:
+    - "generate synthetic telemetry"
+    - "create fleet data"
+    - "synthetic truck data"
+    - "generate GPS data"
+    - "populate telemetry tables"
+  should_not_trigger:
+    - "deploy route deviation demo"
+    - "real-time fleet tracking"
+    - "food delivery data"

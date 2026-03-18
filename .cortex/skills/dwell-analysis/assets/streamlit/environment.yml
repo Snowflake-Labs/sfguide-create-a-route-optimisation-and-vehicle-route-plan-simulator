@@ -1,0 +1,9 @@
+name: dwell-analytics
+channels:
+  - snowflake
+dependencies:
+  - streamlit=1.35.0
+  - snowflake-connector-python
+  - altair
+  - pydeck
+  - pandas
