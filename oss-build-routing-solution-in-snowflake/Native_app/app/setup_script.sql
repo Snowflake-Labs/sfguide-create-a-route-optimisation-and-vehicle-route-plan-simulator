@@ -60,7 +60,6 @@ BEGIN
    CREATE OR ALTER STAGE core.ORS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_elevation_cache_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
-   CREATE OR ALTER STAGE core.NOMINATIM_DB_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
 
    GRANT READ ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT READ ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
@@ -69,9 +68,6 @@ BEGIN
    GRANT WRITE ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_elevation_cache_SPCS_STAGE TO APPLICATION ROLE app_user;
-
-   GRANT READ ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
-   GRANT WRITE ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
 
    RETURN 'Stages Created Successfully';
 END;
@@ -157,21 +153,6 @@ BEGIN
 
    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
 
-   BEGIN
-      ALTER SERVICE IF EXISTS core.nominatim_service
-         FROM SPECIFICATION_FILE='services/nominatim/nominatim-service.yaml';
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
-
-   BEGIN
-      CREATE SERVICE IF NOT EXISTS core.nominatim_service
-         IN COMPUTE POOL identifier(:pool_name)
-         FROM spec='services/nominatim/nominatim-service.yaml'
-         MIN_INSTANCES = 1
-         MAX_INSTANCES = 1
-         AUTO_SUSPEND_SECS = 14400;
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
 
    GRANT OPERATE ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
@@ -180,11 +161,6 @@ BEGIN
    GRANT OPERATE ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
 
-   BEGIN
-      GRANT OPERATE ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
-      GRANT MONITOR ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
 
    RETURN 'Service successfully created';
 END;
@@ -315,38 +291,6 @@ BEGIN
       MAX_BATCH_ROWS = 1000
       AS '/matrix_tabular';
    GRANT USAGE ON FUNCTION core.MATRIX_TABULAR(varchar, array, array) TO APPLICATION ROLE app_user;
-
-   CREATE OR REPLACE FUNCTION core.GEOCODE(address VARCHAR)
-      RETURNS VARIANT
-      SERVICE=core.routing_gateway_service
-      ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 100
-      AS '/geocode';
-   GRANT USAGE ON FUNCTION core.GEOCODE(varchar) TO APPLICATION ROLE app_user;
-
-   CREATE OR REPLACE FUNCTION core.GEOCODE(address VARCHAR, options VARIANT)
-      RETURNS VARIANT
-      SERVICE=core.routing_gateway_service
-      ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 100
-      AS '/geocode_detailed';
-   GRANT USAGE ON FUNCTION core.GEOCODE(varchar, variant) TO APPLICATION ROLE app_user;
-
-   CREATE OR REPLACE FUNCTION core.REVERSE_GEOCODE(lon FLOAT, lat FLOAT)
-      RETURNS VARIANT
-      SERVICE=core.routing_gateway_service
-      ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 100
-      AS '/reverse_geocode';
-   GRANT USAGE ON FUNCTION core.REVERSE_GEOCODE(float, float) TO APPLICATION ROLE app_user;
-
-   CREATE OR REPLACE FUNCTION core.GEOCODE_LOOKUP(osm_ids VARCHAR)
-      RETURNS VARIANT
-      SERVICE=core.routing_gateway_service
-      ENDPOINT='gateway'
-      MAX_BATCH_ROWS = 100
-      AS '/geocode_lookup';
-   GRANT USAGE ON FUNCTION core.GEOCODE_LOOKUP(varchar) TO APPLICATION ROLE app_user;
 
    -- Create MAP_CONFIG table to store map metadata for the function tester
    CREATE TABLE IF NOT EXISTS core.MAP_CONFIG (

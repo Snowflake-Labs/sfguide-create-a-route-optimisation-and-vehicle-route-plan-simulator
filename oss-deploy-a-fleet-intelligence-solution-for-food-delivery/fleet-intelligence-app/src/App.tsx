@@ -20,8 +20,9 @@ export default function App() {
   const [catchment, setCatchment] = useState<CatchmentData | null>(null);
   const [catchmentLoading, setCatchmentLoading] = useState(false);
   const [hoveredRestaurant, setHoveredRestaurant] = useState<CatchmentRestaurant | null>(null);
-  const { stats, loading: statsLoading } = useFleetStats();
-  const { activeStats } = useActiveStats();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { stats, loading: statsLoading } = useFleetStats(refreshKey);
+  const { activeStats } = useActiveStats(refreshKey);
   const agent = useAgent();
 
   const cityConfig: CityConfig = selectedCity === 'All Cities'
@@ -99,6 +100,7 @@ export default function App() {
           catchmentRestaurants={catchment?.restaurants}
           catchmentCustomers={catchment?.customers}
           hoveredRestaurant={hoveredRestaurant}
+          refreshKey={refreshKey}
         />
         {matrixSelection && mapMode === 'matrix' && (
           <CatchmentPanel
@@ -116,6 +118,7 @@ export default function App() {
         open={dataBuilderOpen}
         onClose={() => setDataBuilderOpen(false)}
         initialCity={selectedCity}
+        onDataBuilt={() => setRefreshKey((k) => k + 1)}
       />
     </div>
   );

@@ -132,13 +132,14 @@ interface Props {
   catchmentRestaurants?: CatchmentRestaurant[];
   catchmentCustomers?: CatchmentCustomer[];
   hoveredRestaurant?: CatchmentRestaurant | null;
+  refreshKey?: number;
 }
 
-export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, statusFilter, mapZoomTarget, onMapZoomComplete, onMatrixSelection, catchmentRestaurants, catchmentCustomers, hoveredRestaurant }: Props) {
+export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, statusFilter, mapZoomTarget, onMapZoomComplete, onMatrixSelection, catchmentRestaurants, catchmentCustomers, hoveredRestaurant, refreshKey = 0 }: Props) {
   const [availableDates, setAvailableDates] = useState<{date: string; count: number}[]>([]);
   const [selectedDateIdx, setSelectedDateIdx] = useState<number>(-1);
   const selectedDate = selectedDateIdx >= 0 && selectedDateIdx < availableDates.length ? availableDates[selectedDateIdx].date : '';
-  const { routes, loading } = useRoutes(city, statusFilter, selectedDate);
+  const { routes, loading } = useRoutes(city, statusFilter, selectedDate, refreshKey);
   const [viewState, setViewState] = useState({
     longitude: cityConfig.longitude,
     latitude: cityConfig.latitude,

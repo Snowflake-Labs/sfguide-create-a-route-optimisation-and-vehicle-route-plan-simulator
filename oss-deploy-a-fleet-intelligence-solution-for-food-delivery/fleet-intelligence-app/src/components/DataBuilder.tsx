@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { CITY_NAMES } from '../types';
+import { CITY_NAMES, VEHICLE_TYPES, DEFAULT_VEHICLE_TYPE } from '../types';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   initialCity: string;
+  onDataBuilt?: () => void;
 }
 
 interface CityStatus {
@@ -95,10 +96,11 @@ const DATA_STEPS = [
 
 const PROVISION_STATUS_ORDER = ['idle', 'downloading_pbf', 'creating_pool', 'creating_service', 'building_graph', 'creating_functions', 'ready', 'building_data', 'complete'];
 
-export default function DataBuilder({ open, onClose, initialCity }: Props) {
+export default function DataBuilder({ open, onClose, initialCity, onDataBuilt }: Props) {
   const [city, setCity] = useState(initialCity !== 'All Cities' ? initialCity : CITY_NAMES[0]);
   const [numCouriers, setNumCouriers] = useState(50);
   const [numDays, setNumDays] = useState(1);
+  const [vehicleType, setVehicleType] = useState(DEFAULT_VEHICLE_TYPE);
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [cityStatus, setCityStatus] = useState<CityStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -156,7 +158,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
       const resp = await fetch(`/api/city/${encodeURIComponent(city)}/provision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ num_couriers: numCouriers, num_days: numDays, start_date: startDate, shifts }),
+        body: JSON.stringify({ num_couriers: numCouriers, num_days: numDays, start_date: startDate, shifts, vehicle_type: vehicleType }),
       });
       const data = await resp.json();
       if (data.status === 'started' || data.error?.includes('already in progress')) {
@@ -172,6 +174,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
               if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
               setIsBuilding(false);
               fetchStatus();
+              if (pd.status === 'complete' && onDataBuilt) onDataBuilt();
             }
           } catch {}
         }, 2000);
@@ -181,7 +184,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
       if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
       setProgress({ status: 'error', error: err.message, orsRegion: '' });
     }
-  }, [city, numCouriers, numDays, startDate, fetchStatus]);
+  }, [city, numCouriers, numDays, startDate, fetchStatus, onDataBuilt]);
 
   const deleteData = useCallback(async () => {
     if (!city) return;
@@ -200,7 +203,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
       setActionMessage(`Delete failed: ${err.message}`);
     }
     setDeleting(false);
-  }, [city, fetchStatus]);
+  }, [city, fetchStatus, onDataBuilt]);
 
   const restoreData = useCallback(async () => {
     if (!city) return;
@@ -216,6 +219,7 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
       if (data.status === 'restored') {
         setActionMessage(`Data restored for ${city}`);
         fetchStatus();
+        if (onDataBuilt) onDataBuilt();
       } else {
         setActionMessage(`Restore failed: ${data.error || 'Unknown error'}`);
       }
@@ -338,6 +342,24 @@ export default function DataBuilder({ open, onClose, initialCity }: Props) {
                 <div className="data-config-item">
                   <label>Start Date (Today)</label>
                   <input type="date" className="data-date-input" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </div>
+                <div className="data-config-item" style={{ gridColumn: '1 / -1' }}>
+                  <label>Vehicle Type</label>
+                  <div className="matrix-region-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 6 }}>
+                    {VEHICLE_TYPES.map((vt) => (
+                      <button
+                        key={vt.value}
+                        className={`matrix-region-card ${vehicleType === vt.value ? 'active' : ''}`}
+                        onClick={() => setVehicleType(vt.value)}
+                        style={{ padding: '8px 10px', minHeight: 0 }}
+                      >
+                        <div className="matrix-region-name" style={{ fontSize: 13 }}>
+                          <span style={{ marginRight: 4 }}>{vt.icon}</span>
+                          {vt.label}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className="matrix-estimate-grid" style={{ marginTop: 12 }}>

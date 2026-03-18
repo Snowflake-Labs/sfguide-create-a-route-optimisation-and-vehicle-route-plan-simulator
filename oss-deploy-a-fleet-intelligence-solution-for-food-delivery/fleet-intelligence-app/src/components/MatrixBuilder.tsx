@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { MatrixEstimate, MatrixBuildStatus } from '../types';
+import type { MatrixEstimate, MatrixBuildStatus, MatrixExistingDetail } from '../types';
+import { VEHICLE_TYPES, DEFAULT_VEHICLE_TYPE } from '../types';
 
 interface Props {
   open: boolean;
@@ -99,11 +100,13 @@ export default function MatrixBuilder({ open, onClose }: Props) {
   const [loadingRegions, setLoadingRegions] = useState(false);
   const [selectedRegion, setSelectedRegion] = useState<string>('');
   const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([9, 8, 7]));
+  const [selectedVehicle, setSelectedVehicle] = useState<string>(DEFAULT_VEHICLE_TYPE);
   const [buildStatus, setBuildStatus] = useState<MatrixBuildStatus[]>([]);
   const [isBuilding, setIsBuilding] = useState(false);
   const [liveProgress, setLiveProgress] = useState<Record<string, { built: number; total: number }>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [existingCounts, setExistingCounts] = useState<Record<string, number>>({});
+  const [existingDetails, setExistingDetails] = useState<MatrixExistingDetail[]>([]);
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [modalView, setModalView] = useState<ModalView>('main');
   const [removeResults, setRemoveResults] = useState<Record<string, RemoveResult>>({});
@@ -134,7 +137,8 @@ export default function MatrixBuilder({ open, onClose }: Props) {
     fetch(`/api/matrix/existing${params}`)
       .then((r) => r.json())
       .then((data) => {
-        setExistingCounts(data);
+        setExistingCounts(data.counts || {});
+        setExistingDetails(data.details || []);
         setLoadingExisting(false);
       })
       .catch(() => setLoadingExisting(false));
@@ -262,6 +266,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
         body: JSON.stringify({
           region: selectedRegion,
           resolutions: Array.from(selectedRes).sort(),
+          vehicle_type: selectedVehicle,
         }),
       });
       const data = await res.json();
@@ -290,7 +295,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
       }
     } catch (err: any) {
       setIsBuilding(false);
-      setBuildStatus([{ region: selectedRegion, resolution: -1, status: 'error', stage: 'CONNECTION_ERROR', total_origins: 0, processed_origins: 0, total_pairs: 0, built_pairs: 0, percent_complete: 0, elapsed_seconds: 0, est_remaining_seconds: 0, hexagons: 0, work_queue: 0, raw_ingested: 0, flattened: 0, error: `Service unavailable — please wait a moment and try again. (${err.message})` }]);
+      setBuildStatus([{ region: selectedRegion, resolution: -1, vehicle_type: selectedVehicle, status: 'error', stage: 'CONNECTION_ERROR', total_origins: 0, processed_origins: 0, total_pairs: 0, built_pairs: 0, percent_complete: 0, elapsed_seconds: 0, est_remaining_seconds: 0, hexagons: 0, work_queue: 0, raw_ingested: 0, flattened: 0, error: `Service unavailable — please wait a moment and try again. (${err.message})` }]);
     }
   }, [selectedRegion, selectedRes, refreshExisting]);
 
@@ -329,7 +334,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
             </svg>
             <div>
               <div className="matrix-title">Travel Time Matrix Builder</div>
-              <div className="matrix-subtitle">Pre-compute driving times between H3 hexagons using OpenRouteService</div>
+              <div className="matrix-subtitle">Pre-compute travel times between H3 hexagons using OpenRouteService</div>
             </div>
           </div>
           <button className="matrix-close" onClick={onClose}>×</button>
@@ -376,7 +381,38 @@ export default function MatrixBuilder({ open, onClose }: Props) {
           {region && regionReady && (
             <>
               <div className="matrix-section">
-                <div className="matrix-section-title">2. Select Resolutions</div>
+                <div className="matrix-section-title">2. Vehicle Type</div>
+                <div className="matrix-region-grid">
+                  {VEHICLE_TYPES.map((vt) => (
+                    <button
+                      key={vt.value}
+                      className={`matrix-region-card ${selectedVehicle === vt.value ? 'active' : ''}`}
+                      onClick={() => setSelectedVehicle(vt.value)}
+                    >
+                      <div className="matrix-region-name">
+                        <span style={{ marginRight: 6 }}>{vt.icon}</span>
+                        {vt.label}
+                      </div>
+                      <div className="matrix-region-desc">{vt.description}</div>
+                    </button>
+                  ))}
+                </div>
+                {existingDetails.filter((d) => d.region === selectedRegion).length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--sb-text-tertiary)' }}>
+                    Existing vehicle types for {region.label}: {existingDetails
+                      .filter((d) => d.region === selectedRegion)
+                      .map((d) => {
+                        const vt = VEHICLE_TYPES.find((v) => v.value === d.vehicle_type);
+                        return `${vt?.icon || ''} ${vt?.label || d.vehicle_type}`;
+                      })
+                      .filter((v, i, a) => a.indexOf(v) === i)
+                      .join(', ')}
+                  </div>
+                )}
+              </div>
+
+              <div className="matrix-section">
+                <div className="matrix-section-title">3. Select Resolutions</div>
                 <div className="matrix-res-grid">
                   {hexEstimates.map((h) => (
                     <label key={h.res} className={`matrix-res-card ${selectedRes.has(h.res) ? 'active' : ''}`}>
@@ -397,7 +433,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               </div>
 
               <div className="matrix-section">
-                <div className="matrix-section-title">3. Resource Estimate</div>
+                <div className="matrix-section-title">4. Resource Estimate</div>
                 <div className="matrix-estimate-grid">
                   <div className="matrix-estimate-card primary">
                     <div className="matrix-estimate-label">Total Pairs</div>
@@ -446,7 +482,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               </div>
 
               <div className="matrix-section">
-                <div className="matrix-section-title">4. Cost Comparison vs External APIs</div>
+                <div className="matrix-section-title">5. Cost Comparison vs External APIs</div>
                 <div className="matrix-comparison-note">
                   Computing ~{formatNumber(estimate.total_pairs)} origin-destination travel times for {region.label}
                 </div>
@@ -773,11 +809,12 @@ INSERT INTO DATA.CA_TRAVEL_TIME_RES7
 
         <div className="matrix-footer">
           <div className="matrix-footer-info">
-            {!loadingExisting && existingCounts && Object.keys(existingCounts).length > 0 && (
+            {!loadingExisting && existingDetails.length > 0 && (
               <span className="matrix-existing">
-                Existing: {Object.entries(existingCounts).map(([k, v]) =>
-                  `${k}: ${formatNumber(v as number)}`
-                ).join(' · ')}
+                Existing: {existingDetails.map((d) => {
+                  const vt = VEHICLE_TYPES.find((v) => v.value === d.vehicle_type);
+                  return `${d.table.replace('CA_TRAVEL_TIME_', '')}: ${formatNumber(d.count)} (${vt?.label || d.vehicle_type})`;
+                }).join(' · ')}
               </span>
             )}
           </div>
@@ -803,7 +840,7 @@ INSERT INTO DATA.CA_TRAVEL_TIME_RES7
               onClick={startBuild}
               disabled={isBuilding || selectedRes.size === 0 || !regionReady}
             >
-              {isBuilding ? 'Building...' : regionReady ? `Build Matrix for ${region?.label || 'Region'}${isSuspended ? ' (will resume ORS)' : ''}` : 'Select a ready region'}
+              {isBuilding ? 'Building...' : regionReady ? `Build ${VEHICLE_TYPES.find((v) => v.value === selectedVehicle)?.label || 'Car'} Matrix for ${region?.label || 'Region'}${isSuspended ? ' (will resume ORS)' : ''}` : 'Select a ready region'}
             </button>
           </div>
         </div>

@@ -708,6 +708,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
 app.get('/api/matrix/existing', async (_req, res) => {
   try {
     const counts: Record<string, number> = {};
+    const details: Array<{ table: string; region: string; vehicle_type: string; count: number }> = [];
     try {
       const rows = await snowSql(
         `SELECT TABLE_NAME, ROW_COUNT FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'DATA' AND TABLE_NAME IN ('CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9')`
@@ -720,9 +721,22 @@ app.get('/api/matrix/existing', async (_req, res) => {
         counts[tbl] = 0;
       }
     }
-    res.json(counts);
+    try {
+      for (const res_level of [7, 8, 9]) {
+        const tbl = `CA_TRAVEL_TIME_RES${res_level}`;
+        if ((counts[tbl] || 0) > 0) {
+          const breakdown = await snowSql(
+            `SELECT REGION, COALESCE(VEHICLE_TYPE, 'driving-car') AS VEHICLE_TYPE, COUNT(*) AS CNT FROM ${SF_DATABASE}.DATA.${tbl} GROUP BY REGION, VEHICLE_TYPE`
+          );
+          for (const r of breakdown) {
+            details.push({ table: tbl, region: r.REGION || 'unknown', vehicle_type: r.VEHICLE_TYPE || 'driving-car', count: Number(r.CNT || 0) });
+          }
+        }
+      }
+    } catch {}
+    res.json({ counts, details });
   } catch (err: any) {
-    res.json({});
+    res.json({ counts: {}, details: [] });
   }
 });
 
@@ -731,8 +745,12 @@ app.get('/api/matrix/travel-times', async (req, res) => {
     const resolution = req.query.resolution || '8';
     const city = req.query.city as string || '';
     const region = city ? getOrsRegion(city) : '';
+    const vehicle_type = req.query.vehicle_type as string || '';
     const tableName = `${SF_DATABASE}.DATA.CA_TRAVEL_TIME_RES${resolution}`;
-    const regionFilter = region ? `WHERE REGION = '${region.replace(/'/g, "''")}'` : '';
+    const conditions: string[] = [];
+    if (region) conditions.push(`REGION = '${region.replace(/'/g, "''")}' `);
+    if (vehicle_type) conditions.push(`VEHICLE_TYPE = '${vehicle_type.replace(/'/g, "''")}' `);
+    const regionFilter = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const sql = `
       SELECT
         ORIGIN_H3 AS HEX_ID,
@@ -763,9 +781,11 @@ app.get('/api/matrix/reachability', async (req, res) => {
     const resolution = req.query.resolution || '8';
     const city = req.query.city as string || '';
     const region = city ? getOrsRegion(city) : '';
+    const vehicle_type = req.query.vehicle_type as string || '';
     if (!origin) return res.status(400).json({ error: 'origin required' });
     const tableName = `${SF_DATABASE}.DATA.CA_TRAVEL_TIME_RES${resolution}`;
-    const regionFilter = region ? ` AND REGION = '${region.replace(/'/g, "''")}'` : '';
+    let regionFilter = region ? ` AND REGION = '${region.replace(/'/g, "''")}'` : '';
+    if (vehicle_type) regionFilter += ` AND VEHICLE_TYPE = '${vehicle_type.replace(/'/g, "''")}'`;
     const sql = `
       SELECT
         DEST_H3 AS HEX_ID,
@@ -895,7 +915,7 @@ app.get('/api/matrix/catchment', async (req, res) => {
 
 app.post('/api/matrix/build', async (req, res) => {
   try {
-    const { region, resolutions } = req.body;
+    const { region, resolutions, vehicle_type = 'cycling-electric' } = req.body;
     if (!region || !resolutions?.length) {
       return res.status(400).json({ error: 'region and resolutions required' });
     }
@@ -907,8 +927,9 @@ app.post('/api/matrix/build', async (req, res) => {
     const bounds = cityEntry[1].bbox;
     const matrixFnName = region === 'SanFrancisco' ? 'MATRIX_TABULAR' : `MATRIX_${region.toUpperCase()}`;
     const matrixFn = `${SF_DATABASE}.ROUTING.${matrixFnName}`;
+    const vehicleProfile = vehicle_type || 'cycling-electric';
 
-    const jobId = `${region}_${Date.now()}`;
+    const jobId = `${region}_${vehicleProfile}_${Date.now()}`;
     const statuses: Record<number, any> = {};
     for (const r of resolutions) {
       statuses[r] = {
@@ -946,11 +967,11 @@ app.post('/api/matrix/build', async (req, res) => {
         try {
           statuses[r].stage = 'HEXAGONS_READY';
           const result = await snowSql(
-            `CALL ${SF_DATABASE}.DATA.BUILD_MATRIX_FOR_REGION('${resLabel}', ${bounds.minLat}, ${bounds.maxLat}, ${bounds.minLon}, ${bounds.maxLon}, '${matrixFn}', '${region}')`
+            `CALL ${SF_DATABASE}.DATA.BUILD_MATRIX_FOR_REGION('${resLabel}', ${bounds.minLat}, ${bounds.maxLat}, ${bounds.minLon}, ${bounds.maxLon}, '${matrixFn}', '${region}', '${vehicleProfile}')`
           );
 
           const travelRows = await snowSql(
-            `SELECT COUNT(*) as CNT FROM ${SF_DATABASE}.DATA.CA_TRAVEL_TIME_RES${r} WHERE REGION = '${region}'`
+            `SELECT COUNT(*) as CNT FROM ${SF_DATABASE}.DATA.CA_TRAVEL_TIME_RES${r} WHERE REGION = '${region}' AND VEHICLE_TYPE = '${vehicleProfile}'`
           );
           const totalPairs = Number(travelRows[0]?.CNT || 0);
 
@@ -967,7 +988,7 @@ app.post('/api/matrix/build', async (req, res) => {
       })();
     }
 
-    res.json({ status: 'started', jobId, region });
+    res.json({ status: 'started', jobId, region, vehicle_type: vehicleProfile });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1052,18 +1073,30 @@ app.get('/health', (_req, res) => {
 app.delete('/api/matrix/remove', async (req, res) => {
   try {
     const resolutions = (req.query.resolutions as string || '7,8,9').split(',').map(Number);
-    const results: Record<number, { table: string; rows_before: number; status: string; sql: string }> = {};
+    const region = req.query.region as string || '';
+    const vehicle_type = req.query.vehicle_type as string || '';
+    const results: Record<number, { table: string; rows_before: number; rows_removed: number; status: string }> = {};
 
     for (const r of resolutions) {
       const tableName = `${SF_DATABASE}.DATA.CA_TRAVEL_TIME_RES${r}`;
       try {
-        const countRows = await snowSql(`SELECT COUNT(*) as CNT FROM ${tableName}`);
-        const rowsBefore = Number(countRows[0]?.CNT || 0);
-        const truncateSql = `TRUNCATE TABLE ${tableName}`;
-        await snowSql(truncateSql);
-        results[r] = { table: tableName, rows_before: rowsBefore, status: 'removed', sql: truncateSql };
+        if (region || vehicle_type) {
+          const conditions: string[] = [];
+          if (region) conditions.push(`REGION = '${region.replace(/'/g, "''")}'`);
+          if (vehicle_type) conditions.push(`VEHICLE_TYPE = '${vehicle_type.replace(/'/g, "''")}'`);
+          const whereClause = conditions.join(' AND ');
+          const countRows = await snowSql(`SELECT COUNT(*) as CNT FROM ${tableName} WHERE ${whereClause}`);
+          const rowsBefore = Number(countRows[0]?.CNT || 0);
+          await snowSql(`DELETE FROM ${tableName} WHERE ${whereClause}`);
+          results[r] = { table: tableName, rows_before: rowsBefore, rows_removed: rowsBefore, status: 'removed' };
+        } else {
+          const countRows = await snowSql(`SELECT COUNT(*) as CNT FROM ${tableName}`);
+          const rowsBefore = Number(countRows[0]?.CNT || 0);
+          await snowSql(`TRUNCATE TABLE ${tableName}`);
+          results[r] = { table: tableName, rows_before: rowsBefore, rows_removed: rowsBefore, status: 'removed' };
+        }
       } catch (err: any) {
-        results[r] = { table: tableName, rows_before: 0, status: 'error', sql: err.message?.slice(0, 200) };
+        results[r] = { table: tableName, rows_before: 0, rows_removed: 0, status: 'error' };
       }
     }
 
@@ -1142,9 +1175,10 @@ app.delete('/api/data/clear', async (_req, res) => {
 app.post('/api/data/build', async (req, res) => {
   if (dataBuildState.running) return res.status(409).json({ error: 'Build already in progress' });
 
-  const { cities = ['San Francisco'], num_couriers = 50, num_days = 1, start_date = '2025-01-15', shifts } = req.body;
+  const { cities = ['San Francisco'], num_couriers = 50, num_days = 1, start_date = '2025-01-15', shifts, vehicle_type = 'cycling-electric' } = req.body;
   const DB = SF_DATABASE;
   const cityList = cities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',');
+  const vehicleType = vehicle_type || 'cycling-electric';
 
   dataBuildState.running = true;
   dataBuildState.config = req.body;
@@ -1230,7 +1264,7 @@ home_locations AS (
 SELECT 'C-' || LPAD(ca.courier_num::STRING, 4, '0') AS COURIER_ID,
   hl.ADDRESS_ID AS HOME_ADDRESS_ID, ca.shift_type AS SHIFT_TYPE, ca.shift_start_hour AS SHIFT_START_HOUR,
   ca.shift_end_hour AS SHIFT_END_HOUR, ca.shift_crosses_midnight AS SHIFT_CROSSES_MIDNIGHT,
-  CASE WHEN UNIFORM(1,100,RANDOM())<=60 THEN 'bicycle' WHEN UNIFORM(1,100,RANDOM())<=85 THEN 'car' ELSE 'scooter' END AS VEHICLE_TYPE
+  '${vehicleType.replace(/'/g, "''")}' AS VEHICLE_TYPE
 FROM courier_assignments ca LEFT JOIN home_locations hl ON ca.courier_num = hl.rn`);
         const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.COURIERS`);
         updateStep('couriers', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[2].started_at || Date.now())) / 1000 });
@@ -1298,7 +1332,7 @@ SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
   RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
   CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS,
   ${routingFn}(
-    CASE VEHICLE_TYPE WHEN 'bicycle' THEN 'cycling-regular' ELSE 'driving-car' END,
+    '${vehicleType.replace(/'/g, "''")}',
     ARRAY_CONSTRUCT(ST_X(RESTAURANT_LOCATION), ST_Y(RESTAURANT_LOCATION)),
     ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
   ) AS ROUTE_RESPONSE
@@ -1381,16 +1415,34 @@ SELECT ORDER_ID, COURIER_ID, ORDER_TIME, PICKUP_TIME, DELIVERY_TIME AS DROPOFF_T
   CASE WHEN COURIER_STATE='at_restaurant' THEN 0 WHEN COURIER_STATE='picking_up' THEN 0
     WHEN COURIER_STATE='arriving' THEN UNIFORM(2,8,RANDOM()) WHEN COURIER_STATE='delivered' THEN 0
     WHEN COURIER_STATE='en_route' THEN
-      CASE VEHICLE_TYPE WHEN 'bicycle' THEN
+      CASE '${vehicleType.replace(/'/g, "''")}'
+      WHEN 'cycling-regular' THEN
         CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(8,15,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(15,22,RANDOM()) ELSE UNIFORM(20,30,RANDOM()) END
-      WHEN 'scooter' THEN
-        CASE WHEN SPEED_ROLL<=15 THEN UNIFORM(10,20,RANDOM()) WHEN SPEED_ROLL<=50 THEN UNIFORM(20,35,RANDOM()) ELSE UNIFORM(30,45,RANDOM()) END
+      WHEN 'cycling-road' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(12,18,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(18,28,RANDOM()) ELSE UNIFORM(25,35,RANDOM()) END
+      WHEN 'cycling-electric' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(15,22,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(22,30,RANDOM()) ELSE UNIFORM(28,40,RANDOM()) END
+      WHEN 'cycling-mountain' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(6,12,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(12,18,RANDOM()) ELSE UNIFORM(16,25,RANDOM()) END
+      WHEN 'foot-walking' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(3,5,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(4,6,RANDOM()) ELSE UNIFORM(5,7,RANDOM()) END
+      WHEN 'foot-hiking' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(3,5,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(4,6,RANDOM()) ELSE UNIFORM(5,8,RANDOM()) END
+      WHEN 'wheelchair' THEN
+        CASE WHEN SPEED_ROLL<=20 THEN UNIFORM(2,4,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(3,5,RANDOM()) ELSE UNIFORM(4,6,RANDOM()) END
+      WHEN 'driving-hgv' THEN
+        CASE WHEN HOUR(CURR_TIME) BETWEEN 11 AND 13 THEN
+          CASE WHEN SPEED_ROLL<=25 THEN UNIFORM(5,12,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(12,25,RANDOM()) ELSE UNIFORM(20,40,RANDOM()) END
+        WHEN HOUR(CURR_TIME) BETWEEN 18 AND 20 THEN
+          CASE WHEN SPEED_ROLL<=30 THEN UNIFORM(5,12,RANDOM()) WHEN SPEED_ROLL<=65 THEN UNIFORM(12,25,RANDOM()) ELSE UNIFORM(20,35,RANDOM()) END
+        ELSE CASE WHEN SPEED_ROLL<=15 THEN UNIFORM(8,18,RANDOM()) WHEN SPEED_ROLL<=45 THEN UNIFORM(18,30,RANDOM()) ELSE UNIFORM(25,45,RANDOM()) END
+        END
       ELSE CASE WHEN HOUR(CURR_TIME) BETWEEN 11 AND 13 THEN
           CASE WHEN SPEED_ROLL<=25 THEN UNIFORM(5,15,RANDOM()) WHEN SPEED_ROLL<=60 THEN UNIFORM(15,30,RANDOM()) ELSE UNIFORM(25,45,RANDOM()) END
         WHEN HOUR(CURR_TIME) BETWEEN 18 AND 20 THEN
           CASE WHEN SPEED_ROLL<=30 THEN UNIFORM(5,15,RANDOM()) WHEN SPEED_ROLL<=65 THEN UNIFORM(15,30,RANDOM()) ELSE UNIFORM(25,40,RANDOM()) END
         ELSE CASE WHEN SPEED_ROLL<=15 THEN UNIFORM(10,20,RANDOM()) WHEN SPEED_ROLL<=45 THEN UNIFORM(20,35,RANDOM()) ELSE UNIFORM(30,55,RANDOM()) END
-        END END END AS KMH,
+        END END AS KMH,
   NULL AS CITY
 FROM expanded`);
         const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.COURIER_LOCATIONS`);
@@ -1608,13 +1660,7 @@ async function provisionOrsForRegion(region: string): Promise<void> {
         instructions: false
         maximum_visited_nodes: 100000000
     profiles:
-      driving-car:
-        enabled: true
-      driving-hgv:
-        enabled: true
-      cycling-regular:
-        enabled: true
-      cycling-road:
+      cycling-electric:
         enabled: true
   endpoints:
     matrix:
@@ -1689,7 +1735,7 @@ app.post('/api/city/:city/provision', async (req, res) => {
   const config = CITY_ORS_MAP[city];
   if (!config) return res.status(404).json({ error: `Unknown city: ${city}` });
   const today = new Date().toISOString().slice(0, 10);
-  const { num_couriers = 50, num_days = 1, start_date = today, shifts } = req.body || {};
+  const { num_couriers = 50, num_days = 1, start_date = today, shifts, vehicle_type = 'cycling-electric' } = req.body || {};
   const region = config.orsRegion;
   if (cityProvisionStates[city]?.status !== 'idle' && cityProvisionStates[city]?.status !== 'error' && cityProvisionStates[city]?.status !== 'complete') {
     return res.status(409).json({ error: 'Provisioning already in progress', state: cityProvisionStates[city] });
@@ -1706,7 +1752,7 @@ app.post('/api/city/:city/provision', async (req, res) => {
           throw new Error(`ORS provisioning failed: ${e.message?.slice(0, 400)}`);
         });
       }
-      await runCityDataBuild(city, { num_couriers, num_days, start_date, shifts, orsPromise });
+      await runCityDataBuild(city, { num_couriers, num_days, start_date, shifts, vehicle_type, orsPromise });
       updateCityState(city, { status: 'complete', message: `Data build complete for ${city}` });
     } catch (err: any) {
       updateCityState(city, { status: 'error', error: err.message?.slice(0, 500), message: 'Build failed' });
@@ -1714,9 +1760,10 @@ app.post('/api/city/:city/provision', async (req, res) => {
   })();
 });
 
-async function runCityDataBuild(city: string, opts: { num_couriers: number; num_days: number; start_date: string; shifts?: any; orsPromise?: Promise<void> | null }) {
+async function runCityDataBuild(city: string, opts: { num_couriers: number; num_days: number; start_date: string; shifts?: any; vehicle_type?: string; orsPromise?: Promise<void> | null }) {
   const DB = SF_DATABASE;
   const { num_couriers, num_days, start_date } = opts;
+  const vehicleType = opts.vehicle_type || 'cycling-electric';
   const cityList = `'${city.replace(/'/g, "''")}'`;
   const routingFn = getDirectionsFn(city);
   const cityConfig = CITY_ORS_MAP[city];
@@ -1894,7 +1941,7 @@ routed AS (
     RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
     CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS, DAY_OFFSET,
     ${routingFn}(
-      CASE VEHICLE_TYPE WHEN 'bicycle' THEN 'cycling-regular' ELSE 'driving-car' END,
+      '${vehicleType.replace(/'/g, "''")}',
       ARRAY_CONSTRUCT(ST_X(RESTAURANT_LOCATION), ST_Y(RESTAURANT_LOCATION)),
       ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
     ) AS ROUTE_RESPONSE, CITY
@@ -2063,7 +2110,7 @@ app.get('/api/matrix/directions', async (req, res) => {
     const endLon = Number(req.query.end_lon);
     const endLat = Number(req.query.end_lat);
     const city = (req.query.city as string) || 'San Francisco';
-    const profile = (req.query.profile as string) || 'driving-car';
+    const profile = (req.query.profile as string) || 'cycling-electric';
     if (!startLon || !startLat || !endLon || !endLat) {
       return res.status(400).json({ error: 'start_lon, start_lat, end_lon, end_lat required' });
     }

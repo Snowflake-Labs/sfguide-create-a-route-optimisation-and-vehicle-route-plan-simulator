@@ -9,7 +9,7 @@ export interface MapZoomTarget {
   area: string;
 }
 
-export function useRoutes(city: string, statusFilter: StatusFilter = 'all', dateFilter: string = '') {
+export function useRoutes(city: string, statusFilter: StatusFilter = 'all', dateFilter: string = '', refreshKey: number = 0) {
   const [routes, setRoutes] = useState<RouteData[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -51,30 +51,32 @@ export function useRoutes(city: string, statusFilter: StatusFilter = 'all', date
         setRoutes([]);
         setLoading(false);
       });
-  }, [city, statusFilter, dateFilter]);
+  }, [city, statusFilter, dateFilter, refreshKey]);
 
   return { routes, loading };
 }
 
-export function useActiveStats() {
+export function useActiveStats(refreshKey: number = 0) {
   const [activeStats, setActiveStats] = useState<ActiveStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
     fetch('/api/active-stats')
       .then((r) => r.json())
       .then((data) => { setActiveStats(data); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [refreshKey]);
 
   return { activeStats, loading };
 }
 
-export function useFleetStats() {
+export function useFleetStats(refreshKey: number = 0) {
   const [stats, setStats] = useState<FleetStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
     fetch('/api/fleet-stats')
       .then((r) => r.json())
       .then((data) => {
@@ -82,7 +84,7 @@ export function useFleetStats() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [refreshKey]);
 
   return { stats, loading };
 }

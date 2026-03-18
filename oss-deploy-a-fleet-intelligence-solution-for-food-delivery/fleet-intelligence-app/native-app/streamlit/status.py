@@ -210,6 +210,17 @@ try:
     endpoint_url = result.get("endpoint_url", "")
     data_rows = int(result.get("delivery_routes", 0))
 
+    try:
+        city_rows = session.sql("SELECT DISTINCT CITY FROM data.DELIVERY_ROUTE_GEOMETRIES WHERE CITY IS NOT NULL ORDER BY CITY").collect()
+        city_list = [r[0] for r in city_rows if r[0]]
+        city_count = len(city_list)
+        if city_count > 0:
+            coverage_text = f"{city_count} {'City' if city_count == 1 else 'Cities'} ({', '.join(city_list[:5])}{'...' if city_count > 5 else ''})"
+        else:
+            coverage_text = "No data — run Data Builder"
+    except Exception:
+        coverage_text = "Unknown"
+
     if ui_status in ("READY", "RUNNING"):
         badge_class = "ready"
         badge_text = "Ready"
@@ -249,23 +260,13 @@ try:
     if service_ready:
         app_url = f"https://{endpoint_url}"
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"""
-            <div class="launch-card">
-                <div class="launch-card-title">🗺️ Fleet Map Application</div>
-                <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 1rem;">Explore delivery routes, courier activity heatmaps, and fleet performance across 20 California cities with AI-powered analysis.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            st.link_button("Launch Fleet Map", app_url, type="primary", use_container_width=True)
-        with col2:
-            st.markdown(f"""
-            <div class="launch-card">
-                <div class="launch-card-title">🤖 Fleet Intelligence Agent</div>
-                <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 1rem;">Ask natural language questions about delivery performance, courier efficiency, restaurant volumes, and route optimization.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            st.link_button("Chat in App", app_url, type="secondary", use_container_width=True)
+        st.markdown(f"""
+        <div class="launch-card">
+            <div class="launch-card-title">🚚 Fleet Intelligence Dashboard</div>
+            <p style="color: {SB_MID_GRAY}; font-size: 0.85rem; margin-bottom: 1rem;">Explore delivery routes, courier heatmaps, and fleet performance{f' across {city_count} cities' if city_count > 0 else ''} — plus ask natural language questions with the built-in Cortex AI agent.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.link_button("Open Fleet Intelligence", app_url, type="primary", use_container_width=True)
     else:
         if ui_status == "SUSPENDED":
             st.markdown(f"""
@@ -313,7 +314,7 @@ try:
         <div class="feature-card">
             <div class="feature-icon">🗺️</div>
             <div class="feature-title">Route Visualization</div>
-            <div class="feature-desc">Delivery paths across 20 cities</div>
+            <div class="feature-desc">Delivery paths across all cities</div>
         </div>
         """, unsafe_allow_html=True)
     with f2:
@@ -436,12 +437,20 @@ try:
 
         st.markdown("---")
         st.markdown(f"**External Access**")
-        ref_col1, ref_col2 = st.columns(2)
-        with ref_col1:
-            if st.button("Grant Map Tiles Access", use_container_width=True):
+        try:
+            eai_associations = permissions.get_reference_associations("external_access_ref")
+            eai_granted = len(eai_associations) > 0
+        except Exception:
+            eai_granted = False
+
+        if eai_granted:
+            st.success("Map Tiles Access")
+        else:
+            st.error("Map Tiles Access")
+            if st.button("Grant Map Tiles Access", use_container_width=True, type="primary"):
                 permissions.request_reference("external_access_ref")
-        with ref_col2:
-            st.markdown(f"<div style='font-size: 0.8rem; color: {SB_MID_GRAY}; padding-top: 0.5rem;'>Required for Carto basemap tiles in the web UI</div>", unsafe_allow_html=True)
+                time.sleep(1)
+                st.rerun()
 
     with st.expander("Service Status"):
         ui_display = "Running" if ui_status in ("READY", "RUNNING") else ("Starting" if ui_status in ("STARTING", "PENDING") else "Offline")
@@ -454,7 +463,7 @@ try:
             <tr><td>Endpoint</td><td>{"Live" if url_is_valid else "Pending"}</td></tr>
             <tr><td>Delivery Routes</td><td>{data_rows:,} rows</td></tr>
             <tr><td>Data Source</td><td>App-Owned ({app_name}.DATA)</td></tr>
-            <tr><td>Coverage</td><td>California (20 Cities)</td></tr>
+            <tr><td>Coverage</td><td>{coverage_text}</td></tr>
             <tr><td>Application</td><td>{app_name}</td></tr>
             <tr><td>Account</td><td>{org_name}/{account_name}</td></tr>
         </table>

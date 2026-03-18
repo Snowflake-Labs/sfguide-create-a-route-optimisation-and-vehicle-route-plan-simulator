@@ -13,26 +13,104 @@ description: "Deploy the Fleet Intelligence food delivery solution: native app w
 | `NUM_COURIERS` | 50 | Total number of delivery couriers |
 | `NUM_DAYS` | 1 | Number of days to simulate |
 | `START_DATE` | 2025-01-15 | First day of simulation |
+| `VEHICLE_TYPE` | cycling-electric | ORS routing profile for courier vehicle type (E-Bike default, suited for food delivery) |
+
+### Vehicle Types
+
+The solution supports multiple vehicle types via OpenRouteService routing profiles. Each courier uses the selected vehicle type for route generation, speed simulation, and travel time matrix computation.
+
+| UI Label | ORS Profile | Description |
+|----------|-------------|-------------|
+| E-Bike | `cycling-electric` | Electric bicycle (default) |
+| Car | `driving-car` | Standard car driving |
+| HGV | `driving-hgv` | Heavy goods vehicle routing |
+| Bicycle | `cycling-regular` | Regular cycling |
+| Road Bike | `cycling-road` | Road cycling |
+| Walking | `foot-walking` | Pedestrian routing |
+
+**Key behaviors:**
+- One vehicle type per data build — all couriers in a build use the same type
+- Matrix builds support one vehicle type per build; building again with a different type **appends** data (does not overwrite)
+- `CA_TRAVEL_TIME_RES7/8/9` tables include a `VEHICLE_TYPE` column to support multiple types coexisting
+- The ORS config defaults to `cycling-electric` (E-Bike); additional profiles require ORS service reconfiguration
+- Speed simulation profiles differ per vehicle type (e.g., cycling ~15-30 km/h, walking ~4-7 km/h, driving ~15-55 km/h)
 
 ---
 
-## Supported Locations
+## Supported Maps & Locations
 
-The native app supports cities worldwide. ORS map data is downloaded automatically per-city from BBBike/Geofabrik.
+The native app supports cities worldwide. ORS routing uses PBF map files downloaded automatically per-city from BBBike (`https://download.bbbike.org/osm/bbbike/`).
 
-| Location | Country | State | Center LON | Center LAT | ORS Region |
-|----------|---------|-------|------------|------------|------------|
-| **San Francisco** | US | CA | -122.44 | 37.76 | SanFrancisco |
-| **Los Angeles** | US | CA | -118.24 | 34.05 | LosAngeles |
-| **San Jose** | US | CA | -121.89 | 37.34 | SanJose |
-| **Sacramento** | US | CA | -121.49 | 38.58 | Sacramento |
-| **Santa Barbara** | US | CA | -119.70 | 34.42 | SantaBarbara |
-| **Stockton** | US | CA | -121.29 | 37.97 | Stockton |
-| **New York** | US | NY | -73.98 | 40.71 | NewYork |
-| **Chicago** | US | IL | -87.73 | 41.83 | Chicago |
-| **London** | GB | | -0.09 | 51.51 | London |
-| **Paris** | FR | | 2.35 | 48.86 | Paris |
-| **Berlin** | DE | BE | 13.40 | 52.52 | Berlin |
+### Default Supported Maps
+
+These 11 cities are pre-configured with verified BBBike PBF URLs, bounding boxes, and Overture Maps filters:
+
+| Location | Country | State | Center LON | Center LAT | ORS Region | BBBike PBF Name |
+|----------|---------|-------|------------|------------|------------|-----------------|
+| **San Francisco** | US | CA | -122.44 | 37.76 | SanFrancisco | `SanFrancisco` |
+| **Los Angeles** | US | CA | -118.24 | 34.05 | LosAngeles | `LosAngeles` |
+| **San Jose** | US | CA | -121.89 | 37.34 | SanJose | `SanJose` |
+| **Sacramento** | US | CA | -121.49 | 38.58 | Sacramento | `Sacramento` |
+| **Santa Barbara** | US | CA | -119.70 | 34.42 | SantaBarbara | `SantaBarbara` |
+| **Stockton** | US | CA | -121.29 | 37.97 | Stockton | `Stockton` |
+| **New York** | US | NY | -73.98 | 40.71 | NewYork | `NewYork` |
+| **Chicago** | US | IL | -87.73 | 41.83 | Chicago | `Chicago` |
+| **London** | GB | | -0.09 | 51.51 | London | `London` |
+| **Paris** | FR | | 2.35 | 48.86 | Paris | `Paris` |
+| **Berlin** | DE | BE | 13.40 | 52.52 | Berlin | `Berlin` |
+
+### Adding Additional Maps (Before Native App Deployment)
+
+Before building and deploying the React native app (Step 12), the user may want to add support for cities not in the default list. Follow this workflow:
+
+**1. Show the user the default maps above and ask:**
+> "Would you like to add any additional city maps beyond the 11 defaults?"
+
+**2. If the user requests a city, verify it exists on the BBBike download server:**
+
+Fetch the BBBike city list to check availability:
+```
+URL: https://download.bbbike.org/osm/bbbike/
+```
+
+The page lists all available cities as directory links. Search for the requested city name (case-sensitive, no spaces — e.g., `SanDiego`, `Toronto`, `Sydney`).
+
+- The BBBike PBF URL pattern is: `https://download.bbbike.org/osm/bbbike/{CityName}/{CityName}.osm.pbf`
+- City names on BBBike use PascalCase with no spaces (e.g., `SanDiego`, `LasVegas`, `RiodeJaneiro`)
+
+**3. If the city IS found on BBBike:**
+
+Confirm with the user:
+> "✅ **{CityName}** is available on BBBike. The PBF map URL is:
+> `https://download.bbbike.org/osm/bbbike/{CityName}/{CityName}.osm.pbf`
+>
+> Would you like to add this as a supported city? (The map will NOT be downloaded now — it will be downloaded automatically when ORS routing is provisioned for this city after deployment.)"
+
+If confirmed, you must add the city to the `CITY_ORS_MAP` in `server/index.ts` before building the Docker image in Step 12. The entry format is:
+
+```typescript
+'{city_key}': {
+  pbfUrl: 'https://download.bbbike.org/osm/bbbike/{CityName}/{CityName}.osm.pbf',
+  bounds: [[{sw_lon}, {sw_lat}], [{ne_lon}, {ne_lat}]],
+  center: [{center_lon}, {center_lat}],
+  zoom: 12,
+  country: '{COUNTRY_CODE}',
+  state: '{STATE_CODE}',  // empty string for non-US cities
+}
+```
+
+Also add the city to the Overture Maps filter tables below so data generation works.
+
+**4. If the city is NOT found on BBBike:**
+
+Notify the user:
+> "❌ **{CityName}** was not found on the BBBike download server. Available cities can be browsed at:
+> `https://download.bbbike.org/osm/bbbike/`
+>
+> Note: BBBike city names are PascalCase with no spaces. Try variations like `{suggestions}`.
+> Alternatively, check Geofabrik downloads at `https://download.geofabrik.de/` for region-level PBF files."
+
+**5. Do NOT download the map.** The map is downloaded automatically by the native app's downloader service when `ROUTING.CREATE_CITY_ORS_SERVICE('{CityName}')` is called after deployment.
 
 ### Overture Maps Filter by City
 
@@ -44,6 +122,8 @@ The native app supports cities worldwide. ORS map data is downloaded automatical
 | London | `ADDRESSES[0]:country::STRING = 'GB'` | `COUNTRY = 'GB'` |
 | Paris | `ADDRESSES[0]:country::STRING = 'FR'` | `COUNTRY = 'FR'` |
 | Berlin | `ADDRESSES[0]:country::STRING = 'DE'` | `COUNTRY = 'DE'` |
+
+> **Adding filters for new cities:** For US cities, use the appropriate state code. For international cities, use the country code only. Add a new row to this table when adding a custom city.
 
 ---
 
@@ -110,19 +190,28 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 ---
 
-### Step 2: Choose Location and Deploy Fleet Intelligence Native App
+### Step 2: Choose Location, Manage Maps, and Deploy Fleet Intelligence Native App
 
 > The Fleet Intelligence Native App is **fully self-contained** — it bundles ORS, VROOM, routing gateway, and PBF downloader. No separate ORS installation needed.
 
 **Sub-step 2a: Ask User to Choose Location**
 
-Present the pre-configured cities. Store `{LOCATION}`, `{COUNTRY}`, and `{STATE}` from the filter table.
+Present the pre-configured cities from the **Default Supported Maps** table. Store `{LOCATION}`, `{COUNTRY}`, and `{STATE}` from the filter table.
 
-**Sub-step 2b: Deploy the Native App**
+**Sub-step 2b: Check for Additional Maps**
+
+Follow the **Adding Additional Maps** workflow in the "Supported Maps & Locations" section above:
+1. Ask the user if they want to add any cities beyond the 11 defaults.
+2. If yes, search BBBike (`https://download.bbbike.org/osm/bbbike/`) to verify the city exists.
+3. Confirm with the user before adding.
+4. If confirmed, add the city to `CITY_ORS_MAP` in `server/index.ts` and to the Overture Maps filter table — this MUST happen before the Docker image is built in Step 12.
+5. If the city is not found on BBBike, notify the user and suggest alternatives.
+
+**Sub-step 2c: Deploy the Native App**
 
 Follow **Step 12** to build Docker image, push to Snowflake, create app package, install, grant privileges, and deploy.
 
-**Sub-step 2c: Provision ORS Routing for the Selected City**
+**Sub-step 2d: Provision ORS Routing for the Selected City**
 
 ```sql
 CALL FLEET_INTELLIGENCE_APP.ROUTING.SETUP_ORS();
@@ -133,7 +222,7 @@ CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_ORS_SERVICE('{LOCATION}');
 CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_FUNCTIONS('{LOCATION}');
 ```
 
-**Sub-step 2d: Verify Routing**
+**Sub-step 2e: Verify Routing**
 
 ```sql
 SELECT FLEET_INTELLIGENCE_APP.ROUTING.DIRECTIONS(
@@ -664,7 +753,18 @@ ALTER STREAMLIT FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.SWIFTB
 
 ### Step 12: Deploy Fleet Intelligence React Native App
 
-**Prerequisites:** Docker installed, `snow` CLI authenticated.
+**Prerequisites:** Docker Desktop installed and running, `snow` CLI authenticated, `linux/amd64` platform support enabled.
+
+> **Docker Provisioning Notes:**
+> - Docker Desktop must be installed and running (macOS/Windows/Linux)
+> - Ensure `linux/amd64` platform builds are enabled (Docker Desktop > Settings > General > "Use Rosetta for x86_64/amd64 emulation" on Apple Silicon)
+> - All images must be built with `--platform linux/amd64` — SPCS only runs `linux/amd64` containers
+> - Multi-stage Dockerfiles are recommended to keep image size small (builder + runtime stages)
+> - The Fleet Intelligence app uses `node:20-slim` as the base image
+> - Image tags must match exactly between `manifest.yml` (artifacts.container_services.images) and the service YAML (spec.containers[].image)
+> - When updating an image, always use a NEW tag (e.g. v1.2 → v1.3) — SPCS caches images by tag and won't pick up changes to the same tag
+> - To verify Docker is ready: `docker info` should show the server running
+> - Registry login is per-session: `snow spcs image-registry login -c {CONNECTION_NAME}`
 
 #### Sub-step 12a: Verify Dockerfile Port
 
@@ -674,7 +774,7 @@ Ensure the Dockerfile has `ENV PORT=8080` and `EXPOSE 8080`.
 
 ```bash
 cd oss-deploy-a-fleet-intelligence-solution-for-food-delivery/fleet-intelligence-app
-docker build --platform linux/amd64 -t fleet-intelligence:v1.1 .
+docker build --platform linux/amd64 -t fleet-intelligence:v1.2 .
 ```
 
 #### Sub-step 12c: Create Image Repository
@@ -695,8 +795,8 @@ Extract `repository_url`: `<orgname>-<acctname>.registry.snowflakecomputing.com/
 ```bash
 snow spcs image-registry login -c {CONNECTION_NAME}
 
-docker tag fleet-intelligence:v1.1 {REPO_URL}/fleet-intelligence:v1.1
-docker push {REPO_URL}/fleet-intelligence:v1.1
+docker tag fleet-intelligence:v1.2 {REPO_URL}/fleet-intelligence:v1.2
+docker push {REPO_URL}/fleet-intelligence:v1.2
 
 docker tag openrouteservice:v9.0.0 {REPO_URL}/openrouteservice:v9.0.0
 docker push {REPO_URL}/openrouteservice:v9.0.0
@@ -737,14 +837,36 @@ Use `REGISTER VERSION` (release channels enabled) or `ADD VERSION`:
 
 ```sql
 ALTER APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG
-    REGISTER VERSION v1_0
+    REGISTER VERSION V1_2
     USING '@FLEET_INTELLIGENCE_PKG.stage_content.app_code';
 ```
+
+If max versions error (512023), deregister an old version first:
+
+```sql
+SHOW VERSIONS IN APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG;
+ALTER APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG DEREGISTER VERSION <OLD_VERSION>;
+```
+
+For release channel management, add the version to the channel and set the directive:
+
+```sql
+ALTER APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG MODIFY RELEASE CHANNEL DEFAULT ADD VERSION V1_2;
+ALTER APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG MODIFY RELEASE CHANNEL DEFAULT SET DEFAULT RELEASE DIRECTIVE VERSION=V1_2 PATCH=0;
+```
+
+For first install:
 
 ```sql
 CREATE APPLICATION FLEET_INTELLIGENCE_APP
     FROM APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG
-    USING VERSION v1_0;
+    USING VERSION V1_2;
+```
+
+For upgrade of existing app (created from specific version):
+
+```sql
+ALTER APPLICATION FLEET_INTELLIGENCE_APP UPGRADE USING VERSION V1_2;
 ```
 
 #### Sub-step 12h: Grant Required Privileges
@@ -837,7 +959,88 @@ The endpoint URL takes 2-3 minutes after READY to resolve.
 | `ADD VERSION` error 512020 | Use `REGISTER VERSION` (release channels enabled) |
 | EAI bind fails "Object does not exist" | Must use `SYSTEM$REFERENCE()` handle |
 | Endpoint "provisioning in progress" | Wait 2-3 minutes after READY |
+| Data not showing after build | UI auto-refreshes when Data Builder completes — if stale, toggle city selector or reload page |
 | Agent error "Unknown function SNOWFLAKE.CORTEX.COMPLETE" | `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTELLIGENCE_APP` |
 | SPCS not picking up new image | Must use NEW tag and update manifest.yml + service YAML |
 | `ADD PATCH` error 093359 | Manifest changes require full new VERSION (not patch) |
 | Max versions error | Deregister old: `ALTER APPLICATION PACKAGE ... DEREGISTER VERSION ...` |
+
+---
+
+## Uninstall / Complete Teardown
+
+To completely remove Fleet Intelligence and all associated resources, execute these steps in order. Each statement should be run separately.
+
+> **WARNING:** This is destructive and irreversible. All data, services, compute pools, and application objects will be permanently deleted.
+
+### Step 1: Drop the Application
+
+This stops all SPCS services (UI, ORS, VROOM, downloader) and removes the app:
+
+```sql
+DROP APPLICATION IF EXISTS FLEET_INTELLIGENCE_APP CASCADE;
+```
+
+### Step 2: Drop Compute Pools
+
+The app creates up to two compute pools. Drop them (they may take a moment to drain):
+
+```sql
+DROP COMPUTE POOL IF EXISTS FLEET_INTELLIGENCE_APP_compute_pool;
+```
+
+```sql
+DROP COMPUTE POOL IF EXISTS FLEET_INTELLIGENCE_APP_routing_pool;
+```
+
+If the pools are still in use, suspend first:
+
+```sql
+ALTER COMPUTE POOL FLEET_INTELLIGENCE_APP_compute_pool SUSPEND;
+ALTER COMPUTE POOL FLEET_INTELLIGENCE_APP_routing_pool SUSPEND;
+```
+
+Then retry the DROP after pools reach IDLE state.
+
+### Step 3: Drop the Application Package
+
+```sql
+DROP APPLICATION PACKAGE IF EXISTS FLEET_INTELLIGENCE_PKG;
+```
+
+### Step 4: Drop External Access Integrations and Network Rules
+
+```sql
+DROP EXTERNAL ACCESS INTEGRATION IF EXISTS fleet_intel_map_tiles_eai;
+DROP EXTERNAL ACCESS INTEGRATION IF EXISTS fleet_intel_download_eai;
+DROP NETWORK RULE IF EXISTS fleet_intel_map_tiles_rule;
+DROP NETWORK RULE IF EXISTS fleet_intel_download_rule;
+```
+
+### Step 5: Drop the Setup Database
+
+This removes all generated data (restaurants, addresses, couriers, delivery routes, analytics views):
+
+```sql
+DROP DATABASE IF EXISTS FLEET_INTELLIGENCE_SETUP;
+```
+
+### Step 6: Drop the Warehouse (Optional)
+
+Only drop if this warehouse was created specifically for Fleet Intelligence:
+
+```sql
+DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+```
+
+### Step 7: Verify Cleanup
+
+```sql
+SHOW APPLICATIONS LIKE 'FLEET_INTELLIGENCE%';
+SHOW APPLICATION PACKAGES LIKE 'FLEET_INTELLIGENCE%';
+SHOW COMPUTE POOLS LIKE 'FLEET_INTELLIGENCE%';
+SHOW DATABASES LIKE 'FLEET_INTELLIGENCE%';
+SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'fleet_intel%';
+```
+
+All queries should return empty results.

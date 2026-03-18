@@ -110,6 +110,31 @@ export interface TravelTimeHexData {
 
 export type MatrixResolution = 7 | 8 | 9;
 
+export interface VehicleTypeOption {
+  label: string;
+  value: string;
+  description: string;
+  icon: string;
+}
+
+export const VEHICLE_TYPES: VehicleTypeOption[] = [
+  { label: 'E-Bike', value: 'cycling-electric', description: 'Electric bicycle (default)', icon: '⚡' },
+  { label: 'Car', value: 'driving-car', description: 'Standard driving profile', icon: '🚗' },
+  { label: 'Bicycle', value: 'cycling-regular', description: 'Regular cycling', icon: '🚲' },
+  { label: 'Road Bike', value: 'cycling-road', description: 'Road cycling', icon: '🚴' },
+  { label: 'HGV', value: 'driving-hgv', description: 'Heavy goods vehicle', icon: '🚛' },
+  { label: 'Walking', value: 'foot-walking', description: 'Walking profile', icon: '🚶' },
+];
+
+export const DEFAULT_VEHICLE_TYPE = 'cycling-electric';
+
+export interface MatrixExistingDetail {
+  table: string;
+  region: string;
+  vehicle_type: string;
+  count: number;
+}
+
 export interface ReachabilityHexData {
   hex_id: string;
   lat: number;
@@ -230,6 +255,7 @@ export interface MatrixEstimate {
 export interface MatrixBuildStatus {
   region: string;
   resolution: number;
+  vehicle_type: string;
   status: 'idle' | 'building' | 'complete' | 'error';
   stage: string;
   total_origins: number;
