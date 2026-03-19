@@ -1,0 +1,146 @@
+/* 
+   SwiftBite Food Delivery - Brand Colors CSS
+   Based on Snowflake Brand Guidelines with food delivery accent
+*/
+
+:root {
+    --swiftbite-orange: #FF6B35;     /* Primary brand - appetizing orange */
+    --swiftbite-red: #E63946;        /* Urgency/hot food indicator */
+    --snowflake-blue: #29B5E8;       /* Snowflake accent */
+    --mid-blue: #11567F;
+    --midnight: #000000;
+    
+    --star-blue: #71D3DC;
+    --valencia-orange: #FF9F36;
+    --purple-moon: #7D44CF;
+    --first-light: #D45B90;
+    --windy-city: #8A999E;
+    
+    --iceberg: #003545;
+    --ruby-sky: #3C0045;
+    --violet-dawn: #1C0045;
+    --winter: #24323D;
+    
+    --fresh-green: #2ECC71;          /* On-time/fresh indicator */
+    --warning-amber: #F39C12;        /* Late/delay indicator */
+}
+
+h0black {
+    color: var(--midnight);
+    font-size: 40px;
+    font-weight: 900;
+    display: inline;
+}
+
+h0orange {
+    color: var(--swiftbite-orange);
+    font-size: 40px;
+    font-weight: 900;
+    display: inline;
+}
+
+h0blue {
+    color: var(--snowflake-blue);
+    font-size: 40px;
+    font-weight: 900;
+    display: inline;
+}
+
+h1grey {
+    color: var(--windy-city);
+    font-size: 18px;
+    font-weight: 300;
+    display: inline;
+}
+
+h1sub {
+    color: var(--mid-blue);
+    font-size: 24px;
+    font-weight: 700;
+    display: inline;
+}
+
+h1orange {
+    color: var(--swiftbite-orange);
+    font-size: 24px;
+    font-weight: 700;
+    display: inline;
+}
+
+veh1 {
+    color: var(--purple-moon);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh2 {
+    color: var(--first-light);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh3 {
+    color: var(--valencia-orange);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh4 {
+    color: var(--star-blue);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh5 {
+    color: var(--iceberg);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+veh6 {
+    color: var(--ruby-sky);
+    font-size: 18px;
+    font-weight: 600;
+    display: inline;
+}
+
+.status-ontime {
+    color: var(--fresh-green);
+    font-weight: 600;
+}
+
+.status-late {
+    color: var(--warning-amber);
+    font-weight: 600;
+}
+
+.status-critical {
+    color: var(--swiftbite-red);
+    font-weight: 600;
+}
+
+.swiftbite-button {
+    background-color: var(--swiftbite-orange);
+    color: white;
+    border: none;
+    border-radius: 80px;
+    padding: 12px 27px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.swiftbite-button:hover {
+    background-color: var(--swiftbite-red);
+}
+
+.snowflake-tooltip {
+    background-color: var(--mid-blue);
+    color: white;
+    border-radius: 4px;
+    padding: 8px;
+}

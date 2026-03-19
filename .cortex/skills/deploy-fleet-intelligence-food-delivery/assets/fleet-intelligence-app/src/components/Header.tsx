@@ -1,0 +1,54 @@
+import React from 'react';
+
+interface Props {
+  onMatrixBuilder?: () => void;
+  onDataBuilder?: () => void;
+}
+
+export default function Header({ onMatrixBuilder, onDataBuilder }: Props) {
+  return (
+    <div className="header">
+      <div className="header-logo">
+        <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="6" fill="#FF6B35" />
+          <path d="M10 28L14 12H20L24 20L28 12H34" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="14" cy="28" r="3" fill="white" />
+          <circle cx="28" cy="28" r="3" fill="white" />
+        </svg>
+        <span className="header-title">SwiftBite Fleet Intelligence</span>
+        <span className="header-subtitle">California Delivery Operations</span>
+      </div>
+      <div className="header-actions">
+        {onDataBuilder && (
+          <button className="header-matrix-btn" onClick={onDataBuilder}>
+            <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
+              <path d="M3 3h14v14H3z" stroke="#FF6B35" strokeWidth="1.5" fill="none" />
+              <path d="M7 10h6M10 7v6" stroke="#FF6B35" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Data Builder
+          </button>
+        )}
+        {onMatrixBuilder && (
+          <button className="header-matrix-btn" onClick={onMatrixBuilder}>
+            <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
+              <rect x="1" y="1" width="7" height="7" rx="1" fill="#FF6B35" opacity="0.8" />
+              <rect x="12" y="1" width="7" height="7" rx="1" fill="#FF6B35" opacity="0.5" />
+              <rect x="1" y="12" width="7" height="7" rx="1" fill="#FF6B35" opacity="0.5" />
+              <rect x="12" y="12" width="7" height="7" rx="1" fill="#FF6B35" opacity="0.3" />
+            </svg>
+            Matrix Builder
+          </button>
+        )}
+        <div className="header-badge">
+          <span>Powered by</span>
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="#29B5E8" />
+            <path d="M2 17L12 22L22 17" stroke="#29B5E8" strokeWidth="2" />
+            <path d="M2 12L12 17L22 12" stroke="#29B5E8" strokeWidth="2" />
+          </svg>
+          <span style={{ fontWeight: 700, color: '#29B5E8' }}>Snowflake</span>
+        </div>
+      </div>
+    </div>
+  );
+}
