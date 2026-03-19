@@ -45,6 +45,10 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
 | COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `build-routing-solution_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 1: Set Query Tag for Tracking
@@ -136,9 +140,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 ### Step 5: Build and Push Container Images
 
-**Goal:** Build 4 container images and push to Snowflake image repository
-
-> **Note:** The nominatim (geocoding) service is NOT included in this deployment. Geocoding is optional and not required for routing, optimization, isochrones, or matrix operations. Do NOT build or push a nominatim image.
+**Goal:** Build 5 container images and push to Snowflake image repository
 
 **Actions:**
 
@@ -184,17 +186,23 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/vroom-docker:v1.0.1 .
    $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
    
+   # ors control app (React management UI)
+   cd ../ors_control_app
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/ors_control_app:v1.0.0 .
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.0
+   
    # return to working directory
    cd ../../..
    ```
 
-4. **Monitor** progress (builds 4 images):
+4. **Monitor** progress (builds 5 images):
    - openrouteservice:v9.0.0
    - downloader:v0.0.3
    - routing_reverse_proxy:v0.7.2
    - vroom-docker:v1.0.1
+   - ors_control_app:v1.0.0
 
-**Output:** All 4 container images pushed to Snowflake image repository
+**Output:** All 5 container images pushed to Snowflake image repository
 
 **Expected Duration:** 5-10 minutes
 
@@ -285,7 +293,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - Database: `OPENROUTESERVICE_SETUP`
 - Application: `OPENROUTESERVICE_NATIVE_APP`
-- 4 SPCS services running (downloader, openrouteservice, gateway, vroom)
+- 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
+- React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
 
 ### Default Routing Profiles
 
@@ -316,7 +325,6 @@ The app registers the following SQL functions in the `CORE` schema:
 - `ISOCHRONES(method, lon, lat, range)`
 - `OPTIMIZATION(jobs, vehicles, matrices)` / `OPTIMIZATION(challenge)`
 - `MATRIX(method, sources, destinations)` / `MATRIX_TABULAR(...)`
-- `GEOCODE_LOOKUP(address)` / `REVERSE_GEOCODE(lon, lat)`
 
 **GEO table functions** (return parsed GEOGRAPHY column alongside response):
 - `DIRECTIONS_GEO(method, jstart, jend)` → RESPONSE, GEOJSON, DISTANCE, DURATION
@@ -326,6 +334,24 @@ The app registers the following SQL functions in the `CORE` schema:
 - `OPTIMIZATION_GEO(challenge)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
 
 The `_GEO` variants are table functions that parse the GeoJSON from ORS responses into Snowflake GEOGRAPHY columns, making it easy to use with spatial joins and visualization.
+
+**Lifecycle management procedures:**
+- `RESUME_ALL_SERVICES()` — Resumes all suspended services and the compute pool
+- `SUSPEND_ALL_SERVICES()` — Suspends all services except the control app
+- `SCALE_SERVICES(min, max)` — Scales ORS + gateway instances and pool nodes
+- `GET_STATUS()` — Returns JSON with compute pool state and all service statuses
+- `CHECK_HEALTH()` — Returns BOOLEAN, true if ORS gateway responds
+
+**Multi-city procedures:**
+- `SETUP_CITY_ORS(region)` — Provisions a new city with its own ORS service + functions
+- `DROP_CITY_ORS(region)` — Removes a city's service, functions, and metadata
+- `LIST_CITIES()` — Returns JSON array of all provisioned cities
+- City-specific functions: `DIRECTIONS_{REGION}`, `ISOCHRONES_{REGION}`, `MATRIX_{REGION}`, `OPTIMIZATION_{REGION}`
+
+**Travel time matrix procedures:**
+- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region)` — End-to-end matrix build
+- `MATRIX_PROGRESS()` — Returns JSON with per-resolution build status
+- `RESET_MATRIX_DATA()` — Truncates all matrix tables
 
 Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It make take a minute or two.
 

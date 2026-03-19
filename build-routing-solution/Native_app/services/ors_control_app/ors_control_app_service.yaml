@@ -1,0 +1,17 @@
+spec:
+  containers:
+    - name: ors-control-app
+      image: /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.0
+      env:
+        SNOWFLAKE_DATABASE: "{{database}}"
+      resources:
+        requests:
+          cpu: "0.5"
+          memory: "512Mi"
+        limits:
+          cpu: "1"
+          memory: "1Gi"
+  endpoints:
+    - name: ors-control-ui
+      port: 3001
+      public: true

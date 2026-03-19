@@ -270,7 +270,7 @@ Ensure the scalable travel time matrix pipeline has completed (see `.cortex/skil
 
 **Progress monitoring:**
 ```sql
-CALL FLEET_INTELLIGENCE_APP.DATA.MATRIX_PROGRESS();
+CALL OPENROUTESERVICE_APP.DATA.MATRIX_PROGRESS();
 ```
 Returns JSON per resolution:
 ```json

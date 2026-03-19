@@ -41,6 +41,10 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-agent_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 > All stored procedure and agent SQL definitions are in [references/agent-definitions.md](references/agent-definitions.md).
@@ -69,7 +73,7 @@ Verify: `DIRECTIONS(VARCHAR, VARIANT)`, `ISOCHRONES(VARCHAR, FLOAT, FLOAT, NUMBE
 SHOW SERVICES IN SCHEMA OPENROUTESERVICE_NATIVE_APP.CORE;
 ```
 
-Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTING_GATEWAY_SERVICE`. If any is SUSPENDED, resume with `ALTER SERVICE <name> RESUME;` and wait 15-30 seconds.
+Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTING_GATEWAY_SERVICE`. If any is SUSPENDED, resume with `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();` and verify with `SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();`.
 
 ### Step 3: Create Database, Schema, and Warehouse
 

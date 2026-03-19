@@ -50,6 +50,10 @@ CRITICAL: Verify these before starting:
 | `WAREHOUSE` | `COMPUTE_WH` | Warehouse for ETL execution |
 | `S3_BUCKET` | `s3://fleet-intelligence/` | S3 location of Parquet dataset |
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `route-deviation_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Execution Rules
 
 1. **One statement per `snowflake_sql_execute` call.** Multi-statement blocks can silently fail.

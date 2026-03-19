@@ -36,6 +36,10 @@ Configure which routing profiles are available in your Routing Solution.
 | `foot-hiking` | Foot | Hiking trails |
 | `wheelchair` | Wheelchair | Wheelchair accessible routes |
 
+## Error Logging
+
+When any step fails or produces unexpected results, log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-customization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 1: Get User Preferences
@@ -51,7 +55,7 @@ Configure which routing profiles are available in your Routing Solution.
 2. **Warn about resource impact:**
    - More profiles = longer graph build time
    - More profiles = more memory usage
-   - Default (car, cycling-road, walking) covers most use cases
+   - Default (car, cycling-electric, hgv) covers most use cases
 
 **Output:** User selections recorded
 
@@ -75,7 +79,7 @@ Configure which routing profiles are available in your Routing Solution.
            enabled: false
          cycling-regular:
            enabled: false
-         cycling-road:
+         cycling-electric:
            enabled: true
          cycling-mountain:
            enabled: false

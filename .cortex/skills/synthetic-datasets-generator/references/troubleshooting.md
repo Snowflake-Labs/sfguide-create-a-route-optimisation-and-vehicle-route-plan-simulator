@@ -19,11 +19,8 @@ Common issues, causes, and solutions for the Synthetic Fleet Telemetry Generator
    ```
 2. Resume if suspended:
    ```sql
-   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
+   SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
    ```
 3. Wait 60-90 seconds for services to become READY.
 4. Test with a simple route query. If it still fails, the ORS map may not cover the target region. Use the `routing-customization` skill to change the map.

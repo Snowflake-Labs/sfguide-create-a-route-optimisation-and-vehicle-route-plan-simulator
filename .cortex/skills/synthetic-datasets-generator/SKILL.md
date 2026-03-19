@@ -71,6 +71,10 @@ Three config presets are available in `scripts/config/`:
 
 ---
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `synthetic-datasets-generator_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Execution Rules
 
 1. Run one SQL statement per `snowflake_sql_execute` call. Never batch multiple statements.

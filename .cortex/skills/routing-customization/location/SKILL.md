@@ -30,6 +30,10 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 - `<MAP_NAME>`: OSM file name (e.g., "great-britain-latest.osm.pbf")
 - `<URL>`: Download URL from geofabrik.de or bbbike.org
 
+## Error Logging
+
+When any step fails or produces unexpected results, log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-customization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 1: Suspend Compute Pool

@@ -68,12 +68,7 @@ CATEGORY_DISPLAY_NAMES = {
 with st.sidebar:
     st.markdown('<h1sub>Parameters</h1sub>', unsafe_allow_html=True)
 
-    route_functions_option = st.selectbox(
-        'OpenRouteService App',
-        ['OPEN_ROUTE_SERVICE_SAN_FRANCISCO', 'OPENROUTESERVICE_NATIVE_APP'],
-        index=0,
-        help="SF Bay Area regional app (faster) or Global native app"
-    )
+    route_functions_option = 'OPENROUTESERVICE_NATIVE_APP'
 
     st.markdown('<h1sub>Retail Category</h1sub>', unsafe_allow_html=True)
     category_display = [CATEGORY_DISPLAY_NAMES.get(c, c) for c in RETAIL_CATEGORIES]
@@ -170,16 +165,18 @@ def get_palette(num: int) -> list:
 
 def build_isochrone_single(ors_app: str, profile_name: str, longitude: float, latitude: float, minutes: int) -> dict:
     query = f"""
-        SELECT 
-            TO_GEOGRAPHY(({ors_app}.CORE.ISOCHRONES('{profile_name}', {longitude}, {latitude}, {minutes}))['features'][0]['geometry']) AS GEO
+        SELECT GEOJSON AS GEO
+        FROM TABLE({ors_app}.CORE.ISOCHRONES_GEO('{profile_name}', {longitude}, {latitude}, {minutes}))
     """
     result = session.sql(query).to_pandas()
     if not result.empty and result.loc[0, 'GEO'] is not None:
-        geo_json = json.loads(result.loc[0, 'GEO'])
+        raw_geo = result.loc[0, 'GEO']
+        geo_json = json.loads(raw_geo) if isinstance(raw_geo, str) else raw_geo
+        geo_str = raw_geo if isinstance(raw_geo, str) else json.dumps(raw_geo)
         return {
             'minutes': minutes,
             'coordinates': geo_json['coordinates'],
-            'geo_wkt': result.loc[0, 'GEO']
+            'geo_wkt': geo_str
         }
     return None
 

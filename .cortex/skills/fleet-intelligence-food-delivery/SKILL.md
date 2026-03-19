@@ -124,6 +124,10 @@ Then add `"Riverside"` to the `CALIFORNIA_CITIES` list.
 
 ---
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-food-delivery_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLDER}` values based on the user's chosen configuration before executing.
@@ -153,7 +157,12 @@ Read and follow the instructions in `.cortex/skills/routing-customization/read-o
 1. Display current ORS configuration to the user
 2. Ask user to choose location (recommend the currently configured region first)
 3. If region mismatch, follow `.cortex/skills/routing-customization/SKILL.md` to change map
-4. Check service status, resume if suspended
+4. Check service status and resume if suspended:
+   ```sql
+   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
+   SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+   ```
 5. Test ORS routing with coordinates in the target city
 
 ### Step 3: Configure Database, Warehouse, and Schema
@@ -231,12 +240,12 @@ To remove all objects created by this skill:
 
 ```sql
 -- Reverse dependency order: native app first, then streamlit, views, tables, stages, schemas, databases
-DROP APPLICATION IF EXISTS FLEET_INTELLIGENCE_APP CASCADE;
-DROP APPLICATION PACKAGE IF EXISTS FLEET_INTELLIGENCE_PKG;
+DROP APPLICATION IF EXISTS OPENROUTESERVICE_APP CASCADE;
+DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_PKG;
 DROP EXTERNAL ACCESS INTEGRATION IF EXISTS FLEET_INTEL_MAP_TILES_EAI;
 DROP NETWORK RULE IF EXISTS FLEET_INTEL_MAP_TILES_RULE;
-DROP IMAGE REPOSITORY IF EXISTS FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO;
-DROP DATABASE IF EXISTS FLEET_INTELLIGENCE_SETUP;
+DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.FLEET_INTEL_REPO;
+DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
 DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SWIFTBITE_DELIVERY_DASHBOARD;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN;

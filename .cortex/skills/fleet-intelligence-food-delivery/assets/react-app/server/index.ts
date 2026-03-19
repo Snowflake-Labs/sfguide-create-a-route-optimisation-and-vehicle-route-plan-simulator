@@ -23,7 +23,7 @@ app.use(express.json({ limit: '50mb' }));
 
 const IS_SPCS = existsSync('/snowflake/session/token');
 
-const SF_DATABASE = process.env.SNOWFLAKE_DATABASE || 'FLEET_INTELLIGENCE_APP';
+const SF_DATABASE = process.env.SNOWFLAKE_DATABASE || 'OPENROUTESERVICE_APP';
 const SF_SCHEMA = process.env.SNOWFLAKE_SCHEMA || 'DATA';
 const SF_WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const CONN = process.env.SNOWFLAKE_CONNECTION_NAME || 'FREE_TRIAL';

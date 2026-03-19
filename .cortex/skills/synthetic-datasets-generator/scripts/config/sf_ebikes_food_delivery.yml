@@ -6,7 +6,7 @@ mode: food_delivery
 seed: 42
 
 snowflake:
-  connection_name: null
+  connection_name: fleet_test_evals
   database: FLEET_INTELLIGENCE
   schema: DELIVERY_OPS
   warehouse: INSTALLER

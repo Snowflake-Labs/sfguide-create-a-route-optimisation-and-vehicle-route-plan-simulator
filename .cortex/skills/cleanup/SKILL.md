@@ -29,6 +29,10 @@ This skill queries `INFORMATION_SCHEMA` and `SHOW` commands to discover all tagg
 | DRY_RUN | `true` | When true, only generates DROP statements without executing |
 | INCLUDE_DATABASES | `false` | Whether to DROP entire databases (destructive — requires explicit confirmation) |
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, permission errors), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `cleanup_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Prerequisites
 
 - Active Snowflake connection with privileges to query INFORMATION_SCHEMA and DROP objects

@@ -25,6 +25,10 @@ This skill routes customization requests to the correct subskills based on what 
 | INSERT/DELETE ON OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG | Table | Updates map configuration for Function Tester |
 | ALTER APPLICATION | Application | Upgrades native app to apply changes |
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-customization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 > All file paths in subskills (e.g., `build-routing-solution/Native_app/...`) are relative to the repository root directory.
@@ -54,7 +58,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 "What would you like to customize? Multiple selection is allowed."
 
 1. **Location/Map** - Change the geographic region (e.g., San Francisco → Paris)
-2. **Routing Profiles** - Enable/disable routing profiles (driving-car, foot-walking, cycling-road)
+2. **Routing Profiles** - Enable/disable routing profiles (driving-car, driving-hgv, cycling-electric)
 
 **IMPORTANT:** Use multi-select so the user can choose one or both options. If both are selected, run the location skill first, then the routing profiles skill, before proceeding to Step 4.
 
@@ -98,15 +102,12 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 4. **Resume** all services:
    ```sql
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOADER RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME;
-   ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.VROOM_SERVICE RESUME;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
    ```
 
-5. **Verify** services are running:
+5. **Verify** ORS is healthy:
    ```sql
-   SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE;
+   SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
    ```
 
 6. **Monitor** ORS_SERVICE logs for graph building progress:
@@ -168,7 +169,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 **Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses — just redeploy.
 
-> **_IMPORTANT:_** The `ROUTING_PROFILES` list in `function_tester.py` is **hardcoded** to `['driving-car', 'driving-hgv', 'cycling-road']`. If routing profiles were changed in Step 3, you **must** also edit `build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py` and update the `ROUTING_PROFILES` list (around line 175) to match the profiles enabled in `ors-config.yml` before uploading.
+> **_IMPORTANT:_** The `ROUTING_PROFILES` list in `function_tester.py` is **hardcoded** to `['driving-car', 'driving-hgv', 'cycling-electric']`. If routing profiles were changed in Step 3, you **must** also edit `build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py` and update the `ROUTING_PROFILES` list (around line 175) to match the profiles enabled in `ors-config.yml` before uploading.
 
 **Actions:**
 

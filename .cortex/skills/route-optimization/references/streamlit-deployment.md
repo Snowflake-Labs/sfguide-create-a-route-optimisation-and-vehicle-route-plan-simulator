@@ -63,4 +63,4 @@ For other cities, choose a well-known central landmark.
    ALTER STREAMLIT FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SIMULATOR ADD LIVE VERSION FROM LAST;
    ```
 
-The Streamlit app automatically detects available routing methods by reading `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts profiles with `enabled: true` and populates the "Choose Method" dropdowns. If the config cannot be read, it falls back to: `driving-car`, `driving-hgv`, `cycling-road`.
+The Streamlit app automatically detects available routing methods by reading `ors-config.yml` from `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`. It extracts profiles with `enabled: true` and populates the "Choose Method" dropdowns. If the config cannot be read, it falls back to: `driving-car`, `driving-hgv`, `cycling-electric`.

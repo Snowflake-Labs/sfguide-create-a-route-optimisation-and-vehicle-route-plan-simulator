@@ -494,16 +494,10 @@ def copy_into_table(
     """
     cursor = conn.cursor()
     try:
-        # Get column list from table
-        cursor.execute(f"DESC TABLE {schema}.{table_name}")
-        columns = [row[0] for row in cursor.fetchall()]
-        column_list = ", ".join(columns)
-        
-        # Build COPY INTO with column mapping
         copy_stmt = f"""
-        COPY INTO {schema}.{table_name} ({column_list})
+        COPY INTO {schema}.{table_name}
         FROM {stage_path}
-        FILE_FORMAT = (TYPE = PARQUET)
+        FILE_FORMAT = (TYPE = PARQUET USE_LOGICAL_TYPE = TRUE)
         PATTERN = '{file_pattern}'
         MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
         ON_ERROR = CONTINUE
@@ -532,6 +526,10 @@ def load_telemetry_from_parquet(
 ) -> int:
     stage_path = f"@{schema}.{stage_name}"
     parquet_path = Path(parquet_dir)
+
+    cursor = conn.cursor()
+    cursor.execute(f"TRUNCATE TABLE IF EXISTS {schema}.{telemetry_table}")
+    cursor.close()
 
     for parquet_file in parquet_path.glob("telemetry_*.parquet"):
         upload_to_stage(conn, str(parquet_file), stage_path)
@@ -635,9 +633,10 @@ def load_trips_table(
                     route_wkt = coords_to_wkt_linestring(route.coordinates) if route else None
                     distance_km = route.distance_km if route else None
                     duration_min = route.duration_min if route else None
-                    geog_expr = f"ST_GEOGRAPHYFROMWKT('{route_wkt}')" if route_wkt else "NULL"
+                    geog_expr = f"TO_GEOGRAPHY('{route_wkt}')" if route_wkt else "NULL"
 
-                    values.append(f"""(
+                    values.append(f"""
+                        SELECT
                         '{trip.trip_id}',
                         '{trip.vehicle_id}',
                         '{trip.rider_id}',
@@ -661,15 +660,16 @@ def load_trips_table(
                         {trip.battery_start_pct},
                         {trip.battery_end_pct},
                         {geog_expr}
-                    )""")
+                    """)
                 else:
                     route = trip.route
                     route_wkt = coords_to_wkt_linestring(route.coordinates) if route else None
                     distance_km = route.distance_km if route else None
                     duration_min = route.duration_min if route else None
-                    geog_expr = f"ST_GEOGRAPHYFROMWKT('{route_wkt}')" if route_wkt else "NULL"
+                    geog_expr = f"TO_GEOGRAPHY('{route_wkt}')" if route_wkt else "NULL"
 
-                    values.append(f"""(
+                    values.append(f"""
+                        SELECT
                         '{trip.trip_id}',
                         '{trip.truck_id}',
                         '{trip.driver_id}',
@@ -686,7 +686,7 @@ def load_trips_table(
                         {duration_min or 'NULL'},
                         {str(trip.is_detour).upper()},
                         {geog_expr}
-                    )""")
+                    """)
 
             if delivery_mode:
                 insert_sql = f"""
@@ -697,7 +697,7 @@ def load_trips_table(
                  DISTANCE_KM, DURATION_MIN, PICKUP_DURATION_MIN, DROPOFF_DURATION_MIN,
                  SLA_TARGET_MIN, ACTUAL_DELIVERY_MIN, SLA_MET,
                  IS_DETOUR, BATTERY_START_PCT, BATTERY_END_PCT, ROUTE_GEOG)
-                VALUES {', '.join(values)}
+                {' UNION ALL '.join(values)}
                 """
             else:
                 insert_sql = f"""
@@ -706,7 +706,7 @@ def load_trips_table(
                  ORIGIN_LNG, ORIGIN_LAT, DEST_LNG, DEST_LAT,
                  SCHEDULED_START, TRIP_TYPE, ROUTE_VARIATION,
                  DISTANCE_KM, DURATION_MIN, IS_DETOUR, ROUTE_GEOG)
-                VALUES {', '.join(values)}
+                {' UNION ALL '.join(values)}
                 """
 
             cursor.execute(insert_sql)

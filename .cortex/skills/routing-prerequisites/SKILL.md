@@ -15,6 +15,10 @@ Verify all required tools are installed and guide installation of missing depend
 
 None - this skill helps you install prerequisites!
 
+## Error Logging
+
+When any step fails or produces unexpected results (installation failures, version mismatches, connection errors), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-prerequisites_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 1: Check All Prerequisites

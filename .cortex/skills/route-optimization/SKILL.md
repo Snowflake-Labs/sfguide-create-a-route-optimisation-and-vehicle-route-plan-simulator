@@ -47,6 +47,10 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
 | MARKETPLACE_CARTO | `CARTO Academy` | CARTO Academy Marketplace listing name |
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `route-optimization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Execution Rules
 
 1. Never use bulk `sed` or `replace_all` on `.ipynb` files — notebooks are JSON with structured cell arrays. Use targeted replacements on specific cells identified by name.
@@ -66,7 +70,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 **Goal:** Confirm all 4 ORS services are active (OPENROUTESERVICE, ROUTING_REVERSE_PROXY, VROOM, DOWNLOADER).
 
-> See `references/sql-setup.md` for SHOW SERVICES and ALTER SERVICE RESUME SQL.
+> See `references/sql-setup.md` for SHOW SERVICES, RESUME_ALL_SERVICES, and CHECK_HEALTH SQL.
 
 **STOP** if ORS Native App is not installed.
 
@@ -165,7 +169,7 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 | Marketplace access denied | `CALL SYSTEM$ACCEPT_LEGAL_TERMS` fails | Requires IMPORT SHARE privilege (see Required Privileges section) |
 | Notebook execution fails | `EXECUTE NOTEBOOK` errors | Check logs in Snowsight; verify `OVERTURE_MAPS__PLACES` accessible and warehouse active |
 | Cortex model unavailable | "model not found" error | Try fallback model or set `CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION'` |
-| Services not starting | SUSPENDED or FAILED status | `ALTER SERVICE ... RESUME`; check compute pool capacity |
+| Services not starting | SUSPENDED or FAILED status | `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES()`; check compute pool capacity |
 | Streamlit app errors | App fails to load | Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated |
 | Stage upload fails | Permission error | Verify WRITE privilege on stage and correct `--connection` |
 | Wrong POI region | PLACES has wrong city data | Fix geohash in Step 6, re-run notebook |

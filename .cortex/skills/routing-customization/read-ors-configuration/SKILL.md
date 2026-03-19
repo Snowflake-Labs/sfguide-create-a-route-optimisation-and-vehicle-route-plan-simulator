@@ -21,6 +21,10 @@ Detects the map region/location and routing profiles from the ORS configuration 
 - `<REGION_NAME>`: The configured region name
 - `<ENABLED_PROFILES>`: List of enabled vehicle profiles
 
+## Error Logging
+
+When any step fails or produces unexpected results, log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-customization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 1: Extract Region Name from Service Definition
@@ -52,7 +56,7 @@ Detects the map region/location and routing profiles from the ORS configuration 
 2. **Read** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`
 
 3. **Parse** the downloaded file for `profiles:` entries with `enabled: true`
-   - Common profiles: `driving-car`, `driving-hgv`, `cycling-road`, `cycling-regular`, `foot-walking`
+   - Common profiles: `driving-car`, `driving-hgv`, `cycling-electric`, `cycling-regular`, `foot-walking`
 
 **Output:** `<ENABLED_PROFILES>` extracted
 

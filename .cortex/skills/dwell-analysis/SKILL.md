@@ -74,6 +74,10 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
     +---> DT_DAILY_TRENDS (fleet-wide daily aggregates)
 ```
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `dwell-analysis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Workflow
 
 ### Step 0: Check & Load Source Data
