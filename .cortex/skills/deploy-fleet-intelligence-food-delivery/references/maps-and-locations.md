@@ -18,6 +18,35 @@ These 11 cities are pre-configured. Selecting a new city in the app auto-provisi
 | **Paris** | FR | | 2.35 | 48.86 | Paris | `Paris` |
 | **Berlin** | DE | BE | 13.40 | 52.52 | Berlin | `Berlin` |
 
+## City-Specific vs Generic ORS Functions
+
+> **CRITICAL:** The native app creates both generic and city-specific functions. Generic functions route to the DEFAULT ORS service which only has the Karlsruhe (Germany) test graph. Always use city-specific functions for actual data.
+
+| Function Pattern | Routes To | Use When |
+|-----------------|-----------|----------|
+| `ROUTING.DIRECTIONS_{CITY}()` | City-specific ORS service | **Always use this** for routing |
+| `ROUTING.DIRECTIONS()` | Default ORS (Karlsruhe) | Never use for production data |
+| `ROUTING.MATRIX_{CITY}()` | City-specific ORS service | **Always use this** for matrix calculations |
+| `ROUTING.MATRIX_TABULAR()` | Default ORS (Karlsruhe) | Never use for production data |
+| `ROUTING.MATRIX()` | Default ORS (Karlsruhe) | Never use for production data |
+
+Where `{CITY}` is the ORS Region name in PascalCase with no spaces (e.g., `SanFrancisco`, `London`, `NewYork`).
+
+Example:
+```sql
+SELECT FLEET_INTELLIGENCE_APP.ROUTING.DIRECTIONS_SANFRANCISCO(
+    'driving-car',
+    ARRAY_CONSTRUCT(-122.44, 37.76),
+    ARRAY_CONSTRUCT(-122.42, 37.78)
+);
+
+SELECT FLEET_INTELLIGENCE_APP.ROUTING.MATRIX_SANFRANCISCO(
+    'driving-car',
+    ARRAY_CONSTRUCT(-122.44, 37.76),
+    ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(-122.42, 37.78), ARRAY_CONSTRUCT(-122.40, 37.74))
+);
+```
+
 ## Adding Additional Cities (Before Docker Build)
 
 Only needed for cities NOT in the default list above. Must be done before Step 12 Docker image build.
@@ -44,7 +73,7 @@ Also add the city to the Overture Maps filter table below.
 
 **3. If NOT found**, check Geofabrik at `https://download.geofabrik.de/` for region-level PBF files.
 
-**4. Do NOT download the map.** It is downloaded automatically by the app's downloader service when `ROUTING.CREATE_CITY_ORS_SERVICE('{CityName}')` is called.
+**4. Do NOT download the map.** It is downloaded automatically by the app's downloader service when `ROUTING.CREATE_CITY_ORS_SERVICE('{CityName}')` is called. The downloader service requires the `EXTERNAL_ACCESS_DOWNLOAD_REF` to be bound (see native-app-deploy.md Step 12i).
 
 ## Overture Maps Filters by City
 
@@ -72,4 +101,4 @@ For US cities, use state code. For international, use country code only.
 
 - One vehicle type per data build — all couriers use the same type
 - Matrix builds support one vehicle type per build; different type **appends** data
-- `CA_TRAVEL_TIME_RES7/8/9` tables include `VEHICLE_TYPE` column
+- Travel time matrix tables include `VEHICLE_TYPE` column when applicable

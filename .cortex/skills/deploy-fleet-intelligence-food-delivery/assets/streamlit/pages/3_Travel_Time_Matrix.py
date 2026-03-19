@@ -1,12 +1,9 @@
-# SwiftBite Food Delivery - Travel Time Matrix Visualization
-# Explore pre-computed travel times between H3 hexagons across California
-
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import altair as alt
 from snowflake.snowpark.context import get_active_session
-from city_config import get_city, get_company, get_california_cities
+from city_config import get_city, get_company
 
 COMPANY = get_company()
 
@@ -19,9 +16,7 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
-with st.sidebar:
-    selected_city = st.selectbox("City", get_california_cities(), index=0)
-
+selected_city = 'San Francisco'
 CITY = get_city(selected_city)
 
 st.markdown(f'''
@@ -29,16 +24,11 @@ st.markdown(f'''
 <h1grey>Pre-computed ORS driving times across {CITY["name"]} (H3 Resolution 9)</h1grey>
 ''', unsafe_allow_html=True)
 
-if CITY["name"] != "San Francisco":
-    st.warning(f"The pre-computed travel time matrix is currently only available for San Francisco. Select San Francisco from the city dropdown to explore the matrix data.")
-    st.info("To build a matrix for other cities, use the ORS MATRIX function to compute travel times between H3 hexagons.")
-    st.stop()
-
 
 st.divider()
 
-MATRIX_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX'
-HEXAGONS_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS'
+MATRIX_TABLE = 'FLEET_INTELLIGENCE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX'
+HEXAGONS_TABLE = 'FLEET_INTELLIGENCE_SETUP.ROUTING.SF_HEXAGONS'
 
 @st.cache_data(ttl=600)
 def get_matrix_stats():
@@ -101,11 +91,7 @@ if stats:
 else:
     st.warning("Travel time matrix not found. Please ensure the matrix has been computed.")
     st.info("""
-    To build the travel time matrix, run:
-    ```sql
-    -- See OPENROUTESERVICE_SETUP.ROUTING schema for matrix tables
-    SELECT * FROM OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS LIMIT 10;
-    ```
+    To build the travel time matrix, run Step 12 from the deployment skill.
     """)
     st.stop()
 
@@ -282,7 +268,7 @@ with col2:
     st.metric(
         "Hexagons Reachable",
         f"{len(coverage_data):,}",
-        delta=f"{len(coverage_data)/len(hexagons_df)*100:.1f}% of SF"
+        delta=f"{len(coverage_data)/len(hexagons_df)*100:.1f}% of {CITY['name']}"
     )
 
 with col3:
@@ -302,8 +288,14 @@ with st.expander("How This Matrix Was Built"):
     This matrix was pre-computed using the **OpenRouteService MATRIX function** running in Snowflake via SPCS:
     
     1. **H3 Hexagons** (Resolution 9): Generated from Overture Maps address data for {CITY['name']}
-    2. **Matrix Calculation**: Used `OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX_TABULAR()` to compute driving times
-    3. **Result**: {stats['total_pairs']:,.0f} origin-destination pairs covering {stats['unique_origins']:,.0f} hexagons
+    2. **K-ring Neighbors**: Used `H3_GRID_DISK(hex, 9)` to find nearby hexagons
+    3. **Matrix Calculation**: Used city-specific `FLEET_INTELLIGENCE_APP.ROUTING.MATRIX_SANFRANCISCO()` (NOT `MATRIX_TABULAR`)
+    4. **Result**: {stats['total_pairs']:,.0f} origin-destination pairs covering {stats['unique_origins']:,.0f} hexagons
+    
+    ### Why City-Specific Functions?
+    
+    `MATRIX_TABULAR` routes to the default ORS service which has the Karlsruhe (Germany) graph.
+    City-specific functions (e.g., `MATRIX_SANFRANCISCO`) route to the correct city ORS service.
     
     ### Performance Benefits
     
@@ -317,13 +309,13 @@ with st.expander("How This Matrix Was Built"):
     ```sql
     -- Find travel time between two hexagons
     SELECT travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM FLEET_INTELLIGENCE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND destination_hex_id = '89283082bd7ffff';
     
     -- Find all destinations within 15 minutes
     SELECT destination_hex_id, travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM FLEET_INTELLIGENCE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND travel_time_seconds <= 900
     ORDER BY travel_time_seconds;

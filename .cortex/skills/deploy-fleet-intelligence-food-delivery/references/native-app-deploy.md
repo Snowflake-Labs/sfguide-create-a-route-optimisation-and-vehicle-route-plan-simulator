@@ -1,4 +1,4 @@
-# Native App Deployment (Step 12)
+# Native App Deployment (Step 2)
 
 ## Prerequisites
 
@@ -7,18 +7,18 @@
 - All images must be built with `--platform linux/amd64` (SPCS requirement)
 - When updating an image, always use a NEW tag — SPCS caches images by tag
 
-## Sub-step 12a: Verify Dockerfile Port
+## Sub-step 2a: Verify Dockerfile Port
 
 Ensure `assets/fleet-intelligence-app/Dockerfile` has `ENV PORT=8080` and `EXPOSE 8080`.
 
-## Sub-step 12b: Build Docker Image
+## Sub-step 2b: Build Docker Image
 
 ```bash
 cd <SKILL_DIR>/assets/fleet-intelligence-app
 docker build --platform linux/amd64 -t fleet-intelligence:v1.2 .
 ```
 
-## Sub-step 12c: Create Image Repository
+## Sub-step 2c: Create Image Repository
 
 ```sql
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP;
@@ -31,7 +31,7 @@ SHOW IMAGE REPOSITORIES IN SCHEMA FLEET_INTELLIGENCE_SETUP.PUBLIC;
 
 Extract `repository_url`: `<orgname>-<acctname>.registry.snowflakecomputing.com/fleet_intelligence_setup/public/fleet_intel_repo`
 
-## Sub-step 12d: Tag and Push All Docker Images
+## Sub-step 2d: Tag and Push All Docker Images
 
 ```bash
 snow spcs image-registry login -c {CONNECTION_NAME}
@@ -52,7 +52,7 @@ docker tag downloader:v0.0.3 {REPO_URL}/downloader:v0.0.3
 docker push {REPO_URL}/downloader:v0.0.3
 ```
 
-## Sub-step 12e: Create Application Package
+## Sub-step 2e: Create Application Package
 
 ```sql
 CREATE APPLICATION PACKAGE IF NOT EXISTS FLEET_INTELLIGENCE_PKG;
@@ -61,7 +61,7 @@ CREATE OR REPLACE STAGE FLEET_INTELLIGENCE_PKG.stage_content.app_code
     DIRECTORY = (ENABLE = TRUE) ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
 ```
 
-## Sub-step 12f: Upload Native App Files
+## Sub-step 2f: Upload Native App Files
 
 ```bash
 APP_DIR="<SKILL_DIR>/assets/fleet-intelligence-app/native-app"
@@ -72,7 +72,7 @@ snow stage copy "${APP_DIR}/services/fleet_intelligence_service.yaml" @FLEET_INT
 snow stage copy "${APP_DIR}/streamlit/status.py" @FLEET_INTELLIGENCE_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
 ```
 
-## Sub-step 12g: Register Version and Install
+## Sub-step 2g: Register Version and Install
 
 ```sql
 ALTER APPLICATION PACKAGE FLEET_INTELLIGENCE_PKG
@@ -104,7 +104,7 @@ Upgrade existing app:
 ALTER APPLICATION FLEET_INTELLIGENCE_APP UPGRADE USING VERSION V1_2;
 ```
 
-## Sub-step 12h: Grant Required Privileges
+## Sub-step 2h: Grant Required Privileges
 
 ```sql
 GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
@@ -123,6 +123,12 @@ GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTELLIGENCE_APP;
 ```
 
+Also grant on ROUTING schema (for travel time matrix):
+```sql
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE_SETUP.ROUTING TO APPLICATION FLEET_INTELLIGENCE_APP;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE_SETUP.ROUTING TO APPLICATION FLEET_INTELLIGENCE_APP;
+```
+
 ```sql
 GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION FLEET_INTELLIGENCE_APP;
@@ -132,7 +138,9 @@ GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION FL
 GRANT APPLICATION ROLE FLEET_INTELLIGENCE_APP.APP_USER TO ROLE <YOUR_ROLE>;
 ```
 
-## Sub-step 12i: Create External Access Integration
+## Sub-step 2i: Create External Access Integrations
+
+### Map Tiles EAI (for React UI map rendering)
 
 ```sql
 CREATE OR REPLACE NETWORK RULE fleet_intel_map_tiles_rule
@@ -149,31 +157,96 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION fleet_intel_map_tiles_eai
 GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION FLEET_INTELLIGENCE_APP;
 ```
 
-Bind the reference (**MUST** use `SYSTEM$REFERENCE()`, not raw name):
+Bind the map tiles reference:
 ```sql
-USE DATABASE FLEET_INTELLIGENCE_APP;
-USE SCHEMA CORE;
-CALL core.register_single_callback(
+CALL FLEET_INTELLIGENCE_APP.CORE.REGISTER_SINGLE_CALLBACK(
     'EXTERNAL_ACCESS_REF', 'ADD',
-    SYSTEM$REFERENCE('EXTERNAL_ACCESS_INTEGRATION', 'FLEET_INTEL_MAP_TILES_EAI', 'persistent', 'USAGE')
+    SYSTEM$REFERENCE('EXTERNAL_ACCESS_INTEGRATION', 'FLEET_INTEL_MAP_TILES_EAI', 'PERSISTENT', 'USAGE')
 );
 ```
 
-## Sub-step 12j: Deploy the Service
+### Download EAI (for ORS PBF map downloads)
+
+> **CRITICAL:** The downloader service requires this EAI to download city PBF files from BBBike. Without it, `CREATE_CITY_ORS_SERVICE()` will fail.
 
 ```sql
-USE DATABASE FLEET_INTELLIGENCE_APP;
-CALL core.deploy();
-```
-
-## Sub-step 12k: Verify Deployment
-
-```sql
-SELECT SYSTEM$GET_SERVICE_STATUS('FLEET_INTELLIGENCE_APP.core.fleet_intelligence_service');
+CREATE OR REPLACE NETWORK RULE fleet_intel_download_rule
+    MODE = EGRESS TYPE = HOST_PORT
+    VALUE_LIST = ('download.bbbike.org:443');
 ```
 
 ```sql
-SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE_APP.core.fleet_intelligence_service;
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION fleet_intel_download_eai
+    ALLOWED_NETWORK_RULES = (fleet_intel_download_rule) ENABLED = TRUE;
+```
+
+```sql
+GRANT USAGE ON INTEGRATION fleet_intel_download_eai TO APPLICATION FLEET_INTELLIGENCE_APP;
+```
+
+Bind the download reference:
+```sql
+CALL FLEET_INTELLIGENCE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+    'EXTERNAL_ACCESS_DOWNLOAD_REF', 'ADD',
+    SYSTEM$REFERENCE('EXTERNAL_ACCESS_INTEGRATION', 'FLEET_INTEL_DOWNLOAD_EAI', 'PERSISTENT', 'USAGE')
+);
+```
+
+> **Note on REGISTER_SINGLE_CALLBACK:** This is the ONLY way to bind external access integrations to a native app from outside the app. `SYSTEM$SET_REFERENCE()` can only be called from within native app procedures. `ALTER APPLICATION ... SET REFERENCES` is NOT a valid property.
+
+## Sub-step 2j: Deploy the Service
+
+```sql
+CALL FLEET_INTELLIGENCE_APP.CORE.DEPLOY();
+```
+
+## Sub-step 2k: Verify Deployment
+
+```sql
+SELECT SYSTEM$GET_SERVICE_STATUS('FLEET_INTELLIGENCE_APP.CORE.FLEET_INTELLIGENCE_SERVICE');
+```
+
+```sql
+SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE_APP.CORE.FLEET_INTELLIGENCE_SERVICE;
 ```
 
 Endpoint URL takes 2-3 minutes after READY to resolve.
+
+## Sub-step 2l: Provision ORS Routing for City
+
+```sql
+CALL FLEET_INTELLIGENCE_APP.ROUTING.SETUP_ORS();
+CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_ORS_SERVICE('{LOCATION}');
+CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_FUNCTIONS('{LOCATION}');
+```
+
+## Sub-step 2m: Verify Routing
+
+> **CRITICAL:** Always use city-specific functions, NOT generic ones. See `maps-and-locations.md` for the full function reference.
+
+```sql
+SELECT FLEET_INTELLIGENCE_APP.ROUTING.DIRECTIONS_{LOCATION}(
+    'driving-car',
+    ARRAY_CONSTRUCT({CENTER_LON}, {CENTER_LAT}),
+    ARRAY_CONSTRUCT({CENTER_LON} + 0.02, {CENTER_LAT} + 0.02)
+);
+```
+
+If it fails: `CALL SYSTEM$GET_SERVICE_LOGS('FLEET_INTELLIGENCE_APP.ROUTING.ORS_SERVICE_{LOCATION}', 0, 'ors', 50);`
+
+## ORS Graph Cache Management
+
+When re-provisioning or updating a city's ORS service, you may need to clear cached graph data:
+
+```sql
+REMOVE @FLEET_INTELLIGENCE_APP.ROUTING.ORS_GRAPHS_SPCS_STAGE/{ORS_REGION}/driving-car/;
+REMOVE @FLEET_INTELLIGENCE_APP.ROUTING.ORS_GRAPHS_SPCS_STAGE/{ORS_REGION}/cycling-regular/;
+```
+
+Then restart the ORS service:
+```sql
+ALTER SERVICE FLEET_INTELLIGENCE_APP.ROUTING.ORS_SERVICE_{LOCATION} SUSPEND;
+ALTER SERVICE FLEET_INTELLIGENCE_APP.ROUTING.ORS_SERVICE_{LOCATION} RESUME;
+```
+
+> The ORS Docker image ships with a default Karlsruhe (Germany) test PBF (~8MB, 20K edges). When a city-specific PBF is downloaded, the cached graph from the old PBF may persist. Always clear the graph cache before rebuilding.

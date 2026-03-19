@@ -37,16 +37,20 @@ Start
 Step 1: Query Tag + Overture Maps
   |
   v
-Step 2: Choose Location + Deploy Native App  <-- Load references/maps-and-locations.md
-  |                                               Load references/native-app-deploy.md
+Step 2: Deploy Native App + ORS Routing      <-- Load references/native-app-deploy.md
+  |     (Docker build, push, install,              Load references/maps-and-locations.md
+  |      EAIs, deploy service, provision ORS)
   v
 Step 3: Create Database/Warehouse/Schema
   |
   v
-Steps 4-9: Generate Data                     <-- Load references/data-generation.md
+Steps 4-9: Generate Simulation Data          <-- Load references/data-generation.md
   |
   v
-Steps 10-11: Views + Streamlit               <-- Load references/analytics-and-streamlit.md
+Steps 10-11: Analytics Views + Streamlit     <-- Load references/analytics-and-streamlit.md
+  |
+  v
+Step 12: Travel Time Matrix (Optional)       <-- Load references/analytics-and-streamlit.md
   |
   v
 Done (or troubleshoot)                        <-- Load references/troubleshooting.md
@@ -95,39 +99,34 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 ---
 
-### Step 2: Choose Location, Manage Maps, Deploy Native App
+### Step 2: Deploy Native App, EAIs, and ORS Routing
 
-**Load** `references/maps-and-locations.md` for city tables, BBBike workflow, and Overture filters.
+This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP native app with ORS routing.
 
-**2a:** Present pre-configured cities. Store `{LOCATION}`, `{COUNTRY}`, `{STATE}`.
+**Load** `references/maps-and-locations.md` for city tables and Overture filters.
+**Load** `references/native-app-deploy.md` and follow sub-steps 2a through 2m.
 
-**⚠️ MANDATORY STOPPING POINT**: Ask user which city they want. Also ask if they want to add cities beyond the 11 defaults.
+**MANDATORY STOPPING POINT** (before sub-step 2b): Ask user which city they want. Store `{LOCATION}`, `{COUNTRY}`, `{STATE}`. If they want extra cities beyond the 11 defaults, follow the Adding Additional Cities workflow in maps-and-locations.md — this must happen before Docker build.
 
-**2b:** If user wants extra cities, follow the Adding Additional Cities workflow in maps-and-locations.md. This must happen before Docker build.
+**Summary of sub-steps in native-app-deploy.md:**
 
-**2c: Deploy the Native App**
+| Sub-step | What it does |
+|----------|-------------|
+| 2a | Verify Dockerfile port (8080) |
+| 2b | Docker build (`--platform linux/amd64`) |
+| 2c | Create image repository in Snowflake |
+| 2d | Tag and push all 5 Docker images |
+| 2e | Create application package + stage |
+| 2f | Upload native app files (manifest, setup_script, service YAMLs) |
+| 2g | Register version + install/upgrade application |
+| 2h | Grant privileges (compute pool, warehouse, endpoint, data access) |
+| 2i | Create **both** EAIs (map tiles + download) and bind via `REGISTER_SINGLE_CALLBACK` |
+| 2j | Deploy service (`CALL CORE.DEPLOY()`) |
+| 2k | Verify service is READY and endpoints resolve |
+| 2l | Provision ORS routing for chosen city |
+| 2m | Verify routing with city-specific `DIRECTIONS_{LOCATION}()` |
 
-**Load** `references/native-app-deploy.md` and follow Steps 12a-12k.
-
-**2d: Provision ORS Routing**
-
-```sql
-CALL FLEET_INTELLIGENCE_APP.ROUTING.SETUP_ORS();
-CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_ORS_SERVICE('{LOCATION}');
-CALL FLEET_INTELLIGENCE_APP.ROUTING.CREATE_CITY_FUNCTIONS('{LOCATION}');
-```
-
-**2e: Verify Routing**
-
-```sql
-SELECT FLEET_INTELLIGENCE_APP.ROUTING.DIRECTIONS(
-    'driving-car',
-    [{CENTER_LON}, {CENTER_LAT}],
-    [{CENTER_LON} + 0.02, {CENTER_LAT} + 0.02]
-);
-```
-
-If it fails: `CALL SYSTEM$GET_SERVICE_LOGS('FLEET_INTELLIGENCE_APP.ROUTING.ORS_SERVICE', 0, 'ors', 50);`
+> **CRITICAL:** Always use city-specific functions (`DIRECTIONS_{LOCATION}`, `MATRIX_{LOCATION}`), NOT generic ones (`DIRECTIONS`, `MATRIX_TABULAR`). Generic functions route to the default ORS which has the Karlsruhe/Germany graph.
 
 ---
 
@@ -152,6 +151,10 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DEL
 ```
 
 ```sql
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.ROUTING;
+```
+
+```sql
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE);
 ```
@@ -162,7 +165,7 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELI
 
 **Load** `references/data-generation.md` and execute Steps 4-9 in order.
 
-**⚠️ MANDATORY STOPPING POINT**: After Step 8 (ORS Routes), verify route count before proceeding to Step 9.
+**MANDATORY STOPPING POINT**: After Step 8 (ORS Routes), verify route count before proceeding to Step 9.
 
 ---
 
@@ -174,12 +177,31 @@ Replace `<SKILL_DIR>` with the absolute path to this skill directory when execut
 
 ---
 
+### Step 12: Travel Time Matrix — Streamlit (Optional)
+
+**Load** `references/analytics-and-streamlit.md` — Step 12 section.
+
+Builds an H3 hexagon-level travel time matrix using ORS MATRIX functions. Required for the Travel Time Matrix Streamlit page. Uses city-specific `MATRIX_{LOCATION}()` with parallel workers and resume safety.
+
+> **Two separate matrix architectures exist — they do NOT share data:**
+>
+> | | Streamlit (Step 12) | React App (built-in) |
+> |---|---|---|
+> | **Where** | `FLEET_INTELLIGENCE_SETUP.ROUTING` | `FLEET_INTELLIGENCE_APP.DATA` |
+> | **Tables** | `SF_TRAVEL_TIME_MATRIX`, `SF_HEXAGONS` | `CA_TRAVEL_TIME_RES7/8/9`, `CA_H3_RES7/8/9` |
+> | **Resolutions** | Single (res 9) | Multi (res 7, 8, 9) |
+> | **How to build** | Run Step 12 SQL via this skill | Use the Matrix Builder UI in the React app |
+> | **Columns** | `origin_hex_id, destination_hex_id, travel_time_seconds, distance_meters` | `ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, REGION, VEHICLE_TYPE` |
+>
+> Building one does **not** populate the other. If you need matrix data in both UIs, build separately in each.
+
+---
+
 ## Stopping Points
 
-- ✋ Step 2a: City selection (user must choose location)
-- ✋ Step 2b: Additional maps confirmation (if requested)
-- ✋ After Step 8: Verify routes before generating courier locations
-- ✋ After Step 12k: Verify native app deployment before proceeding
+- Before Step 2b: City selection (user must choose location)
+- After Step 2k: Verify native app deployment before proceeding
+- After Step 8: Verify routes before generating courier locations
 
 **Resume rule:** Upon user approval, proceed directly to next step.
 
@@ -197,6 +219,7 @@ Source files used during deployment:
 
 - `FLEET_INTELLIGENCE_APP` — Native App with React UI, ORS routing, VROOM optimizer
 - `FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY` — Schema with all data tables and views
+- `FLEET_INTELLIGENCE_SETUP.ROUTING` — Schema with travel time matrix tables
 - `SWIFTBITE_DELIVERY_DASHBOARD` — Streamlit app in Snowsight
 
 ## Troubleshooting

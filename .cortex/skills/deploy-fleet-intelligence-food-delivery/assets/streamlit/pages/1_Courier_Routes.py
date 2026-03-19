@@ -9,7 +9,7 @@ import snowflake.snowpark.functions as F
 from snowflake.snowpark.types import *
 from snowflake.snowpark.window import Window
 from snowflake.snowpark.context import get_active_session
-from city_config import get_city, get_company, get_california_cities
+from city_config import get_city, get_company
 
 COMPANY = get_company()
 
@@ -21,9 +21,7 @@ with open('extra.css') as f:
 
 st.logo('logo.svg')
 
-with st.sidebar:
-    selected_city = st.selectbox("City", get_california_cities(), index=0)
-
+selected_city = 'San Francisco'
 CITY = get_city(selected_city)
 
 def bar_creation(dataframe, measure, attribute):
@@ -53,18 +51,18 @@ def bar_creation(dataframe, measure, attribute):
 
     return (bars + text).properties(height=200)
 
-delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == selected_city)
+delivery_plans = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == selected_city)
 routes = delivery_plans.select('GEOMETRY', 'ORDER_ID', 'DISTANCE_METERS', 'COURIER_ID')
-delivery_summary = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
+delivery_summary = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
 
 delivery_plans = delivery_plans.with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
 
-all_courier_locations = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V').filter(F.col('CITY') == selected_city)
+all_courier_locations = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V').filter(F.col('CITY') == selected_city)
 all_courier_locations = all_courier_locations.with_column('POINT_TIME_STR', F.col('POINT_TIME').astype(StringType()))
 
 @st.cache_data
 def get_couriers(city):
-    return session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == city).select('COURIER_ID').distinct().sort('COURIER_ID').to_pandas()
+    return session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == city).select('COURIER_ID').distinct().sort('COURIER_ID').to_pandas()
 
 with st.sidebar:
     couriers_df = get_couriers(selected_city)
@@ -222,7 +220,7 @@ if len(deliveries_df) > 0:
             if len(current_pos) > 0:
                 route_geom = session.sql(f"""
                     SELECT ST_ASGEOJSON(GEOMETRY) AS GEOM
-                    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+                    FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
                     WHERE ORDER_ID = '{order_id}'
                 """).collect()[0]['GEOM']
 

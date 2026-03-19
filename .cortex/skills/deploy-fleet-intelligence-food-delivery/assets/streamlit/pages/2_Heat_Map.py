@@ -8,7 +8,7 @@ import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import altair as alt
 import snowflake.snowpark.functions as F
-from city_config import get_city, get_company, get_california_cities
+from city_config import get_city, get_company
 
 COMPANY = get_company()
 
@@ -23,11 +23,8 @@ with open('extra.css') as f:
 
 session = get_active_session()
 
-with st.sidebar:
-    city_options = ["All Cities"] + get_california_cities()
-    selected_city = st.selectbox("City", city_options, index=0)
-
-city_query_filter = '' if selected_city == 'All Cities' else selected_city
+selected_city = 'San Francisco'
+city_query_filter = selected_city
 CITY = get_city(selected_city)
 
 st.markdown(f'''
@@ -50,7 +47,7 @@ def get_hex_df(h3_res: int, h: int, m: int, city: str = '') -> pd.DataFrame:
     sql = f"""
         WITH active AS (
             SELECT order_id, courier_id, point_geom, courier_state
-            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
+            FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) = {m}
               AND courier_state != 'available'
@@ -61,7 +58,7 @@ def get_hex_df(h3_res: int, h: int, m: int, city: str = '') -> pd.DataFrame:
         ),
         avail_candidates AS (
             SELECT order_id, courier_id, point_geom, courier_state
-            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
+            FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) <= {m}
               {city_filter}
@@ -98,9 +95,9 @@ def get_point_df(h: int, m: int, city: str = '') -> pd.DataFrame:
         WITH active_couriers AS (
             SELECT A.order_id, A.courier_id, A.point_geom, A.courier_state,
                    B.DELIVERY_NAME, C.GEOMETRY
-            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V A
-            INNER JOIN OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_NAMES B ON A.ORDER_ID = B.ORDER_ID
-            INNER JOIN (SELECT ORDER_ID, GEOMETRY FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS) C ON A.ORDER_ID = C.ORDER_ID
+            FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V A
+            INNER JOIN FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_NAMES B ON A.ORDER_ID = B.ORDER_ID
+            INNER JOIN (SELECT ORDER_ID, GEOMETRY FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS) C ON A.ORDER_ID = C.ORDER_ID
             WHERE hour(TO_TIMESTAMP(A.CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(A.CURR_TIME)) = {m}
               AND A.COURIER_STATE != 'available'
@@ -110,7 +107,7 @@ def get_point_df(h: int, m: int, city: str = '') -> pd.DataFrame:
         available_couriers AS (
             SELECT order_id, courier_id, point_geom, courier_state,
                    'Available' AS DELIVERY_NAME, NULL AS GEOMETRY
-            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
+            FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V
             WHERE hour(TO_TIMESTAMP(CURR_TIME)) = {h}
               AND minute(TO_TIMESTAMP(CURR_TIME)) <= {m}
               {city_filter}
@@ -143,9 +140,7 @@ def get_point_df(h: int, m: int, city: str = '') -> pd.DataFrame:
     df["TOOLTIP"] = df.apply(lambda r: "Available Courier" if r["is_available"] else "Delivery: " + str(r["delivery_name"]), axis=1)
     return df[["order_id", "POSITION", "ROUTE", "TOOLTIP", "is_available"]]
 
-delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN')
-if selected_city != 'All Cities':
-    delivery_plans = delivery_plans.filter(F.col('CITY') == selected_city)
+delivery_plans = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == selected_city)
 delivery_plans = delivery_plans.with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
 
 longest_deliveries = delivery_plans.order_by(F.col('DISTANCE_METERS').desc()).limit(5)
