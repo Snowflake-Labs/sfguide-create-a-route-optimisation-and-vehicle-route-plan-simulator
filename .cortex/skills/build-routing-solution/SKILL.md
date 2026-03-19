@@ -287,6 +287,46 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - Application: `OPENROUTESERVICE_NATIVE_APP`
 - 4 SPCS services running (downloader, openrouteservice, gateway, vroom)
 
+### Default Routing Profiles
+
+| Profile | Enabled |
+|---------|--------|
+| driving-car | Yes |
+| driving-hgv | Yes |
+| cycling-electric | Yes |
+
+All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walking, foot-hiking, wheelchair) are disabled by default. Use the `routing-customization` skill to enable additional profiles.
+
+### Default Service Limits
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| maximum_distance | 1,500 km | Max route distance for all profiles |
+| maximum_range_time (isochrones) | 18,000 s (5 hours) | Max isochrone travel time |
+| maximum_range_distance (isochrones) | 1,500 km | Max isochrone travel distance |
+| maximum_intervals (isochrones) | 10 | Max isochrone intervals per request |
+| maximum_routes (matrix) | 250,000 | Max matrix routes |
+
+### Available Functions
+
+The app registers the following SQL functions in the `CORE` schema:
+
+**Scalar functions** (return VARIANT with full ORS JSON response):
+- `DIRECTIONS(method, jstart, jend)` / `DIRECTIONS(method, locations)`
+- `ISOCHRONES(method, lon, lat, range)`
+- `OPTIMIZATION(jobs, vehicles, matrices)` / `OPTIMIZATION(challenge)`
+- `MATRIX(method, sources, destinations)` / `MATRIX_TABULAR(...)`
+- `GEOCODE_LOOKUP(address)` / `REVERSE_GEOCODE(lon, lat)`
+
+**GEO table functions** (return parsed GEOGRAPHY column alongside response):
+- `DIRECTIONS_GEO(method, jstart, jend)` → RESPONSE, GEOJSON, DISTANCE, DURATION
+- `DIRECTIONS_GEO(method, locations)` → RESPONSE, GEOJSON, DISTANCE, DURATION
+- `ISOCHRONES_GEO(method, lon, lat, range)` → RESPONSE, GEOJSON
+- `OPTIMIZATION_GEO(jobs, vehicles, matrices)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
+- `OPTIMIZATION_GEO(challenge)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
+
+The `_GEO` variants are table functions that parse the GeoJSON from ORS responses into Snowflake GEOGRAPHY columns, making it easy to use with spatial joins and visualization.
+
 Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It make take a minute or two.
 
 ## Cleanup
