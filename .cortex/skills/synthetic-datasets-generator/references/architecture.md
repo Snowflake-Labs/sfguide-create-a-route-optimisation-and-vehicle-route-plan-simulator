@@ -270,3 +270,144 @@ Anomalies are **event-level** decisions, not always-on flags. A COMPLIANT driver
 - Batch limit: 200 routes max per ORS call
 - Results cached in local SQLite database (`cache/routes.db`)
 - Route coordinates interpolated at configured time intervals
+
+---
+
+## Food Delivery Mode (E-Bike)
+
+The generator supports a `food_delivery` mode for simulating e-bike delivery fleets. Set `mode: food_delivery` in config.
+
+### Data Flow (Food Delivery)
+
+```
+1. POI Loading
+   ├── Overture Maps PLACES → restaurants/stores (SF bbox)
+   └── Synthetic generator → delivery addresses (5000+)
+            │
+            ▼
+2. Fleet & Rider Assignment
+   ├── Assign rider profiles (EFFICIENT/CASUAL/RECKLESS)
+   ├── Assign home stores
+   └── Set battery range and base e-bike speed
+            │
+            ▼
+3. Delivery Generation (per day, per rider)
+   ├── Pick store → pick nearby delivery address
+   ├── ORS cycling-electric route (outbound + return)
+   ├── Peak-hour demand weighting
+   └── Battery tracking and shift model
+            │
+            ▼
+4. Telemetry Emission
+   ├── GPS interpolation at 7-13s intervals
+   ├── Pickup dwell (5-20 min) + dropoff dwell (2-10 min)
+   ├── No HOS breaks (replaced by shift breaks)
+   ├── Battery drain tracking per km
+   └── Anomaly flags (speeding, late delivery, detour)
+            │
+            ▼
+5. Snowflake Loading
+   ├── Parquet staging → COPY INTO (SF_EBIKES_FACT_VEHICLE_TELEMETRY)
+   ├── write_pandas (SF_EBIKES_DIM_STORE, SF_EBIKES_DIM_VEHICLE, SF_EBIKES_DIM_DELIVERY_ADDRESS)
+   └── Clustering key application
+```
+
+### Star Schema (Food Delivery)
+
+#### SF_EBIKES_DIM_STORE
+
+```sql
+CREATE TABLE SF_EBIKES_DIM_STORE (
+    STORE_ID VARCHAR(100) PRIMARY KEY,
+    NAME VARCHAR(500),
+    CUISINE_TYPE VARCHAR(100),
+    STORE_TYPE VARCHAR(50),
+    LONGITUDE FLOAT, LATITUDE FLOAT,
+    GEOG GEOGRAPHY,
+    ADDRESS VARCHAR(500)
+);
+```
+
+#### SF_EBIKES_DIM_DELIVERY_ADDRESS
+
+```sql
+CREATE TABLE SF_EBIKES_DIM_DELIVERY_ADDRESS (
+    ADDRESS_ID VARCHAR(100) PRIMARY KEY,
+    ADDRESS VARCHAR(500),
+    NEIGHBORHOOD VARCHAR(100),
+    LONGITUDE FLOAT, LATITUDE FLOAT,
+    GEOG GEOGRAPHY,
+    ADDRESS_TYPE VARCHAR(50)
+);
+```
+
+#### SF_EBIKES_DIM_VEHICLE
+
+```sql
+CREATE TABLE SF_EBIKES_DIM_VEHICLE (
+    VEHICLE_ID VARCHAR(50) PRIMARY KEY,
+    RIDER_ID VARCHAR(50),
+    HOME_STORE_ID VARCHAR(100),
+    HOME_LNG FLOAT, HOME_LAT FLOAT,
+    VEHICLE_TYPE VARCHAR(50),
+    RIDER_PROFILE VARCHAR(50),
+    BASE_SPEED_KMH FLOAT,
+    BATTERY_RANGE_KM FLOAT
+);
+```
+
+#### SF_EBIKES_FACT_DELIVERY
+
+```sql
+CREATE TABLE SF_EBIKES_FACT_DELIVERY (
+    TRIP_ID VARCHAR(100) PRIMARY KEY,
+    VEHICLE_ID VARCHAR(50), RIDER_ID VARCHAR(50),
+    STORE_ID VARCHAR(100), ADDRESS_ID VARCHAR(100),
+    STORE_LNG FLOAT, STORE_LAT FLOAT,
+    ADDRESS_LNG FLOAT, ADDRESS_LAT FLOAT,
+    SCHEDULED_START TIMESTAMP_NTZ,
+    TRIP_TYPE VARCHAR(50), ROUTE_VARIATION VARCHAR(50),
+    DISTANCE_KM FLOAT, DURATION_MIN FLOAT,
+    PICKUP_DURATION_MIN FLOAT, DROPOFF_DURATION_MIN FLOAT,
+    SLA_TARGET_MIN FLOAT, ACTUAL_DELIVERY_MIN FLOAT, SLA_MET BOOLEAN,
+    IS_DETOUR BOOLEAN,
+    BATTERY_START_PCT FLOAT, BATTERY_END_PCT FLOAT,
+    ROUTE_GEOG GEOGRAPHY
+);
+```
+
+Clustering: `CLUSTER BY (TO_DATE(SCHEDULED_START), VEHICLE_ID)`
+
+#### SF_EBIKES_FACT_VEHICLE_TELEMETRY
+
+Same structure as FACT_TRUCK_TELEMETRY but uses VEHICLE_ID/RIDER_ID and IS_LATE_DELIVERY instead of IS_HOS_VIOLATION.
+
+Clustering: `CLUSTER BY (TO_DATE(TS), VEHICLE_ID)`
+
+### Rider Behavior Model
+
+| Profile | Proportion | Speeding | Late Delivery | Detour | Speed Variance |
+|---------|-----------|----------|---------------|--------|----------------|
+| EFFICIENT | 85% | 1% | 2% | 3% | +/- 5% |
+| CASUAL | 12% | 8% | 10% | 12% | +/- 10% |
+| RECKLESS | 3% | 20% | 25% | 30% | +/- 18% |
+
+### Battery Model
+
+- Full charge range: 60 km
+- Drain: ~1.67%/km
+- Recharge threshold: 15% (triggers return to store)
+- Recharge time: 30 min (battery swap)
+
+### Delivery SLA
+
+- Target: 30 min from pickup to dropoff
+- Violation if actual delivery time exceeds SLA target
+- Tracked per delivery in SF_EBIKES_FACT_DELIVERY.SLA_MET
+
+### Shift Model
+
+- Operating hours: 10:00-22:00
+- Peak hours: 11-13, 17-20 (1.8x demand multiplier)
+- Break after 4h riding, 20 min duration
+- No EU HOS rules (replaced by shift model)

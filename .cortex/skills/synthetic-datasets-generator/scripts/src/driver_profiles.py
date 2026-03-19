@@ -1,12 +1,11 @@
 """
-Driver Profile Module - Behavior mixture model for realistic driver simulation.
+Driver/Rider Profile Module - Behavior mixture model for realistic simulation.
 
 Implements:
-- Driver profile assignment (COMPLIANT, MILD, OUTLIER)
+- Trucking: Driver profiles (COMPLIANT, MILD, OUTLIER) with HOS tracking
+- Food delivery: Rider profiles (EFFICIENT, CASUAL, RECKLESS) with battery/SLA tracking
 - Event-level anomaly injection (not always-on)
 - Speed variation by profile
-- HOS (Hours of Service) tracking
-- Detour probability
 """
 
 import logging
@@ -19,30 +18,26 @@ logger = logging.getLogger(__name__)
 
 
 class ProfileType(Enum):
-    """Driver behavior profile types."""
     COMPLIANT = "COMPLIANT"
     MILD = "MILD"
     OUTLIER = "OUTLIER"
+    EFFICIENT = "EFFICIENT"
+    CASUAL = "CASUAL"
+    RECKLESS = "RECKLESS"
 
 
 @dataclass
 class DriverProfile:
-    """
-    Driver behavior profile with event-level probabilities.
-    
-    NOTE: Even COMPLIANT drivers may have rare anomalies - 
-    anomalies are event-level, not always-on flags.
-    """
     profile_type: ProfileType
-    detour_probability: float       # Probability of taking alternative route
-    speeding_probability: float     # Probability of speeding on any segment
-    hos_violation_probability: float  # Probability of >9h driving day
-    speed_variance: float           # Speed variation factor (e.g., 0.05 = ±5%)
-    
-    # Derived thresholds
+    detour_probability: float
+    speeding_probability: float
+    hos_violation_probability: float
+    late_delivery_probability: float
+    speed_variance: float
+
     speed_factor_min: float = field(init=False)
     speed_factor_max: float = field(init=False)
-    
+
     def __post_init__(self):
         self.speed_factor_min = 1.0 - self.speed_variance
         self.speed_factor_max = 1.0 + self.speed_variance
@@ -50,9 +45,6 @@ class DriverProfile:
 
 @dataclass 
 class DriverState:
-    """
-    Tracks driver state during simulation for HOS and behavior.
-    """
     driver_id: str
     profile: DriverProfile
     current_date: str = ""
@@ -60,48 +52,61 @@ class DriverState:
     last_break_time: Optional[float] = None
     minutes_since_break: float = 0.0
     violations_today: List[str] = field(default_factory=list)
-    
+    battery_pct: float = 100.0
+    deliveries_today: int = 0
+    shift_start_hour: int = 10
+
     def reset_daily(self, date: str):
-        """Reset daily counters."""
         self.current_date = date
         self.driving_minutes_today = 0.0
         self.last_break_time = None
         self.minutes_since_break = 0.0
         self.violations_today = []
-    
+        self.battery_pct = 100.0
+        self.deliveries_today = 0
+
     def add_driving_time(self, minutes: float):
-        """Add driving time and check for HOS violations."""
         self.driving_minutes_today += minutes
         self.minutes_since_break += minutes
-    
+
+    def add_distance(self, km: float, drain_per_km: float = 1.67):
+        self.battery_pct = max(0, self.battery_pct - km * drain_per_km)
+
+    def recharge(self):
+        self.battery_pct = 100.0
+
     def take_break(self, duration_minutes: float):
-        """Record a break."""
         if duration_minutes >= 30:
             self.minutes_since_break = 0
-    
+
     @property
     def is_hos_violation(self) -> bool:
-        """Check if currently in HOS violation (>9h driving)."""
-        return self.driving_minutes_today > 540  # 9 hours
-    
+        return self.driving_minutes_today > 540
+
     @property
     def needs_mandatory_break(self) -> bool:
-        """Check if mandatory break is needed (>4.5h since last break)."""
-        return self.minutes_since_break > 270  # 4.5 hours
+        return self.minutes_since_break > 270
+
+    @property
+    def needs_recharge(self) -> bool:
+        return self.battery_pct < 15
+
+    @property
+    def battery_depleted(self) -> bool:
+        return self.battery_pct <= 0
 
 
 def create_profile_from_config(
     profile_name: str,
     profile_config: dict
 ) -> DriverProfile:
-    """Create a DriverProfile from configuration."""
     profile_type = ProfileType(profile_name)
-    
     return DriverProfile(
         profile_type=profile_type,
         detour_probability=profile_config.get('detour_probability', 0.1),
         speeding_probability=profile_config.get('speeding_probability', 0.05),
-        hos_violation_probability=profile_config.get('hos_violation_probability', 0.01),
+        hos_violation_probability=profile_config.get('hos_violation_probability', 0.0),
+        late_delivery_probability=profile_config.get('late_delivery_probability', 0.0),
         speed_variance=profile_config.get('speed_variance', 0.05)
     )
 
@@ -162,6 +167,44 @@ def assign_driver_profiles(
     return assignments
 
 
+def assign_rider_profiles(
+    num_riders: int,
+    config: dict,
+    seed: int = 42
+) -> List[Tuple[str, DriverProfile]]:
+    rng = np.random.default_rng(seed)
+    profiles_config = config.get('rider_profiles', {})
+
+    profile_names = []
+    proportions = []
+    for name, cfg in profiles_config.items():
+        profile_names.append(name)
+        proportions.append(cfg.get('proportion', 0.33))
+
+    total = sum(proportions)
+    proportions = [p / total for p in proportions]
+
+    profile_objects = {
+        name: create_profile_from_config(name, profiles_config[name])
+        for name in profile_names
+    }
+
+    assignments = []
+    for i in range(num_riders):
+        rider_id = f"RDR-{i:05d}"
+        profile_name = rng.choice(profile_names, p=proportions)
+        profile = profile_objects[profile_name]
+        assignments.append((rider_id, profile))
+
+    counts = {}
+    for _, profile in assignments:
+        name = profile.profile_type.value
+        counts[name] = counts.get(name, 0) + 1
+
+    logger.info(f"Assigned rider profiles: {counts}")
+    return assignments
+
+
 class BehaviorSimulator:
     """
     Simulates driver behavior for realistic telemetry generation.
@@ -190,12 +233,10 @@ class BehaviorSimulator:
         return self.rng.random() < profile.speeding_probability
     
     def should_exceed_hos(self, profile: DriverProfile) -> bool:
-        """
-        Determine if driver will exceed HOS limits today.
-        
-        Decided at start of day, affects whether mandatory breaks are taken.
-        """
         return self.rng.random() < profile.hos_violation_probability
+
+    def should_deliver_late(self, profile: DriverProfile) -> bool:
+        return self.rng.random() < profile.late_delivery_probability
     
     def get_speed_factor(self, profile: DriverProfile, is_speeding: bool = False) -> float:
         """
@@ -281,19 +322,32 @@ class BehaviorSimulator:
         location_type: str,
         is_long_dwell: bool = False
     ) -> float:
-        """
-        Get dwell duration using lognormal distribution.
-        
-        Args:
-            location_type: 'warehouse' or 'rest_stop'
-            is_long_dwell: Whether this is a long dwell event
-            
-        Returns:
-            Dwell duration in minutes
-        """
         dwell_config = self.config.get('dwell', {})
-        
-        if location_type == 'warehouse':
+
+        if location_type == 'store_pickup':
+            cfg = dwell_config.get('store', {})
+            if is_long_dwell:
+                return self.rng.uniform(
+                    cfg.get('long_wait_min', 15),
+                    cfg.get('long_wait_max', 30)
+                )
+            pickup_cfg = cfg.get('pickup', {})
+            median = pickup_cfg.get('median_min', 7)
+            sigma = pickup_cfg.get('sigma', 0.6)
+            max_min = pickup_cfg.get('max_min', 20)
+            duration = self.rng.lognormal(np.log(median), sigma)
+            return min(duration, max_min)
+
+        elif location_type == 'delivery_dropoff':
+            cfg = dwell_config.get('delivery', {})
+            dropoff_cfg = cfg.get('dropoff', {})
+            median = dropoff_cfg.get('median_min', 3)
+            sigma = dropoff_cfg.get('sigma', 0.5)
+            max_min = dropoff_cfg.get('max_min', 10)
+            duration = self.rng.lognormal(np.log(median), sigma)
+            return min(duration, max_min)
+
+        elif location_type == 'warehouse':
             cfg = dwell_config.get('warehouse', {})
             if is_long_dwell:
                 return self.rng.uniform(

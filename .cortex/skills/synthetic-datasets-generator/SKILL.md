@@ -64,9 +64,10 @@ Before running the generator, verify these prerequisites:
 
 For the complete parameter reference, consult `references/configuration-guide.md`.
 
-Two config presets are available in `scripts/config/`:
-- **`config.yml`** -- Standard config (10 trucks, 1 month, general-purpose)
-- **`calibrated_config.yml`** -- Industry-calibrated config (heterogeneous truck types, tuned statistical targets)
+Three config presets are available in `scripts/config/`:
+- **`de_trucks_retail.yml`** -- Germany truck fleet, standard config (10 trucks, 1 month)
+- **`de_trucks_retail_calibrated.yml`** -- Germany truck fleet, industry-calibrated (heterogeneous truck types, tuned statistical targets)
+- **`sf_ebikes_food_delivery.yml`** -- San Francisco e-bike food delivery (500 vehicles, 1 month)
 
 ---
 
@@ -132,7 +133,7 @@ Ask the user for:
 - **Target database/schema** (default: FLEET_INTELLIGENCE.ROUTE_CACHE)
 - **Region** (default: Germany)
 
-Edit `scripts/config/config.yml` (or `calibrated_config.yml`) with the chosen parameters. Key sections to update:
+Edit `scripts/config/de_trucks_retail.yml` (or another preset) with the chosen parameters. Key sections to update:
 - `snowflake.database`, `snowflake.schema`, `snowflake.warehouse`
 - `fleet.num_trucks`
 - `time.start_date`, `time.duration_months`
@@ -143,7 +144,7 @@ Edit `scripts/config/config.yml` (or `calibrated_config.yml`) with the chosen pa
 Run from the `scripts/` directory:
 
 ```bash
-cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py setup --config config/config.yml
+cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py setup --config config/de_trucks_retail.yml
 ```
 
 This creates:
@@ -155,7 +156,7 @@ This creates:
 ### Step 4: Generate and Load Telemetry
 
 ```bash
-cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py generate --config config/config.yml --load
+cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py generate --config config/de_trucks_retail.yml --load
 ```
 
 The `--load` flag uploads Parquet files to the internal stage and runs COPY INTO after generation.
@@ -176,7 +177,7 @@ Chunk 0: 125,000 points, 450 trips, 35 violations
 ### Step 5: Run QA Validation
 
 ```bash
-cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py qa --config config/config.yml --output qa_results.csv
+cd {SKILL_DIR}/scripts && SNOWFLAKE_CONNECTION_NAME={conn} python main.py qa --config config/de_trucks_retail.yml --output qa_results.csv
 ```
 
 QA checks:

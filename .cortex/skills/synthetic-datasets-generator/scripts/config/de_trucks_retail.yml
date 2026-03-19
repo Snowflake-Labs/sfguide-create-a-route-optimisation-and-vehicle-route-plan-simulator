@@ -1,6 +1,8 @@
 # Synthetic Truck Telemetry Generator Configuration
 # All settings are configurable and seed is deterministic for reproducibility
 
+mode: trucking  # trucking | food_delivery
+
 seed: 42  # Deterministic RNG seed for reproducibility
 
 # Snowflake connection

@@ -169,7 +169,7 @@ class ORSRouter:
     """
     OpenRouteService router via Snowflake native app.
     
-    Calls OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS for HGV routing.
+    Supports driving-hgv (trucking) and cycling-electric (food delivery) profiles.
     """
     
     def __init__(self, config: dict, connection=None):
@@ -394,48 +394,32 @@ def estimate_posted_speed(
     route_progress: float = 0.5,
     route_distance_km: float = 0
 ) -> float:
-    """
-    Estimate posted speed limit for a route segment.
-    
-    Uses route position to infer road type:
-    - Near origin/destination (first/last 10%): likely urban, lower speed
-    - Middle of route: likely motorway for long routes, higher speed
-    
-    Args:
-        segment_distance_km: Segment distance
-        segment_duration_min: Segment duration
-        config: Configuration with posted_speeds
-        road_class: Optional road classification (if known)
-        route_progress: Position along route (0.0 to 1.0)
-        route_distance_km: Total route distance (used to infer road type)
-        
-    Returns:
-        Estimated posted speed in km/h
-    """
     posted_speeds = config.get('routing', {}).get('posted_speeds', {})
-    
+    mode = config.get('mode', 'trucking')
+
     if road_class and road_class in posted_speeds:
         return posted_speeds[road_class]
-    
-    # Position-based estimation
+
+    if mode == 'food_delivery':
+        is_near_endpoints = route_progress < 0.15 or route_progress > 0.85
+        if is_near_endpoints:
+            return posted_speeds.get('residential', 15)
+        return posted_speeds.get('secondary', 20)
+
     is_near_endpoints = route_progress < 0.1 or route_progress > 0.9
     is_long_route = route_distance_km > 100
-    
+
     if is_near_endpoints:
-        # Near origin/destination - likely urban/suburban roads
         if route_distance_km < 50:
             return posted_speeds.get('secondary', 60)
         else:
             return posted_speeds.get('primary', 70)
-    
+
     if is_long_route:
-        # Middle of long route - likely motorway
         return posted_speeds.get('motorway', 80)
     elif route_distance_km > 50:
-        # Medium route - mix of trunk/primary
         return posted_speeds.get('trunk', 80)
     else:
-        # Short route - primary/secondary roads
         return posted_speeds.get('primary', 70)
 
 

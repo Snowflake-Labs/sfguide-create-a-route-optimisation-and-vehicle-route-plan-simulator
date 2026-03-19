@@ -1,8 +1,9 @@
 """
-POI Loader - Load warehouse, destination, and rest stop data from Snowflake.
+POI Loader - Load location data from Snowflake.
 
 Supports:
-- Loading from existing Overture Maps tables
+- Trucking mode: warehouses, destinations, rest stops from Overture Maps
+- Food delivery mode: restaurants/stores and delivery addresses
 - Fallback to synthetic generation if tables don't exist
 """
 
@@ -18,10 +19,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class POIData:
-    """Container for all POI datasets."""
+    """Container for trucking POI datasets."""
     warehouses: pd.DataFrame
     destinations: pd.DataFrame
     rest_stops: pd.DataFrame
+
+
+@dataclass
+class DeliveryPOIData:
+    """Container for food delivery POI datasets."""
+    stores: pd.DataFrame
+    delivery_addresses: pd.DataFrame
 
 
 def get_snowflake_connection(connection_name: Optional[str] = None):
@@ -473,3 +481,197 @@ def find_stops_along_route(
     # Deduplicate and return
     df = pd.DataFrame(candidates).drop_duplicates(subset='rest_stop_id')
     return df.head(max_stops)
+
+
+# ============================================================================
+# FOOD DELIVERY POI LOADING
+# ============================================================================
+
+SF_NEIGHBORHOODS = {
+    'Mission':       (37.7599, -122.4148, 0.008),
+    'SoMa':          (37.7785, -122.3950, 0.009),
+    'Castro':        (37.7609, -122.4350, 0.005),
+    'Marina':        (37.8005, -122.4370, 0.006),
+    'Sunset':        (37.7535, -122.4940, 0.015),
+    'Richmond':      (37.7800, -122.4770, 0.012),
+    'NoeValley':     (37.7502, -122.4331, 0.005),
+    'Hayes':         (37.7760, -122.4240, 0.005),
+    'NorthBeach':    (37.8060, -122.4100, 0.004),
+    'Chinatown':     (37.7941, -122.4078, 0.003),
+    'Tenderloin':    (37.7847, -122.4130, 0.004),
+    'Haight':        (37.7700, -122.4470, 0.006),
+    'PacificHeights': (37.7925, -122.4350, 0.006),
+    'Excelsior':     (37.7250, -122.4300, 0.008),
+    'Bayview':       (37.7340, -122.3900, 0.008),
+    'VisitacionValley': (37.7130, -122.4050, 0.006),
+    'Portola':       (37.7280, -122.4060, 0.005),
+    'GlenPark':      (37.7340, -122.4330, 0.005),
+}
+
+
+def load_restaurants(
+    conn,
+    schema: str,
+    bbox: dict,
+    limit: Optional[int] = 1000
+) -> pd.DataFrame:
+    query = f"""
+    SELECT
+        ID as STORE_ID,
+        NAMES['primary'] as NAME,
+        CATEGORIES['primary']::VARCHAR as CUISINE_TYPE,
+        'RESTAURANT' as STORE_TYPE,
+        ST_X(GEOMETRY)::FLOAT as LONGITUDE,
+        ST_Y(GEOMETRY)::FLOAT as LATITUDE,
+        ADDRESSES['list'][0]['freeform']::VARCHAR as ADDRESS
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+    WHERE ST_Y(GEOMETRY) BETWEEN {bbox['min_lat']} AND {bbox['max_lat']}
+      AND ST_X(GEOMETRY) BETWEEN {bbox['min_lng']} AND {bbox['max_lng']}
+      AND (
+          CATEGORIES['primary']::VARCHAR ILIKE '%restaurant%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%fast_food%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%cafe%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%bakery%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%pizza%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%sushi%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%thai%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%chinese%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%mexican%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%indian%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%burger%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%sandwich%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%deli%'
+          OR CATEGORIES['primary']::VARCHAR ILIKE '%food%'
+      )
+    LIMIT {limit}
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query)
+        df = cursor.fetch_pandas_all()
+        df.columns = [c.lower() for c in df.columns]
+        logger.info(f"Loaded {len(df)} restaurants from Overture Maps")
+        return df
+    except Exception as e:
+        logger.warning(f"Failed to load restaurants from Overture: {e}")
+        return pd.DataFrame()
+    finally:
+        cursor.close()
+
+
+def generate_fallback_stores(
+    bbox: dict,
+    count: int = 800,
+    seed: int = 42
+) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+
+    cuisine_types = [
+        'restaurant', 'fast_food', 'cafe', 'bakery', 'pizza',
+        'sushi', 'thai', 'chinese_restaurant', 'mexican_restaurant',
+        'indian_restaurant', 'burger_joint', 'sandwich_shop', 'deli'
+    ]
+    store_names = [
+        'Golden Gate Eats', 'Bay Bites', 'Fog City Grill', 'Mission Taqueria',
+        'Sunset Sushi', 'Richmond Noodles', 'Castro Coffee', 'Marina Pizza',
+        'SoMa Sandwiches', 'Haight Bakery', 'North Beach Pasta', 'Chinatown Dim Sum'
+    ]
+
+    neighborhoods = list(SF_NEIGHBORHOODS.values())
+    lats = []
+    lngs = []
+    for _ in range(count):
+        nb = neighborhoods[rng.integers(0, len(neighborhoods))]
+        lat = rng.normal(nb[0], nb[2] * 0.4)
+        lng = rng.normal(nb[1], nb[2] * 0.4)
+        lat = np.clip(lat, bbox['min_lat'], bbox['max_lat'])
+        lng = np.clip(lng, bbox['min_lng'], bbox['max_lng'])
+        lats.append(lat)
+        lngs.append(lng)
+
+    stores = pd.DataFrame({
+        'store_id': [f'STORE-{i:05d}' for i in range(count)],
+        'name': rng.choice(store_names, count),
+        'cuisine_type': rng.choice(cuisine_types, count),
+        'store_type': 'RESTAURANT',
+        'longitude': lngs,
+        'latitude': lats,
+        'address': [f'{rng.integers(100, 9999)} {rng.choice(["Market St", "Mission St", "Valencia St", "Geary Blvd", "Irving St", "Clement St", "Polk St", "Columbus Ave", "Haight St", "Divisadero St"])}' for _ in range(count)]
+    })
+
+    logger.info(f"Generated {count} fallback store locations")
+    return stores
+
+
+def generate_delivery_addresses(
+    bbox: dict,
+    count: int = 5000,
+    seed: int = 42
+) -> pd.DataFrame:
+    rng = np.random.default_rng(seed + 100)
+
+    neighborhoods = list(SF_NEIGHBORHOODS.items())
+    nb_weights = np.array([v[2] for _, v in neighborhoods])
+    nb_weights = nb_weights / nb_weights.sum()
+
+    lats = []
+    lngs = []
+    nb_names = []
+    for _ in range(count):
+        idx = rng.choice(len(neighborhoods), p=nb_weights)
+        nb_name, (center_lat, center_lng, spread) = neighborhoods[idx]
+        lat = rng.normal(center_lat, spread)
+        lng = rng.normal(center_lng, spread)
+        lat = np.clip(lat, bbox['min_lat'], bbox['max_lat'])
+        lng = np.clip(lng, bbox['min_lng'], bbox['max_lng'])
+        lats.append(lat)
+        lngs.append(lng)
+        nb_names.append(nb_name)
+
+    street_names = [
+        'Oak St', 'Pine St', 'Bush St', 'Sutter St', 'Post St',
+        'Geary St', 'Turk St', 'Golden Gate Ave', 'McAllister St',
+        'Fulton St', 'Hayes St', 'Fell St', 'Page St', 'Haight St',
+        '24th St', '22nd St', '18th St', '16th St', '14th St',
+        'Guerrero St', 'Dolores St', 'Church St', 'Sanchez St',
+        'Noe St', 'Castro St', 'Masonic Ave', 'Ashbury St'
+    ]
+
+    addresses = pd.DataFrame({
+        'address_id': [f'ADDR-{i:06d}' for i in range(count)],
+        'address': [f'{rng.integers(100, 9999)} {rng.choice(street_names)}' for _ in range(count)],
+        'neighborhood': nb_names,
+        'longitude': lngs,
+        'latitude': lats,
+        'address_type': 'RESIDENTIAL'
+    })
+
+    logger.info(f"Generated {count} delivery addresses across {len(SF_NEIGHBORHOODS)} neighborhoods")
+    return addresses
+
+
+def load_delivery_poi_data(
+    config: dict,
+    connection_name: Optional[str] = None
+) -> DeliveryPOIData:
+    bbox = config['region']['bbox']
+    seed = config.get('seed', 42)
+    sf_config = config.get('snowflake', {})
+    schema = f"{sf_config['database']}.{sf_config['schema']}"
+
+    conn = get_snowflake_connection(connection_name or sf_config.get('connection_name'))
+
+    try:
+        stores = load_restaurants(conn, schema, bbox)
+        if stores.empty:
+            logger.warning("Using fallback store generator")
+            stores = generate_fallback_stores(bbox, 800, seed)
+
+        delivery_addresses = generate_delivery_addresses(bbox, 5000, seed)
+
+        return DeliveryPOIData(
+            stores=stores,
+            delivery_addresses=delivery_addresses
+        )
+    finally:
+        conn.close()

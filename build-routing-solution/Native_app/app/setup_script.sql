@@ -60,8 +60,6 @@ BEGIN
    CREATE OR ALTER STAGE core.ORS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
    CREATE OR ALTER STAGE core.ORS_elevation_cache_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
-   CREATE OR ALTER STAGE core.NOMINATIM_DB_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE );
-
    GRANT READ ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT READ ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT READ ON STAGE core.ORS_elevation_cache_SPCS_STAGE TO APPLICATION ROLE app_user;
@@ -69,9 +67,6 @@ BEGIN
    GRANT WRITE ON STAGE core.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
    GRANT WRITE ON STAGE core.ORS_elevation_cache_SPCS_STAGE TO APPLICATION ROLE app_user;
-
-   GRANT READ ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
-   GRANT WRITE ON STAGE core.NOMINATIM_DB_STAGE TO APPLICATION ROLE app_user;
 
    RETURN 'Stages Created Successfully';
 END;
@@ -157,34 +152,12 @@ BEGIN
 
    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
 
-   BEGIN
-      ALTER SERVICE IF EXISTS core.nominatim_service
-         FROM SPECIFICATION_FILE='services/nominatim/nominatim-service.yaml';
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
-
-   BEGIN
-      CREATE SERVICE IF NOT EXISTS core.nominatim_service
-         IN COMPUTE POOL identifier(:pool_name)
-         FROM spec='services/nominatim/nominatim-service.yaml'
-         MIN_INSTANCES = 1
-         MAX_INSTANCES = 1
-         AUTO_SUSPEND_SECS = 14400;
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
-
    GRANT OPERATE ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
    GRANT OPERATE ON SERVICE core.vroom_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.vroom_service TO APPLICATION ROLE app_user;
    GRANT OPERATE ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.routing_gateway_service TO APPLICATION ROLE app_user;
-
-   BEGIN
-      GRANT OPERATE ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
-      GRANT MONITOR ON SERVICE core.nominatim_service TO APPLICATION ROLE app_user;
-   EXCEPTION WHEN OTHER THEN NULL;
-   END;
 
    RETURN 'Service successfully created';
 END;
@@ -347,6 +320,69 @@ BEGIN
       MAX_BATCH_ROWS = 100
       AS '/geocode_lookup';
    GRANT USAGE ON FUNCTION core.GEOCODE_LOOKUP(varchar) TO APPLICATION ROLE app_user;
+
+   -- GeoJSON wrapper functions: return parsed geometry as separate columns
+   -- DIRECTIONS_GEO (tabular overload)
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS_GEO(method VARCHAR, jstart ARRAY, jend ARRAY)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT core.DIRECTIONS(method, jstart, jend) AS resp)';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   -- DIRECTIONS_GEO (raw overload with locations variant)
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS_GEO(method VARCHAR, locations VARIANT)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT core.DIRECTIONS(method, locations) AS resp)';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
+
+   -- ISOCHRONES_GEO
+   CREATE OR REPLACE FUNCTION core.ISOCHRONES_GEO(method TEXT, lon FLOAT, lat FLOAT, range INT)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT core.ISOCHRONES(method, lon, lat, range) AS resp)';
+   GRANT USAGE ON FUNCTION core.ISOCHRONES_GEO(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
+
+   -- OPTIMIZATION_GEO (tabular overload)
+   CREATE OR REPLACE FUNCTION core.OPTIMIZATION_GEO(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM (SELECT core.OPTIMIZATION(jobs, vehicles, matrices) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
+   GRANT USAGE ON FUNCTION core.OPTIMIZATION_GEO(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   -- OPTIMIZATION_GEO (raw overload)
+   CREATE OR REPLACE FUNCTION core.OPTIMIZATION_GEO(challenge VARIANT)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM (SELECT core.OPTIMIZATION(challenge) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
+   GRANT USAGE ON FUNCTION core.OPTIMIZATION_GEO(VARIANT) TO APPLICATION ROLE app_user;
 
    -- Create MAP_CONFIG table to store map metadata for the function tester
    CREATE TABLE IF NOT EXISTS core.MAP_CONFIG (

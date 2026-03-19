@@ -1,14 +1,15 @@
 # Configuration Guide
 
-Complete reference for all YAML configuration parameters. Two presets are provided:
-- **`config.yml`** -- General-purpose, 10 trucks, 1 month
-- **`calibrated_config.yml`** -- Industry-calibrated, heterogeneous truck types, tuned statistical targets
+Complete reference for all YAML configuration parameters. Three presets are provided:
+- **`de_trucks_retail.yml`** -- General-purpose trucking, 10 trucks, 1 month
+- **`de_trucks_retail_calibrated.yml`** -- Industry-calibrated trucking, heterogeneous truck types
+- **`sf_ebikes_food_delivery.yml`** -- SF e-bike food delivery, 500 vehicles, 1 month
 
 ---
 
 ## Config Presets Comparison
 
-| Aspect | `config.yml` | `calibrated_config.yml` |
+| Aspect | `de_trucks_retail.yml` | `de_trucks_retail_calibrated.yml` |
 |--------|-------------|------------------------|
 | Trucks | 10 | 10 (scale to 500+) |
 | Duration | 1 month | 2 days (test) |
@@ -17,7 +18,7 @@ Complete reference for all YAML configuration parameters. Two presets are provid
 | Speed targets | Not specified | Fleet avg 58-72 km/h |
 | Composition targets | Not specified | Moving 78-86%, warehouse dwell 5-9% |
 
-Use `config.yml` for quick tests. Use `calibrated_config.yml` when statistical accuracy matters.
+Use `de_trucks_retail.yml` for quick tests. Use `de_trucks_retail_calibrated.yml` when statistical accuracy matters.
 
 ---
 
@@ -101,7 +102,7 @@ fleet:
 | `weekend_operating_rate` | Fraction active on weekends (significant drop is realistic) |
 | `trips_per_day.min/max` | Trips assigned per truck per operating day |
 
-#### Calibrated truck types (calibrated_config.yml only)
+#### Calibrated truck types (de_trucks_retail_calibrated.yml only)
 
 ```yaml
 fleet:
@@ -313,3 +314,123 @@ output:
 ```
 
 Table names are configurable. Parquet files are written to `output/` and staged to Snowflake's internal stage for COPY INTO loading.
+
+---
+
+## Food Delivery Mode Parameters
+
+Set `mode: food_delivery` at the top of the config to enable e-bike delivery mode. The following parameters are specific to food delivery.
+
+### mode
+
+```yaml
+mode: food_delivery  # or: trucking (default)
+```
+
+### fleet (food delivery)
+
+```yaml
+fleet:
+  num_vehicles: 500
+  daily_operating_rate: 0.90
+  trips_per_day:
+    min: 15
+    max: 40
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `num_vehicles` | Number of e-bikes in fleet |
+| `daily_operating_rate` | Fraction of riders active each day |
+| `trips_per_day.min/max` | Deliveries per rider per shift |
+
+### rider_profiles
+
+```yaml
+rider_profiles:
+  EFFICIENT:
+    proportion: 0.85
+    detour_probability: 0.03
+    speeding_probability: 0.01
+    late_delivery_probability: 0.02
+    speed_variance: 0.05
+  CASUAL:
+    proportion: 0.12
+    detour_probability: 0.12
+    speeding_probability: 0.08
+    late_delivery_probability: 0.10
+    speed_variance: 0.10
+  RECKLESS:
+    proportion: 0.03
+    detour_probability: 0.30
+    speeding_probability: 0.20
+    late_delivery_probability: 0.25
+    speed_variance: 0.18
+```
+
+### battery
+
+```yaml
+battery:
+  range_km: 60
+  drain_per_km: 1.67
+  recharge_threshold_pct: 15
+  recharge_time_min: 30
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `range_km` | Full charge range in km |
+| `drain_per_km` | Battery % consumed per km |
+| `recharge_threshold_pct` | Return to store when battery below this % |
+| `recharge_time_min` | Time for battery swap/fast charge |
+
+### shift
+
+```yaml
+shift:
+  start_hour: 10
+  end_hour: 22
+  peak_hours: [11, 12, 13, 17, 18, 19, 20]
+  peak_multiplier: 1.8
+  break_after_hours: 4.0
+  break_duration_min: 20
+```
+
+### delivery_sla
+
+```yaml
+delivery_sla:
+  target_minutes: 30
+  warning_minutes: 25
+```
+
+### dwell (food delivery)
+
+```yaml
+dwell:
+  store:
+    pickup:
+      median_min: 7
+      sigma: 0.6
+      max_min: 20
+  delivery:
+    dropoff:
+      median_min: 3
+      sigma: 0.5
+      max_min: 10
+```
+
+### output (food delivery)
+
+```yaml
+output:
+  tables:
+    stores: "SF_EBIKES_DIM_STORE"
+    vehicles: "SF_EBIKES_DIM_VEHICLE"
+    riders: "SF_EBIKES_DIM_RIDER"
+    delivery_addresses: "SF_EBIKES_DIM_DELIVERY_ADDRESS"
+    deliveries: "SF_EBIKES_FACT_DELIVERY"
+    telemetry: "SF_EBIKES_FACT_VEHICLE_TELEMETRY"
+    violations: "SF_EBIKES_FACT_VIOLATION"
+```

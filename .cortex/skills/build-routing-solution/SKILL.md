@@ -138,6 +138,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Build 4 container images and push to Snowflake image repository
 
+> **Note:** The nominatim (geocoding) service is NOT included in this deployment. Geocoding is optional and not required for routing, optimization, isochrones, or matrix operations. Do NOT build or push a nominatim image.
+
 **Actions:**
 
 1. **Authenticate** with SPCS image registry:
@@ -174,8 +176,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    
    # gateway image
    cd ../gateway
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.5.6 .
-   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.5.6
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.7.2 .
+   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.7.2
    
    # vroom image
    cd ../vroom
@@ -189,7 +191,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 4. **Monitor** progress (builds 4 images):
    - openrouteservice:v9.0.0
    - downloader:v0.0.3
-   - routing_reverse_proxy:v0.5.6
+   - routing_reverse_proxy:v0.7.2
    - vroom-docker:v1.0.1
 
 **Output:** All 4 container images pushed to Snowflake image repository
@@ -233,11 +235,16 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Ask user to confirm** they have completed the following in Snowsight:
-   - Navigated to Data Products >> Apps >> OPENROUTESERVICE_NATIVE_APP
-   - Granted all required privileges via the UI
-   - Launched the app using the button in the upper right corner
-   - Verified the app is now accessible and services are running
+1. **Ask user to complete** the following in Snowsight:
+   - Navigate to **Catalog >> Apps >> OPENROUTESERVICE_NATIVE_APP**
+   - Select warehouse **ROUTING_ANALYTICS**
+   - **External connections:** Click **Review**, see the message "OPENROUTESERVICE_NATIVE_APP would like to connect to the following external endpoints", then click **Connect**
+   - **Account Privileges:** Click **Grant**
+   - **Activation:** Wait while "Activating OPENROUTESERVICE_NATIVE_APP" is displayed (this may take 1-2 minutes)
+   - When you see "OPENROUTESERVICE_NATIVE_APP is activated", click **Proceed to App**
+   - (Optional) Go to the **Access Management** tab to grant access to additional roles
+   - Click **Launch App** and wait through the launching steps
+   - When you see **"OPEN ROUTE SERVICE | SERVICE MANAGER"**, the app is fully operational
 
 2. **Wait for explicit confirmation** from user before proceeding to any subsequent skills
 

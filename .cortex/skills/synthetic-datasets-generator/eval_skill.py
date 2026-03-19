@@ -137,9 +137,11 @@ def test_structural():
     for module in ["simulate.py", "continuous_generator.py", "driver_profiles.py",
                     "routing.py", "overture.py", "snowflake_io.py", "qa.py"]:
         result(f"scripts/src/{module} exists", (scripts / "src" / module).exists())
-    result("scripts/config/config.yml exists", (scripts / "config" / "config.yml").exists())
-    result("scripts/config/calibrated_config.yml exists",
-           (scripts / "config" / "calibrated_config.yml").exists())
+    result("scripts/config/de_trucks_retail.yml exists", (scripts / "config" / "de_trucks_retail.yml").exists())
+    result("scripts/config/de_trucks_retail_calibrated.yml exists",
+           (scripts / "config" / "de_trucks_retail_calibrated.yml").exists())
+    result("scripts/config/sf_ebikes_food_delivery.yml exists",
+           (scripts / "config" / "sf_ebikes_food_delivery.yml").exists())
 
 
 # ============================================================================
@@ -364,7 +366,7 @@ def test_references():
         found = f"### {section}" in config or f"## {section}" in config.lower() or f"`{section}`" in config
         result(f"configuration-guide.md covers '{section}'", found)
 
-    result("configuration-guide.md has preset comparison", "config.yml" in config and "calibrated_config.yml" in config)
+    result("configuration-guide.md has preset comparison", "de_trucks_retail" in config and "sf_ebikes_food_delivery" in config)
 
     # 4.3 troubleshooting.md quality
     trouble = (refs / "troubleshooting.md").read_text() if (refs / "troubleshooting.md").exists() else ""
@@ -405,7 +407,7 @@ def test_scripts():
     result("main.py has --load flag", "--load" in main_py)
 
     # 5.2 Config YAML is valid
-    for cfg_name in ["config.yml", "calibrated_config.yml"]:
+    for cfg_name in ["de_trucks_retail.yml", "de_trucks_retail_calibrated.yml", "sf_ebikes_food_delivery.yml"]:
         cfg_path = scripts / "config" / cfg_name
         if cfg_path.exists():
             try:

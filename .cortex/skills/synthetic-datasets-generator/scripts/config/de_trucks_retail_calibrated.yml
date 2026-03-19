@@ -1,6 +1,8 @@
 # Calibrated Synthetic Truck Telemetry Generator Configuration
 # Tuned to match real-world fleet statistics
 
+mode: trucking
+
 seed: 42
 
 snowflake:
@@ -260,7 +262,13 @@ overnight:
 
 # Output
 output:
+  parquet_dir: "output/"
+  stage_name: "@FLEET_INTELLIGENCE.ROUTE_CACHE.TELEMETRY_STAGE"
   tables:
-    telemetry: "FACT_TRUCK_TELEMETRY_TEST"
+    warehouses: "DIM_WAREHOUSE"
+    stops: "DIM_STOP"
+    trucks: "DIM_TRUCK"
+    drivers: "DIM_DRIVER"
     trips: "FACT_TRIP_TEST"
+    telemetry: "FACT_TRUCK_TELEMETRY_TEST"
     violations: "FACT_VIOLATION_TEST"

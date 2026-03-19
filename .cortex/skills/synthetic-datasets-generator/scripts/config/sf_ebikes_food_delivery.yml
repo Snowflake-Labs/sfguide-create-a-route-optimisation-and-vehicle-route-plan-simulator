@@ -1,0 +1,158 @@
+# Synthetic E-Bike Food Delivery Telemetry Generator Configuration
+# San Francisco - 500 e-bikes, food delivery from stores to physical addresses
+
+mode: food_delivery
+
+seed: 42
+
+snowflake:
+  connection_name: null
+  database: FLEET_INTELLIGENCE
+  schema: DELIVERY_OPS
+  warehouse: INSTALLER
+
+region:
+  name: san_francisco
+  bbox:
+    min_lat: 37.700
+    max_lat: 37.820
+    min_lng: -122.520
+    max_lng: -122.350
+
+time:
+  start_date: "2025-12-01"
+  end_date: "2025-12-14"
+  duration_months: 0.5
+  chunk_size_days: 7
+
+fleet:
+  num_vehicles: 500
+  daily_operating_rate: 0.90
+  trips_per_day:
+    min: 15
+    max: 40
+
+distance_distribution:
+  short_pct: 0.70
+  short_max_km: 3
+  medium_pct: 0.25
+  medium_max_km: 6
+  long_pct: 0.05
+
+rider_profiles:
+  EFFICIENT:
+    proportion: 0.85
+    detour_probability: 0.03
+    speeding_probability: 0.01
+    late_delivery_probability: 0.02
+    speed_variance: 0.05
+
+  CASUAL:
+    proportion: 0.12
+    detour_probability: 0.12
+    speeding_probability: 0.08
+    late_delivery_probability: 0.10
+    speed_variance: 0.10
+
+  RECKLESS:
+    proportion: 0.03
+    detour_probability: 0.30
+    speeding_probability: 0.20
+    late_delivery_probability: 0.25
+    speed_variance: 0.18
+
+routing:
+  optimal_route_probability: 0.80
+  alternative_route_probability: 0.15
+  mid_trip_deviation_probability: 0.03
+  major_deviation_probability: 0.02
+
+  ors:
+    service: "OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS"
+    profile: "cycling-electric"
+    batch_size: 200
+    cache_enabled: true
+
+  posted_speeds:
+    primary: 22
+    secondary: 20
+    tertiary: 18
+    residential: 15
+    cycleway: 20
+    path: 12
+    default: 18
+
+telemetry:
+  ping_interval:
+    moving:
+      target_sec: 10
+      variance_sec: 3
+    dwell:
+      min_sec: 60
+      max_sec: 180
+    idle:
+      min_sec: 120
+      max_sec: 300
+
+  gps_jitter:
+    typical_m: 8
+    typical_std_m: 4
+    multipath_probability: 0.03
+    multipath_max_m: 100
+
+  gaps:
+    probability: 0.005
+    min_duration_min: 2
+    max_duration_min: 10
+
+  out_of_order_probability: 0.001
+
+dwell:
+  store:
+    pickup:
+      median_min: 7
+      sigma: 0.6
+      max_min: 20
+    long_wait_probability: 0.08
+    long_wait_min: 15
+    long_wait_max: 30
+
+  delivery:
+    dropoff:
+      median_min: 3
+      sigma: 0.5
+      max_min: 10
+
+battery:
+  range_km: 60
+  drain_per_km: 1.67
+  recharge_threshold_pct: 15
+  recharge_time_min: 30
+
+shift:
+  start_hour: 10
+  end_hour: 22
+  peak_hours: [11, 12, 13, 17, 18, 19, 20]
+  peak_multiplier: 1.8
+  break_after_hours: 4.0
+  break_duration_min: 20
+
+delivery_sla:
+  target_minutes: 30
+  warning_minutes: 25
+
+speeding:
+  threshold_factor: 1.10
+  severe_threshold: 1.25
+
+output:
+  parquet_dir: "output/"
+  stage_name: "@FLEET_INTELLIGENCE.DELIVERY_OPS.TELEMETRY_STAGE"
+  tables:
+    stores: "SF_EBIKES_DIM_STORE"
+    vehicles: "SF_EBIKES_DIM_VEHICLE"
+    riders: "SF_EBIKES_DIM_RIDER"
+    delivery_addresses: "SF_EBIKES_DIM_DELIVERY_ADDRESS"
+    deliveries: "SF_EBIKES_FACT_DELIVERY"
+    telemetry: "SF_EBIKES_FACT_VEHICLE_TELEMETRY"
+    violations: "SF_EBIKES_FACT_VIOLATION"
