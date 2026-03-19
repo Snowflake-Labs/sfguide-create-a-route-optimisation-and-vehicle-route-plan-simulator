@@ -44,7 +44,7 @@ Every run is parameterized by a **region config**. Choose resolutions and scalin
 | Parameter | Description | Example (SF) | Example (California) | Example (UK) |
 |-----------|-------------|--------------|---------------------|--------------|
 | `P_REGION` | Short region identifier | `sf` | `california` | `uk` |
-| `P_DB` | Target database | `ROUTING_DB` | `ROUTING_DB` | `ROUTING_DB` |
+| `P_DB` | Target database | `FLEET_INTELLIGENCE` | `FLEET_INTELLIGENCE` | `FLEET_INTELLIGENCE` |
 | `P_MIN_LAT` | Bounding box south | 37.70 | 32.49 | 49.90 |
 | `P_MAX_LAT` | Bounding box north | 37.84 | 42.19 | 60.90 |
 | `P_MIN_LON` | Bounding box west | -122.52 | -124.42 | -8.65 |
@@ -124,7 +124,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-ti
 Create hexagon grids covering the target region at each resolution. Run once per resolution.
 
 ```sql
-CREATE OR REPLACE TABLE <P_DB>.PUBLIC.<P_REGION>_H3_RES<N> AS
+CREATE OR REPLACE TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N> AS
 WITH lat_series AS (
     SELECT <P_MIN_LAT> + (SEQ4() * <LAT_STEP>) AS lat
     FROM TABLE(GENERATOR(ROWCOUNT => <LAT_COUNT>))
@@ -144,7 +144,7 @@ SELECT h3_index,
        ST_Y(H3_CELL_TO_POINT(h3_index)) AS lat
 FROM h3_cells;
 
-ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_H3_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Grid step sizes: RES 6=0.05, RES 7=0.02, RES 8=0.008, RES 9=0.003, RES 10=0.001.
@@ -154,13 +154,13 @@ Grid step sizes: RES 6=0.05, RES 7=0.02, RES 8=0.008, RES 9=0.003, RES 10=0.001.
 Combines H3_GRID_DISK neighbour lookup, coordinate packing, and grouping — each row is a ready-to-fire MATRIX_TABULAR call.
 
 ```sql
-CREATE OR REPLACE TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> AS
+CREATE OR REPLACE TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N> AS
 WITH pairs AS (
     SELECT a.h3_index AS origin_h3, a.lon AS origin_lon, a.lat AS origin_lat,
            n.value::STRING AS dest_h3
-    FROM <P_DB>.PUBLIC.<P_REGION>_H3_RES<N> a,
+    FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N> a,
     LATERAL FLATTEN(input => H3_GRID_DISK(a.h3_index, <K_RING>)) n
-    WHERE n.value::STRING IN (SELECT h3_index FROM <P_DB>.PUBLIC.<P_REGION>_H3_RES<N>)
+    WHERE n.value::STRING IN (SELECT h3_index FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N>)
       AND a.h3_index != n.value::STRING
 ),
 grouped AS (
@@ -168,16 +168,16 @@ grouped AS (
            ARRAY_AGG(ARRAY_CONSTRUCT(d.lon, d.lat)) AS dest_coords,
            ARRAY_AGG(p.dest_h3) AS dest_hex_ids
     FROM pairs p
-    JOIN <P_DB>.PUBLIC.<P_REGION>_H3_RES<N> d ON p.dest_h3 = d.h3_index
+    JOIN <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N> d ON p.dest_h3 = d.h3_index
     GROUP BY origin_h3, origin_lon, origin_lat
 )
 SELECT ROW_NUMBER() OVER (ORDER BY origin_h3) AS seq_id,
        origin_h3, origin_lon, origin_lat, dest_coords, dest_hex_ids
 FROM grouped;
 
-ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> CLUSTER BY (SEQ_ID);
+ALTER TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N> CLUSTER BY (SEQ_ID);
 
-ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 3: Create Raw Staging Tables
@@ -185,7 +185,7 @@ ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N> SET COMMENT = '{"origin":
 Raw tables store VARIANT payloads from MATRIX_TABULAR with zero transformation.
 
 ```sql
-CREATE OR REPLACE TABLE <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N> (
+CREATE OR REPLACE TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_MATRIX_RAW_RES<N> (
     SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
@@ -239,13 +239,13 @@ Wait for warm-up: `SELECT <P_ORS_APP>.CORE.ORS_STATUS();` — confirm `service_r
 > Full SQL: [references/sql-procedures.md](references/sql-procedures.md) — `CREATE_MATRIX_DAG`, `START_MATRIX_DAG`, `STOP_MATRIX_DAG`
 
 ```sql
-CALL CREATE_MATRIX_DAG('ROUTING_DB', 'SF', ARRAY_CONSTRUCT(9), 'ROUTING_ANALYTICS', 'FLATTEN_WH', 3);
-CALL START_MATRIX_DAG('ROUTING_DB', 'SF', ARRAY_CONSTRUCT(9), 3);
+CALL CREATE_MATRIX_DAG('FLEET_INTELLIGENCE', 'SF', ARRAY_CONSTRUCT(9), 'ROUTING_ANALYTICS', 'FLATTEN_WH', 3);
+CALL START_MATRIX_DAG('FLEET_INTELLIGENCE', 'SF', ARRAY_CONSTRUCT(9), 3);
 
-CALL CREATE_MATRIX_DAG('ROUTING_DB', 'CA', ARRAY_CONSTRUCT(7, 8, 9), 'ROUTING_ANALYTICS', 'FLATTEN_WH', 10);
-CALL START_MATRIX_DAG('ROUTING_DB', 'CA', ARRAY_CONSTRUCT(7, 8, 9), 10);
+CALL CREATE_MATRIX_DAG('FLEET_INTELLIGENCE', 'CA', ARRAY_CONSTRUCT(7, 8, 9), 'ROUTING_ANALYTICS', 'FLATTEN_WH', 10);
+CALL START_MATRIX_DAG('FLEET_INTELLIGENCE', 'CA', ARRAY_CONSTRUCT(7, 8, 9), 10);
 
-CALL STOP_MATRIX_DAG('ROUTING_DB', 'SF', ARRAY_CONSTRUCT(9), 3);
+CALL STOP_MATRIX_DAG('FLEET_INTELLIGENCE', 'SF', ARRAY_CONSTRUCT(9), 3);
 ```
 
 ### Step 7: Monitor Progress
@@ -256,9 +256,9 @@ Quick progress check:
 
 ```sql
 SELECT COUNT(*) AS done,
-       (SELECT COUNT(*) FROM <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>) AS total,
-       ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>), 0), 1) AS pct
-FROM <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N>;
+       (SELECT COUNT(*) FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N>) AS total,
+       ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N>), 0), 1) AS pct
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_MATRIX_RAW_RES<N>;
 ```
 
 ### Step 8: FLATTEN Raw Data
@@ -294,7 +294,7 @@ For ad-hoc runs or more control:
 
 ```bash
 #!/bin/bash
-REGION="sf"; RES=9; TOTAL=50000; WORKERS=3; CONNECTION="myconn"; DB="ROUTING_DB"
+REGION="sf"; RES=9; TOTAL=50000; WORKERS=3; CONNECTION="myconn"; DB="FLEET_INTELLIGENCE"
 chunk_size=$(( (TOTAL + WORKERS - 1) / WORKERS ))
 for w in $(seq 0 $((WORKERS - 1))); do
     start_seq=$(( w * chunk_size + 1 ))
@@ -303,7 +303,7 @@ for w in $(seq 0 $((WORKERS - 1))); do
     [ $start_seq -gt $TOTAL ] && break
     snow sql -c $CONNECTION -q "
         USE ROLE ACCOUNTADMIN; USE WAREHOUSE ROUTING_ANALYTICS;
-        CALL ${DB}.PUBLIC.BUILD_TRAVEL_TIME_RANGE('${REGION}', ${RES}, ${start_seq}, ${end_seq});
+        CALL ${DB}.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE('${REGION}', ${RES}, ${start_seq}, ${end_seq});
     " 2>/dev/null &
     sleep 3
 done
@@ -320,11 +320,11 @@ The work queue stores each pair (A, B) only once. **You MUST query both directio
 
 ```sql
 SELECT DEST_H3 AS hex_id, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS
-FROM <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N>
 WHERE ORIGIN_H3 = '<my_origin_hex>' AND TRAVEL_TIME_SECONDS <= 1800
 UNION ALL
 SELECT ORIGIN_H3 AS hex_id, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS
-FROM <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N>
 WHERE DEST_H3 = '<my_origin_hex>' AND TRAVEL_TIME_SECONDS <= 1800
 ORDER BY TRAVEL_TIME_SECONDS;
 ```
@@ -335,7 +335,7 @@ ORDER BY TRAVEL_TIME_SECONDS;
 
 ```sql
 SELECT TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS
-FROM <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N>
 WHERE (ORIGIN_H3 = '<hex_a>' AND DEST_H3 = '<hex_b>')
    OR (ORIGIN_H3 = '<hex_b>' AND DEST_H3 = '<hex_a>')
 LIMIT 1;
@@ -344,7 +344,7 @@ LIMIT 1;
 ### Search Optimization
 
 ```sql
-ALTER TABLE <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>
+ALTER TABLE <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N>
   ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
 ```
 
@@ -364,7 +364,7 @@ pairs AS (
            COALESCE(tt.TRAVEL_TIME_SECONDS, 0) AS duration,
            COALESCE(tt.TRAVEL_DISTANCE_METERS, 0) AS distance
     FROM locations a CROSS JOIN locations b
-    LEFT JOIN <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N> tt
+    LEFT JOIN <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N> tt
         ON (tt.ORIGIN_H3 = a.h3_index AND tt.DEST_H3 = b.h3_index)
         OR (tt.ORIGIN_H3 = b.h3_index AND tt.DEST_H3 = a.h3_index)
 )
@@ -417,15 +417,15 @@ To remove all objects created by this skill:
 ```sql
 -- Reverse dependency order: procedures first, then tables, warehouses
 -- Replace <P_REGION> and <N> with your actual region and resolution values (e.g., SF, 9)
-DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
-DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
-DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(VARCHAR, NUMBER, NUMBER, NUMBER, VARCHAR);
-DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_TRAVEL_TIME_RES<N>;
-DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N>;
-DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>;
-DROP TABLE IF EXISTS <P_DB>.PUBLIC.<P_REGION>_H3_RES<N>;
+DROP PROCEDURE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.FLATTEN_MATRIX_RAW(VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE(VARCHAR, NUMBER, NUMBER, NUMBER, VARCHAR);
+DROP TABLE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_TRAVEL_TIME_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_MATRIX_RAW_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N>;
+DROP TABLE IF EXISTS <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_H3_RES<N>;
 DROP WAREHOUSE IF EXISTS FLATTEN_WH;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 ```

@@ -5,8 +5,8 @@ seed: 42
 
 snowflake:
   connection_name: airpublic
-  database: FLEET_DEMOS
-  schema: ROUTING
+  database: FLEET_INTELLIGENCE
+  schema: ROUTE_CACHE
   warehouse: INSTALLER
 
 region:

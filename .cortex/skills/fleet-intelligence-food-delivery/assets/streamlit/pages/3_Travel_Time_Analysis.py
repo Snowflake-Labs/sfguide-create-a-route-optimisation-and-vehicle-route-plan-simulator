@@ -22,8 +22,8 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
-TRAVEL_MATRIX_TABLE = "OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX"
-SF_HEXAGONS_TABLE = "OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS"
+TRAVEL_MATRIX_TABLE = "FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX"
+SF_HEXAGONS_TABLE = "FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_HEXAGONS"
 ORS_APP = "OPENROUTESERVICE_NATIVE_APP"
 
 BAND_COLORS = [
@@ -96,7 +96,7 @@ with st.sidebar:
 
     @st.cache_data(ttl=300)
     def get_origin_hexagons(center_lon, center_lat, res, limit=100):
-        table = f"OPENROUTESERVICE_SETUP.PUBLIC.{res_table_map[res]}"
+        table = f"FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.{res_table_map[res]}"
         query = f"""
         SELECT h3_index AS HEX_ID, lon AS LON, lat AS LAT,
                ST_DISTANCE(centroid, ST_MAKEPOINT({center_lon}, {center_lat})) AS dist

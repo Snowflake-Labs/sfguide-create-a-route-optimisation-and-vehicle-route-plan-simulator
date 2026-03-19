@@ -328,7 +328,7 @@ class ORSRouter:
         conn,
         origin_id: str,
         dest_id: str,
-        schema: str = "FLEET_DEMOS.ROUTING",
+        schema: str = "FLEET_INTELLIGENCE.ROUTE_CACHE",
         table: str = "ORS_ROUTE_CACHE"
     ) -> Optional[RouteResult]:
         """

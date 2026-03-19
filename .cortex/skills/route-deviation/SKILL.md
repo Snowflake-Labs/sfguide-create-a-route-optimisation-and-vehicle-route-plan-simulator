@@ -4,6 +4,7 @@ description: "Deploy the Route Deviation Analysis demo: load synthetic truck tel
 depends_on:
   - build-routing-solution
   - routing-customization
+  - synthetic-datasets-generator
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -25,14 +26,14 @@ CRITICAL: Verify these before starting:
 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
-| CREATE DATABASE | Account | Creates SYNTHETIC_DATASETS, FLEET_INTELLIGENCE, and FLEET_DEMOS databases |
+| CREATE DATABASE | Account | Creates SYNTHETIC_DATASETS and FLEET_INTELLIGENCE databases |
 | CREATE WAREHOUSE | Account | Creates COMPUTE_WH warehouse |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS_GEO for route cache |
-| CREATE SCHEMA | Database (SYNTHETIC_DATASETS, FLEET_INTELLIGENCE, FLEET_DEMOS) | Creates source, target, and route cache schemas |
+| CREATE SCHEMA | Database (SYNTHETIC_DATASETS, FLEET_INTELLIGENCE) | Creates source, target, and route cache schemas |
 | CREATE TABLE | Schema (multiple) | Creates source tables, ETL tables, route cache |
-| CREATE STAGE | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE, FLEET_INTELLIGENCE.DEVIATION_ANALYSIS) | Creates S3 external stage and Streamlit stage |
+| CREATE STAGE | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE, FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Creates S3 external stage and Streamlit stage |
 | CREATE FILE FORMAT | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE) | Creates PARQUET_FF file format |
-| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.DEVIATION_ANALYSIS) | Deploys ROUTE_DEVIATION_DASHBOARD |
+| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Deploys ROUTE_DEVIATION_DASHBOARD |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
@@ -43,9 +44,9 @@ CRITICAL: Verify these before starting:
 | `SOURCE_DB` | `SYNTHETIC_DATASETS` | Database for source tables |
 | `SOURCE_SCHEMA` | `FLEET_INTELLIGENCE` | Schema for source tables |
 | `TARGET_DB` | `FLEET_INTELLIGENCE` | Database for ETL output tables |
-| `TARGET_SCHEMA` | `DEVIATION_ANALYSIS` | Schema for ETL output tables |
-| `ROUTE_CACHE_DB` | `FLEET_DEMOS` | Database containing ROUTE_CACHE |
-| `ROUTE_CACHE_SCHEMA` | `ROUTING` | Schema containing ROUTE_CACHE |
+| `TARGET_SCHEMA` | `ROUTE_DEVIATION` | Schema for ETL output tables |
+| `ROUTE_CACHE_DB` | `FLEET_INTELLIGENCE` | Database containing ROUTE_CACHE |
+| `ROUTE_CACHE_SCHEMA` | `ROUTE_CACHE` | Schema containing ROUTE_CACHE |
 | `WAREHOUSE` | `COMPUTE_WH` | Warehouse for ETL execution |
 | `S3_BUCKET` | `s3://fleet-intelligence/` | S3 location of Parquet dataset |
 
@@ -77,20 +78,15 @@ Set the session query tag for tracking. See `references/sql-pipeline.md` > Query
 
 Create source/target databases, schemas, route cache DB/schema, and warehouse. See `references/sql-pipeline.md` > Infrastructure Setup.
 
-### Step 4: Load Source Data from S3
+### Step 4: Check & Load Source Data
 
-Load 5 tables from `s3://fleet-intelligence/` Parquet files. Each table has different GEOGRAPHY handling — consult `references/dataset-guide.md` > GEOGRAPHY Column Handling for the correct conversion functions.
+Check if the synthetic fleet dataset already exists in `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE`. Run the verification query from `references/sql-pipeline.md` > Verify All Source Tables.
 
-Load order:
-1. Create external stage and file format
-2. GERMANY_DESTINATIONS (~75,242 rows)
-3. GERMANY_REST_STOPS (~6,315 rows)
-4. TRUCK_FLEET (500 rows)
-5. TRIP_SCHEDULE (9,343 rows)
-6. FACT_TRUCK_TELEMETRY (~15.1M rows — 2-5 min on MEDIUM warehouse)
-7. Run verification query to confirm all 5 tables
+**If all 5 tables exist with expected row counts** (FACT_TRUCK_TELEMETRY ~15.1M, TRIP_SCHEDULE 9,343, TRUCK_FLEET 500, GERMANY_DESTINATIONS ~75,242, GERMANY_REST_STOPS ~6,315): **SKIP** to Step 5.
 
-**STOP** if any table has 0 rows. Debug before proceeding.
+**If any table is missing or has 0 rows:** Load from S3 by executing the canonical loading script at `synthetic-datasets-generator` skill (`s3-load-fleet-intelligence.sql` in its references folder). Run each statement sequentially via `snowflake_sql_execute`. This creates the database, schema, file format, external stage, and loads all 5 tables from `s3://fleet-intelligence/`.
+
+**STOP** if any table still has 0 rows after loading. Debug before proceeding.
 
 ### Step 5: Populate Route Cache
 
@@ -204,17 +200,16 @@ To remove all objects created by this skill:
 
 ```sql
 -- Reverse dependency order: streamlit first, then ETL tables, route cache, source tables, stages, schemas, warehouses, databases
-DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.ROUTE_DEVIATION_DASHBOARD;
-DROP STAGE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.STREAMLIT;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.DAILY_DEVIATION_TRENDS;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.DRIVER_DEVIATION_SUMMARY;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.TRIP_DEVIATION_ANALYSIS;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.OD_EXPECTED_ROUTES;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS.TRIP_ACTUAL_METRICS;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS;
-DROP TABLE IF EXISTS FLEET_DEMOS.ROUTING.ROUTE_CACHE;
-DROP SCHEMA IF EXISTS FLEET_DEMOS.ROUTING;
-DROP DATABASE IF EXISTS FLEET_DEMOS;
+DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.ROUTE_DEVIATION_DASHBOARD;
+DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.STREAMLIT;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.OD_EXPECTED_ROUTES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_ACTUAL_METRICS;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_CACHE.ROUTE_CACHE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_CACHE;
 DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FACT_TRUCK_TELEMETRY;
 DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRIP_SCHEDULE;
 DROP TABLE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRUCK_FLEET;
@@ -224,7 +219,6 @@ DROP FILE FORMAT IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.PARQUET_FF;
 DROP STAGE IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FLEET_INTEL_STAGE;
 DROP SCHEMA IF EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DEVIATION_ANALYSIS;
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
 DROP WAREHOUSE IF EXISTS COMPUTE_WH;
 ```

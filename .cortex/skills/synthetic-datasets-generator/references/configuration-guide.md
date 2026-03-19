@@ -36,8 +36,8 @@ Deterministic RNG seed. Same seed + same config = identical output.
 ```yaml
 snowflake:
   connection_name: null    # Uses SNOWFLAKE_CONNECTION_NAME env var if null
-  database: FLEET_DEMOS
-  schema: ROUTING
+  database: FLEET_INTELLIGENCE
+  schema: ROUTE_CACHE
   warehouse: INSTALLER
 ```
 
@@ -301,7 +301,7 @@ speeding:
 ```yaml
 output:
   parquet_dir: "output/"
-  stage_name: "@FLEET_DEMOS.ROUTING.TELEMETRY_STAGE"
+  stage_name: "@FLEET_INTELLIGENCE.ROUTE_CACHE.TELEMETRY_STAGE"
   tables:
     warehouses: "DIM_WAREHOUSE"
     stops: "DIM_STOP"

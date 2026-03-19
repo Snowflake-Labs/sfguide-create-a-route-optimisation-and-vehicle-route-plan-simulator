@@ -37,8 +37,8 @@ if CITY["name"] != "San Francisco":
 
 st.divider()
 
-MATRIX_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX'
-HEXAGONS_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS'
+MATRIX_TABLE = 'FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX'
+HEXAGONS_TABLE = 'FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_HEXAGONS'
 
 @st.cache_data(ttl=600)
 def get_matrix_stats():
@@ -103,8 +103,8 @@ else:
     st.info("""
     To build the travel time matrix, run:
     ```sql
-    -- See OPENROUTESERVICE_SETUP.ROUTING schema for matrix tables
-    SELECT * FROM OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS LIMIT 10;
+    -- See FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX schema for matrix tables
+    SELECT * FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_HEXAGONS LIMIT 10;
     ```
     """)
     st.stop()
@@ -317,13 +317,13 @@ with st.expander("How This Matrix Was Built"):
     ```sql
     -- Find travel time between two hexagons
     SELECT travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND destination_hex_id = '89283082bd7ffff';
     
     -- Find all destinations within 15 minutes
     SELECT destination_hex_id, travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND travel_time_seconds <= 900
     ORDER BY travel_time_seconds;

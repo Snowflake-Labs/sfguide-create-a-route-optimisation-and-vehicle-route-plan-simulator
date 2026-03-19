@@ -9,7 +9,7 @@ SQL and Python definitions for the OpenRouteService Routing Agent.
 Wraps ORS DIRECTIONS with AI geocoding for natural language location input.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
@@ -96,7 +96,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -106,7 +106,7 @@ ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR,
 Wraps ORS ISOCHRONES with AI geocoding for natural language location input.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -185,7 +185,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -195,7 +195,7 @@ ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, 
 Wraps ORS OPTIMIZATION with AI geocoding for multi-stop delivery routing (Python).
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -330,7 +330,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -340,7 +340,7 @@ ALTER PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHA
 Creates the Cortex Agent with tool bindings to the three stored procedures.
 
 ```sql
-CREATE OR REPLACE AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT
+CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
@@ -453,17 +453,17 @@ tools:
 tool_resources:
   tool_directions:
     type: procedure
-    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_isochrone:
     type: procedure
-    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;
@@ -475,5 +475,5 @@ $$;
 
 ```sql
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
-ADD AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
+ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
 ```

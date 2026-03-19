@@ -15,8 +15,8 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 ## Configuration
 
-- **Database:** `OPENROUTESERVICE_SETUP`
-- **Schema:** `SI_ROUTING_AGENT`
+- **Database:** `FLEET_INTELLIGENCE`
+- **Schema:** `ROUTING_AGENT`
 - **Warehouse:** `ROUTING_ANALYTICS`
 - **Agent Name:** `ROUTING_AGENT`
 
@@ -30,12 +30,12 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
-| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
-| USAGE ON DATABASE OPENROUTESERVICE_SETUP | Database | Uses the setup database |
-| CREATE SCHEMA | Database (OPENROUTESERVICE_SETUP) | Creates SI_ROUTING_AGENT schema |
-| CREATE PROCEDURE | Schema (OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION |
-| CREATE CORTEX AGENT | Schema (OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT) | Creates ROUTING_AGENT |
+| USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
+| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_AGENT schema |
+| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION |
+| CREATE CORTEX AGENT | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates ROUTING_AGENT |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
 | SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
 
@@ -76,9 +76,9 @@ Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTIN
 Create dedicated objects for the routing agent.
 
 ```sql
-CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
@@ -90,7 +90,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 Wraps ORS DIRECTIONS with AI geocoding (claude-sonnet-4-5) so users can describe locations in natural language. Returns distance_km, duration_mins, segments, and geometry on success; structured error on failure.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(...)
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(...)
 -- Full definition: see references/agent-definitions.md
 ```
 
@@ -101,7 +101,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTI
 Wraps ORS ISOCHRONES with AI geocoding. Accepts a location description and range in minutes; returns area_km2 and geometry polygon on success.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(...)
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(...)
 -- Full definition: see references/agent-definitions.md
 ```
 
@@ -112,7 +112,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRO
 Python procedure wrapping ORS OPTIMIZATION. Geocodes delivery locations and depot, builds VROOM-compatible jobs/vehicles arrays, and returns optimized routes with unassigned-job detection.
 
 ```sql
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(...)
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(...)
 -- Full definition: see references/agent-definitions.md
 ```
 
@@ -123,7 +123,7 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZ
 Create a Cortex Agent (`ROUTING_AGENT`) with three tool bindings pointing to the procedures above.
 
 ```sql
-CREATE OR REPLACE CORTEX AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT(...)
+CREATE OR REPLACE CORTEX AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT(...)
 -- Full definition: see references/agent-definitions.md
 ```
 
@@ -133,7 +133,7 @@ CREATE OR REPLACE CORTEX AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_A
 
 ```sql
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
-ADD AGENT OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
+ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
 ```
 
 ### Step 9: Test the Agent
@@ -178,8 +178,8 @@ Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
 
 ## Output
 
-- 1 database: `OPENROUTESERVICE_SETUP`
-- 1 schema: `OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT`
+- 1 database: `FLEET_INTELLIGENCE`
+- 1 schema: `FLEET_INTELLIGENCE.ROUTING_AGENT`
 - 1 warehouse: `ROUTING_ANALYTICS`
 - 3 stored procedures with AI geocoding and error handling
 - 1 Cortex Agent registered in Snowflake Intelligence
@@ -200,13 +200,12 @@ To remove all objects created by this skill:
 
 ```sql
 -- Reverse dependency order: agent first, then procedures, schema, warehouse, database
-DROP CORTEX AGENT IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.ROUTING_AGENT;
-DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
-DROP SCHEMA IF EXISTS OPENROUTESERVICE_SETUP.SI_ROUTING_AGENT;
+DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
-DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

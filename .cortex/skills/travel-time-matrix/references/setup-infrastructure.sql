@@ -16,7 +16,7 @@ USE ROLE ACCOUNTADMIN;
 -- VARIABLES — Set these for your region
 -- =============================================================================
 SET P_REGION = 'SF';                  -- Short identifier (used in table names)
-SET P_DB = 'ROUTING_DB';             -- Target database
+SET P_DB = 'FLEET_INTELLIGENCE';             -- Target database
 SET P_ORS_APP = 'OPENROUTESERVICE_NATIVE_APP';
 SET P_INSTANCES = 3;                  -- ORS + gateway instance count
 SET P_CLUSTERS = 3;                   -- Warehouse cluster count

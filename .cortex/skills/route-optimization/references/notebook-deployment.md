@@ -53,7 +53,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 
 1. Create the notebook stage:
    ```sql
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook 
+   CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
@@ -62,35 +62,35 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 2. Upload notebook files:
    ```bash
    snow stage copy "assets/notebooks/add_carto_data.ipynb" \
-     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "assets/notebooks/environment.yml" \
-     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. Create the notebook:
    ```sql
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA
-   FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
+   CREATE OR REPLACE NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA
+   FROM '@FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK'
    MAIN_FILE = 'add_carto_data.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
    ```
 
 4. Execute notebook:
    ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ADD_CARTO_DATA();
+   EXECUTE NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA();
    ```
 
 5. Verify tables:
    ```sql
-   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.PLACES
+   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
    UNION ALL
-   SELECT 'LOOKUP', COUNT(*) FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
+   SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
    UNION ALL
-   SELECT 'JOB_TEMPLATE', COUNT(*) FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.JOB_TEMPLATE;
+   SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
    ```
    - `PLACES`: typically 50K-500K rows depending on region
    - `LOOKUP`: 3 rows (default) or number of custom industries
@@ -100,7 +100,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
 6. If custom industries were configured, verify:
    ```sql
    SELECT INDUSTRY, PA, PB, PC, CTYPE, STYPE 
-   FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP;
+   FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
    ```
 
 ## Step 7: Check for Latest Claude Model
@@ -178,19 +178,19 @@ Markdown cells to update:
 1. Upload:
    ```bash
    snow stage copy "assets/notebooks/routing_functions_aisql.ipynb" \
-     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
    
    snow stage copy "assets/notebooks/environment.yml" \
-     @OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.notebook --connection <ACTIVE_CONNECTION> --overwrite
+     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 2. Create:
    ```sql
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL
-   FROM '@OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.NOTEBOOK'
+   CREATE OR REPLACE NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL
+   FROM '@FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK'
    MAIN_FILE = 'routing_functions_aisql.ipynb'
    QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    
-   ALTER NOTEBOOK OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
+   ALTER NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL ADD LIVE VERSION FROM LAST;
    ```

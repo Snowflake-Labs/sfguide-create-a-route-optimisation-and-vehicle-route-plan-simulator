@@ -76,6 +76,23 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
 
 ## Workflow
 
+### Step 0: Check & Load Source Data
+
+Check if the synthetic fleet dataset already exists in `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE`:
+
+```sql
+SELECT 'FACT_TRUCK_TELEMETRY' AS TBL, COUNT(*) AS ROW_CNT FROM SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FACT_TRUCK_TELEMETRY
+UNION ALL SELECT 'GERMANY_DESTINATIONS', COUNT(*) FROM SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_DESTINATIONS
+UNION ALL SELECT 'GERMANY_REST_STOPS', COUNT(*) FROM SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_REST_STOPS
+UNION ALL SELECT 'TRUCK_FLEET', COUNT(*) FROM SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRUCK_FLEET;
+```
+
+**If all 4 tables exist with expected row counts** (FACT_TRUCK_TELEMETRY ~15.1M, GERMANY_DESTINATIONS ~75,242, GERMANY_REST_STOPS ~6,315, TRUCK_FLEET 500): **SKIP** to Step 1.
+
+**If any table is missing or has 0 rows:** Load from S3 by executing the canonical loading script from the `synthetic-datasets-generator` skill (`s3-load-fleet-intelligence.sql` in its references folder). Run each statement sequentially via `snowflake_sql_execute`. This creates the database, schema, file format, external stage, and loads all 5 tables from `s3://fleet-intelligence/`.
+
+**STOP** if any table still has 0 rows after loading.
+
 ### Step 1: Run SQL Pipeline
 
 Execute the complete 12-step SQL pipeline from `references/sql-pipeline.sql`. Run each statement sequentially using `snowflake_sql_execute`.
@@ -210,7 +227,8 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 
 ## Stopping Points
 
-- ✋ Step 1: Verify source tables exist before running pipeline
+- ✋ Step 0: Verify source tables exist; auto-load from S3 if missing
+- ✋ Step 1: Verify source tables loaded before running pipeline
 - ✋ Step 1 (after Step 3 SQL): Verify SLA_THRESHOLDS has 5 rows
 - ✋ Step 2: Verify Dynamic Tables are refreshing before deploying Streamlit
 - ✋ Step 3: Verify all DT row counts are non-zero

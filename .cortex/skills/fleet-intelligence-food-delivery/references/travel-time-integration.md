@@ -66,7 +66,7 @@ cp /tmp/California/California.osm.pbf /tmp/SanFrancisco.osm.pbf
 
 #### Step 4: Upload to ORS App Stage
 
-**CRITICAL:** Upload to `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`).
+**CRITICAL:** Upload to `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`).
 
 ```sql
 -- Remove existing SF data
@@ -142,7 +142,7 @@ When configuring ORS for California statewide routing (required for DoorDash-sty
 | **TOTAL** | **45-75 minutes** | End-to-end from start to routing ready |
 
 ### Key Stage Paths
-- **Data Stage**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE`)
+- **Data Stage**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`)
 - **Graphs Stage**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE`
 - **Config Location**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml`
 
@@ -175,7 +175,7 @@ The SF travel time matrix demonstrates the speed of the ORS MATRIX function in S
 | **ORS MATRIX Computation** | **36 seconds** (single SQL call, all 1,065 origins processed) |
 | **INSERT into Snowflake** | 2.4 seconds |
 | **End-to-end pipeline** | ~3 minutes (hex creation → matrix INSERT) |
-| **Table** | `OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX` |
+| **Table** | `FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX` |
 
 The ORS MATRIX function accepts an array of origin/destination coordinates and returns a full NxN distance/duration matrix in a single call. For 1,065 hexagons, this means computing 1.1M+ travel time pairs in just 36 seconds.
 
@@ -205,43 +205,43 @@ Enable Snowflake Search Optimization on large tables for fast point lookups. Thi
 ### H3 Hexagon Tables
 
 ```sql
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES7
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_H3_RES7
     ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
 
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES8
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_H3_RES8
     ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
 
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_H3_RES9
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_H3_RES9
     ADD SEARCH OPTIMIZATION ON EQUALITY(H3_INDEX);
 ```
 
 ### Travel Time Matrix Tables
 
 ```sql
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7
     ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
 
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8
     ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
 
-ALTER TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES9
     ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
 ```
 
 ### SF Travel Time Matrix
 
 ```sql
-ALTER TABLE OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX
     ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_HEX_ID, DESTINATION_HEX_ID);
 ```
 
 ### Overture Maps-derived Tables
 
 ```sql
-ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
     ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
 
-ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
     ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
 ```
 
@@ -289,7 +289,7 @@ After the pairs tables are built, populate with actual travel times from ORS MAT
 
 ```sql
 -- Create travel time result tables (run after pairs are built)
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9 (
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES9 (
     origin_h3 VARCHAR,
     dest_h3 VARCHAR,
     travel_time_seconds FLOAT,
@@ -298,7 +298,7 @@ CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9 (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8 (
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8 (
     origin_h3 VARCHAR,
     dest_h3 VARCHAR,
     travel_time_seconds FLOAT,
@@ -307,7 +307,7 @@ CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8 (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7 (
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 (
     origin_h3 VARCHAR,
     dest_h3 VARCHAR,
     travel_time_seconds FLOAT,
@@ -322,7 +322,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-s
 Create a view that joins delivery orders with pre-computed travel times:
 
 ```sql
-CREATE OR REPLACE VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES AS
 WITH order_h3 AS (
     SELECT 
         o.*,
@@ -335,7 +335,7 @@ WITH order_h3 AS (
         H3_POINT_TO_CELL_STRING(o.CUSTOMER_LOCATION, 7) AS customer_h3_res7,
         -- Calculate straight-line distance for tier selection
         ST_DISTANCE(o.RESTAURANT_LOCATION, o.CUSTOMER_LOCATION) / 1000 AS straight_line_km
-    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
 )
 SELECT 
     oh.*,
@@ -357,23 +357,23 @@ SELECT
         tt7.travel_distance_meters
     ) AS est_travel_distance_meters
 FROM order_h3 oh
-LEFT JOIN OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9 tt9 
+LEFT JOIN FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES9 tt9 
     ON (oh.restaurant_h3_res9 = tt9.origin_h3 AND oh.customer_h3_res9 = tt9.dest_h3)
     OR (oh.restaurant_h3_res9 = tt9.dest_h3 AND oh.customer_h3_res9 = tt9.origin_h3)
-LEFT JOIN OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8 tt8 
+LEFT JOIN FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8 tt8 
     ON (oh.restaurant_h3_res8 = tt8.origin_h3 AND oh.customer_h3_res8 = tt8.dest_h3)
     OR (oh.restaurant_h3_res8 = tt8.dest_h3 AND oh.customer_h3_res8 = tt8.origin_h3)
-LEFT JOIN OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7 tt7 
+LEFT JOIN FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 tt7 
     ON (oh.restaurant_h3_res7 = tt7.origin_h3 AND oh.customer_h3_res7 = tt7.dest_h3)
     OR (oh.restaurant_h3_res7 = tt7.dest_h3 AND oh.customer_h3_res7 = tt7.origin_h3);
 
-ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 3: Create ETA Prediction Function
 
 ```sql
-CREATE OR REPLACE FUNCTION OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
     restaurant_lon FLOAT,
     restaurant_lat FLOAT,
     customer_lon FLOAT,
@@ -404,13 +404,13 @@ $$
         SELECT 
             h.*,
             COALESCE(
-                (SELECT travel_time_seconds FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES9 
+                (SELECT travel_time_seconds FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES9 
                  WHERE (origin_h3 = h.r_h3_9 AND dest_h3 = h.c_h3_9) 
                     OR (origin_h3 = h.c_h3_9 AND dest_h3 = h.r_h3_9) LIMIT 1),
-                (SELECT travel_time_seconds FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES8 
+                (SELECT travel_time_seconds FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8 
                  WHERE (origin_h3 = h.r_h3_8 AND dest_h3 = h.c_h3_8) 
                     OR (origin_h3 = h.c_h3_8 AND dest_h3 = h.r_h3_8) LIMIT 1),
-                (SELECT travel_time_seconds FROM OPENROUTESERVICE_SETUP.PUBLIC.CA_TRAVEL_TIME_RES7 
+                (SELECT travel_time_seconds FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 
                  WHERE (origin_h3 = h.r_h3_7 AND dest_h3 = h.c_h3_7) 
                     OR (origin_h3 = h.c_h3_7 AND dest_h3 = h.r_h3_7) LIMIT 1),
                 -- Fallback: estimate from straight-line distance (avg 30 km/h in city)
@@ -432,7 +432,7 @@ $$
     FROM travel_lookup
 $$;
 
-ALTER FUNCTION OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 4: Use ETA Predictions in Delivery Routes
@@ -440,12 +440,12 @@ ALTER FUNCTION OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_D
 Replace ORS DIRECTIONS calls with matrix lookups for faster route generation:
 
 ```sql
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 AS
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 AS
 WITH order_timing AS (
     SELECT 
         o.*,
         -- Get pre-computed travel time from matrix
-        OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+        FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
             ST_X(o.RESTAURANT_LOCATION),
             ST_Y(o.RESTAURANT_LOCATION),
             ST_X(o.CUSTOMER_LOCATION),
@@ -453,7 +453,7 @@ WITH order_timing AS (
             o.PREP_TIME_MINS
         ) AS eta_info,
         ROW_NUMBER() OVER (PARTITION BY o.COURIER_ID ORDER BY o.ORDER_HOUR, o.ORDER_NUMBER) AS COURIER_ORDER_SEQ
-    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
 ),
 cumulative_timing AS (
     SELECT 
@@ -498,7 +498,7 @@ SELECT
     eta_info:resolution_used::STRING AS TRAVEL_TIME_SOURCE
 FROM cumulative_timing;
 
-ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 5: Real-time ETA Updates View
@@ -506,7 +506,7 @@ ALTER TABLE OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROU
 Create a view for real-time courier tracking with updated ETAs:
 
 ```sql
-CREATE OR REPLACE VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS AS
 SELECT 
     cl.COURIER_ID,
     cl.ORDER_ID,
@@ -543,14 +543,14 @@ SELECT
         WHEN cl.KMH < 30 THEN 'normal'
         ELSE 'fast'
     END AS traffic_status
-FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl
 WHERE cl.POINT_INDEX = (
     SELECT MAX(POINT_INDEX) 
-    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl2 
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl2 
     WHERE cl2.ORDER_ID = cl.ORDER_ID
 );
 
-ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Performance Comparison: Matrix Lookup vs ORS Calls
@@ -565,7 +565,7 @@ ALTER VIEW OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY
 
 ```sql
 -- Instant ETA prediction using pre-computed matrix
-SELECT OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+SELECT FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
     -122.4194, 37.7749,  -- Restaurant (SF City Hall)
     -122.3894, 37.7649,  -- Customer (Mission District)
     12                    -- Prep time (minutes)

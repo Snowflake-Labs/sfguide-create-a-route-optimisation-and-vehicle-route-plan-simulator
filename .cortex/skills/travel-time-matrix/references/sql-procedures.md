@@ -9,7 +9,7 @@ All stored procedures for the travel-time-matrix workflow. Each procedure is par
 Resume-safe, retry-aware worker procedure. Processes a range of work queue rows, inserting raw VARIANT payloads into the staging table. Uses adaptive batch sizing per resolution and exponential backoff on failure.
 
 ```sql
-CREATE OR REPLACE PROCEDURE <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(
+CREATE OR REPLACE PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE(
     P_REGION VARCHAR,
     P_RES INTEGER,
     P_START_SEQ INTEGER,
@@ -104,7 +104,7 @@ BEGIN
 END;
 $$;
 
-ALTER PROCEDURE <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 **Adaptive batch sizing rationale:**
@@ -120,7 +120,7 @@ ALTER PROCEDURE <P_DB>.PUBLIC.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER,
 Post-processing procedure. Extracts structured travel-time pairs from raw VARIANT payloads. Run on a dedicated XLARGE warehouse for fast bulk processing.
 
 ```sql
-CREATE OR REPLACE PROCEDURE <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(
+CREATE OR REPLACE PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.FLATTEN_MATRIX_RAW(
     P_REGION VARCHAR,
     P_RES INTEGER
 )
@@ -169,7 +169,7 @@ BEGIN
 END;
 $$;
 
-ALTER PROCEDURE <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(VARCHAR, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.FLATTEN_MATRIX_RAW(VARCHAR, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -179,7 +179,7 @@ ALTER PROCEDURE <P_DB>.PUBLIC.FLATTEN_MATRIX_RAW(VARCHAR, INTEGER) SET COMMENT =
 Creates the full Task DAG: per-resolution root tasks, parallel worker tasks, and flatten tasks. Fully parameterized by region, resolution list, and worker count.
 
 ```sql
-CREATE OR REPLACE PROCEDURE <P_DB>.PUBLIC.CREATE_MATRIX_DAG(
+CREATE OR REPLACE PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.CREATE_MATRIX_DAG(
     P_DB VARCHAR,
     P_REGION VARCHAR,
     P_RESOLUTIONS ARRAY,
@@ -213,17 +213,17 @@ BEGIN
         res_label := 'RES' || res::VARCHAR;
 
         BEGIN
-            EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.PUBLIC.TASK_FLATTEN_' || P_REGION || '_' || res_label;
+            EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_FLATTEN_' || P_REGION || '_' || res_label;
         EXCEPTION WHEN OTHER THEN NULL; END;
         w := 1;
         WHILE (w <= P_NUM_WORKERS) DO
             BEGIN
-                EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.PUBLIC.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
+                EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
             EXCEPTION WHEN OTHER THEN NULL; END;
             w := w + 1;
         END WHILE;
         BEGIN
-            EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label;
+            EXECUTE IMMEDIATE 'DROP TASK IF EXISTS ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label;
         EXCEPTION WHEN OTHER THEN NULL; END;
     END FOR;
 
@@ -231,14 +231,14 @@ BEGIN
         res := P_RESOLUTIONS[i]::INTEGER;
         res_label := 'RES' || res::VARCHAR;
 
-        rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || P_DB || '.PUBLIC.' || P_REGION || '_WORK_QUEUE_' || res_label);
+        rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || P_DB || '.TRAVEL_TIME_MATRIX.' || P_REGION || '_WORK_QUEUE_' || res_label);
         LET c1 CURSOR FOR rs;
         FOR r IN c1 DO
             total_rows := r.CNT;
         END FOR;
         chunk_size := CEIL(total_rows / P_NUM_WORKERS);
 
-        ddl := 'CREATE OR REPLACE TASK ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label ||
+        ddl := 'CREATE OR REPLACE TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label ||
                ' WAREHOUSE = ' || P_FLATTEN_WH ||
                ' AS SELECT ''Work queue ' || P_REGION || ' ' || res_label || ' ready: ' || total_rows || ' origins''';
         EXECUTE IMMEDIATE ddl;
@@ -248,11 +248,11 @@ BEGIN
             start_seq := ((w - 1) * chunk_size) + 1;
             end_seq := LEAST(w * chunk_size, total_rows);
             IF (start_seq <= total_rows) THEN
-                task_name := P_DB || '.PUBLIC.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
+                task_name := P_DB || '.TRAVEL_TIME_MATRIX.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
                 ddl := 'CREATE OR REPLACE TASK ' || task_name ||
                        ' WAREHOUSE = ' || P_ROUTING_WH ||
-                       ' AFTER ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label ||
-                       ' AS CALL ' || P_DB || '.PUBLIC.BUILD_TRAVEL_TIME_RANGE(''' || P_REGION || ''', ' || res || ', ' || start_seq || ', ' || end_seq || ', ''' || P_ORS_APP || ''')';
+                       ' AFTER ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label ||
+                       ' AS CALL ' || P_DB || '.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE(''' || P_REGION || ''', ' || res || ', ' || start_seq || ', ' || end_seq || ', ''' || P_ORS_APP || ''')';
                 EXECUTE IMMEDIATE ddl;
                 total_tasks := total_tasks + 1;
             END IF;
@@ -266,15 +266,15 @@ BEGIN
                 IF (worker_list != '') THEN
                     worker_list := worker_list || ', ';
                 END IF;
-                worker_list := worker_list || P_DB || '.PUBLIC.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
+                worker_list := worker_list || P_DB || '.TRAVEL_TIME_MATRIX.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0');
             END IF;
             w := w + 1;
         END WHILE;
 
-        ddl := 'CREATE OR REPLACE TASK ' || P_DB || '.PUBLIC.TASK_FLATTEN_' || P_REGION || '_' || res_label ||
+        ddl := 'CREATE OR REPLACE TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_FLATTEN_' || P_REGION || '_' || res_label ||
                ' WAREHOUSE = ' || P_FLATTEN_WH ||
                ' AFTER ' || worker_list ||
-               ' AS CALL ' || P_DB || '.PUBLIC.FLATTEN_MATRIX_RAW(''' || P_REGION || ''', ' || res || ')';
+               ' AS CALL ' || P_DB || '.TRAVEL_TIME_MATRIX.FLATTEN_MATRIX_RAW(''' || P_REGION || ''', ' || res || ')';
         EXECUTE IMMEDIATE ddl;
         total_tasks := total_tasks + 2;
     END FOR;
@@ -283,7 +283,7 @@ BEGIN
 END;
 $$;
 
-ALTER PROCEDURE <P_DB>.PUBLIC.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR, VARCHAR, INTEGER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -293,7 +293,7 @@ ALTER PROCEDURE <P_DB>.PUBLIC.CREATE_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, VARCHAR
 Resumes all tasks (leaf-to-root order) then executes root tasks to kick off the pipeline.
 
 ```sql
-CREATE OR REPLACE PROCEDURE <P_DB>.PUBLIC.START_MATRIX_DAG(
+CREATE OR REPLACE PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.START_MATRIX_DAG(
     P_DB VARCHAR,
     P_REGION VARCHAR,
     P_RESOLUTIONS ARRAY,
@@ -314,31 +314,31 @@ BEGIN
         res := P_RESOLUTIONS[i]::INTEGER;
         res_label := 'RES' || res::VARCHAR;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_FLATTEN_' || P_REGION || '_' || res_label || ' RESUME';
+            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_FLATTEN_' || P_REGION || '_' || res_label || ' RESUME';
         EXCEPTION WHEN OTHER THEN NULL; END;
         w := P_NUM_WORKERS;
         WHILE (w >= 1) DO
             BEGIN
-                EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0') || ' RESUME';
+                EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0') || ' RESUME';
             EXCEPTION WHEN OTHER THEN NULL; END;
             w := w - 1;
         END WHILE;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label || ' RESUME';
+            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label || ' RESUME';
         EXCEPTION WHEN OTHER THEN NULL; END;
     END FOR;
 
     FOR i IN 0 TO ARRAY_SIZE(P_RESOLUTIONS) - 1 DO
         res := P_RESOLUTIONS[i]::INTEGER;
         res_label := 'RES' || res::VARCHAR;
-        EXECUTE IMMEDIATE 'EXECUTE TASK ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label;
+        EXECUTE IMMEDIATE 'EXECUTE TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label;
     END FOR;
 
     RETURN 'DAG started for ' || P_REGION || ': all tasks resumed and root tasks executed';
 END;
 $$;
 
-ALTER PROCEDURE <P_DB>.PUBLIC.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -348,7 +348,7 @@ ALTER PROCEDURE <P_DB>.PUBLIC.START_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER)
 Suspends all tasks (root-to-leaf order) to halt the pipeline.
 
 ```sql
-CREATE OR REPLACE PROCEDURE <P_DB>.PUBLIC.STOP_MATRIX_DAG(
+CREATE OR REPLACE PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.STOP_MATRIX_DAG(
     P_DB VARCHAR,
     P_REGION VARCHAR,
     P_RESOLUTIONS ARRAY,
@@ -369,17 +369,17 @@ BEGIN
         res := P_RESOLUTIONS[i]::INTEGER;
         res_label := 'RES' || res::VARCHAR;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label || ' SUSPEND';
+            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label || ' SUSPEND';
         EXCEPTION WHEN OTHER THEN NULL; END;
         w := 1;
         WHILE (w <= P_NUM_WORKERS) DO
             BEGIN
-                EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0') || ' SUSPEND';
+                EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_WORKER_' || P_REGION || '_' || res_label || '_' || LPAD(w, 2, '0') || ' SUSPEND';
             EXCEPTION WHEN OTHER THEN NULL; END;
             w := w + 1;
         END WHILE;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.PUBLIC.TASK_FLATTEN_' || P_REGION || '_' || res_label || ' SUSPEND';
+            EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_FLATTEN_' || P_REGION || '_' || res_label || ' SUSPEND';
         EXCEPTION WHEN OTHER THEN NULL; END;
     END FOR;
 
@@ -387,7 +387,7 @@ BEGIN
 END;
 $$;
 
-ALTER PROCEDURE <P_DB>.PUBLIC.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE <P_DB>.TRAVEL_TIME_MATRIX.STOP_MATRIX_DAG(VARCHAR, VARCHAR, ARRAY, INTEGER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -401,9 +401,9 @@ SELECT
     '<P_REGION>' AS region,
     'RES<N>' AS res,
     COUNT(*) AS done,
-    (SELECT COUNT(*) FROM <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>) AS total,
-    ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM <P_DB>.PUBLIC.<P_REGION>_WORK_QUEUE_RES<N>), 0), 1) AS pct
-FROM <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N>;
+    (SELECT COUNT(*) FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N>) AS total,
+    ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_WORK_QUEUE_RES<N>), 0), 1) AS pct
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_MATRIX_RAW_RES<N>;
 ```
 
 ### Running Worker Check
@@ -425,6 +425,6 @@ ORDER BY START_TIME;
 SELECT
     CASE WHEN MATRIX_RESULT:durations IS NOT NULL THEN 'SUCCESS' ELSE 'ERROR' END AS STATUS,
     COUNT(*) AS CNT
-FROM <P_DB>.PUBLIC.<P_REGION>_MATRIX_RAW_RES<N>
+FROM <P_DB>.TRAVEL_TIME_MATRIX.<P_REGION>_MATRIX_RAW_RES<N>
 GROUP BY 1;
 ```

@@ -9,7 +9,7 @@ st.set_page_config(page_title="Route Inspector", layout="wide")
 
 session = get_active_session()
 SOURCE_SCHEMA = "SYNTHETIC_DATASETS.FLEET_INTELLIGENCE"
-TARGET_SCHEMA = "FLEET_INTELLIGENCE.DEVIATION_ANALYSIS"
+TARGET_SCHEMA = "FLEET_INTELLIGENCE.ROUTE_DEVIATION"
 
 @st.cache_data(ttl=300)
 def run_query(sql):
@@ -198,4 +198,4 @@ try:
 
 except Exception as e:
     st.error(f"Error loading data: {e}")
-    st.info("Ensure the ETL pipeline has been run and tables exist in FLEET_INTELLIGENCE.DEVIATION_ANALYSIS")
+    st.info("Ensure the ETL pipeline has been run and tables exist in FLEET_INTELLIGENCE.ROUTE_DEVIATION")

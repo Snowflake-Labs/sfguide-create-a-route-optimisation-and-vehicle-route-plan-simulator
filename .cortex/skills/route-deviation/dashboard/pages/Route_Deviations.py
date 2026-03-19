@@ -8,7 +8,7 @@ from snowflake.snowpark.context import get_active_session
 st.set_page_config(page_title="Route Deviations", layout="wide")
 
 session = get_active_session()
-SCHEMA = "FLEET_INTELLIGENCE.DEVIATION_ANALYSIS"
+SCHEMA = "FLEET_INTELLIGENCE.ROUTE_DEVIATION"
 
 @st.cache_data(ttl=300)
 def run_query(sql):
@@ -168,4 +168,4 @@ try:
 
 except Exception as e:
     st.error(f"Error loading data: {e}")
-    st.info("Ensure the ETL pipeline has been run and tables exist in FLEET_INTELLIGENCE.DEVIATION_ANALYSIS")
+    st.info("Ensure the ETL pipeline has been run and tables exist in FLEET_INTELLIGENCE.ROUTE_DEVIATION")

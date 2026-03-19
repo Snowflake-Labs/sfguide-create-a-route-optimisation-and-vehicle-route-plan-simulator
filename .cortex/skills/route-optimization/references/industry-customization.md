@@ -15,7 +15,7 @@ How to customize industries for the route optimization demo.
 Update Cell 15 (the LOOKUP INSERT) in `add_carto_data.ipynb`:
 
 ```sql
-CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP (
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     INDUSTRY VARCHAR,
     PA VARCHAR,
     PB VARCHAR,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOK
 )
 COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
-INSERT INTO OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.LOOKUP
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
 SELECT '<Industry1>', '<Product A>', '<Product B>', '<Product C>',
        ARRAY_CONSTRUCT('<keywords>'), ARRAY_CONSTRUCT('warehouse', 'distribution', 'depot'),
        ARRAY_CONSTRUCT('<customer_type1>', '<customer_type2>'),
@@ -78,7 +78,7 @@ SELECT 'Electronics', 'High-Value Items', 'Fragile Equipment', 'Standard Electro
 After the Carto notebook runs, query available Overture Maps categories to validate `CTYPE` values:
 ```sql
 SELECT DISTINCT CATEGORY, COUNT(*) AS COUNT 
-FROM OPENROUTESERVICE_SETUP.VEHICLE_ROUTING_SIMULATOR.PLACES 
+FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES 
 GROUP BY CATEGORY 
 ORDER BY COUNT DESC 
 LIMIT 50;

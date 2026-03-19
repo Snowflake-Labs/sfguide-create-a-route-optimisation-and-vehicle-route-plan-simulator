@@ -56,15 +56,15 @@ def bar_creation(dataframe, measure, attribute):
     return (bars + text).properties(height=200)
 
 # Load data from views
-vehicle_plans_poi = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')
+vehicle_plans_poi = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN')
 routes = vehicle_plans_poi.select('GEOMETRY', 'TRIP_ID', 'DISTANCE_METERS', 'DRIVER_ID')
-trip_summary = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
+trip_summary = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY')
 
 # Add TRIP_NAME column
 vehicle_plans_poi = vehicle_plans_poi.with_column('TRIP_NAME', concat(col('ORIGIN_STREET'), lit(' -> '), col('DESTINATION_STREET')))
 
 # Join for driver locations
-all_driver_locations = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V')
+all_driver_locations = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V')
 all_driver_locations = all_driver_locations.with_column('POINT_TIME_STR', col('POINT_TIME').astype(StringType()))
 
 # Get unique drivers
@@ -240,7 +240,7 @@ if len(trips_df) > 0:
                 # Route geometry
                 route_geom = session.sql(f"""
                     SELECT ST_ASGEOJSON(GEOMETRY) AS GEOM 
-                    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY 
+                    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY 
                     WHERE TRIP_ID = '{trip_id}'
                 """).collect()[0]['GEOM']
                 

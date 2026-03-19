@@ -53,18 +53,18 @@ def bar_creation(dataframe, measure, attribute):
 
     return (bars + text).properties(height=200)
 
-delivery_plans = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == selected_city)
+delivery_plans = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == selected_city)
 routes = delivery_plans.select('GEOMETRY', 'ORDER_ID', 'DISTANCE_METERS', 'COURIER_ID')
-delivery_summary = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
+delivery_summary = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
 
 delivery_plans = delivery_plans.with_column('DELIVERY_NAME', F.concat(F.col('RESTAURANT_NAME'), F.lit(' -> '), F.col('CUSTOMER_STREET')))
 
-all_courier_locations = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V').filter(F.col('CITY') == selected_city)
+all_courier_locations = session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS_V').filter(F.col('CITY') == selected_city)
 all_courier_locations = all_courier_locations.with_column('POINT_TIME_STR', F.col('POINT_TIME').astype(StringType()))
 
 @st.cache_data
 def get_couriers(city):
-    return session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == city).select('COURIER_ID').distinct().sort('COURIER_ID').to_pandas()
+    return session.table('FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN').filter(F.col('CITY') == city).select('COURIER_ID').distinct().sort('COURIER_ID').to_pandas()
 
 with st.sidebar:
     couriers_df = get_couriers(selected_city)
@@ -222,7 +222,7 @@ if len(deliveries_df) > 0:
             if len(current_pos) > 0:
                 route_geom = session.sql(f"""
                     SELECT ST_ASGEOJSON(GEOMETRY) AS GEOM
-                    FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+                    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
                     WHERE ORDER_ID = '{order_id}'
                 """).collect()[0]['GEOM']
 

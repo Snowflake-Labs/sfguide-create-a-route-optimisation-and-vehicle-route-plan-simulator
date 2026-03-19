@@ -84,6 +84,14 @@ Two config presets are available in `scripts/config/`:
 
 ---
 
+## Quick Load from S3 (Alternative)
+
+If you do not need to generate fresh data and just want the pre-built dataset, use `references/s3-load-fleet-intelligence.sql`. This loads all 5 source tables (GERMANY_DESTINATIONS, GERMANY_REST_STOPS, TRUCK_FLEET, TRIP_SCHEDULE, FACT_TRUCK_TELEMETRY) from the public `s3://fleet-intelligence/` bucket into `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE`. Takes 2-5 minutes vs 30-60 minutes for fresh generation.
+
+Both the `route-deviation` and `dwell-analysis` skills auto-detect and use this script when source data is missing.
+
+---
+
 ## Workflow
 
 ### Step 1: Verify Prerequisites
@@ -121,7 +129,7 @@ If POI tables are missing, the generator creates fallback synthetic locations au
 Ask the user for:
 - **Fleet size** (10 for quick test, 100-500 for production)
 - **Duration** (1-3 months)
-- **Target database/schema** (default: FLEET_DEMOS.ROUTING)
+- **Target database/schema** (default: FLEET_INTELLIGENCE.ROUTE_CACHE)
 - **Region** (default: Germany)
 
 Edit `scripts/config/config.yml` (or `calibrated_config.yml`) with the chosen parameters. Key sections to update:
