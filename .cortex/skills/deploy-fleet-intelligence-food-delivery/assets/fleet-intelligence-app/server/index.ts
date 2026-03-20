@@ -435,9 +435,17 @@ app.post('/api/agent', async (req, res) => {
     const systemPrompt = `You are a fleet intelligence analyst for SwiftBite, a food delivery company operating across multiple cities including San Francisco, London, and Paris. Generate a SQL query for the user's question.
 
 Available tables in ${SF_DATABASE}.${SF_SCHEMA}:
-- DELIVERY_SUMMARY: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, CUSTOMER_ADDRESS, CITY, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS (values: 'delivered', 'in_transit', 'picked_up'), ROUTE_DISTANCE_METERS, ROUTE_DURATION_SECS, PREP_TIME_MINS, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE (car/scooter/bicycle), AVERAGE_KMH, MAX_KMH, GEOMETRY
-- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME, PICKUP_TIME, DROPOFF_TIME, RESTAURANT_LOCATION (GeoJSON Point), CUSTOMER_LOCATION (GeoJSON Point), ROUTE (GeoJSON LineString), POINT_GEOM (GeoJSON Point - current position), CURR_TIME, POINT_INDEX, COURIER_STATE (en_route, etc.), KMH, CITY
-- ORDERS_ASSIGNED_TO_COURIERS: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUSTOMER_ADDRESS, CITY, ORDER_TIME, ORDER_STATUS
+- DELIVERY_SUMMARY: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION (GEOGRAPHY), CITY, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS (values: 'delivered', 'in_transit', 'picked_up'), ROUTE_DISTANCE_METERS (FLOAT), ROUTE_DURATION_SECS (FLOAT), PREP_TIME_MINS, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE (car/scooter/bicycle), AVERAGE_KMH, MAX_KMH, GEOMETRY (GEOGRAPHY)
+- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DROPOFF_TIME (TIMESTAMP), RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), ROUTE (GEOGRAPHY - route linestring), POINT_GEOM (GEOGRAPHY - current courier position), CURR_TIME (TIMESTAMP), POINT_INDEX, COURIER_STATE (en_route, etc.), KMH, CITY
+- ORDERS_ASSIGNED_TO_COURIERS: COURIER_ID, ORDER_ID, RESTAURANT_ID, RESTAURANT_NAME, RESTAURANT_ADDRESS, CUSTOMER_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), GEOMETRY (GEOGRAPHY), ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS, CITY
+
+IMPORTANT SQL notes for GEOGRAPHY columns:
+- These are Snowflake GEOGRAPHY type, NOT GeoJSON strings. Use them directly with spatial functions.
+- Use ST_DISTANCE(col1, col2) to compute distance between two GEOGRAPHY columns (returns meters).
+- Use ST_DISTANCE(ST_POINT(lon, lat), col) to compute distance from a coordinate to a GEOGRAPHY column.
+- Do NOT use ST_GEOMFROMGEOJSON() on GEOGRAPHY columns — they are already spatial objects.
+- To get lat/lon from GEOGRAPHY: ST_Y(col) for latitude, ST_X(col) for longitude.
+- For restaurant queries (name, cuisine, location), prefer DELIVERY_SUMMARY which has RESTAURANT_NAME and CUISINE_TYPE. COURIER_LOCATIONS does NOT have restaurant names or IDs.
 
 For time-series/trend queries, use DATE_TRUNC or HOUR(ORDER_TIME) to bucket time. For "delivery load over time" queries, count deliveries grouped by time bucket.
 
@@ -720,18 +728,18 @@ app.get('/api/matrix/existing', async (_req, res) => {
     const details: Array<{ table: string; region: string; vehicle_type: string; count: number }> = [];
     try {
       const rows = await snowSql(
-        `SELECT TABLE_NAME, ROW_COUNT FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'DATA' AND TABLE_NAME IN ('CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9')`
+        `SELECT TABLE_NAME, ROW_COUNT FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'DATA' AND TABLE_NAME IN ('CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9', 'CA_TRAVEL_TIME_RES10')`
       );
       for (const row of rows) {
         counts[row.TABLE_NAME] = Number(row.ROW_COUNT || 0);
       }
     } catch {
-      for (const tbl of ['CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9']) {
+      for (const tbl of ['CA_TRAVEL_TIME_RES7', 'CA_TRAVEL_TIME_RES8', 'CA_TRAVEL_TIME_RES9', 'CA_TRAVEL_TIME_RES10']) {
         counts[tbl] = 0;
       }
     }
     try {
-      for (const res_level of [7, 8, 9]) {
+      for (const res_level of [7, 8, 9, 10]) {
         const tbl = `CA_TRAVEL_TIME_RES${res_level}`;
         if ((counts[tbl] || 0) > 0) {
           const breakdown = await snowSql(
@@ -1081,7 +1089,7 @@ app.get('/health', (_req, res) => {
 
 app.delete('/api/matrix/remove', async (req, res) => {
   try {
-    const resolutions = (req.query.resolutions as string || '7,8,9').split(',').map(Number);
+    const resolutions = (req.query.resolutions as string || '7,8,9,10').split(',').map(Number);
     const region = req.query.region as string || '';
     const vehicle_type = req.query.vehicle_type as string || '';
     const results: Record<number, { table: string; rows_before: number; rows_removed: number; status: string }> = {};
@@ -1117,7 +1125,7 @@ app.delete('/api/matrix/remove', async (req, res) => {
 
 app.post('/api/matrix/restore', async (req, res) => {
   try {
-    const { resolutions = [7, 8, 9], offset_minutes = 5 } = req.body;
+    const { resolutions = [7, 8, 9, 10], offset_minutes = 5 } = req.body;
     const results: Record<number, { table: string; rows_restored: number; status: string; sql: string }> = {};
 
     for (const r of resolutions) {

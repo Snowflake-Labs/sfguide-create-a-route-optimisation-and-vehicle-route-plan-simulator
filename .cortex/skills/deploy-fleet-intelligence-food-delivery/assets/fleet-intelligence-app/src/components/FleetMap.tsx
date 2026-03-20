@@ -998,7 +998,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       {mapMode === 'matrix' && (
         <div className="matrix-resolution-selector">
           <span className="matrix-res-label">Resolution</span>
-          {([7, 8, 9] as MatrixResolution[]).map((r) => (
+          {([7, 8, 9, 10] as MatrixResolution[]).map((r) => (
             <button
               key={r}
               className={`matrix-res-btn ${matrixResolution === r ? 'active' : ''}`}

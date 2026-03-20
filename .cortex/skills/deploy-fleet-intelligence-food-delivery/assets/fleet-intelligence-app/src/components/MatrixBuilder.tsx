@@ -22,12 +22,13 @@ interface RegionInfo {
 }
 
 const RES_LABELS: Record<number, string> = {
+  10: 'Block Level (66m)',
   9: 'Last Mile (174m)',
   8: 'Delivery Zone (460m)',
   7: 'Long Range (1.2km)',
 };
 
-const RES_CUTOFFS: Record<number, number> = { 9: 2, 8: 10, 7: 50 };
+const RES_CUTOFFS: Record<number, number> = { 10: 0.5, 9: 2, 8: 10, 7: 50 };
 
 const RATE_PAIRS_PER_SEC = 31500;
 const CREDIT_PER_HOUR_SMALL = 2;
@@ -36,13 +37,14 @@ function estimateHexCount(bounds: RegionInfo['bounds'], res: number): number {
   const latRange = bounds.maxLat - bounds.minLat;
   const lonRange = bounds.maxLon - bounds.minLon;
   const area = latRange * lonRange;
+  if (res === 10) return Math.round(area * 630000);
   if (res === 9) return Math.round(area * 90000);
   if (res === 8) return Math.round(area * 13500);
   return Math.round(area * 2000);
 }
 
 function estimatePairs(hexCount: number, res: number): number {
-  const kRing = res === 7 ? 33 : res === 8 ? 17 : 9;
+  const kRing = res === 7 ? 33 : res === 8 ? 17 : res === 9 ? 9 : 5;
   const avgNeighbors = Math.min(hexCount - 1, kRing * 6);
   return hexCount * avgNeighbors;
 }
@@ -99,7 +101,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
   const [regions, setRegions] = useState<RegionInfo[]>([]);
   const [loadingRegions, setLoadingRegions] = useState(false);
   const [selectedRegion, setSelectedRegion] = useState<string>('');
-  const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([9, 8, 7]));
+  const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([10, 9, 8]));
   const [selectedVehicle, setSelectedVehicle] = useState<string>(DEFAULT_VEHICLE_TYPE);
   const [buildStatus, setBuildStatus] = useState<MatrixBuildStatus[]>([]);
   const [isBuilding, setIsBuilding] = useState(false);
@@ -165,7 +167,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
     setModalView('removing');
     try {
       const regionParam = selectedRegion ? `&region=${selectedRegion}` : '';
-      const resp = await fetch(`/api/matrix/remove?resolutions=7,8,9${regionParam}`, { method: 'DELETE' });
+      const resp = await fetch(`/api/matrix/remove?resolutions=7,8,9,10${regionParam}`, { method: 'DELETE' });
       const data = await resp.json();
       setRemoveResults(data.resolutions || {});
       setModalView('removed');
@@ -182,7 +184,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
       const resp = await fetch('/api/matrix/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resolutions: [7, 8, 9], offset_minutes: restoreMinutes, region: selectedRegion || '' }),
+        body: JSON.stringify({ resolutions: [7, 8, 9, 10], offset_minutes: restoreMinutes, region: selectedRegion || '' }),
       });
       const data = await resp.json();
       setRestoreResults(data.resolutions || {});
@@ -199,7 +201,7 @@ export default function MatrixBuilder({ open, onClose }: Props) {
 
   const hexEstimates = React.useMemo(() => {
     if (!region) return [];
-    return [9, 8, 7].map((res) => {
+    return [10, 9, 8, 7].map((res) => {
       const hexagons = estimateHexCount(region.bounds, res);
       const pairs = estimatePairs(hexagons, res);
       return { res, hexagons, pairs };
@@ -670,16 +672,18 @@ export default function MatrixBuilder({ open, onClose }: Props) {
               <div className="matrix-danger-icon">⚠️</div>
               <div className="matrix-danger-title">Remove {selectedRegion || 'All'} Matrix Data</div>
               <div className="matrix-danger-text">
-                This will remove travel time data{selectedRegion ? ` for ${selectedRegion}` : ''} across all 3 resolutions, removing <strong>{formatNumber(totalExisting)}</strong> rows.
+                This will remove travel time data{selectedRegion ? ` for ${selectedRegion}` : ''} across all 4 resolutions, removing <strong>{formatNumber(totalExisting)}</strong> rows.
                 Rebuild time depends on region size, warehouse config, and ORS instance count.
               </div>
               <div className="matrix-sql-preview">
                 <div className="matrix-sql-label">SQL to be executed:</div>
                 <pre className="matrix-sql-code">{selectedRegion ? `DELETE FROM DATA.CA_TRAVEL_TIME_RES7 WHERE REGION = '${selectedRegion}';
 DELETE FROM DATA.CA_TRAVEL_TIME_RES8 WHERE REGION = '${selectedRegion}';
-DELETE FROM DATA.CA_TRAVEL_TIME_RES9 WHERE REGION = '${selectedRegion}';` : `TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES7;
+DELETE FROM DATA.CA_TRAVEL_TIME_RES9 WHERE REGION = '${selectedRegion}';
+DELETE FROM DATA.CA_TRAVEL_TIME_RES10 WHERE REGION = '${selectedRegion}';` : `TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES7;
 TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES8;
-TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES9;`}</pre>
+TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES9;
+TRUNCATE TABLE DATA.CA_TRAVEL_TIME_RES10;`}</pre>
               </div>
               <div className="matrix-danger-note">
                 You can restore this data using <strong>Snowflake Time Travel</strong> (up to 90 days) — see the Restore option after removal.
@@ -756,13 +760,13 @@ INSERT INTO DATA.CA_TRAVEL_TIME_RES7
   SELECT * FROM DATA.CA_TRAVEL_TIME_RES7
   AT(OFFSET => -${restoreMinutes * 60})
   WHERE REGION = '${selectedRegion}';
--- (repeated for RES8, RES9)` : `-- Snowflake Time Travel: OFFSET => -${restoreMinutes * 60} seconds
+-- (repeated for RES8, RES9, RES10)` : `-- Snowflake Time Travel: OFFSET => -${restoreMinutes * 60} seconds
 -- Restores all travel times from ${restoreMinutes} min ago
 
 INSERT INTO DATA.CA_TRAVEL_TIME_RES7
   SELECT * FROM DATA.CA_TRAVEL_TIME_RES7
   AT(OFFSET => -${restoreMinutes * 60});
--- (repeated for RES8, RES9)`}</pre>
+-- (repeated for RES8, RES9, RES10)`}</pre>
               </div>
               <div className="matrix-danger-note">
                 Time Travel is available for up to <strong>90 days</strong> (default retention). The offset should be set to a time <em>before</em> the TRUNCATE was executed.

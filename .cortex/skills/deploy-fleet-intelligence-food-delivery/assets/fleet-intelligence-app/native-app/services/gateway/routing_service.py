@@ -272,11 +272,105 @@ def get_ors_matrix_response(profile, payload, ors_host=None):
     downstream_url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
     downstream_headers = {"Content-Type": "application/json"}
     logger.info(f'Calling: {downstream_url}')
-    logger.info(f'Payload: {payload}')
-    
-    r = requests.post(url=downstream_url, headers=downstream_headers, json=payload)
-    logger.debug(r.json())
-    return r.json()
+    logger.debug(f'Payload locations count: {len(payload.get("locations", []))}')
+
+    r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=30)
+    result = r.json()
+
+    if 'error' in result and result['error'].get('code') == 6099:
+        logger.warning(f'ORS 6099: unreachable nodes — retrying with chunked destinations')
+        result = _retry_matrix_chunked(profile, payload, downstream_url, downstream_headers)
+
+    return result
+
+
+def _retry_matrix_chunked(profile, payload, url, headers):
+    locations = payload['locations']
+    origin = locations[0]
+    dest_locations = locations[1:]
+    dest_indices_orig = payload.get('destinations', list(range(1, len(locations))))
+
+    CHUNK_SIZE = 50
+    merged_durations = [None] * len(dest_locations)
+    merged_distances = [None] * len(dest_locations)
+    metadata = None
+    sources_info = None
+    dest_info = [None] * len(dest_locations)
+    success_count = 0
+
+    for chunk_start in range(0, len(dest_locations), CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, len(dest_locations))
+        chunk_dests = dest_locations[chunk_start:chunk_end]
+        chunk_locs = [origin] + chunk_dests
+        chunk_payload = {
+            'locations': chunk_locs,
+            'sources': [0],
+            'destinations': list(range(1, len(chunk_locs))),
+            'metrics': ['duration', 'distance']
+        }
+        try:
+            cr = requests.post(url=url, headers=headers, json=chunk_payload, timeout=15)
+            chunk_result = cr.json()
+
+            if 'error' in chunk_result and chunk_result['error'].get('code') == 6099:
+                logger.warning(f'Chunk [{chunk_start}:{chunk_end}] has unreachable nodes, splitting into sub-chunks')
+                SUB_CHUNK = 10
+                for sub_start in range(0, len(chunk_dests), SUB_CHUNK):
+                    sub_end = min(sub_start + SUB_CHUNK, len(chunk_dests))
+                    sub_dests = chunk_dests[sub_start:sub_end]
+                    sub_locs = [origin] + sub_dests
+                    sub_payload = {
+                        'locations': sub_locs,
+                        'sources': [0],
+                        'destinations': list(range(1, len(sub_locs))),
+                        'metrics': ['duration', 'distance']
+                    }
+                    try:
+                        sr = requests.post(url=url, headers=headers, json=sub_payload, timeout=15)
+                        sub_result = sr.json()
+                        if 'durations' in sub_result:
+                            for i in range(len(sub_dests)):
+                                idx = chunk_start + sub_start + i
+                                merged_durations[idx] = sub_result['durations'][0][i]
+                                merged_distances[idx] = sub_result['distances'][0][i]
+                                success_count += 1
+                                if sub_result.get('destinations') and i < len(sub_result['destinations']):
+                                    dest_info[idx] = sub_result['destinations'][i]
+                                if not metadata and sub_result.get('metadata'):
+                                    metadata = sub_result['metadata']
+                                if not sources_info and sub_result.get('sources'):
+                                    sources_info = sub_result['sources']
+                    except Exception:
+                        pass
+                continue
+
+            if 'durations' in chunk_result:
+                for i in range(len(chunk_dests)):
+                    idx = chunk_start + i
+                    merged_durations[idx] = chunk_result['durations'][0][i]
+                    merged_distances[idx] = chunk_result['distances'][0][i]
+                    success_count += 1
+                    if chunk_result.get('destinations') and i < len(chunk_result['destinations']):
+                        dest_info[idx] = chunk_result['destinations'][i]
+                if not metadata and chunk_result.get('metadata'):
+                    metadata = chunk_result['metadata']
+                if not sources_info and chunk_result.get('sources'):
+                    sources_info = chunk_result['sources']
+
+        except Exception as e:
+            logger.error(f'Chunk [{chunk_start}:{chunk_end}] failed: {e}')
+
+    if success_count == 0:
+        return {'error': {'code': 6099, 'message': 'All destinations unreachable after chunked retry'}}
+
+    logger.info(f'Chunked retry: {success_count}/{len(dest_locations)} destinations resolved')
+    return {
+        'durations': [merged_durations],
+        'distances': [merged_distances],
+        'destinations': dest_info,
+        'sources': sources_info or [{'location': origin, 'snapped_distance': 0}],
+        'metadata': metadata or {}
+    }
 
 def get_vroom_response(payload):
     logger.info(payload)

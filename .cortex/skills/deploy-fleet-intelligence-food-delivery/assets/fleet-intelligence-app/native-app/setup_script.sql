@@ -348,7 +348,7 @@ BEGIN
         RETURNS VARIANT
         SERVICE=routing.routing_gateway_service
         ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
+        MAX_BATCH_ROWS = 10
         AS '/matrix_tabular';
     GRANT USAGE ON FUNCTION routing.MATRIX_TABULAR(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
@@ -549,7 +549,7 @@ BEGIN
         RETURNS VARIANT
         SERVICE=routing.routing_gateway_service
         ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
+        MAX_BATCH_ROWS = 10
         AS ''' || city_path || '/matrix_tabular''';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
@@ -873,7 +873,6 @@ GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
 GRANT DELETE ON TABLE data.CA_TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
 
-
 CREATE TABLE IF NOT EXISTS data.CA_TRAVEL_TIME_RES8 (
     ORIGIN_H3 VARCHAR,
     DEST_H3 VARCHAR,
@@ -901,6 +900,19 @@ GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
 GRANT DELETE ON TABLE data.CA_TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
 
+CREATE TABLE IF NOT EXISTS data.CA_TRAVEL_TIME_RES10 (
+    ORIGIN_H3 VARCHAR,
+    DEST_H3 VARCHAR,
+    TRAVEL_TIME_SECONDS FLOAT,
+    TRAVEL_DISTANCE_METERS FLOAT,
+    CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    REGION VARCHAR,
+    VEHICLE_TYPE VARCHAR DEFAULT 'cycling-electric'
+);
+GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES10 TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES10 TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.CA_TRAVEL_TIME_RES10 TO APPLICATION ROLE app_user;
+
 
 -- H3 hexagon tables
 CREATE TABLE IF NOT EXISTS data.CA_H3_RES7 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT);
@@ -914,6 +926,10 @@ GRANT INSERT ON TABLE data.CA_H3_RES8 TO APPLICATION ROLE app_user;
 CREATE TABLE IF NOT EXISTS data.CA_H3_RES9 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT);
 GRANT SELECT ON TABLE data.CA_H3_RES9 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_H3_RES9 TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.CA_H3_RES10 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT);
+GRANT SELECT ON TABLE data.CA_H3_RES10 TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.CA_H3_RES10 TO APPLICATION ROLE app_user;
 
 -- Work queue tables (pre-computed origin + destinations per row, ready for MATRIX_TABULAR)
 CREATE TABLE IF NOT EXISTS data.CA_WORK_QUEUE_RES7 (
@@ -937,6 +953,13 @@ CREATE TABLE IF NOT EXISTS data.CA_WORK_QUEUE_RES9 (
 GRANT SELECT ON TABLE data.CA_WORK_QUEUE_RES9 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_WORK_QUEUE_RES9 TO APPLICATION ROLE app_user;
 
+CREATE TABLE IF NOT EXISTS data.CA_WORK_QUEUE_RES10 (
+    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT,
+    DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY
+);
+GRANT SELECT ON TABLE data.CA_WORK_QUEUE_RES10 TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.CA_WORK_QUEUE_RES10 TO APPLICATION ROLE app_user;
+
 -- Raw staging tables (VARIANT payload from MATRIX_TABULAR — no FLATTEN during ingestion)
 CREATE TABLE IF NOT EXISTS data.CA_MATRIX_RAW_RES7 (
     SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT
@@ -955,6 +978,12 @@ CREATE TABLE IF NOT EXISTS data.CA_MATRIX_RAW_RES9 (
 );
 GRANT SELECT ON TABLE data.CA_MATRIX_RAW_RES9 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_MATRIX_RAW_RES9 TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.CA_MATRIX_RAW_RES10 (
+    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT
+);
+GRANT SELECT ON TABLE data.CA_MATRIX_RAW_RES10 TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.CA_MATRIX_RAW_RES10 TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- DATA: Build Travel Time Matrix — Scalable Architecture
@@ -982,8 +1011,10 @@ BEGIN
         resolution := 7; lat_step := 0.02; lon_step := 0.02;
     ELSEIF (P_RES = 'RES8') THEN
         resolution := 8; lat_step := 0.008; lon_step := 0.008;
-    ELSE
+    ELSEIF (P_RES = 'RES9') THEN
         resolution := 9; lat_step := 0.003; lon_step := 0.003;
+    ELSE
+        resolution := 10; lat_step := 0.001; lon_step := 0.001;
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
@@ -1040,8 +1071,10 @@ BEGIN
         k_ring := 33;
     ELSEIF (P_RES = 'RES8') THEN
         k_ring := 17;
-    ELSE
+    ELSEIF (P_RES = 'RES9') THEN
         k_ring := 9;
+    ELSE
+        k_ring := 5;
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || queue_table;
@@ -1349,7 +1382,8 @@ BEGIN
         ''' || P_VEHICLE_TYPE || '''
     FROM ' || raw_table || ' r,
         LATERAL FLATTEN(input => r.MATRIX_RESULT:durations[0]) f
-    WHERE r.MATRIX_RESULT:durations IS NOT NULL';
+    WHERE r.MATRIX_RESULT:durations IS NOT NULL
+      AND f.value IS NOT NULL';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table || ' WHERE REGION = ''' || P_REGION || ''' AND VEHICLE_TYPE = ''' || P_VEHICLE_TYPE || '''');
     LET c CURSOR FOR rs;
@@ -1464,6 +1498,40 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE data.BUILD_TRAVEL_TIME_MATRIX_RES9() TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE data.BUILD_TRAVEL_TIME_MATRIX_RES10()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    hex_count INTEGER;
+    queue_count INTEGER;
+    raw_count INTEGER;
+    result VARCHAR;
+BEGIN
+    SELECT COUNT(*) INTO hex_count FROM data.CA_H3_RES10;
+    IF (hex_count = 0) THEN
+        CALL data.BUILD_HEXAGONS('RES10', 37.71, 37.81, -122.51, -122.37);
+    END IF;
+    SELECT COUNT(*) INTO hex_count FROM data.CA_H3_RES10;
+
+    SELECT COUNT(*) INTO queue_count FROM data.CA_WORK_QUEUE_RES10;
+    IF (queue_count = 0) THEN
+        CALL data.BUILD_WORK_QUEUE('RES10');
+    END IF;
+    SELECT COUNT(*) INTO queue_count FROM data.CA_WORK_QUEUE_RES10;
+
+    EXECUTE IMMEDIATE 'CALL data.BUILD_TRAVEL_TIME_RANGE(''RES10'', 1, ' || queue_count || ')';
+    CALL data.FLATTEN_MATRIX_RAW('RES10', 'SanFrancisco', 'cycling-electric');
+
+    RETURN 'RES10 complete: ' || hex_count || ' hexagons, ' ||
+           queue_count || ' origins, ' ||
+           (SELECT COUNT(*) FROM data.CA_TRAVEL_TIME_RES10) || ' travel times';
+END;
+$$;
+GRANT USAGE ON PROCEDURE data.BUILD_TRAVEL_TIME_MATRIX_RES10() TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE PROCEDURE data.MATRIX_PROGRESS()
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -1474,8 +1542,9 @@ DECLARE
     r7_hex INTEGER DEFAULT 0; r7_queue INTEGER DEFAULT 0; r7_raw INTEGER DEFAULT 0; r7_flat INTEGER DEFAULT 0;
     r8_hex INTEGER DEFAULT 0; r8_queue INTEGER DEFAULT 0; r8_raw INTEGER DEFAULT 0; r8_flat INTEGER DEFAULT 0;
     r9_hex INTEGER DEFAULT 0; r9_queue INTEGER DEFAULT 0; r9_raw INTEGER DEFAULT 0; r9_flat INTEGER DEFAULT 0;
-    r7_stage VARCHAR; r8_stage VARCHAR; r9_stage VARCHAR;
-    r7_pct FLOAT DEFAULT 0; r8_pct FLOAT DEFAULT 0; r9_pct FLOAT DEFAULT 0;
+    r10_hex INTEGER DEFAULT 0; r10_queue INTEGER DEFAULT 0; r10_raw INTEGER DEFAULT 0; r10_flat INTEGER DEFAULT 0;
+    r7_stage VARCHAR; r8_stage VARCHAR; r9_stage VARCHAR; r10_stage VARCHAR;
+    r7_pct FLOAT DEFAULT 0; r8_pct FLOAT DEFAULT 0; r9_pct FLOAT DEFAULT 0; r10_pct FLOAT DEFAULT 0;
 BEGIN
     SELECT COUNT(*) INTO r7_hex FROM data.CA_H3_RES7;
     SELECT COUNT(*) INTO r7_queue FROM data.CA_WORK_QUEUE_RES7;
@@ -1491,6 +1560,11 @@ BEGIN
     SELECT COUNT(*) INTO r9_queue FROM data.CA_WORK_QUEUE_RES9;
     SELECT COUNT(*) INTO r9_raw FROM data.CA_MATRIX_RAW_RES9;
     SELECT COUNT(*) INTO r9_flat FROM data.CA_TRAVEL_TIME_RES9;
+
+    SELECT COUNT(*) INTO r10_hex FROM data.CA_H3_RES10;
+    SELECT COUNT(*) INTO r10_queue FROM data.CA_WORK_QUEUE_RES10;
+    SELECT COUNT(*) INTO r10_raw FROM data.CA_MATRIX_RAW_RES10;
+    SELECT COUNT(*) INTO r10_flat FROM data.CA_TRAVEL_TIME_RES10;
 
     IF (r7_flat > 0 AND r7_queue > 0 AND r7_raw = r7_queue) THEN r7_stage := 'COMPLETE';
     ELSEIF (r7_raw > 0 AND r7_raw = r7_queue) THEN r7_stage := 'FLATTENING';
@@ -1519,6 +1593,15 @@ BEGIN
     END IF;
     IF (r9_queue > 0) THEN r9_pct := ROUND(r9_raw * 100.0 / r9_queue, 1); END IF;
 
+    IF (r10_flat > 0 AND r10_queue > 0 AND r10_raw = r10_queue) THEN r10_stage := 'COMPLETE';
+    ELSEIF (r10_raw > 0 AND r10_raw = r10_queue) THEN r10_stage := 'FLATTENING';
+    ELSEIF (r10_raw > 0) THEN r10_stage := 'BUILDING';
+    ELSEIF (r10_queue > 0) THEN r10_stage := 'QUEUED';
+    ELSEIF (r10_hex > 0) THEN r10_stage := 'HEXAGONS_READY';
+    ELSE r10_stage := 'NOT_STARTED';
+    END IF;
+    IF (r10_queue > 0) THEN r10_pct := ROUND(r10_raw * 100.0 / r10_queue, 1); END IF;
+
     RETURN OBJECT_CONSTRUCT(
         'RES7', OBJECT_CONSTRUCT(
             'stage', r7_stage, 'hexagons', r7_hex, 'work_queue', r7_queue,
@@ -1528,7 +1611,10 @@ BEGIN
             'raw_ingested', r8_raw, 'flattened', r8_flat, 'pct', r8_pct),
         'RES9', OBJECT_CONSTRUCT(
             'stage', r9_stage, 'hexagons', r9_hex, 'work_queue', r9_queue,
-            'raw_ingested', r9_raw, 'flattened', r9_flat, 'pct', r9_pct)
+            'raw_ingested', r9_raw, 'flattened', r9_flat, 'pct', r9_pct),
+        'RES10', OBJECT_CONSTRUCT(
+            'stage', r10_stage, 'hexagons', r10_hex, 'work_queue', r10_queue,
+            'raw_ingested', r10_raw, 'flattened', r10_flat, 'pct', r10_pct)
     )::VARCHAR;
 END;
 $$;
@@ -1544,15 +1630,19 @@ BEGIN
     TRUNCATE TABLE data.CA_H3_RES7;
     TRUNCATE TABLE data.CA_H3_RES8;
     TRUNCATE TABLE data.CA_H3_RES9;
+    TRUNCATE TABLE data.CA_H3_RES10;
     TRUNCATE TABLE data.CA_WORK_QUEUE_RES7;
     TRUNCATE TABLE data.CA_WORK_QUEUE_RES8;
     TRUNCATE TABLE data.CA_WORK_QUEUE_RES9;
+    TRUNCATE TABLE data.CA_WORK_QUEUE_RES10;
     TRUNCATE TABLE data.CA_MATRIX_RAW_RES7;
     TRUNCATE TABLE data.CA_MATRIX_RAW_RES8;
     TRUNCATE TABLE data.CA_MATRIX_RAW_RES9;
+    TRUNCATE TABLE data.CA_MATRIX_RAW_RES10;
     TRUNCATE TABLE data.CA_TRAVEL_TIME_RES7;
     TRUNCATE TABLE data.CA_TRAVEL_TIME_RES8;
     TRUNCATE TABLE data.CA_TRAVEL_TIME_RES9;
+    TRUNCATE TABLE data.CA_TRAVEL_TIME_RES10;
     RETURN 'All matrix tables reset';
 END;
 $$;

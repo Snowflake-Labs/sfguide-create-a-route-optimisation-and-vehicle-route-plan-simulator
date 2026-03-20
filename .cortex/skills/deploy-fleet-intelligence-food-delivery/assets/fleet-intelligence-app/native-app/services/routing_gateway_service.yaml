@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /fleet_intelligence_setup/public/fleet_intel_repo/routing_reverse_proxy:v0.9.2
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/routing_reverse_proxy:v0.9.4
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000

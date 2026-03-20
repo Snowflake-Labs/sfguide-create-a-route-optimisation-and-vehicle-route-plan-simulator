@@ -108,7 +108,7 @@ export interface TravelTimeHexData {
   max_distance_meters: number;
 }
 
-export type MatrixResolution = 7 | 8 | 9;
+export type MatrixResolution = 7 | 8 | 9 | 10;
 
 export interface VehicleTypeOption {
   label: string;
