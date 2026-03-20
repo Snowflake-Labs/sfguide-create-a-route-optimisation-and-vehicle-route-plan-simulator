@@ -213,7 +213,29 @@ Source files used during deployment:
 |------|-------------|
 | `assets/fleet-intelligence-app/` | React UI + Express server (Dockerfile, src/, server/) |
 | `assets/fleet-intelligence-app/native-app/` | Native app configs (manifest.yml, setup_script.sql, service YAMLs) |
+| `assets/fleet-intelligence-app/native-app/services/gateway/` | Multi-city gateway (fleet-intelligence-specific, NOT shared) |
 | `assets/streamlit/` | Streamlit dashboard (Delivery_Control_Center.py + pages/) |
+
+## Shared ORS Images (from build-routing-solution)
+
+Three of the five Docker images are **identical** to those in the `build-routing-solution` skill
+and should be built from the shared source at `oss-build-routing-solution-in-snowflake/Native_app/services/`
+to reduce maintenance:
+
+| Image | Tag | Source | Shared? |
+|-------|-----|--------|---------|
+| `fleet-intelligence` | v1.16 | `assets/fleet-intelligence-app/` | No — skill-specific |
+| `routing_reverse_proxy` | v0.9.4 | `assets/.../native-app/services/gateway/` | No — multi-city gateway with gunicorn, chunked matrix retry |
+| `openrouteservice` | v9.0.0 | `oss-build-routing-solution.../services/openrouteservice/` | **Yes — identical** |
+| `vroom-docker` | v1.0.1 | `oss-build-routing-solution.../services/vroom/` | **Yes — identical** |
+| `downloader` | v0.0.3 | `oss-build-routing-solution.../services/downloader/` | **Yes — identical** |
+
+The `ors-config.yml` staged file is also identical and should come from `oss-build-routing-solution-in-snowflake/Native_app/provider_setup/staged_files/ors-config.yml`.
+
+> **Why the gateway is different:** Fleet Intelligence uses a multi-city architecture with
+> `/city/<region>/` route prefixes, `resolve_ors_host()` for per-city ORS service discovery,
+> chunked matrix retry for unreachable nodes (error 6099), and gunicorn with 4 workers.
+> The build-routing-solution gateway is single-city with Flask dev server.
 
 ## Output
 

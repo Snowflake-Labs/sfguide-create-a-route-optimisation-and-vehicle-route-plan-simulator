@@ -11,12 +11,46 @@
 
 Ensure `assets/fleet-intelligence-app/Dockerfile` has `ENV PORT=8080` and `EXPOSE 8080`.
 
-## Sub-step 2b: Build Docker Image
+## Sub-step 2b: Build Docker Images
+
+### Fleet Intelligence App (skill-specific)
 
 ```bash
 cd <SKILL_DIR>/assets/fleet-intelligence-app
 docker build --platform linux/amd64 -t fleet-intelligence:v1.2 .
 ```
+
+### Gateway (skill-specific — multi-city version)
+
+```bash
+cd <SKILL_DIR>/assets/fleet-intelligence-app/native-app/services/gateway
+docker build --rm --platform linux/amd64 -t routing_reverse_proxy:v0.9.4 .
+```
+
+### Shared ORS Images (from build-routing-solution skill)
+
+The following 3 images are identical to those in the `build-routing-solution` skill and should be
+built from the shared source at `oss-build-routing-solution-in-snowflake/Native_app/services/`:
+
+```bash
+ORS_SERVICES_DIR="<REPO_ROOT>/oss-build-routing-solution-in-snowflake/Native_app/services"
+
+# openrouteservice — identical to build-routing-solution
+cd "${ORS_SERVICES_DIR}/openrouteservice"
+docker build --rm --platform linux/amd64 -t openrouteservice:v9.0.0 .
+
+# vroom — identical to build-routing-solution
+cd "${ORS_SERVICES_DIR}/vroom"
+docker build --rm --platform linux/amd64 -t vroom-docker:v1.0.1 .
+
+# downloader — identical to build-routing-solution
+cd "${ORS_SERVICES_DIR}/downloader"
+docker build --rm --platform linux/amd64 -t downloader:v0.0.3 .
+```
+
+> **NOTE:** If these images were already built and pushed by the `build-routing-solution` skill
+> to the same Snowflake image repository, you can skip rebuilding them — just tag and push
+> from the existing local images.
 
 ## Sub-step 2c: Create Image Repository
 
@@ -36,17 +70,19 @@ Extract `repository_url`: `<orgname>-<acctname>.registry.snowflakecomputing.com/
 ```bash
 snow spcs image-registry login -c {CONNECTION_NAME}
 
+# Fleet-intelligence-specific images
 docker tag fleet-intelligence:v1.2 {REPO_URL}/fleet-intelligence:v1.2
 docker push {REPO_URL}/fleet-intelligence:v1.2
 
+docker tag routing_reverse_proxy:v0.9.4 {REPO_URL}/routing_reverse_proxy:v0.9.4
+docker push {REPO_URL}/routing_reverse_proxy:v0.9.4
+
+# Shared images (from build-routing-solution source)
 docker tag openrouteservice:v9.0.0 {REPO_URL}/openrouteservice:v9.0.0
 docker push {REPO_URL}/openrouteservice:v9.0.0
 
 docker tag vroom-docker:v1.0.1 {REPO_URL}/vroom-docker:v1.0.1
 docker push {REPO_URL}/vroom-docker:v1.0.1
-
-docker tag routing_reverse_proxy:v0.9.2 {REPO_URL}/routing_reverse_proxy:v0.9.2
-docker push {REPO_URL}/routing_reverse_proxy:v0.9.2
 
 docker tag downloader:v0.0.3 {REPO_URL}/downloader:v0.0.3
 docker push {REPO_URL}/downloader:v0.0.3
