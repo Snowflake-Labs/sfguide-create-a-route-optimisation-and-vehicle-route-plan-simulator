@@ -376,6 +376,70 @@ BEGIN
         AS '/ors_status';
     GRANT USAGE ON FUNCTION routing.ORS_STATUS() TO APPLICATION ROLE app_user;
 
+    CREATE OR REPLACE FUNCTION routing.DIRECTIONS_GEO(method VARCHAR, jstart ARRAY, jend ARRAY)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+        LANGUAGE SQL
+        AS
+        'SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT routing.DIRECTIONS(method, jstart, jend) AS resp)';
+    GRANT USAGE ON FUNCTION routing.DIRECTIONS_GEO(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+    CREATE OR REPLACE FUNCTION routing.DIRECTIONS_GEO(method VARCHAR, locations VARIANT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+        LANGUAGE SQL
+        AS
+        'SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT routing.DIRECTIONS(method, locations) AS resp)';
+    GRANT USAGE ON FUNCTION routing.DIRECTIONS_GEO(VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
+
+    CREATE OR REPLACE FUNCTION routing.ISOCHRONES_GEO(method TEXT, lon FLOAT, lat FLOAT, range INT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+        LANGUAGE SQL
+        AS
+        'SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT routing.ISOCHRONES(method, lon, lat, range) AS resp)';
+    GRANT USAGE ON FUNCTION routing.ISOCHRONES_GEO(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
+
+    CREATE OR REPLACE FUNCTION routing.OPTIMIZATION_GEO(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+        LANGUAGE SQL
+        AS
+        'SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM
+            (SELECT routing.OPTIMIZATION(jobs, vehicles, matrices) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
+    GRANT USAGE ON FUNCTION routing.OPTIMIZATION_GEO(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+    CREATE OR REPLACE FUNCTION routing.OPTIMIZATION_GEO(challenge VARIANT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+        LANGUAGE SQL
+        AS
+        'SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM
+            (SELECT routing.OPTIMIZATION(challenge) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
+    GRANT USAGE ON FUNCTION routing.OPTIMIZATION_GEO(VARIANT) TO APPLICATION ROLE app_user;
+
     RETURN 'Routing functions created';
 END;
 $$;
@@ -489,7 +553,80 @@ BEGIN
         AS ''' || city_path || '/matrix_tabular''';
     EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
-    RETURN 'City routing functions created for region ' || :P_REGION || ' (shared gateway with /city/ prefix)';
+    LET fn_dir_geo VARCHAR := 'DIRECTIONS_GEO_' || UPPER(:P_REGION);
+    LET fn_iso_geo VARCHAR := 'ISOCHRONES_GEO_' || UPPER(:P_REGION);
+    LET fn_opt_geo VARCHAR := 'OPTIMIZATION_GEO_' || UPPER(:P_REGION);
+
+    EXECUTE IMMEDIATE '
+    CREATE OR REPLACE FUNCTION routing.' || fn_dir_geo || '(method VARCHAR, jstart ARRAY, jend ARRAY)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+        LANGUAGE SQL
+        AS
+        ''SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT routing.' || fn_dir || '(method, jstart, jend) AS resp)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir_geo || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
+
+    EXECUTE IMMEDIATE '
+    CREATE OR REPLACE FUNCTION routing.' || fn_dir_geo || '(method VARCHAR, locations VARIANT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+        LANGUAGE SQL
+        AS
+        ''SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT routing.' || fn_dir || '(method, locations) AS resp)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir_geo || '(VARCHAR, VARIANT) TO APPLICATION ROLE app_user';
+
+    EXECUTE IMMEDIATE '
+    CREATE OR REPLACE FUNCTION routing.' || fn_iso_geo || '(method TEXT, lon FLOAT, lat FLOAT, range INT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+        LANGUAGE SQL
+        AS
+        ''SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT routing.ISOCHRONES(method, lon, lat, range) AS resp)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_iso_geo || '(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user';
+
+    EXECUTE IMMEDIATE '
+    CREATE OR REPLACE FUNCTION routing.' || fn_opt_geo || '(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+        LANGUAGE SQL
+        AS
+        ''SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''''type'''', ''''LineString'''', ''''coordinates'''', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM
+            (SELECT routing.OPTIMIZATION(jobs, vehicles, matrices) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_opt_geo || '(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
+
+    EXECUTE IMMEDIATE '
+    CREATE OR REPLACE FUNCTION routing.' || fn_opt_geo || '(challenge VARIANT)
+        RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+        LANGUAGE SQL
+        AS
+        ''SELECT
+            resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''''type'''', ''''LineString'''', ''''coordinates'''', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM
+            (SELECT routing.OPTIMIZATION(challenge) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_opt_geo || '(VARIANT) TO APPLICATION ROLE app_user';
+
+    RETURN 'City routing functions created for region ' || :P_REGION || ' (shared gateway with /city/ prefix, includes _GEO wrappers)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;
