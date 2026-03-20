@@ -437,7 +437,7 @@ BEGIN
         AUTO_RESUME = TRUE
         AUTO_SUSPEND_SECS = 14400;
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G","ORS_ENGINE_PROFILES_CYCLING_ELECTRIC_ENABLED":"true","ORS_ENGINE_PROFILES_DRIVING_CAR_ENABLED":"false","ORS_ENGINE_PROFILES_DRIVING_HGV_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_REGULAR_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_ROAD_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_MOUNTAIN_ENABLED":"false","ORS_ENGINE_PROFILES_FOOT_WALKING_ENABLED":"false","ORS_ENGINE_PROFILES_FOOT_HIKING_ENABLED":"false","ORS_ENGINE_PROFILES_WHEELCHAIR_ENABLED":"false"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS routing.' || svc_name;
     create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
@@ -730,7 +730,7 @@ CREATE TABLE IF NOT EXISTS data.CA_TRAVEL_TIME_RES7 (
     TRAVEL_DISTANCE_METERS FLOAT,
     CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     REGION VARCHAR,
-    VEHICLE_TYPE VARCHAR DEFAULT 'driving-car'
+    VEHICLE_TYPE VARCHAR DEFAULT 'cycling-electric'
 );
 GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
@@ -744,7 +744,7 @@ CREATE TABLE IF NOT EXISTS data.CA_TRAVEL_TIME_RES8 (
     TRAVEL_DISTANCE_METERS FLOAT,
     CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     REGION VARCHAR,
-    VEHICLE_TYPE VARCHAR DEFAULT 'driving-car'
+    VEHICLE_TYPE VARCHAR DEFAULT 'cycling-electric'
 );
 GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES8 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES8 TO APPLICATION ROLE app_user;
@@ -758,7 +758,7 @@ CREATE TABLE IF NOT EXISTS data.CA_TRAVEL_TIME_RES9 (
     TRAVEL_DISTANCE_METERS FLOAT,
     CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     REGION VARCHAR,
-    VEHICLE_TYPE VARCHAR DEFAULT 'driving-car'
+    VEHICLE_TYPE VARCHAR DEFAULT 'cycling-electric'
 );
 GRANT SELECT ON TABLE data.CA_TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
@@ -1004,7 +1004,7 @@ BEGIN
             q.ORIGIN_H3,
             q.DEST_HEX_IDS,
             routing.MATRIX_TABULAR(
-                ''driving-car'',
+                ''cycling-electric'',
                 ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT),
                 q.DEST_COORDS
             )
@@ -1036,7 +1036,7 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE data.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE data.BUILD_TRAVEL_TIME_RANGE_REGION(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_MATRIX_FN VARCHAR, P_VEHICLE_PROFILE VARCHAR DEFAULT 'driving-car')
+CREATE OR REPLACE PROCEDURE data.BUILD_TRAVEL_TIME_RANGE_REGION(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_MATRIX_FN VARCHAR, P_VEHICLE_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1124,7 +1124,7 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE data.BUILD_TRAVEL_TIME_RANGE_REGION(VARCHAR, INTEGER, INTEGER, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE data.BUILD_MATRIX_FOR_REGION(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_VEHICLE_PROFILE VARCHAR DEFAULT 'driving-car')
+CREATE OR REPLACE PROCEDURE data.BUILD_MATRIX_FOR_REGION(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_VEHICLE_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1184,7 +1184,7 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE data.BUILD_MATRIX_FOR_REGION(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE data.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR, P_VEHICLE_TYPE VARCHAR DEFAULT 'driving-car')
+CREATE OR REPLACE PROCEDURE data.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR, P_VEHICLE_TYPE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1250,7 +1250,7 @@ BEGIN
     SELECT COUNT(*) INTO queue_count FROM data.CA_WORK_QUEUE_RES7;
 
     EXECUTE IMMEDIATE 'CALL data.BUILD_TRAVEL_TIME_RANGE(''RES7'', 1, ' || queue_count || ')';
-    CALL data.FLATTEN_MATRIX_RAW('RES7', 'SanFrancisco');
+    CALL data.FLATTEN_MATRIX_RAW('RES7', 'SanFrancisco', 'cycling-electric');
 
     RETURN 'RES7 complete: ' || hex_count || ' hexagons, ' ||
            queue_count || ' origins, ' ||
@@ -1284,7 +1284,7 @@ BEGIN
     SELECT COUNT(*) INTO queue_count FROM data.CA_WORK_QUEUE_RES8;
 
     EXECUTE IMMEDIATE 'CALL data.BUILD_TRAVEL_TIME_RANGE(''RES8'', 1, ' || queue_count || ')';
-    CALL data.FLATTEN_MATRIX_RAW('RES8', 'SanFrancisco');
+    CALL data.FLATTEN_MATRIX_RAW('RES8', 'SanFrancisco', 'cycling-electric');
 
     RETURN 'RES8 complete: ' || hex_count || ' hexagons, ' ||
            queue_count || ' origins, ' ||
@@ -1318,7 +1318,7 @@ BEGIN
     SELECT COUNT(*) INTO queue_count FROM data.CA_WORK_QUEUE_RES9;
 
     EXECUTE IMMEDIATE 'CALL data.BUILD_TRAVEL_TIME_RANGE(''RES9'', 1, ' || queue_count || ')';
-    CALL data.FLATTEN_MATRIX_RAW('RES9', 'SanFrancisco');
+    CALL data.FLATTEN_MATRIX_RAW('RES9', 'SanFrancisco', 'cycling-electric');
 
     RETURN 'RES9 complete: ' || hex_count || ' hexagons, ' ||
            queue_count || ' origins, ' ||

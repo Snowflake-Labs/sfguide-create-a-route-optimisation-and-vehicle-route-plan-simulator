@@ -48,10 +48,9 @@ function getOrsRegion(city: string): string {
 }
 
 const ORS_PROFILE_MAP: Record<string, string> = {
-  'cycling-electric': 'driving-car',
-  'cycling-regular': 'driving-car',
-  'cycling-mountain': 'driving-car',
-  'cycling-road': 'driving-car',
+  'cycling-regular': 'cycling-electric',
+  'cycling-mountain': 'cycling-electric',
+  'cycling-road': 'cycling-electric',
 };
 function mapOrsProfile(profile: string): string {
   return ORS_PROFILE_MAP[profile] || profile;
@@ -925,7 +924,7 @@ app.get('/api/matrix/catchment', async (req, res) => {
 
 app.post('/api/matrix/build', async (req, res) => {
   try {
-    const { region, resolutions, vehicle_type = 'driving-car' } = req.body;
+    const { region, resolutions, vehicle_type = 'cycling-electric' } = req.body;
     if (!region || !resolutions?.length) {
       return res.status(400).json({ error: 'region and resolutions required' });
     }
@@ -937,7 +936,7 @@ app.post('/api/matrix/build', async (req, res) => {
     const bounds = cityEntry[1].bbox;
     const matrixFnName = `MATRIX_${region.toUpperCase()}`;
     const matrixFn = `${SF_DATABASE}.ROUTING.${matrixFnName}`;
-    const vehicleProfile = mapOrsProfile(vehicle_type || 'driving-car');
+    const vehicleProfile = mapOrsProfile(vehicle_type || 'cycling-electric');
 
     const jobId = `${region}_${vehicleProfile}_${Date.now()}`;
     const statuses: Record<number, any> = {};
@@ -1185,10 +1184,10 @@ app.delete('/api/data/clear', async (_req, res) => {
 app.post('/api/data/build', async (req, res) => {
   if (dataBuildState.running) return res.status(409).json({ error: 'Build already in progress' });
 
-  const { cities = ['San Francisco'], num_couriers = 50, num_days = 1, start_date = '2025-01-15', shifts, vehicle_type = 'driving-car' } = req.body;
+  const { cities = ['San Francisco'], num_couriers = 50, num_days = 1, start_date = '2025-01-15', shifts, vehicle_type = 'cycling-electric' } = req.body;
   const DB = SF_DATABASE;
   const cityList = cities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',');
-  const vehicleType = mapOrsProfile(vehicle_type || 'driving-car');
+  const vehicleType = mapOrsProfile(vehicle_type || 'cycling-electric');
 
   dataBuildState.running = true;
   dataBuildState.config = req.body;
@@ -1612,8 +1611,7 @@ async function provisionOrsForRegion(region: string): Promise<void> {
   const DB = SF_DATABASE;
   const regionCfg = ORS_REGION_CONFIG[region];
   if (!regionCfg) throw new Error(`Unknown ORS region: ${region}`);
-  const isSF = region === 'SanFrancisco';
-  const svcName = isSF ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
+  const svcName = `ORS_SERVICE_${region.toUpperCase()}`;
   const stageDir = region;
   const existing = await checkOrsRegionReady(region);
   if (existing.serviceStatus === 'RUNNING' && existing.functionExists) return;
@@ -1684,7 +1682,7 @@ async function provisionOrsForRegion(region: string): Promise<void> {
         instructions: false
         maximum_visited_nodes: 100000000
     profiles:
-      driving-car:
+      cycling-electric:
         enabled: true
   endpoints:
     matrix:
@@ -1695,15 +1693,11 @@ async function provisionOrsForRegion(region: string): Promise<void> {
   }
 
   if (!existing.serviceExists || existing.serviceStatus === 'SUSPENDED') {
-    if (!isSF) {
-      await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_ORS_SERVICE('${region}')`);
-      try {
-        await snowSql(`CALL ${DB}.ROUTING.CREATE_SERVICES()`);
-      } catch (e: any) {
-        console.log('create_services for shared gateway info:', e.message?.slice(0, 200));
-      }
-    } else {
-      await snowSql(`CALL ${DB}.ROUTING.SETUP_ORS()`);
+    await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_ORS_SERVICE('${region}')`);
+    try {
+      await snowSql(`CALL ${DB}.ROUTING.CREATE_SERVICES()`);
+    } catch (e: any) {
+      console.log('create_services for shared gateway info:', e.message?.slice(0, 200));
     }
   }
 
@@ -1720,12 +1714,44 @@ async function provisionOrsForRegion(region: string): Promise<void> {
   }
 
   if (!existing.functionExists) {
-    if (!isSF) {
-      await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_FUNCTIONS('${region}')`);
-    } else {
-      await snowSql(`CALL ${DB}.ROUTING.CREATE_FUNCTIONS()`);
+    await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_FUNCTIONS('${region}')`);
+  }
+
+  await waitForOrsGraphReady(region);
+}
+
+async function waitForOrsGraphReady(region: string, maxAttempts = 60, intervalMs = 15000): Promise<void> {
+  const DB = SF_DATABASE;
+  const fnName = `${DB}.ROUTING.DIRECTIONS_${region.toUpperCase()}`;
+  const regionCfg = ORS_REGION_CONFIG[region];
+  const cities = regionCfg?.cities || [];
+  const cityConfig = cities.length > 0 ? CITY_ORS_MAP[cities[0]] : null;
+  const testLat = cityConfig ? (cityConfig.bbox.minLat + cityConfig.bbox.maxLat) / 2 : 37.76;
+  const testLon = cityConfig ? (cityConfig.bbox.minLon + cityConfig.bbox.maxLon) / 2 : -122.44;
+  const offsetLat = testLat + 0.005;
+  const offsetLon = testLon + 0.005;
+
+  console.log(`Waiting for ORS graph to be ready for ${region} (testing ${fnName})...`);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const rows = await snowSql(
+        `SELECT ${fnName}('cycling-electric', ARRAY_CONSTRUCT(${testLon}, ${testLat}), ARRAY_CONSTRUCT(${offsetLon}, ${offsetLat})) AS RESULT`
+      );
+      const result = rows[0]?.RESULT;
+      if (result && !JSON.stringify(result).includes('"error"')) {
+        console.log(`ORS graph ready for ${region} after ${attempt} attempt(s)`);
+        return;
+      }
+      const errMsg = typeof result === 'string' ? result : JSON.stringify(result);
+      console.log(`ORS graph not ready for ${region} (attempt ${attempt}/${maxAttempts}): ${errMsg?.slice(0, 200)}`);
+    } catch (e: any) {
+      console.log(`ORS graph check failed for ${region} (attempt ${attempt}/${maxAttempts}): ${e.message?.slice(0, 200)}`);
+    }
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, intervalMs));
     }
   }
+  throw new Error(`ORS graph for ${region} did not become ready after ${maxAttempts} attempts (${Math.round(maxAttempts * intervalMs / 60000)} minutes)`);
 }
 
 async function downloadPbfLocally(pbfUrl: string, targetName: string, stageDir: string, db: string): Promise<void> {
@@ -1758,7 +1784,7 @@ app.post('/api/city/:city/provision', async (req, res) => {
   const config = CITY_ORS_MAP[city];
   if (!config) return res.status(404).json({ error: `Unknown city: ${city}` });
   const today = new Date().toISOString().slice(0, 10);
-  const { num_couriers = 50, num_days = 1, start_date = today, shifts, vehicle_type = 'driving-car' } = req.body || {};
+  const { num_couriers = 50, num_days = 1, start_date = today, shifts, vehicle_type = 'cycling-electric' } = req.body || {};
   const region = config.orsRegion;
   if (cityProvisionStates[city]?.status !== 'idle' && cityProvisionStates[city]?.status !== 'error' && cityProvisionStates[city]?.status !== 'complete') {
     return res.status(409).json({ error: 'Provisioning already in progress', state: cityProvisionStates[city] });
@@ -1786,7 +1812,7 @@ app.post('/api/city/:city/provision', async (req, res) => {
 async function runCityDataBuild(city: string, opts: { num_couriers: number; num_days: number; start_date: string; shifts?: any; vehicle_type?: string; orsPromise?: Promise<void> | null }) {
   const DB = SF_DATABASE;
   const { num_couriers, num_days, start_date } = opts;
-  const vehicleType = mapOrsProfile(opts.vehicle_type || 'driving-car');
+  const vehicleType = mapOrsProfile(opts.vehicle_type || 'cycling-electric');
   const cityList = `'${city.replace(/'/g, "''")}'`;
   const routingFn = getDirectionsFn(city);
   const cityConfig = CITY_ORS_MAP[city];
@@ -1897,6 +1923,10 @@ FROM courier_assignments ca LEFT JOIN home_locations hl ON ca.courier_num = hl.r
       updateStep('routes', { status: 'waiting_for_ors', message: 'Waiting for ORS routing service to be ready...', started_at: Date.now() });
       await opts.orsPromise;
     }
+
+    updateStep('routes', { status: 'waiting_for_graph', message: 'Verifying ORS routing graph is loaded...', started_at: Date.now() });
+    const region = getOrsRegion(city);
+    await waitForOrsGraphReady(region);
 
     updateStep('routes', { status: 'running', message: 'Generating routes via OpenRouteService...', started_at: Date.now() });
     try {
@@ -2133,7 +2163,7 @@ app.get('/api/matrix/directions', async (req, res) => {
     const endLon = Number(req.query.end_lon);
     const endLat = Number(req.query.end_lat);
     const city = (req.query.city as string) || 'San Francisco';
-    const profile = mapOrsProfile((req.query.profile as string) || 'driving-car');
+    const profile = mapOrsProfile((req.query.profile as string) || 'cycling-electric');
     if (!startLon || !startLat || !endLon || !endLat) {
       return res.status(400).json({ error: 'start_lon, start_lat, end_lon, end_lat required' });
     }

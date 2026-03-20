@@ -3,6 +3,8 @@ import json
 import time
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime
+import snowflake.permissions as permissions
+
 session = get_active_session()
 app_name = session.sql("SELECT CURRENT_DATABASE()").collect()[0][0]
 
@@ -339,6 +341,116 @@ try:
             <div class="feature-desc">Self-contained routing services</div>
         </div>
         """, unsafe_allow_html=True)
+
+    with st.expander("Permissions & Privileges"):
+        st.markdown(f"""
+        <div style="font-size: 0.85rem; color: {SB_MID_GRAY}; margin-bottom: 1rem;">
+            Grant required privileges for Fleet Intelligence to operate.
+        </div>
+        """, unsafe_allow_html=True)
+
+        all_privs = [
+            "CREATE COMPUTE POOL", "CREATE WAREHOUSE", "BIND SERVICE ENDPOINT",
+            "CREATE DATABASE",
+            "EXECUTE TASK", "EXECUTE MANAGED TASK",
+            "IMPORTED PRIVILEGES ON SNOWFLAKE DB"
+        ]
+        held_privs = permissions.get_held_account_privileges(all_privs)
+        priv_labels = {
+            "CREATE COMPUTE POOL": "Compute Pool",
+            "CREATE WAREHOUSE": "Warehouse",
+            "BIND SERVICE ENDPOINT": "Service Endpoint",
+            "CREATE DATABASE": "Create Database",
+            "EXECUTE TASK": "Execute Task",
+            "EXECUTE MANAGED TASK": "Managed Task",
+            "IMPORTED PRIVILEGES ON SNOWFLAKE DB": "Cortex AI"
+        }
+        rows = [list(priv_labels.items())[i:i+4] for i in range(0, len(priv_labels), 4)]
+        for row in rows:
+            priv_cols = st.columns(4)
+            for i, (priv, label) in enumerate(row):
+                with priv_cols[i]:
+                    if priv in held_privs:
+                        st.success(f"{label}")
+                    else:
+                        st.warning(f"{label}")
+
+        missing_privs = [p for p in all_privs if p not in held_privs]
+        if missing_privs:
+            st.warning(f"{len(missing_privs)} privilege(s) not yet granted.")
+            if st.button("Request All Missing Privileges", type="primary"):
+                permissions.request_account_privileges(missing_privs)
+
+        st.markdown("---")
+
+        st.markdown(f"**Data Source Grants (required for Data Builder)**")
+        st.markdown(f"""
+        <div style="font-size: 0.8rem; color: {SB_MID_GRAY}; margin-bottom: 0.75rem;">
+            The Data Builder needs access to Overture Maps (Marketplace) for restaurant and address data.
+            These must be granted by an ACCOUNTADMIN.
+        </div>
+        """, unsafe_allow_html=True)
+
+        try:
+            grant_row = session.sql("CALL core.check_grants()").collect()
+            grants = json.loads(grant_row[0][0]) if grant_row else {}
+        except Exception:
+            grants = {}
+
+        g_cols = st.columns(2)
+        grant_items = [
+            ("overture_places", "Overture Places", "Restaurant data from Overture Maps"),
+            ("overture_addresses", "Overture Addresses", "Customer address data from Overture Maps"),
+        ]
+        for i, (key, label, desc) in enumerate(grant_items):
+            with g_cols[i]:
+                if grants.get(key, False):
+                    st.success(f"{label}")
+                else:
+                    st.error(f"{label}")
+
+        missing_grants = [item for item in grant_items if not grants.get(item[0], False)]
+        if missing_grants:
+            st.markdown(f"""
+            <div style="background: #FFF3E0; border: 1px solid #FFB74D; border-radius: 8px; padding: 1rem; margin: 0.75rem 0;">
+                <div style="font-weight: 700; color: #E65100; margin-bottom: 0.5rem;">⚠️ Missing Grants — {len(missing_grants)} of {len(grant_items)}</div>
+                <div style="font-size: 0.8rem; color: #BF360C;">
+                    Click the buttons below to grant each missing privilege.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            ref_map = {
+                "overture_places": "overture_places_ref",
+                "overture_addresses": "overture_addresses_ref",
+            }
+            btn_cols = st.columns(len(missing_grants))
+            for i, (key, label, desc) in enumerate(missing_grants):
+                with btn_cols[i]:
+                    ref_name = ref_map.get(key)
+                    if ref_name and st.button(f"Grant {label}", use_container_width=True, type="primary", key=f"grant_{key}"):
+                        permissions.request_reference(ref_name)
+                        time.sleep(1)
+                        st.rerun()
+        else:
+            st.success("All data source grants are in place! The Data Builder is ready to use.")
+
+        st.markdown("---")
+        st.markdown(f"**External Access**")
+        try:
+            eai_associations = permissions.get_reference_associations("external_access_ref")
+            eai_granted = len(eai_associations) > 0
+        except Exception:
+            eai_granted = False
+
+        if eai_granted:
+            st.success("Map Tiles Access")
+        else:
+            st.error("Map Tiles Access")
+            if st.button("Grant Map Tiles Access", use_container_width=True, type="primary"):
+                permissions.request_reference("external_access_ref")
+                time.sleep(1)
+                st.rerun()
 
     with st.expander("Service Status"):
         ui_display = "Running" if ui_status in ("READY", "RUNNING") else ("Starting" if ui_status in ("STARTING", "PENDING") else "Offline")

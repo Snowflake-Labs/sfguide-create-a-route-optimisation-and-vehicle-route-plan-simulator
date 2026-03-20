@@ -29,16 +29,94 @@ CITIES = {
         "longitude": -121.49,
         "zoom": 12,
     },
-    "Stockton": {
-        "name": "Stockton",
-        "latitude": 37.96,
-        "longitude": -121.29,
+    "Fresno": {
+        "name": "Fresno",
+        "latitude": 36.74,
+        "longitude": -119.77,
+        "zoom": 12,
+    },
+    "Oakland": {
+        "name": "Oakland",
+        "latitude": 37.80,
+        "longitude": -122.27,
+        "zoom": 12,
+    },
+    "Long Beach": {
+        "name": "Long Beach",
+        "latitude": 33.77,
+        "longitude": -118.19,
         "zoom": 12,
     },
     "Santa Barbara": {
         "name": "Santa Barbara",
         "latitude": 34.42,
         "longitude": -119.70,
+        "zoom": 13,
+    },
+    "Bakersfield": {
+        "name": "Bakersfield",
+        "latitude": 35.37,
+        "longitude": -119.02,
+        "zoom": 12,
+    },
+    "Anaheim": {
+        "name": "Anaheim",
+        "latitude": 33.84,
+        "longitude": -117.91,
+        "zoom": 12,
+    },
+    "Santa Ana": {
+        "name": "Santa Ana",
+        "latitude": 33.75,
+        "longitude": -117.87,
+        "zoom": 13,
+    },
+    "Irvine": {
+        "name": "Irvine",
+        "latitude": 33.68,
+        "longitude": -117.83,
+        "zoom": 12,
+    },
+    "Riverside": {
+        "name": "Riverside",
+        "latitude": 33.95,
+        "longitude": -117.40,
+        "zoom": 12,
+    },
+    "Stockton": {
+        "name": "Stockton",
+        "latitude": 37.96,
+        "longitude": -121.29,
+        "zoom": 12,
+    },
+    "Modesto": {
+        "name": "Modesto",
+        "latitude": 37.64,
+        "longitude": -120.99,
+        "zoom": 12,
+    },
+    "Pasadena": {
+        "name": "Pasadena",
+        "latitude": 34.15,
+        "longitude": -118.14,
+        "zoom": 13,
+    },
+    "Huntington Beach": {
+        "name": "Huntington Beach",
+        "latitude": 33.66,
+        "longitude": -117.99,
+        "zoom": 13,
+    },
+    "Torrance": {
+        "name": "Torrance",
+        "latitude": 33.84,
+        "longitude": -118.34,
+        "zoom": 13,
+    },
+    "Berkeley": {
+        "name": "Berkeley",
+        "latitude": 37.87,
+        "longitude": -122.27,
         "zoom": 13,
     },
     "New York": {
@@ -53,24 +131,33 @@ CITIES = {
         "longitude": -87.63,
         "zoom": 12,
     },
-    "London": {
-        "name": "London",
-        "latitude": 51.51,
-        "longitude": -0.09,
+    "Austin": {
+        "name": "Austin",
+        "latitude": 30.27,
+        "longitude": -97.74,
         "zoom": 12,
     },
-    "Paris": {
-        "name": "Paris",
-        "latitude": 48.86,
-        "longitude": 2.35,
+    "Seattle": {
+        "name": "Seattle",
+        "latitude": 47.61,
+        "longitude": -122.33,
         "zoom": 12,
     },
-    "Berlin": {
-        "name": "Berlin",
-        "latitude": 52.52,
-        "longitude": 13.40,
-        "zoom": 12,
-    },
+}
+
+CALIFORNIA_CITIES = [
+    "Los Angeles", "San Francisco", "San Diego", "San Jose",
+    "Sacramento", "Fresno", "Oakland", "Long Beach",
+    "Anaheim", "Santa Ana", "Irvine", "Riverside",
+    "Stockton", "Modesto", "Pasadena", "Huntington Beach",
+    "Torrance", "Berkeley", "Santa Barbara", "Bakersfield",
+]
+
+CALIFORNIA_CENTER = {
+    "name": "California",
+    "latitude": 37.27,
+    "longitude": -119.27,
+    "zoom": 6,
 }
 
 COMPANY = {
@@ -80,14 +167,24 @@ COMPANY = {
 
 
 def get_city(name="San Francisco"):
+    """Return city config dict. Falls back to San Francisco if name not found."""
+    if name == "All Cities":
+        return CALIFORNIA_CENTER
     return CITIES.get(name, CITIES["San Francisco"])
 
 
+def get_california_cities():
+    """Return list of California city names for sidebar selectors."""
+    return CALIFORNIA_CITIES
+
+
 def get_company():
+    """Return company branding config."""
     return COMPANY
 
 
 def driver_color(driver_id, alpha=255):
+    """Generate a distinct RGB color for a driver ID using hue rotation."""
     try:
         n = int(driver_id.split("-")[-1])
     except (ValueError, IndexError):

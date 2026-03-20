@@ -23,6 +23,7 @@
 | Data not showing after build | Toggle city selector or reload page |
 | Agent error "Unknown function SNOWFLAKE.CORTEX.COMPLETE" | `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTELLIGENCE_APP` |
 | SPCS not picking up new image | Must use NEW tag and update manifest.yml + service YAML |
+| Consumer app not offered upgrade | Release directives must be set per-channel: `ALTER APPLICATION PACKAGE ... MODIFY RELEASE CHANNEL DEFAULT SET DEFAULT RELEASE DIRECTIVE VERSION=... PATCH=...` — the standard `SET DEFAULT RELEASE DIRECTIVE` (without channel) silently does nothing on packages with release channels |
 | `ADD PATCH` error 093359 | Manifest changes require full new VERSION (not patch) |
 | Max versions error | Deregister old: `ALTER APPLICATION PACKAGE ... DEREGISTER VERSION ...` |
 | Streamlit error 099106 "There is already a live version" | DROP and recreate the Streamlit app entirely. `ALTER ... CHECKOUT LIVE VERSION` does not reliably fix this. |

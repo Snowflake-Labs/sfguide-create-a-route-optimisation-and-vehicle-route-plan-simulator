@@ -115,15 +115,16 @@ export interface VehicleTypeOption {
   value: string;
   description: string;
   icon: string;
+  disabled?: boolean;
 }
 
 export const VEHICLE_TYPES: VehicleTypeOption[] = [
-  { label: 'E-Bike', value: 'cycling-electric', description: 'Electric bicycle (default)', icon: '⚡' },
-  { label: 'Car', value: 'driving-car', description: 'Standard driving profile', icon: '🚗' },
-  { label: 'Bicycle', value: 'cycling-regular', description: 'Regular cycling', icon: '🚲' },
-  { label: 'Road Bike', value: 'cycling-road', description: 'Road cycling', icon: '🚴' },
-  { label: 'HGV', value: 'driving-hgv', description: 'Heavy goods vehicle', icon: '🚛' },
-  { label: 'Walking', value: 'foot-walking', description: 'Walking profile', icon: '🚶' },
+  { label: 'E-Bike', value: 'cycling-electric', description: 'Electric bicycle (default)', icon: '⚡', disabled: false },
+  { label: 'Car', value: 'driving-car', description: 'Standard driving profile', icon: '🚗', disabled: true },
+  { label: 'Bicycle', value: 'cycling-regular', description: 'Regular cycling', icon: '🚲', disabled: true },
+  { label: 'Road Bike', value: 'cycling-road', description: 'Road cycling', icon: '🚴', disabled: true },
+  { label: 'HGV', value: 'driving-hgv', description: 'Heavy goods vehicle', icon: '🚛', disabled: true },
+  { label: 'Walking', value: 'foot-walking', description: 'Walking profile', icon: '🚶', disabled: true },
 ];
 
 export const DEFAULT_VEHICLE_TYPE = 'cycling-electric';

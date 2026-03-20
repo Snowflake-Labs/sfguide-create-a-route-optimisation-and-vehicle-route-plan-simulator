@@ -5,7 +5,7 @@ import altair as alt
 import json
 from snowflake.snowpark.context import get_active_session
 import snowflake.snowpark.functions as F
-from city_config import get_city, get_company, driver_color
+from city_config import get_city, get_company, get_california_cities, driver_color
 
 COMPANY = get_company()
 
@@ -22,11 +22,13 @@ st.logo('logo.svg')
 
 session = get_active_session()
 
-selected_city = 'San Francisco'
+with st.sidebar:
+    selected_city = st.selectbox("City", get_california_cities(), index=0)
+
 CITY = get_city(selected_city)
 
 st.markdown(f'''
-<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> {CITY["name"]} Fleet Intelligence</h0blue><BR>
+<h0orange>{COMPANY["name"]}</h0orange><h0black> |</h0black><h0blue> California Fleet Intelligence</h0blue><BR>
 <h1grey>{COMPANY["tagline"]} - {CITY["name"]} Operations</h1grey>
 ''', unsafe_allow_html=True)
 
@@ -37,8 +39,8 @@ st.markdown(f'<h1sub>{CITY["name"]} Delivery Overview</h1sub>', unsafe_allow_htm
 col1, col2, col3, col4, col5 = st.columns(5)
 
 try:
-    city_orders = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS').filter(F.col('CITY') == selected_city)
-    city_summary = session.table('FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
+    city_orders = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_ASSIGNED_TO_COURIERS').filter(F.col('CITY') == selected_city)
+    city_summary = session.table('OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY').filter(F.col('CITY') == selected_city)
 
     orders_count = city_orders.count()
     couriers_count = city_orders.select('COURIER_ID').distinct().count()
@@ -68,6 +70,55 @@ except Exception as e:
 
 st.divider()
 
+st.markdown(f'<h1sub>California Overview — All Cities</h1sub>', unsafe_allow_html=True)
+
+try:
+    all_city_stats = session.sql("""
+        SELECT
+            CITY,
+            COUNT(*) AS ORDERS,
+            COUNT(DISTINCT COURIER_ID) AS COURIERS,
+            COUNT(DISTINCT RESTAURANT_ID) AS RESTAURANTS,
+            ROUND(SUM(ROUTE_DISTANCE_METERS)/1000, 0) AS TOTAL_KM,
+            ROUND(AVG(ROUTE_DURATION_SECS)/60, 1) AS AVG_MINS
+        FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+        GROUP BY CITY
+        ORDER BY ORDERS DESC
+    """).to_pandas()
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        chart_orders = alt.Chart(all_city_stats).mark_bar().encode(
+            x=alt.X('ORDERS:Q', title='Orders'),
+            y=alt.Y('CITY:N', sort='-x', title=''),
+            color=alt.condition(
+                alt.datum.CITY == selected_city,
+                alt.value('#FF6B35'),
+                alt.value('#FFB899')
+            ),
+            tooltip=['CITY', 'ORDERS', 'COURIERS', 'RESTAURANTS', 'AVG_MINS']
+        ).properties(title='Orders by City', height=300)
+        st.altair_chart(chart_orders, use_container_width=True)
+
+    with col2:
+        chart_km = alt.Chart(all_city_stats).mark_bar().encode(
+            x=alt.X('TOTAL_KM:Q', title='Total Distance (km)'),
+            y=alt.Y('CITY:N', sort='-x', title=''),
+            color=alt.condition(
+                alt.datum.CITY == selected_city,
+                alt.value('#29B5E8'),
+                alt.value('#96D5EF')
+            ),
+            tooltip=['CITY', 'TOTAL_KM', 'AVG_MINS', 'COURIERS']
+        ).properties(title='Distance by City', height=300)
+        st.altair_chart(chart_km, use_container_width=True)
+
+except Exception as e:
+    st.error(f"Error loading city stats: {e}")
+
+st.divider()
+
 st.markdown(f'<h1sub>{CITY["name"]} Live Delivery Routes</h1sub>', unsafe_allow_html=True)
 
 try:
@@ -75,7 +126,7 @@ try:
     def get_city_couriers(city):
         return session.sql(f"""
             SELECT DISTINCT COURIER_ID
-            FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+            FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
             WHERE CITY = '{city}'
             ORDER BY COURIER_ID
         """).to_pandas()['COURIER_ID'].tolist()
@@ -100,7 +151,7 @@ try:
             ROUTE_DISTANCE_METERS/1000 AS DISTANCE_KM,
             ROUTE_DURATION_SECS/60 AS ETA_MINS,
             ORDER_STATUS
-        FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+        FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
         WHERE CITY = '{selected_city}'
           {courier_filter}
         LIMIT 200
@@ -211,7 +262,7 @@ try:
             ROUND(SUM(ROUTE_DISTANCE_METERS)/1000, 1) AS TOTAL_KM,
             ROUND(AVG(ROUTE_DURATION_SECS)/60, 1) AS AVG_DELIVERY_MINS,
             ROUND(SUM(ROUTE_DURATION_SECS)/3600, 1) AS TOTAL_HOURS
-        FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+        FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
         WHERE CITY = '{selected_city}'
         GROUP BY COURIER_ID
         ORDER BY DELIVERIES DESC
@@ -257,7 +308,7 @@ try:
             COUNT(*) AS ORDERS,
             ROUND(SUM(ROUTE_DISTANCE_METERS)/1000, 0) AS TOTAL_KM,
             ROUND(AVG(ROUTE_DURATION_SECS)/60, 1) AS AVG_DELIVERY_MINS
-        FROM FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
+        FROM OPENROUTESERVICE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY
         WHERE CITY = '{selected_city}'
         GROUP BY HOUR(ORDER_TIME)
         ORDER BY HOUR
@@ -301,12 +352,11 @@ Use the sidebar to access different views:
 
 - **Courier Routes** - Track individual courier deliveries with route visualization and AI insights
 - **Delivery Heat Map** - View delivery density and restaurant hotspots across the city
-- **Travel Time Matrix** - Explore pre-computed H3 hexagon travel times
 
 ### Data Sources
 
-- **Overture Maps Places** - {CITY["name"]} restaurant locations
-- **Overture Maps Addresses** - {CITY["name"]} delivery addresses
+- **Overture Maps Places** - 160K+ California restaurant locations
+- **Overture Maps Addresses** - 13.6M California delivery addresses
 - **OpenRouteService** - Real-time routing for optimal delivery paths
 ''', unsafe_allow_html=True)
 

@@ -350,8 +350,9 @@ export default function DataBuilder({ open, onClose, initialCity, onDataBuilt }:
                       <button
                         key={vt.value}
                         className={`matrix-region-card ${vehicleType === vt.value ? 'active' : ''}`}
-                        onClick={() => setVehicleType(vt.value)}
-                        style={{ padding: '8px 10px', minHeight: 0 }}
+                        onClick={() => !vt.disabled && setVehicleType(vt.value)}
+                        disabled={vt.disabled}
+                        style={{ padding: '8px 10px', minHeight: 0, opacity: vt.disabled ? 0.4 : 1, cursor: vt.disabled ? 'not-allowed' : 'pointer' }}
                       >
                         <div className="matrix-region-name" style={{ fontSize: 13 }}>
                           <span style={{ marginRight: 4 }}>{vt.icon}</span>
