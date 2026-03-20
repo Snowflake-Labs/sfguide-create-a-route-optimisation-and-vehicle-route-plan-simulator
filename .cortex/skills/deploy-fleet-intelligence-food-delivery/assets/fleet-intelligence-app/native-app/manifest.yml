@@ -5,7 +5,7 @@ artifacts:
   readme: README.md
   container_services:
     images:
-      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.11
+      - /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.16
       - /fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0
       - /fleet_intelligence_setup/public/fleet_intel_repo/vroom-docker:v1.0.1
       - /fleet_intelligence_setup/public/fleet_intel_repo/routing_reverse_proxy:v0.9.4

@@ -30,7 +30,7 @@ const RES_LABELS: Record<number, string> = {
 
 const RES_CUTOFFS: Record<number, number> = { 10: 0.5, 9: 2, 8: 10, 7: 50 };
 
-const RATE_PAIRS_PER_SEC = 31500;
+const RATE_PAIRS_PER_SEC = 300;
 const CREDIT_PER_HOUR_SMALL = 2;
 
 function estimateHexCount(bounds: RegionInfo['bounds'], res: number): number {

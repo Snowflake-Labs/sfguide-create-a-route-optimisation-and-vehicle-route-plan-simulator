@@ -30,21 +30,27 @@ const CONN = process.env.SNOWFLAKE_CONNECTION_NAME || 'FREE_TRIAL';
 const SNOWFLAKE_HOST = process.env.SNOWFLAKE_HOST || '';
 
 const CITY_ORS_MAP: Record<string, any> = {
-  'London': { cityKey: 'LONDON', pbfUrl: 'https://download.bbbike.org/osm/bbbike/London/London.osm.pbf', pbfFilename: 'London.osm.pbf', orsRegion: 'London', country: 'GB', state: '', bbox: { minLat: 51.28, maxLat: 51.69, minLon: -0.51, maxLon: 0.33 } },
-  'Paris': { cityKey: 'PARIS', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf', pbfFilename: 'Paris.osm.pbf', orsRegion: 'Paris', country: 'FR', state: '', bbox: { minLat: 48.81, maxLat: 48.90, minLon: 2.22, maxLon: 2.47 } },
-  'Berlin': { cityKey: 'BERLIN', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf', pbfFilename: 'Berlin.osm.pbf', orsRegion: 'Berlin', country: 'DE', state: 'BE', bbox: { minLat: 52.34, maxLat: 52.68, minLon: 13.09, maxLon: 13.76 } },
-  'New York': { cityKey: 'NEW_YORK', pbfUrl: 'https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf', pbfFilename: 'NewYork.osm.pbf', orsRegion: 'NewYork', country: 'US', state: 'NY', bbox: { minLat: 40.49, maxLat: 40.92, minLon: -74.26, maxLon: -73.70 } },
-  'Chicago': { cityKey: 'CHICAGO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf', pbfFilename: 'Chicago.osm.pbf', orsRegion: 'Chicago', country: 'US', state: 'IL', bbox: { minLat: 41.64, maxLat: 42.02, minLon: -87.94, maxLon: -87.52 } },
-  'Los Angeles': { cityKey: 'LOS_ANGELES', pbfUrl: 'https://download.bbbike.org/osm/bbbike/LosAngeles/LosAngeles.osm.pbf', pbfFilename: 'LosAngeles.osm.pbf', orsRegion: 'LosAngeles', country: 'US', state: 'CA', bbox: { minLat: 33.70, maxLat: 34.34, minLon: -118.67, maxLon: -117.65 } },
-  'San Francisco': { cityKey: 'SAN_FRANCISCO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf', pbfFilename: 'SanFrancisco.osm.pbf', orsRegion: 'SanFrancisco', country: 'US', state: 'CA', bbox: { minLat: 37.71, maxLat: 37.81, minLon: -122.51, maxLon: -122.37 } },
-  'San Jose': { cityKey: 'SAN_JOSE', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanJose/SanJose.osm.pbf', pbfFilename: 'SanJose.osm.pbf', orsRegion: 'SanJose', country: 'US', state: 'CA', bbox: { minLat: 37.12, maxLat: 37.47, minLon: -122.05, maxLon: -121.72 } },
-  'Sacramento': { cityKey: 'SACRAMENTO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Sacramento/Sacramento.osm.pbf', pbfFilename: 'Sacramento.osm.pbf', orsRegion: 'Sacramento', country: 'US', state: 'CA', bbox: { minLat: 38.43, maxLat: 38.70, minLon: -121.56, maxLon: -121.35 } },
-  'Santa Barbara': { cityKey: 'SANTA_BARBARA', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SantaBarbara/SantaBarbara.osm.pbf', pbfFilename: 'SantaBarbara.osm.pbf', orsRegion: 'SantaBarbara', country: 'US', state: 'CA', bbox: { minLat: 34.38, maxLat: 34.46, minLon: -119.78, maxLon: -119.63 } },
-  'Stockton': { cityKey: 'STOCKTON', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Stockton/Stockton.osm.pbf', pbfFilename: 'Stockton.osm.pbf', orsRegion: 'Stockton', country: 'US', state: 'CA', bbox: { minLat: 37.90, maxLat: 38.05, minLon: -121.38, maxLon: -121.20 } },
+  'London': { cityKey: 'LONDON', pbfUrl: 'https://download.bbbike.org/osm/bbbike/London/London.osm.pbf', pbfFilename: 'London.osm.pbf', orsRegion: 'London', country: 'GB', state: '', bbox: { minLat: 51.28, maxLat: 51.69, minLon: -0.51, maxLon: 0.33 }, geohash3: ['gcp', 'u10'] },
+  'Paris': { cityKey: 'PARIS', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf', pbfFilename: 'Paris.osm.pbf', orsRegion: 'Paris', country: 'FR', state: '', bbox: { minLat: 48.81, maxLat: 48.90, minLon: 2.22, maxLon: 2.47 }, geohash3: ['u09'] },
+  'Berlin': { cityKey: 'BERLIN', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf', pbfFilename: 'Berlin.osm.pbf', orsRegion: 'Berlin', country: 'DE', state: 'BE', bbox: { minLat: 52.34, maxLat: 52.68, minLon: 13.09, maxLon: 13.76 }, geohash3: ['u33'] },
+  'New York': { cityKey: 'NEW_YORK', pbfUrl: 'https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf', pbfFilename: 'NewYork.osm.pbf', orsRegion: 'NewYork', country: 'US', state: 'NY', bbox: { minLat: 40.49, maxLat: 40.92, minLon: -74.26, maxLon: -73.70 }, geohash3: ['dr5', 'dr7'] },
+  'Chicago': { cityKey: 'CHICAGO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf', pbfFilename: 'Chicago.osm.pbf', orsRegion: 'Chicago', country: 'US', state: 'IL', bbox: { minLat: 41.64, maxLat: 42.02, minLon: -87.94, maxLon: -87.52 }, geohash3: ['dp3'] },
+  'Los Angeles': { cityKey: 'LOS_ANGELES', pbfUrl: 'https://download.bbbike.org/osm/bbbike/LosAngeles/LosAngeles.osm.pbf', pbfFilename: 'LosAngeles.osm.pbf', orsRegion: 'LosAngeles', country: 'US', state: 'CA', bbox: { minLat: 33.70, maxLat: 34.34, minLon: -118.67, maxLon: -117.65 }, geohash3: ['9mg', '9q5', '9qh'] },
+  'San Francisco': { cityKey: 'SAN_FRANCISCO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf', pbfFilename: 'SanFrancisco.osm.pbf', orsRegion: 'SanFrancisco', country: 'US', state: 'CA', bbox: { minLat: 37.71, maxLat: 37.81, minLon: -122.51, maxLon: -122.37 }, geohash3: ['9q8'] },
+  'San Jose': { cityKey: 'SAN_JOSE', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanJose/SanJose.osm.pbf', pbfFilename: 'SanJose.osm.pbf', orsRegion: 'SanJose', country: 'US', state: 'CA', bbox: { minLat: 37.12, maxLat: 37.47, minLon: -122.05, maxLon: -121.72 }, geohash3: ['9q9'] },
+  'Sacramento': { cityKey: 'SACRAMENTO', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Sacramento/Sacramento.osm.pbf', pbfFilename: 'Sacramento.osm.pbf', orsRegion: 'Sacramento', country: 'US', state: 'CA', bbox: { minLat: 38.43, maxLat: 38.70, minLon: -121.56, maxLon: -121.35 }, geohash3: ['9qc'] },
+  'Santa Barbara': { cityKey: 'SANTA_BARBARA', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SantaBarbara/SantaBarbara.osm.pbf', pbfFilename: 'SantaBarbara.osm.pbf', orsRegion: 'SantaBarbara', country: 'US', state: 'CA', bbox: { minLat: 34.38, maxLat: 34.46, minLon: -119.78, maxLon: -119.63 }, geohash3: ['9q4'] },
+  'Stockton': { cityKey: 'STOCKTON', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Stockton/Stockton.osm.pbf', pbfFilename: 'Stockton.osm.pbf', orsRegion: 'Stockton', country: 'US', state: 'CA', bbox: { minLat: 37.90, maxLat: 38.05, minLon: -121.38, maxLon: -121.20 }, geohash3: ['9q9', '9qc'] },
 };
 
 function getOrsRegion(city: string): string {
   return CITY_ORS_MAP[city]?.orsRegion || 'SanFrancisco';
+}
+
+function getGeohashFilter(city: string): string {
+  const prefixes = CITY_ORS_MAP[city]?.geohash3 || ['9q8'];
+  if (prefixes.length === 1) return `ST_GEOHASH(GEOMETRY) LIKE '${prefixes[0]}%'`;
+  return '(' + prefixes.map((p: string) => `ST_GEOHASH(GEOMETRY) LIKE '${p}%'`).join(' OR ') + ')';
 }
 
 const ORS_PROFILE_MAP: Record<string, string> = {
@@ -74,7 +80,7 @@ function stripAnsi(str: string): string {
   return str.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '').replace(/\[[\d;]*m/g, '');
 }
 
-function cortexCompleteLocal(prompt: string, model: string = 'claude-3-5-sonnet'): string {
+function cortexCompleteLocal(prompt: string, model: string = 'claude-4-sonnet'): string {
   const tmpFile = join(tmpdir(), `cortex_prompt_${Date.now()}.txt`);
   writeFileSync(tmpFile, prompt);
   try {
@@ -86,7 +92,7 @@ function cortexCompleteLocal(prompt: string, model: string = 'claude-3-5-sonnet'
   }
 }
 
-function cortexCompleteLocalFile(messages: any[], model: string = 'claude-3-5-sonnet'): string {
+function cortexCompleteLocalFile(messages: any[], model: string = 'claude-4-sonnet'): string {
   const tmpFile = join(tmpdir(), `cortex_messages_${Date.now()}.json`);
   writeFileSync(tmpFile, JSON.stringify({ messages }));
   try {
@@ -248,6 +254,95 @@ GROUP BY DT ORDER BY DT`;
     const rows = await snowSql(sql);
     res.json(rows.map((r: any) => ({ date: r.DT, count: Number(r.CNT || 0) })));
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/routes/hours', async (req, res) => {
+  try {
+    const city = req.query.city as string || 'San Francisco';
+    const dateFilter = req.query.date as string || '';
+    const conditions: string[] = [];
+    if (city !== 'All Cities') conditions.push(`CITY = '${city.replace(/'/g, "''")}'`);
+    if (dateFilter) conditions.push(`TO_VARCHAR(CURR_TIME::DATE, 'YYYY-MM-DD') = '${dateFilter.replace(/'/g, "''")}'`);
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT HOUR(CURR_TIME) AS HR, COUNT(DISTINCT ORDER_ID) AS ACTIVE_ORDERS
+FROM ${SF_DATABASE}.${SF_SCHEMA}.COURIER_LOCATIONS
+${whereClause}
+AND COURIER_STATE IN ('en_route','picking_up','arriving')
+GROUP BY HR ORDER BY HR`;
+    const rows = await snowSql(sql);
+    res.json(rows.map((r: any) => ({ hour: Number(r.HR), activeOrders: Number(r.ACTIVE_ORDERS || 0) })));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/routes/courier-positions', async (req, res) => {
+  try {
+    const city = req.query.city as string || 'San Francisco';
+    const dateFilter = req.query.date as string || '';
+    const hourFilter = req.query.hour as string || '';
+    const conditions: string[] = [];
+    if (city !== 'All Cities') conditions.push(`cl.CITY = '${city.replace(/'/g, "''")}'`);
+    if (dateFilter) conditions.push(`TO_VARCHAR(cl.CURR_TIME::DATE, 'YYYY-MM-DD') = '${dateFilter.replace(/'/g, "''")}'`);
+
+    let hourCondition = '';
+    if (hourFilter !== '') {
+      const hr = parseInt(hourFilter, 10);
+      if (dateFilter) {
+        hourCondition = `AND cl.CURR_TIME >= '${dateFilter} ${String(hr).padStart(2,'0')}:00:00' AND cl.CURR_TIME < '${dateFilter} ${String(hr).padStart(2,'0')}:59:59'`;
+      } else {
+        hourCondition = `AND HOUR(cl.CURR_TIME) = ${hr}`;
+      }
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')} ${hourCondition}` : (hourCondition ? `WHERE 1=1 ${hourCondition}` : '');
+
+    const sql = `WITH ranked AS (
+  SELECT
+    cl.COURIER_ID, cl.ORDER_ID, cl.COURIER_STATE, cl.KMH, cl.CURR_TIME, cl.POINT_INDEX,
+    ST_Y(cl.POINT_GEOM) AS LAT, ST_X(cl.POINT_GEOM) AS LON,
+    ST_Y(cl.CUSTOMER_LOCATION) AS DEST_LAT, ST_X(cl.CUSTOMER_LOCATION) AS DEST_LON,
+    cl.DROPOFF_TIME,
+    DATEDIFF('second', cl.CURR_TIME, cl.DROPOFF_TIME) AS ETA_SECS,
+    ds.RESTAURANT_NAME, ds.CUSTOMER_ADDRESS,
+    ROW_NUMBER() OVER (PARTITION BY cl.ORDER_ID ORDER BY cl.POINT_INDEX DESC) AS rn
+  FROM ${SF_DATABASE}.${SF_SCHEMA}.COURIER_LOCATIONS cl
+  LEFT JOIN ${SF_DATABASE}.${SF_SCHEMA}.DELIVERY_SUMMARY ds ON cl.ORDER_ID = ds.ORDER_ID
+  ${whereClause}
+  AND ds.ORDER_STATUS IN ('in_transit','picked_up')
+  AND cl.COURIER_STATE IN ('en_route','picking_up','arriving')
+)
+SELECT COURIER_ID, ORDER_ID, COURIER_STATE, KMH, CURR_TIME, POINT_INDEX,
+  LAT, LON, DEST_LAT, DEST_LON, DROPOFF_TIME,
+  GREATEST(ETA_SECS, 0) AS ETA_SECS,
+  ROUND(GREATEST(ETA_SECS, 0) / 60.0, 1) AS ETA_MINS,
+  RESTAURANT_NAME, CUSTOMER_ADDRESS
+FROM ranked WHERE rn = 1
+ORDER BY COURIER_ID`;
+
+    console.log(`Fetching courier positions for ${city} date=${dateFilter} hour=${hourFilter}`);
+    const rows = await snowSql(sql);
+    console.log(`Got ${rows.length} courier positions`);
+    res.json(rows.map((r: any) => ({
+      courier_id: r.COURIER_ID,
+      order_id: r.ORDER_ID,
+      state: r.COURIER_STATE,
+      kmh: Number(r.KMH || 0),
+      lat: Number(r.LAT),
+      lon: Number(r.LON),
+      dest_lat: Number(r.DEST_LAT),
+      dest_lon: Number(r.DEST_LON),
+      eta_secs: Number(r.ETA_SECS || 0),
+      eta_mins: Number(r.ETA_MINS || 0),
+      restaurant_name: r.RESTAURANT_NAME || '',
+      customer_address: r.CUSTOMER_ADDRESS || '',
+      time: r.CURR_TIME,
+      point_index: Number(r.POINT_INDEX || 0),
+    })));
+  } catch (err: any) {
+    console.error('Courier positions error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -436,7 +531,7 @@ app.post('/api/agent', async (req, res) => {
 
 Available tables in ${SF_DATABASE}.${SF_SCHEMA}:
 - DELIVERY_SUMMARY: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION (GEOGRAPHY), CITY, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS (values: 'delivered', 'in_transit', 'picked_up'), ROUTE_DISTANCE_METERS (FLOAT), ROUTE_DURATION_SECS (FLOAT), PREP_TIME_MINS, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE (car/scooter/bicycle), AVERAGE_KMH, MAX_KMH, GEOMETRY (GEOGRAPHY)
-- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DROPOFF_TIME (TIMESTAMP), RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), ROUTE (GEOGRAPHY - route linestring), POINT_GEOM (GEOGRAPHY - current courier position), CURR_TIME (TIMESTAMP), POINT_INDEX, COURIER_STATE (en_route, etc.), KMH, CITY
+- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DROPOFF_TIME (TIMESTAMP), RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), ROUTE (GEOGRAPHY - route linestring), POINT_GEOM (GEOGRAPHY - current courier position), CURR_TIME (TIMESTAMP), POINT_INDEX, COURIER_STATE (values: 'at_restaurant', 'picking_up', 'en_route', 'arriving', 'delivered' — NOT the same as ORDER_STATUS), KMH, CITY
 - ORDERS_ASSIGNED_TO_COURIERS: COURIER_ID, ORDER_ID, RESTAURANT_ID, RESTAURANT_NAME, RESTAURANT_ADDRESS, CUSTOMER_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), GEOMETRY (GEOGRAPHY), ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS, CITY
 
 IMPORTANT SQL notes for GEOGRAPHY columns:
@@ -449,7 +544,15 @@ IMPORTANT SQL notes for GEOGRAPHY columns:
 
 For time-series/trend queries, use DATE_TRUNC or HOUR(ORDER_TIME) to bucket time. For "delivery load over time" queries, count deliveries grouped by time bucket.
 
-IMPORTANT: ORDER_STATUS can be 'delivered', 'in_transit', or 'picked_up'. Active/pending orders are those NOT 'delivered'. When the user asks about active, in-progress, pending, or not-yet-delivered orders, filter with ORDER_STATUS != 'delivered'.
+IMPORTANT: ORDER_STATUS (in DELIVERY_SUMMARY) can be 'delivered', 'in_transit', or 'picked_up'. Active/pending orders are those NOT 'delivered'. When the user asks about active, in-progress, pending, in-transit, or not-yet-delivered orders, use DELIVERY_SUMMARY.ORDER_STATUS (e.g. ORDER_STATUS = 'in_transit' or ORDER_STATUS != 'delivered').
+WARNING: Do NOT confuse ORDER_STATUS with COURIER_STATE. They are different columns in different tables with different values. COURIER_STATE in COURIER_LOCATIONS has values: 'at_restaurant','picking_up','en_route','arriving','delivered'. ORDER_STATUS in DELIVERY_SUMMARY has values: 'delivered','in_transit','picked_up'. There is NO 'in_transit' value in COURIER_STATE. For questions about order counts, status, restaurants, use DELIVERY_SUMMARY.
+
+For courier position/ETA queries, use COURIER_LOCATIONS table. Each delivery has 15 position snapshots (POINT_INDEX 0-14): 0=at_restaurant, 1=picking_up, 2-12=en_route (positions along route), 13=arriving, 14=delivered. CURR_TIME is the timestamp at each position. To find where a courier currently is or their ETA:
+- Filter COURIER_STATE IN ('en_route','picking_up','arriving') for active couriers
+- ETA = DATEDIFF('second', CURR_TIME, DROPOFF_TIME) gives seconds until delivery
+- To find courier position at a specific hour: filter HOUR(CURR_TIME) = <hour> and take the latest POINT_INDEX per ORDER_ID
+- To join with restaurant/customer names, join to DELIVERY_SUMMARY on ORDER_ID
+- KMH column gives the courier's speed at each snapshot point
 
 You can also emit map_action commands to control the dashboard map. If the user asks to show active/in-transit orders on the map, or to filter the map, include a "map_action" field:
 - {"sql": "...", "explanation": "...", "map_action": {"filter": "active"}} — show only active (non-delivered) routes on map
@@ -465,9 +568,11 @@ Keep queries efficient and concise. Use fully qualified table names. IMPORTANT: 
 
     if (IS_SPCS) {
       try {
-        const escapedSystem = systemPrompt.replace(/'/g, "\\'");
-        const escapedUser = userQuestion.replace(/'/g, "\\'");
-        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', [{'role':'system','content':'${escapedSystem}'},{'role':'user','content':'${escapedUser}'}], {'max_tokens':2048}) as RESPONSE`;
+        const messagesJson = JSON.stringify([
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userQuestion }
+        ]);
+        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', PARSE_JSON($$${messagesJson}$$), {'max_tokens':2048}) as RESPONSE`;
         console.log('Calling CORTEX.COMPLETE via SQL for SQL gen...');
         const rows = await snowSqlSpcs(cortexSql);
         console.log('CORTEX.COMPLETE SQL gen returned rows:', rows.length);
@@ -515,7 +620,7 @@ Keep queries efficient and concise. Use fully qualified table names. IMPORTANT: 
       const result = cortexCompleteLocalFile([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userQuestion },
-      ], 'claude-3-5-sonnet');
+      ], 'claude-4-sonnet');
       try {
         const jsonMatch = result.match(/\{[\s\S]*"sql"[\s\S]*\}/);
         if (jsonMatch) {
@@ -609,9 +714,11 @@ Rules for charts:
 
     if (IS_SPCS) {
       try {
-        const escapedSys = responsePrompt.replace(/'/g, "\\'");
-        const userContent = `${userQuestion}${dataContext}`.replace(/'/g, "\\'");
-        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', [{'role':'system','content':'${escapedSys}'},{'role':'user','content':'${userContent}'}], {'max_tokens':2048}) as RESPONSE`;
+        const respMessagesJson = JSON.stringify([
+          { role: 'system', content: responsePrompt },
+          { role: 'user', content: `${userQuestion}${dataContext}` }
+        ]);
+        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', PARSE_JSON($$${respMessagesJson}$$), {'max_tokens':2048}) as RESPONSE`;
         console.log('Calling CORTEX.COMPLETE via SQL for response gen...');
         const rows = await snowSqlSpcs(cortexSql);
         console.log('CORTEX.COMPLETE response gen returned rows:', rows.length);
@@ -640,7 +747,7 @@ Rules for charts:
       const result = cortexCompleteLocalFile([
         { role: 'system', content: responsePrompt },
         { role: 'user', content: `${userQuestion}${dataContext}` },
-      ], 'claude-3-5-sonnet');
+      ], 'claude-4-sonnet');
       if (result) {
         send({ type: 'text_delta', text: result });
       } else {
@@ -1249,7 +1356,7 @@ SELECT ID AS ADDRESS_ID, GEOMETRY AS LOCATION,
   COALESCE(ADDRESS_LEVELS[0]:value::STRING || ' ' || STREET, STREET) AS FULL_ADDRESS,
   STREET, POSTCODE, ADDRESS_LEVELS[0]:value::STRING AS STATE, ADDRESS_LEVELS[1]:value::STRING AS CITY
 FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
-WHERE COUNTRY = 'US' AND ADDRESS_LEVELS[0]:value::STRING = 'CA' AND STREET IS NOT NULL`);
+WHERE ST_GEOHASH(GEOMETRY) LIKE '9q8%' AND COUNTRY = 'US' AND ADDRESS_LEVELS[0]:value::STRING = 'CA' AND STREET IS NOT NULL`);
         const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.CUSTOMER_ADDRESSES`);
         updateStep('addresses', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[1].started_at || Date.now())) / 1000 });
       } catch (err: any) { updateStep('addresses', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
@@ -1302,15 +1409,15 @@ FROM ${DB}.DATA.CUSTOMER_ADDRESSES WHERE FULL_ADDRESS IS NOT NULL AND LENGTH(FUL
 WITH courier_order_counts AS (
   SELECT c.COURIER_ID, c.SHIFT_TYPE, c.SHIFT_START_HOUR, c.SHIFT_END_HOUR,
     c.SHIFT_CROSSES_MIDNIGHT, c.VEHICLE_TYPE,
-    CASE c.SHIFT_TYPE WHEN 'Lunch' THEN UNIFORM(12,18,RANDOM()) WHEN 'Dinner' THEN UNIFORM(14,20,RANDOM())
-      WHEN 'Breakfast' THEN UNIFORM(6,10,RANDOM()) WHEN 'Afternoon' THEN UNIFORM(8,12,RANDOM())
-      WHEN 'Late Night' THEN UNIFORM(4,8,RANDOM()) END AS NUM_ORDERS
+    CASE c.SHIFT_TYPE WHEN 'Lunch' THEN UNIFORM(25,35,RANDOM()) WHEN 'Dinner' THEN UNIFORM(25,35,RANDOM())
+      WHEN 'Breakfast' THEN UNIFORM(15,25,RANDOM()) WHEN 'Afternoon' THEN UNIFORM(18,28,RANDOM())
+      WHEN 'Late Night' THEN UNIFORM(10,18,RANDOM()) END AS NUM_ORDERS
   FROM ${DB}.DATA.COURIERS c
 ),
 order_sequence AS (
   SELECT c.COURIER_ID, c.SHIFT_TYPE, c.SHIFT_START_HOUR, c.SHIFT_END_HOUR, c.SHIFT_CROSSES_MIDNIGHT,
     c.VEHICLE_TYPE, c.NUM_ORDERS, ROW_NUMBER() OVER (PARTITION BY c.COURIER_ID ORDER BY RANDOM()) AS ORDER_NUMBER
-  FROM courier_order_counts c CROSS JOIN TABLE(GENERATOR(ROWCOUNT => 25)) g
+  FROM courier_order_counts c CROSS JOIN TABLE(GENERATOR(ROWCOUNT => 40)) g
   QUALIFY ORDER_NUMBER <= c.NUM_ORDERS
 ),
 orders_with_hours AS (
@@ -1884,7 +1991,8 @@ SELECT ID AS ADDRESS_ID, GEOMETRY AS LOCATION,
   ADDRESS_LEVELS[0]:value::STRING AS STATE,
   '${city.replace(/'/g, "''")}' AS CITY
 FROM (SELECT * FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
-WHERE ST_Y(GEOMETRY) BETWEEN ${cityBbox.minLat} AND ${cityBbox.maxLat}
+WHERE ${getGeohashFilter(city)}
+  AND ST_Y(GEOMETRY) BETWEEN ${cityBbox.minLat} AND ${cityBbox.maxLat}
   AND ST_X(GEOMETRY) BETWEEN ${cityBbox.minLon} AND ${cityBbox.maxLon}
   AND STREET IS NOT NULL) SAMPLE (50000 ROWS)`);
       }
@@ -1919,7 +2027,7 @@ home_locations AS (
 SELECT '${cityPrefix}-' || LPAD(ca.courier_num::STRING, 4, '0') AS COURIER_ID,
   hl.ADDRESS_ID AS HOME_ADDRESS_ID, ca.shift_type AS SHIFT_TYPE, ca.shift_start_hour AS SHIFT_START_HOUR,
   ca.shift_end_hour AS SHIFT_END_HOUR, ca.shift_crosses_midnight AS SHIFT_CROSSES_MIDNIGHT,
-  CASE WHEN UNIFORM(1,100,RANDOM())<=60 THEN 'bicycle' WHEN UNIFORM(1,100,RANDOM())<=85 THEN 'car' ELSE 'scooter' END AS VEHICLE_TYPE
+  'cycling-electric' AS VEHICLE_TYPE
 FROM courier_assignments ca LEFT JOIN home_locations hl ON ca.courier_num = hl.rn`);
       const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.COURIERS WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
       updateStep('couriers', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
@@ -1955,15 +2063,15 @@ addresses_numbered AS (
 courier_order_counts AS (
   SELECT c.COURIER_ID, c.SHIFT_TYPE, c.SHIFT_START_HOUR, c.SHIFT_END_HOUR,
     c.SHIFT_CROSSES_MIDNIGHT, c.VEHICLE_TYPE,
-    CASE c.SHIFT_TYPE WHEN 'Lunch' THEN UNIFORM(12,18,RANDOM()) WHEN 'Dinner' THEN UNIFORM(14,20,RANDOM())
-      WHEN 'Breakfast' THEN UNIFORM(6,10,RANDOM()) WHEN 'Afternoon' THEN UNIFORM(8,12,RANDOM())
-      WHEN 'Late Night' THEN UNIFORM(4,8,RANDOM()) END AS NUM_ORDERS
+    CASE c.SHIFT_TYPE WHEN 'Lunch' THEN UNIFORM(25,35,RANDOM()) WHEN 'Dinner' THEN UNIFORM(25,35,RANDOM())
+      WHEN 'Breakfast' THEN UNIFORM(15,25,RANDOM()) WHEN 'Afternoon' THEN UNIFORM(18,28,RANDOM())
+      WHEN 'Late Night' THEN UNIFORM(10,18,RANDOM()) END AS NUM_ORDERS
   FROM ${DB}.DATA.COURIERS c WHERE c.COURIER_ID LIKE '${cityPrefix}-%'
 ),
 order_sequence AS (
   SELECT c.COURIER_ID, c.SHIFT_TYPE, c.SHIFT_START_HOUR, c.SHIFT_END_HOUR, c.SHIFT_CROSSES_MIDNIGHT,
     c.VEHICLE_TYPE, c.NUM_ORDERS, ROW_NUMBER() OVER (PARTITION BY c.COURIER_ID ORDER BY RANDOM()) AS ORDER_NUMBER
-  FROM courier_order_counts c CROSS JOIN TABLE(GENERATOR(ROWCOUNT => 25)) g
+  FROM courier_order_counts c CROSS JOIN TABLE(GENERATOR(ROWCOUNT => 40)) g
   QUALIFY ORDER_NUMBER <= c.NUM_ORDERS
 ),
 orders_with_hours AS (
@@ -1979,11 +2087,11 @@ orders_indexed AS (
     o.ORDER_HOUR::INT AS ORDER_HOUR, o.ORDER_NUMBER::INT AS ORDER_NUMBER, o.SHIFT_TYPE, o.VEHICLE_TYPE,
     MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'R')), rc.cnt)+1 AS RESTAURANT_IDX,
     MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'C')), ac.cnt)+1 AS CUSTOMER_IDX,
-    UNIFORM(5,25,RANDOM()) AS PREP_TIME_MINS,
+    UNIFORM(3,15,RANDOM()) AS PREP_TIME_MINS,
     MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'D')), ${num_days}) AS DAY_OFFSET,
     CASE
       WHEN MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'D')), ${num_days}) = 0
-        THEN CASE WHEN UNIFORM(1,100,RANDOM())<=82 THEN 'delivered' WHEN UNIFORM(1,100,RANDOM())<=92 THEN 'in_transit' ELSE 'picked_up' END
+        THEN CASE WHEN UNIFORM(1,100,RANDOM())<=70 THEN 'delivered' WHEN UNIFORM(1,100,RANDOM())<=85 THEN 'in_transit' ELSE 'picked_up' END
       ELSE 'delivered'
     END AS ORDER_STATUS
   FROM orders_with_hours o CROSS JOIN rest_count rc CROSS JOIN addr_count ac

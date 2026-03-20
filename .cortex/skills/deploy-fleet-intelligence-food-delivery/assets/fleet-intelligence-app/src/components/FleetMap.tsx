@@ -178,7 +178,13 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     routes: true,
     pickups: true,
     dropoffs: true,
+    couriers: true,
   });
+
+  const [selectedHour, setSelectedHour] = useState<number>(-1);
+  const [availableHours, setAvailableHours] = useState<{hour: number; activeOrders: number}[]>([]);
+  const [courierPositions, setCourierPositions] = useState<any[]>([]);
+  const [couriersLoading, setCouriersLoading] = useState(false);
 
   const toggleLayer = useCallback((key: string) => {
     setLayerVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -202,6 +208,25 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       })
       .catch(() => setAvailableDates([]));
   }, [city]);
+
+  useEffect(() => {
+    if (!selectedDate) { setAvailableHours([]); setSelectedHour(-1); return; }
+    fetch(`/api/routes/hours?city=${encodeURIComponent(city)}&date=${selectedDate}`)
+      .then((r) => r.json())
+      .then((hours: any[]) => { setAvailableHours(hours); setSelectedHour(-1); })
+      .catch(() => setAvailableHours([]));
+  }, [city, selectedDate]);
+
+  useEffect(() => {
+    if (mapMode !== 'routes' || !selectedDate) { setCourierPositions([]); return; }
+    setCouriersLoading(true);
+    const params = new URLSearchParams({ city, date: selectedDate });
+    if (selectedHour >= 0) params.set('hour', String(selectedHour));
+    fetch(`/api/routes/courier-positions?${params.toString()}`)
+      .then((r) => r.json())
+      .then((positions: any[]) => { setCourierPositions(positions); setCouriersLoading(false); })
+      .catch(() => { setCourierPositions([]); setCouriersLoading(false); });
+  }, [city, selectedDate, selectedHour, mapMode]);
 
   useEffect(() => {
     if (!mapZoomTarget) return;
@@ -463,6 +488,26 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         lineWidthMinPixels: 2,
       }),
     [dropoffData]
+  );
+
+  const courierLayer = useMemo(
+    () =>
+      courierPositions.length > 0
+        ? new ScatterplotLayer({
+            id: 'courier-bikes',
+            data: courierPositions,
+            pickable: true,
+            getPosition: (d: any) => [d.lon, d.lat],
+            getFillColor: [255, 213, 79, 255],
+            getLineColor: [255, 255, 255, 255],
+            getRadius: 80,
+            radiusMinPixels: 6,
+            radiusMaxPixels: 14,
+            stroked: true,
+            lineWidthMinPixels: 2,
+          })
+        : null,
+    [courierPositions]
   );
 
   const hexLayer = useMemo(
@@ -762,8 +807,9 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     if (layerVisibility.routes) routeLayers.push(pathLayer);
     if (layerVisibility.pickups) routeLayers.push(pickupLayer);
     if (layerVisibility.dropoffs) routeLayers.push(dropoffLayer);
+    if (layerVisibility.couriers && courierLayer) routeLayers.push(courierLayer);
     return routeLayers;
-  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer]);
+  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer, courierLayer]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
@@ -792,6 +838,24 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     if (layer?.id === 'dropoffs') {
       return {
         html: `<div class="tooltip-container"><div class="tooltip-title">Dropoff</div><div class="tooltip-row"><span class="tooltip-label">Address</span><span class="tooltip-value">${object.customer_address}</span></div><div class="tooltip-row"><span class="tooltip-label">Courier</span><span class="tooltip-value">${object.courier_id}</span></div></div>`,
+        style: { background: 'transparent', border: 'none', padding: '0' },
+      };
+    }
+    if (layer?.id === 'courier-bikes') {
+      const etaStr = object.eta_mins > 0 ? `${object.eta_mins} min` : 'Arriving';
+      const stateStr = (object.state || '').replace(/_/g, ' ');
+      return {
+        html: `
+          <div class="tooltip-container">
+            <div class="tooltip-title">🚲 Courier ${object.courier_id}</div>
+            <div class="tooltip-divider"></div>
+            <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-value">${stateStr}</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">ETA</span><span class="tooltip-value highlight">${etaStr}</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">Speed</span><span class="tooltip-value">${object.kmh} km/h</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">From</span><span class="tooltip-value">${object.restaurant_name}</span></div>
+            <div class="tooltip-row"><span class="tooltip-label">To</span><span class="tooltip-value">${object.customer_address}</span></div>
+          </div>
+        `,
         style: { background: 'transparent', border: 'none', padding: '0' },
       };
     }
@@ -954,6 +1018,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             { key: 'routes', label: 'Routes', color: '#FF6B35' },
             { key: 'pickups', label: 'Pickups', color: '#66BB6A' },
             { key: 'dropoffs', label: 'Dropoffs', color: '#42A5F5' },
+            { key: 'couriers', label: 'Couriers', color: '#FFD54F' },
           ].map((layer) => (
             <label key={layer.key} className="layer-toggle-item">
               <input
@@ -991,6 +1056,34 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             {availableDates.map((d) => (
               <span key={d.date}>{formatDateLabel(d.date)}</span>
             ))}
+          </div>
+        </div>
+      )}
+
+      {mapMode === 'routes' && selectedDate && (
+        <div className="date-slider-panel" style={{ top: availableDates.length > 1 ? '100px' : '12px' }}>
+          <div className="date-slider-header">
+            <span className="date-slider-label">Hour</span>
+            <span className="date-slider-value">
+              {selectedHour === -1 ? 'All Hours' : `${String(selectedHour).padStart(2, '0')}:00`}
+              {selectedHour >= 0 && courierPositions.length > 0 && ` (${courierPositions.length} couriers)`}
+              {couriersLoading && ' ...'}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={-1}
+            max={23}
+            value={selectedHour}
+            onChange={(e) => setSelectedHour(Number(e.target.value))}
+            className="date-slider-input"
+          />
+          <div className="date-slider-ticks">
+            <span>All</span>
+            <span>06:00</span>
+            <span>12:00</span>
+            <span>18:00</span>
+            <span>23:00</span>
           </div>
         </div>
       )}
@@ -1087,6 +1180,10 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             <div className="color-legend-item">
               <div className="color-legend-swatch" style={{ background: '#42A5F5', border: '2px solid white', borderRadius: '50%' }} />
               Dropoff (customer)
+            </div>
+            <div className="color-legend-item">
+              <div className="color-legend-swatch" style={{ background: '#FFD54F', borderRadius: '50%', border: '2px solid white' }} />
+              Courier (in transit)
             </div>
             <div className="color-legend-item" style={{ fontSize: 10, color: 'var(--sb-text-secondary)', marginTop: 4 }}>
               Each color = unique courier

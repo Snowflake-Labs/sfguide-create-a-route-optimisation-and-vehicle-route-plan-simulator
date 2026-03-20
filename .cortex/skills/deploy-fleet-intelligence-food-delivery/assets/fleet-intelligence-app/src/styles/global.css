@@ -240,10 +240,10 @@ body {
 .map-control-btn.active { background: var(--sb-orange); border-color: var(--sb-orange); }
 
 .layer-toggle-panel {
-  position: absolute; top: 12px; left: 130px; z-index: 10;
+  position: absolute; top: 132px; left: 12px; z-index: 10;
   background: rgba(26,42,58,0.95); border: 1px solid var(--sb-panel-border);
   border-radius: 8px; padding: 8px 12px;
-  display: flex; align-items: center; gap: 12px;
+  display: flex; flex-direction: column; gap: 4px;
 }
 .layer-toggle-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--sb-text-secondary); }
 .layer-toggle-item { display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 11px; color: var(--sb-off-white); }
@@ -254,7 +254,7 @@ body {
 .layer-toggle-label { font-weight: 500; }
 
 .date-slider-panel {
-  position: absolute; top: 12px; left: 400px; z-index: 10;
+  position: absolute; top: 12px; right: 12px; z-index: 10;
   background: rgba(26,42,58,0.95); border: 1px solid var(--sb-panel-border);
   border-radius: 8px; padding: 8px 14px; min-width: 220px;
 }
