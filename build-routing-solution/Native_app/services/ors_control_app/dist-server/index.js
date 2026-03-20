@@ -191,6 +191,23 @@ app.get('/api/cities', async (_req, res) => {
             }
             return { ...c, serviceStatus, functionExists: true };
         }));
+        let defaultStatus = 'NOT_FOUND';
+        try {
+            const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA ${SF_DATABASE}.CORE`);
+            defaultStatus = rows?.[0]?.status || 'NOT_FOUND';
+        }
+        catch { }
+        if (defaultStatus !== 'NOT_FOUND') {
+            enriched.unshift({
+                region: 'default',
+                display_name: 'San Francisco (Default)',
+                status: 'DEPLOYED',
+                serviceStatus: defaultStatus,
+                functionExists: true,
+                isDefault: true,
+                bbox: { min_lat: 37.71, max_lat: 37.81, min_lon: -122.51, max_lon: -122.37 },
+            });
+        }
         res.json({ cities: enriched });
     }
     catch (err) {

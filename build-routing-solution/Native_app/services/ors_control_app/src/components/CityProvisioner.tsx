@@ -3,10 +3,12 @@ import { CITY_CATALOG } from '../types';
 
 interface CityStatus {
   region: string;
+  display_name?: string;
   status: string;
   serviceStatus: string;
   pbfDownloaded: boolean;
   functionExists: boolean;
+  isDefault?: boolean;
 }
 
 interface ProvisionProgress {
@@ -115,11 +117,15 @@ export default function CityProvisioner() {
           <tbody>
             {cities.map((c) => (
               <tr key={c.region}>
-                <td>{c.region}</td>
+                <td>{c.display_name || c.region}</td>
                 <td><span className={`badge ${c.serviceStatus === 'RUNNING' ? 'ok' : 'warn'}`}>{c.serviceStatus}</span></td>
                 <td>{c.functionExists ? '✓' : '—'}</td>
                 <td>
-                  <button className="btn danger small" onClick={() => dropCity(c.region)}>Drop</button>
+                  {c.isDefault ? (
+                    <span className="badge ok">Built-in</span>
+                  ) : (
+                    <button className="btn danger small" onClick={() => dropCity(c.region)}>Drop</button>
+                  )}
                 </td>
               </tr>
             ))}
