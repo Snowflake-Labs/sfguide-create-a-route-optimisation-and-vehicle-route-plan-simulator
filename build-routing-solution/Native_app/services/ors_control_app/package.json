@@ -13,18 +13,21 @@
     "start": "node dist-server/index.js"
   },
   "dependencies": {
+    "@deck.gl/core": "^9.2.11",
+    "@deck.gl/layers": "^9.2.11",
+    "@deck.gl/react": "^9.2.11",
     "concurrently": "^9.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
-    "leaflet": "^1.9.4",
+    "maplibre-gl": "^5.20.2",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-map-gl": "^8.1.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/leaflet": "^1.9.21",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
