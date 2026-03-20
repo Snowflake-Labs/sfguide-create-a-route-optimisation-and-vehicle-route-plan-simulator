@@ -203,9 +203,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CMD ["node", "dist-server/index.js"]
    RTEOF
    mv .dockerignore .dockerignore.bak 2>/dev/null
-   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.1 .
+   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.5 .
    mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.1
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.5
    
    # return to working directory
    cd ../../..
@@ -216,7 +216,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - downloader:v0.0.3
    - routing_reverse_proxy:v0.7.2
    - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.1
+   - ors_control_app:v1.0.5
 
 **Output:** All 5 container images pushed to Snowflake image repository
 
@@ -267,7 +267,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 1. **Ask user to complete** the following in Snowsight:
    - Navigate to **Catalog >> Apps >> OPENROUTESERVICE_NATIVE_APP**
    - Select warehouse **ROUTING_ANALYTICS**
-   - **External connections:** Click **Review**, see the message "OPENROUTESERVICE_NATIVE_APP would like to connect to the following external endpoints", then click **Connect**
+   - **External connections:** Click **Review**, see the message "OPENROUTESERVICE_NATIVE_APP would like to connect to the following external endpoints", then click **Connect**. There are TWO references: one for OSM map downloads and one for CARTO basemap tiles. Both must be connected.
    - **Account Privileges:** Click **Grant**
    - **Activation:** Wait while "Activating OPENROUTESERVICE_NATIVE_APP" is displayed (this may take 1-2 minutes)
    - When you see "OPENROUTESERVICE_NATIVE_APP is activated", click **Proceed to App**
@@ -322,11 +322,35 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 ### Podman Registry Auth for Wrong Host
 **Symptom:** `podman push` fails with "unable to retrieve auth token: invalid username/password: unauthorized" even after `snow spcs image-registry login`
-**Solution:** `snow spcs image-registry login` may store credentials for the wrong registry hostname. Use the manual token approach:
+**Solution:** `snow spcs image-registry login` may store credentials for the wrong registry hostname. Use the manual token approach with `--creds` flag:
 ```bash
 REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
-snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
+TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
+podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.5
 ```
+
+### Basemap Tiles Not Loading (ENOTFOUND / 502)
+**Symptom:** Map shows grey tiles, browser console shows 502 errors for `/api/tiles/`, service logs show `getaddrinfo ENOTFOUND a.basemaps.cartocdn.com`
+**Cause:** The CARTO basemap EAI (`external_access_carto_ref`) is not bound to the control app service, so SPCS cannot resolve DNS for `a.basemaps.cartocdn.com`.
+**Solution:**
+1. First check if the EAI reference was auto-provisioned during setup. If the app was installed before the CARTO EAI was added, manually create and bind it:
+   ```sql
+   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_SETUP.PUBLIC.ORS_MAP_TILES_RULE
+       MODE = EGRESS TYPE = HOST_PORT
+       VALUE_LIST = ('a.basemaps.cartocdn.com:443', 'b.basemaps.cartocdn.com:443',
+                     'c.basemaps.cartocdn.com:443', 'd.basemaps.cartocdn.com:443');
+   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_MAP_TILES_EAI
+       ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_SETUP.PUBLIC.ORS_MAP_TILES_RULE) ENABLED = TRUE;
+   GRANT USAGE ON INTEGRATION ORS_MAP_TILES_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+       'EXTERNAL_ACCESS_CARTO_REF', 'ADD',
+       SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_MAP_TILES_EAI', 'PERSISTENT', 'USAGE'));
+   ```
+2. Then recreate the control app to pick up the EAI (it must be present at service creation time):
+   ```sql
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.CREATE_CONTROL_APP();
+   ```
+**Key insight:** `ALTER SERVICE SET EXTERNAL_ACCESS_INTEGRATIONS` does NOT reliably enable DNS. The EAI must be present at `CREATE SERVICE` time. The `create_control_app` procedure now DROP+CREATEs the service to ensure this.
 
 ## Output
 
@@ -344,7 +368,7 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 | driving-hgv | Yes |
 | cycling-electric | Yes |
 
-All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walking, foot-hiking, wheelchair) are disabled by default. Use the `routing-customization` skill to enable additional profiles.
+All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walking, foot-hiking, wheelchair) are disabled by default. When provisioning new cities via the Cities tab, users can select which routing profiles to install using the profile checkboxes. Use the `routing-customization` skill to change profiles on the default (San Francisco) instance.
 
 ### Default Service Limits
 

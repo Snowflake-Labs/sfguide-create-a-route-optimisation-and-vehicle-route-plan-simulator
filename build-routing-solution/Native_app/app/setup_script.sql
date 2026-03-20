@@ -22,9 +22,7 @@ BEGIN
    ALTER SERVICE IF EXISTS core.routing_gateway_service
       FROM SPECIFICATION_FILE='services/gateway/routing-gateway-service.yaml';
 
-   ALTER SERVICE IF EXISTS core.ors_control_app
-      FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml';
-
+   -- control app is DROP+CREATE'd (not ALTER'd) to ensure EAI bindings are applied
    BEGIN
       CALL core.create_control_app();
    EXCEPTION
@@ -214,7 +212,15 @@ BEGIN
           RETURN OBJECT_CONSTRUCT(
               'type', 'CONFIGURATION',
               'payload', OBJECT_CONSTRUCT(
-                  'host_ports', ARRAY_CONSTRUCT('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com'),
+                  'host_ports', ARRAY_CONSTRUCT('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443'),
+                  'allowed_secrets', 'NONE'
+                  )
+          )::STRING;
+      WHEN 'EXTERNAL_ACCESS_CARTO_REF' THEN
+          RETURN OBJECT_CONSTRUCT(
+              'type', 'CONFIGURATION',
+              'payload', OBJECT_CONSTRUCT(
+                  'host_ports', ARRAY_CONSTRUCT('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443'),
                   'allowed_secrets', 'NONE'
                   )
           )::STRING;
@@ -543,6 +549,79 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
+AS
+$$
+def run(session, p_region, p_pbf_file, p_profiles):
+    import tempfile, os
+
+    profiles_list = [p.strip() for p in p_profiles.split(',') if p.strip()]
+    all_profiles = [
+        'driving-car', 'driving-hgv', 'cycling-regular', 'cycling-road',
+        'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'
+    ]
+
+    profile_lines = []
+    for p in all_profiles:
+        enabled = 'true' if p in profiles_list else 'false'
+        profile_lines.append('      ' + p + ':\n        enabled: ' + enabled)
+
+    all_profiles_str = ', '.join(all_profiles)
+    lines = [
+        'ors:',
+        '  engine:',
+        '    profile_default:',
+        '      build:',
+        '        source_file: /home/ors/files/' + p_pbf_file,
+        '        instructions: false',
+        '      service:',
+        '        maximum_distance: 1500000',
+        '        maximum_distance_dynamic_weights: 1500000',
+        '        maximum_distance_avoid_areas: 1500000',
+        '        maximum_distance_alternative_routes: 1500000',
+        '        maximum_distance_round_trip_routes: 1500000',
+        '        maximum_visited_nodes: 100000000',
+        '    profiles:',
+    ]
+    yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'
+    yaml_content += '\n'.join([
+        '  endpoints:',
+        '    matrix:',
+        '      maximum_visited_nodes: 100000000',
+        '      maximum_routes: 250000',
+        '    isochrones:',
+        '      maximum_locations: 2',
+        '      maximum_intervals: 10',
+        '      maximum_range_distance:',
+        '        - profiles: ' + all_profiles_str,
+        '          value: 1500000',
+        '      maximum_range_time:',
+        '        - profiles: ' + all_profiles_str,
+        '          value: 18000',
+        '',
+    ])
+
+    tmpdir = tempfile.mkdtemp()
+    config_path = os.path.join(tmpdir, 'ors-config.yml')
+    with open(config_path, 'w') as f:
+        f.write(yaml_content)
+
+    try:
+        stage_path = '@CORE.ORS_SPCS_STAGE/' + p_region + '/'
+        session.file.put(config_path, stage_path, auto_compress=False, overwrite=True)
+    finally:
+        os.unlink(config_path)
+        os.rmdir(tmpdir)
+
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles
+$$;
+GRANT USAGE ON PROCEDURE core.write_ors_config(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.setup_city_ors(P_REGION VARCHAR)
 RETURNS STRING
@@ -1394,12 +1473,25 @@ $$
 BEGIN
     LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
 
-    CREATE SERVICE IF NOT EXISTS core.ors_control_app
-        IN COMPUTE POOL IDENTIFIER(:pool_name)
-        FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
-        MIN_INSTANCES = 1
-        MAX_INSTANCES = 1
-        AUTO_SUSPEND_SECS = 0;
+    DROP SERVICE IF EXISTS core.ors_control_app;
+
+    BEGIN
+        CREATE SERVICE core.ors_control_app
+            IN COMPUTE POOL IDENTIFIER(:pool_name)
+            FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
+            MIN_INSTANCES = 1
+            MAX_INSTANCES = 1
+            AUTO_SUSPEND_SECS = 0
+            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'));
+    EXCEPTION
+        WHEN OTHER THEN
+            CREATE SERVICE core.ors_control_app
+                IN COMPUTE POOL IDENTIFIER(:pool_name)
+                FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
+                MIN_INSTANCES = 1
+                MAX_INSTANCES = 1
+                AUTO_SUSPEND_SECS = 0;
+    END;
 
     GRANT USAGE ON SERVICE core.ors_control_app TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE core.ors_control_app!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;

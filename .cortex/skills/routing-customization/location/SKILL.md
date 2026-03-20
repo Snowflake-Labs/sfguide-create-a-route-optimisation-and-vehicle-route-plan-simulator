@@ -60,7 +60,7 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE
    MODE = EGRESS
    TYPE = HOST_PORT
-   VALUE_LIST = ('download.geofabrik.de', 'download.bbbike.org')
+   VALUE_LIST = ('download.geofabrik.de:443', 'download.bbbike.org:443')
    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION DOWNLOAD_MAP_ACCESS_INTEGRATION
@@ -143,6 +143,17 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
 **Goal:** Modify ors-config.yml to reference new map file
 
 **Actions:**
+
+**Option A — Using WRITE_ORS_CONFIG (recommended):**
+```sql
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
+    '<REGION_NAME>',
+    '<MAP_NAME>',
+    'driving-car,driving-hgv,cycling-electric'  -- comma-separated profiles to enable
+);
+```
+
+**Option B — Manual editing (fallback):**
 
 1. **Edit** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`

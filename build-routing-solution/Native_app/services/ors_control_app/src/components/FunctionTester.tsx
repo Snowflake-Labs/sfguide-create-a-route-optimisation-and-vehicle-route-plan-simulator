@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import Map from 'react-map-gl/maplibre';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import { GeoJsonLayer, ScatterplotLayer, BitmapLayer } from '@deck.gl/layers';
+import { TileLayer } from '@deck.gl/geo-layers';
 
 interface CityOption {
   region: string;
@@ -11,24 +10,36 @@ interface CityOption {
   bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
 }
 
-const BASEMAP: any = {
-  version: 8,
-  sources: {
-    'carto-light': {
-      type: 'raster',
-      tiles: [
-        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-        'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-        'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-        'https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-      ],
-      tileSize: 256,
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
+const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
+
+function cartoBasemap() {
+  return new TileLayer({
+    id: 'carto-basemap',
+    data: CARTO_LIGHT,
+    minZoom: 0,
+    maxZoom: 19,
+    tileSize: 256,
+    renderSubLayers: (props: any) => {
+      const { boundingBox } = props.tile;
+      return new BitmapLayer(props, {
+        data: undefined,
+        image: props.data,
+        bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]],
+      });
     },
-  },
-  layers: [
-    { id: 'carto-light-layer', type: 'raster', source: 'carto-light', minzoom: 0, maxzoom: 22 },
-  ],
+  });
+}
+
+const PROFILE_LABELS: Record<string, string> = {
+  'driving-car': 'Car',
+  'driving-hgv': 'Truck (HGV)',
+  'cycling-regular': 'Cycling',
+  'cycling-road': 'Cycling (Road)',
+  'cycling-mountain': 'Cycling (Mountain)',
+  'cycling-electric': 'Cycling (E-Bike)',
+  'foot-walking': 'Walking',
+  'foot-hiking': 'Hiking',
+  'wheelchair': 'Wheelchair',
 };
 
 const FUNCTIONS = [
@@ -61,7 +72,7 @@ function fnSuffix(city: CityOption | null, baseName: string): string {
   return `${baseName}_${city.region.toUpperCase()}`;
 }
 
-function generateSql(fnName: string, city: CityOption | null): string {
+function generateSql(fnName: string, city: CityOption | null, profile: string = 'driving-car'): string {
   const bbox = city?.bbox;
   const center = bboxCenter(bbox);
   const start = offsetPoint(center, -0.005, -0.005);
@@ -78,17 +89,17 @@ function generateSql(fnName: string, city: CityOption | null): string {
     case 'CHECK_HEALTH':
       return `SELECT CORE.CHECK_HEALTH()`;
     case 'DIRECTIONS':
-      return `SELECT CORE.${name}('driving-car', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}))`;
+      return `SELECT CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}))`;
     case 'DIRECTIONS_GEO':
-      return `SELECT * FROM TABLE(CORE.${name}('driving-car', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
+      return `SELECT * FROM TABLE(CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
     case 'ISOCHRONES':
-      return `SELECT CORE.${name}('driving-car', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10)`;
+      return `SELECT CORE.${name}('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10)`;
     case 'ISOCHRONES_GEO':
-      return `SELECT * FROM TABLE(CORE.${name}('driving-car', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
+      return `SELECT * FROM TABLE(CORE.${name}('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
     case 'MATRIX':
-      return `SELECT CORE.${name}('driving-car', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
+      return `SELECT CORE.${name}('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
     case 'MATRIX_TABULAR':
-      return `SELECT CORE.${name}('driving-car', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
+      return `SELECT CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
     case 'OPTIMIZATION':
       return `SELECT CORE.${name}(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n)`;
     case 'OPTIMIZATION_GEO':
@@ -225,9 +236,9 @@ function extractGeoData(result: any): GeoData {
   return { geojson, points, center, zoom };
 }
 
-function ResultMap({ result, fnName }: { result: any; fnName: string }) {
+function ResultMap({ result, fnName, cityCenter }: { result: any; fnName: string; cityCenter: [number, number] }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
-  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: cityCenter[0], latitude: cityCenter[1], zoom: 12, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     if (geo.center) {
@@ -297,9 +308,10 @@ function ResultMap({ result, fnName }: { result: any; fnName: string }) {
     });
   }, [geo.points]);
 
-  const layers = useMemo(() => [geojsonLayer, startEndLayer, pointsLayer].filter(Boolean), [geojsonLayer, startEndLayer, pointsLayer]);
+  const basemap = useMemo(() => cartoBasemap(), []);
+  const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer]);
 
-  if (!geo.geojson && geo.points.length === 0) return null;
+  const hasGeo = !!(geo.geojson || geo.points.length > 0);
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
@@ -321,16 +333,16 @@ function ResultMap({ result, fnName }: { result: any; fnName: string }) {
   return (
     <div style={{ marginTop: 16 }}>
       <h3>Map</h3>
-      <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative' }}>
+      {!hasGeo && <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '0 0 8px' }}>No spatial data to display. Run a geo function to see results on the map.</p>}
+      <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         <DeckGL
           viewState={viewState}
           onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
           controller={true}
           layers={layers}
           getTooltip={getTooltip}
-        >
-          <Map mapStyle={BASEMAP} />
-        </DeckGL>
+          style={{ width: '100%', height: '100%' }}
+        />
       </div>
     </div>
   );
@@ -340,6 +352,9 @@ export default function FunctionTester() {
   const [cities, setCities] = useState<CityOption[]>([]);
   const [selectedCity, setSelectedCity] = useState<CityOption | null>(null);
   const [selectedFn, setSelectedFn] = useState('ORS_STATUS');
+  const [selectedProfile, setSelectedProfile] = useState('driving-car');
+  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
   const [sqlInput, setSqlInput] = useState('SELECT CORE.ORS_STATUS()');
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -362,16 +377,56 @@ export default function FunctionTester() {
     })();
   }, []);
 
+  const fetchProfiles = useCallback(async (city: CityOption | null) => {
+    setProfilesLoading(true);
+    try {
+      const statusFn = fnSuffix(city, 'ORS_STATUS');
+      const resp = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `SELECT CORE.${statusFn}()` }),
+      });
+      const data = await resp.json();
+      if (data.result?.[0]) {
+        const raw = Object.values(data.result[0])[0];
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed?.profiles && typeof parsed.profiles === 'object') {
+          const names = Object.keys(parsed.profiles).filter((p: string) => parsed.profiles[p]?.encoder_name);
+          if (names.length > 0) {
+            setAvailableProfiles(names);
+            if (!names.includes(selectedProfile)) {
+              setSelectedProfile(names[0]);
+              setSqlInput(generateSql(selectedFn, city, names[0]));
+            }
+            setProfilesLoading(false);
+            return;
+          }
+        }
+      }
+    } catch {}
+    setAvailableProfiles([]);
+    setProfilesLoading(false);
+  }, [selectedFn, selectedProfile]);
+
+  useEffect(() => {
+    if (selectedCity) fetchProfiles(selectedCity);
+  }, [selectedCity]);
+
   const onCityChange = useCallback((region: string) => {
     const city = cities.find((c) => c.region === region) || null;
     setSelectedCity(city);
-    setSqlInput(generateSql(selectedFn, city));
-  }, [cities, selectedFn]);
+    setSqlInput(generateSql(selectedFn, city, selectedProfile));
+  }, [cities, selectedFn, selectedProfile]);
 
   const onFnChange = useCallback((fnName: string) => {
     setSelectedFn(fnName);
-    setSqlInput(generateSql(fnName, selectedCity));
-  }, [selectedCity]);
+    setSqlInput(generateSql(fnName, selectedCity, selectedProfile));
+  }, [selectedCity, selectedProfile]);
+
+  const onProfileChange = useCallback((profile: string) => {
+    setSelectedProfile(profile);
+    setSqlInput(generateSql(selectedFn, selectedCity, profile));
+  }, [selectedCity, selectedFn]);
 
   const executeQuery = useCallback(async () => {
     setRunning(true);
@@ -415,6 +470,20 @@ export default function FunctionTester() {
         ))}
       </select>
 
+      <h3>Routing Profile</h3>
+      <select
+        className="select"
+        value={selectedProfile}
+        onChange={(e) => onProfileChange(e.target.value)}
+        disabled={profilesLoading}
+      >
+        {profilesLoading && <option value="">Loading profiles...</option>}
+        {!profilesLoading && availableProfiles.length === 0 && <option value="driving-car">driving-car</option>}
+        {!profilesLoading && availableProfiles.map((p) => (
+          <option key={p} value={p}>{PROFILE_LABELS[p] || p}</option>
+        ))}
+      </select>
+
       <h3>Function</h3>
       <div className="fn-grid">
         {FUNCTIONS.map((fn) => (
@@ -450,14 +519,14 @@ export default function FunctionTester() {
         </div>
       )}
 
+      {result !== null && <ResultMap result={result} fnName={selectedFn} cityCenter={bboxCenter(selectedCity?.bbox)} />}
+
       {result !== null && (
         <div className="result-panel">
           <h3>Result</h3>
           <pre className="result-json">{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
         </div>
       )}
-
-      {result !== null && <ResultMap result={result} fnName={selectedFn} />}
     </div>
   );
 }

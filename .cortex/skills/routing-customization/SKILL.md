@@ -169,7 +169,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 **Note:** The Function Tester automatically reads the MAP_CONFIG table (updated in Step 5) and dynamically generates region-specific sample addresses within those bounds. No manual code edits are needed for addresses — just redeploy.
 
-> **_IMPORTANT:_** The `ROUTING_PROFILES` list in `function_tester.py` is **hardcoded** to `['driving-car', 'driving-hgv', 'cycling-electric']`. If routing profiles were changed in Step 3, you **must** also edit `build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py` and update the `ROUTING_PROFILES` list (around line 175) to match the profiles enabled in `ors-config.yml` before uploading.
+> **_IMPORTANT:_** The React-based Function Tester in the ORS Control App now dynamically loads installed profiles from ORS_STATUS — no hardcoded profile list to update. The legacy Streamlit `function_tester.py` has a hardcoded `ROUTING_PROFILES` list. If you are using the Streamlit version and routing profiles were changed in Step 3, edit `build-routing-solution/Native_app/code_artifacts/streamlit/pages/function_tester.py` and update the `ROUTING_PROFILES` list to match.
 
 **Actions:**
 

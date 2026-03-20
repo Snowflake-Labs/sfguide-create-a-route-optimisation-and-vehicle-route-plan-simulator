@@ -28,10 +28,25 @@ const PROVISION_PHASES = [
 
 const PHASE_ORDER = ['idle', 'downloading_pbf', 'creating_pool', 'creating_service', 'building_graph', 'creating_functions', 'ready'];
 
+const ALL_PROFILES: { id: string; label: string; group: string }[] = [
+  { id: 'driving-car', label: 'Car', group: 'Driving' },
+  { id: 'driving-hgv', label: 'Truck (HGV)', group: 'Driving' },
+  { id: 'cycling-regular', label: 'Cycling', group: 'Cycling' },
+  { id: 'cycling-road', label: 'Cycling (Road)', group: 'Cycling' },
+  { id: 'cycling-mountain', label: 'Cycling (Mountain)', group: 'Cycling' },
+  { id: 'cycling-electric', label: 'E-Bike', group: 'Cycling' },
+  { id: 'foot-walking', label: 'Walking', group: 'Foot' },
+  { id: 'foot-hiking', label: 'Hiking', group: 'Foot' },
+  { id: 'wheelchair', label: 'Wheelchair', group: 'Accessibility' },
+];
+
+const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
+
 export default function CityProvisioner() {
   const [cities, setCities] = useState<CityStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCity, setSelectedCity] = useState('');
+  const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
   const [provisioning, setProvisioning] = useState(false);
   const [progress, setProgress] = useState<ProvisionProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -50,10 +65,17 @@ export default function CityProvisioner() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchCities]);
 
+  const toggleProfile = useCallback((profileId: string) => {
+    setSelectedProfiles((prev) =>
+      prev.includes(profileId) ? prev.filter((p) => p !== profileId) : [...prev, profileId]
+    );
+  }, []);
+
   const startProvision = useCallback(async () => {
     if (!selectedCity) return;
     const config = CITY_CATALOG[selectedCity];
     if (!config) return;
+    if (selectedProfiles.length === 0) return;
 
     setProvisioning(true);
     setProgress({ status: 'started', phase: 'downloading_pbf' });
@@ -67,6 +89,7 @@ export default function CityProvisioner() {
           region: config.region,
           pbf_url: config.pbfUrl,
           bbox: config.bbox,
+          profiles: selectedProfiles,
         }),
       });
       const data = await resp.json();
@@ -88,7 +111,7 @@ export default function CityProvisioner() {
       setProvisioning(false);
       setProgress({ status: 'error', phase: '', error: err.message });
     }
-  }, [selectedCity, fetchCities]);
+  }, [selectedCity, selectedProfiles, fetchCities]);
 
   const dropCity = useCallback(async (region: string) => {
     try {
@@ -98,6 +121,11 @@ export default function CityProvisioner() {
   }, [fetchCities]);
 
   const phaseIdx = progress ? PHASE_ORDER.indexOf(progress.phase) : -1;
+
+  const profileGroups = ALL_PROFILES.reduce<Record<string, typeof ALL_PROFILES>>((acc, p) => {
+    (acc[p.group] = acc[p.group] || []).push(p);
+    return acc;
+  }, {});
 
   return (
     <div className="panel">
@@ -137,7 +165,7 @@ export default function CityProvisioner() {
       <div className="provision-form">
         <select
           value={selectedCity}
-          onChange={(e) => setSelectedCity(e.target.value)}
+          onChange={(e) => { setSelectedCity(e.target.value); setSelectedProfiles(DEFAULT_PROFILES); }}
           disabled={provisioning}
           className="select"
         >
@@ -148,29 +176,59 @@ export default function CityProvisioner() {
         </select>
 
         {selectedCity && CITY_CATALOG[selectedCity] && (
-          <div className="city-info">
-            <div className="info-row">
-              <span className="info-label">Region:</span>
-              <span>{CITY_CATALOG[selectedCity].region}</span>
+          <>
+            <div className="city-info">
+              <div className="info-row">
+                <span className="info-label">Region:</span>
+                <span>{CITY_CATALOG[selectedCity].region}</span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">Bounding Box:</span>
+                <span>
+                  {CITY_CATALOG[selectedCity].bbox.minLat.toFixed(2)}° — {CITY_CATALOG[selectedCity].bbox.maxLat.toFixed(2)}°N,{' '}
+                  {CITY_CATALOG[selectedCity].bbox.minLon.toFixed(2)}° — {CITY_CATALOG[selectedCity].bbox.maxLon.toFixed(2)}°E
+                </span>
+              </div>
+              <div className="info-row">
+                <span className="info-label">PBF Source:</span>
+                <span className="info-url">{CITY_CATALOG[selectedCity].pbfUrl}</span>
+              </div>
             </div>
-            <div className="info-row">
-              <span className="info-label">Bounding Box:</span>
-              <span>
-                {CITY_CATALOG[selectedCity].bbox.minLat.toFixed(2)}° — {CITY_CATALOG[selectedCity].bbox.maxLat.toFixed(2)}°N,{' '}
-                {CITY_CATALOG[selectedCity].bbox.minLon.toFixed(2)}° — {CITY_CATALOG[selectedCity].bbox.maxLon.toFixed(2)}°E
-              </span>
+
+            <div className="profile-selector">
+              <label className="info-label">Routing Profiles:</label>
+              <p className="subtitle" style={{ margin: '4px 0 8px' }}>
+                More profiles = longer graph build time and higher memory usage
+              </p>
+              {Object.entries(profileGroups).map(([group, profiles]) => (
+                <div key={group} className="profile-group">
+                  <span className="profile-group-label">{group}</span>
+                  <div className="profile-checkboxes">
+                    {profiles.map((p) => (
+                      <label key={p.id} className="profile-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={selectedProfiles.includes(p.id)}
+                          onChange={() => toggleProfile(p.id)}
+                          disabled={provisioning}
+                        />
+                        <span>{p.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+                {selectedProfiles.length} profile{selectedProfiles.length !== 1 ? 's' : ''} selected
+              </div>
             </div>
-            <div className="info-row">
-              <span className="info-label">PBF Source:</span>
-              <span className="info-url">{CITY_CATALOG[selectedCity].pbfUrl}</span>
-            </div>
-          </div>
+          </>
         )}
 
         <button
           className="btn primary"
           onClick={startProvision}
-          disabled={!selectedCity || provisioning}
+          disabled={!selectedCity || provisioning || selectedProfiles.length === 0}
         >
           {provisioning ? 'Provisioning...' : `Deploy ORS for ${selectedCity || '...'}`}
         </button>

@@ -3,7 +3,7 @@ name: routing-profiles
 description: "Enable or disable ORS routing profiles (driving-car, driving-hgv, cycling, walking, wheelchair). Subskill of routing-customization — must be invoked from the router, not independently. Use when: changing vehicle types as part of customization workflow. Do NOT use for: standalone execution, changing map region, or deploying demo apps. Triggers: change routing profile, change vehicle type, enable profile, disable profile."
 metadata:
   author: Snowflake SIT-IS
-  version: 1.0.0
+  version: 1.1.0
   category: configuration
 ---
 
@@ -20,7 +20,7 @@ Configure which routing profiles are available in your Routing Solution.
 
 ## Input Parameters
 
-- `<REGION_NAME>`: Target region name selected by user (e.g., "great-britain", "switzerland", "new-york")
+- `<REGION_NAME>`: Target region name selected by user (e.g., "SanFrancisco", "NewYork", "London")
 
 ## Available Profiles
 
@@ -61,37 +61,33 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
 
 ### Step 2: Update Configuration
 
-**Goal:** Modify ors-config.yml with new profile settings
+**Goal:** Write new ors-config.yml to the region's stage using the `WRITE_ORS_CONFIG` stored procedure
 
 **Actions:**
 
+**Option A — For new cities provisioned via the Cities tab UI:**
+Profile selection is built into the CityProvisioner UI. Users select routing profile checkboxes before clicking Deploy. No manual config editing needed.
+
+**Option B — For the default (San Francisco) instance or existing cities:**
+
+1. **Determine the PBF filename** for the region (e.g., `SanFrancisco.osm.pbf`)
+
+2. **Call the WRITE_ORS_CONFIG procedure** to generate and upload the config:
+   ```sql
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
+       '<REGION_NAME>',
+       '<PBF_FILENAME>',
+       'driving-car,driving-hgv,cycling-electric'  -- comma-separated list of profiles to ENABLE
+   );
+   ```
+   
+   This generates a complete `ors-config.yml` with only the specified profiles enabled and uploads it to `@CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml`.
+
+**Option C — Manual editing (fallback):**
+
 1. **Edit** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`:
    - For each profile, set `enabled: true` or `enabled: false`
-   
-   Example structure:
-   ```yaml
-   ors:
-     engine:
-       profiles:
-         driving-car:
-           enabled: true
-         driving-hgv:
-           enabled: false
-         cycling-regular:
-           enabled: false
-         cycling-electric:
-           enabled: true
-         cycling-mountain:
-           enabled: false
-         cycling-electric:
-           enabled: false
-         foot-walking:
-           enabled: true
-         foot-hiking:
-           enabled: false
-         wheelchair:
-           enabled: false
-   ```
+   - Update `source_file` to match the region's PBF filename
 
 2. **Upload** modified file:
    ```bash
@@ -108,6 +104,7 @@ After completing all steps in this subskill, return to the **routing-customizati
 
 | Issue | Solution |
 |-------|----------|
+| `WRITE_ORS_CONFIG` not found | App needs upgrade. Upload latest `setup_script.sql` and run `ALTER APPLICATION ... UPGRADE` |
 | Config file not found locally | Re-download from stage: `snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml build-routing-solution/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite` |
 | Stage upload fails | Verify WRITE privilege on stage and correct `--connection` value |
 | Profile name typo | Use exact names from Available Profiles table above |

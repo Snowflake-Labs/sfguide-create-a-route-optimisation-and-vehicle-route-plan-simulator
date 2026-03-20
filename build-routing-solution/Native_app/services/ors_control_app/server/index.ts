@@ -214,7 +214,7 @@ app.get('/api/cities', async (_req, res) => {
 const provisionStates: Record<string, any> = {};
 
 app.post('/api/cities/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox } = req.body;
+  const { city, region, pbf_url, bbox, profiles } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -248,6 +248,16 @@ app.post('/api/cities/provision', async (req, res) => {
         const pbfFilename = escapeString((pbf_url || '').split('/').pop() || 'data.osm.pbf');
         await runSql(`SELECT ${SF_DATABASE}.CORE.DOWNLOAD('ors_spcs_stage/${safeRegion}', '${pbfFilename}', '${safePbfUrl}')`);
       } catch {}
+
+      provisionStates[safeRegion] = { status: 'running', phase: 'creating_service', message: 'Writing ORS config...' };
+      const pbfFile = escapeString((pbf_url || '').split('/').pop() || 'data.osm.pbf');
+      const defaultProfiles = 'driving-car,driving-hgv,cycling-electric';
+      const validProfiles = ['driving-car', 'driving-hgv', 'cycling-regular', 'cycling-road', 'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'];
+      const selectedProfiles = Array.isArray(profiles)
+        ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
+        : defaultProfiles;
+      const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
+      await callProcedure(`WRITE_ORS_CONFIG('${safeRegion}', '${pbfFile}', '${safeProfiles}')`);
 
       provisionStates[safeRegion] = { status: 'running', phase: 'creating_service', message: 'Creating ORS service...' };
       await callProcedure(`SETUP_CITY_ORS('${safeRegion}')`);
@@ -429,6 +439,42 @@ app.post('/api/query', async (req, res) => {
     res.json({ result: rows });
   } catch (err: any) {
     res.json({ error: err.message });
+  }
+});
+
+const tileCache = new Map<string, { buf: Buffer; ts: number }>();
+const TILE_CACHE_TTL = 3600_000;
+
+app.get('/api/tiles/:z/:x/:y', async (req, res) => {
+  const { z, x, y } = req.params;
+  const key = `${z}/${x}/${y}`;
+  const cached = tileCache.get(key);
+  if (cached && Date.now() - cached.ts < TILE_CACHE_TTL) {
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(cached.buf);
+    return;
+  }
+  const url = `https://a.basemaps.cartocdn.com/light_all/${z}/${x}/${y}@2x.png`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) { continue; }
+      const buf = Buffer.from(await resp.arrayBuffer());
+      tileCache.set(key, { buf, ts: Date.now() });
+      if (tileCache.size > 5000) {
+        const oldest = [...tileCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 1000);
+        for (const [k] of oldest) tileCache.delete(k);
+      }
+      res.set('Content-Type', 'image/png');
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.send(buf);
+      return;
+    } catch (e: any) {
+      if (attempt < 2) { await new Promise(r => setTimeout(r, 200 * (attempt + 1))); continue; }
+      console.error(`Tile proxy error for ${key}: ${e.cause?.message || e.message}`);
+      res.status(502).send('Tile fetch failed');
+    }
   }
 });
 
