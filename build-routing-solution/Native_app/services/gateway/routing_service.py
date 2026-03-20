@@ -114,7 +114,11 @@ def post_optimization_tabular():
     input_rows = message['data']
 
     def build_vroom_payload(row):
-        payload = {'jobs': row[1], 'vehicles': row[2]}
+        vehicles = row[2]
+        for v in vehicles:
+            if isinstance(v, dict) and 'profile' not in v:
+                v['profile'] = 'driving-car'
+        payload = {'jobs': row[1], 'vehicles': vehicles}
         if len(row) > 3 and row[3]:
             matrices = row[3]
             if isinstance(matrices, dict) and len(matrices) > 0:
@@ -272,12 +276,13 @@ def post_matrix_tabular(format="json"):
     '''
     Matrix Tabular Handler
 
-    MATRIX(method string, locations array)
+    Supports two calling conventions:
+      2-arg: MATRIX(method, locations)        -> row = [id, method, locations]
+      3-arg: MATRIX_TABULAR(method, origin, destinations) -> row = [id, method, origin, destinations]
 
     row[1] - method/profile string (e.g., 'driving-car')
-    row[2] - locations array of [lon, lat] pairs
-    
-    Returns duration and distance matrix between all locations
+    row[2] - locations array (2-arg) OR origin point/array (3-arg)
+    row[3] - destinations array (3-arg only)
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
@@ -287,11 +292,28 @@ def post_matrix_tabular(format="json"):
 
     input_rows = message['data']
 
-    output_rows = [[row[0], get_ors_response('matrix', row[1], {
-        'locations': row[2],
-        'metrics': ['distance', 'duration'],
-        'resolve_locations': True
-    }, format)] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        if len(row) == 4:
+            origin = row[2]
+            destinations = row[3]
+            if origin and not isinstance(origin[0], list):
+                origin = [origin]
+            locations = origin + destinations
+            body = {
+                'locations': locations,
+                'sources': list(range(len(origin))),
+                'destinations': list(range(len(origin), len(locations))),
+                'metrics': ['distance', 'duration'],
+                'resolve_locations': True
+            }
+        else:
+            body = {
+                'locations': row[2],
+                'metrics': ['distance', 'duration'],
+                'resolve_locations': True
+            }
+        output_rows.append([row[0], get_ors_response('matrix', row[1], body, format)])
         
     logger.info(f'Produced {len(output_rows)} rows')
 
@@ -322,7 +344,16 @@ def post_matrix(format="json"):
 
     input_rows = message['data']
 
-    output_rows = [[row[0], get_ors_response('matrix', row[1], row[2], format)] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        body = row[2]
+        if isinstance(body, list):
+            body = {
+                'locations': body,
+                'metrics': ['distance', 'duration'],
+                'resolve_locations': True
+            }
+        output_rows.append([row[0], get_ors_response('matrix', row[1], body, format)])
         
     logger.info(f'Produced {len(output_rows)} rows')
 

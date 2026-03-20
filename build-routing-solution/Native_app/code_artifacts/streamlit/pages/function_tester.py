@@ -1503,24 +1503,18 @@ elif test_function == "📊 MATRIX":
     if st.button("🧪 Test MATRIX Function", type="primary"):
         with st.spinner("Calling ORS MATRIX function..."):
             try:
-                # Build locations array
                 locations_array = [[loc['lon'], loc['lat']] for loc in selected_matrix_locations]
                 
-                # Create dataframe and call function
-                matrix_df = session.create_dataframe([{
-                    'PROFILE': routing_profile,
-                    'LOCATIONS': locations_array
-                }])
-                
-                matrix_result = matrix_df.select(
-                    call_function(
-                        'OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX',
-                        col('PROFILE'),
-                        col('LOCATIONS')
-                    ).alias('MATRIX_RESULT')
+                inner = ', '.join(
+                    f'ARRAY_CONSTRUCT({lon}, {lat})' for lon, lat in locations_array
+                )
+                sql = (
+                    f"SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX("
+                    f"'{routing_profile}', "
+                    f"ARRAY_CONSTRUCT({inner}))"
                 )
                 
-                result = matrix_result.collect()
+                result = session.sql(sql).collect()
                 
                 if result and result[0][0]:
                     matrix_raw = result[0][0]

@@ -178,8 +178,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    
    # gateway image
    cd ../gateway
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.7.2 .
-   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.7.2
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.7.5 .
+   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.7.5
    
    # vroom image
    cd ../vroom
@@ -214,7 +214,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 4. **Monitor** progress (builds 5 images):
    - openrouteservice:v9.0.0
    - downloader:v0.0.3
-   - routing_reverse_proxy:v0.7.2
+   - routing_reverse_proxy:v0.7.5
    - vroom-docker:v1.0.1
    - ors_control_app:v1.0.5
 
