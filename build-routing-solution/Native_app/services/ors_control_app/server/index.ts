@@ -13,7 +13,8 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const IS_SPCS = existsSync('/snowflake/session/token');
-const SF_DATABASE = process.env.SNOWFLAKE_DATABASE || 'OPENROUTESERVICE_NATIVE_APP';
+const rawDb = process.env.SNOWFLAKE_DATABASE || '';
+const SF_DATABASE = (rawDb && !rawDb.includes('{{')) ? rawDb : 'OPENROUTESERVICE_NATIVE_APP';
 let SF_WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || '';
 const CONN = process.env.SNOWFLAKE_CONNECTION_NAME || 'FREE_TRIAL';
 const SNOWFLAKE_HOST = process.env.SNOWFLAKE_HOST || '';
@@ -83,8 +84,13 @@ async function snowSqlSpcs(sql: string, timeoutSecs: number = 600): Promise<any[
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
+  console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${SF_WAREHOUSE}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
   const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`SQL API error ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  if (!res.ok) {
+    const errBody = (await res.text()).slice(0, 500);
+    console.error(`[SQL API] Error ${res.status}: ${errBody}`);
+    throw new Error(`SQL API error ${res.status}: ${errBody}`);
+  }
   let result: any = await res.json();
   if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
     const pollUrl = `https://${SNOWFLAKE_HOST}${result.statementStatusUrl}`;
@@ -94,6 +100,10 @@ async function snowSqlSpcs(sql: string, timeoutSecs: number = 600): Promise<any[
       result = await pr.json();
       if (result.data || (result.code && result.code !== '333334')) break;
     }
+  }
+  if (result.message && !result.data) {
+    console.error(`[SQL API] Statement error: ${result.message}`);
+    throw new Error(`SQL error: ${result.message}`);
   }
   if (!result.data) return [];
   const cols = (result.resultSetMetaData?.rowType || []).map((c: any) => c.name);
@@ -119,6 +129,7 @@ app.get('/api/status', async (_req, res) => {
     const result = await callProcedure('GET_STATUS()');
     res.json(JSON.parse(result));
   } catch (err: any) {
+    console.error(`[/api/status] Error: ${err.message}`);
     res.json({ compute_pool: 'ERROR', services: [], error: err.message });
   }
 });
@@ -127,7 +138,8 @@ app.get('/api/health', async (_req, res) => {
   try {
     const rows = await runSql(`SELECT ${SF_DATABASE}.CORE.CHECK_HEALTH() AS H`);
     res.json({ healthy: rows?.[0]?.H === 'true' || rows?.[0]?.H === true || rows?.[0]?.H === 'TRUE' });
-  } catch {
+  } catch (err: any) {
+    console.error(`[/api/health] Error: ${err.message}`);
     res.json({ healthy: false });
   }
 });

@@ -13,8 +13,10 @@ artifacts:
       - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
       - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.7.2
       - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
-      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.0
-  default_streamlit: core.control_app
+      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.1
+  default_web_endpoint:
+    service: core.ors_control_app
+    endpoint: ors-control-ui
 references:
   - external_access_integration_ref:
       label: "External access integration"
@@ -35,3 +37,5 @@ configuration:
 privileges:
 - CREATE COMPUTE POOL:
     description: "Permission to create compute pools for running services"
+- BIND SERVICE ENDPOINT:
+    description: "Permission to expose public endpoints for SPCS services"

@@ -188,8 +188,24 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    
    # ors control app (React management UI)
    cd ../ors_control_app
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/ors_control_app:v1.0.0 .
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.0
+   # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
+   # Build locally first, then use a runtime-only Dockerfile:
+   npm ci && npm run build && npm run build:server
+   cat > Dockerfile.runtime <<'RTEOF'
+   FROM node:20-alpine
+   WORKDIR /app
+   COPY dist ./dist
+   COPY dist-server ./dist-server
+   COPY package.json ./
+   COPY package-lock.json* ./
+   RUN npm ci --omit=dev || npm install --omit=dev
+   EXPOSE 3001
+   CMD ["node", "dist-server/index.js"]
+   RTEOF
+   mv .dockerignore .dockerignore.bak 2>/dev/null
+   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.1 .
+   mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.1
    
    # return to working directory
    cd ../../..
@@ -200,7 +216,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - downloader:v0.0.3
    - routing_reverse_proxy:v0.7.2
    - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.0
+   - ors_control_app:v1.0.1
 
 **Output:** All 5 container images pushed to Snowflake image repository
 
@@ -225,12 +241,17 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    cd Native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
-2. **Open the application in browser:**
+2. **Grant warehouse access to the app** (required for the React control app SQL API):
+   ```sql
+   GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+
+3. **Open the application in browser:**
    ```bash
    cd Native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
-3. **Verify** deployment output includes:
+4. **Verify** deployment output includes:
    - Application package created: `OPENROUTESERVICE_NATIVE_APP_PKG`
    - Application created: `OPENROUTESERVICE_NATIVE_APP`
    - Snowsight URL provided
@@ -287,6 +308,25 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 ### Wrong Directory Error
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
 **Solution:** Ensure script runs from `Native_app/` directory, not `provider_setup/`
+
+### ARM Mac esbuild Crash (ors_control_app)
+**Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`
+**Solution:** Build the React app locally (native ARM) first, then use a runtime-only Dockerfile that copies the pre-built `dist/` and `dist-server/` directories. See Step 5 for the exact commands. Must temporarily rename `.dockerignore` since it excludes `dist/`.
+
+### Control App Shows ERROR / Unhealthy / 0 Services
+**Symptom:** React UI shows ERROR for compute pool, Unhealthy for ORS health, 0 running services
+**Solution:** Check service logs with `SYSTEM$GET_SERVICE_LOGS`. Common causes:
+1. **Missing warehouse grant:** Run `GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;`
+2. **Missing QUERY_WAREHOUSE:** Run `ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP SET QUERY_WAREHOUSE = ROUTING_ANALYTICS;`
+3. **`{{database}}` template not resolved:** SPCS does NOT resolve `{{database}}` in service spec env vars within Native App context. The service spec must hardcode the database name (`OPENROUTESERVICE_NATIVE_APP`), not use `{{database}}`.
+
+### Podman Registry Auth for Wrong Host
+**Symptom:** `podman push` fails with "unable to retrieve auth token: invalid username/password: unauthorized" even after `snow spcs image-registry login`
+**Solution:** `snow spcs image-registry login` may store credentials for the wrong registry hostname. Use the manual token approach:
+```bash
+REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
+```
 
 ## Output
 

@@ -25,6 +25,12 @@ BEGIN
    ALTER SERVICE IF EXISTS core.ors_control_app
       FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml';
 
+   BEGIN
+      CALL core.create_control_app();
+   EXCEPTION
+      WHEN OTHER THEN NULL;
+   END;
+
    RETURN 'DONE';
 END;
 $$;
@@ -104,6 +110,14 @@ BEGIN
       AS '/download_to_stage';
 
    GRANT USAGE ON FUNCTION core.download (varchar, varchar, varchar) TO APPLICATION ROLE app_user;
+
+   LET svc_status VARCHAR := 'PENDING';
+   LET wait_count INT := 0;
+   WHILE (:svc_status != 'READY' AND :wait_count < 30) DO
+      SELECT SYSTEM$WAIT(10);
+      svc_status := (SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('core.downloader'))[0]['status']::VARCHAR);
+      wait_count := :wait_count + 1;
+   END WHILE;
 
    SELECT CORE.DOWNLOAD(STAGE, RELATIVE_PATH, DOWNLOAD_URL) FROM SHARED_SCHEMA.OSM_DATA;
 
@@ -374,6 +388,13 @@ BEGIN
    GRANT INSERT ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
    GRANT UPDATE ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
    GRANT DELETE ON TABLE core.MAP_CONFIG TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.CHECK_HEALTH()
+   RETURNS BOOLEAN
+   LANGUAGE SQL
+   AS
+   'SELECT CASE WHEN core.ORS_STATUS() IS NOT NULL THEN TRUE ELSE FALSE END';
+   GRANT USAGE ON FUNCTION core.CHECK_HEALTH() TO APPLICATION ROLE app_user;
 
    RETURN 'Functions successfully created';
 END;
@@ -758,18 +779,6 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.GET_STATUS() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE FUNCTION core.CHECK_HEALTH()
-RETURNS BOOLEAN
-LANGUAGE SQL
-AS
-$$
-    SELECT CASE
-        WHEN core.ORS_STATUS() IS NOT NULL THEN TRUE
-        ELSE FALSE
-    END
-$$;
-GRANT USAGE ON FUNCTION core.CHECK_HEALTH() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- TRAVEL TIME MATRIX: Tables for H3 hexagon-based travel time computation
@@ -1390,12 +1399,18 @@ BEGIN
         FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
         MIN_INSTANCES = 1
         MAX_INSTANCES = 1
-        AUTO_SUSPEND_SECS = 3600;
+        AUTO_SUSPEND_SECS = 0;
 
     GRANT USAGE ON SERVICE core.ors_control_app TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE core.ors_control_app!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     GRANT OPERATE ON SERVICE core.ors_control_app TO APPLICATION ROLE app_user;
     GRANT MONITOR ON SERVICE core.ors_control_app TO APPLICATION ROLE app_user;
+
+    BEGIN
+        ALTER SERVICE core.ors_control_app SET QUERY_WAREHOUSE = ROUTING_ANALYTICS;
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
 
     RETURN 'ORS Control App service created';
 END;
