@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import Map from 'react-map-gl/maplibre';
 import DeckGL from '@deck.gl/react';
-import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { PathLayer, ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { useRoutes } from '../hooks/useData';
-import type { MapZoomTarget } from '../hooks/useData';
-import type { RouteData, CityConfig, MapMode, TravelTimeHexData, StatusFilter, MatrixResolution, MatrixSelection, ReachabilityHexData, CatchmentRestaurant, CatchmentCustomer, AnimatedRoute } from '../types';
+import type { MapZoomTarget, FleetAlert } from '../hooks/useData';
+import type { RouteData, CityConfig, MapMode, TravelTimeHexData, MapFilter, StatusFilter, MatrixResolution, MatrixSelection, ReachabilityHexData, CatchmentRestaurant, CatchmentCustomer, AnimatedRoute } from '../types';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const BASEMAP: any = {
@@ -126,6 +126,8 @@ interface Props {
   mapMode: MapMode;
   onMapModeChange: (mode: MapMode) => void;
   statusFilter: StatusFilter;
+  mapFilter: MapFilter;
+  onClearMapFilter?: () => void;
   mapZoomTarget?: MapZoomTarget | null;
   onMapZoomComplete?: () => void;
   onMatrixSelection?: (selection: MatrixSelection | null) => void;
@@ -133,13 +135,14 @@ interface Props {
   catchmentCustomers?: CatchmentCustomer[];
   hoveredRestaurant?: CatchmentRestaurant | null;
   refreshKey?: number;
+  floodAlerts?: FleetAlert[];
 }
 
-export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, statusFilter, mapZoomTarget, onMapZoomComplete, onMatrixSelection, catchmentRestaurants, catchmentCustomers, hoveredRestaurant, refreshKey = 0 }: Props) {
+export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, statusFilter, mapFilter, onClearMapFilter, mapZoomTarget, onMapZoomComplete, onMatrixSelection, catchmentRestaurants, catchmentCustomers, hoveredRestaurant, refreshKey = 0, floodAlerts = [] }: Props) {
   const [availableDates, setAvailableDates] = useState<{date: string; count: number}[]>([]);
   const [selectedDateIdx, setSelectedDateIdx] = useState<number>(-1);
   const selectedDate = selectedDateIdx >= 0 && selectedDateIdx < availableDates.length ? availableDates[selectedDateIdx].date : '';
-  const { routes, loading } = useRoutes(city, statusFilter, selectedDate, refreshKey);
+  const { routes, loading } = useRoutes(city, mapFilter, selectedDate, refreshKey);
   const [viewState, setViewState] = useState({
     longitude: cityConfig.longitude,
     latitude: cityConfig.latitude,
@@ -804,12 +807,26 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       return result;
     }
     const routeLayers: any[] = [];
+    const floodFeatures = floodAlerts
+      .filter(a => a.type === 'flood' && a.area_geojson)
+      .map(a => ({ type: 'Feature' as const, properties: { title: a.title, severity: a.severity, description: a.description, water_level: a.water_level_m, roads: a.affected_roads }, geometry: a.area_geojson }));
+    if (floodFeatures.length > 0) {
+      routeLayers.push(new GeoJsonLayer({
+        id: 'flood-zones',
+        data: { type: 'FeatureCollection', features: floodFeatures },
+        getFillColor: [255, 50, 50, 60],
+        getLineColor: [255, 80, 80, 200],
+        getLineWidth: 2,
+        lineWidthMinPixels: 2,
+        pickable: true,
+      }));
+    }
     if (layerVisibility.routes) routeLayers.push(pathLayer);
     if (layerVisibility.pickups) routeLayers.push(pickupLayer);
     if (layerVisibility.dropoffs) routeLayers.push(dropoffLayer);
     if (layerVisibility.couriers && courierLayer) routeLayers.push(courierLayer);
     return routeLayers;
-  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer, courierLayer]);
+  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer, courierLayer, floodAlerts]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
@@ -824,6 +841,11 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             <div class="tooltip-row"><span class="tooltip-label">Distance</span><span class="tooltip-value">${object.distance_km.toFixed(1)} km</span></div>
             <div class="tooltip-row"><span class="tooltip-label">ETA</span><span class="tooltip-value">${object.eta_mins.toFixed(0)} min</span></div>
             <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-value">${object.order_status}</span></div>
+            ${object.delay_reason && object.delay_reason !== 'none' ? `
+            <div class="tooltip-divider"></div>
+            <div class="tooltip-row"><span class="tooltip-label" style="color:#ff6b6b">Delay</span><span class="tooltip-value" style="color:#ff6b6b">${object.delay_reason}${object.flood_affected ? ' (flood zone)' : ''}</span></div>
+            <div class="tooltip-row"><span class="tooltip-label" style="color:#ff6b6b">Delayed by</span><span class="tooltip-value" style="color:#ff6b6b">${object.delay_minutes} min</span></div>
+            ` : ''}
           </div>
         `,
         style: { background: 'transparent', border: 'none', padding: '0' },
@@ -955,6 +977,22 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         style: { background: 'transparent', border: 'none', padding: '0' },
       };
     }
+    if (layer?.id === 'flood-zones' && object?.properties) {
+      const p = object.properties;
+      return {
+        html: `
+          <div class="tooltip-container" style="border-left: 3px solid #ff4444;">
+            <div class="tooltip-title" style="color:#ff6b6b;">&#9888; ${p.title || 'Flood Zone'}</div>
+            <div class="tooltip-divider"></div>
+            <div class="tooltip-row"><span class="tooltip-label">Severity</span><span class="tooltip-value" style="color:#ff6b6b">${(p.severity || '').toUpperCase()}</span></div>
+            ${p.water_level ? `<div class="tooltip-row"><span class="tooltip-label">Water Level</span><span class="tooltip-value">${p.water_level}m</span></div>` : ''}
+            ${p.roads ? `<div class="tooltip-row"><span class="tooltip-label">Roads Affected</span><span class="tooltip-value">~${p.roads}</span></div>` : ''}
+            ${p.description ? `<div class="tooltip-row"><span class="tooltip-label" style="color:#aaa;font-style:italic">${p.description.slice(0, 100)}...</span></div>` : ''}
+          </div>
+        `,
+        style: { background: 'transparent', border: 'none', padding: '0' },
+      };
+    }
     return null;
   }, [reachData.length, hoveredRestaurant, animatedRoute, animProgress]);
 
@@ -983,10 +1021,13 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         <Map mapStyle={BASEMAP} />
       </DeckGL>
 
-      {statusFilter !== 'all' && (
+      {(mapFilter.type !== 'all' || statusFilter !== 'all') && (
         <div className="map-filter-badge">
-          Showing: {statusFilter === 'active' ? 'Active Only' : statusFilter.replace('_', ' ')}
+          Showing: {mapFilter.type !== 'all' ? mapFilter.label : (statusFilter === 'active' ? 'Active Only' : statusFilter.replace('_', ' '))}
           <span className="map-filter-count">{routesWithCoords.length} routes</span>
+          {mapFilter.type !== 'all' && onClearMapFilter && (
+            <button className="map-filter-clear" onClick={onClearMapFilter}>✕</button>
+          )}
         </div>
       )}
 

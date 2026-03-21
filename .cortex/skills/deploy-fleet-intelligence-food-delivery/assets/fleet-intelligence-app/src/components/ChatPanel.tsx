@@ -6,15 +6,21 @@ import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import type { Working, ChatMessage, FileAttachment, FleetStats, ActiveStats, StatusFilter, MatrixSelection } from '../types';
+import type { Working, ChatMessage, FileAttachment, FleetStats, ActiveStats, StatusFilter, MapFilter, MatrixSelection } from '../types';
+import { parseAgentFilter } from '../types';
 
 const QUICK_QUESTIONS = [
-  'Show me all active deliveries right now',
-  'Which couriers are currently in transit?',
-  'What is the average delivery time across all cities?',
-  'Compare delivery volumes between LA and San Francisco',
-  'Which restaurants have the most pending orders?',
-  'Show delivery load over time for courier C-0001',
+  'How many deliveries were made today?',
+  "What's the busiest restaurant by order count?",
+  'Show me the weather conditions over the last 24 hours',
+  'Which couriers were affected by flooding?',
+  'How many customer complaints are flood-related vs traffic-related?',
+  "What's the average delay for flood-affected deliveries vs normal?",
+  'Show angry customer calls from today',
+  'Show all deliveries for courier SAN-0012 on the map',
+  "What's the forecast for tomorrow?",
+  'Which shift has the most delays?',
+  'Show me Italian restaurants on the map',
 ];
 
 const CHART_REGEX = /```chart\s*\n([\s\S]*?)\n```/g;
@@ -104,14 +110,82 @@ function parseCharts(content: string): { text: string; charts: ChartSpec[] } {
   return { text, charts };
 }
 
-function MarkdownWithCharts({ content }: { content: string }) {
+function autoDetectChart(results: Record<string, any>[] | undefined): ChartSpec | null {
+  if (!results || results.length < 2 || results.length > 100) return null;
+  const keys = Object.keys(results[0]);
+  if (keys.length < 2) return null;
+
+  const isNumeric = (v: any) => v !== null && v !== undefined && !isNaN(Number(v)) && typeof v !== 'boolean';
+  const isTimelike = (k: string) => /time|date|hour|day|month|year|period|week|shift/i.test(k);
+  const isCategory = (k: string) => /name|type|city|status|cuisine|vehicle|id|courier|restaurant|category/i.test(k);
+
+  const numericKeys = keys.filter(k => results!.every(r => r[k] === null || isNumeric(r[k])));
+  const nonNumericKeys = keys.filter(k => !numericKeys.includes(k));
+
+  let xKey = '';
+  const yKeys: { key: string; label: string }[] = [];
+
+  const timeKey = keys.find(k => isTimelike(k) && !numericKeys.includes(k));
+  const catKey = keys.find(k => isCategory(k) && !numericKeys.includes(k));
+  const numTimeKey = keys.find(k => isTimelike(k) && numericKeys.includes(k));
+
+  if (timeKey) {
+    xKey = timeKey;
+  } else if (numTimeKey) {
+    xKey = numTimeKey;
+  } else if (catKey) {
+    xKey = catKey;
+  } else if (nonNumericKeys.length > 0) {
+    xKey = nonNumericKeys[0];
+  } else if (numericKeys.length >= 2) {
+    xKey = numericKeys[0];
+  }
+
+  if (!xKey) return null;
+
+  const candidates = numericKeys.filter(k => k !== xKey);
+  if (candidates.length === 0) return null;
+
+  for (const k of candidates.slice(0, 4)) {
+    yKeys.push({ key: k, label: k.replace(/_/g, ' ') });
+  }
+
+  const uniqueX = new Set(results!.map(r => String(r[xKey]))).size;
+  const chartType: 'bar' | 'line' = (timeKey || numTimeKey || uniqueX > 8) ? 'line' : 'bar';
+
+  const data = results!.map(r => {
+    const row: Record<string, any> = {};
+    row[xKey] = r[xKey];
+    for (const yk of yKeys) {
+      row[yk.key] = r[yk.key] !== null ? Number(r[yk.key]) : 0;
+    }
+    return row;
+  });
+
+  return {
+    type: chartType,
+    title: yKeys.length === 1 ? yKeys[0].label : undefined,
+    xKey,
+    yKeys,
+    data,
+  };
+}
+
+function MarkdownWithCharts({ content, workings }: { content: string; workings?: Working[] }) {
   const { text, charts } = useMemo(() => parseCharts(content), [content]);
+  const autoChart = useMemo(() => {
+    if (charts.length > 0) return null;
+    const toolResult = workings?.find(w => w.type === 'tool_result' && w.results && w.results.length > 0);
+    return toolResult ? autoDetectChart(toolResult.results) : null;
+  }, [charts.length, workings]);
+
   return (
     <>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
       {charts.map((spec, i) => (
         <AgentChart key={i} spec={spec} />
       ))}
+      {autoChart && <AgentChart spec={autoChart} />}
     </>
   );
 }
@@ -128,6 +202,7 @@ interface CompactStatsProps {
   selectedCity: string;
   statusFilter: StatusFilter;
   onStatusFilter: (f: StatusFilter) => void;
+  onMapFilter: (f: MapFilter) => void;
   matrixSelection?: MatrixSelection | null;
 }
 
@@ -291,7 +366,7 @@ interface ChatPanelProps {
   agent: {
     messages: ChatMessage[];
     loading: boolean;
-    sendMessage: (text: string, attachments?: FileAttachment[], onMapFilter?: (f: string) => void) => void;
+    sendMessage: (text: string, attachments?: FileAttachment[], onMapFilter?: (filterType: string, filterValue: string) => void) => void;
     clearChat: () => void;
     currentWorkings: Working[];
     streamingText: string;
@@ -307,7 +382,7 @@ interface ChatPanelProps {
   matrixSelection?: MatrixSelection | null;
 }
 
-export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter, matrixSelection }: ChatPanelProps) {
+export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter, onMapFilter, matrixSelection }: ChatPanelProps) {
   const { messages, loading, sendMessage, clearChat, currentWorkings, streamingText, currentStatus } = agent;
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -317,12 +392,10 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, currentWorkings, streamingText, currentStatus]);
 
-  const handleMapFilterFromAgent = useCallback((filter: string) => {
-    const validFilters: StatusFilter[] = ['all', 'active', 'in_transit', 'picked_up'];
-    if (validFilters.includes(filter as StatusFilter)) {
-      onStatusFilter(filter as StatusFilter);
-    }
-  }, [onStatusFilter]);
+  const handleMapFilterFromAgent = useCallback((filterType: string, filterValue: string) => {
+    const parsed = parseAgentFilter(filterType, filterValue);
+    onMapFilter(parsed);
+  }, [onMapFilter]);
 
   useEffect(() => {
     const originHex = matrixSelection?.origin_hex || null;
@@ -399,7 +472,7 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
             )}
             {msg.role === 'assistant' ? (
               <div className="markdown-content">
-                <MarkdownWithCharts content={msg.content} />
+                <MarkdownWithCharts content={msg.content} workings={msg.workings} />
               </div>
             ) : (
               <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>

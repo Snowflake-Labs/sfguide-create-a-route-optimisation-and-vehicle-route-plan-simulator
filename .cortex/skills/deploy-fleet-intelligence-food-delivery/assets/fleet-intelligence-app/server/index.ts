@@ -29,6 +29,9 @@ const SF_WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
 const CONN = process.env.SNOWFLAKE_CONNECTION_NAME || 'FREE_TRIAL';
 const SNOWFLAKE_HOST = process.env.SNOWFLAKE_HOST || '';
 
+const AGENT_SCHEMA = process.env.AGENT_SCHEMA || 'CORE';
+const AGENT_NAME = process.env.AGENT_NAME || 'FLEET_INTELLIGENCE_AGENT';
+
 const CITY_ORS_MAP: Record<string, any> = {
   'London': { cityKey: 'LONDON', pbfUrl: 'https://download.bbbike.org/osm/bbbike/London/London.osm.pbf', pbfFilename: 'London.osm.pbf', orsRegion: 'London', country: 'GB', state: '', bbox: { minLat: 51.28, maxLat: 51.69, minLon: -0.51, maxLon: 0.33 }, geohash3: ['gcp', 'u10'] },
   'Paris': { cityKey: 'PARIS', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf', pbfFilename: 'Paris.osm.pbf', orsRegion: 'Paris', country: 'FR', state: '', bbox: { minLat: 48.81, maxLat: 48.90, minLon: 2.22, maxLon: 2.47 }, geohash3: ['u09'] },
@@ -211,11 +214,37 @@ app.get('/api/routes', async (req, res) => {
     const city = req.query.city as string || 'Los Angeles';
     const statusFilter = req.query.status as string || '';
     const dateFilter = req.query.date as string || '';
+    const filterType = req.query.filter_type as string || '';
+    const filterValue = req.query.filter_value as string || '';
     const conditions: string[] = [];
     if (city !== 'All Cities') conditions.push(`CITY = '${city.replace(/'/g, "''")}'`);
     if (statusFilter === 'active') conditions.push(`ORDER_STATUS != 'delivered'`);
     else if (statusFilter && statusFilter !== 'all') conditions.push(`ORDER_STATUS = '${statusFilter.replace(/'/g, "''")}'`);
     if (dateFilter) conditions.push(`TO_VARCHAR(ORDER_TIME::DATE, 'YYYY-MM-DD') = '${dateFilter.replace(/'/g, "''")}'`);
+    const safeVal = filterValue.replace(/'/g, "''");
+    if (filterType && filterValue) {
+      switch (filterType.toLowerCase()) {
+        case 'restaurant':
+          conditions.push(`UPPER(RESTAURANT_NAME) LIKE UPPER('%${safeVal}%')`);
+          break;
+        case 'courier':
+          conditions.push(`UPPER(COURIER_ID) LIKE UPPER('%${safeVal}%')`);
+          break;
+        case 'cuisine':
+          conditions.push(`UPPER(CUISINE_TYPE) LIKE UPPER('%${safeVal}%')`);
+          break;
+        case 'vehicle':
+          conditions.push(`UPPER(VEHICLE_TYPE) LIKE UPPER('%${safeVal}%')`);
+          break;
+        case 'shift':
+          conditions.push(`UPPER(SHIFT_TYPE) LIKE UPPER('%${safeVal}%')`);
+          break;
+        case 'status':
+          if (safeVal.toLowerCase() === 'active') conditions.push(`ORDER_STATUS != 'delivered'`);
+          else conditions.push(`ORDER_STATUS = '${safeVal}'`);
+          break;
+      }
+    }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const sql = `SELECT
   COURIER_ID,
@@ -226,7 +255,10 @@ app.get('/api/routes', async (req, res) => {
   ROUTE_DISTANCE_METERS/1000 AS DISTANCE_KM,
   ROUTE_DURATION_SECS/60 AS ETA_MINS,
   ORDER_STATUS,
-  CITY
+  CITY,
+  DELAY_REASON,
+  DELAY_MINUTES,
+  FLOOD_AFFECTED
 FROM ${SF_DATABASE}.${SF_SCHEMA}.DELIVERY_SUMMARY
 ${whereClause}
 LIMIT 500`;
@@ -238,6 +270,71 @@ LIMIT 500`;
   } catch (err: any) {
     console.error('Routes error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/alerts', async (req, res) => {
+  try {
+    const city = req.query.city as string || 'San Francisco';
+    const alerts: any[] = [];
+    try {
+      const floods = await snowSql(`SELECT FLOOD_ID, FLOOD_NAME, SEVERITY, ST_ASGEOJSON(FLOOD_AREA) AS AREA_JSON,
+        ST_Y(CENTROID) AS CENTER_LAT, ST_X(CENTROID) AS CENTER_LON,
+        START_TIME, END_TIME, PEAK_TIME, WATER_LEVEL_M, IS_ACTIVE, AFFECTED_ROADS_EST, DESCRIPTION
+      FROM ${SF_DATABASE}.DATA.FLOOD_MONITORING
+      WHERE CITY = '${city.replace(/'/g, "''")}' AND IS_ACTIVE = TRUE`);
+      for (const f of floods) {
+        alerts.push({
+          type: 'flood',
+          id: f.FLOOD_ID,
+          title: f.FLOOD_NAME,
+          severity: f.SEVERITY,
+          area_geojson: f.AREA_JSON ? JSON.parse(f.AREA_JSON) : null,
+          center_lat: Number(f.CENTER_LAT),
+          center_lon: Number(f.CENTER_LON),
+          start_time: f.START_TIME,
+          end_time: f.END_TIME,
+          peak_time: f.PEAK_TIME,
+          water_level_m: Number(f.WATER_LEVEL_M),
+          affected_roads: Number(f.AFFECTED_ROADS_EST),
+          description: f.DESCRIPTION,
+        });
+      }
+    } catch {}
+    try {
+      const weather = await snowSql(`SELECT DISTINCT WEATHER_SEVERITY, WEATHER_CONDITION,
+        COUNT(*) AS STATION_COUNT
+      FROM ${SF_DATABASE}.DATA.WEATHER_OBSERVATIONS
+      WHERE CITY = '${city.replace(/'/g, "''")}'
+        AND WEATHER_SEVERITY IN ('warning', 'severe')
+        AND OBSERVATION_TIME >= DATEADD('hour', -3, (SELECT MAX(OBSERVATION_TIME) FROM ${SF_DATABASE}.DATA.WEATHER_OBSERVATIONS))
+      GROUP BY WEATHER_SEVERITY, WEATHER_CONDITION`);
+      for (const w of weather) {
+        alerts.push({
+          type: 'weather',
+          severity: w.WEATHER_SEVERITY,
+          condition: w.WEATHER_CONDITION,
+          station_count: Number(w.STATION_COUNT),
+        });
+      }
+    } catch {}
+    try {
+      const incidents = await snowSql(`SELECT INCIDENT_TYPE, COUNT(*) AS CNT,
+        ROUND(AVG(DELAY_MINUTES), 1) AS AVG_DELAY
+      FROM ${SF_DATABASE}.DATA.DELIVERY_INCIDENTS
+      WHERE CITY = '${city.replace(/'/g, "''")}'
+      GROUP BY INCIDENT_TYPE`);
+      const incidentSummary: Record<string, any> = {};
+      for (const i of incidents) {
+        incidentSummary[i.INCIDENT_TYPE] = { count: Number(i.CNT), avg_delay: Number(i.AVG_DELAY) };
+      }
+      if (Object.keys(incidentSummary).length > 0) {
+        alerts.push({ type: 'incident_summary', incidents: incidentSummary });
+      }
+    } catch {}
+    res.json(alerts);
+  } catch (err: any) {
+    res.json([]);
   }
 });
 
@@ -519,104 +616,243 @@ app.post('/api/agent', async (req, res) => {
     res.flushHeaders();
 
     const send = (obj: any) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    send({ type: 'status', message: 'Analyzing your question...' });
-    send({ type: 'thinking_delta', text: 'Interpreting your question and generating a data query...\n' });
 
-    send({ type: 'tool_use', tool_name: 'fleet_data', tool_type: 'cortex_analyst_text_to_sql' });
-    send({ type: 'status', message: 'Querying fleet intelligence data...' });
+    if (IS_SPCS) {
+      send({ type: 'status', message: 'Connecting to Fleet Intelligence agent...' });
+      const { host, token } = getSpcsConfig();
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      };
 
-    console.log('Generating SQL for:', userQuestion.slice(0, 200));
+      let threadId = '';
+      try {
+        const threadRes = await fetch(`https://${host}/api/v2/cortex/threads`, {
+          method: 'POST', headers, body: JSON.stringify({})
+        });
+        if (threadRes.ok) {
+          const threadData: any = await threadRes.json();
+          threadId = threadData.thread_id || '';
+        }
+      } catch (threadErr: any) {
+        console.error('Thread creation error:', threadErr.message);
+      }
 
-    const systemPrompt = `You are a fleet intelligence analyst for SwiftBite, a food delivery company operating across multiple cities including San Francisco, London, and Paris. Generate a SQL query for the user's question.
+      const agentUrl = `https://${host}/api/v2/databases/${SF_DATABASE}/schemas/${AGENT_SCHEMA}/agents/${AGENT_NAME}:run`;
+      const agentBody: any = {
+        messages: [{ role: 'user', content: [{ type: 'text', text: userQuestion }] }]
+      };
+      if (threadId) {
+        agentBody.thread_id = threadId;
+        agentBody.parent_message_id = '0';
+      }
+
+      console.log('Calling Agent API:', agentUrl);
+      const agentRes = await fetch(agentUrl, {
+        method: 'POST',
+        headers: { ...headers, 'Accept': 'text/event-stream' },
+        body: JSON.stringify(agentBody),
+      });
+
+      if (!agentRes.ok) {
+        const errText = await agentRes.text();
+        console.error('Agent API error:', agentRes.status, errText.slice(0, 500));
+        send({ type: 'error', message: `Agent API error ${agentRes.status}: ${errText.slice(0, 200)}` });
+        send({ type: 'done' });
+        res.end();
+        return;
+      }
+
+      let accSql = '';
+      let accExplanation = '';
+      const reader = (agentRes.body as any).getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = '';
+      let currentData = '';
+
+      const processEvent = (evtType: string, evtData: string) => {
+        let data: any;
+        try { data = JSON.parse(evtData); } catch { return; }
+        console.log('SSE event:', evtType, evtData.slice(0, 500));
+
+        switch (evtType) {
+          case 'response.status':
+            send({ type: 'status', message: data.status || data.text || 'Processing...' });
+            break;
+          case 'response.thinking.delta':
+            send({ type: 'thinking_delta', text: data.text || '' });
+            break;
+          case 'response.thinking':
+            break;
+          case 'response.tool_use':
+            send({ type: 'tool_use', tool_name: data.name || 'fleet_data', tool_type: data.type || 'generic' });
+            if (data.name === 'fleet_map_control' && data.input) {
+              send({
+                type: 'map_filter',
+                filter_type: data.input.filter_type || 'all',
+                filter_value: data.input.filter_value || '',
+              });
+            }
+            send({ type: 'status', message: data.name === 'fleet_map_control' ? 'Updating map display...' : 'Querying fleet intelligence data...' });
+            break;
+          case 'response.tool_result.status':
+            send({ type: 'status', message: data.status || 'Running query...' });
+            break;
+          case 'response.tool_result.analyst.delta':
+            if (data.delta?.sql) accSql += data.delta.sql;
+            if (data.delta?.sql_explanation) accExplanation += data.delta.sql_explanation;
+            if (data.delta?.think) send({ type: 'thinking_delta', text: data.delta.think });
+            break;
+          case 'response.tool_result.analyst.suggestion.delta':
+            break;
+          case 'response.tool_result': {
+            if (data.name === 'fleet_map_control') {
+              break;
+            }
+            const toolResult: any = {
+              type: 'tool_result',
+              tool_name: data.name || 'fleet_data',
+              status: data.status === 'error' ? 'error' : 'complete',
+              sql: accSql,
+              sql_explanation: accExplanation,
+              has_results: true,
+            };
+            if (data.content && Array.isArray(data.content)) {
+              for (const c of data.content) {
+                let rawText = '';
+                if (c.type === 'text' && c.text) {
+                  rawText = c.text;
+                } else if (c.type === 'json' && c.json?.result) {
+                  rawText = typeof c.json.result === 'string' ? c.json.result : JSON.stringify(c.json.result);
+                  if (rawText.startsWith('"') && rawText.endsWith('"')) {
+                    try { rawText = JSON.parse(rawText); } catch {}
+                  }
+                }
+                if (rawText) {
+                  try {
+                    const parsed = JSON.parse(rawText);
+                    if (parsed.sql) toolResult.sql = parsed.sql;
+                    if (parsed.data && Array.isArray(parsed.data)) {
+                      toolResult.row_count = parsed.row_count || parsed.data.length;
+                      toolResult.results = parsed.data;
+                    }
+                    if (parsed.error) {
+                      toolResult.status = 'error';
+                      toolResult.error = parsed.error;
+                    }
+                    if (Array.isArray(parsed)) toolResult.row_count = parsed.length;
+                  } catch {}
+                }
+              }
+            }
+            send(toolResult);
+            accSql = '';
+            accExplanation = '';
+            break;
+          }
+          case 'response.text.delta':
+            send({ type: 'text_delta', text: data.text || '' });
+            break;
+          case 'response.text':
+            break;
+          case 'response.text.annotation':
+            break;
+          case 'response.table':
+            break;
+          case 'response.chart':
+            if (data.chart_spec) {
+              try {
+                const vegaSpec = typeof data.chart_spec === 'string' ? JSON.parse(data.chart_spec) : data.chart_spec;
+                const chartData = vegaSpec?.data?.values || [];
+                const encoding = vegaSpec?.encoding || {};
+                const xField = encoding.x?.field || '';
+                const yField = encoding.y?.field || '';
+                if (xField && yField && chartData.length > 0) {
+                  const chartBlock = JSON.stringify({
+                    type: vegaSpec.mark === 'bar' ? 'bar' : 'line',
+                    title: vegaSpec.title || '',
+                    xKey: xField,
+                    yKeys: [{ key: yField, label: yField.replace(/_/g, ' ') }],
+                    data: chartData.slice(0, 30),
+                  });
+                  send({ type: 'text_delta', text: '\n```chart\n' + chartBlock + '\n```\n' });
+                }
+              } catch {}
+            }
+            break;
+          case 'response': {
+            if (data.content && Array.isArray(data.content)) {
+              for (const item of data.content) {
+                if (item.type === 'text' && item.text?.text) {
+                  send({ type: 'text_delta', text: item.text.text });
+                }
+              }
+            }
+            break;
+          }
+          case 'metadata':
+            break;
+          case 'error':
+            send({ type: 'error', message: data.message || data.error || 'Agent error' });
+            break;
+          default:
+            break;
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let nlIdx: number;
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.substring(0, nlIdx).replace(/\r$/, '');
+          buffer = buffer.substring(nlIdx + 1);
+
+          if (line.startsWith('event:')) {
+            currentEvent = line.substring(6).trim();
+          } else if (line.startsWith('data:')) {
+            const dataStr = line.substring(5).trim();
+            currentData = currentData ? currentData + '\n' + dataStr : dataStr;
+          } else if (line === '') {
+            if (currentEvent && currentData) {
+              processEvent(currentEvent, currentData);
+            }
+            currentEvent = '';
+            currentData = '';
+          }
+        }
+      }
+
+      if (currentEvent && currentData) {
+        processEvent(currentEvent, currentData);
+      }
+
+      send({ type: 'done' });
+      res.end();
+    } else {
+      send({ type: 'status', message: 'Analyzing your question...' });
+      send({ type: 'thinking_delta', text: 'Interpreting your question and generating a data query...\n' });
+      send({ type: 'tool_use', tool_name: 'fleet_data', tool_type: 'cortex_analyst_text_to_sql' });
+      send({ type: 'status', message: 'Querying fleet intelligence data...' });
+
+      const systemPrompt = `You are a fleet intelligence analyst for SwiftBite, a food delivery company operating across multiple cities including San Francisco, London, and Paris. Generate a SQL query for the user's question.
 
 Available tables in ${SF_DATABASE}.${SF_SCHEMA}:
 - DELIVERY_SUMMARY: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION (GEOGRAPHY), CITY, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS (values: 'delivered', 'in_transit', 'picked_up'), ROUTE_DISTANCE_METERS (FLOAT), ROUTE_DURATION_SECS (FLOAT), PREP_TIME_MINS, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE (car/scooter/bicycle), AVERAGE_KMH, MAX_KMH, GEOMETRY (GEOGRAPHY)
-- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DROPOFF_TIME (TIMESTAMP), RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), ROUTE (GEOGRAPHY - route linestring), POINT_GEOM (GEOGRAPHY - current courier position), CURR_TIME (TIMESTAMP), POINT_INDEX, COURIER_STATE (values: 'at_restaurant', 'picking_up', 'en_route', 'arriving', 'delivered' — NOT the same as ORDER_STATUS), KMH, CITY
+- COURIER_LOCATIONS: ORDER_ID, COURIER_ID, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DROPOFF_TIME (TIMESTAMP), RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), ROUTE (GEOGRAPHY), POINT_GEOM (GEOGRAPHY), CURR_TIME (TIMESTAMP), POINT_INDEX, COURIER_STATE (values: 'at_restaurant', 'picking_up', 'en_route', 'arriving', 'delivered'), KMH, CITY
 - ORDERS_ASSIGNED_TO_COURIERS: COURIER_ID, ORDER_ID, RESTAURANT_ID, RESTAURANT_NAME, RESTAURANT_ADDRESS, CUSTOMER_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_LOCATION (GEOGRAPHY), GEOMETRY (GEOGRAPHY), ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS, CITY
 
-IMPORTANT SQL notes for GEOGRAPHY columns:
-- These are Snowflake GEOGRAPHY type, NOT GeoJSON strings. Use them directly with spatial functions.
-- Use ST_DISTANCE(col1, col2) to compute distance between two GEOGRAPHY columns (returns meters).
-- Use ST_DISTANCE(ST_POINT(lon, lat), col) to compute distance from a coordinate to a GEOGRAPHY column.
-- Do NOT use ST_GEOMFROMGEOJSON() on GEOGRAPHY columns — they are already spatial objects.
-- To get lat/lon from GEOGRAPHY: ST_Y(col) for latitude, ST_X(col) for longitude.
-- For restaurant queries (name, cuisine, location), prefer DELIVERY_SUMMARY which has RESTAURANT_NAME and CUISINE_TYPE. COURIER_LOCATIONS does NOT have restaurant names or IDs.
+IMPORTANT: ORDER_STATUS can be 'delivered', 'in_transit', or 'picked_up'. Active orders are those NOT 'delivered'.
+For courier position queries, use COURIER_LOCATIONS table. Each delivery has 15 position snapshots (POINT_INDEX 0-14).
+Return ONLY a JSON object: {"sql": "SELECT ...", "explanation": "..."}
+Keep queries efficient. Use fully qualified table names. Limit detail queries to 20 rows.`;
 
-For time-series/trend queries, use DATE_TRUNC or HOUR(ORDER_TIME) to bucket time. For "delivery load over time" queries, count deliveries grouped by time bucket.
+      let sqlStatement = '';
+      let sqlExplanation = '';
 
-IMPORTANT: ORDER_STATUS (in DELIVERY_SUMMARY) can be 'delivered', 'in_transit', or 'picked_up'. Active/pending orders are those NOT 'delivered'. When the user asks about active, in-progress, pending, in-transit, or not-yet-delivered orders, use DELIVERY_SUMMARY.ORDER_STATUS (e.g. ORDER_STATUS = 'in_transit' or ORDER_STATUS != 'delivered').
-WARNING: Do NOT confuse ORDER_STATUS with COURIER_STATE. They are different columns in different tables with different values. COURIER_STATE in COURIER_LOCATIONS has values: 'at_restaurant','picking_up','en_route','arriving','delivered'. ORDER_STATUS in DELIVERY_SUMMARY has values: 'delivered','in_transit','picked_up'. There is NO 'in_transit' value in COURIER_STATE. For questions about order counts, status, restaurants, use DELIVERY_SUMMARY.
-
-For courier position/ETA queries, use COURIER_LOCATIONS table. Each delivery has 15 position snapshots (POINT_INDEX 0-14): 0=at_restaurant, 1=picking_up, 2-12=en_route (positions along route), 13=arriving, 14=delivered. CURR_TIME is the timestamp at each position. To find where a courier currently is or their ETA:
-- Filter COURIER_STATE IN ('en_route','picking_up','arriving') for active couriers
-- ETA = DATEDIFF('second', CURR_TIME, DROPOFF_TIME) gives seconds until delivery
-- To find courier position at a specific hour: filter HOUR(CURR_TIME) = <hour> and take the latest POINT_INDEX per ORDER_ID
-- To join with restaurant/customer names, join to DELIVERY_SUMMARY on ORDER_ID
-- KMH column gives the courier's speed at each snapshot point
-
-You can also emit map_action commands to control the dashboard map. If the user asks to show active/in-transit orders on the map, or to filter the map, include a "map_action" field:
-- {"sql": "...", "explanation": "...", "map_action": {"filter": "active"}} — show only active (non-delivered) routes on map
-- {"sql": "...", "explanation": "...", "map_action": {"filter": "in_transit"}} — show only in_transit routes
-- {"sql": "...", "explanation": "...", "map_action": {"filter": "all"}} — show all routes (reset filter)
-
-Return ONLY a JSON object: {"sql": "SELECT ...", "explanation": "...", "map_action": {...} (optional)}
-Keep queries efficient and concise. Use fully qualified table names. IMPORTANT: Keep SQL short — select only the columns needed to answer the question, never SELECT *. For count/summary questions use aggregations. Limit detail queries to 20 rows.`;
-
-    let sqlStatement = '';
-    let sqlExplanation = '';
-    let mapAction: any = null;
-
-    if (IS_SPCS) {
-      try {
-        const messagesJson = JSON.stringify([
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userQuestion }
-        ]);
-        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', PARSE_JSON($$${messagesJson}$$), {'max_tokens':2048}) as RESPONSE`;
-        console.log('Calling CORTEX.COMPLETE via SQL for SQL gen...');
-        const rows = await snowSqlSpcs(cortexSql);
-        console.log('CORTEX.COMPLETE SQL gen returned rows:', rows.length);
-        if (rows.length > 0) {
-          const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
-          console.log('CORTEX.COMPLETE SQL gen raw preview:', String(raw).slice(0, 300));
-          let content = '';
-          try {
-            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.choices?.[0]?.content || (typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
-          } catch {
-            content = String(raw);
-          }
-          console.log('CORTEX.COMPLETE SQL gen content preview:', content.slice(0, 300));
-          try {
-            const jsonMatch = content.match(/\{[\s\S]*"sql"[\s\S]*\}/);
-            if (jsonMatch) {
-              const sanitized = jsonMatch[0].replace(/(?<=":[\s]*"[^"]*)\n/g, ' ').replace(/[\x00-\x1f]/g, (c: string) => c === '\n' ? '\\n' : c === '\t' ? '\\t' : c === '\r' ? '\\r' : '');
-              let parsedJson: any;
-              try {
-                parsedJson = JSON.parse(sanitized);
-              } catch {
-                const sqlDirect = content.match(/"sql"\s*:\s*"([\s\S]*?)(?:"\s*[,}])/);
-                const explDirect = content.match(/"explanation"\s*:\s*"([\s\S]*?)(?:"\s*[,}])/);
-                if (sqlDirect) {
-                  parsedJson = { sql: sqlDirect[1].replace(/\\n/g, ' ').replace(/\n/g, ' '), explanation: explDirect?.[1] || '' };
-                }
-              }
-              if (parsedJson) {
-                sqlStatement = parsedJson.sql || '';
-                sqlExplanation = parsedJson.explanation || '';
-                mapAction = parsedJson.map_action || null;
-              }
-            } else {
-              console.error('SQL gen: no JSON match found in content (length=' + content.length + '):', content.slice(0, 500));
-            }
-          } catch (parseErr: any) {
-            console.error('SQL gen: JSON parse failed:', parseErr.message, 'content preview:', content.slice(0, 500));
-          }
-        }
-      } catch (cortexErr: any) {
-        console.error('CORTEX.COMPLETE SQL gen exception:', cortexErr.name, cortexErr.message);
-      }
-    } else {
       const result = cortexCompleteLocalFile([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userQuestion },
@@ -638,125 +874,67 @@ Keep queries efficient and concise. Use fully qualified table names. IMPORTANT: 
           if (parsed) {
             sqlStatement = parsed.sql || '';
             sqlExplanation = parsed.explanation || '';
-            mapAction = parsed.map_action || null;
           }
         }
       } catch {}
-    }
 
-    if (mapAction) {
-      send({ type: 'map_filter', filter: mapAction.filter || 'all' });
-    }
+      let queryResults: any[] = [];
+      let queryError = '';
 
-    let queryResults: any[] = [];
-    let queryError = '';
-
-    if (sqlStatement) {
-      console.log('Generated SQL:', sqlStatement.slice(0, 300));
-      send({ type: 'thinking_delta', text: `Generated SQL query. Executing...\n` });
-      const toolResult: any = { type: 'tool_result', tool_name: 'fleet_data', status: 'complete', sql: sqlStatement };
-      if (sqlExplanation) toolResult.sql_explanation = sqlExplanation;
-
-      try {
-        queryResults = await snowSql(sqlStatement);
-        toolResult.has_results = true;
-        toolResult.row_count = queryResults.length;
-        console.log(`SQL returned ${queryResults.length} rows`);
-      } catch (sqlErr: any) {
-        queryError = sqlErr.message;
-        toolResult.status = 'error';
-        console.error('SQL execution error:', queryError);
-      }
-      send(toolResult);
-    } else {
-      send({ type: 'tool_result', tool_name: 'fleet_data', status: 'error' });
-    }
-
-    send({ type: 'status', message: 'Generating response...' });
-
-    const responsePrompt = `You are a fleet intelligence analyst for SwiftBite food delivery. Present data clearly with context.
-Use markdown formatting with proper GFM tables when showing tabular data. Provide specific numbers and percentages when available.
-If the data query returned no results (0 rows), say clearly that no data was found. Do NOT make up or hallucinate data. If the tables are empty, explain that the delivery data has not been built yet and suggest running the data build process.
-
-IMPORTANT: When the query results contain time-series, trend, or comparative data that would benefit from visualization, include a chart block in your response.
-Chart blocks use this exact format (the JSON must be valid):
-
-\`\`\`chart
-{
-  "type": "line",
-  "title": "Chart Title",
-  "xKey": "column_name_for_x_axis",
-  "yKeys": [{"key": "column_name", "label": "Display Label"}],
-  "data": [{"column_name_for_x_axis": "value1", "column_name": 123}, ...]
-}
-\`\`\`
-
-Rules for charts:
-- Use type "line" for time-series/trends, "bar" for comparisons/rankings
-- The data array should contain the actual query result values (extract from the query results provided)
-- xKey must match a key in each data object
-- yKeys array lists the numeric columns to plot, each with a "key" and optional "label"
-- Keep data to at most 30 rows for readability
-- Always include a descriptive title
-- You can include both a markdown table AND a chart in the same response
-- For time data, format dates/times as short readable strings (e.g. "17:00", "Jan 15", "Mon")`;
-
-    let dataContext = '';
-    if (queryResults.length > 0) {
-      const maxRows = queryResults.slice(0, 50);
-      dataContext = `\n\nQuery results (${queryResults.length} rows):\n${JSON.stringify(maxRows, null, 2)}`;
-      if (sqlStatement) dataContext = `\nSQL executed: ${sqlStatement}` + dataContext;
-    } else if (queryError) {
-      dataContext = `\n\nThe data query failed: ${queryError}`;
-    } else if (sqlStatement) {
-      dataContext = `\nSQL executed: ${sqlStatement}\n\nThe query returned 0 rows. The data tables are currently empty — no delivery data has been generated yet. Do NOT make up or invent any data. Tell the user the tables are empty and they need to build data first.`;
-    }
-
-    if (IS_SPCS) {
-      try {
-        const respMessagesJson = JSON.stringify([
-          { role: 'system', content: responsePrompt },
-          { role: 'user', content: `${userQuestion}${dataContext}` }
-        ]);
-        const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', PARSE_JSON($$${respMessagesJson}$$), {'max_tokens':2048}) as RESPONSE`;
-        console.log('Calling CORTEX.COMPLETE via SQL for response gen...');
-        const rows = await snowSqlSpcs(cortexSql);
-        console.log('CORTEX.COMPLETE response gen returned rows:', rows.length);
-        if (rows.length > 0) {
-          const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
-          let content = '';
-          try {
-            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.choices?.[0]?.content || (typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
-          } catch {
-            content = String(raw);
-          }
-          if (content) {
-            send({ type: 'text_delta', text: content });
-          } else {
-            send({ type: 'text_delta', text: sqlExplanation || 'I was unable to generate a response.' });
-          }
-        } else {
-          send({ type: 'text_delta', text: sqlExplanation || 'I was unable to generate a response.' });
+      if (sqlStatement) {
+        send({ type: 'thinking_delta', text: `Generated SQL query. Executing...\n` });
+        const toolResult: any = { type: 'tool_result', tool_name: 'fleet_data', status: 'complete', sql: sqlStatement };
+        if (sqlExplanation) toolResult.sql_explanation = sqlExplanation;
+        try {
+          queryResults = await snowSql(sqlStatement);
+          toolResult.has_results = true;
+          toolResult.row_count = queryResults.length;
+          toolResult.results = queryResults.slice(0, 50);
+        } catch (sqlErr: any) {
+          queryError = sqlErr.message;
+          toolResult.status = 'error';
         }
-      } catch (cortexErr: any) {
-        console.error('CORTEX.COMPLETE response gen exception:', cortexErr.name, cortexErr.message);
-        send({ type: 'text_delta', text: sqlExplanation || 'I encountered an error generating a response.' });
+        send(toolResult);
+      } else {
+        send({ type: 'tool_result', tool_name: 'fleet_data', status: 'error' });
       }
-    } else {
-      const result = cortexCompleteLocalFile([
+
+      send({ type: 'status', message: 'Generating response...' });
+
+      const responsePrompt = `You are a fleet intelligence analyst for SwiftBite food delivery. Present data clearly with context.
+Use markdown formatting with proper GFM tables when showing tabular data. Provide specific numbers and percentages when available.
+If the data query returned no results (0 rows), say clearly that no data was found. Do NOT make up or hallucinate data.
+
+When the query results contain time-series or comparative data, include a chart block:
+\`\`\`chart
+{"type": "line", "title": "Chart Title", "xKey": "col", "yKeys": [{"key": "col", "label": "Label"}], "data": [...]}
+\`\`\`
+Use type "line" for trends, "bar" for comparisons. Keep data to 30 rows max.`;
+
+      let dataContext = '';
+      if (queryResults.length > 0) {
+        const maxRows = queryResults.slice(0, 50);
+        dataContext = `\n\nQuery results (${queryResults.length} rows):\n${JSON.stringify(maxRows, null, 2)}`;
+        if (sqlStatement) dataContext = `\nSQL executed: ${sqlStatement}` + dataContext;
+      } else if (queryError) {
+        dataContext = `\n\nThe data query failed: ${queryError}`;
+      } else if (sqlStatement) {
+        dataContext = `\nSQL executed: ${sqlStatement}\n\nThe query returned 0 rows.`;
+      }
+
+      const respResult = cortexCompleteLocalFile([
         { role: 'system', content: responsePrompt },
         { role: 'user', content: `${userQuestion}${dataContext}` },
       ], 'claude-4-sonnet');
-      if (result) {
-        send({ type: 'text_delta', text: result });
+      if (respResult) {
+        send({ type: 'text_delta', text: respResult });
       } else {
         send({ type: 'text_delta', text: sqlExplanation || 'I was unable to generate a response.' });
       }
-    }
 
-    send({ type: 'done' });
-    res.end();
+      send({ type: 'done' });
+      res.end();
+    }
   } catch (err: any) {
     console.error('Agent error:', err.message);
     if (!res.headersSent) {
@@ -1190,6 +1368,151 @@ app.get('/api/matrix/status', async (req, res) => {
   }
 });
 
+app.post('/api/query', async (req, res) => {
+  try {
+    let query = '';
+    if (req.body.data && Array.isArray(req.body.data)) {
+      query = req.body.data[0]?.[1] || '';
+    } else {
+      query = req.body.query || '';
+    }
+    if (!query) return res.json({ data: [[0, JSON.stringify({ error: 'query parameter required' })]] });
+
+    const schemaInfo = `Table: ${SF_DATABASE}.DATA.DELIVERY_SUMMARY
+Columns:
+  ORDER_ID VARCHAR - Unique delivery order identifier
+  COURIER_ID VARCHAR - Courier assigned (e.g. SAN-0029, LON-0015)
+  RESTAURANT_ID VARCHAR - Restaurant identifier
+  RESTAURANT_NAME VARCHAR - Name of the restaurant
+  RESTAURANT_ADDRESS VARCHAR - Restaurant street address
+  CUSTOMER_ADDRESS VARCHAR - Customer delivery address
+  CUSTOMER_ADDRESS_ID VARCHAR - Customer address identifier
+  CITY VARCHAR - City (San Francisco, London, Paris, etc.)
+  ORDER_STATUS VARCHAR - Status: delivered, in_transit, or picked_up
+  ORDER_TIME TIMESTAMP - When the order was placed
+  PICKUP_TIME TIMESTAMP - When courier picked up order
+  DELIVERY_TIME TIMESTAMP - When the order was delivered
+  SHIFT_TYPE VARCHAR - Shift: Lunch, Dinner, or Afternoon
+  VEHICLE_TYPE VARCHAR - Vehicle: car, scooter, or bicycle
+  CUISINE_TYPE VARCHAR - Type of cuisine
+  PREP_TIME_MINS NUMBER - Restaurant food prep time in minutes
+  ROUTE_DISTANCE_METERS FLOAT - Delivery route distance in meters
+  ROUTE_DURATION_SECS FLOAT - Delivery route duration in seconds
+  AVERAGE_KMH NUMBER(38,6) - Average courier speed in kmh
+  MAX_KMH NUMBER - Maximum courier speed in kmh
+  DELAY_REASON VARCHAR - Reason for delay: traffic, flooding, weather, or none
+  DELAY_MINUTES FLOAT - Total delay in minutes due to incidents
+  FLOOD_AFFECTED BOOLEAN - Whether delivery was affected by flooding
+  DELAY_WEATHER_CONDITION VARCHAR - Weather condition that caused the delay
+
+Table: ${SF_DATABASE}.DATA.WEATHER_OBSERVATIONS
+Columns:
+  OBSERVATION_ID VARCHAR - Unique observation identifier
+  OBSERVATION_TIME TIMESTAMP - Time of weather observation (hourly intervals)
+  STATION_NAME VARCHAR - Weather station name
+  TEMPERATURE_C FLOAT - Temperature in celsius
+  FEELS_LIKE_C FLOAT - Feels-like temperature in celsius
+  WIND_SPEED_MPH FLOAT - Wind speed in mph
+  WIND_GUST_MPH FLOAT - Wind gust speed in mph
+  WIND_DIRECTION VARCHAR - Wind direction (N, NE, E, SE, S, SW, W, NW)
+  HUMIDITY_PCT FLOAT - Humidity percentage
+  PRESSURE_HPA FLOAT - Atmospheric pressure in hPa
+  VISIBILITY_KM FLOAT - Visibility in km
+  PRECIPITATION_MM FLOAT - Precipitation in mm
+  WEATHER_CONDITION VARCHAR - Condition: Clear, Cloudy, Light Rain, Heavy Rain, Thunderstorm, Fog, Snow
+  WEATHER_SEVERITY VARCHAR - Severity: normal, advisory, warning, severe
+  UV_INDEX INTEGER - UV index
+  CITY VARCHAR - City name
+
+Table: ${SF_DATABASE}.DATA.WEATHER_FORECASTS
+Columns:
+  FORECAST_ID VARCHAR - Unique forecast identifier
+  ISSUED_AT TIMESTAMP - When the forecast was issued
+  FORECAST_TIME TIMESTAMP - Future time the forecast is for
+  STATION_NAME VARCHAR - Weather station name
+  TEMPERATURE_C FLOAT - Forecast temperature in celsius
+  FEELS_LIKE_C FLOAT - Forecast feels-like temperature
+  WIND_SPEED_MPH FLOAT - Forecast wind speed in mph
+  WIND_GUST_MPH FLOAT - Forecast wind gust speed
+  PRECIPITATION_PROB_PCT FLOAT - Probability of precipitation (0-100)
+  PRECIPITATION_MM FLOAT - Forecast precipitation in mm
+  WEATHER_CONDITION VARCHAR - Forecast condition: Clear, Cloudy, Light Rain, Heavy Rain, Thunderstorm
+  WEATHER_SEVERITY VARCHAR - Forecast severity: normal, advisory, warning, severe
+  CITY VARCHAR - City name
+
+Table: ${SF_DATABASE}.DATA.FLOOD_MONITORING
+Columns:
+  FLOOD_ID VARCHAR - Unique flood event identifier
+  FLOOD_NAME VARCHAR - Name of the flood event
+  SEVERITY VARCHAR - Flood severity: minor, moderate, severe
+  START_TIME TIMESTAMP - When the flood started
+  END_TIME TIMESTAMP - When the flood ended or expected to end
+  PEAK_TIME TIMESTAMP - When the flood peaked
+  WATER_LEVEL_M FLOAT - Water level in meters
+  IS_ACTIVE BOOLEAN - Whether the flood is currently active
+  AFFECTED_ROADS_EST INTEGER - Estimated number of affected roads
+  DESCRIPTION VARCHAR - Flood description
+  CITY VARCHAR - City name
+
+Table: ${SF_DATABASE}.DATA.DELIVERY_INCIDENTS
+Columns:
+  INCIDENT_ID VARCHAR - Unique incident identifier
+  ORDER_ID VARCHAR - Related delivery order ID (joins to DELIVERY_SUMMARY.ORDER_ID)
+  COURIER_ID VARCHAR - Courier involved
+  INCIDENT_TYPE VARCHAR - Type: traffic, flooding, weather
+  INCIDENT_TIME TIMESTAMP - When the incident occurred
+  DELAY_MINUTES FLOAT - Delay caused in minutes
+  DESCRIPTION VARCHAR - Incident description
+  RELATED_FLOOD_ID VARCHAR - Related flood ID if flooding type (joins to FLOOD_MONITORING.FLOOD_ID)
+  WEATHER_CONDITION VARCHAR - Weather during incident
+  RESOLVED_TIME TIMESTAMP - When incident was resolved
+  CITY VARCHAR - City name
+
+Table: ${SF_DATABASE}.DATA.CUSTOMER_CALLS
+Columns:
+  CALL_ID VARCHAR - Unique call identifier
+  ORDER_ID VARCHAR - Related delivery order ID (joins to DELIVERY_SUMMARY.ORDER_ID)
+  CALL_TIME TIMESTAMP - Time of customer call
+  CUSTOMER_NAME VARCHAR - Customer name
+  CALL_DURATION_SECS INTEGER - Call duration in seconds
+  CALL_TYPE VARCHAR - Type: complaint, enquiry, cancellation
+  SENTIMENT VARCHAR - Customer sentiment: angry, frustrated, neutral, understanding
+  ISSUE_CATEGORY VARCHAR - Issue: late delivery, weather delay, flood delay, missing items, wrong order
+  CALL_NOTES VARCHAR - Verbatim customer comments
+  RESOLUTION VARCHAR - How the call was resolved
+  RELATED_INCIDENT_ID VARCHAR - Related incident ID
+  CITY VARCHAR - City name
+
+RELATIONSHIPS:
+  DELIVERY_INCIDENTS.ORDER_ID -> DELIVERY_SUMMARY.ORDER_ID
+  CUSTOMER_CALLS.ORDER_ID -> DELIVERY_SUMMARY.ORDER_ID
+  DELIVERY_INCIDENTS.RELATED_FLOOD_ID -> FLOOD_MONITORING.FLOOD_ID`;
+
+    const prompt = `You are a SQL expert for a food delivery fleet analytics system. Generate a single Snowflake SQL query to answer the user question. Return ONLY the SQL query, no explanation, no markdown, no backticks. Use efficient aggregation queries. For weather summaries, aggregate across all stations in a single query rather than querying per-station. For forecasts, query WEATHER_FORECASTS table directly by FORECAST_TIME.\n\nSchema:\n${schemaInfo}\n\nQuestion: ${query}`;
+    const escapedPrompt = prompt.replace(/'/g, "''").replace(/\\/g, '\\\\');
+
+    const cortexResult = await snowSql(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-4-sonnet', '${escapedPrompt}') AS RESULT`);
+    let generatedSql = (cortexResult[0]?.RESULT || '').trim();
+    if (generatedSql.startsWith('```')) {
+      generatedSql = generatedSql.split('\n').slice(1).join('\n').replace(/```\s*$/, '').trim();
+    }
+
+    if (!generatedSql || generatedSql.length < 5) {
+      const result = JSON.stringify({ error: 'Failed to generate SQL', sql: generatedSql });
+      return res.json({ data: [[0, result]] });
+    }
+
+    const rows = await snowSql(generatedSql);
+    const data = rows.slice(0, 50);
+    const result = JSON.stringify({ sql: generatedSql, row_count: rows.length, data });
+    res.json({ data: [[0, result]] });
+  } catch (err: any) {
+    console.error('Query endpoint error:', err.message);
+    const result = JSON.stringify({ error: err.message?.slice(0, 500) });
+    res.json({ data: [[0, result]] });
+  }
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode: IS_SPCS ? 'spcs' : 'local' });
 });
@@ -1268,7 +1591,9 @@ app.get('/api/data/status', async (_req, res) => {
   try {
     const tables = ['RESTAURANTS', 'CUSTOMER_ADDRESSES', 'COURIERS', 'DELIVERY_ORDERS',
       'ORDERS_WITH_LOCATIONS', 'DELIVERY_ROUTES', 'DELIVERY_ROUTES_PARSED',
-      'DELIVERY_ROUTE_GEOMETRIES', 'COURIER_LOCATIONS'];
+      'DELIVERY_ROUTE_GEOMETRIES', 'COURIER_LOCATIONS',
+      'WEATHER_OBSERVATIONS', 'WEATHER_FORECASTS', 'FLOOD_MONITORING',
+      'DELIVERY_INCIDENTS', 'CUSTOMER_CALLS'];
     const counts: Record<string, number> = {};
     for (const t of tables) {
       try {
@@ -1286,7 +1611,9 @@ app.get('/api/data/progress', (_req, res) => {
 
 app.delete('/api/data/clear', async (_req, res) => {
   try {
-    const tables = ['COURIER_LOCATIONS', 'DELIVERY_ROUTE_GEOMETRIES', 'DELIVERY_ROUTES_PARSED',
+    const tables = ['CUSTOMER_CALLS', 'DELIVERY_INCIDENTS', 'FLOOD_MONITORING',
+      'WEATHER_FORECASTS', 'WEATHER_OBSERVATIONS',
+      'COURIER_LOCATIONS', 'DELIVERY_ROUTE_GEOMETRIES', 'DELIVERY_ROUTES_PARSED',
       'DELIVERY_ROUTES', 'ORDERS_WITH_LOCATIONS', 'DELIVERY_ORDERS', 'COURIERS',
       'ADDRESSES_NUMBERED', 'RESTAURANTS_NUMBERED', 'CUSTOMER_ADDRESSES', 'RESTAURANTS'];
     for (const t of tables) {
@@ -1314,6 +1641,10 @@ app.post('/api/data/build', async (req, res) => {
     { step: 'routes', status: 'idle' },
     { step: 'geometries', status: 'idle' },
     { step: 'locations', status: 'idle' },
+    { step: 'weather', status: 'idle' },
+    { step: 'floods', status: 'idle' },
+    { step: 'incidents', status: 'idle' },
+    { step: 'calls', status: 'idle' },
   ];
 
   res.json({ status: 'started' });
@@ -1587,6 +1918,410 @@ FROM expanded`);
         updateStep('locations', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[6].started_at || Date.now())) / 1000 });
       } catch (err: any) { updateStep('locations', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+      // Step 8: Weather Observations (Met Office style)
+      updateStep('weather', { status: 'running', message: 'Generating Met Office weather observations...', started_at: Date.now() });
+      try {
+        const weatherStations: Record<string, { name: string; lat: number; lon: number }[]> = {
+          'San Francisco': [
+            { name: 'SF Downtown', lat: 37.7749, lon: -122.4194 },
+            { name: 'SF Mission District', lat: 37.7599, lon: -122.4148 },
+            { name: 'SF Marina', lat: 37.8015, lon: -122.4368 },
+            { name: 'SF Sunset', lat: 37.7525, lon: -122.4949 },
+            { name: 'SF SoMa', lat: 37.7785, lon: -122.3950 },
+            { name: 'SF Richmond', lat: 37.7799, lon: -122.4644 },
+            { name: 'SF Bayview', lat: 37.7296, lon: -122.3876 },
+            { name: 'SF North Beach', lat: 37.8061, lon: -122.4103 },
+          ],
+          'London': [
+            { name: 'London City', lat: 51.5074, lon: -0.1278 },
+            { name: 'London Heathrow', lat: 51.4700, lon: -0.4543 },
+            { name: 'London Greenwich', lat: 51.4769, lon: -0.0005 },
+            { name: 'London Kensington', lat: 51.4988, lon: -0.1749 },
+            { name: 'London Camden', lat: 51.5390, lon: -0.1426 },
+            { name: 'London Canary Wharf', lat: 51.5054, lon: -0.0235 },
+          ],
+          'Paris': [
+            { name: 'Paris Centre', lat: 48.8566, lon: 2.3522 },
+            { name: 'Paris Orly', lat: 48.7262, lon: 2.3652 },
+            { name: 'Paris Montmartre', lat: 48.8867, lon: 2.3431 },
+            { name: 'Paris La Defense', lat: 48.8924, lon: 2.2360 },
+          ],
+        };
+
+        const stationsForCity = weatherStations[cities[0]] || weatherStations['San Francisco'];
+        const stationUnions = stationsForCity.map(s =>
+          `SELECT '${s.name.replace(/'/g, "''")}' AS station_name, ST_MAKEPOINT(${s.lon}, ${s.lat}) AS station_location`
+        ).join(' UNION ALL\n  ');
+
+        await snowSql(`INSERT OVERWRITE INTO ${DB}.DATA.WEATHER_OBSERVATIONS
+WITH date_range AS (
+  SELECT DATEADD('day', -SEQ4(), '${start_date}'::DATE) AS obs_date
+  FROM TABLE(GENERATOR(ROWCOUNT => ${num_days}))
+),
+hours AS (
+  SELECT SEQ4() AS obs_hour FROM TABLE(GENERATOR(ROWCOUNT => 24))
+),
+stations AS (
+  ${stationUnions}
+),
+base_weather AS (
+  SELECT
+    d.obs_date, h.obs_hour, s.station_name, s.station_location,
+    d.obs_date = (SELECT MAX(obs_date) FROM date_range) AS is_last_day,
+    UNIFORM(1, 100, RANDOM()) AS weather_roll,
+    UNIFORM(1, 100, RANDOM()) AS severity_roll
+  FROM date_range d CROSS JOIN hours h CROSS JOIN stations s
+)
+SELECT
+  MD5(station_name || obs_date || obs_hour || RANDOM()) AS OBSERVATION_ID,
+  DATEADD('hour', obs_hour, obs_date::TIMESTAMP_NTZ) AS OBSERVATION_TIME,
+  station_name AS STATION_NAME,
+  station_location AS STATION_LOCATION,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(8, 14, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 0 AND 6 THEN ROUND(UNIFORM(5, 10, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 7 AND 11 THEN ROUND(UNIFORM(10, 16, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 12 AND 17 THEN ROUND(UNIFORM(14, 22, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    ELSE ROUND(UNIFORM(8, 15, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+  END AS TEMPERATURE_C,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(4, 10, RANDOM())::FLOAT, 1)
+    ELSE ROUND(UNIFORM(6, 18, RANDOM())::FLOAT, 1)
+  END AS FEELS_LIKE_C,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(25, 45, RANDOM())::FLOAT, 1)
+    ELSE ROUND(UNIFORM(3, 20, RANDOM())::FLOAT, 1)
+  END AS WIND_SPEED_MPH,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(35, 60, RANDOM())::FLOAT, 1)
+    ELSE ROUND(UNIFORM(5, 30, RANDOM())::FLOAT, 1)
+  END AS WIND_GUST_MPH,
+  CASE UNIFORM(1,8,RANDOM()) WHEN 1 THEN 'N' WHEN 2 THEN 'NE' WHEN 3 THEN 'E' WHEN 4 THEN 'SE' WHEN 5 THEN 'S' WHEN 6 THEN 'SW' WHEN 7 THEN 'W' ELSE 'NW' END AS WIND_DIRECTION,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(85, 98, RANDOM())::FLOAT, 1)
+    ELSE ROUND(UNIFORM(40, 80, RANDOM())::FLOAT, 1)
+  END AS HUMIDITY_PCT,
+  ROUND(UNIFORM(1005, 1025, RANDOM())::FLOAT - CASE WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 20 ELSE 0 END, 1) AS PRESSURE_HPA,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(0.5, 3, RANDOM())::FLOAT, 1)
+    ELSE ROUND(UNIFORM(5, 30, RANDOM())::FLOAT, 1)
+  END AS VISIBILITY_KM,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(8, 25, RANDOM())::FLOAT, 1)
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(3, 12, RANDOM())::FLOAT, 1)
+    WHEN weather_roll <= 30 THEN ROUND(UNIFORM(0.1, 2, RANDOM())::FLOAT, 1)
+    ELSE 0
+  END AS PRECIPITATION_MM,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 12 AND 14 THEN 'Thunderstorm'
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 'Heavy Rain'
+    WHEN is_last_day AND obs_hour IN (9, 17) THEN 'Light Rain'
+    WHEN weather_roll <= 15 THEN 'Heavy Rain'
+    WHEN weather_roll <= 35 THEN 'Light Rain'
+    WHEN weather_roll <= 50 THEN 'Overcast'
+    WHEN weather_roll <= 70 THEN 'Cloudy'
+    WHEN weather_roll <= 85 THEN 'Partly Cloudy'
+    ELSE 'Clear'
+  END AS WEATHER_CONDITION,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 12 AND 14 THEN 'severe'
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 'warning'
+    WHEN is_last_day AND obs_hour IN (9, 17) THEN 'advisory'
+    WHEN weather_roll <= 15 THEN 'advisory'
+    ELSE 'normal'
+  END AS WEATHER_SEVERITY,
+  CASE WHEN obs_hour BETWEEN 10 AND 16 THEN UNIFORM(1, 6, RANDOM()) ELSE 0 END AS UV_INDEX,
+  '${cities[0].replace(/'/g, "''")}' AS CITY
+FROM base_weather`);
+        const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.WEATHER_OBSERVATIONS`);
+        updateStep('weather', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[7].started_at || Date.now())) / 1000 });
+      } catch (err: any) { updateStep('weather', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+      // Step 8b: Weather Forecasts (future 3 days)
+      try {
+        const lastDate = `'${start_date}'::DATE`;
+        await snowSql(`INSERT OVERWRITE INTO ${DB}.DATA.WEATHER_FORECASTS
+WITH forecast_days AS (
+  SELECT DATEADD('day', SEQ4() + 1, ${lastDate}) AS forecast_date
+  FROM TABLE(GENERATOR(ROWCOUNT => 3))
+),
+hours AS (
+  SELECT SEQ4() * 3 AS fc_hour FROM TABLE(GENERATOR(ROWCOUNT => 8))
+),
+stations AS (
+  SELECT DISTINCT STATION_NAME, STATION_LOCATION FROM ${DB}.DATA.WEATHER_OBSERVATIONS LIMIT 8
+)
+SELECT
+  MD5(s.STATION_NAME || d.forecast_date || h.fc_hour || RANDOM()) AS FORECAST_ID,
+  ${lastDate}::TIMESTAMP_NTZ AS ISSUED_AT,
+  DATEADD('hour', h.fc_hour, d.forecast_date::TIMESTAMP_NTZ) AS FORECAST_TIME,
+  s.STATION_NAME, s.STATION_LOCATION,
+  ROUND(UNIFORM(10, 20, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1) AS TEMPERATURE_C,
+  ROUND(UNIFORM(8, 17, RANDOM())::FLOAT, 1) AS FEELS_LIKE_C,
+  ROUND(UNIFORM(5, 18, RANDOM())::FLOAT, 1) AS WIND_SPEED_MPH,
+  ROUND(UNIFORM(10, 25, RANDOM())::FLOAT, 1) AS WIND_GUST_MPH,
+  ROUND(UNIFORM(10, 60, RANDOM())::FLOAT, 0) AS PRECIPITATION_PROB_PCT,
+  ROUND(UNIFORM(0, 3, RANDOM())::FLOAT, 1) AS PRECIPITATION_MM,
+  CASE UNIFORM(1,5,RANDOM()) WHEN 1 THEN 'Light Rain' WHEN 2 THEN 'Cloudy' WHEN 3 THEN 'Partly Cloudy' WHEN 4 THEN 'Overcast' ELSE 'Clear' END AS WEATHER_CONDITION,
+  'normal' AS WEATHER_SEVERITY,
+  '${cities[0].replace(/'/g, "''")}' AS CITY
+FROM forecast_days d CROSS JOIN hours h CROSS JOIN stations s`);
+      } catch (err: any) { console.error('Weather forecast generation error:', err.message); }
+
+      // Step 9: Flood Monitoring (flash flood on most recent day only)
+      updateStep('floods', { status: 'running', message: 'Generating flood monitoring data...', started_at: Date.now() });
+      try {
+        const floodZones: Record<string, { name: string; polygon: string; desc: string }> = {
+          'San Francisco': {
+            name: 'Mission Creek Flash Flood',
+            polygon: 'POLYGON((-122.4000 37.7700, -122.3900 37.7700, -122.3900 37.7780, -122.3950 37.7810, -122.4000 37.7780, -122.4000 37.7700))',
+            desc: 'Flash flooding reported in the Mission Creek and SoMa area. Surface water flooding affecting roads and low-lying areas. Multiple road closures in effect. Drainage systems overwhelmed by sudden heavy rainfall.'
+          },
+          'London': {
+            name: 'Thames Barrier Flash Flood',
+            polygon: 'POLYGON((-0.0600 51.4900, -0.0200 51.4900, -0.0200 51.5050, -0.0400 51.5100, -0.0600 51.5050, -0.0600 51.4900))',
+            desc: 'Flash flooding in the Greenwich and Isle of Dogs area. Surface water flooding affecting major roads. Thames Barrier activated. Multiple road closures.'
+          },
+          'Paris': {
+            name: 'Seine Overflow Flash Flood',
+            polygon: 'POLYGON((2.3200 48.8450, 2.3600 48.8450, 2.3600 48.8600, 2.3400 48.8650, 2.3200 48.8600, 2.3200 48.8450))',
+            desc: 'Flash flooding near the Seine river in the 5th and 13th arrondissements. Surface water affecting roads and metro stations.'
+          },
+        };
+        const zone = floodZones[cities[0]] || floodZones['San Francisco'];
+        const lastDay = `'${start_date}'::DATE`;
+
+        await snowSql(`INSERT OVERWRITE INTO ${DB}.DATA.FLOOD_MONITORING
+SELECT
+  'FLOOD-001' AS FLOOD_ID,
+  '${zone.name.replace(/'/g, "''")}' AS FLOOD_NAME,
+  'severe' AS SEVERITY,
+  TRY_TO_GEOGRAPHY('${zone.polygon}') AS FLOOD_AREA,
+  ST_CENTROID(TRY_TO_GEOGRAPHY('${zone.polygon}')) AS CENTROID,
+  DATEADD('hour', 11, ${lastDay}::TIMESTAMP_NTZ) AS START_TIME,
+  DATEADD('hour', 17, ${lastDay}::TIMESTAMP_NTZ) AS END_TIME,
+  DATEADD('hour', 13, ${lastDay}::TIMESTAMP_NTZ) AS PEAK_TIME,
+  1.8 AS WATER_LEVEL_M,
+  TRUE AS IS_ACTIVE,
+  12 AS AFFECTED_ROADS_EST,
+  '${zone.desc.replace(/'/g, "''")}' AS DESCRIPTION,
+  '${cities[0].replace(/'/g, "''")}' AS CITY
+UNION ALL
+SELECT
+  'FLOOD-002', '${(cities[0] === 'London' ? 'Wandsworth Surface Water' : cities[0] === 'Paris' ? 'Marais District Drainage' : 'Bayview Basin Overflow').replace(/'/g, "''")}',
+  'moderate',
+  TRY_TO_GEOGRAPHY('${
+    cities[0] === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
+    : cities[0] === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
+    : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))'
+  }'),
+  ST_CENTROID(TRY_TO_GEOGRAPHY('${
+    cities[0] === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
+    : cities[0] === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
+    : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))'
+  }')),
+  DATEADD('hour', 12, ${lastDay}::TIMESTAMP_NTZ),
+  DATEADD('hour', 16, ${lastDay}::TIMESTAMP_NTZ),
+  DATEADD('hour', 14, ${lastDay}::TIMESTAMP_NTZ),
+  0.9, TRUE, 6,
+  'Moderate surface water flooding affecting local roads. Drains overwhelmed. Caution advised for drivers and cyclists.',
+  '${cities[0].replace(/'/g, "''")}' AS CITY`);
+        const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.FLOOD_MONITORING`);
+        updateStep('floods', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[8].started_at || Date.now())) / 1000 });
+      } catch (err: any) { updateStep('floods', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+      // Step 10: Delivery Incidents (traffic delays + flood delays + weather delays)
+      updateStep('incidents', { status: 'running', message: 'Generating delivery incidents and delays...', started_at: Date.now() });
+      try {
+        const lastDay = `'${start_date}'::DATE`;
+
+        await snowSql(`INSERT OVERWRITE INTO ${DB}.DATA.DELIVERY_INCIDENTS
+WITH all_deliveries AS (
+  SELECT ORDER_ID, COURIER_ID, ORDER_TIME, PICKUP_TIME, DELIVERY_TIME,
+    RESTAURANT_LOCATION, CUSTOMER_LOCATION, GEOMETRY, CITY,
+    DATE_TRUNC('day', ORDER_TIME) AS ORDER_DATE,
+    DATE_TRUNC('day', ORDER_TIME) = ${lastDay}::DATE AS is_last_day,
+    HOUR(ORDER_TIME) AS order_hour
+  FROM ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES
+  WHERE GEOMETRY IS NOT NULL
+),
+flood_zones AS (
+  SELECT FLOOD_ID, FLOOD_AREA, START_TIME, END_TIME
+  FROM ${DB}.DATA.FLOOD_MONITORING
+),
+weather_at_time AS (
+  SELECT DISTINCT DATE_TRUNC('hour', OBSERVATION_TIME) AS obs_hour, WEATHER_CONDITION, WEATHER_SEVERITY
+  FROM ${DB}.DATA.WEATHER_OBSERVATIONS
+  WHERE WEATHER_SEVERITY IN ('warning', 'severe')
+),
+flood_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    f.FLOOD_ID, 'flooding' AS INCIDENT_TYPE,
+    UNIFORM(15, 45, RANDOM()) AS DELAY_MINUTES,
+    CASE UNIFORM(1,3,RANDOM())
+      WHEN 1 THEN 'Route blocked by flash flooding. Courier diverted via alternative route.'
+      WHEN 2 THEN 'Delivery delayed due to road closure from flooding. Area impassable.'
+      ELSE 'Surface water on route caused significant slowdown. Courier proceeded with caution.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  JOIN flood_zones f ON d.is_last_day
+    AND d.ORDER_TIME BETWEEN f.START_TIME AND f.END_TIME
+    AND ST_DWITHIN(d.CUSTOMER_LOCATION, f.FLOOD_AREA, 800)
+),
+weather_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    NULL AS FLOOD_ID, 'weather' AS INCIDENT_TYPE,
+    UNIFORM(5, 20, RANDOM()) AS DELAY_MINUTES,
+    CASE w.WEATHER_CONDITION
+      WHEN 'Heavy Rain' THEN 'Heavy rain reducing visibility and road grip. Courier speed reduced for safety.'
+      WHEN 'Thunderstorm' THEN 'Thunderstorm conditions. Courier sheltered temporarily before continuing.'
+      ELSE 'Adverse weather conditions causing delivery slowdown.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  JOIN weather_at_time w ON DATE_TRUNC('hour', d.ORDER_TIME) = w.obs_hour
+  WHERE d.ORDER_ID NOT IN (SELECT ORDER_ID FROM flood_affected)
+    AND UNIFORM(1, 100, RANDOM()) <= 40
+),
+traffic_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    NULL AS FLOOD_ID, 'traffic' AS INCIDENT_TYPE,
+    UNIFORM(5, 15, RANDOM()) AS DELAY_MINUTES,
+    CASE UNIFORM(1,5,RANDOM())
+      WHEN 1 THEN 'Heavy traffic congestion on main route. Courier stuck at intersection.'
+      WHEN 2 THEN 'Road works causing detour and delay.'
+      WHEN 3 THEN 'Accident on route causing traffic backup.'
+      WHEN 4 THEN 'Rush hour congestion significantly slowing courier progress.'
+      ELSE 'Unexpected traffic delay on delivery route.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  WHERE d.ORDER_ID NOT IN (SELECT ORDER_ID FROM flood_affected)
+    AND d.ORDER_ID NOT IN (SELECT ORDER_ID FROM weather_affected)
+    AND d.order_hour BETWEEN 11 AND 20
+    AND UNIFORM(1, 100, RANDOM()) <= 12
+)
+SELECT
+  MD5(ORDER_ID || INCIDENT_TYPE || RANDOM()) AS INCIDENT_ID,
+  ORDER_ID, COURIER_ID, INCIDENT_TYPE,
+  DATEADD('minute', UNIFORM(5, 30, RANDOM()), ORDER_TIME) AS INCIDENT_TIME,
+  DELAY_MINUTES, CUSTOMER_LOCATION AS INCIDENT_LOCATION,
+  DESCRIPTION, FLOOD_ID AS RELATED_FLOOD_ID,
+  CASE INCIDENT_TYPE
+    WHEN 'flooding' THEN 'Heavy Rain'
+    WHEN 'weather' THEN 'Heavy Rain'
+    ELSE NULL
+  END AS WEATHER_CONDITION,
+  DATEADD('minute', DELAY_MINUTES, DATEADD('minute', UNIFORM(5, 30, RANDOM()), ORDER_TIME)) AS RESOLVED_TIME,
+  CITY
+FROM (
+  SELECT * FROM flood_affected
+  UNION ALL SELECT * FROM weather_affected
+  UNION ALL SELECT * FROM traffic_affected
+)`);
+        const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_INCIDENTS`);
+        updateStep('incidents', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[9].started_at || Date.now())) / 1000 });
+      } catch (err: any) { updateStep('incidents', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+      // Step 11: Customer Calls (complaints about delays)
+      updateStep('calls', { status: 'running', message: 'Generating customer calls...', started_at: Date.now() });
+      try {
+        await snowSql(`INSERT OVERWRITE INTO ${DB}.DATA.CUSTOMER_CALLS
+WITH incident_orders AS (
+  SELECT i.INCIDENT_ID, i.ORDER_ID, i.COURIER_ID, i.INCIDENT_TYPE, i.INCIDENT_TIME,
+    i.DELAY_MINUTES, i.DESCRIPTION AS INC_DESC, i.RELATED_FLOOD_ID, i.CITY,
+    d.RESTAURANT_NAME, d.CUSTOMER_ADDRESS
+  FROM ${DB}.DATA.DELIVERY_INCIDENTS i
+  JOIN ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES d ON i.ORDER_ID = d.ORDER_ID
+),
+first_names AS (
+  SELECT column1 AS fname, ROW_NUMBER() OVER (ORDER BY column1) - 1 AS fn_idx FROM VALUES
+  ('Emma'),('James'),('Sarah'),('Michael'),('Lisa'),('David'),('Anna'),('Robert'),
+  ('Kate'),('John'),('Maria'),('Tom'),('Sophie'),('Chris'),('Rachel'),('Alex'),
+  ('Olivia'),('Daniel'),('Jessica'),('Ben'),('Lucy'),('Sam'),('Claire'),('Mark'),
+  ('Amy'),('Paul'),('Nina'),('Harry'),('Zoe'),('Jack')
+),
+last_names AS (
+  SELECT column1 AS lname, ROW_NUMBER() OVER (ORDER BY column1) - 1 AS ln_idx FROM VALUES
+  ('Smith'),('Johnson'),('Williams'),('Brown'),('Jones'),('Garcia'),('Miller'),
+  ('Davis'),('Rodriguez'),('Martinez'),('Anderson'),('Thomas'),('Jackson'),('White'),
+  ('Harris'),('Martin'),('Thompson'),('Moore'),('Allen'),('Young')
+),
+call_templates AS (
+  SELECT io.*,
+    UNIFORM(1, 100, RANDOM()) AS call_roll,
+    MOD(ABS(HASH(io.ORDER_ID || 'fn')), 30) AS fname_idx,
+    MOD(ABS(HASH(io.ORDER_ID || 'ln')), 20) AS lname_idx
+  FROM incident_orders io
+  WHERE UNIFORM(1, 100, RANDOM()) <= 70
+)
+SELECT
+  MD5(ct.ORDER_ID || 'CALL' || RANDOM()) AS CALL_ID,
+  ct.ORDER_ID,
+  DATEADD('minute', UNIFORM(5, 60, RANDOM())::INT, ct.INCIDENT_TIME) AS CALL_TIME,
+  fn.fname || ' ' || ln.lname AS CUSTOMER_NAME,
+  CASE
+    WHEN ct.INCIDENT_TYPE = 'flooding' THEN UNIFORM(120, 360, RANDOM())
+    WHEN ct.INCIDENT_TYPE = 'weather' THEN UNIFORM(90, 240, RANDOM())
+    ELSE UNIFORM(60, 180, RANDOM())
+  END AS CALL_DURATION_SECS,
+  CASE
+    WHEN ct.call_roll <= 75 THEN 'complaint'
+    WHEN ct.call_roll <= 90 THEN 'enquiry'
+    ELSE 'cancellation'
+  END AS CALL_TYPE,
+  CASE
+    WHEN ct.INCIDENT_TYPE = 'flooding' AND ct.call_roll <= 30 THEN 'angry'
+    WHEN ct.INCIDENT_TYPE = 'flooding' THEN 'frustrated'
+    WHEN ct.INCIDENT_TYPE = 'weather' AND ct.call_roll <= 20 THEN 'angry'
+    WHEN ct.INCIDENT_TYPE = 'weather' THEN 'frustrated'
+    WHEN ct.call_roll <= 15 THEN 'angry'
+    WHEN ct.call_roll <= 50 THEN 'frustrated'
+    WHEN ct.call_roll <= 80 THEN 'neutral'
+    ELSE 'understanding'
+  END AS SENTIMENT,
+  CASE ct.INCIDENT_TYPE
+    WHEN 'flooding' THEN 'flood delay'
+    WHEN 'weather' THEN 'weather delay'
+    ELSE 'late delivery'
+  END AS ISSUE_CATEGORY,
+  CASE ct.INCIDENT_TYPE
+    WHEN 'flooding' THEN
+      CASE UNIFORM(1,4,RANDOM())
+        WHEN 1 THEN 'My order from ' || ct.RESTAURANT_NAME || ' is very late. The driver says the road is flooded and they cannot get through.'
+        WHEN 2 THEN 'I have been waiting over an hour. Apparently there is flooding near my area. When will my food arrive?'
+        WHEN 3 THEN 'The courier called to say they are stuck due to flooding. This is unacceptable. I want a refund.'
+        ELSE 'My delivery is delayed because of flooding. Can you give me an update on when it will arrive?'
+      END
+    WHEN 'weather' THEN
+      CASE UNIFORM(1,4,RANDOM())
+        WHEN 1 THEN 'My order is late. I understand the weather is bad but I placed this order an hour ago.'
+        WHEN 2 THEN 'The delivery is taking much longer than expected. Is it because of the rain?'
+        WHEN 3 THEN 'Hi, just checking on my order from ' || ct.RESTAURANT_NAME || '. The app says it is delayed due to weather.'
+        ELSE 'My food is going to be cold by the time it arrives. The rain has caused major delays apparently.'
+      END
+    ELSE
+      CASE UNIFORM(1,4,RANDOM())
+        WHEN 1 THEN 'My order from ' || ct.RESTAURANT_NAME || ' was supposed to arrive 20 minutes ago. Where is my courier?'
+        WHEN 2 THEN 'The delivery is running late. The app showed 15 minutes but it has been 30 already.'
+        WHEN 3 THEN 'Can I get an update on my order? It seems to be stuck in traffic somewhere.'
+        ELSE 'Hi, my delivery is delayed. The tracker shows the courier has not moved in a while.'
+      END
+  END AS CALL_NOTES,
+  CASE
+    WHEN ct.call_roll <= 10 THEN 'refund issued'
+    WHEN ct.call_roll <= 30 THEN 'discount offered'
+    WHEN ct.call_roll <= 60 THEN 'apology and ETA provided'
+    WHEN ct.call_roll <= 85 THEN 'customer informed of situation'
+    ELSE 'order cancelled and refunded'
+  END AS RESOLUTION,
+  ct.INCIDENT_ID AS RELATED_INCIDENT_ID,
+  ct.CITY
+FROM call_templates ct
+JOIN first_names fn ON ct.fname_idx = fn.fn_idx
+JOIN last_names ln ON ct.lname_idx = ln.ln_idx`);
+        const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.CUSTOMER_CALLS`);
+        updateStep('calls', { status: 'complete', rows: Number(rc[0]?.CNT || 0), elapsed_seconds: (Date.now() - (dataBuildState.steps[10].started_at || Date.now())) / 1000 });
+      } catch (err: any) { updateStep('calls', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
     } catch (err: any) {
       console.error('Data build pipeline error:', err.message);
     } finally {
@@ -1603,6 +2338,10 @@ const DATA_BUILD_STEPS = [
   { id: 'routes', label: 'Generate ORS Routes' },
   { id: 'geometries', label: 'Parse Routes & Geometries' },
   { id: 'locations', label: 'Interpolate Courier Locations' },
+  { id: 'weather', label: 'Generate Weather Data' },
+  { id: 'floods', label: 'Generate Flood Events' },
+  { id: 'incidents', label: 'Generate Delivery Incidents' },
+  { id: 'calls', label: 'Generate Customer Calls' },
 ];
 
 function getCityProvisionState(city: string) {
@@ -2205,6 +2944,356 @@ FROM expanded`, 1200);
       const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.COURIER_LOCATIONS WHERE CITY IN (${cityList})`);
       updateStep('locations', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('locations', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    // Step 8: Weather Observations
+    updateStep('weather', { status: 'running', message: 'Generating weather observations...', started_at: Date.now() });
+    try {
+      const weatherStations: Record<string, { name: string; lat: number; lon: number }[]> = {
+        'San Francisco': [
+          { name: 'SF Downtown', lat: 37.7749, lon: -122.4194 },
+          { name: 'SF Mission District', lat: 37.7599, lon: -122.4148 },
+          { name: 'SF Marina', lat: 37.8015, lon: -122.4368 },
+          { name: 'SF Sunset', lat: 37.7525, lon: -122.4949 },
+          { name: 'SF SoMa', lat: 37.7785, lon: -122.3950 },
+          { name: 'SF Richmond', lat: 37.7799, lon: -122.4644 },
+          { name: 'SF Bayview', lat: 37.7296, lon: -122.3876 },
+          { name: 'SF North Beach', lat: 37.8061, lon: -122.4103 },
+        ],
+        'London': [
+          { name: 'London City', lat: 51.5074, lon: -0.1278 },
+          { name: 'London Heathrow', lat: 51.4700, lon: -0.4543 },
+          { name: 'London Greenwich', lat: 51.4769, lon: -0.0005 },
+          { name: 'London Kensington', lat: 51.4988, lon: -0.1749 },
+          { name: 'London Camden', lat: 51.5390, lon: -0.1426 },
+          { name: 'London Canary Wharf', lat: 51.5054, lon: -0.0235 },
+        ],
+        'Paris': [
+          { name: 'Paris Centre', lat: 48.8566, lon: 2.3522 },
+          { name: 'Paris Orly', lat: 48.7262, lon: 2.3652 },
+          { name: 'Paris Montmartre', lat: 48.8867, lon: 2.3431 },
+          { name: 'Paris La Defense', lat: 48.8924, lon: 2.2360 },
+        ],
+      };
+      const stationsForCity = weatherStations[city] || weatherStations['San Francisco'];
+      const stationUnions = stationsForCity.map(s =>
+        `SELECT '${s.name.replace(/'/g, "''")}' AS station_name, ST_MAKEPOINT(${s.lon}, ${s.lat}) AS station_location`
+      ).join(' UNION ALL\n  ');
+      const safeCity = city.replace(/'/g, "''");
+
+      await snowSql(`DELETE FROM ${DB}.DATA.WEATHER_OBSERVATIONS WHERE CITY IN (${cityList})`);
+      await snowSql(`DELETE FROM ${DB}.DATA.WEATHER_FORECASTS WHERE CITY IN (${cityList})`);
+      await snowSql(`INSERT INTO ${DB}.DATA.WEATHER_OBSERVATIONS
+WITH date_range AS (
+  SELECT DATEADD('day', -SEQ4(), '${start_date}'::DATE) AS obs_date
+  FROM TABLE(GENERATOR(ROWCOUNT => ${num_days}))
+),
+hours AS (
+  SELECT SEQ4() AS obs_hour FROM TABLE(GENERATOR(ROWCOUNT => 24))
+),
+stations AS (
+  ${stationUnions}
+),
+base_weather AS (
+  SELECT
+    d.obs_date, h.obs_hour, s.station_name, s.station_location,
+    d.obs_date = (SELECT MAX(obs_date) FROM date_range) AS is_last_day,
+    UNIFORM(1, 100, RANDOM()) AS weather_roll,
+    UNIFORM(1, 100, RANDOM()) AS severity_roll
+  FROM date_range d CROSS JOIN hours h CROSS JOIN stations s
+)
+SELECT
+  MD5(station_name || obs_date || obs_hour || RANDOM()) AS OBSERVATION_ID,
+  DATEADD('hour', obs_hour, obs_date::TIMESTAMP_NTZ) AS OBSERVATION_TIME,
+  station_name AS STATION_NAME, station_location AS STATION_LOCATION,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(8, 14, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 0 AND 6 THEN ROUND(UNIFORM(5, 10, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 7 AND 11 THEN ROUND(UNIFORM(10, 16, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    WHEN obs_hour BETWEEN 12 AND 17 THEN ROUND(UNIFORM(14, 22, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+    ELSE ROUND(UNIFORM(8, 15, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1)
+  END AS TEMPERATURE_C,
+  CASE WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(4, 10, RANDOM())::FLOAT, 1) ELSE ROUND(UNIFORM(6, 18, RANDOM())::FLOAT, 1) END AS FEELS_LIKE_C,
+  CASE WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(25, 45, RANDOM())::FLOAT, 1) ELSE ROUND(UNIFORM(3, 20, RANDOM())::FLOAT, 1) END AS WIND_SPEED_MPH,
+  CASE WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(35, 60, RANDOM())::FLOAT, 1) ELSE ROUND(UNIFORM(5, 30, RANDOM())::FLOAT, 1) END AS WIND_GUST_MPH,
+  CASE UNIFORM(1,8,RANDOM()) WHEN 1 THEN 'N' WHEN 2 THEN 'NE' WHEN 3 THEN 'E' WHEN 4 THEN 'SE' WHEN 5 THEN 'S' WHEN 6 THEN 'SW' WHEN 7 THEN 'W' ELSE 'NW' END AS WIND_DIRECTION,
+  CASE WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(85, 98, RANDOM())::FLOAT, 1) ELSE ROUND(UNIFORM(40, 80, RANDOM())::FLOAT, 1) END AS HUMIDITY_PCT,
+  ROUND(UNIFORM(1005, 1025, RANDOM())::FLOAT - CASE WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 20 ELSE 0 END, 1) AS PRESSURE_HPA,
+  CASE WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(0.5, 3, RANDOM())::FLOAT, 1) ELSE ROUND(UNIFORM(5, 30, RANDOM())::FLOAT, 1) END AS VISIBILITY_KM,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 11 AND 15 THEN ROUND(UNIFORM(8, 25, RANDOM())::FLOAT, 1)
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN ROUND(UNIFORM(3, 12, RANDOM())::FLOAT, 1)
+    WHEN weather_roll <= 30 THEN ROUND(UNIFORM(0.1, 2, RANDOM())::FLOAT, 1)
+    ELSE 0
+  END AS PRECIPITATION_MM,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 12 AND 14 THEN 'Thunderstorm'
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 'Heavy Rain'
+    WHEN is_last_day AND obs_hour IN (9, 17) THEN 'Light Rain'
+    WHEN weather_roll <= 15 THEN 'Heavy Rain'
+    WHEN weather_roll <= 35 THEN 'Light Rain'
+    WHEN weather_roll <= 50 THEN 'Overcast'
+    WHEN weather_roll <= 70 THEN 'Cloudy'
+    WHEN weather_roll <= 85 THEN 'Partly Cloudy'
+    ELSE 'Clear'
+  END AS WEATHER_CONDITION,
+  CASE
+    WHEN is_last_day AND obs_hour BETWEEN 12 AND 14 THEN 'severe'
+    WHEN is_last_day AND obs_hour BETWEEN 10 AND 16 THEN 'warning'
+    WHEN is_last_day AND obs_hour IN (9, 17) THEN 'advisory'
+    WHEN weather_roll <= 15 THEN 'advisory'
+    ELSE 'normal'
+  END AS WEATHER_SEVERITY,
+  CASE WHEN obs_hour BETWEEN 10 AND 16 THEN UNIFORM(1, 6, RANDOM()) ELSE 0 END AS UV_INDEX,
+  '${safeCity}' AS CITY
+FROM base_weather`);
+
+      try {
+        const lastDate = `'${start_date}'::DATE`;
+        await snowSql(`INSERT INTO ${DB}.DATA.WEATHER_FORECASTS
+WITH forecast_days AS (
+  SELECT DATEADD('day', SEQ4() + 1, ${lastDate}) AS forecast_date
+  FROM TABLE(GENERATOR(ROWCOUNT => 3))
+),
+hours AS (SELECT SEQ4() * 3 AS fc_hour FROM TABLE(GENERATOR(ROWCOUNT => 8))),
+stations AS (
+  SELECT DISTINCT STATION_NAME, STATION_LOCATION FROM ${DB}.DATA.WEATHER_OBSERVATIONS WHERE CITY IN (${cityList}) LIMIT 8
+)
+SELECT
+  MD5(s.STATION_NAME || d.forecast_date || h.fc_hour || RANDOM()) AS FORECAST_ID,
+  ${lastDate}::TIMESTAMP_NTZ AS ISSUED_AT,
+  DATEADD('hour', h.fc_hour, d.forecast_date::TIMESTAMP_NTZ) AS FORECAST_TIME,
+  s.STATION_NAME, s.STATION_LOCATION,
+  ROUND(UNIFORM(10, 20, RANDOM())::FLOAT + UNIFORM(0,9,RANDOM())/10.0, 1) AS TEMPERATURE_C,
+  ROUND(UNIFORM(8, 17, RANDOM())::FLOAT, 1) AS FEELS_LIKE_C,
+  ROUND(UNIFORM(5, 18, RANDOM())::FLOAT, 1) AS WIND_SPEED_MPH,
+  ROUND(UNIFORM(10, 25, RANDOM())::FLOAT, 1) AS WIND_GUST_MPH,
+  ROUND(UNIFORM(10, 60, RANDOM())::FLOAT, 0) AS PRECIPITATION_PROB_PCT,
+  ROUND(UNIFORM(0, 3, RANDOM())::FLOAT, 1) AS PRECIPITATION_MM,
+  CASE UNIFORM(1,5,RANDOM()) WHEN 1 THEN 'Light Rain' WHEN 2 THEN 'Cloudy' WHEN 3 THEN 'Partly Cloudy' WHEN 4 THEN 'Overcast' ELSE 'Clear' END AS WEATHER_CONDITION,
+  'normal' AS WEATHER_SEVERITY,
+  '${safeCity}' AS CITY
+FROM forecast_days d CROSS JOIN hours h CROSS JOIN stations s`);
+      } catch (err: any) { console.error('Weather forecast generation error:', err.message); }
+
+      const wrc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.WEATHER_OBSERVATIONS WHERE CITY IN (${cityList})`);
+      updateStep('weather', { status: 'complete', rows: Number(wrc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('weather', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    // Step 9: Flood Monitoring
+    updateStep('floods', { status: 'running', message: 'Generating flood monitoring data...', started_at: Date.now() });
+    try {
+      const safeCity = city.replace(/'/g, "''");
+      const floodZones: Record<string, { name: string; polygon: string; desc: string }> = {
+        'San Francisco': {
+          name: 'Mission Creek Flash Flood',
+          polygon: 'POLYGON((-122.4000 37.7700, -122.3900 37.7700, -122.3900 37.7780, -122.3950 37.7810, -122.4000 37.7780, -122.4000 37.7700))',
+          desc: 'Flash flooding reported in the Mission Creek and SoMa area. Surface water flooding affecting roads and low-lying areas. Multiple road closures in effect.'
+        },
+        'London': {
+          name: 'Thames Barrier Flash Flood',
+          polygon: 'POLYGON((-0.0600 51.4900, -0.0200 51.4900, -0.0200 51.5050, -0.0400 51.5100, -0.0600 51.5050, -0.0600 51.4900))',
+          desc: 'Flash flooding in the Greenwich and Isle of Dogs area. Surface water flooding affecting major roads. Thames Barrier activated.'
+        },
+        'Paris': {
+          name: 'Seine Overflow Flash Flood',
+          polygon: 'POLYGON((2.3200 48.8450, 2.3600 48.8450, 2.3600 48.8600, 2.3400 48.8650, 2.3200 48.8600, 2.3200 48.8450))',
+          desc: 'Flash flooding near the Seine river in the 5th and 13th arrondissements. Surface water affecting roads and metro stations.'
+        },
+      };
+      const zone = floodZones[city] || floodZones['San Francisco'];
+      const zone2Name = city === 'London' ? 'Wandsworth Surface Water' : city === 'Paris' ? 'Marais District Drainage' : 'Bayview Basin Overflow';
+      const zone2Poly = city === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
+        : city === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
+        : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))';
+      const lastDay = `'${start_date}'::DATE`;
+
+      await snowSql(`DELETE FROM ${DB}.DATA.FLOOD_MONITORING WHERE CITY IN (${cityList})`);
+      await snowSql(`INSERT INTO ${DB}.DATA.FLOOD_MONITORING
+SELECT 'FLOOD-001' AS FLOOD_ID, '${zone.name.replace(/'/g, "''")}' AS FLOOD_NAME, 'severe' AS SEVERITY,
+  TRY_TO_GEOGRAPHY('${zone.polygon}') AS FLOOD_AREA,
+  ST_CENTROID(TRY_TO_GEOGRAPHY('${zone.polygon}')) AS CENTROID,
+  DATEADD('hour', 11, ${lastDay}::TIMESTAMP_NTZ) AS START_TIME,
+  DATEADD('hour', 17, ${lastDay}::TIMESTAMP_NTZ) AS END_TIME,
+  DATEADD('hour', 13, ${lastDay}::TIMESTAMP_NTZ) AS PEAK_TIME,
+  1.8 AS WATER_LEVEL_M, TRUE AS IS_ACTIVE, 12 AS AFFECTED_ROADS_EST,
+  '${zone.desc.replace(/'/g, "''")}' AS DESCRIPTION, '${safeCity}' AS CITY
+UNION ALL
+SELECT 'FLOOD-002', '${zone2Name.replace(/'/g, "''")}', 'moderate',
+  TRY_TO_GEOGRAPHY('${zone2Poly}'),
+  ST_CENTROID(TRY_TO_GEOGRAPHY('${zone2Poly}')),
+  DATEADD('hour', 12, ${lastDay}::TIMESTAMP_NTZ),
+  DATEADD('hour', 16, ${lastDay}::TIMESTAMP_NTZ),
+  DATEADD('hour', 14, ${lastDay}::TIMESTAMP_NTZ),
+  0.9, TRUE, 6,
+  'Moderate surface water flooding affecting local roads. Drains overwhelmed. Caution advised.',
+  '${safeCity}'`);
+      const frc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.FLOOD_MONITORING WHERE CITY IN (${cityList})`);
+      updateStep('floods', { status: 'complete', rows: Number(frc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('floods', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    // Step 10: Delivery Incidents
+    updateStep('incidents', { status: 'running', message: 'Generating delivery incidents...', started_at: Date.now() });
+    try {
+      const lastDay = `'${start_date}'::DATE`;
+      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_INCIDENTS WHERE CITY IN (${cityList})`);
+      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_INCIDENTS
+WITH all_deliveries AS (
+  SELECT ORDER_ID, COURIER_ID, ORDER_TIME, PICKUP_TIME, DELIVERY_TIME,
+    RESTAURANT_LOCATION, CUSTOMER_LOCATION, GEOMETRY, CITY,
+    DATE_TRUNC('day', ORDER_TIME) = ${lastDay}::DATE AS is_last_day,
+    HOUR(ORDER_TIME) AS order_hour
+  FROM ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES
+  WHERE GEOMETRY IS NOT NULL AND CITY IN (${cityList})
+),
+flood_zones AS (
+  SELECT FLOOD_ID, FLOOD_AREA, START_TIME, END_TIME
+  FROM ${DB}.DATA.FLOOD_MONITORING WHERE CITY IN (${cityList})
+),
+weather_at_time AS (
+  SELECT DISTINCT DATE_TRUNC('hour', OBSERVATION_TIME) AS obs_hour, WEATHER_CONDITION, WEATHER_SEVERITY
+  FROM ${DB}.DATA.WEATHER_OBSERVATIONS
+  WHERE CITY IN (${cityList}) AND WEATHER_SEVERITY IN ('warning', 'severe')
+),
+flood_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    f.FLOOD_ID, 'flooding' AS INCIDENT_TYPE,
+    UNIFORM(15, 45, RANDOM()) AS DELAY_MINUTES,
+    CASE UNIFORM(1,3,RANDOM())
+      WHEN 1 THEN 'Route blocked by flash flooding. Courier diverted via alternative route.'
+      WHEN 2 THEN 'Delivery delayed due to road closure from flooding. Area impassable.'
+      ELSE 'Surface water on route caused significant slowdown. Courier proceeded with caution.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  JOIN flood_zones f ON d.is_last_day
+    AND d.ORDER_TIME BETWEEN f.START_TIME AND f.END_TIME
+    AND ST_DWITHIN(d.CUSTOMER_LOCATION, f.FLOOD_AREA, 800)
+),
+weather_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    NULL AS FLOOD_ID, 'weather' AS INCIDENT_TYPE,
+    UNIFORM(5, 20, RANDOM()) AS DELAY_MINUTES,
+    CASE w.WEATHER_CONDITION
+      WHEN 'Heavy Rain' THEN 'Heavy rain reducing visibility and road grip. Courier speed reduced for safety.'
+      WHEN 'Thunderstorm' THEN 'Thunderstorm conditions. Courier sheltered temporarily before continuing.'
+      ELSE 'Adverse weather conditions causing delivery slowdown.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  JOIN weather_at_time w ON DATE_TRUNC('hour', d.ORDER_TIME) = w.obs_hour
+  WHERE d.ORDER_ID NOT IN (SELECT ORDER_ID FROM flood_affected)
+    AND UNIFORM(1, 100, RANDOM()) <= 40
+),
+traffic_affected AS (
+  SELECT d.ORDER_ID, d.COURIER_ID, d.ORDER_TIME, d.CUSTOMER_LOCATION, d.CITY,
+    NULL AS FLOOD_ID, 'traffic' AS INCIDENT_TYPE,
+    UNIFORM(5, 15, RANDOM()) AS DELAY_MINUTES,
+    CASE UNIFORM(1,5,RANDOM())
+      WHEN 1 THEN 'Heavy traffic congestion on main route.'
+      WHEN 2 THEN 'Road works causing detour and delay.'
+      WHEN 3 THEN 'Accident on route causing traffic backup.'
+      WHEN 4 THEN 'Rush hour congestion significantly slowing courier progress.'
+      ELSE 'Unexpected traffic delay on delivery route.'
+    END AS DESCRIPTION
+  FROM all_deliveries d
+  WHERE d.ORDER_ID NOT IN (SELECT ORDER_ID FROM flood_affected)
+    AND d.ORDER_ID NOT IN (SELECT ORDER_ID FROM weather_affected)
+    AND d.order_hour BETWEEN 11 AND 20
+    AND UNIFORM(1, 100, RANDOM()) <= 12
+)
+SELECT
+  MD5(ORDER_ID || INCIDENT_TYPE || RANDOM()) AS INCIDENT_ID,
+  ORDER_ID, COURIER_ID, INCIDENT_TYPE,
+  DATEADD('minute', UNIFORM(5, 30, RANDOM()), ORDER_TIME) AS INCIDENT_TIME,
+  DELAY_MINUTES, CUSTOMER_LOCATION AS INCIDENT_LOCATION, DESCRIPTION,
+  FLOOD_ID AS RELATED_FLOOD_ID,
+  CASE INCIDENT_TYPE WHEN 'flooding' THEN 'Heavy Rain' WHEN 'weather' THEN 'Heavy Rain' ELSE NULL END AS WEATHER_CONDITION,
+  DATEADD('minute', DELAY_MINUTES, DATEADD('minute', UNIFORM(5, 30, RANDOM()), ORDER_TIME)) AS RESOLVED_TIME,
+  CITY
+FROM (
+  SELECT * FROM flood_affected
+  UNION ALL SELECT * FROM weather_affected
+  UNION ALL SELECT * FROM traffic_affected
+)`);
+      const irc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_INCIDENTS WHERE CITY IN (${cityList})`);
+      updateStep('incidents', { status: 'complete', rows: Number(irc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('incidents', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    // Step 11: Customer Calls
+    updateStep('calls', { status: 'running', message: 'Generating customer calls...', started_at: Date.now() });
+    try {
+      await snowSql(`DELETE FROM ${DB}.DATA.CUSTOMER_CALLS WHERE CITY IN (${cityList})`);
+      await snowSql(`INSERT INTO ${DB}.DATA.CUSTOMER_CALLS
+WITH incident_orders AS (
+  SELECT i.INCIDENT_ID, i.ORDER_ID, i.COURIER_ID, i.INCIDENT_TYPE, i.INCIDENT_TIME,
+    i.DELAY_MINUTES, i.DESCRIPTION AS INC_DESC, i.RELATED_FLOOD_ID, i.CITY,
+    d.RESTAURANT_NAME, d.CUSTOMER_ADDRESS
+  FROM ${DB}.DATA.DELIVERY_INCIDENTS i
+  JOIN ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES d ON i.ORDER_ID = d.ORDER_ID
+  WHERE i.CITY IN (${cityList})
+),
+first_names AS (
+  SELECT column1 AS fname, ROW_NUMBER() OVER (ORDER BY column1) - 1 AS fn_idx FROM VALUES
+  ('Emma'),('James'),('Sarah'),('Michael'),('Lisa'),('David'),('Anna'),('Robert'),
+  ('Kate'),('John'),('Maria'),('Tom'),('Sophie'),('Chris'),('Rachel'),('Alex'),
+  ('Olivia'),('Daniel'),('Jessica'),('Ben'),('Lucy'),('Sam'),('Claire'),('Mark'),
+  ('Amy'),('Paul'),('Nina'),('Harry'),('Zoe'),('Jack')
+),
+last_names AS (
+  SELECT column1 AS lname, ROW_NUMBER() OVER (ORDER BY column1) - 1 AS ln_idx FROM VALUES
+  ('Smith'),('Johnson'),('Williams'),('Brown'),('Jones'),('Garcia'),('Miller'),
+  ('Davis'),('Rodriguez'),('Martinez'),('Anderson'),('Thomas'),('Jackson'),('White'),
+  ('Harris'),('Martin'),('Thompson'),('Moore'),('Allen'),('Young')
+),
+call_templates AS (
+  SELECT io.*,
+    UNIFORM(1, 100, RANDOM()) AS call_roll,
+    MOD(ABS(HASH(io.ORDER_ID || 'fn')), 30) AS fname_idx,
+    MOD(ABS(HASH(io.ORDER_ID || 'ln')), 20) AS lname_idx
+  FROM incident_orders io
+  WHERE UNIFORM(1, 100, RANDOM()) <= 70
+)
+SELECT
+  MD5(ct.ORDER_ID || 'CALL' || RANDOM()) AS CALL_ID, ct.ORDER_ID,
+  DATEADD('minute', UNIFORM(5, 60, RANDOM())::INT, ct.INCIDENT_TIME) AS CALL_TIME,
+  fn.fname || ' ' || ln.lname AS CUSTOMER_NAME,
+  CASE WHEN ct.INCIDENT_TYPE = 'flooding' THEN UNIFORM(120, 360, RANDOM()) WHEN ct.INCIDENT_TYPE = 'weather' THEN UNIFORM(90, 240, RANDOM()) ELSE UNIFORM(60, 180, RANDOM()) END AS CALL_DURATION_SECS,
+  CASE WHEN ct.call_roll <= 75 THEN 'complaint' WHEN ct.call_roll <= 90 THEN 'enquiry' ELSE 'cancellation' END AS CALL_TYPE,
+  CASE
+    WHEN ct.INCIDENT_TYPE = 'flooding' AND ct.call_roll <= 30 THEN 'angry'
+    WHEN ct.INCIDENT_TYPE = 'flooding' THEN 'frustrated'
+    WHEN ct.INCIDENT_TYPE = 'weather' AND ct.call_roll <= 20 THEN 'angry'
+    WHEN ct.INCIDENT_TYPE = 'weather' THEN 'frustrated'
+    WHEN ct.call_roll <= 15 THEN 'angry'
+    WHEN ct.call_roll <= 50 THEN 'frustrated'
+    WHEN ct.call_roll <= 80 THEN 'neutral'
+    ELSE 'understanding'
+  END AS SENTIMENT,
+  CASE ct.INCIDENT_TYPE WHEN 'flooding' THEN 'flood delay' WHEN 'weather' THEN 'weather delay' ELSE 'late delivery' END AS ISSUE_CATEGORY,
+  CASE ct.INCIDENT_TYPE
+    WHEN 'flooding' THEN CASE UNIFORM(1,4,RANDOM())
+      WHEN 1 THEN 'My order from ' || ct.RESTAURANT_NAME || ' is very late. The driver says the road is flooded and they cannot get through.'
+      WHEN 2 THEN 'I have been waiting over an hour. Apparently there is flooding near my area. When will my food arrive?'
+      WHEN 3 THEN 'The courier called to say they are stuck due to flooding. This is unacceptable. I want a refund.'
+      ELSE 'My delivery is delayed because of flooding. Can you give me an update on when it will arrive?' END
+    WHEN 'weather' THEN CASE UNIFORM(1,4,RANDOM())
+      WHEN 1 THEN 'My order is late. I understand the weather is bad but I placed this order an hour ago.'
+      WHEN 2 THEN 'The delivery is taking much longer than expected. Is it because of the rain?'
+      WHEN 3 THEN 'Hi, just checking on my order from ' || ct.RESTAURANT_NAME || '. The app says it is delayed due to weather.'
+      ELSE 'My food is going to be cold by the time it arrives. The rain has caused major delays apparently.' END
+    ELSE CASE UNIFORM(1,4,RANDOM())
+      WHEN 1 THEN 'My order from ' || ct.RESTAURANT_NAME || ' was supposed to arrive 20 minutes ago. Where is my courier?'
+      WHEN 2 THEN 'The delivery is running late. The app showed 15 minutes but it has been 30 already.'
+      WHEN 3 THEN 'Can I get an update on my order? It seems to be stuck in traffic somewhere.'
+      ELSE 'Hi, my delivery is delayed. The tracker shows the courier has not moved in a while.' END
+  END AS CALL_NOTES,
+  CASE WHEN ct.call_roll <= 10 THEN 'refund issued' WHEN ct.call_roll <= 30 THEN 'discount offered' WHEN ct.call_roll <= 60 THEN 'apology and ETA provided' WHEN ct.call_roll <= 85 THEN 'customer informed of situation' ELSE 'order cancelled and refunded' END AS RESOLUTION,
+  ct.INCIDENT_ID AS RELATED_INCIDENT_ID, ct.CITY
+FROM call_templates ct
+JOIN first_names fn ON ct.fname_idx = fn.fn_idx
+JOIN last_names ln ON ct.lname_idx = ln.ln_idx`);
+      const crc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.CUSTOMER_CALLS WHERE CITY IN (${cityList})`);
+      updateStep('calls', { status: 'complete', rows: Number(crc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('calls', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
   } catch (err: any) {
     console.error(`City build error for ${city}:`, err.message);
     throw err;
@@ -2217,7 +3306,7 @@ app.get('/api/city/:city/progress', (req, res) => {
   res.json(state);
 });
 
-const CITY_DATA_TABLES = ['COURIER_LOCATIONS', 'DELIVERY_ROUTE_GEOMETRIES', 'COURIERS'];
+const CITY_DATA_TABLES = ['CUSTOMER_CALLS', 'DELIVERY_INCIDENTS', 'FLOOD_MONITORING', 'WEATHER_FORECASTS', 'WEATHER_OBSERVATIONS', 'COURIER_LOCATIONS', 'DELIVERY_ROUTE_GEOMETRIES', 'COURIERS'];
 
 app.delete('/api/city/:city/data', async (req, res) => {
   try {

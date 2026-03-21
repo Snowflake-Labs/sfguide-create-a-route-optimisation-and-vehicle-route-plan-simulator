@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { RouteData, FleetStats, ChatMessage, Working, FileAttachment, ActiveStats, StatusFilter } from '../types';
+import type { RouteData, FleetStats, ChatMessage, Working, FileAttachment, ActiveStats, MapFilter } from '../types';
 import { courierColor } from '../types';
 
 export interface MapZoomTarget {
@@ -9,14 +9,19 @@ export interface MapZoomTarget {
   area: string;
 }
 
-export function useRoutes(city: string, statusFilter: StatusFilter = 'all', dateFilter: string = '', refreshKey: number = 0) {
+export function useRoutes(city: string, mapFilter: MapFilter, dateFilter: string = '', refreshKey: number = 0) {
   const [routes, setRoutes] = useState<RouteData[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ city });
-    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (mapFilter.type === 'status' && mapFilter.value) {
+      params.set('status', mapFilter.value);
+    } else if (mapFilter.type !== 'all' && mapFilter.value) {
+      params.set('filter_type', mapFilter.type);
+      params.set('filter_value', mapFilter.value);
+    }
     if (dateFilter) params.set('date', dateFilter);
     fetch(`/api/routes?${params.toString()}`)
       .then((r) => {
@@ -41,6 +46,9 @@ export function useRoutes(city: string, statusFilter: StatusFilter = 'all', date
             order_status: r.ORDER_STATUS || 'unknown',
             city: r.CITY || city,
             color: courierColor(r.COURIER_ID),
+            delay_reason: r.DELAY_REASON || 'none',
+            delay_minutes: Number(r.DELAY_MINUTES || 0),
+            flood_affected: r.FLOOD_AFFECTED === true || r.FLOOD_AFFECTED === 'true',
           };
         });
         setRoutes(mapped);
@@ -51,9 +59,40 @@ export function useRoutes(city: string, statusFilter: StatusFilter = 'all', date
         setRoutes([]);
         setLoading(false);
       });
-  }, [city, statusFilter, dateFilter, refreshKey]);
+  }, [city, mapFilter.type, mapFilter.value, dateFilter, refreshKey]);
 
   return { routes, loading };
+}
+
+export interface FleetAlert {
+  type: 'flood' | 'weather' | 'incident_summary';
+  id?: string;
+  title?: string;
+  severity?: string;
+  area_geojson?: any;
+  center_lat?: number;
+  center_lon?: number;
+  start_time?: string;
+  end_time?: string;
+  description?: string;
+  water_level_m?: number;
+  affected_roads?: number;
+  condition?: string;
+  station_count?: number;
+  incidents?: Record<string, { count: number; avg_delay: number }>;
+}
+
+export function useAlerts(city: string, refreshKey: number = 0) {
+  const [alerts, setAlerts] = useState<FleetAlert[]>([]);
+
+  useEffect(() => {
+    fetch(`/api/alerts?city=${encodeURIComponent(city)}`)
+      .then(r => r.json())
+      .then(data => setAlerts(Array.isArray(data) ? data : []))
+      .catch(() => setAlerts([]));
+  }, [city, refreshKey]);
+
+  return alerts;
 }
 
 export function useActiveStats(refreshKey: number = 0) {
@@ -98,7 +137,7 @@ export function useAgent() {
   const [mapZoomTarget, setMapZoomTarget] = useState<MapZoomTarget | null>(null);
 
   const sendMessage = useCallback(
-    async (text: string, attachments?: FileAttachment[], onMapFilter?: (f: string) => void) => {
+    async (text: string, attachments?: FileAttachment[], onMapFilter?: (filterType: string, filterValue: string) => void) => {
       const userMsg: ChatMessage = { role: 'user', content: text, attachments };
       setMessages((prev) => [...prev, userMsg]);
       setLoading(true);
@@ -171,11 +210,12 @@ export function useAgent() {
                     sql_explanation: data.sql_explanation,
                     has_results: data.has_results,
                     row_count: data.row_count,
+                    results: data.results,
                   });
                   setCurrentWorkings([...workings]);
                   break;
                 case 'map_filter':
-                  if (data.filter && onMapFilter) onMapFilter(data.filter);
+                  if (onMapFilter) onMapFilter(data.filter_type || 'all', data.filter_value || '');
                   break;
                 case 'map_zoom':
                   setMapZoomTarget({

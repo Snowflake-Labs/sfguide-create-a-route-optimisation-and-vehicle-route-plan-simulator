@@ -1,13 +1,16 @@
 CREATE APPLICATION ROLE IF NOT EXISTS app_user;
+CREATE APPLICATION ROLE IF NOT EXISTS all_agents_role;
 
 CREATE SCHEMA IF NOT EXISTS core;
 GRANT USAGE ON SCHEMA core TO APPLICATION ROLE app_user;
+GRANT USAGE ON SCHEMA core TO APPLICATION ROLE all_agents_role;
 
 CREATE SCHEMA IF NOT EXISTS routing;
 GRANT USAGE ON SCHEMA routing TO APPLICATION ROLE app_user;
 
 CREATE SCHEMA IF NOT EXISTS data;
 GRANT USAGE ON SCHEMA data TO APPLICATION ROLE app_user;
+GRANT USAGE ON SCHEMA data TO APPLICATION ROLE all_agents_role;
 
 -- =============================================================================
 -- CORE: Callbacks, deploy, status
@@ -166,6 +169,16 @@ BEGIN
     GRANT SERVICE ROLE core.fleet_intelligence_service!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     GRANT OPERATE ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
     GRANT MONITOR ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
+    BEGIN
+        CALL core.setup_semantic_view();
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        CALL core.create_agent();
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
     RETURN 'Version initialized';
 EXCEPTION
     WHEN OTHER THEN
@@ -986,6 +999,108 @@ GRANT SELECT ON TABLE data.CA_MATRIX_RAW_RES10 TO APPLICATION ROLE app_user;
 GRANT INSERT ON TABLE data.CA_MATRIX_RAW_RES10 TO APPLICATION ROLE app_user;
 
 -- =============================================================================
+-- DATA: Weather, Flood Monitoring, Delivery Incidents, Customer Calls
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS data.WEATHER_OBSERVATIONS (
+    OBSERVATION_ID VARCHAR,
+    OBSERVATION_TIME TIMESTAMP_NTZ,
+    STATION_NAME VARCHAR,
+    STATION_LOCATION GEOGRAPHY,
+    TEMPERATURE_C FLOAT,
+    FEELS_LIKE_C FLOAT,
+    WIND_SPEED_MPH FLOAT,
+    WIND_GUST_MPH FLOAT,
+    WIND_DIRECTION VARCHAR,
+    HUMIDITY_PCT FLOAT,
+    PRESSURE_HPA FLOAT,
+    VISIBILITY_KM FLOAT,
+    PRECIPITATION_MM FLOAT,
+    WEATHER_CONDITION VARCHAR,
+    WEATHER_SEVERITY VARCHAR,
+    UV_INDEX INTEGER,
+    CITY VARCHAR
+);
+GRANT SELECT ON TABLE data.WEATHER_OBSERVATIONS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.WEATHER_OBSERVATIONS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.WEATHER_OBSERVATIONS TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.WEATHER_FORECASTS (
+    FORECAST_ID VARCHAR,
+    ISSUED_AT TIMESTAMP_NTZ,
+    FORECAST_TIME TIMESTAMP_NTZ,
+    STATION_NAME VARCHAR,
+    STATION_LOCATION GEOGRAPHY,
+    TEMPERATURE_C FLOAT,
+    FEELS_LIKE_C FLOAT,
+    WIND_SPEED_MPH FLOAT,
+    WIND_GUST_MPH FLOAT,
+    PRECIPITATION_PROB_PCT FLOAT,
+    PRECIPITATION_MM FLOAT,
+    WEATHER_CONDITION VARCHAR,
+    WEATHER_SEVERITY VARCHAR,
+    CITY VARCHAR
+);
+GRANT SELECT ON TABLE data.WEATHER_FORECASTS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.WEATHER_FORECASTS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.WEATHER_FORECASTS TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.FLOOD_MONITORING (
+    FLOOD_ID VARCHAR,
+    FLOOD_NAME VARCHAR,
+    SEVERITY VARCHAR,
+    FLOOD_AREA GEOGRAPHY,
+    CENTROID GEOGRAPHY,
+    START_TIME TIMESTAMP_NTZ,
+    END_TIME TIMESTAMP_NTZ,
+    PEAK_TIME TIMESTAMP_NTZ,
+    WATER_LEVEL_M FLOAT,
+    IS_ACTIVE BOOLEAN,
+    AFFECTED_ROADS_EST INTEGER,
+    DESCRIPTION VARCHAR,
+    CITY VARCHAR
+);
+GRANT SELECT ON TABLE data.FLOOD_MONITORING TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.FLOOD_MONITORING TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.FLOOD_MONITORING TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.DELIVERY_INCIDENTS (
+    INCIDENT_ID VARCHAR,
+    ORDER_ID VARCHAR,
+    COURIER_ID VARCHAR,
+    INCIDENT_TYPE VARCHAR,
+    INCIDENT_TIME TIMESTAMP_NTZ,
+    DELAY_MINUTES FLOAT,
+    INCIDENT_LOCATION GEOGRAPHY,
+    DESCRIPTION VARCHAR,
+    RELATED_FLOOD_ID VARCHAR,
+    WEATHER_CONDITION VARCHAR,
+    RESOLVED_TIME TIMESTAMP_NTZ,
+    CITY VARCHAR
+);
+GRANT SELECT ON TABLE data.DELIVERY_INCIDENTS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.DELIVERY_INCIDENTS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.DELIVERY_INCIDENTS TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS data.CUSTOMER_CALLS (
+    CALL_ID VARCHAR,
+    ORDER_ID VARCHAR,
+    CALL_TIME TIMESTAMP_NTZ,
+    CUSTOMER_NAME VARCHAR,
+    CALL_DURATION_SECS INTEGER,
+    CALL_TYPE VARCHAR,
+    SENTIMENT VARCHAR,
+    ISSUE_CATEGORY VARCHAR,
+    CALL_NOTES VARCHAR,
+    RESOLUTION VARCHAR,
+    RELATED_INCIDENT_ID VARCHAR,
+    CITY VARCHAR
+);
+GRANT SELECT ON TABLE data.CUSTOMER_CALLS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE data.CUSTOMER_CALLS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE data.CUSTOMER_CALLS TO APPLICATION ROLE app_user;
+
+-- =============================================================================
 -- DATA: Build Travel Time Matrix — Scalable Architecture
 -- =============================================================================
 -- Pipeline: BUILD_HEXAGONS → BUILD_WORK_QUEUE → BUILD_TRAVEL_TIME_RANGE (workers) → FLATTEN_MATRIX_RAW
@@ -1657,6 +1772,15 @@ WITH delivery_stats AS (
     SELECT ORDER_ID, AVG(KMH) AS AVERAGE_KMH, MAX(KMH) AS MAX_KMH
     FROM data.COURIER_LOCATIONS
     GROUP BY ORDER_ID
+),
+incident_stats AS (
+    SELECT ORDER_ID,
+        MAX(INCIDENT_TYPE) AS DELAY_REASON,
+        SUM(DELAY_MINUTES) AS TOTAL_DELAY_MINUTES,
+        MAX(RELATED_FLOOD_ID) AS FLOOD_ID,
+        MAX(WEATHER_CONDITION) AS INCIDENT_WEATHER
+    FROM data.DELIVERY_INCIDENTS
+    GROUP BY ORDER_ID
 )
 SELECT
     rg.COURIER_ID, rg.ORDER_ID, rg.ORDER_TIME, rg.PICKUP_TIME, rg.DELIVERY_TIME,
@@ -1665,9 +1789,14 @@ SELECT
     rg.CUSTOMER_ADDRESS_ID, rg.CUSTOMER_ADDRESS, rg.CUSTOMER_LOCATION,
     rg.PREP_TIME_MINS, rg.ORDER_STATUS, rg.ROUTE_DURATION_SECS, rg.ROUTE_DISTANCE_METERS,
     rg.GEOMETRY, rg.SHIFT_TYPE, rg.VEHICLE_TYPE, rg.CITY,
-    ds.AVERAGE_KMH, ds.MAX_KMH
+    ds.AVERAGE_KMH, ds.MAX_KMH,
+    COALESCE(ins.DELAY_REASON, 'none') AS DELAY_REASON,
+    COALESCE(ins.TOTAL_DELAY_MINUTES, 0) AS DELAY_MINUTES,
+    CASE WHEN ins.FLOOD_ID IS NOT NULL THEN TRUE ELSE FALSE END AS FLOOD_AFFECTED,
+    ins.INCIDENT_WEATHER AS DELAY_WEATHER_CONDITION
 FROM data.DELIVERY_ROUTE_GEOMETRIES rg
-LEFT JOIN delivery_stats ds ON rg.ORDER_ID = ds.ORDER_ID;
+LEFT JOIN delivery_stats ds ON rg.ORDER_ID = ds.ORDER_ID
+LEFT JOIN incident_stats ins ON rg.ORDER_ID = ins.ORDER_ID;
 GRANT SELECT ON VIEW data.DELIVERY_SUMMARY TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE VIEW data.COURIER_LOCATIONS_V AS
@@ -1703,6 +1832,201 @@ FROM data.DELIVERY_ROUTE_GEOMETRIES;
 GRANT SELECT ON VIEW data.DELIVERY_ROUTE_PLAN TO APPLICATION ROLE app_user;
 
 -- =============================================================================
+-- CORE: Semantic View + Cortex Agent
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE core.setup_semantic_view()
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
+AS
+$$
+def run(session):
+    db = session.sql("SELECT CURRENT_DATABASE()").collect()[0][0]
+    results = []
+    try:
+        session.sql(f"""CREATE OR REPLACE SEMANTIC VIEW {db}.DATA.FLEET_ANALYTICS
+TABLES (
+    DELIVERIES AS {db}.DATA.DELIVERY_SUMMARY PRIMARY KEY (ORDER_ID),
+    WEATHER AS {db}.DATA.WEATHER_OBSERVATIONS PRIMARY KEY (OBSERVATION_ID),
+    FORECASTS AS {db}.DATA.WEATHER_FORECASTS PRIMARY KEY (FORECAST_ID),
+    FLOODS AS {db}.DATA.FLOOD_MONITORING PRIMARY KEY (FLOOD_ID),
+    INCIDENTS AS {db}.DATA.DELIVERY_INCIDENTS PRIMARY KEY (INCIDENT_ID),
+    CALLS AS {db}.DATA.CUSTOMER_CALLS PRIMARY KEY (CALL_ID)
+)
+RELATIONSHIPS (
+    INCIDENTS (ORDER_ID) REFERENCES DELIVERIES (ORDER_ID),
+    CALLS (ORDER_ID) REFERENCES DELIVERIES (ORDER_ID),
+    INCIDENTS (RELATED_FLOOD_ID) REFERENCES FLOODS (FLOOD_ID)
+)
+FACTS (
+    DELIVERIES.ROUTE_DISTANCE_METERS as ROUTE_DISTANCE_METERS comment='Delivery route distance in meters',
+    DELIVERIES.ROUTE_DURATION_SECS as ROUTE_DURATION_SECS comment='Delivery route duration in seconds',
+    DELIVERIES.PREP_TIME_MINS as PREP_TIME_MINS comment='Restaurant food preparation time in minutes',
+    DELIVERIES.AVERAGE_KMH as AVERAGE_KMH comment='Average courier speed in kmh',
+    DELIVERIES.MAX_KMH as MAX_KMH comment='Maximum courier speed in kmh',
+    DELIVERIES.DELAY_MINUTES as DELAY_MINUTES comment='Total delay in minutes due to incidents',
+    WEATHER.TEMPERATURE_C as TEMPERATURE_C comment='Observed temperature in celsius',
+    WEATHER.WIND_SPEED_MPH as WIND_SPEED_MPH comment='Observed wind speed in mph',
+    WEATHER.PRECIPITATION_MM as PRECIPITATION_MM comment='Observed precipitation amount in mm',
+    WEATHER.HUMIDITY_PCT as HUMIDITY_PCT comment='Observed humidity percentage',
+    FORECASTS.PRECIPITATION_PROB_PCT as PRECIPITATION_PROB_PCT comment='Forecast probability of precipitation 0 to 100 percent',
+    INCIDENTS.DELAY_MINUTES as DELAY_MINUTES comment='Delay minutes caused by this incident',
+    CALLS.CALL_DURATION_SECS as CALL_DURATION_SECS comment='Customer call duration in seconds'
+)
+DIMENSIONS (
+    DELIVERIES.ORDER_ID as ORDER_ID comment='Unique delivery order identifier',
+    DELIVERIES.COURIER_ID as COURIER_ID comment='Courier assigned to the delivery',
+    DELIVERIES.RESTAURANT_ID as RESTAURANT_ID comment='Restaurant identifier',
+    DELIVERIES.RESTAURANT_NAME as RESTAURANT_NAME comment='Name of the restaurant',
+    DELIVERIES.CUISINE_TYPE as CUISINE_TYPE comment='Type of cuisine',
+    DELIVERIES.RESTAURANT_ADDRESS as RESTAURANT_ADDRESS comment='Restaurant street address',
+    DELIVERIES.CUSTOMER_ADDRESS_ID as CUSTOMER_ADDRESS_ID comment='Customer address identifier',
+    DELIVERIES.CUSTOMER_ADDRESS as CUSTOMER_ADDRESS comment='Customer delivery address',
+    DELIVERIES.CITY as CITY comment='City where the delivery takes place',
+    DELIVERIES.ORDER_TIME as ORDER_TIME comment='Timestamp when the order was placed',
+    DELIVERIES.PICKUP_TIME as PICKUP_TIME comment='Timestamp when courier picked up order',
+    DELIVERIES.DELIVERY_TIME as DELIVERY_TIME comment='Timestamp when the order was delivered',
+    DELIVERIES.ORDER_STATUS as ORDER_STATUS comment='Delivery status',
+    DELIVERIES.SHIFT_TYPE as SHIFT_TYPE comment='Shift period Lunch Dinner or Afternoon',
+    DELIVERIES.VEHICLE_TYPE as VEHICLE_TYPE comment='Courier vehicle car scooter or bicycle',
+    DELIVERIES.DELAY_REASON as DELAY_REASON comment='Reason for delivery delay: traffic, flooding, weather, or none',
+    DELIVERIES.FLOOD_AFFECTED as FLOOD_AFFECTED comment='Whether delivery was affected by flooding',
+    DELIVERIES.DELAY_WEATHER_CONDITION as DELAY_WEATHER_CONDITION comment='Weather condition that caused the delay',
+    WEATHER.OBSERVATION_TIME as OBSERVATION_TIME comment='Time of weather observation hourly intervals',
+    WEATHER.STATION_NAME as STATION_NAME comment='Met Office weather station name',
+    WEATHER.WEATHER_CONDITION as WEATHER_CONDITION comment='Observed weather condition: Clear, Cloudy, Light Rain, Heavy Rain, Thunderstorm, Fog, Snow',
+    WEATHER.WEATHER_SEVERITY as WEATHER_SEVERITY comment='Observed weather severity: normal, advisory, warning, severe',
+    FORECASTS.ISSUED_AT as ISSUED_AT comment='When the forecast was issued',
+    FORECASTS.FORECAST_TIME as FORECAST_TIME comment='Future time the forecast is for use this to find tomorrow or upcoming weather',
+    FORECASTS.CITY as CITY comment='City for the forecast',
+    INCIDENTS.INCIDENT_TYPE as INCIDENT_TYPE comment='Type of delivery incident: traffic, flooding, weather',
+    INCIDENTS.INCIDENT_TIME as INCIDENT_TIME comment='Time when the incident occurred',
+    INCIDENTS.DESCRIPTION as DESCRIPTION comment='Description of the delivery incident',
+    FLOODS.FLOOD_NAME as FLOOD_NAME comment='Name of the flood event',
+    FLOODS.SEVERITY as SEVERITY comment='Flood severity level: minor, moderate, severe',
+    FLOODS.START_TIME as START_TIME comment='When the flood event started',
+    FLOODS.END_TIME as END_TIME comment='When the flood event ended',
+    FLOODS.IS_ACTIVE as IS_ACTIVE comment='Whether the flood event is currently active',
+    CALLS.CALL_TIME as CALL_TIME comment='Time of customer call',
+    CALLS.CALL_TYPE as CALL_TYPE comment='Type of call: complaint, enquiry, cancellation',
+    CALLS.SENTIMENT as SENTIMENT comment='Customer sentiment: angry, frustrated, neutral, understanding',
+    CALLS.ISSUE_CATEGORY as ISSUE_CATEGORY comment='Issue category: late delivery, weather delay, flood delay, missing items, wrong order',
+    CALLS.RESOLUTION as RESOLUTION comment='How the call was resolved'
+)
+METRICS (
+    DELIVERIES.TOTAL_DELIVERIES AS COUNT(DELIVERIES.ORDER_ID) comment='Total number of deliveries',
+    DELIVERIES.AVG_DISTANCE AS AVG(DELIVERIES.ROUTE_DISTANCE_METERS) comment='Average delivery distance in meters',
+    DELIVERIES.AVG_DURATION AS AVG(DELIVERIES.ROUTE_DURATION_SECS) comment='Average delivery duration in seconds',
+    DELIVERIES.AVG_PREP AS AVG(DELIVERIES.PREP_TIME_MINS) comment='Average food preparation time in minutes',
+    DELIVERIES.AVG_COURIER_SPEED AS AVG(DELIVERIES.AVERAGE_KMH) comment='Average courier speed in kmh',
+    DELIVERIES.DELAYED_DELIVERIES AS COUNT_IF(DELIVERIES.DELAY_REASON != 'none') comment='Number of delayed deliveries',
+    DELIVERIES.AVG_DELAY AS AVG(IFF(DELIVERIES.DELAY_MINUTES > 0, DELIVERIES.DELAY_MINUTES, NULL)) comment='Average delay in minutes for affected deliveries',
+    DELIVERIES.FLOOD_AFFECTED_COUNT AS COUNT_IF(DELIVERIES.FLOOD_AFFECTED = TRUE) comment='Number of deliveries affected by flooding',
+    CALLS.TOTAL_CALLS AS COUNT(CALLS.CALL_ID) comment='Total customer calls',
+    INCIDENTS.TOTAL_INCIDENTS AS COUNT(INCIDENTS.INCIDENT_ID) comment='Total delivery incidents'
+)
+""").collect()
+        results.append("Semantic view created")
+    except Exception as e:
+        results.append(f"Semantic view error: {e}")
+    try:
+        session.sql(f"GRANT SELECT ON ALL SEMANTIC VIEWS IN SCHEMA {db}.DATA TO APPLICATION ROLE app_user").collect()
+        session.sql(f"GRANT SELECT ON ALL SEMANTIC VIEWS IN SCHEMA {db}.DATA TO APPLICATION ROLE all_agents_role").collect()
+        session.sql(f"GRANT SELECT ON ALL VIEWS IN SCHEMA {db}.DATA TO APPLICATION ROLE all_agents_role").collect()
+        session.sql(f"GRANT SELECT ON ALL TABLES IN SCHEMA {db}.DATA TO APPLICATION ROLE all_agents_role").collect()
+        results.append("Grants applied")
+    except Exception as e:
+        results.append(f"Grant error: {e}")
+    return " | ".join(results)
+$$;
+GRANT USAGE ON PROCEDURE core.setup_semantic_view() TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE FUNCTION core.FLEET_MAP_FILTER(filter_type VARCHAR, filter_value VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+AS 'SELECT filter_type || '':'' || filter_value';
+GRANT USAGE ON FUNCTION core.FLEET_MAP_FILTER(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON FUNCTION core.FLEET_MAP_FILTER(VARCHAR, VARCHAR) TO APPLICATION ROLE all_agents_role;
+
+DROP PROCEDURE IF EXISTS core.FLEET_DATA_QUERY(VARCHAR);
+DROP FUNCTION IF EXISTS core.FLEET_DATA_QUERY(VARCHAR);
+CREATE OR REPLACE FUNCTION core.FLEET_DATA_QUERY(query VARCHAR)
+RETURNS VARIANT
+SERVICE = core.fleet_intelligence_service
+ENDPOINT = 'fleet-intel-ui'
+COMMENT = 'Query fleet delivery data via natural language. Routes to SPCS service for SQL generation and execution.'
+AS '/api/query';
+GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE all_agents_role;
+
+DROP PROCEDURE IF EXISTS core.create_agent();
+DROP PROCEDURE IF EXISTS core.create_agent(VARCHAR);
+CREATE OR REPLACE PROCEDURE core.create_agent(AGENT_WAREHOUSE STRING DEFAULT 'FLEET_INTEL_WH')
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
+AS
+$$
+import json as _json
+def run(session, agent_warehouse):
+    db = session.sql("SELECT CURRENT_DATABASE()").collect()[0][0]
+    wh = agent_warehouse if agent_warehouse else "FLEET_INTEL_WH"
+    spec = {
+        "models": {"orchestration": "claude-4-sonnet"},
+        "instructions": {
+            "orchestration": (
+                "You are SwiftBite Fleet Intelligence, an AI analyst for a food delivery company. "
+                "IMPORTANT EFFICIENCY RULES: "
+                "1. Always ask ONE comprehensive question per fleet_data call. Never break a query into multiple calls. "
+                "2. For weather summaries, ask for aggregated data across all stations in one query. "
+                "3. For forecasts, ask about WEATHER_FORECASTS table data directly. "
+                "4. Aim to answer every question in 1-2 fleet_data calls maximum. "
+                "AVAILABLE DATA: "
+                "DELIVERY_SUMMARY - Deliveries with DELAY_REASON (none/traffic/flooding/weather), DELAY_MINUTES, FLOOD_AFFECTED, AVERAGE_KMH, ORDER_STATUS (delivered/in_transit/picked_up), ORDER_TIME/PICKUP_TIME/DELIVERY_TIME, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE, CUISINE_TYPE, CITY, COURIER_ID (e.g. SAN-0029). "
+                "WEATHER_OBSERVATIONS - Hourly weather: OBSERVATION_TIME, STATION_NAME, TEMPERATURE_C, WIND_SPEED_MPH, HUMIDITY_PCT, PRECIPITATION_MM, WEATHER_CONDITION (Clear/Cloudy/Light Rain/Heavy Rain/Thunderstorm/Fog/Snow), WEATHER_SEVERITY (normal/advisory/warning/severe). "
+                "WEATHER_FORECASTS - Future predictions: FORECAST_TIME (the future datetime), ISSUED_AT, STATION_NAME, TEMPERATURE_C, PRECIPITATION_PROB_PCT, WEATHER_CONDITION, WEATHER_SEVERITY. Use FORECAST_TIME to find tomorrow or upcoming weather. "
+                "FLOOD_MONITORING - Flood events: FLOOD_NAME, SEVERITY (minor/moderate/severe), START_TIME, END_TIME, WATER_LEVEL_M, IS_ACTIVE, AFFECTED_ROADS_EST. "
+                "DELIVERY_INCIDENTS - Delay events: INCIDENT_TYPE (traffic/flooding/weather), DELAY_MINUTES, RELATED_FLOOD_ID, WEATHER_CONDITION. Joins to DELIVERY_SUMMARY on ORDER_ID. "
+                "CUSTOMER_CALLS - Customer calls: CALL_TYPE (complaint/enquiry/cancellation), SENTIMENT (angry/frustrated/neutral/understanding), ISSUE_CATEGORY, CALL_NOTES (verbatim comments), RESOLUTION. Joins to DELIVERY_SUMMARY on ORDER_ID. "
+                "MAP CONTROL: Use fleet_map_control to filter the dashboard map. filter_type: restaurant/courier/status/cuisine/vehicle/shift/all. "
+                "Examples: filter_type=courier, filter_value=SAN-0029; filter_type=all, filter_value= (reset). "
+                "Always query fleet_data alongside map actions to provide data context. "
+                "IMPORTANT: Do NOT use native chart or table visualization tools. Respond with plain text using GFM markdown tables."
+            )
+        },
+        "tools": [
+            {"tool_spec": {"type": "generic", "name": "fleet_data", "description": "Query SwiftBite food delivery fleet data including deliveries, couriers, restaurants, routes, timing, and speeds across multiple cities. Pass the user question as the query parameter.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "The natural language question about fleet delivery data"}}, "required": ["query"]}}},
+            {"tool_spec": {"type": "generic", "name": "fleet_map_control", "description": "Control the dashboard map to filter and display specific delivery routes. Use filter_type and filter_value together to dynamically filter the map.", "input_schema": {"type": "object", "properties": {"filter_type": {"type": "string", "description": "The category to filter by: restaurant (filter by restaurant name), courier (filter by courier ID), status (filter by order status: active, in_transit, picked_up, delivered), cuisine (filter by cuisine type), vehicle (filter by vehicle type), shift (filter by shift type), or all (reset/show everything)"}, "filter_value": {"type": "string", "description": "The value to filter by within the chosen filter_type. For example: Starbucks, SAN-0029, active, Italian, bicycle, Lunch, or empty string for all"}}, "required": ["filter_type", "filter_value"]}}}
+        ],
+        "tool_resources": {
+            "fleet_data": {
+                "type": "function",
+                "identifier": db + ".CORE.FLEET_DATA_QUERY",
+                "execution_environment": {"type": "warehouse", "warehouse": wh}
+            },
+            "fleet_map_control": {
+                "type": "function",
+                "identifier": db + ".CORE.FLEET_MAP_FILTER",
+                "execution_environment": {"type": "warehouse", "warehouse": wh}
+            }
+        }
+    }
+    spec_str = _json.dumps(spec)
+    escaped_spec = spec_str.replace("'", "''")
+    create_sql = f"CREATE OR REPLACE AGENT core.FLEET_INTELLIGENCE_AGENT COMMENT = 'SwiftBite Fleet Intelligence agent' FROM SPECIFICATION '{escaped_spec}'"
+    session.sql(create_sql).collect()
+    session.sql("GRANT USAGE ON AGENT core.FLEET_INTELLIGENCE_AGENT TO APPLICATION ROLE app_user").collect()
+    session.sql("GRANT USAGE ON AGENT core.FLEET_INTELLIGENCE_AGENT TO APPLICATION ROLE all_agents_role").collect()
+    return "Agent created with warehouse: " + wh
+$$;
+GRANT USAGE ON PROCEDURE core.create_agent(STRING) TO APPLICATION ROLE app_user;
+
+-- =============================================================================
 -- CORE: grant_callback, deploy, status
 -- =============================================================================
 
@@ -1735,6 +2059,16 @@ BEGIN
     CALL core.create_ui_compute_pool();
     CALL core.create_warehouse();
     CALL core.create_ui_service();
+    BEGIN
+        CALL core.setup_semantic_view();
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        CALL core.create_agent();
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
     RETURN 'UI deployment complete';
 END;
 $$;

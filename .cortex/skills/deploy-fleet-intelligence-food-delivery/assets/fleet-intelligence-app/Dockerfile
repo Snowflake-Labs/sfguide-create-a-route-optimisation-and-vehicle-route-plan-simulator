@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
-RUN npm run build && npx tsc -p tsconfig.server.json
+RUN npx vite build && npx tsc -p tsconfig.server.json
 
 FROM --platform=linux/amd64 node:20-slim
 WORKDIR /app

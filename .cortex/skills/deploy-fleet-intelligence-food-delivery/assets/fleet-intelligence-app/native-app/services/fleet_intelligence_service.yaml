@@ -1,10 +1,12 @@
 spec:
   containers:
     - name: fleet-intelligence
-      image: /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.16
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/fleet-intelligence:v1.30
       env:
         SNOWFLAKE_SCHEMA: DATA
         SNOWFLAKE_WAREHOUSE: FLEET_INTEL_WH
+        AGENT_SCHEMA: CORE
+        AGENT_NAME: FLEET_INTELLIGENCE_AGENT
         PORT: "8080"
       readinessProbe:
         path: /health

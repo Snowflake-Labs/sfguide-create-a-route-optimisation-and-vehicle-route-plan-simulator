@@ -16,6 +16,9 @@ export interface RouteData {
   order_status: string;
   city: string;
   color: [number, number, number, number];
+  delay_reason: string;
+  delay_minutes: number;
+  flood_affected: boolean;
 }
 
 export interface CourierLocation {
@@ -55,6 +58,7 @@ export interface Working {
   sql_explanation?: string;
   has_results?: boolean;
   row_count?: number;
+  results?: Record<string, any>[];
 }
 
 export interface FileAttachment {
@@ -75,6 +79,37 @@ export interface ChatMessage {
 export type MapMode = 'routes' | 'heatmap' | 'matrix';
 
 export type StatusFilter = 'all' | 'active' | 'in_transit' | 'picked_up';
+
+export interface MapFilter {
+  type: 'all' | 'status' | 'restaurant' | 'courier' | 'cuisine' | 'vehicle' | 'shift';
+  value: string;
+  label: string;
+}
+
+export const DEFAULT_MAP_FILTER: MapFilter = { type: 'all', value: '', label: '' };
+
+export function parseAgentFilter(filterType: string, filterValue: string): MapFilter {
+  const t = filterType.toLowerCase();
+  switch (t) {
+    case 'restaurant':
+      return { type: 'restaurant', value: filterValue, label: `Restaurant: ${filterValue}` };
+    case 'courier':
+      return { type: 'courier', value: filterValue, label: `Courier: ${filterValue}` };
+    case 'cuisine':
+      return { type: 'cuisine', value: filterValue, label: `Cuisine: ${filterValue}` };
+    case 'vehicle':
+      return { type: 'vehicle', value: filterValue, label: `Vehicle: ${filterValue}` };
+    case 'shift':
+      return { type: 'shift', value: filterValue, label: `Shift: ${filterValue}` };
+    case 'status':
+      return { type: 'status', value: filterValue, label: filterValue === 'active' ? 'Active Only' : filterValue.replace(/_/g, ' ') };
+    case 'all':
+    case 'reset':
+      return DEFAULT_MAP_FILTER;
+    default:
+      return DEFAULT_MAP_FILTER;
+  }
+}
 
 export interface ActiveStats {
   active: number;

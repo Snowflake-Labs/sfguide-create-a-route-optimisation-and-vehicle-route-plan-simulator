@@ -92,6 +92,10 @@ const DATA_STEPS = [
   { id: 'routes', label: 'Generate ORS Routes', desc: 'Actual road routing via OpenRouteService' },
   { id: 'geometries', label: 'Parse Routes & Geometries', desc: 'Timing, distances, route lines' },
   { id: 'locations', label: 'Interpolate Courier Locations', desc: 'Positions along routes with speeds' },
+  { id: 'weather', label: 'Generate Weather Data', desc: 'Met Office style observations & forecasts' },
+  { id: 'floods', label: 'Generate Flood Events', desc: 'Flash flooding zones with polygons' },
+  { id: 'incidents', label: 'Generate Delivery Incidents', desc: 'Traffic, weather & flood delays' },
+  { id: 'calls', label: 'Generate Customer Calls', desc: 'Complaint calls about delayed orders' },
 ];
 
 const PROVISION_STATUS_ORDER = ['idle', 'downloading_pbf', 'creating_pool', 'creating_service', 'building_graph', 'creating_functions', 'ready', 'building_data', 'complete'];
