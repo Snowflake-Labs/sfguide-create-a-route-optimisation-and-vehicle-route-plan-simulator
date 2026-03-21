@@ -860,113 +860,86 @@ $$;
 GRANT USAGE ON PROCEDURE core.GET_STATUS() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
--- TRAVEL TIME MATRIX: Tables for H3 hexagon-based travel time computation
+-- TRAVEL TIME MATRIX: Schema and dynamic table creation
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS core.TRAVEL_TIME_RES7 (
-    ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR,
-    TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT,
-    CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(), REGION VARCHAR
+CREATE SCHEMA IF NOT EXISTS travel_matrix
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
+GRANT USAGE ON SCHEMA travel_matrix TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS travel_matrix.MATRIX_BUILD_JOBS (
+    JOB_ID VARCHAR NOT NULL,
+    REGION VARCHAR NOT NULL,
+    PROFILE VARCHAR NOT NULL,
+    RESOLUTION VARCHAR NOT NULL,
+    STATUS VARCHAR DEFAULT 'PENDING',
+    STAGE VARCHAR DEFAULT 'NOT_STARTED',
+    HEXAGONS NUMBER DEFAULT 0,
+    WORK_QUEUE_ROWS NUMBER DEFAULT 0,
+    RAW_ROWS NUMBER DEFAULT 0,
+    MATRIX_ROWS NUMBER DEFAULT 0,
+    PCT_COMPLETE FLOAT DEFAULT 0,
+    ERROR_MSG VARCHAR,
+    STATEMENT_HANDLE VARCHAR,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    STARTED_AT TIMESTAMP_NTZ,
+    COMPLETED_AT TIMESTAMP_NTZ
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.TRAVEL_TIME_RES7 TO APPLICATION ROLE app_user;
+GRANT SELECT ON TABLE travel_matrix.MATRIX_BUILD_JOBS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE travel_matrix.MATRIX_BUILD_JOBS TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE travel_matrix.MATRIX_BUILD_JOBS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE travel_matrix.MATRIX_BUILD_JOBS TO APPLICATION ROLE app_user;
 
-CREATE TABLE IF NOT EXISTS core.TRAVEL_TIME_RES8 (
-    ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR,
-    TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT,
-    CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(), REGION VARCHAR
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.TRAVEL_TIME_RES8 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.TRAVEL_TIME_RES8 TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.TRAVEL_TIME_RES8 TO APPLICATION ROLE app_user;
+CREATE OR REPLACE PROCEDURE core.ENSURE_MATRIX_TABLES(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    list_table VARCHAR;
+    wq_table VARCHAR;
+    raw_table VARCHAR;
+    matrix_table VARCHAR;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
 
-CREATE TABLE IF NOT EXISTS core.TRAVEL_TIME_RES9 (
-    ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR,
-    TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT,
-    CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(), REGION VARCHAR
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.TRAVEL_TIME_RES9 TO APPLICATION ROLE app_user;
+    list_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
+    wq_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
+    raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
+    matrix_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
 
-CREATE TABLE IF NOT EXISTS core.H3_RES7 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.H3_RES7 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.H3_RES7 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.H3_RES7 TO APPLICATION ROLE app_user;
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || list_table || ' (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT TRUNCATE ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
 
-CREATE TABLE IF NOT EXISTS core.H3_RES8 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.H3_RES8 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.H3_RES8 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.H3_RES8 TO APPLICATION ROLE app_user;
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || wq_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT, DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT TRUNCATE ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
 
-CREATE TABLE IF NOT EXISTS core.H3_RES9 (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.H3_RES9 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.H3_RES9 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.H3_RES9 TO APPLICATION ROLE app_user;
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || raw_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || raw_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || raw_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT TRUNCATE ON TABLE ' || raw_table || ' TO APPLICATION ROLE app_user';
 
-CREATE TABLE IF NOT EXISTS core.WORK_QUEUE_RES7 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT,
-    DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.WORK_QUEUE_RES7 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.WORK_QUEUE_RES7 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.WORK_QUEUE_RES7 TO APPLICATION ROLE app_user;
-
-CREATE TABLE IF NOT EXISTS core.WORK_QUEUE_RES8 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT,
-    DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.WORK_QUEUE_RES8 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.WORK_QUEUE_RES8 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.WORK_QUEUE_RES8 TO APPLICATION ROLE app_user;
-
-CREATE TABLE IF NOT EXISTS core.WORK_QUEUE_RES9 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT,
-    DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.WORK_QUEUE_RES9 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.WORK_QUEUE_RES9 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.WORK_QUEUE_RES9 TO APPLICATION ROLE app_user;
-
-CREATE TABLE IF NOT EXISTS core.MATRIX_RAW_RES7 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT, REGION VARCHAR
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.MATRIX_RAW_RES7 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.MATRIX_RAW_RES7 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.MATRIX_RAW_RES7 TO APPLICATION ROLE app_user;
-
-CREATE TABLE IF NOT EXISTS core.MATRIX_RAW_RES8 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT, REGION VARCHAR
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.MATRIX_RAW_RES8 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.MATRIX_RAW_RES8 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.MATRIX_RAW_RES8 TO APPLICATION ROLE app_user;
-
-CREATE TABLE IF NOT EXISTS core.MATRIX_RAW_RES9 (
-    SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT, REGION VARCHAR
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
-GRANT SELECT ON TABLE core.MATRIX_RAW_RES9 TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.MATRIX_RAW_RES9 TO APPLICATION ROLE app_user;
-GRANT TRUNCATE ON TABLE core.MATRIX_RAW_RES9 TO APPLICATION ROLE app_user;
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table || ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT DELETE ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+    RETURN 'Tables ensured: ' || list_table || ', ' || wq_table || ', ' || raw_table || ', ' || matrix_table;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.ENSURE_MATRIX_TABLES(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- TRAVEL TIME MATRIX: Pipeline procedures
 -- =============================================================================
 
-CREATE OR REPLACE PROCEDURE core.BUILD_HEXAGONS(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT)
+CREATE OR REPLACE PROCEDURE core.BUILD_HEXAGONS(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -977,17 +950,25 @@ DECLARE
     lat_step FLOAT;
     lon_step FLOAT;
     hex_table VARCHAR;
+    safe_profile VARCHAR;
     row_count INTEGER;
     rs RESULTSET;
 BEGIN
-    hex_table := 'core.H3_' || P_RES;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
 
-    IF (P_RES = 'RES7') THEN
+    IF (P_RES = 'RES5') THEN
+        resolution := 5; lat_step := 0.15; lon_step := 0.15;
+    ELSEIF (P_RES = 'RES6') THEN
+        resolution := 6; lat_step := 0.06; lon_step := 0.06;
+    ELSEIF (P_RES = 'RES7') THEN
         resolution := 7; lat_step := 0.02; lon_step := 0.02;
     ELSEIF (P_RES = 'RES8') THEN
         resolution := 8; lat_step := 0.008; lon_step := 0.008;
-    ELSE
+    ELSEIF (P_RES = 'RES9') THEN
         resolution := 9; lat_step := 0.003; lon_step := 0.003;
+    ELSE
+        resolution := 10; lat_step := 0.001; lon_step := 0.001;
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
@@ -1022,31 +1003,24 @@ BEGIN
     RETURN P_RES || ' hexagons built: ' || row_count || ' hexagons';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.BUILD_HEXAGONS(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.BUILD_HEXAGONS(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.BUILD_WORK_QUEUE(P_RES VARCHAR)
+CREATE OR REPLACE PROCEDURE core.BUILD_WORK_QUEUE(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    k_ring INTEGER;
     hex_table VARCHAR;
     queue_table VARCHAR;
+    safe_profile VARCHAR;
     row_count INTEGER;
     rs RESULTSET;
 BEGIN
-    hex_table := 'core.H3_' || P_RES;
-    queue_table := 'core.WORK_QUEUE_' || P_RES;
-
-    IF (P_RES = 'RES7') THEN
-        k_ring := 33;
-    ELSEIF (P_RES = 'RES8') THEN
-        k_ring := 17;
-    ELSE
-        k_ring := 9;
-    END IF;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
+    queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || queue_table;
 
@@ -1057,11 +1031,10 @@ BEGIN
             a.H3_INDEX AS origin_h3,
             a.CENTER_LON AS origin_lon,
             a.CENTER_LAT AS origin_lat,
-            n.value::STRING AS dest_h3
-        FROM ' || hex_table || ' a,
-        LATERAL FLATTEN(input => H3_GRID_DISK(a.H3_INDEX, ' || k_ring || ')) n
-        WHERE n.value::STRING IN (SELECT H3_INDEX FROM ' || hex_table || ')
-          AND a.H3_INDEX != n.value::STRING
+            b.H3_INDEX AS dest_h3
+        FROM ' || hex_table || ' a
+        CROSS JOIN ' || hex_table || ' b
+        WHERE a.H3_INDEX != b.H3_INDEX
     ),
     grouped AS (
         SELECT
@@ -1087,9 +1060,9 @@ BEGIN
     RETURN P_RES || ' work queue built: ' || row_count || ' origins ready';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.BUILD_WORK_QUEUE(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.BUILD_WORK_QUEUE(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.BUILD_TRAVEL_TIME_RANGE(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER)
+CREATE OR REPLACE PROCEDURE core.BUILD_TRAVEL_TIME_RANGE(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1102,6 +1075,7 @@ DECLARE
     batch_num INTEGER DEFAULT 0;
     queue_table VARCHAR;
     raw_table VARCHAR;
+    safe_profile VARCHAR;
     insert_sql VARCHAR;
     resume_sql VARCHAR;
     max_done INTEGER DEFAULT 0;
@@ -1110,15 +1084,22 @@ DECLARE
     max_retries INTEGER DEFAULT 5;
     retry_wait INTEGER DEFAULT 10;
 BEGIN
-    queue_table := 'core.WORK_QUEUE_' || P_RES;
-    raw_table := 'core.MATRIX_RAW_' || P_RES;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
+    raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
 
-    IF (P_RES = 'RES7') THEN
+    IF (P_RES = 'RES5') THEN
+        batch_size := 20;
+    ELSEIF (P_RES = 'RES6') THEN
+        batch_size := 50;
+    ELSEIF (P_RES = 'RES7') THEN
         batch_size := 100;
     ELSEIF (P_RES = 'RES8') THEN
-        batch_size := 1000;
+        batch_size := 200;
+    ELSEIF (P_RES = 'RES9') THEN
+        batch_size := 100;
     ELSE
-        batch_size := 2000;
+        batch_size := 50;
     END IF;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
@@ -1145,7 +1126,7 @@ BEGIN
             q.ORIGIN_H3,
             q.DEST_HEX_IDS,
             core.MATRIX_TABULAR(
-                ''driving-car'',
+                ''' || P_PROFILE || ''',
                 ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT),
                 q.DEST_COORDS
             )
@@ -1175,9 +1156,9 @@ BEGIN
            ' (resumed from seq ' || max_done || ')';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.BUILD_TRAVEL_TIME_RANGE_REGION(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_MATRIX_FN VARCHAR)
+CREATE OR REPLACE PROCEDURE core.BUILD_TRAVEL_TIME_RANGE_REGION(P_RES VARCHAR, P_START_SEQ INTEGER, P_END_SEQ INTEGER, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1190,6 +1171,7 @@ DECLARE
     batch_num INTEGER DEFAULT 0;
     queue_table VARCHAR;
     raw_table VARCHAR;
+    safe_profile VARCHAR;
     insert_sql VARCHAR;
     resume_sql VARCHAR;
     max_done INTEGER DEFAULT 0;
@@ -1198,15 +1180,22 @@ DECLARE
     max_retries INTEGER DEFAULT 5;
     retry_wait INTEGER DEFAULT 10;
 BEGIN
-    queue_table := 'core.WORK_QUEUE_' || P_RES;
-    raw_table := 'core.MATRIX_RAW_' || P_RES;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
+    raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
 
-    IF (P_RES = 'RES7') THEN
+    IF (P_RES = 'RES5') THEN
+        batch_size := 20;
+    ELSEIF (P_RES = 'RES6') THEN
+        batch_size := 50;
+    ELSEIF (P_RES = 'RES7') THEN
         batch_size := 100;
     ELSEIF (P_RES = 'RES8') THEN
-        batch_size := 1000;
+        batch_size := 200;
+    ELSEIF (P_RES = 'RES9') THEN
+        batch_size := 100;
     ELSE
-        batch_size := 2000;
+        batch_size := 50;
     END IF;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
@@ -1233,7 +1222,7 @@ BEGIN
             q.ORIGIN_H3,
             q.DEST_HEX_IDS,
             ' || P_MATRIX_FN || '(
-                ''driving-car'',
+                ''' || P_PROFILE || ''',
                 ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT),
                 q.DEST_COORDS
             )
@@ -1263,9 +1252,9 @@ BEGIN
            ' (resumed from seq ' || max_done || ', fn=' || P_MATRIX_FN || ')';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE_REGION(VARCHAR, INTEGER, INTEGER, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE_REGION(VARCHAR, INTEGER, INTEGER, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1274,38 +1263,39 @@ $$
 DECLARE
     raw_table VARCHAR;
     target_table VARCHAR;
+    safe_profile VARCHAR;
     row_count INTEGER;
     rs RESULTSET;
 BEGIN
-    raw_table := 'core.MATRIX_RAW_' || P_RES;
-    target_table := 'core.TRAVEL_TIME_' || P_RES;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
+    target_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
 
-    EXECUTE IMMEDIATE 'DELETE FROM ' || target_table || ' WHERE REGION = ''' || P_REGION || ''' OR REGION IS NULL';
+    EXECUTE IMMEDIATE 'DELETE FROM ' || target_table;
 
     EXECUTE IMMEDIATE '
-    INSERT INTO ' || target_table || ' (ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, REGION)
+    INSERT INTO ' || target_table || ' (ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS)
     SELECT
         r.ORIGIN_H3,
         r.DEST_HEX_IDS[f.INDEX]::VARCHAR AS DEST_H3,
         r.MATRIX_RESULT:durations[0][f.INDEX]::FLOAT AS TRAVEL_TIME_SECONDS,
-        r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS,
-        ''' || P_REGION || '''
+        r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS
     FROM ' || raw_table || ' r,
         LATERAL FLATTEN(input => r.MATRIX_RESULT:durations[0]) f
     WHERE r.MATRIX_RESULT:durations IS NOT NULL';
 
-    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table || ' WHERE REGION = ''' || P_REGION || '''');
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table);
     LET c CURSOR FOR rs;
     FOR row_val IN c DO
         row_count := row_val.CNT;
     END FOR;
 
-    RETURN P_RES || ' flatten complete (' || P_REGION || '): ' || row_count || ' travel time pairs';
+    RETURN P_RES || ' flatten complete (' || P_REGION || '/' || P_PROFILE || '): ' || row_count || ' travel time pairs';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.FLATTEN_MATRIX_RAW(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.FLATTEN_MATRIX_RAW(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.BUILD_MATRIX_FOR_REGION(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.BUILD_MATRIX_FOR_REGION(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
@@ -1318,12 +1308,16 @@ DECLARE
     hex_table VARCHAR;
     queue_table VARCHAR;
     travel_table VARCHAR;
+    safe_profile VARCHAR;
     count_sql VARCHAR;
     rs RESULTSET;
 BEGIN
-    hex_table := 'core.H3_' || P_RES;
-    queue_table := 'core.WORK_QUEUE_' || P_RES;
-    travel_table := 'core.TRAVEL_TIME_' || P_RES;
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
+    queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
+    travel_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
+
+    CALL core.ENSURE_MATRIX_TABLES(:P_REGION, :P_PROFILE, :P_RES);
 
     BEGIN
         ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
@@ -1339,127 +1333,359 @@ BEGIN
     END;
     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
 
-    CALL core.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON);
+    CALL core.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || hex_table;
     rs := (EXECUTE IMMEDIATE :count_sql);
     LET c2 CURSOR FOR rs;
     FOR r IN c2 DO hex_count := r.CNT; END FOR;
 
-    CALL core.BUILD_WORK_QUEUE(:P_RES);
+    CALL core.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE);
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || queue_table;
     rs := (EXECUTE IMMEDIATE :count_sql);
     LET c4 CURSOR FOR rs;
     FOR r IN c4 DO queue_count := r.CNT; END FOR;
 
-    EXECUTE IMMEDIATE 'CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(''' || P_RES || ''', 1, ' || queue_count || ', ''' || P_MATRIX_FN || ''')';
-    EXECUTE IMMEDIATE 'CALL core.FLATTEN_MATRIX_RAW(''' || P_RES || ''', ''' || P_REGION || ''')';
+    EXECUTE IMMEDIATE 'CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(''' || P_RES || ''', 1, ' || queue_count || ', ''' || P_MATRIX_FN || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
+    EXECUTE IMMEDIATE 'CALL core.FLATTEN_MATRIX_RAW(''' || P_RES || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
 
-    count_sql := 'SELECT COUNT(*) AS CNT FROM ' || travel_table || ' WHERE REGION = ''' || P_REGION || '''';
+    count_sql := 'SELECT COUNT(*) AS CNT FROM ' || travel_table;
     rs := (EXECUTE IMMEDIATE :count_sql);
     LET c5 CURSOR FOR rs;
     FOR r IN c5 DO travel_count := r.CNT; END FOR;
 
-    RETURN P_RES || ' complete (' || P_MATRIX_FN || '): ' || hex_count || ' hexagons, ' ||
+    RETURN P_RES || ' complete (' || P_MATRIX_FN || ', ' || P_PROFILE || '): ' || hex_count || ' hexagons, ' ||
            queue_count || ' origins, ' || travel_count || ' travel times';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.BUILD_MATRIX_FOR_REGION(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.BUILD_MATRIX_FOR_REGION(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.MATRIX_PROGRESS()
+CREATE OR REPLACE PROCEDURE core.MATRIX_PROGRESS(P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    r7_hex INTEGER DEFAULT 0; r7_queue INTEGER DEFAULT 0; r7_raw INTEGER DEFAULT 0; r7_flat INTEGER DEFAULT 0;
-    r8_hex INTEGER DEFAULT 0; r8_queue INTEGER DEFAULT 0; r8_raw INTEGER DEFAULT 0; r8_flat INTEGER DEFAULT 0;
-    r9_hex INTEGER DEFAULT 0; r9_queue INTEGER DEFAULT 0; r9_raw INTEGER DEFAULT 0; r9_flat INTEGER DEFAULT 0;
-    r7_stage VARCHAR; r8_stage VARCHAR; r9_stage VARCHAR;
-    r7_pct FLOAT DEFAULT 0; r8_pct FLOAT DEFAULT 0; r9_pct FLOAT DEFAULT 0;
+    result VARCHAR;
+    rs RESULTSET;
 BEGIN
-    SELECT COUNT(*) INTO r7_hex FROM core.H3_RES7;
-    SELECT COUNT(*) INTO r7_queue FROM core.WORK_QUEUE_RES7;
-    SELECT COUNT(*) INTO r7_raw FROM core.MATRIX_RAW_RES7;
-    SELECT COUNT(*) INTO r7_flat FROM core.TRAVEL_TIME_RES7;
-
-    SELECT COUNT(*) INTO r8_hex FROM core.H3_RES8;
-    SELECT COUNT(*) INTO r8_queue FROM core.WORK_QUEUE_RES8;
-    SELECT COUNT(*) INTO r8_raw FROM core.MATRIX_RAW_RES8;
-    SELECT COUNT(*) INTO r8_flat FROM core.TRAVEL_TIME_RES8;
-
-    SELECT COUNT(*) INTO r9_hex FROM core.H3_RES9;
-    SELECT COUNT(*) INTO r9_queue FROM core.WORK_QUEUE_RES9;
-    SELECT COUNT(*) INTO r9_raw FROM core.MATRIX_RAW_RES9;
-    SELECT COUNT(*) INTO r9_flat FROM core.TRAVEL_TIME_RES9;
-
-    IF (r7_flat > 0 AND r7_queue > 0 AND r7_raw = r7_queue) THEN r7_stage := 'COMPLETE';
-    ELSEIF (r7_raw > 0 AND r7_raw = r7_queue) THEN r7_stage := 'FLATTENING';
-    ELSEIF (r7_raw > 0) THEN r7_stage := 'BUILDING';
-    ELSEIF (r7_queue > 0) THEN r7_stage := 'QUEUED';
-    ELSEIF (r7_hex > 0) THEN r7_stage := 'HEXAGONS_READY';
-    ELSE r7_stage := 'NOT_STARTED';
-    END IF;
-    IF (r7_queue > 0) THEN r7_pct := ROUND(r7_raw * 100.0 / r7_queue, 1); END IF;
-
-    IF (r8_flat > 0 AND r8_queue > 0 AND r8_raw = r8_queue) THEN r8_stage := 'COMPLETE';
-    ELSEIF (r8_raw > 0 AND r8_raw = r8_queue) THEN r8_stage := 'FLATTENING';
-    ELSEIF (r8_raw > 0) THEN r8_stage := 'BUILDING';
-    ELSEIF (r8_queue > 0) THEN r8_stage := 'QUEUED';
-    ELSEIF (r8_hex > 0) THEN r8_stage := 'HEXAGONS_READY';
-    ELSE r8_stage := 'NOT_STARTED';
-    END IF;
-    IF (r8_queue > 0) THEN r8_pct := ROUND(r8_raw * 100.0 / r8_queue, 1); END IF;
-
-    IF (r9_flat > 0 AND r9_queue > 0 AND r9_raw = r9_queue) THEN r9_stage := 'COMPLETE';
-    ELSEIF (r9_raw > 0 AND r9_raw = r9_queue) THEN r9_stage := 'FLATTENING';
-    ELSEIF (r9_raw > 0) THEN r9_stage := 'BUILDING';
-    ELSEIF (r9_queue > 0) THEN r9_stage := 'QUEUED';
-    ELSEIF (r9_hex > 0) THEN r9_stage := 'HEXAGONS_READY';
-    ELSE r9_stage := 'NOT_STARTED';
-    END IF;
-    IF (r9_queue > 0) THEN r9_pct := ROUND(r9_raw * 100.0 / r9_queue, 1); END IF;
-
-    RETURN OBJECT_CONSTRUCT(
-        'RES7', OBJECT_CONSTRUCT(
-            'stage', r7_stage, 'hexagons', r7_hex, 'work_queue', r7_queue,
-            'raw_ingested', r7_raw, 'flattened', r7_flat, 'pct', r7_pct),
-        'RES8', OBJECT_CONSTRUCT(
-            'stage', r8_stage, 'hexagons', r8_hex, 'work_queue', r8_queue,
-            'raw_ingested', r8_raw, 'flattened', r8_flat, 'pct', r8_pct),
-        'RES9', OBJECT_CONSTRUCT(
-            'stage', r9_stage, 'hexagons', r9_hex, 'work_queue', r9_queue,
-            'raw_ingested', r9_raw, 'flattened', r9_flat, 'pct', r9_pct)
-    )::VARCHAR;
+    rs := (
+        SELECT COALESCE(OBJECT_AGG(
+            RESOLUTION,
+            OBJECT_CONSTRUCT(
+                'stage', CASE STATUS WHEN 'COMPLETE' THEN 'COMPLETE' WHEN 'ERROR' THEN 'ERROR' ELSE STAGE END,
+                'hexagons', HEXAGONS,
+                'work_queue', WORK_QUEUE_ROWS,
+                'raw_ingested', RAW_ROWS,
+                'flattened', MATRIX_ROWS,
+                'pct', PCT_COMPLETE,
+                'status', STATUS,
+                'error', COALESCE(ERROR_MSG, '')
+            )
+        ), OBJECT_CONSTRUCT())::VARCHAR AS OBJ
+        FROM travel_matrix.MATRIX_BUILD_JOBS
+        WHERE UPPER(REGION) = UPPER(:P_REGION)
+          AND UPPER(REPLACE(PROFILE, '-', '_')) = UPPER(REPLACE(:P_PROFILE, '-', '_'))
+          AND STATUS IN ('RUNNING', 'COMPLETE', 'ERROR')
+          AND CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
+    );
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO result := row_val.OBJ; END FOR;
+    RETURN COALESCE(result, '{}');
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.MATRIX_PROGRESS() TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.MATRIX_PROGRESS(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.RESET_MATRIX_DATA()
+CREATE OR REPLACE PROCEDURE core.RESET_MATRIX_DATA(P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    safe_profile VARCHAR;
+    prefix VARCHAR;
+    res_num INTEGER;
+    res_label VARCHAR;
 BEGIN
-    TRUNCATE TABLE core.H3_RES7;
-    TRUNCATE TABLE core.H3_RES8;
-    TRUNCATE TABLE core.H3_RES9;
-    TRUNCATE TABLE core.WORK_QUEUE_RES7;
-    TRUNCATE TABLE core.WORK_QUEUE_RES8;
-    TRUNCATE TABLE core.WORK_QUEUE_RES9;
-    TRUNCATE TABLE core.MATRIX_RAW_RES7;
-    TRUNCATE TABLE core.MATRIX_RAW_RES8;
-    TRUNCATE TABLE core.MATRIX_RAW_RES9;
-    TRUNCATE TABLE core.TRAVEL_TIME_RES7;
-    TRUNCATE TABLE core.TRAVEL_TIME_RES8;
-    TRUNCATE TABLE core.TRAVEL_TIME_RES9;
-    RETURN 'All matrix tables reset';
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
+
+    FOR res_num IN 5 TO 10 DO
+        res_label := 'RES' || res_num::VARCHAR;
+        BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_LIST_' || res_label; EXCEPTION WHEN OTHER THEN NULL; END;
+        BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_WORK_QUEUE_' || res_label; EXCEPTION WHEN OTHER THEN NULL; END;
+        BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_RAW_' || res_label; EXCEPTION WHEN OTHER THEN NULL; END;
+        BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_' || res_label; EXCEPTION WHEN OTHER THEN NULL; END;
+    END FOR;
+
+    DELETE FROM travel_matrix.MATRIX_BUILD_JOBS
+    WHERE UPPER(REGION) = UPPER(P_REGION)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = safe_profile;
+
+    RETURN 'Matrix tables dropped for ' || P_REGION || '/' || P_PROFILE;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.RESET_MATRIX_DATA() TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.RESET_MATRIX_DATA(VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.BUILD_MATRIX_JOB_WRAPPER(P_JOB_ID VARCHAR, P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    prefix VARCHAR;
+    hex_count INTEGER DEFAULT 0;
+    queue_count INTEGER DEFAULT 0;
+    raw_count INTEGER DEFAULT 0;
+    matrix_count INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
+
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=CURRENT_TIMESTAMP()
+    WHERE JOB_ID = :P_JOB_ID;
+
+    CALL core.ENSURE_MATRIX_TABLES(:P_REGION, :P_PROFILE, :P_RES);
+
+    BEGIN
+        ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
+    EXCEPTION WHEN OTHER THEN
+        BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
+    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+
+    CALL core.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_LIST_' || P_RES);
+    LET c1 CURSOR FOR rs; FOR r IN c1 DO hex_count := r.CNT; END FOR;
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STAGE='WORK_QUEUE', HEXAGONS=:hex_count
+    WHERE JOB_ID = :P_JOB_ID;
+
+    CALL core.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE);
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_WORK_QUEUE_' || P_RES);
+    LET c2 CURSOR FOR rs; FOR r IN c2 DO queue_count := r.CNT; END FOR;
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STAGE='BUILDING', WORK_QUEUE_ROWS=:queue_count
+    WHERE JOB_ID = :P_JOB_ID;
+
+    EXECUTE IMMEDIATE 'CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(''' || P_RES || ''', 1, ' || queue_count || ', ''' || P_MATRIX_FN || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
+    LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_count := r.CNT; END FOR;
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STAGE='FLATTENING', RAW_ROWS=:raw_count, PCT_COMPLETE=100
+    WHERE JOB_ID = :P_JOB_ID;
+
+    EXECUTE IMMEDIATE 'CALL core.FLATTEN_MATRIX_RAW(''' || P_RES || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_' || P_RES);
+    LET c4 CURSOR FOR rs; FOR r IN c4 DO matrix_count := r.CNT; END FOR;
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STATUS='COMPLETE', STAGE='COMPLETE', MATRIX_ROWS=:matrix_count,
+        RAW_ROWS=:raw_count, PCT_COMPLETE=100, COMPLETED_AT=CURRENT_TIMESTAMP()
+    WHERE JOB_ID = :P_JOB_ID;
+
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_LIST_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_WORK_QUEUE_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_RAW_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+
+    RETURN 'Job ' || :P_JOB_ID || ' complete: ' || matrix_count || ' travel time pairs';
+EXCEPTION
+    WHEN OTHER THEN
+        LET err_msg VARCHAR := SQLERRM;
+        UPDATE travel_matrix.MATRIX_BUILD_JOBS
+        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
+        WHERE JOB_ID = :P_JOB_ID;
+        RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.BUILD_MATRIX_JOB_WRAPPER(VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.GET_BUILD_STATUS()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    result VARCHAR DEFAULT '[]';
+    rs RESULTSET;
+BEGIN
+    rs := (
+        SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+            'job_id', JOB_ID,
+            'region', REGION,
+            'profile', PROFILE,
+            'resolution', RESOLUTION,
+            'status', STATUS,
+            'stage', STAGE,
+            'hexagons', HEXAGONS,
+            'work_queue_rows', WORK_QUEUE_ROWS,
+            'raw_rows', RAW_ROWS,
+            'matrix_rows', MATRIX_ROWS,
+            'pct_complete', PCT_COMPLETE,
+            'error_msg', COALESCE(ERROR_MSG, ''),
+            'created_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'statement_handle', COALESCE(STATEMENT_HANDLE, '')
+        )), ARRAY_CONSTRUCT())::VARCHAR AS ARR
+        FROM travel_matrix.MATRIX_BUILD_JOBS
+        WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
+        ORDER BY CREATED_AT DESC
+    );
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO result := row_val.ARR; END FOR;
+    RETURN COALESCE(result, '[]');
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.GET_BUILD_STATUS() TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.GET_MATRIX_INVENTORY()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    result VARCHAR DEFAULT '[]';
+    rs RESULTSET;
+BEGIN
+    rs := (
+        SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+            'table_name', t.TABLE_NAME,
+            'row_count', t.ROW_COUNT,
+            'created', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', t.CREATED), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'bytes', t.BYTES,
+            'execution_time_secs', COALESCE(DATEDIFF('SECOND', j.STARTED_AT, j.COMPLETED_AT), 0)
+        )), ARRAY_CONSTRUCT())::VARCHAR AS ARR
+        FROM INFORMATION_SCHEMA.TABLES t
+        LEFT JOIN (
+            SELECT REGION, PROFILE, RESOLUTION, STARTED_AT, COMPLETED_AT,
+                   ROW_NUMBER() OVER (PARTITION BY REGION, PROFILE, RESOLUTION ORDER BY COMPLETED_AT DESC) AS RN
+            FROM TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE STATUS = 'COMPLETE'
+        ) j
+          ON j.RN = 1
+          AND t.TABLE_NAME = UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_MATRIX_' || j.RESOLUTION
+        WHERE t.TABLE_SCHEMA = 'TRAVEL_MATRIX'
+          AND t.TABLE_NAME LIKE '%\\_MATRIX\\_%' ESCAPE '\\'
+          AND t.TABLE_NAME NOT LIKE '%\\_MATRIX\\_RAW\\_%' ESCAPE '\\'
+          AND t.TABLE_NAME != 'MATRIX_BUILD_JOBS'
+        ORDER BY t.TABLE_NAME
+    );
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO result := row_val.ARR; END FOR;
+    RETURN COALESCE(result, '[]');
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.GET_MATRIX_INVENTORY() TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.DELETE_MATRIX_CONFIG(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    prefix VARCHAR;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
+
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_LIST_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_WORK_QUEUE_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_RAW_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+    BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
+
+    DELETE FROM travel_matrix.MATRIX_BUILD_JOBS
+    WHERE UPPER(REGION) = UPPER(P_REGION)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = safe_profile
+      AND UPPER(RESOLUTION) = UPPER(P_RES);
+
+    RETURN 'Deleted: ' || P_REGION || '/' || P_PROFILE || '/' || P_RES;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.DELETE_MATRIX_CONFIG(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.CANCEL_MATRIX_BUILD(P_JOB_ID VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    handle VARCHAR;
+    rs RESULTSET;
+BEGIN
+    rs := (SELECT STATEMENT_HANDLE FROM travel_matrix.MATRIX_BUILD_JOBS WHERE JOB_ID = :P_JOB_ID AND STATUS = 'RUNNING');
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO handle := row_val.STATEMENT_HANDLE; END FOR;
+
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP()
+    WHERE JOB_ID = :P_JOB_ID;
+
+    RETURN OBJECT_CONSTRUCT('cancelled', TRUE, 'job_id', :P_JOB_ID, 'statement_handle', handle)::VARCHAR;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.CANCEL_MATRIX_BUILD(VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.GET_LIVE_TABLE_COUNT(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    prefix VARCHAR;
+    hex_cnt INTEGER DEFAULT 0;
+    queue_cnt INTEGER DEFAULT 0;
+    raw_cnt INTEGER DEFAULT 0;
+    flat_cnt INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
+
+    BEGIN rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_LIST_' || P_RES);
+    LET c1 CURSOR FOR rs; FOR r IN c1 DO hex_cnt := r.CNT; END FOR;
+    EXCEPTION WHEN OTHER THEN hex_cnt := 0; END;
+
+    BEGIN rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_WORK_QUEUE_' || P_RES);
+    LET c2 CURSOR FOR rs; FOR r IN c2 DO queue_cnt := r.CNT; END FOR;
+    EXCEPTION WHEN OTHER THEN queue_cnt := 0; END;
+
+    BEGIN rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
+    LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_cnt := r.CNT; END FOR;
+    EXCEPTION WHEN OTHER THEN raw_cnt := 0; END;
+
+    BEGIN rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_' || P_RES);
+    LET c4 CURSOR FOR rs; FOR r IN c4 DO flat_cnt := r.CNT; END FOR;
+    EXCEPTION WHEN OTHER THEN flat_cnt := 0; END;
+
+    RETURN OBJECT_CONSTRUCT(
+        'hexagons', hex_cnt, 'work_queue', queue_cnt,
+        'raw_ingested', raw_cnt, 'flattened', flat_cnt
+    )::VARCHAR;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.GET_LIVE_TABLE_COUNT(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- UI: React control app (SPCS service) + legacy Streamlit
