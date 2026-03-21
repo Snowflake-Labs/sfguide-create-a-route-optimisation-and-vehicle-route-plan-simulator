@@ -402,6 +402,125 @@ BEGIN
    'SELECT CASE WHEN core.ORS_STATUS() IS NOT NULL THEN TRUE ELSE FALSE END';
    GRANT USAGE ON FUNCTION core.CHECK_HEALTH() TO APPLICATION ROLE app_user;
 
+   -- ===== REGION-AWARE OVERLOADS (multi-city) =====
+
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS(region VARCHAR, method VARCHAR, jstart ARRAY, jend ARRAY)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/directions_tabular';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS(VARCHAR, VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS(region VARCHAR, method VARCHAR, locations VARIANT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/directions';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS(VARCHAR, VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.ISOCHRONES(region VARCHAR, method TEXT, lon FLOAT, lat FLOAT, range INT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/isochrones_tabular';
+   GRANT USAGE ON FUNCTION core.ISOCHRONES(VARCHAR, TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX(region VARCHAR, method VARCHAR, locations ARRAY)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/matrix_tabular';
+   GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, VARCHAR, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX(region VARCHAR, method VARCHAR, options VARIANT)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/matrix';
+   GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.MATRIX_TABULAR(region VARCHAR, method VARCHAR, origin ARRAY, destinations ARRAY)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/matrix_tabular';
+   GRANT USAGE ON FUNCTION core.MATRIX_TABULAR(VARCHAR, VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.OPTIMIZATION(region VARCHAR, jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=10
+      AS '/r/optimization_tabular';
+   GRANT USAGE ON FUNCTION core.OPTIMIZATION(VARCHAR, ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.ORS_STATUS(region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=core.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS=1
+      AS '/r/ors_status';
+   GRANT USAGE ON FUNCTION core.ORS_STATUS(VARCHAR) TO APPLICATION ROLE app_user;
+
+   -- ===== REGION-AWARE _GEO WRAPPERS =====
+
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS_GEO(region VARCHAR, method VARCHAR, jstart ARRAY, jend ARRAY)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT core.DIRECTIONS(region, method, jstart, jend) AS resp)';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.DIRECTIONS_GEO(region VARCHAR, method VARCHAR, locations VARIANT)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, DISTANCE FLOAT, DURATION FLOAT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON,
+            resp:features[0]:properties:summary:distance::FLOAT AS DISTANCE,
+            resp:features[0]:properties:summary:duration::FLOAT AS DURATION
+         FROM (SELECT core.DIRECTIONS(region, method, locations) AS resp)';
+   GRANT USAGE ON FUNCTION core.DIRECTIONS_GEO(VARCHAR, VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.ISOCHRONES_GEO(region VARCHAR, method TEXT, lon FLOAT, lat FLOAT, range INT)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT core.ISOCHRONES(region, method, lon, lat, range) AS resp)';
+   GRANT USAGE ON FUNCTION core.ISOCHRONES_GEO(VARCHAR, TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.OPTIMIZATION_GEO(region VARCHAR, jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
+      LANGUAGE SQL
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(OBJECT_CONSTRUCT(''type'', ''LineString'', ''coordinates'', f.value:geometry)) AS GEOJSON,
+            f.value:vehicle::INT AS VEHICLE,
+            f.value:duration::INT AS DURATION,
+            f.value:steps::VARIANT AS STEPS
+         FROM (SELECT core.OPTIMIZATION(region, jobs, vehicles, matrices) AS resp),
+            LATERAL FLATTEN(input => resp:routes) f';
+   GRANT USAGE ON FUNCTION core.OPTIMIZATION_GEO(VARCHAR, ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
+
+   CREATE OR REPLACE FUNCTION core.LIST_REGIONS()
+      RETURNS TABLE (REGION VARCHAR, DISPLAY_NAME VARCHAR, STATUS VARCHAR, MIN_LAT FLOAT, MAX_LAT FLOAT, MIN_LON FLOAT, MAX_LON FLOAT)
+      LANGUAGE SQL
+      AS
+      'SELECT REGION, DISPLAY_NAME, STATUS, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM core.CITY_ORS_MAP';
+   GRANT USAGE ON FUNCTION core.LIST_REGIONS() TO APPLICATION ROLE app_user;
+
    RETURN 'Functions successfully created';
 END;
 $$;
@@ -634,7 +753,6 @@ BEGIN
     CALL core.create_city_ors_service(:P_REGION);
     CALL core.create_services();
     SELECT SYSTEM$WAIT(30);
-    CALL core.create_city_functions(:P_REGION);
     RETURN 'City ORS deployed for region: ' || :P_REGION;
 END;
 $$;
@@ -664,15 +782,8 @@ AS
 $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    LET fn_dir VARCHAR := 'DIRECTIONS_' || UPPER(:P_REGION);
-    LET fn_matrix VARCHAR := 'MATRIX_' || UPPER(:P_REGION);
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
-    EXECUTE IMMEDIATE 'DROP FUNCTION IF EXISTS core.' || fn_dir || '(VARCHAR, ARRAY, ARRAY)';
-    EXECUTE IMMEDIATE 'DROP FUNCTION IF EXISTS core.' || fn_dir || '(VARCHAR, VARIANT)';
-    EXECUTE IMMEDIATE 'DROP FUNCTION IF EXISTS core.ISOCHRONES_' || UPPER(:P_REGION) || '(TEXT, FLOAT, FLOAT, INT)';
-    EXECUTE IMMEDIATE 'DROP FUNCTION IF EXISTS core.' || fn_matrix || '(VARCHAR, ARRAY, ARRAY)';
-    EXECUTE IMMEDIATE 'DROP FUNCTION IF EXISTS core.OPTIMIZATION_' || UPPER(:P_REGION) || '(ARRAY, ARRAY, ARRAY)';
 
     DELETE FROM core.CITY_ORS_MAP WHERE REGION = :P_REGION;
 
@@ -947,8 +1058,6 @@ AS
 $$
 DECLARE
     resolution INTEGER;
-    lat_step FLOAT;
-    lon_step FLOAT;
     hex_table VARCHAR;
     safe_profile VARCHAR;
     row_count INTEGER;
@@ -958,41 +1067,38 @@ BEGIN
     hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
 
     IF (P_RES = 'RES5') THEN
-        resolution := 5; lat_step := 0.15; lon_step := 0.15;
+        resolution := 5;
     ELSEIF (P_RES = 'RES6') THEN
-        resolution := 6; lat_step := 0.06; lon_step := 0.06;
+        resolution := 6;
     ELSEIF (P_RES = 'RES7') THEN
-        resolution := 7; lat_step := 0.02; lon_step := 0.02;
+        resolution := 7;
     ELSEIF (P_RES = 'RES8') THEN
-        resolution := 8; lat_step := 0.008; lon_step := 0.008;
+        resolution := 8;
     ELSEIF (P_RES = 'RES9') THEN
-        resolution := 9; lat_step := 0.003; lon_step := 0.003;
+        resolution := 9;
     ELSE
-        resolution := 10; lat_step := 0.001; lon_step := 0.001;
+        resolution := 10;
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
     EXECUTE IMMEDIATE '
     INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_LAT, CENTER_LON)
-    WITH lat_series AS (
-        SELECT ' || P_MIN_LAT || ' + (SEQ4() * ' || lat_step || ') AS lat
-        FROM TABLE(GENERATOR(ROWCOUNT => 100000))
-        WHERE ' || P_MIN_LAT || ' + (SEQ4() * ' || lat_step || ') <= ' || P_MAX_LAT || '
-    ),
-    lon_series AS (
-        SELECT ' || P_MIN_LON || ' + (SEQ4() * ' || lon_step || ') AS lon
-        FROM TABLE(GENERATOR(ROWCOUNT => 100000))
-        WHERE ' || P_MIN_LON || ' + (SEQ4() * ' || lon_step || ') <= ' || P_MAX_LON || '
-    ),
-    h3_cells AS (
-        SELECT DISTINCT H3_POINT_TO_CELL_STRING(ST_MAKEPOINT(lon, lat), ' || resolution || ') AS h3_index
-        FROM lat_series CROSS JOIN lon_series
-    )
-    SELECT h3_index,
-           ST_Y(H3_CELL_TO_POINT(h3_index)) AS center_lat,
-           ST_X(H3_CELL_TO_POINT(h3_index)) AS center_lon
-    FROM h3_cells';
+    SELECT
+        h.VALUE::VARCHAR AS h3_index,
+        ST_Y(H3_CELL_TO_POINT(h.VALUE::VARCHAR)) AS center_lat,
+        ST_X(H3_CELL_TO_POINT(h.VALUE::VARCHAR)) AS center_lon
+    FROM TABLE(FLATTEN(
+        H3_POLYGON_TO_CELLS_STRINGS(
+            TO_GEOGRAPHY(''POLYGON((' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || '))''),
+            ' || resolution || '
+        )
+    )) h';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
@@ -1172,6 +1278,7 @@ DECLARE
     queue_table VARCHAR;
     raw_table VARCHAR;
     safe_profile VARCHAR;
+    matrix_call VARCHAR;
     insert_sql VARCHAR;
     resume_sql VARCHAR;
     max_done INTEGER DEFAULT 0;
@@ -1183,6 +1290,12 @@ BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
+
+    IF (P_REGION IS NOT NULL AND UPPER(P_REGION) NOT IN ('DEFAULT', 'SAN_FRANCISCO')) THEN
+        matrix_call := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+    ELSE
+        matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+    END IF;
 
     IF (P_RES = 'RES5') THEN
         batch_size := 20;
@@ -1221,11 +1334,7 @@ BEGIN
             q.SEQ_ID,
             q.ORIGIN_H3,
             q.DEST_HEX_IDS,
-            ' || P_MATRIX_FN || '(
-                ''' || P_PROFILE || ''',
-                ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT),
-                q.DEST_COORDS
-            )
+            ' || matrix_call || '
         FROM ' || queue_table || ' q
         WHERE q.SEQ_ID BETWEEN ' || current_pos || ' AND ' || batch_end;
 
@@ -1282,7 +1391,8 @@ BEGIN
         r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS
     FROM ' || raw_table || ' r,
         LATERAL FLATTEN(input => r.MATRIX_RESULT:durations[0]) f
-    WHERE r.MATRIX_RESULT:durations IS NOT NULL';
+    WHERE r.MATRIX_RESULT:durations IS NOT NULL
+    ORDER BY r.ORIGIN_H3';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table);
     LET c CURSOR FOR rs;
@@ -1311,6 +1421,10 @@ DECLARE
     safe_profile VARCHAR;
     count_sql VARCHAR;
     rs RESULTSET;
+    parallel_count INTEGER DEFAULT 4;
+    chunk_size INTEGER;
+    chunk_start INTEGER;
+    chunk_end INTEGER;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
@@ -1347,7 +1461,16 @@ BEGIN
     LET c4 CURSOR FOR rs;
     FOR r IN c4 DO queue_count := r.CNT; END FOR;
 
-    EXECUTE IMMEDIATE 'CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(''' || P_RES || ''', 1, ' || queue_count || ', ''' || P_MATRIX_FN || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
+    chunk_size := GREATEST(CEIL(queue_count / parallel_count), 1);
+    chunk_start := 1;
+
+    WHILE (chunk_start <= queue_count) DO
+        chunk_end := LEAST(chunk_start + chunk_size - 1, queue_count);
+        ASYNC (CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(:P_RES, :chunk_start, :chunk_end, :P_MATRIX_FN, :P_REGION, :P_PROFILE));
+        chunk_start := chunk_end + 1;
+    END WHILE;
+    AWAIT ALL;
+
     EXECUTE IMMEDIATE 'CALL core.FLATTEN_MATRIX_RAW(''' || P_RES || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || travel_table;
@@ -1356,7 +1479,7 @@ BEGIN
     FOR r IN c5 DO travel_count := r.CNT; END FOR;
 
     RETURN P_RES || ' complete (' || P_MATRIX_FN || ', ' || P_PROFILE || '): ' || hex_count || ' hexagons, ' ||
-           queue_count || ' origins, ' || travel_count || ' travel times';
+           queue_count || ' origins, ' || travel_count || ' travel times (' || parallel_count || ' parallel workers)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.BUILD_MATRIX_FOR_REGION(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
@@ -1644,6 +1767,65 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.CANCEL_MATRIX_BUILD(VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.RESTORE_MATRIX_DATA(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR, P_OFFSET_SECONDS INTEGER DEFAULT 300)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    matrix_table VARCHAR;
+    current_count INTEGER DEFAULT 0;
+    restored_count INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    matrix_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
+
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || matrix_table);
+        LET c1 CURSOR FOR rs; FOR r IN c1 DO current_count := r.CNT; END FOR;
+    EXCEPTION WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'message', 'Table does not exist: ' || matrix_table)::VARCHAR;
+    END;
+
+    IF (current_count > 0) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'status', 'skipped',
+            'message', 'Table already has data',
+            'table', matrix_table,
+            'current_rows', current_count
+        )::VARCHAR;
+    END IF;
+
+    BEGIN
+        EXECUTE IMMEDIATE '
+        INSERT INTO ' || matrix_table || ' (ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT)
+        SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+        FROM ' || matrix_table || ' AT(OFFSET => -' || P_OFFSET_SECONDS || ')';
+    EXCEPTION WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT(
+            'status', 'error',
+            'message', 'Time Travel restore failed: ' || SQLERRM,
+            'table', matrix_table,
+            'offset_seconds', P_OFFSET_SECONDS
+        )::VARCHAR;
+    END;
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || matrix_table);
+    LET c2 CURSOR FOR rs; FOR r IN c2 DO restored_count := r.CNT; END FOR;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'restored',
+        'table', matrix_table,
+        'restored_rows', restored_count,
+        'offset_seconds', P_OFFSET_SECONDS
+    )::VARCHAR;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.RESTORE_MATRIX_DATA(VARCHAR, VARCHAR, VARCHAR, INTEGER) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.GET_LIVE_TABLE_COUNT(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR

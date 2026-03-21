@@ -203,9 +203,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CMD ["node", "dist-server/index.js"]
    RTEOF
    mv .dockerignore .dockerignore.bak 2>/dev/null
-   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.5 .
+   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.18 .
    mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.5
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.18
    
    # return to working directory
    cd ../../..
@@ -216,7 +216,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - downloader:v0.0.3
    - routing_reverse_proxy:v0.7.5
    - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.5
+   - ors_control_app:v1.0.18
 
 **Output:** All 5 container images pushed to Snowflake image repository
 
@@ -326,7 +326,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 ```bash
 REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
 TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
-podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.5
+podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.18
 ```
 
 ### Basemap Tiles Not Loading (ENOTFOUND / 502)
@@ -413,11 +413,46 @@ The `_GEO` variants are table functions that parse the GeoJSON from ORS response
 - City-specific functions: `DIRECTIONS_{REGION}`, `ISOCHRONES_{REGION}`, `MATRIX_{REGION}`, `OPTIMIZATION_{REGION}`
 
 **Travel time matrix procedures:**
-- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region)` — End-to-end matrix build
-- `MATRIX_PROGRESS()` — Returns JSON with per-resolution build status
-- `RESET_MATRIX_DATA()` — Truncates all matrix tables
+- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region, profile)` — End-to-end matrix build with parallel ASYNC workers
+- `BUILD_HEXAGONS(res, min_lat, max_lat, min_lon, max_lon, region, profile)` — Generates H3 hex grid using H3_POLYGON_TO_CELLS_STRINGS (native polygon coverage)
+- `BUILD_WORK_QUEUE(res, region, profile)` — Creates origin→destinations work queue with H3_GRID_DISK neighbors
+- `BUILD_TRAVEL_TIME_RANGE_REGION(res, start_seq, end_seq, matrix_fn, region, profile)` — Processes batch range with retry logic
+- `FLATTEN_MATRIX_RAW(res, region, profile)` — Flattens VARIANT results into travel time pairs (ORDER BY ORIGIN_H3)
+- `MATRIX_PROGRESS(region, profile)` — Returns JSON with per-resolution build status
+- `ENSURE_MATRIX_TABLES(region, profile, res)` — Creates region/profile-specific matrix tables if not exists
+
+**Matrix builder optimizations (v1.1):**
+- **H3_POLYGON_TO_CELLS_STRINGS**: Replaces brute-force CROSS JOIN grid generation with native Snowflake polygon-to-H3 coverage. Eliminates GENERATOR + SEQ4() + DISTINCT approach. ~10x faster hex generation.
+- **ASYNC/AWAIT parallel workers**: BUILD_MATRIX_FOR_REGION splits the work queue into 4 parallel chunks, each processed by an async BUILD_TRAVEL_TIME_RANGE_REGION call. Up to 4x faster ORS API throughput.
+- **ORDER BY ORIGIN_H3**: FLATTEN_MATRIX_RAW writes travel time pairs ordered by origin hex, ensuring optimal physical data layout for spatial queries and the Matrix Viewer.
+
+**Matrix Viewer (ORS Control App):**
+- Interactive deck.gl heatmap visualization of travel time matrices
+- SQL API v2 multi-partition pagination (handles 1M+ row matrices)
+- 5-minute discrete color gradient buckets
+- Region/resolution/profile selector with row count and build time display
+- Build Time column in Matrix Builder inventory
 
 Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It make take a minute or two.
+
+## Fast Deploy (Control App Only)
+
+To rebuild and redeploy only the ORS Control App without rebuilding all images:
+
+```bash
+cd build-routing-solution/Native_app/services/ors_control_app
+./deploy.sh <connection> <version>
+# Example: ./deploy.sh fleet_test_evals v1.0.19
+```
+
+This script: builds React + server locally, creates runtime Dockerfile, pushes image, updates service YAML version, uploads setup_script.sql to app package stage, and upgrades the native app.
+
+Alternatively, to update just the setup_script.sql (stored procedures) without rebuilding the container:
+
+```sql
+PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
+```
 
 ## Cleanup
 

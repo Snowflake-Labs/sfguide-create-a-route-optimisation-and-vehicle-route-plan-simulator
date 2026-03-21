@@ -33,6 +33,35 @@ async function detectWarehouse(): Promise<void> {
   }
 }
 
+async function waitForOrsGraphReady(region: string, maxWaitSecs: number = 600): Promise<{ ready: boolean; elapsed: number; profiles: string[] }> {
+  const start = Date.now();
+  const interval = 15000;
+  const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
+  const safeRegion = region.replace(/[^A-Za-z0-9_]/g, '');
+  const isDefault = !safeRegion || safeRegion.toUpperCase() === 'DEFAULT' || safeRegion.toUpperCase() === 'SAN_FRANCISCO';
+  const statusSql = isDefault
+    ? `SELECT ${SF_DATABASE}.CORE.ORS_STATUS() AS S`
+    : `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const rows = await runSql(statusSql);
+      const raw = rows?.[0]?.S;
+      if (raw) {
+        const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (status.service_ready === true && status.profiles) {
+          const profileNames = Object.keys(status.profiles);
+          if (profileNames.length > 0) {
+            return { ready: true, elapsed: Math.round((Date.now() - start) / 1000), profiles: profileNames };
+          }
+        }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  return { ready: false, elapsed: Math.round((Date.now() - start) / 1000), profiles: [] };
+}
+
 const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9_]{0,254}$/;
 
 function sanitizeIdentifier(val: string): string {
@@ -274,7 +303,7 @@ app.post('/api/cities/provision', async (req, res) => {
       provisionStates[safeRegion] = { status: 'running', phase: 'creating_service', message: 'Creating ORS service...' };
       await callProcedure(`SETUP_CITY_ORS('${safeRegion}')`);
 
-      provisionStates[safeRegion] = { status: 'running', phase: 'building_graph', message: 'Waiting for routing graph build...' };
+      provisionStates[safeRegion] = { status: 'running', phase: 'starting_service', message: 'Waiting for ORS service to start...' };
       for (let i = 0; i < 60; i++) {
         await new Promise((r) => setTimeout(r, 10000));
         try {
@@ -283,10 +312,13 @@ app.post('/api/cities/provision', async (req, res) => {
         } catch {}
       }
 
-      provisionStates[safeRegion] = { status: 'running', phase: 'creating_functions', message: 'Creating city functions...' };
-      await callProcedure(`CREATE_CITY_FUNCTIONS('${safeRegion}')`);
-
-      provisionStates[safeRegion] = { status: 'complete', phase: 'ready', message: 'City provisioned' };
+      provisionStates[safeRegion] = { status: 'running', phase: 'building_graph', message: 'Service running — waiting for routing graph to load (this may take several minutes)...' };
+      const graphResult = await waitForOrsGraphReady(safeRegion, 600);
+      if (graphResult.ready) {
+        provisionStates[safeRegion] = { status: 'complete', phase: 'ready', message: `City provisioned — ${graphResult.profiles.length} profile(s) ready in ${graphResult.elapsed}s: ${graphResult.profiles.join(', ')}` };
+      } else {
+        provisionStates[safeRegion] = { status: 'complete', phase: 'ready', message: `City provisioned — service running but graph may still be loading (waited ${graphResult.elapsed}s). Check ORS_STATUS('${safeRegion}').` };
+      }
     } catch (err: any) {
       provisionStates[safeRegion] = { status: 'error', phase: '', error: err.message };
     }
@@ -419,6 +451,76 @@ async function cancelStatement(handle: string): Promise<boolean> {
   } catch { return false; }
 }
 
+app.post('/api/matrix/cost-estimate', async (req, res) => {
+  try {
+    const { region, resolutions, profile } = req.body;
+    if (!region || !resolutions) return res.status(400).json({ error: 'region and resolutions required' });
+
+    let safeRegion: string;
+    try { safeRegion = sanitizeIdentifier(region); }
+    catch { return res.status(400).json({ error: 'Invalid region' }); }
+
+    let bbox = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
+    try {
+      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.CITY_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
+      if (cityRow?.[0]) bbox = cityRow[0];
+    } catch {}
+
+    const latSpan = Math.abs(Number(bbox.MAX_LAT) - Number(bbox.MIN_LAT));
+    const lonSpan = Math.abs(Number(bbox.MAX_LON) - Number(bbox.MIN_LON));
+    const areaSqKm = latSpan * 111 * lonSpan * 111 * Math.cos(((Number(bbox.MIN_LAT) + Number(bbox.MAX_LAT)) / 2) * Math.PI / 180);
+
+    const hexAreaKm2: Record<number, number> = { 5: 252.9, 6: 36.13, 7: 5.16, 8: 0.737, 9: 0.105, 10: 0.015 };
+    const pairsPerSecond = 30000;
+    const computePoolNodes = 10;
+    const computePoolCreditPerNodeHr = 1;
+    const warehouseCreditPerHr = 10;
+    const flattenCredits = 2;
+    const creditPriceDollars = 3;
+
+    const estimates = (resolutions as number[]).filter((r) => r >= 5 && r <= 10).map((resolution) => {
+      const hexCount = Math.ceil(areaSqKm / (hexAreaKm2[resolution] || 1));
+      const totalPairs = hexCount * (hexCount - 1);
+      const buildTimeSecs = totalPairs / pairsPerSecond;
+      const buildTimeHrs = buildTimeSecs / 3600;
+
+      const computePoolCredits = computePoolNodes * computePoolCreditPerNodeHr * buildTimeHrs;
+      const warehouseCredits = warehouseCreditPerHr * buildTimeHrs;
+      const totalCredits = computePoolCredits + warehouseCredits + flattenCredits;
+      const estimatedCostDollars = totalCredits * creditPriceDollars;
+
+      return {
+        resolution: `RES${resolution}`,
+        hex_count: hexCount,
+        total_pairs: totalPairs,
+        estimated_build_time_minutes: Math.round(buildTimeSecs / 60 * 10) / 10,
+        cost_breakdown: {
+          compute_pool: { nodes: computePoolNodes, credits: Math.round(computePoolCredits * 10) / 10 },
+          warehouse: { type: 'X-Small x10 clusters', credits: Math.round(warehouseCredits * 10) / 10 },
+          flatten: { type: 'X-Large', credits: flattenCredits },
+          total_credits: Math.round(totalCredits * 10) / 10,
+          estimated_cost_usd: Math.round(estimatedCostDollars * 100) / 100,
+        },
+      };
+    });
+
+    const totalCredits = estimates.reduce((sum, e) => sum + e.cost_breakdown.total_credits, 0);
+    res.json({
+      region: safeRegion,
+      profile: profile || 'driving-car',
+      area_sq_km: Math.round(areaSqKm),
+      bbox: { min_lat: bbox.MIN_LAT, max_lat: bbox.MAX_LAT, min_lon: bbox.MIN_LON, max_lon: bbox.MAX_LON },
+      resolutions: estimates,
+      total_estimated_credits: Math.round(totalCredits * 10) / 10,
+      total_estimated_cost_usd: Math.round(totalCredits * creditPriceDollars * 100) / 100,
+      credit_price_usd: creditPriceDollars,
+      note: 'Estimates based on 30K pairs/sec throughput with 10-node compute pool. Actual costs depend on ORS graph complexity, network conditions, and retry rates.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/matrix/existing', async (req, res) => {
   try {
     const region = req.query.region as string;
@@ -463,10 +565,6 @@ app.post('/api/matrix/build', async (req, res) => {
     } catch {}
 
     let matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR`;
-    try {
-      const svcRows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion.toUpperCase()}' IN SCHEMA ${SF_DATABASE}.CORE`);
-      if (svcRows?.length > 0) matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR_${safeRegion.toUpperCase()}`;
-    } catch {}
 
     const jobs: { job_id: string; resolution: number }[] = [];
     const regionDb = safeRegion;
@@ -565,6 +663,20 @@ app.delete('/api/matrix/:region/:profile/:resolution', async (req, res) => {
     res.json({ status: 'ok', result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/matrix/:region/:profile/:resolution/restore', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const safeProfile = escapeString(req.params.profile);
+    const safeRes = sanitizeIdentifier(req.params.resolution);
+    const offsetSecs = sanitizeInt(req.body.offset_seconds || 300);
+    const result = await callProcedure(`RESTORE_MATRIX_DATA('${safeRegion}', '${safeProfile}', '${safeRes}', ${offsetSecs})`);
+    const parsed = JSON.parse(result || '{}');
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', error: err.message });
   }
 });
 

@@ -31,27 +31,40 @@ logger = get_logger('routing-service')
 
 app = Flask(__name__)
 
+
+def resolve_ors_host(region=None):
+    if not region:
+        return ORS_HOST
+    normalized = region.strip().lower().replace(' ', '')
+    return f'ors-service-{normalized}'
+
+
+def _make_response(output_rows):
+    response = make_response({"data": output_rows})
+    response.headers['Content-type'] = 'application/json'
+    return response
+
+
+def _parse_rows(message):
+    if message is None or not message.get('data'):
+        return None
+    return message['data']
+
+
 @app.get("/health")
 def readiness_probe():
     return "OK"
 
-@app.get("/ors_status")
-def get_ors_status():
-    '''
-    Get ORS Status including graph bounds
-    Returns service status with bounding box information for available profiles
-    '''
+
+def _get_ors_status(ors_host=None):
+    host = ors_host or ORS_HOST
     try:
-        # Query ORS status endpoint
-        status_url = f'http://{ORS_HOST}:{ORS_PORT}{ORS_API_PATH}/status'
+        status_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/status'
         logger.info(f'Querying ORS status: {status_url}')
         r = requests.get(url=status_url, timeout=10)
         status_data = r.json()
-        
-        # Try to get bounds by making a test isochrone request at the center
-        # This helps determine if the service is ready and where the graph covers
+
         bounds_info = {}
-        
         if 'profiles' in status_data:
             for profile_name, profile_data in status_data['profiles'].items():
                 bounds_info[profile_name] = {
@@ -60,59 +73,72 @@ def get_ors_status():
                     'graph_build_date': profile_data.get('graph_build_date'),
                     'osm_date': profile_data.get('osm_date')
                 }
-        
+
         status_data['bounds_info'] = bounds_info
         status_data['service_ready'] = len(bounds_info) > 0
-        
+        status_data['ors_host'] = host
         return status_data
+    except requests.exceptions.ConnectionError:
+        logger.error(f'Cannot connect to ORS at {host} - service may not be provisioned or is suspended')
+        return {
+            'error': 'connection_failed',
+            'message': f'Cannot connect to ORS at {host}. Region may not be provisioned or service is suspended. '
+                       f'Use SETUP_CITY_ORS(region) to provision.',
+            'service_ready': False,
+            'ors_host': host
+        }
     except requests.exceptions.Timeout:
-        logger.error('ORS status request timed out - graphs may still be building')
-        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False}
+        logger.error(f'ORS status request timed out on {host} - graphs may still be building')
+        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False, 'ors_host': host}
     except Exception as e:
-        logger.error(f'Error getting ORS status: {str(e)}')
-        return {'error': str(e), 'service_ready': False}
+        logger.error(f'Error getting ORS status from {host}: {str(e)}')
+        return {'error': str(e), 'service_ready': False, 'ors_host': host}
+
+
+@app.get("/ors_status")
+def get_ors_status():
+    return _get_ors_status()
+
 
 @app.post("/ors_status")
 def post_ors_status():
-    '''
-    ORS Status Handler for Snowflake External Function
-    Returns service status with graph information
-    '''
     message = request.json
     logger.debug(f'Received status request: {message}')
-    
-    if message is None or not message.get('data'):
-        return {"data": [[0, get_ors_status()]]}
-    
-    input_rows = message['data']
-    status = get_ors_status()
-    output_rows = [[row[0], status] for row in input_rows]
-    
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    return response
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {"data": [[0, _get_ors_status()]]}
+    status = _get_ors_status()
+    return _make_response([[row[0], status] for row in input_rows])
 
-@app.post("/optimization_tabular")
-def post_optimization_tabular():
-    '''
-    Tabular Optimization Handler
 
-    Easy Optimization problem solver
-
-    row[1] - jobs array
-    row[2] - vehicles array
-    row[3] - matrices object (optional) - pre-computed cost matrices per profile
-             Format: {"profile_name": {"durations": [[...]], "distances": [[...]]}}
-             When provided, jobs/vehicles should use location_index instead of location
-    '''
+@app.post("/r/ors_status")
+def post_ors_status_region():
     message = request.json
-    logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
-        return {}
+    logger.debug(f'Received region status request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {"data": [[0, _get_ors_status()]]}
+    output_rows = []
+    for row in input_rows:
+        region = row[1]
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], _get_ors_status(ors_host)])
+    return _make_response(output_rows)
 
-    input_rows = message['data']
 
+@app.get("/r/health/<region>")
+def region_health(region):
+    host = resolve_ors_host(region)
+    status = _get_ors_status(host)
+    return {
+        'region': region,
+        'host': host,
+        'ready': status.get('service_ready', False),
+        'profiles': list(status.get('profiles', {}).keys()) if 'profiles' in status else []
+    }
+
+
+def _handle_optimization_tabular(input_rows, vroom_host_override=None):
     def build_vroom_payload(row):
         vehicles = row[2]
         for v in vehicles:
@@ -129,220 +155,371 @@ def post_optimization_tabular():
                 payload['options'] = {'g': False}
         return payload
 
-    output_rows = [[row[0], get_vroom_response(build_vroom_payload(row))] for row in input_rows]
-        
+    return [[row[0], get_vroom_response(build_vroom_payload(row))] for row in input_rows]
+
+
+@app.post("/optimization_tabular")
+def post_optimization_tabular():
+    '''
+    row[1] - jobs array
+    row[2] - vehicles array
+    row[3] - matrices object (optional)
+    '''
+    message = request.json
+    logger.debug(f'Received request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = _handle_optimization_tabular(input_rows)
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/optimization_tabular")
+def post_optimization_tabular_region():
+    '''
+    row[1] - region string
+    row[2] - jobs array
+    row[3] - vehicles array
+    row[4] - matrices object (optional)
+    '''
+    message = request.json
+    logger.debug(f'Received region optimization request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    shifted_rows = []
+    for row in input_rows:
+        shifted = [row[0]] + list(row[2:])
+        shifted_rows.append(shifted)
+    output_rows = _handle_optimization_tabular(shifted_rows)
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
 
 @app.post("/optimization")
 def post_optimization():
     '''
-    Optimization Handler
-
-    Takes raw Optimization problem, according to the https://openrouteservice.org/dev/#/api-docs/optimization
-
     row[1] - problem varchar
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-
-    input_rows = message['data']
-
     output_rows = [[row[0], get_vroom_response(row[1])] for row in input_rows]
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+def _handle_directions_tabular(input_rows, format, ors_host=None):
+    host = ors_host or ORS_HOST
+    output_rows = []
+    for row in input_rows:
+        output_rows.append([row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format, host)])
+    return output_rows
+
 
 @app.post("/directions_tabular")
 @app.post("/directions_tabular/<format>")
 def post_directions_tabular_with_format(format="geojson"):
-    '''
-    Directions Handler with format option
-    '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
+    output_rows = _handle_directions_tabular(input_rows, format)
+    return _make_response(output_rows)
 
-    input_rows = message['data']
-    output_rows = [[row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format)] for row in input_rows]
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
+@app.post("/r/directions_tabular")
+@app.post("/r/directions_tabular/<format>")
+def post_directions_tabular_region(format="geojson"):
+    '''
+    row[1] - region, row[2] - method, row[3] - start, row[4] - end
+    '''
+    message = request.json
+    logger.debug(f'Received region directions request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = []
+    for row in input_rows:
+        ors_host = resolve_ors_host(row[1])
+        shifted = [row[0], row[2], row[3], row[4]]
+        output_rows.append([row[0], get_ors_response('directions', row[2], {'coordinates': [row[3], row[4]]}, format, ors_host)])
+    return _make_response(output_rows)
 
-    return response
+
+def _handle_directions(input_rows, format, ors_host=None):
+    host = ors_host or ORS_HOST
+    return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
+
 
 @app.post("/directions")
 @app.post("/directions/<format>")
 def post_directions_with_format(format="geojson"):
-    '''
-    Directions Handler with format option
-    '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-    
-    input_rows = message['data']
-    output_rows = [[row[0], get_ors_response('directions', row[1], row[2], format)] for row in input_rows]
+    output_rows = _handle_directions(input_rows, format)
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/directions")
+@app.post("/r/directions/<format>")
+def post_directions_region(format="geojson"):
+    '''
+    row[1] - region, row[2] - method, row[3] - locations
+    '''
+    message = request.json
+    logger.debug(f'Received region directions request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = []
+    for row in input_rows:
+        ors_host = resolve_ors_host(row[1])
+        output_rows.append([row[0], get_ors_response('directions', row[2], row[3], format, ors_host)])
+    return _make_response(output_rows)
+
+
+def _handle_isochrones_tabular(input_rows, format, ors_host=None):
+    host = ors_host or ORS_HOST
+    output_rows = []
+    for row in input_rows:
+        output_rows.append([row[0], get_ors_response('isochrones', row[1], {
+            'locations': [[row[2], row[3]]],
+            'range': [row[4] * 60],
+            'location_type': 'start',
+            'range_type': 'time',
+            'smoothing': 10
+        }, format, host)])
+    return output_rows
+
 
 @app.post("/isochrones_tabular")
 @app.post("/isochrones_tabular/<format>")
 def post_isochrones_tabular(format="geojson"):
-    '''
-    Isochrones Tabular Handler
-
-    ISOCHRONES(method string, lon float, lat float, range int)
-
-    row[1] - method string, 
-    row[2] - lon float 
-    row[3] - lat float
-    row[4] - range int
-    '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_ors_response('isochrones', row[1], {'locations': [[row[2], row[3]]], 'range':[row[4]*60],
-                    'location_type':'start',
-                    'range_type':'time',
-                    'smoothing':10}, format)]for row in input_rows]
-        
+    output_rows = _handle_isochrones_tabular(input_rows, format)
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/isochrones_tabular")
+@app.post("/r/isochrones_tabular/<format>")
+def post_isochrones_tabular_region(format="geojson"):
+    '''
+    row[1] - region, row[2] - method, row[3] - lon, row[4] - lat, row[5] - range
+    '''
+    message = request.json
+    logger.debug(f'Received region isochrones request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = []
+    for row in input_rows:
+        ors_host = resolve_ors_host(row[1])
+        output_rows.append([row[0], get_ors_response('isochrones', row[2], {
+            'locations': [[row[3], row[4]]],
+            'range': [row[5] * 60],
+            'location_type': 'start',
+            'range_type': 'time',
+            'smoothing': 10
+        }, format, ors_host)])
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
 
 @app.post("/isochrones")
 @app.post("/isochrones/<format>")
 def post_isochrones(format="geojson"):
-    '''
-    Isochrones Tabular Handler
-
-    ISOCHRONES(method string, lon float, lat float, range int)
-
-    row[1] - problem varchar
-    '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-
-    input_rows = message['data']
-
-    output_rows = [[row[0], get_ors_response('isochrones', row[1], json.loads(row[2]), format)]for row in input_rows]
-        
+    output_rows = [[row[0], get_ors_response('isochrones', row[1], json.loads(row[2]), format)] for row in input_rows]
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/isochrones")
+@app.post("/r/isochrones/<format>")
+def post_isochrones_region(format="geojson"):
+    '''
+    row[1] - region, row[2] - method, row[3] - options json string
+    '''
+    message = request.json
+    logger.debug(f'Received region isochrones request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = []
+    for row in input_rows:
+        ors_host = resolve_ors_host(row[1])
+        output_rows.append([row[0], get_ors_response('isochrones', row[2], json.loads(row[3]), format, ors_host)])
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
+
+def _build_matrix_body(method, row_data, has_destinations):
+    if has_destinations:
+        origin = row_data[0]
+        destinations = row_data[1]
+        if origin and not isinstance(origin[0], list):
+            origin = [origin]
+        locations = origin + destinations
+        return {
+            'locations': locations,
+            'sources': list(range(len(origin))),
+            'destinations': list(range(len(origin), len(locations))),
+            'metrics': ['distance', 'duration'],
+            'resolve_locations': True
+        }
+    else:
+        return {
+            'locations': row_data[0],
+            'metrics': ['distance', 'duration'],
+            'resolve_locations': True
+        }
+
+
+def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, format, ors_host, chunk_size=50):
+    all_durations = None
+    all_distances = None
+
+    for i in range(0, len(destinations_idx), chunk_size):
+        chunk_dests = destinations_idx[i:i + chunk_size]
+        body = {
+            'locations': locations,
+            'sources': sources_idx,
+            'destinations': chunk_dests,
+            'metrics': ['distance', 'duration'],
+            'resolve_locations': True
+        }
+        resp = get_ors_response('matrix', profile, body, format, ors_host)
+        if 'error' in resp:
+            if chunk_size > 10:
+                partial = _retry_matrix_chunked(profile, locations, sources_idx, chunk_dests, format, ors_host, 10)
+                if partial and 'error' not in partial:
+                    if all_durations is None:
+                        all_durations = [[] for _ in partial.get('durations', [])]
+                        all_distances = [[] for _ in partial.get('distances', [])]
+                    for r_idx, dur_row in enumerate(partial.get('durations', [])):
+                        all_durations[r_idx].extend(dur_row)
+                    for r_idx, dist_row in enumerate(partial.get('distances', [])):
+                        all_distances[r_idx].extend(dist_row)
+            continue
+
+        if all_durations is None:
+            all_durations = [[] for _ in resp.get('durations', [])]
+            all_distances = [[] for _ in resp.get('distances', [])]
+        for r_idx, dur_row in enumerate(resp.get('durations', [])):
+            all_durations[r_idx].extend(dur_row)
+        for r_idx, dist_row in enumerate(resp.get('distances', [])):
+            all_distances[r_idx].extend(dist_row)
+
+    if all_durations is None:
+        return {'error': 'all_chunks_failed', 'message': 'All matrix chunks failed'}
+
+    return {
+        'durations': all_durations,
+        'distances': all_distances,
+        'sources': sources_idx,
+        'destinations': destinations_idx
+    }
+
 
 @app.post("/matrix_tabular")
 @app.post("/matrix_tabular/<format>")
 def post_matrix_tabular(format="json"):
     '''
-    Matrix Tabular Handler
-
-    Supports two calling conventions:
-      2-arg: MATRIX(method, locations)        -> row = [id, method, locations]
-      3-arg: MATRIX_TABULAR(method, origin, destinations) -> row = [id, method, origin, destinations]
-
-    row[1] - method/profile string (e.g., 'driving-car')
-    row[2] - locations array (2-arg) OR origin point/array (3-arg)
-    row[3] - destinations array (3-arg only)
+    2-arg: MATRIX(method, locations)        -> row = [id, method, locations]
+    3-arg: MATRIX_TABULAR(method, origin, destinations) -> row = [id, method, origin, destinations]
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-
-    input_rows = message['data']
 
     output_rows = []
     for row in input_rows:
-        if len(row) == 4:
+        has_dest = len(row) == 4
+        body = _build_matrix_body(row[1], row[2:], has_dest)
+        resp = get_ors_response('matrix', row[1], body, format)
+        if isinstance(resp, dict) and resp.get('error', {}).get('code') == 6099 and has_dest:
             origin = row[2]
             destinations = row[3]
             if origin and not isinstance(origin[0], list):
                 origin = [origin]
             locations = origin + destinations
-            body = {
-                'locations': locations,
-                'sources': list(range(len(origin))),
-                'destinations': list(range(len(origin), len(locations))),
-                'metrics': ['distance', 'duration'],
-                'resolve_locations': True
-            }
-        else:
-            body = {
-                'locations': row[2],
-                'metrics': ['distance', 'duration'],
-                'resolve_locations': True
-            }
-        output_rows.append([row[0], get_ors_response('matrix', row[1], body, format)])
-        
+            sources_idx = list(range(len(origin)))
+            destinations_idx = list(range(len(origin), len(locations)))
+            resp = _retry_matrix_chunked(row[1], locations, sources_idx, destinations_idx, format, ORS_HOST)
+        output_rows.append([row[0], resp])
+
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/matrix_tabular")
+@app.post("/r/matrix_tabular/<format>")
+def post_matrix_tabular_region(format="json"):
+    '''
+    Region-aware matrix:
+    2-arg: MATRIX(region, method, locations)        -> row = [id, region, method, locations]
+    3-arg: MATRIX_TABULAR(region, method, origin, destinations) -> row = [id, region, method, origin, destinations]
+    '''
+    message = request.json
+    logger.debug(f'Received region matrix request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        region = row[1]
+        ors_host = resolve_ors_host(region)
+        method = row[2]
+        has_dest = len(row) == 5
+        body = _build_matrix_body(method, row[3:], has_dest)
+        resp = get_ors_response('matrix', method, body, format, ors_host)
+        if isinstance(resp, dict) and resp.get('error', {}).get('code') == 6099 and has_dest:
+            origin = row[3]
+            destinations = row[4]
+            if origin and not isinstance(origin[0], list):
+                origin = [origin]
+            locations = origin + destinations
+            sources_idx = list(range(len(origin)))
+            destinations_idx = list(range(len(origin), len(locations)))
+            resp = _retry_matrix_chunked(method, locations, sources_idx, destinations_idx, format, ors_host)
+        output_rows.append([row[0], resp])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
 
 @app.post("/matrix")
 @app.post("/matrix/<format>")
 def post_matrix(format="json"):
     '''
-    Matrix Handler
-
-    MATRIX(method string, options variant)
-
-    row[1] - method/profile string (e.g., 'driving-car')
-    row[2] - full matrix options as JSON/variant (locations, metrics, sources, destinations, etc.)
-    
-    See: https://openrouteservice.org/dev/#/api-docs/v2/matrix/{profile}/post
+    row[1] - method/profile string
+    row[2] - full matrix options as JSON/variant
     '''
     message = request.json
     logger.debug(f'Received request: {message}')
-    if message is None or not message['data']:
-        logger.info('Received empty message')
+    input_rows = _parse_rows(message)
+    if not input_rows:
         return {}
-
-    input_rows = message['data']
 
     output_rows = []
     for row in input_rows:
@@ -354,24 +531,52 @@ def post_matrix(format="json"):
                 'resolve_locations': True
             }
         output_rows.append([row[0], get_ors_response('matrix', row[1], body, format)])
-        
+
     logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
 
-    response = make_response({"data": output_rows})
-    response.headers['Content-type'] = 'application/json'
-    logger.debug(f'Sending response: {response.json}')
 
-    return response
+@app.post("/r/matrix")
+@app.post("/r/matrix/<format>")
+def post_matrix_region(format="json"):
+    '''
+    row[1] - region, row[2] - method, row[3] - full matrix options
+    '''
+    message = request.json
+    logger.debug(f'Received region matrix request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+
+    output_rows = []
+    for row in input_rows:
+        ors_host = resolve_ors_host(row[1])
+        body = row[3]
+        if isinstance(body, list):
+            body = {
+                'locations': body,
+                'metrics': ['distance', 'duration'],
+                'resolve_locations': True
+            }
+        output_rows.append([row[0], get_ors_response('matrix', row[2], body, format, ors_host)])
+
+    logger.info(f'Produced {len(output_rows)} rows')
+    return _make_response(output_rows)
+
 
 def get_vroom_response(payload):
-    '''
-    Vroom Service Endpoint Abstraction
-    '''
     logger.info(payload)
     downstream_url = f'http://{VROOM_HOST}:{VROOM_PORT}'
-    downstream_headers ={"Content-Type":"application/json"}
-    r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
-    vroom_r = r.json()
+    downstream_headers = {"Content-Type": "application/json"}
+    try:
+        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
+        vroom_r = r.json()
+    except requests.exceptions.ConnectionError:
+        logger.error(f'Cannot connect to VROOM at {VROOM_HOST}:{VROOM_PORT}')
+        return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {VROOM_HOST}:{VROOM_PORT}'}
+    except requests.exceptions.Timeout:
+        logger.error(f'VROOM request timed out')
+        return {'error': 'timeout', 'message': 'VROOM optimization request timed out'}
     logger.debug(f'VROOM response: {vroom_r}')
     if 'routes' in vroom_r:
         for route in vroom_r['routes']:
@@ -380,22 +585,40 @@ def get_vroom_response(payload):
                 route['geometry'] = [[lon, lat] for lat, lon in decoded_geometry]
     return vroom_r
 
-def get_ors_response(function, profile, payload, format):
-    '''
-    ORS Endpoint abstraction
-    '''
+
+def get_ors_response(function, profile, payload, format, ors_host=None):
+    host = ors_host or ORS_HOST
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
 
-    downstream_url = f'http://{ORS_HOST}:{ORS_PORT}{endpoint}'
-    downstream_headers ={"Content-Type":"application/json"}
+    downstream_url = f'http://{host}:{ORS_PORT}{endpoint}'
+    downstream_headers = {"Content-Type": "application/json"}
     logger.info(f'Calling: {downstream_url}')
     logger.info(f'Payload: {payload}')
-    
-    r = requests.post(url = downstream_url, headers=downstream_headers, json = payload)
-    logger.debug(r.json())
-    return r.json()
+
+    try:
+        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=120)
+        logger.debug(r.json())
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        region_hint = f' (host: {host})' if host != ORS_HOST else ''
+        logger.error(f'Cannot connect to ORS{region_hint}')
+        return {
+            'error': 'connection_failed',
+            'message': f'Cannot connect to ORS{region_hint}. '
+                       f'Region may not be provisioned or service is suspended. '
+                       f'Use ORS_STATUS(region) to check or SETUP_CITY_ORS(region) to provision.',
+            'ors_host': host
+        }
+    except requests.exceptions.Timeout:
+        logger.error(f'ORS request timed out on {host}')
+        return {
+            'error': 'timeout',
+            'message': f'ORS request timed out on {host}. Try reducing batch size or check if graphs are still building.',
+            'ors_host': host
+        }
+
 
 if __name__ == '__main__':
     app.run(host=SERVICE_HOST, port=SERVICE_PORT)
