@@ -2065,6 +2065,18 @@ BEGIN
     IF (ARRAY_CONTAINS('BIND SERVICE ENDPOINT'::VARIANT, privileges) OR ARRAY_CONTAINS('CREATE COMPUTE POOL'::VARIANT, privileges)) THEN
         CALL core.create_ui_service();
     END IF;
+    IF (ARRAY_CONTAINS('IMPORTED PRIVILEGES ON SNOWFLAKE DB'::VARIANT, privileges)) THEN
+        BEGIN
+            CALL core.setup_semantic_view();
+        EXCEPTION
+            WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            CALL core.create_agent();
+        EXCEPTION
+            WHEN OTHER THEN NULL;
+        END;
+    END IF;
     RETURN 'App deployed successfully';
 END;
 $$;
