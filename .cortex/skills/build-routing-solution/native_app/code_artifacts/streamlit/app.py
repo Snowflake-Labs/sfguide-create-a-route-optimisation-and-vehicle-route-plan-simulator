@@ -15,7 +15,7 @@ session = get_active_session()
 
 # Page configuration
 st.set_page_config(
-    page_title="ORS Service Manager",
+    page_title="Routing Service Manager",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -30,8 +30,8 @@ st.logo('logo.svg')
 
 # Main application header with Snowflake branding
 st.markdown('''
-<h0black>OPEN ROUTE SERVICE |</h0black><h0blue> SERVICE MANAGER</h0blue><BR>
-<h1grey>Monitor and Control ORS Services</h1grey>
+<h0black>ROUTING SERVICE |</h0black><h0blue> SERVICE MANAGER</h0blue><BR>
+<h1grey>Monitor and Control Routing Services</h1grey>
 ''', unsafe_allow_html=True)
 
 # Service database and schema configuration
