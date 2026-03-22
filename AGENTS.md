@@ -112,15 +112,69 @@ ALL changes to the ORS native app schema (procedures, tables, functions) MUST go
 
 ```bash
 # The ONLY way to deploy setup_script.sql changes:
-cd build-routing-solution/Native_app
-./deploy.sh [connection_name]    # defaults to fleet_test_evals
+cd build-routing-solution/native_app/app
+./upgrade_app.sh           # uploads setup_script.sql + modules/*.sql, then ALTER APPLICATION UPGRADE
 ```
 
 Key facts:
-- The active `setup_script.sql` lives at the **stage root** (`@...STAGE/setup_script.sql`), NOT in `app/`
-- The `manifest.yml` references `setup_script: setup_script.sql` (root-relative)
-- `deploy.sh` uploads setup_script.sql, manifest.yml, and service YAMLs to stage, removes stale copies, upgrades, and checks for ACCOUNTADMIN-owned objects
+- `setup_script.sql` is a thin orchestrator (~15 lines) that calls `EXECUTE IMMEDIATE FROM 'modules/<NN>_<domain>.sql'`
+- The 6 module files live in `native_app/app/modules/`:
+  | Module | Domain | Component tag |
+  |--------|--------|---------------|
+  | `01_core_infra.sql` | compute, stages, services, callbacks | `core` |
+  | `02_routing_functions.sql` | service functions, UDFs | `routing` |
+  | `03_city_management.sql` | city provisioning, per-region ORS | `provisioner` / `multi-city` |
+  | `04_service_lifecycle.sql` | resume, suspend, scale, status | `lifecycle` |
+  | `05_matrix_pipeline.sql` | matrix build pipeline | `matrix` |
+  | `06_matrix_ops.sql` | matrix status, inventory, delete | `matrix` |
+- `upgrade_app.sh` uploads `setup_script.sql` + all `modules/*.sql` to the package stage, then runs `ALTER APPLICATION UPGRADE`
 - If you see ACCOUNTADMIN-owned objects after upgrade, DROP them — they shadow or conflict with app-owned objects
+
+### Native App SQL Scripting Guidelines (MANDATORY)
+
+Every `CREATE` statement in the setup_script modules MUST include a tracking COMMENT tag. No exceptions.
+
+**Format:**
+```sql
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"<component>"}}'
+```
+
+Where `<component>` matches the module domain (see table above).
+
+**Rules:**
+
+1. **Procedures** — COMMENT goes before `AS $$`:
+   ```sql
+   CREATE OR REPLACE PROCEDURE core.my_proc()
+   RETURNS VARCHAR
+   LANGUAGE SQL
+   EXECUTE AS OWNER
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}'
+   AS
+   $$
+   ```
+
+2. **Tables** — COMMENT goes after column definitions:
+   ```sql
+   CREATE TABLE IF NOT EXISTS travel_matrix.MY_TABLE (
+       COL1 VARCHAR
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
+   ```
+
+3. **Schemas** — COMMENT goes inline:
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS core
+       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+   ```
+
+4. **Streamlit / Services / Functions created at top level** — same pattern with appropriate component tag.
+
+5. **Dynamic objects (inside procedure bodies)** — use `ALTER ... SET COMMENT` after creation when the DDL syntax does not support inline COMMENT (e.g., CTAS, service functions with `SERVICE=` clause).
+
+6. **New modules** — if adding a new module file, register it in `setup_script.sql` with `EXECUTE IMMEDIATE FROM` and add a row to the module table above.
+
+7. **Pre-commit check** — before uploading, run: `grep -c COMMENT modules/*.sql` and verify every module has at least as many COMMENT clauses as CREATE statements.
 
 ## Control App Image Deployment (ors_control_app)
 
