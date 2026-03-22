@@ -14,7 +14,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="app-logo">
-          <img src="/snowflake_h3.png" width="28" height="28" alt="Snowflake H3" />
+          <img src="/snowflake_h3.png" style={{ height: 36, objectFit: 'contain' }} alt="Snowflake" />
           <span>Routing Service</span>
         </div>
         <nav className="app-tabs">

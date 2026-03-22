@@ -307,6 +307,8 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
+See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
+
 Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It may take a minute or two.
 
 ## Examples
@@ -331,9 +333,9 @@ Result: Control app image rebuilt and deployed, app upgraded
 ### Example 3: Update stored procedures only
 User says: "I changed setup_script.sql, deploy it"
 Actions:
-1. Upload setup_script.sql to stage and upgrade app:
+1. Upload setup_script.sql to stage ROOT (NOT `app/` — see `references/snowflake-scripting-guidelines.md` §2) and upgrade app:
    ```sql
-   PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+   PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
    ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
    ```
 Result: Stored procedures updated without container rebuild
@@ -353,9 +355,22 @@ This script: builds React + server locally, creates runtime Dockerfile, pushes i
 Alternatively, to update just the setup_script.sql (stored procedures) without rebuilding the container:
 
 ```sql
-PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+-- IMPORTANT: PUT to stage ROOT, not app/ — manifest reads from root
+PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
 ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
 ```
+
+## Coding Guidelines
+
+Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`. It covers:
+- Variable binding rules (colon prefix gotchas)
+- Stage file map (where each file must be PUT)
+- Pre-deployment and post-deployment checklists
+- Deployment verification SQL
+- Sandbox testing workflow
+- Common pitfalls and their fixes
+
+These guidelines exist because past issues were caused by wrong stage paths, incorrect variable syntax, and missing verification steps. Follow them to avoid repeating these mistakes.
 
 ## Cleanup
 

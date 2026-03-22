@@ -717,15 +717,25 @@ app.post('/api/matrix/build', async (req, res) => {
 
     res.json({ status: 'launched', jobs });
 
-    Promise.all(jobs.map(async ({ job_id: jobId, resolution }) => {
-      try {
-        const callSql = `CALL ${SF_DATABASE}.CORE.BUILD_MATRIX_JOB_WRAPPER('${escapeString(jobId)}', 'RES${resolution}', ${sanitizeFloat(bbox.MIN_LAT)}, ${sanitizeFloat(bbox.MAX_LAT)}, ${sanitizeFloat(bbox.MIN_LON)}, ${sanitizeFloat(bbox.MAX_LON)}, '${escapeString(matrixFn)}', '${escapeString(regionDb)}', '${safeProfile}')`;
-        const handle = await submitSqlAsync(callSql);
-        await runSql(`UPDATE ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET STATEMENT_HANDLE = '${escapeString(handle)}' WHERE JOB_ID = '${escapeString(jobId)}'`);
-      } catch (e: any) {
-        console.error(`[matrix/build] async launch error for ${jobId}: ${e.message}`);
+    (async () => {
+      for (const { job_id: jobId, resolution } of jobs) {
+        try {
+          const callSql = `CALL ${SF_DATABASE}.CORE.BUILD_MATRIX_JOB_WRAPPER('${escapeString(jobId)}', 'RES${resolution}', ${sanitizeFloat(bbox.MIN_LAT)}, ${sanitizeFloat(bbox.MAX_LAT)}, ${sanitizeFloat(bbox.MIN_LON)}, ${sanitizeFloat(bbox.MAX_LON)}, '${escapeString(matrixFn)}', '${escapeString(regionDb)}', '${safeProfile}')`;
+          const handle = await submitSqlAsync(callSql);
+          await runSql(`UPDATE ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET STATEMENT_HANDLE = '${escapeString(handle)}' WHERE JOB_ID = '${escapeString(jobId)}'`);
+          let jobStatus = 'RUNNING';
+          while (jobStatus === 'RUNNING' || jobStatus === 'PENDING') {
+            await new Promise(r => setTimeout(r, 10000));
+            try {
+              const rows = await runSql(`SELECT STATUS FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE JOB_ID = '${escapeString(jobId)}'`);
+              jobStatus = rows?.[0]?.STATUS || 'UNKNOWN';
+            } catch { break; }
+          }
+        } catch (e: any) {
+          console.error(`[matrix/build] async launch error for ${jobId}: ${e.message}`);
+        }
       }
-    })).catch(() => {});
+    })().catch(() => {});
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

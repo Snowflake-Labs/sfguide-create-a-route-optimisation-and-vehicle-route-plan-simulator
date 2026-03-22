@@ -168,12 +168,21 @@ export default function MatrixViewer() {
     if (matchedTable) loadRandomOrigin(matchedTable);
   }, [matchedTable]);
 
+  const originSet = useMemo(() => new Set(allHexes), [allHexes]);
+  const [notOriginMsg, setNotOriginMsg] = useState('');
+
   const handleHexClick = useCallback(async (info: any) => {
     const hexId = info?.object?.hex_id;
     if (!hexId || !activeTable) return;
     if (hexId === originHex) return;
+    if (!originSet.has(hexId)) {
+      setNotOriginMsg(`${hexId} is a destination only — no origin data available. Click a gray hexagon instead.`);
+      setTimeout(() => setNotOriginMsg(''), 3000);
+      return;
+    }
+    setNotOriginMsg('');
     setLoading(true);
-    setLoadingMsg('Re-centering...');
+    setLoadingMsg('Loading reachability...');
     try {
       const reachData = await fetchReachability(activeTable, hexId);
       const dests = parseDestinations(reachData);
@@ -183,19 +192,13 @@ export default function MatrixViewer() {
       setDestinations(dests);
       const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
       setDriveTimeLimit(Math.ceil(maxVisible / 60) || sliderMax);
-      setViewState(prev => ({
-        ...prev,
-        longitude: Number(reachData.origin_lon || prev.longitude),
-        latitude: Number(reachData.origin_lat || prev.latitude),
-        zoom: 11,
-      }));
     } catch (e: any) {
       if (e.name !== 'AbortError') {}
     } finally {
       setLoading(false);
       setLoadingMsg('');
     }
-  }, [activeTable, originHex, fetchReachability, sliderMax]);
+  }, [activeTable, originHex, fetchReachability, sliderMax, originSet]);
 
   const handleSliderChange = useCallback((mins: number) => {
     setDriveTimeLimit(mins);
@@ -404,8 +407,13 @@ export default function MatrixViewer() {
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
-            Click any hexagon to re-center the visualization on it
+            Click any gray hexagon to set it as the new origin
           </div>
+          {notOriginMsg && (
+            <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 4, padding: '6px 10px', background: 'rgba(245,158,11,0.1)', borderRadius: 6 }}>
+              {notOriginMsg}
+            </div>
+          )}
         </>
       )}
     </div>

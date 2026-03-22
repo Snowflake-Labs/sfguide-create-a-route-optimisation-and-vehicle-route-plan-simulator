@@ -1238,6 +1238,7 @@ CREATE TABLE IF NOT EXISTS travel_matrix.MATRIX_BUILD_JOBS (
     RAW_ROWS NUMBER DEFAULT 0,
     MATRIX_ROWS NUMBER DEFAULT 0,
     PCT_COMPLETE FLOAT DEFAULT 0,
+    MESSAGE VARCHAR,
     ERROR_MSG VARCHAR,
     STATEMENT_HANDLE VARCHAR,
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
@@ -1604,6 +1605,40 @@ BEGIN
         current_pos := batch_end + 1;
     END WHILE;
 
+    LET error_retry_sql VARCHAR;
+    LET error_origin_count INTEGER DEFAULT 0;
+    LET fixed_count INTEGER DEFAULT 0;
+    LET retry_pass INTEGER DEFAULT 0;
+    LET max_error_retries INTEGER DEFAULT 3;
+
+    WHILE (retry_pass < max_error_retries) DO
+        error_retry_sql := 'SELECT COUNT(*) AS CNT FROM ' || raw_table ||
+            ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
+            ' AND MATRIX_RESULT:durations IS NULL';
+        rs := (EXECUTE IMMEDIATE :error_retry_sql);
+        LET ec CURSOR FOR rs;
+        FOR r IN ec DO error_origin_count := r.CNT; END FOR;
+
+        IF (error_origin_count = 0) THEN
+            retry_pass := max_error_retries;
+        ELSE
+            retry_pass := retry_pass + 1;
+            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
+
+            EXECUTE IMMEDIATE 'DELETE FROM ' || raw_table ||
+            ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
+            ' AND MATRIX_RESULT:durations IS NULL';
+
+            EXECUTE IMMEDIATE '
+            INSERT INTO ' || raw_table || '
+            SELECT q.SEQ_ID, q.ORIGIN_H3, q.DEST_HEX_IDS, ' || matrix_call || '
+            FROM ' || queue_table || ' q
+            WHERE q.SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
+            ' AND q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || raw_table ||
+            ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ || ')';
+        END IF;
+    END WHILE;
+
     RETURN P_RES || ' range [' || P_START_SEQ || '-' || P_END_SEQ ||
            '] complete: ' || batch_num || ' batches of ' || batch_size ||
            ' (resumed from seq ' || max_done || ', fn=' || P_MATRIX_FN || ')';
@@ -1827,6 +1862,10 @@ DECLARE
     error_count INTEGER DEFAULT 0;
     sample_error VARCHAR DEFAULT '';
     rs RESULTSET;
+    wait_attempt INTEGER DEFAULT 0;
+    max_wait_attempts INTEGER DEFAULT 20;
+    profile_ready BOOLEAN DEFAULT FALSE;
+    status_json VARIANT;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
@@ -1846,7 +1885,38 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
     END;
-    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+
+    EXECUTE IMMEDIATE 'UPDATE travel_matrix.MATRIX_BUILD_JOBS SET MESSAGE=''Waiting for ORS profile ' || P_PROFILE || ' to become ready...'' WHERE JOB_ID=''' || P_JOB_ID || '''';
+
+    WHILE (wait_attempt < max_wait_attempts AND NOT profile_ready) DO
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
+        wait_attempt := wait_attempt + 1;
+        BEGIN
+            LET is_default BOOLEAN := (UPPER(P_REGION) IN ('DEFAULT', 'SAN_FRANCISCO'));
+            IF (is_default) THEN
+                rs := (SELECT PARSE_JSON(TO_VARCHAR(core.ORS_STATUS())) AS S);
+            ELSE
+                rs := (EXECUTE IMMEDIATE 'SELECT PARSE_JSON(TO_VARCHAR(core.ORS_STATUS(''' || P_REGION || '''))) AS S');
+            END IF;
+            LET cs CURSOR FOR rs;
+            FOR r IN cs DO
+                status_json := r.S;
+            END FOR;
+            IF (status_json:profiles IS NOT NULL AND status_json:profiles[P_PROFILE] IS NOT NULL) THEN
+                profile_ready := TRUE;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END WHILE;
+
+    LET wait_secs INTEGER := wait_attempt * 15;
+
+    IF (NOT profile_ready) THEN
+        EXECUTE IMMEDIATE 'UPDATE travel_matrix.MATRIX_BUILD_JOBS SET STATUS=''ERROR'', ERROR_MSG=''ORS profile ' || P_PROFILE || ' not ready after ' || wait_secs || ' seconds. Service may need more time to load graphs.'', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=''' || P_JOB_ID || '''';
+        RETURN 'Job ' || :P_JOB_ID || ' failed: profile ' || :P_PROFILE || ' not ready';
+    END IF;
+
+    EXECUTE IMMEDIATE 'UPDATE travel_matrix.MATRIX_BUILD_JOBS SET MESSAGE=''ORS profile ' || P_PROFILE || ' ready after ' || wait_secs || 's'' WHERE JOB_ID=''' || P_JOB_ID || '''';
 
     CALL core.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
 
@@ -1864,7 +1934,17 @@ BEGIN
     SET STAGE='BUILDING', WORK_QUEUE_ROWS=:queue_count
     WHERE JOB_ID = :P_JOB_ID;
 
-    EXECUTE IMMEDIATE 'CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(''' || P_RES || ''', 1, ' || queue_count || ', ''' || P_MATRIX_FN || ''', ''' || P_REGION || ''', ''' || P_PROFILE || ''')';
+    LET parallel_count INTEGER := 4;
+    LET chunk_size INTEGER := GREATEST(CEIL(queue_count / parallel_count), 1);
+    LET chunk_start INTEGER := 1;
+    LET chunk_end INTEGER;
+
+    WHILE (chunk_start <= queue_count) DO
+        chunk_end := LEAST(chunk_start + chunk_size - 1, queue_count);
+        ASYNC (CALL core.BUILD_TRAVEL_TIME_RANGE_REGION(:P_RES, :chunk_start, :chunk_end, :P_MATRIX_FN, :P_REGION, :P_PROFILE));
+        chunk_start := chunk_end + 1;
+    END WHILE;
+    AWAIT ALL;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
     LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_count := r.CNT; END FOR;
