@@ -104,6 +104,54 @@ Key rules:
 - **Deploy Streamlit without `OR REPLACE`** — always use `CREATE OR REPLACE STREAMLIT`
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
+- **Run CREATE PROCEDURE/TABLE/FUNCTION directly in OPENROUTESERVICE_NATIVE_APP** — objects created as ACCOUNTADMIN are invisible to the app context and will cause runtime errors
+
+## ORS Native App Deployment Rules
+
+ALL changes to the ORS native app schema (procedures, tables, functions) MUST go through the setup_script upgrade flow. Never create objects directly via SQL.
+
+```bash
+# The ONLY way to deploy setup_script.sql changes:
+cd build-routing-solution/Native_app
+./deploy.sh [connection_name]    # defaults to fleet_test_evals
+```
+
+Key facts:
+- The active `setup_script.sql` lives at the **stage root** (`@...STAGE/setup_script.sql`), NOT in `app/`
+- The `manifest.yml` references `setup_script: setup_script.sql` (root-relative)
+- `deploy.sh` uploads setup_script.sql, manifest.yml, and service YAMLs to stage, removes stale copies, upgrades, and checks for ACCOUNTADMIN-owned objects
+- If you see ACCOUNTADMIN-owned objects after upgrade, DROP them — they shadow or conflict with app-owned objects
+
+## Control App Image Deployment (ors_control_app)
+
+When changing server code (e.g., `server/index.ts`), you must rebuild and push the Docker image:
+
+```bash
+cd build-routing-solution/Native_app/services/ors_control_app
+
+# 1. Edit BOTH source and compiled files:
+#    - server/index.ts (source)
+#    - dist-server/index.js (compiled — this is what runs in SPCS)
+
+# 2. Build (bump version from current):
+docker build --platform linux/amd64 -t pm-fleet-test.registry.snowflakecomputing.com/openrouteservice_setup/public/image_repository/ors_control_app:vX.Y.Z .
+
+# 3. Login if needed:
+snow spcs image-registry login -c fleet_test_evals
+
+# 4. Push:
+docker push pm-fleet-test.registry.snowflakecomputing.com/openrouteservice_setup/public/image_repository/ors_control_app:vX.Y.Z
+
+# 5. Update version in these files:
+#    - services/ors_control_app/ors_control_app_service.yaml (image tag)
+#    - app/manifest.yml (container_services.images list)
+
+# 6. Deploy (uploads all YAMLs + upgrades app):
+cd ../..
+./deploy.sh
+```
+
+The app upgrade (`ALTER APPLICATION ... UPGRADE`) re-creates the ORS_CONTROL_APP service, which picks up the new image tag from the service YAML.
 
 ## Skill Dependency Graph
 

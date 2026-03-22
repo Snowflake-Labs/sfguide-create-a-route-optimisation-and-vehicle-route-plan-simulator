@@ -43,16 +43,17 @@ const PROFILE_LABELS: Record<string, string> = {
 };
 
 const FUNCTIONS = [
-  { name: 'DIRECTIONS', sig: '(method, start, end)' },
-  { name: 'DIRECTIONS_GEO', sig: '(method, start, end) → TABLE' },
-  { name: 'ISOCHRONES', sig: '(method, lon, lat, range)' },
-  { name: 'ISOCHRONES_GEO', sig: '(method, lon, lat, range) → TABLE' },
-  { name: 'OPTIMIZATION', sig: '(jobs, vehicles)' },
-  { name: 'OPTIMIZATION_GEO', sig: '(jobs, vehicles) → TABLE' },
-  { name: 'MATRIX', sig: '(method, locations)' },
-  { name: 'MATRIX_TABULAR', sig: '(method, origin, destinations)' },
-  { name: 'ORS_STATUS', sig: '()' },
+  { name: 'DIRECTIONS', sig: '([region,] method, start, end)' },
+  { name: 'DIRECTIONS_GEO', sig: '([region,] method, start, end) → TABLE' },
+  { name: 'ISOCHRONES', sig: '([region,] method, lon, lat, range)' },
+  { name: 'ISOCHRONES_GEO', sig: '([region,] method, lon, lat, range) → TABLE' },
+  { name: 'OPTIMIZATION', sig: '([region,] jobs, vehicles)' },
+  { name: 'OPTIMIZATION_GEO', sig: '([region,] jobs, vehicles) → TABLE' },
+  { name: 'MATRIX', sig: '([region,] method, locations)' },
+  { name: 'MATRIX_TABULAR', sig: '([region,] method, origin, destinations)' },
+  { name: 'ORS_STATUS', sig: '([region])' },
   { name: 'CHECK_HEALTH', sig: '() → BOOLEAN' },
+  { name: 'LIST_REGIONS', sig: '() → TABLE' },
 ];
 
 function bboxCenter(bbox: CityOption['bbox']): [number, number] {
@@ -67,12 +68,11 @@ function offsetPoint(center: [number, number], dlat: number, dlon: number): [num
   return [+(center[0] + dlon).toFixed(4), +(center[1] + dlat).toFixed(4)];
 }
 
-function fnSuffix(city: CityOption | null, baseName: string): string {
-  if (!city || city.isDefault || city.region === 'default') return baseName;
-  return `${baseName}_${city.region.toUpperCase()}`;
+function isRegionCity(city: CityOption | null): boolean {
+  return !!(city && !city.isDefault && city.region !== 'default');
 }
 
-function generateSql(fnName: string, city: CityOption | null, profile: string = 'driving-car'): string {
+function generateSql(fnName: string, city: CityOption | null, profile: string = 'driving-car', db: string = ''): string {
   const bbox = city?.bbox;
   const center = bboxCenter(bbox);
   const start = offsetPoint(center, -0.005, -0.005);
@@ -81,29 +81,34 @@ function generateSql(fnName: string, city: CityOption | null, profile: string = 
   const job2 = offsetPoint(center, 0.004, 0.004);
   const depot = offsetPoint(center, -0.008, 0.002);
   const dest2 = offsetPoint(center, 0.008, -0.003);
-  const name = fnSuffix(city, fnName);
+  const rp = isRegionCity(city) ? `'${city!.region}', ` : '';
+  const p = db ? `${db}.CORE` : 'CORE';
 
   switch (fnName) {
+    case 'LIST_REGIONS':
+      return `SELECT * FROM TABLE(${p}.LIST_REGIONS())`;
     case 'ORS_STATUS':
-      return `SELECT CORE.ORS_STATUS()`;
+      return isRegionCity(city)
+        ? `SELECT ${p}.ORS_STATUS('${city!.region}')`
+        : `SELECT ${p}.ORS_STATUS()`;
     case 'CHECK_HEALTH':
-      return `SELECT CORE.CHECK_HEALTH()`;
+      return `SELECT ${p}.CHECK_HEALTH()`;
     case 'DIRECTIONS':
-      return `SELECT CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}))`;
+      return `SELECT ${p}.DIRECTIONS(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}))`;
     case 'DIRECTIONS_GEO':
-      return `SELECT * FROM TABLE(CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
+      return `SELECT * FROM TABLE(${p}.DIRECTIONS_GEO(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
     case 'ISOCHRONES':
-      return `SELECT CORE.${name}('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10)`;
+      return `SELECT ${p}.ISOCHRONES(${rp}'${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10)`;
     case 'ISOCHRONES_GEO':
-      return `SELECT * FROM TABLE(CORE.${name}('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
+      return `SELECT * FROM TABLE(${p}.ISOCHRONES_GEO(${rp}'${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
     case 'MATRIX':
-      return `SELECT CORE.${name}('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
+      return `SELECT ${p}.MATRIX(${rp}'${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
     case 'MATRIX_TABULAR':
-      return `SELECT CORE.${name}('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
+      return `SELECT ${p}.MATRIX_TABULAR(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
     case 'OPTIMIZATION':
-      return `SELECT CORE.${name}(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n)`;
+      return `SELECT ${p}.OPTIMIZATION(${rp}\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n)`;
     case 'OPTIMIZATION_GEO':
-      return `SELECT * FROM TABLE(CORE.${name}(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n))`;
+      return `SELECT * FROM TABLE(${p}.OPTIMIZATION_GEO(${rp}\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n))`;
     default:
       return '';
   }
@@ -355,6 +360,7 @@ export default function FunctionTester() {
   const [selectedProfile, setSelectedProfile] = useState('driving-car');
   const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
+  const [sfDatabase, setSfDatabase] = useState('');
   const [sqlInput, setSqlInput] = useState('SELECT CORE.ORS_STATUS()');
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -363,6 +369,13 @@ export default function FunctionTester() {
 
   useEffect(() => {
     (async () => {
+      let db = '';
+      try {
+        const cr = await fetch('/api/config');
+        const cfg = await cr.json();
+        db = cfg.database || '';
+        setSfDatabase(db);
+      } catch {}
       try {
         const r = await fetch('/api/cities');
         const data = await r.json();
@@ -371,7 +384,7 @@ export default function FunctionTester() {
         const def = cityList.find((c) => c.isDefault) || cityList[0];
         if (def) {
           setSelectedCity(def);
-          setSqlInput(generateSql('ORS_STATUS', def));
+          setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
         }
       } catch {}
     })();
@@ -380,11 +393,14 @@ export default function FunctionTester() {
   const fetchProfiles = useCallback(async (city: CityOption | null) => {
     setProfilesLoading(true);
     try {
-      const statusFn = fnSuffix(city, 'ORS_STATUS');
+      const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
+      const statusSql = isRegionCity(city)
+        ? `SELECT ${pfx}.ORS_STATUS('${city!.region}')`
+        : `SELECT ${pfx}.ORS_STATUS()`;
       const resp = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: `SELECT CORE.${statusFn}()` }),
+        body: JSON.stringify({ sql: statusSql }),
       });
       const data = await resp.json();
       if (data.result?.[0]) {
@@ -396,7 +412,7 @@ export default function FunctionTester() {
             setAvailableProfiles(names);
             if (!names.includes(selectedProfile)) {
               setSelectedProfile(names[0]);
-              setSqlInput(generateSql(selectedFn, city, names[0]));
+              setSqlInput(generateSql(selectedFn, city, names[0], sfDatabase));
             }
             setProfilesLoading(false);
             return;
@@ -406,7 +422,7 @@ export default function FunctionTester() {
     } catch {}
     setAvailableProfiles([]);
     setProfilesLoading(false);
-  }, [selectedFn, selectedProfile]);
+  }, [selectedFn, selectedProfile, sfDatabase]);
 
   useEffect(() => {
     if (selectedCity) fetchProfiles(selectedCity);
@@ -415,18 +431,18 @@ export default function FunctionTester() {
   const onCityChange = useCallback((region: string) => {
     const city = cities.find((c) => c.region === region) || null;
     setSelectedCity(city);
-    setSqlInput(generateSql(selectedFn, city, selectedProfile));
-  }, [cities, selectedFn, selectedProfile]);
+    setSqlInput(generateSql(selectedFn, city, selectedProfile, sfDatabase));
+  }, [cities, selectedFn, selectedProfile, sfDatabase]);
 
   const onFnChange = useCallback((fnName: string) => {
     setSelectedFn(fnName);
-    setSqlInput(generateSql(fnName, selectedCity, selectedProfile));
-  }, [selectedCity, selectedProfile]);
+    setSqlInput(generateSql(fnName, selectedCity, selectedProfile, sfDatabase));
+  }, [selectedCity, selectedProfile, sfDatabase]);
 
   const onProfileChange = useCallback((profile: string) => {
     setSelectedProfile(profile);
-    setSqlInput(generateSql(selectedFn, selectedCity, profile));
-  }, [selectedCity, selectedFn]);
+    setSqlInput(generateSql(selectedFn, selectedCity, profile, sfDatabase));
+  }, [selectedCity, selectedFn, sfDatabase]);
 
   const executeQuery = useCallback(async () => {
     setRunning(true);

@@ -15,6 +15,7 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
+GATEWAY_VERSION = 'v0.9.4'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -53,7 +54,7 @@ def _parse_rows(message):
 
 @app.get("/health")
 def readiness_probe():
-    return "OK"
+    return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': ORS_HOST, 'vroom_host': VROOM_HOST}
 
 
 def _get_ors_status(ors_host=None):
@@ -138,8 +139,71 @@ def region_health(region):
     }
 
 
-def _handle_optimization_tabular(input_rows, vroom_host_override=None):
+def _compute_matrices_from_ors(locations, profile, ors_host):
+    body = {
+        'locations': locations,
+        'metrics': ['distance', 'duration'],
+    }
+    endpoint = f'{ORS_API_PATH}/matrix/{profile}'
+    if not endpoint.startswith('/'):
+        endpoint = '/' + endpoint
+    url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
+    logger.info(f'Pre-computing matrix from regional ORS: {url} with {len(locations)} locations')
+    try:
+        r = requests.post(url=url, headers={'Content-Type': 'application/json'}, json=body, timeout=120)
+        data = r.json()
+        if 'durations' in data and 'distances' in data:
+            durations = [[round(v) if v is not None else 0 for v in row] for row in data['durations']]
+            costs = [[round(v) if v is not None else 0 for v in row] for row in data['distances']]
+            return {'durations': durations, 'costs': costs}
+        if 'error' in data:
+            logger.error(f'ORS matrix error: {data}')
+            return None
+        return None
+    except Exception as e:
+        logger.error(f'Failed to pre-compute matrix from {ors_host}: {e}')
+        return None
+
+
+def _collect_locations(jobs, vehicles):
+    locs = []
+    indices = {}
+    for item in (jobs or []) + (vehicles or []):
+        if not isinstance(item, dict):
+            continue
+        for key in ['location', 'start', 'end']:
+            loc = item.get(key)
+            if loc and isinstance(loc, list) and len(loc) == 2:
+                t = tuple(loc)
+                if t not in indices:
+                    indices[t] = len(locs)
+                    locs.append(list(t))
+    return locs, indices
+
+
+def _remap_indices(jobs, vehicles, indices):
+    for item in (jobs or []):
+        if isinstance(item, dict) and 'location' in item:
+            t = tuple(item['location'])
+            if t in indices:
+                item['location_index'] = indices[t]
+                del item['location']
+    for item in (vehicles or []):
+        if not isinstance(item, dict):
+            continue
+        for key, idx_key in [('start', 'start_index'), ('end', 'end_index')]:
+            if key in item:
+                t = tuple(item[key])
+                if t in indices:
+                    item[idx_key] = indices[t]
+                    del item[key]
+
+
+def _handle_optimization_tabular(input_rows, ors_host_override=None):
+    _collected_locs = []
+
     def build_vroom_payload(row):
+        _collected_locs.clear()
         vehicles = row[2]
         for v in vehicles:
             if isinstance(v, dict) and 'profile' not in v:
@@ -153,9 +217,77 @@ def _handle_optimization_tabular(input_rows, vroom_host_override=None):
             elif isinstance(matrices, list) and len(matrices) > 0:
                 payload['matrices'] = matrices[0] if len(matrices) == 1 and isinstance(matrices[0], dict) else matrices
                 payload['options'] = {'g': False}
+        if ors_host_override and ors_host_override != ORS_HOST and 'matrices' not in payload:
+            jobs = payload.get('jobs', [])
+            vehs = payload.get('vehicles', [])
+            profile = 'driving-car'
+            for v in vehs:
+                if isinstance(v, dict) and 'profile' in v:
+                    profile = v['profile']
+                    break
+            locs, loc_indices = _collect_locations(jobs, vehs)
+            if len(locs) >= 2:
+                computed = _compute_matrices_from_ors(locs, profile, ors_host_override)
+                if computed:
+                    _remap_indices(jobs, vehs, loc_indices)
+                    payload['matrices'] = {profile: computed}
+                    payload['options'] = {'g': False}
+                    _collected_locs.extend(locs)
+                    logger.info(f'Injected pre-computed {len(locs)}x{len(locs)} matrix for {ors_host_override}')
+                else:
+                    logger.warning(f'Matrix pre-computation failed for {ors_host_override}, VROOM will use default ORS')
         return payload
 
-    return [[row[0], get_vroom_response(build_vroom_payload(row))] for row in input_rows]
+    results = []
+    for row in input_rows:
+        resp = get_vroom_response(build_vroom_payload(row))
+        if ors_host_override and 'routes' in resp:
+            needs_geo = any('geometry' not in r for r in resp['routes'])
+            if needs_geo:
+                profile = 'driving-car'
+                for v in (row[2] if len(row) > 2 else []):
+                    if isinstance(v, dict) and 'profile' in v:
+                        profile = v['profile']
+                        break
+                _reconstruct_geometry(resp['routes'], profile, ors_host_override, list(_collected_locs))
+        results.append([row[0], resp])
+    return results
+
+
+def _reconstruct_geometry(routes, profile, ors_host, locations=None):
+    for route in routes:
+        if 'geometry' in route:
+            continue
+        coords = []
+        for step in route.get('steps', []):
+            loc = step.get('location')
+            if not loc and 'location_index' in step and locations:
+                idx = step['location_index']
+                if 0 <= idx < len(locations):
+                    loc = locations[idx]
+            if loc and isinstance(loc, list) and len(loc) == 2:
+                coords.append(loc)
+        if len(coords) >= 2:
+            try:
+                body = {'coordinates': coords}
+                endpoint = f'{ORS_API_PATH}/directions/{profile}/geojson'
+                if not endpoint.startswith('/'):
+                    endpoint = '/' + endpoint
+                url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
+                r = requests.post(url=url, headers={'Content-Type': 'application/json'}, json=body, timeout=30)
+                data = r.json()
+                if 'features' in data and len(data['features']) > 0:
+                    geom = data['features'][0].get('geometry', {})
+                    route['geometry'] = geom.get('coordinates', coords)
+                else:
+                    route['geometry'] = coords
+            except Exception as e:
+                logger.warning(f'Geometry reconstruction failed for route {route.get("vehicle")}: {e}')
+                route['geometry'] = coords
+        elif len(coords) == 1:
+            route['geometry'] = [coords[0], coords[0]]
+        else:
+            route['geometry'] = []
 
 
 @app.post("/optimization_tabular")
@@ -188,11 +320,13 @@ def post_optimization_tabular_region():
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
+    region = input_rows[0][1] if input_rows else None
+    ors_host = resolve_ors_host(region) if region else ORS_HOST
     shifted_rows = []
     for row in input_rows:
         shifted = [row[0]] + list(row[2:])
         shifted_rows.append(shifted)
-    output_rows = _handle_optimization_tabular(shifted_rows)
+    output_rows = _handle_optimization_tabular(shifted_rows, ors_host_override=ors_host)
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
@@ -608,14 +742,18 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
             'error': 'connection_failed',
             'message': f'Cannot connect to ORS{region_hint}. '
                        f'Region may not be provisioned or service is suspended. '
-                       f'Use ORS_STATUS(region) to check or SETUP_CITY_ORS(region) to provision.',
+                       f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
+                       f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
+                       f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
             'ors_host': host
         }
     except requests.exceptions.Timeout:
         logger.error(f'ORS request timed out on {host}')
         return {
             'error': 'timeout',
-            'message': f'ORS request timed out on {host}. Try reducing batch size or check if graphs are still building.',
+            'message': f'ORS request timed out on {host}. '
+                       f'Possible causes: graphs still loading after resume (~2-3 min), '
+                       f'or request too large. Try reducing batch size or check ORS_STATUS().',
             'ors_host': host
         }
 

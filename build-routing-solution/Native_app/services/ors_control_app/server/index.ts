@@ -108,7 +108,7 @@ function snowSqlLocal(sql: string): any[] {
 
 async function snowSqlSpcs(sql: string, timeoutSecs: number = 600): Promise<any[]> {
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: timeoutSecs, database: SF_DATABASE, warehouse: SF_WAREHOUSE };
+  const body = { statement: sql, timeout: timeoutSecs, database: SF_DATABASE, schema: 'CORE', warehouse: SF_WAREHOUSE };
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -175,14 +175,98 @@ app.get('/api/status', async (_req, res) => {
   }
 });
 
+app.get('/api/config', (_req, res) => {
+  res.json({ database: SF_DATABASE });
+});
+
+const APP_VERSION = '1.0.25';
+
 app.get('/api/health', async (_req, res) => {
+  const result: Record<string, any> = { healthy: false, version: APP_VERSION, services: {} };
   try {
-    const rows = await runSql(`SELECT ${SF_DATABASE}.CORE.CHECK_HEALTH() AS H`);
-    res.json({ healthy: rows?.[0]?.H === 'true' || rows?.[0]?.H === true || rows?.[0]?.H === 'TRUE' });
-  } catch (err: any) {
-    console.error(`[/api/health] Error: ${err.message}`);
-    res.json({ healthy: false });
+    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.ORS_SERVICE')) AS S`);
+    const raw = statusRows?.[0]?.S;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (Array.isArray(parsed)) {
+      result.services.ors = parsed[0]?.status || 'UNKNOWN';
+    }
+  } catch { result.services.ors = 'ERROR'; }
+
+  try {
+    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.ROUTING_GATEWAY_SERVICE')) AS S`);
+    const raw = statusRows?.[0]?.S;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (Array.isArray(parsed)) {
+      result.services.gateway = parsed[0]?.status || 'UNKNOWN';
+    }
+  } catch { result.services.gateway = 'ERROR'; }
+
+  try {
+    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.VROOM_SERVICE')) AS S`);
+    const raw = statusRows?.[0]?.S;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (Array.isArray(parsed)) {
+      result.services.vroom = parsed[0]?.status || 'UNKNOWN';
+    }
+  } catch { result.services.vroom = 'ERROR'; }
+
+  try {
+    const versionRows = await runSql(`SELECT COMPONENT, VERSION FROM ${SF_DATABASE}.CORE.VERSION_INFO`);
+    if (versionRows?.length) {
+      result.versions = {};
+      for (const row of versionRows) {
+        result.versions[row.COMPONENT || row.component] = row.VERSION || row.version;
+      }
+    }
+  } catch {}
+
+  result.healthy = result.services.ors === 'READY' && result.services.gateway === 'READY';
+  res.json(result);
+});
+
+app.get('/api/ors-readiness', async (_req, res) => {
+  const readiness: Record<string, any> = {};
+  try {
+    const defaultRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
+    const raw = defaultRows?.[0]?.S;
+    if (raw) {
+      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      readiness['default'] = {
+        service_ready: data.service_ready ?? false,
+        profiles: Object.keys(data.profiles || {}),
+        graphs: Object.entries(data.bounds_info || {}).map(([p, v]: [string, any]) => ({
+          profile: p, ready: v.ready ?? false, build_date: v.graph_build_date,
+        })),
+      };
+    }
+  } catch (e: any) {
+    readiness['default'] = { service_ready: false, error: e.message };
   }
+
+  try {
+    const cities = JSON.parse(await callProcedure('LIST_CITIES()') || '[]');
+    for (const city of cities) {
+      const safeRegion = sanitizeIdentifier(city.region);
+      try {
+        const rows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
+        const raw = rows?.[0]?.S;
+        if (raw) {
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          readiness[city.region] = {
+            service_ready: data.service_ready ?? false,
+            profiles: Object.keys(data.profiles || {}),
+            graphs: Object.entries(data.bounds_info || {}).map(([p, v]: [string, any]) => ({
+              profile: p, ready: v.ready ?? false, build_date: v.graph_build_date,
+            })),
+          };
+        }
+      } catch (e: any) {
+        readiness[city.region] = { service_ready: false, error: e.message };
+      }
+    }
+  } catch {}
+
+  res.json(readiness);
 });
 
 app.post('/api/resume', async (_req, res) => {
@@ -252,8 +336,6 @@ app.get('/api/cities', async (_req, res) => {
   }
 });
 
-const provisionStates: Record<string, any> = {};
-
 app.post('/api/cities/provision', async (req, res) => {
   const { city, region, pbf_url, bbox, profiles } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
@@ -277,68 +359,74 @@ app.post('/api/cities/provision', async (req, res) => {
   const minLon = sanitizeFloat(bbox.minLon);
   const maxLon = sanitizeFloat(bbox.maxLon);
 
-  provisionStates[safeRegion] = { status: 'started', phase: 'downloading_pbf' };
-  res.json({ status: 'started' });
+  const defaultProfiles = 'driving-car,driving-hgv,cycling-electric';
+  const validProfiles = ['driving-car', 'driving-hgv', 'cycling-regular', 'cycling-road', 'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'];
+  const selectedProfiles = Array.isArray(profiles)
+    ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
+    : defaultProfiles;
+  const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
 
-  (async () => {
-    try {
-      provisionStates[safeRegion] = { status: 'running', phase: 'downloading_pbf', message: 'Downloading PBF file...' };
-      await runSql(`INSERT INTO ${SF_DATABASE}.CORE.CITY_ORS_MAP (REGION, DISPLAY_NAME, PBF_URL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS) VALUES ('${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, 'PROVISIONING')`);
+  const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
-      try {
-        const pbfFilename = escapeString((pbf_url || '').split('/').pop() || 'data.osm.pbf');
-        await runSql(`SELECT ${SF_DATABASE}.CORE.DOWNLOAD('ors_spcs_stage/${safeRegion}', '${pbfFilename}', '${safePbfUrl}')`);
-      } catch {}
+  try {
+    await runSql(`INSERT INTO ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE) VALUES ('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', '${safeProfiles}', 'PENDING', 'NOT_STARTED')`);
+  } catch (err: any) {
+    return res.status(500).json({ error: `Failed to create job: ${err.message}` });
+  }
 
-      provisionStates[safeRegion] = { status: 'running', phase: 'creating_service', message: 'Writing ORS config...' };
-      const pbfFile = escapeString((pbf_url || '').split('/').pop() || 'data.osm.pbf');
-      const defaultProfiles = 'driving-car,driving-hgv,cycling-electric';
-      const validProfiles = ['driving-car', 'driving-hgv', 'cycling-regular', 'cycling-road', 'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'];
-      const selectedProfiles = Array.isArray(profiles)
-        ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
-        : defaultProfiles;
-      const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
-      await callProcedure(`WRITE_ORS_CONFIG('${safeRegion}', '${pbfFile}', '${safeProfiles}')`);
+  res.json({ status: 'launched', job_id: jobId });
 
-      provisionStates[safeRegion] = { status: 'running', phase: 'creating_service', message: 'Creating ORS service...' };
-      await callProcedure(`SETUP_CITY_ORS('${safeRegion}')`);
-
-      provisionStates[safeRegion] = { status: 'running', phase: 'starting_service', message: 'Waiting for ORS service to start...' };
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 10000));
-        try {
-          const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion}' IN SCHEMA ${SF_DATABASE}.CORE`);
-          if (rows?.[0]?.status === 'RUNNING') break;
-        } catch {}
-      }
-
-      provisionStates[safeRegion] = { status: 'running', phase: 'building_graph', message: 'Service running — waiting for routing graph to load (this may take several minutes)...' };
-      const graphResult = await waitForOrsGraphReady(safeRegion, 600);
-      if (graphResult.ready) {
-        provisionStates[safeRegion] = { status: 'complete', phase: 'ready', message: `City provisioned — ${graphResult.profiles.length} profile(s) ready in ${graphResult.elapsed}s: ${graphResult.profiles.join(', ')}` };
-      } else {
-        provisionStates[safeRegion] = { status: 'complete', phase: 'ready', message: `City provisioned — service running but graph may still be loading (waited ${graphResult.elapsed}s). Check ORS_STATUS('${safeRegion}').` };
-      }
-    } catch (err: any) {
-      provisionStates[safeRegion] = { status: 'error', phase: '', error: err.message };
-    }
-  })();
+  try {
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_CITY_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}')`;
+    const handle = await submitSqlAsync(callSql);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
+  } catch (e: any) {
+    console.error(`[provision] async launch error: ${e.message}`);
+  }
 });
 
-app.get('/api/cities/:region/progress', (req, res) => {
+app.get('/api/cities/provision/status', async (_req, res) => {
+  try {
+    const result = await callProcedure('GET_PROVISION_STATUS()');
+    const jobs = JSON.parse(result || '[]');
+    res.json({ jobs });
+  } catch (err: any) {
+    res.json({ jobs: [], error: err.message });
+  }
+});
+
+app.get('/api/cities/:region/progress', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
-    res.json(provisionStates[safeRegion] || { status: 'idle', phase: '' });
-  } catch {
-    res.json({ status: 'idle', phase: '' });
-  }
+    const result = await callProcedure('GET_PROVISION_STATUS()');
+    const jobs = JSON.parse(result || '[]');
+    const job = jobs.find((j: any) => j.region === safeRegion && (j.status === 'RUNNING' || j.status === 'PENDING'));
+    if (job) {
+      res.json({ status: job.status === 'RUNNING' ? 'running' : job.status, phase: job.stage.toLowerCase(), message: job.message, error: job.error_msg });
+    } else {
+      const completed = jobs.find((j: any) => j.region === safeRegion);
+      res.json(completed ? { status: completed.status.toLowerCase(), phase: completed.stage.toLowerCase(), message: completed.message } : { status: 'idle', phase: '' });
+    }
+  } catch { res.json({ status: 'idle', phase: '' }); }
+});
+
+app.post('/api/cities/:region/cancel', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const result = await callProcedure('GET_PROVISION_STATUS()');
+    const jobs = JSON.parse(result || '[]');
+    const active = jobs.find((j: any) => j.region === safeRegion && (j.status === 'RUNNING' || j.status === 'PENDING'));
+    if (active?.statement_handle) await cancelStatement(active.statement_handle);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
+    res.json({ status: 'cancelled' });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/cities/:region', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const result = await callProcedure(`DROP_CITY_ORS('${safeRegion}')`);
-    delete provisionStates[safeRegion];
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
     res.json({ status: 'ok', result });
   } catch (err: any) {
     res.json({ status: 'error', error: err.message });
@@ -622,10 +710,10 @@ app.get('/api/matrix/inventory', async (_req, res) => {
     const tables = JSON.parse(result || '[]');
     const inventory = tables.map((t: any) => {
       const name = t.table_name || '';
-      const parts = name.match(/^(.+?)_([A-Z_]+?)_MATRIX_(RES\d+)$/);
+      const parts = name.match(/^(.+)_MATRIX_(RES\d+)$/);
       if (!parts) return null;
       const regionProfile = parts[1];
-      const resolution = parts[3];
+      const resolution = parts[2];
       const profileIdx = regionProfile.lastIndexOf('_DRIVING_') >= 0
         ? regionProfile.lastIndexOf('_DRIVING_')
         : regionProfile.lastIndexOf('_CYCLING_') >= 0

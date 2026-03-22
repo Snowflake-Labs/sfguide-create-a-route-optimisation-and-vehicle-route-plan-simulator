@@ -29,6 +29,12 @@ BEGIN
       WHEN OTHER THEN NULL;
    END;
 
+   BEGIN
+      CALL core.create_functions();
+   EXCEPTION
+      WHEN OTHER THEN NULL;
+   END;
+
    RETURN 'DONE';
 END;
 $$;
@@ -232,12 +238,94 @@ $$;
 
 GRANT USAGE ON PROCEDURE core.get_config_for_ref(STRING) TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE core.cleanup_legacy_functions()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+  fn_name VARCHAR;
+  fn_args VARCHAR;
+  drop_sql VARCHAR;
+  c CURSOR FOR
+    SELECT FUNCTION_NAME, ARGUMENT_SIGNATURE
+    FROM INFORMATION_SCHEMA.FUNCTIONS
+    WHERE FUNCTION_SCHEMA = 'CORE'
+      AND (
+        FUNCTION_NAME LIKE '%\_BERLIN' ESCAPE '\\'
+        OR FUNCTION_NAME LIKE '%\_MUNICH' ESCAPE '\\'
+        OR FUNCTION_NAME LIKE '%\_LONDON' ESCAPE '\\'
+        OR FUNCTION_NAME LIKE '%\_PARIS' ESCAPE '\\'
+        OR FUNCTION_NAME LIKE '%\_AMSTERDAM' ESCAPE '\\'
+      );
+BEGIN
+  FOR fn IN c DO
+    drop_sql := 'DROP FUNCTION IF EXISTS core.' || fn.FUNCTION_NAME || fn.ARGUMENT_SIGNATURE;
+    EXECUTE IMMEDIATE drop_sql;
+  END FOR;
+  RETURN 'Legacy per-city functions cleaned up';
+EXCEPTION
+  WHEN OTHER THEN RETURN 'Cleanup skipped: ' || SQLERRM;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.cleanup_legacy_functions() TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.pre_upgrade_cleanup()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+DECLARE
+  fn_name VARCHAR;
+  fn_args VARCHAR;
+  drop_sql VARCHAR;
+  dropped INT DEFAULT 0;
+  c CURSOR FOR
+    SELECT FUNCTION_NAME, ARGUMENT_SIGNATURE
+    FROM INFORMATION_SCHEMA.FUNCTIONS
+    WHERE FUNCTION_SCHEMA = 'CORE'
+      AND FUNCTION_OWNER != CURRENT_DATABASE();
+BEGIN
+  FOR fn IN c DO
+    BEGIN
+      drop_sql := 'DROP FUNCTION IF EXISTS core.' || fn.FUNCTION_NAME || fn.ARGUMENT_SIGNATURE;
+      EXECUTE IMMEDIATE drop_sql;
+      dropped := dropped + 1;
+    EXCEPTION
+      WHEN OTHER THEN NULL;
+    END;
+  END FOR;
+  RETURN 'Dropped ' || dropped || ' non-app-owned functions';
+EXCEPTION
+  WHEN OTHER THEN RETURN 'Pre-upgrade cleanup error: ' || SQLERRM;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.pre_upgrade_cleanup() TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS core.VERSION_INFO (
+  COMPONENT VARCHAR NOT NULL,
+  VERSION VARCHAR NOT NULL,
+  UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+  UPDATED_BY VARCHAR DEFAULT CURRENT_USER()
+)
+COMMENT = 'Tracks deployed versions of app components';
+GRANT SELECT ON TABLE core.VERSION_INFO TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE core.VERSION_INFO TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE core.VERSION_INFO TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE core.VERSION_INFO TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE PROCEDURE core.create_functions()
 RETURNS string
 LANGUAGE sql
 AS
 $$
 BEGIN
+   BEGIN
+     CALL core.cleanup_legacy_functions();
+   EXCEPTION
+     WHEN OTHER THEN NULL;
+   END;
+
    CREATE OR REPLACE FUNCTION core.DIRECTIONS (method varchar, jstart array, jend array)
       RETURNS VARIANT
       SERVICE=core.routing_gateway_service
@@ -521,11 +609,171 @@ BEGIN
       'SELECT REGION, DISPLAY_NAME, STATUS, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM core.CITY_ORS_MAP';
    GRANT USAGE ON FUNCTION core.LIST_REGIONS() TO APPLICATION ROLE app_user;
 
+   MERGE INTO core.VERSION_INFO t USING (SELECT 'setup_script' AS COMPONENT) s
+     ON t.COMPONENT = s.COMPONENT
+     WHEN MATCHED THEN UPDATE SET VERSION = '1.1.0', UPDATED_AT = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (COMPONENT, VERSION) VALUES ('setup_script', '1.1.0');
+
    RETURN 'Functions successfully created';
 END;
 $$;
 
 GRANT USAGE ON PROCEDURE core.create_functions() TO APPLICATION ROLE app_user;
+
+CREATE TABLE IF NOT EXISTS core.CITY_PROVISION_JOBS (
+    JOB_ID VARCHAR NOT NULL,
+    REGION VARCHAR NOT NULL,
+    DISPLAY_NAME VARCHAR,
+    PBF_URL VARCHAR,
+    PROFILES VARCHAR,
+    STATUS VARCHAR DEFAULT 'PENDING',
+    STAGE VARCHAR DEFAULT 'NOT_STARTED',
+    MESSAGE VARCHAR,
+    STATEMENT_HANDLE VARCHAR,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    STARTED_AT TIMESTAMP_NTZ,
+    COMPLETED_AT TIMESTAMP_NTZ,
+    ERROR_MSG VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
+GRANT SELECT ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.PROVISION_CITY_WRAPPER(
+    P_JOB_ID VARCHAR,
+    P_REGION VARCHAR,
+    P_DISPLAY_NAME VARCHAR,
+    P_PBF_URL VARCHAR,
+    P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT,
+    P_PROFILES VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    pbf_filename VARCHAR;
+    svc_name VARCHAR;
+    svc_status VARCHAR DEFAULT '';
+    status_raw VARCHAR;
+    status_json VARIANT;
+    profile_count INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    UPDATE core.CITY_PROVISION_JOBS
+    SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=CURRENT_TIMESTAMP(),
+        MESSAGE='Inserting city metadata and downloading PBF file...'
+    WHERE JOB_ID = :P_JOB_ID;
+
+    MERGE INTO core.CITY_ORS_MAP t USING (
+        SELECT :P_REGION AS REGION
+    ) s ON t.REGION = s.REGION
+    WHEN NOT MATCHED THEN INSERT (REGION, DISPLAY_NAME, PBF_URL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
+        VALUES (:P_REGION, :P_DISPLAY_NAME, :P_PBF_URL, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, 'PROVISIONING');
+
+    pbf_filename := SPLIT_PART(:P_PBF_URL, '/', -1);
+    IF (pbf_filename IS NULL OR pbf_filename = '') THEN
+        pbf_filename := 'data.osm.pbf';
+    END IF;
+    BEGIN
+        EXECUTE IMMEDIATE 'SELECT core.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    UPDATE core.CITY_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
+    CALL core.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
+
+    UPDATE core.CITY_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
+    CALL core.SETUP_CITY_ORS(:P_REGION);
+
+    UPDATE core.CITY_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
+    svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
+    FOR i IN 1 TO 60 DO
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA core';
+            rs := (EXECUTE IMMEDIATE 'SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))');
+            LET c1 CURSOR FOR rs;
+            FOR r IN c1 DO svc_status := r.S; END FOR;
+            IF (:svc_status = 'RUNNING') THEN
+                UPDATE core.CITY_PROVISION_JOBS SET MESSAGE='ORS service is RUNNING, waiting for graph...' WHERE JOB_ID = :P_JOB_ID;
+                BREAK;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    UPDATE core.CITY_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
+    FOR i IN 1 TO 40 DO
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT core.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
+            LET c2 CURSOR FOR rs;
+            FOR r IN c2 DO status_raw := r.S; END FOR;
+            status_json := TRY_PARSE_JSON(:status_raw);
+            IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
+                profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
+                IF (:profile_count > 0) THEN
+                    UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+                    UPDATE core.CITY_PROVISION_JOBS
+                    SET STATUS='COMPLETE', STAGE='READY',
+                        MESSAGE='City provisioned — ' || :profile_count || ' profile(s) ready',
+                        COMPLETED_AT=CURRENT_TIMESTAMP()
+                    WHERE JOB_ID = :P_JOB_ID;
+                    RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
+                END IF;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+    UPDATE core.CITY_PROVISION_JOBS
+    SET STATUS='COMPLETE', STAGE='READY',
+        MESSAGE='Service running but graph may still be loading. Check ORS_STATUS.',
+        COMPLETED_AT=CURRENT_TIMESTAMP()
+    WHERE JOB_ID = :P_JOB_ID;
+    RETURN 'Job ' || :P_JOB_ID || ' complete (graph may still be loading)';
+
+EXCEPTION
+    WHEN OTHER THEN
+        LET err_msg VARCHAR := SQLERRM;
+        UPDATE core.CITY_PROVISION_JOBS
+        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
+        WHERE JOB_ID = :P_JOB_ID;
+        RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.PROVISION_CITY_WRAPPER(VARCHAR, VARCHAR, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.GET_PROVISION_STATUS()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    result VARCHAR;
+BEGIN
+    SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+        'job_id', JOB_ID, 'region', REGION, 'display_name', COALESCE(DISPLAY_NAME, REGION),
+        'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
+        'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
+        'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
+        'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD HH24:MI:SS'),
+        'started_at', COALESCE(TO_VARCHAR(STARTED_AT, 'YYYY-MM-DD HH24:MI:SS'), ''),
+        'completed_at', COALESCE(TO_VARCHAR(COMPLETED_AT, 'YYYY-MM-DD HH24:MI:SS'), '')
+    )), ARRAY_CONSTRUCT())::VARCHAR INTO result
+    FROM core.CITY_PROVISION_JOBS
+    WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
+    ORDER BY CREATED_AT DESC;
+    RETURN result;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.GET_PROVISION_STATUS() TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.grant_callback(privileges array)
 RETURNS string
@@ -1380,19 +1628,28 @@ BEGIN
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
     target_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
 
-    EXECUTE IMMEDIATE 'DELETE FROM ' || target_table;
-
     EXECUTE IMMEDIATE '
-    INSERT INTO ' || target_table || ' (ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS)
+    CREATE OR REPLACE TABLE ' || target_table || '
+    CLUSTER BY (ORIGIN_H3)
+    COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''
+    AS
     SELECT
         r.ORIGIN_H3,
         r.DEST_HEX_IDS[f.INDEX]::VARCHAR AS DEST_H3,
         r.MATRIX_RESULT:durations[0][f.INDEX]::FLOAT AS TRAVEL_TIME_SECONDS,
-        r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS
+        r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS,
+        CURRENT_TIMESTAMP() AS CALCULATED_AT
     FROM ' || raw_table || ' r,
         LATERAL FLATTEN(input => r.MATRIX_RESULT:durations[0]) f
     WHERE r.MATRIX_RESULT:durations IS NOT NULL
-    ORDER BY r.ORIGIN_H3';
+      AND r.MATRIX_RESULT:durations[0][f.INDEX] IS NOT NULL';
+
+    BEGIN
+      EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
+      EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
+      EXECUTE IMMEDIATE 'GRANT DELETE ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table);
     LET c CURSOR FOR rs;
@@ -1545,8 +1802,8 @@ BEGIN
     END FOR;
 
     DELETE FROM travel_matrix.MATRIX_BUILD_JOBS
-    WHERE UPPER(REGION) = UPPER(P_REGION)
-      AND UPPER(REPLACE(PROFILE, '-', '_')) = safe_profile;
+    WHERE UPPER(REGION) = UPPER(:P_REGION)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = :safe_profile;
 
     RETURN 'Matrix tables dropped for ' || P_REGION || '/' || P_PROFILE;
 END;
@@ -1566,6 +1823,9 @@ DECLARE
     queue_count INTEGER DEFAULT 0;
     raw_count INTEGER DEFAULT 0;
     matrix_count INTEGER DEFAULT 0;
+    valid_count INTEGER DEFAULT 0;
+    error_count INTEGER DEFAULT 0;
+    sample_error VARCHAR DEFAULT '';
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -1608,6 +1868,41 @@ BEGIN
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
     LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_count := r.CNT; END FOR;
+
+    rs := (EXECUTE IMMEDIATE '
+        SELECT
+            COUNT(CASE WHEN MATRIX_RESULT:durations IS NOT NULL THEN 1 END) AS VALID_CNT,
+            COUNT(CASE WHEN MATRIX_RESULT:durations IS NULL THEN 1 END) AS ERROR_CNT
+        FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
+    LET c3b CURSOR FOR rs;
+    FOR r IN c3b DO
+        valid_count := r.VALID_CNT;
+        error_count := r.ERROR_CNT;
+    END FOR;
+
+    IF (error_count > 0 AND valid_count = 0) THEN
+        rs := (EXECUTE IMMEDIATE '
+            SELECT COALESCE(
+                MATRIX_RESULT:error:message::VARCHAR,
+                MATRIX_RESULT:metadata:engine:build_date::VARCHAR,
+                LEFT(MATRIX_RESULT::VARCHAR, 200)
+            ) AS ERR FROM ' || prefix || '_MATRIX_RAW_' || P_RES || ' LIMIT 1');
+        LET c3c CURSOR FOR rs;
+        FOR r IN c3c DO sample_error := r.ERR; END FOR;
+        UPDATE travel_matrix.MATRIX_BUILD_JOBS
+        SET STATUS='ERROR', STAGE='BUILDING',
+            ERROR_MSG='ORS returned errors for all ' || :raw_count || ' origins. Sample: ' || :sample_error,
+            RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
+        WHERE JOB_ID = :P_JOB_ID;
+        RETURN 'Job ' || :P_JOB_ID || ' failed: all ' || raw_count || ' ORS responses were errors';
+    END IF;
+
+    IF (error_count > 0) THEN
+        UPDATE travel_matrix.MATRIX_BUILD_JOBS
+        SET ERROR_MSG='Warning: ' || :error_count || ' of ' || :raw_count || ' origins returned ORS errors'
+        WHERE JOB_ID = :P_JOB_ID;
+    END IF;
+
     UPDATE travel_matrix.MATRIX_BUILD_JOBS
     SET STAGE='FLATTENING', RAW_ROWS=:raw_count, PCT_COMPLETE=100
     WHERE JOB_ID = :P_JOB_ID;
@@ -1616,6 +1911,16 @@ BEGIN
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_' || P_RES);
     LET c4 CURSOR FOR rs; FOR r IN c4 DO matrix_count := r.CNT; END FOR;
+
+    IF (matrix_count = 0 AND raw_count > 0) THEN
+        UPDATE travel_matrix.MATRIX_BUILD_JOBS
+        SET STATUS='ERROR', STAGE='FLATTENING',
+            ERROR_MSG='Flatten produced 0 pairs from ' || :raw_count || ' RAW rows (valid=' || :valid_count || ', errors=' || :error_count || ')',
+            RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
+        WHERE JOB_ID = :P_JOB_ID;
+        RETURN 'Job ' || :P_JOB_ID || ' failed: 0 pairs after flatten';
+    END IF;
+
     UPDATE travel_matrix.MATRIX_BUILD_JOBS
     SET STATUS='COMPLETE', STAGE='COMPLETE', MATRIX_ROWS=:matrix_count,
         RAW_ROWS=:raw_count, PCT_COMPLETE=100, COMPLETED_AT=CURRENT_TIMESTAMP()
@@ -1736,9 +2041,9 @@ BEGIN
     BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
 
     DELETE FROM travel_matrix.MATRIX_BUILD_JOBS
-    WHERE UPPER(REGION) = UPPER(P_REGION)
-      AND UPPER(REPLACE(PROFILE, '-', '_')) = safe_profile
-      AND UPPER(RESOLUTION) = UPPER(P_RES);
+    WHERE UPPER(REGION) = UPPER(:P_REGION)
+      AND UPPER(REPLACE(PROFILE, '-', '_')) = :safe_profile
+      AND UPPER(RESOLUTION) = UPPER(:P_RES);
 
     RETURN 'Deleted: ' || P_REGION || '/' || P_PROFILE || '/' || P_RES;
 END;

@@ -3,6 +3,19 @@ export interface ServiceInfo {
   status: string;
 }
 
+export interface OrsGraphInfo {
+  profile: string;
+  ready: boolean;
+  build_date?: string;
+}
+
+export interface OrsRegionReadiness {
+  service_ready: boolean;
+  profiles: string[];
+  graphs: OrsGraphInfo[];
+  error?: string;
+}
+
 export interface StatusResponse {
   compute_pool: string;
   services: ServiceInfo[];
