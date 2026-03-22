@@ -49,50 +49,15 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
 
 **Output:** Compute pool suspended
 
-### Step 2: Setup Download Notebook
+### Step 2: Download Map Data (replaces old Notebook workflow)
 
-**Goal:** Create required Notebook for map download
+**Goal:** Download OSM map data locally and upload to Snowflake stage
 
-**Actions:**
-
-1. **Execute** notebook setup SQL:
-   ```sql
-   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE
-   MODE = EGRESS
-   TYPE = HOST_PORT
-   VALUE_LIST = ('download.geofabrik.de:443', 'download.bbbike.org:443')
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-
-   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION DOWNLOAD_MAP_ACCESS_INTEGRATION
-   ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP_NETWORK_RULE)
-   ENABLED = TRUE
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   
-   CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL
-   MIN_NODES = 1
-   MAX_NODES = 2
-   INSTANCE_FAMILY = CPU_X64_S
-   AUTO_RESUME = TRUE
-   AUTO_SUSPEND_SECS = 600
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-
-   CREATE OR REPLACE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP
-   FROM '@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/Notebook'
-   QUERY_WAREHOUSE = 'ROUTING_ANALYTICS' 
-   RUNTIME_NAME = 'SYSTEM$BASIC_RUNTIME' 
-   COMPUTE_POOL = 'OPENROUTESERVICE_NATIVE_APP_NOTEBOOK_COMPUTE_POOL' 
-   MAIN_FILE = 'download_map.ipynb'
-   EXTERNAL_ACCESS_INTEGRATIONS = (DOWNLOAD_MAP_ACCESS_INTEGRATION)
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
-
-   ALTER NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP ADD LIVE VERSION FROM LAST;
-   ```
-
-**Output:** Download notebook created
+**Note:** This step no longer requires a Snowflake Notebook, compute pool, or external access integration. The download runs locally via a Python script.
 
 ### Step 3: Download Map Data
 
-**Goal:** Execute notebook to download OSM map data for target region
+**Goal:** Download OSM map data and upload to Snowflake stage
 
 **Actions:**
 
@@ -103,21 +68,22 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
    ```
    - If map exists, ask user if they want to re-download
 
-2. **Execute** download notebook:
-   ```sql
-   EXECUTE NOTEBOOK OPENROUTESERVICE_NATIVE_APP.CORE.DOWNLOAD_MAP(
-     url => '<URL>',
-     map_name => '<MAP_NAME>',
-     region_name => '<REGION_NAME>'
-   )
+2. **Run** the download script from `build-routing-solution/scripts/`:
+   ```bash
+   python download_map.py \
+     "https://download.geofabrik.de/europe/<region>-latest.osm.pbf" \
+     "<region>-latest.osm.pbf" \
+     "<region>" \
+     --connection <connection>
    ```
    
    **Parameters:**
-   - `url`: Link to OSM map (e.g., `'https://download.geofabrik.de/europe/switzerland-latest.osm.pbf'`)
-   - `map_name`: File name (e.g., `'switzerland-latest.osm.pbf'`)
-   - `region_name`: Region name (e.g., `'switzerland'`)
+   - First arg: URL of OSM PBF file (e.g., `https://download.geofabrik.de/europe/switzerland-latest.osm.pbf`)
+   - Second arg: File name (e.g., `switzerland-latest.osm.pbf`)
+   - Third arg: Region folder name on stage (e.g., `switzerland`)
+   - `--connection`: Snowflake connection name
    
-   **Timeout:** 12000 seconds (large maps take time)
+   **Note:** Large maps (>1GB) will take time to download. The script shows progress.
 
 3. **Check downloaded map size** and suggest resource scaling:
    ```sql

@@ -33,7 +33,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
-> All relative paths (e.g., `Native_app/`, `Notebook/`) are relative to the repository root directory.
+> All relative paths (e.g., `Native_app/`, `scripts/`) are relative to the `build-routing-solution/` directory.
 
 ## Configuration
 
@@ -130,8 +130,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    snow stage copy "Native_app/provider_setup/staged_files/ors-config.yml" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
 
-   snow stage copy "Notebook/download_map.ipynb" \
-   @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/Notebook/ --connection <connection> --overwrite
+   snow stage copy "scripts/download_map.py" \
+   @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
 
 **Output:** Configuration files uploaded to Snowflake stage
@@ -178,8 +178,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    
    # gateway image
    cd ../gateway
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.7.5 .
-   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.7.5
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.9.4 .
+   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.9.4
    
    # vroom image
    cd ../vroom
@@ -203,9 +203,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CMD ["node", "dist-server/index.js"]
    RTEOF
    mv .dockerignore .dockerignore.bak 2>/dev/null
-   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.18 .
+   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.27 .
    mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.18
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.27
    
    # return to working directory
    cd ../../..
@@ -214,9 +214,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 4. **Monitor** progress (builds 5 images):
    - openrouteservice:v9.0.0
    - downloader:v0.0.3
-   - routing_reverse_proxy:v0.7.5
+   - routing_reverse_proxy:v0.9.4
    - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.18
+   - ors_control_app:v1.0.27
 
 **Output:** All 5 container images pushed to Snowflake image repository
 
@@ -283,74 +283,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 ## Stopping Points
 
-- ✋ Step 2: After detecting container runtime - confirm user's choice if both available
-- ✋ Step 5: After starting container build - monitor for authentication errors
-- ✋ Step 6: After deployment - verify application created successfully
+- Step 2: After detecting container runtime — confirm user's choice if both available
+- Step 5: After starting container build — monitor for authentication errors
+- Step 6: After deployment — verify application created successfully
 
-## Common Issues
+## Troubleshooting
 
-### Container Runtime Not Running
-**Symptom:** "Cannot connect to the Docker daemon" or "Cannot connect to Podman"
-**Solution:** 
-- Podman: `podman machine start`
-- Docker: Start Docker Desktop application
-
-### Authentication Required
-**Symptom:** "unauthorized" or "authentication required" or "invalid username/password"
-**Solution:** 
-- Docker: Run `snow spcs image-registry login -c <connection>`
-- Podman: Use session token with password-stdin:
-  ```bash
-  REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
-  snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
-  ```
-
-### Wrong Directory Error
-**Symptom:** "cd: services/openrouteservice: No such file or directory"
-**Solution:** Ensure script runs from `Native_app/` directory, not `provider_setup/`
-
-### ARM Mac esbuild Crash (ors_control_app)
-**Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`
-**Solution:** Build the React app locally (native ARM) first, then use a runtime-only Dockerfile that copies the pre-built `dist/` and `dist-server/` directories. See Step 5 for the exact commands. Must temporarily rename `.dockerignore` since it excludes `dist/`.
-
-### Control App Shows ERROR / Unhealthy / 0 Services
-**Symptom:** React UI shows ERROR for compute pool, Unhealthy for ORS health, 0 running services
-**Solution:** Check service logs with `SYSTEM$GET_SERVICE_LOGS`. Common causes:
-1. **Missing warehouse grant:** Run `GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;`
-2. **Missing QUERY_WAREHOUSE:** Run `ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP SET QUERY_WAREHOUSE = ROUTING_ANALYTICS;`
-3. **`{{database}}` template not resolved:** SPCS does NOT resolve `{{database}}` in service spec env vars within Native App context. The service spec must hardcode the database name (`OPENROUTESERVICE_NATIVE_APP`), not use `{{database}}`.
-
-### Podman Registry Auth for Wrong Host
-**Symptom:** `podman push` fails with "unable to retrieve auth token: invalid username/password: unauthorized" even after `snow spcs image-registry login`
-**Solution:** `snow spcs image-registry login` may store credentials for the wrong registry hostname. Use the manual token approach with `--creds` flag:
-```bash
-REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
-TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
-podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.18
-```
-
-### Basemap Tiles Not Loading (ENOTFOUND / 502)
-**Symptom:** Map shows grey tiles, browser console shows 502 errors for `/api/tiles/`, service logs show `getaddrinfo ENOTFOUND a.basemaps.cartocdn.com`
-**Cause:** The CARTO basemap EAI (`external_access_carto_ref`) is not bound to the control app service, so SPCS cannot resolve DNS for `a.basemaps.cartocdn.com`.
-**Solution:**
-1. First check if the EAI reference was auto-provisioned during setup. If the app was installed before the CARTO EAI was added, manually create and bind it:
-   ```sql
-   CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_SETUP.PUBLIC.ORS_MAP_TILES_RULE
-       MODE = EGRESS TYPE = HOST_PORT
-       VALUE_LIST = ('a.basemaps.cartocdn.com:443', 'b.basemaps.cartocdn.com:443',
-                     'c.basemaps.cartocdn.com:443', 'd.basemaps.cartocdn.com:443');
-   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_MAP_TILES_EAI
-       ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_SETUP.PUBLIC.ORS_MAP_TILES_RULE) ENABLED = TRUE;
-   GRANT USAGE ON INTEGRATION ORS_MAP_TILES_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
-       'EXTERNAL_ACCESS_CARTO_REF', 'ADD',
-       SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_MAP_TILES_EAI', 'PERSISTENT', 'USAGE'));
-   ```
-2. Then recreate the control app to pick up the EAI (it must be present at service creation time):
-   ```sql
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.CREATE_CONTROL_APP();
-   ```
-**Key insight:** `ALTER SERVICE SET EXTERNAL_ACCESS_INTEGRATIONS` does NOT reliably enable DNS. The EAI must be present at `CREATE SERVICE` time. The `create_control_app` procedure now DROP+CREATEs the service to ensure this.
+See `references/troubleshooting.md` for detailed solutions to common issues:
+- Container runtime not running
+- Authentication / registry push failures
+- ARM Mac esbuild crash (ors_control_app)
+- Control app showing ERROR / Unhealthy / 0 Services
+- Podman registry auth for wrong host
+- Basemap tiles not loading (ENOTFOUND / 502)
 
 ## Output
 
@@ -360,80 +305,38 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
 
-### Default Routing Profiles
+See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
-| Profile | Enabled |
-|---------|--------|
-| driving-car | Yes |
-| driving-hgv | Yes |
-| cycling-electric | Yes |
+Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It may take a minute or two.
 
-All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walking, foot-hiking, wheelchair) are disabled by default. When provisioning new cities via the Cities tab, users can select which routing profiles to install using the profile checkboxes. Use the `routing-customization` skill to change profiles on the default (San Francisco) instance.
+## Examples
 
-### Default Service Limits
+### Example 1: Fresh deployment
+User says: "Set up the OpenRouteService native app from scratch"
+Actions:
+1. Detect container runtime (Step 2)
+2. Create database and stages (Step 3)
+3. Upload config files (Step 4)
+4. Build and push all 5 images (Step 5)
+5. Deploy native app (Step 6)
+6. Guide user through Snowsight activation (Step 7)
+Result: Fully operational ORS app with San Francisco routing
 
-| Setting | Value | Description |
-|---------|-------|-------------|
-| maximum_distance | 1,500 km | Max route distance for all profiles |
-| maximum_range_time (isochrones) | 18,000 s (5 hours) | Max isochrone travel time |
-| maximum_range_distance (isochrones) | 1,500 km | Max isochrone travel distance |
-| maximum_intervals (isochrones) | 10 | Max isochrone intervals per request |
-| maximum_routes (matrix) | 250,000 | Max matrix routes |
+### Example 2: Rebuild control app only
+User says: "Update the control app to latest version"
+Actions:
+1. Use the Fast Deploy shortcut: `cd Native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
+Result: Control app image rebuilt and deployed, app upgraded
 
-### Available Functions
-
-The app registers the following SQL functions in the `CORE` schema:
-
-**Scalar functions** (return VARIANT with full ORS JSON response):
-- `DIRECTIONS(method, jstart, jend)` / `DIRECTIONS(method, locations)`
-- `ISOCHRONES(method, lon, lat, range)`
-- `OPTIMIZATION(jobs, vehicles, matrices)` / `OPTIMIZATION(challenge)`
-- `MATRIX(method, sources, destinations)` / `MATRIX_TABULAR(...)`
-
-**GEO table functions** (return parsed GEOGRAPHY column alongside response):
-- `DIRECTIONS_GEO(method, jstart, jend)` → RESPONSE, GEOJSON, DISTANCE, DURATION
-- `DIRECTIONS_GEO(method, locations)` → RESPONSE, GEOJSON, DISTANCE, DURATION
-- `ISOCHRONES_GEO(method, lon, lat, range)` → RESPONSE, GEOJSON
-- `OPTIMIZATION_GEO(jobs, vehicles, matrices)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
-- `OPTIMIZATION_GEO(challenge)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
-
-The `_GEO` variants are table functions that parse the GeoJSON from ORS responses into Snowflake GEOGRAPHY columns, making it easy to use with spatial joins and visualization.
-
-**Lifecycle management procedures:**
-- `RESUME_ALL_SERVICES()` — Resumes all suspended services and the compute pool
-- `SUSPEND_ALL_SERVICES()` — Suspends all services except the control app
-- `SCALE_SERVICES(min, max)` — Scales ORS + gateway instances and pool nodes
-- `GET_STATUS()` — Returns JSON with compute pool state and all service statuses
-- `CHECK_HEALTH()` — Returns BOOLEAN, true if ORS gateway responds
-
-**Multi-city procedures:**
-- `SETUP_CITY_ORS(region)` — Provisions a new city with its own ORS service + functions
-- `DROP_CITY_ORS(region)` — Removes a city's service, functions, and metadata
-- `LIST_CITIES()` — Returns JSON array of all provisioned cities
-- City-specific functions: `DIRECTIONS_{REGION}`, `ISOCHRONES_{REGION}`, `MATRIX_{REGION}`, `OPTIMIZATION_{REGION}`
-
-**Travel time matrix procedures:**
-- `BUILD_MATRIX_FOR_REGION(res, min_lat, max_lat, min_lon, max_lon, matrix_fn, region, profile)` — End-to-end matrix build with parallel ASYNC workers
-- `BUILD_HEXAGONS(res, min_lat, max_lat, min_lon, max_lon, region, profile)` — Generates H3 hex grid using H3_POLYGON_TO_CELLS_STRINGS (native polygon coverage)
-- `BUILD_WORK_QUEUE(res, region, profile)` — Creates origin→destinations work queue with H3_GRID_DISK neighbors
-- `BUILD_TRAVEL_TIME_RANGE_REGION(res, start_seq, end_seq, matrix_fn, region, profile)` — Processes batch range with retry logic
-- `FLATTEN_MATRIX_RAW(res, region, profile)` — Flattens VARIANT results into travel time pairs (ORDER BY ORIGIN_H3)
-- `MATRIX_PROGRESS(region, profile)` — Returns JSON with per-resolution build status
-- `ENSURE_MATRIX_TABLES(region, profile, res)` — Creates region/profile-specific matrix tables if not exists
-
-**Matrix builder optimizations (v1.1):**
-- **H3_POLYGON_TO_CELLS_STRINGS**: Replaces brute-force CROSS JOIN grid generation with native Snowflake polygon-to-H3 coverage. Eliminates GENERATOR + SEQ4() + DISTINCT approach. ~10x faster hex generation.
-- **ASYNC/AWAIT parallel workers**: BUILD_MATRIX_FOR_REGION splits the work queue into 4 parallel chunks, each processed by an async BUILD_TRAVEL_TIME_RANGE_REGION call. Up to 4x faster ORS API throughput.
-- **ORDER BY ORIGIN_H3**: FLATTEN_MATRIX_RAW writes travel time pairs ordered by origin hex, ensuring optimal physical data layout for spatial queries and the Matrix Viewer.
-
-**Matrix Viewer (ORS Control App):**
-- Interactive deck.gl heatmap visualization of travel time matrices
-- SQL API v2 multi-partition pagination (handles 1M+ row matrices)
-- 5-minute discrete color gradient buckets
-- Region/resolution/profile selector with row count and build time display
-- Build Time column in Matrix Builder inventory
-
-Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It make take a minute or two.
+### Example 3: Update stored procedures only
+User says: "I changed setup_script.sql, deploy it"
+Actions:
+1. Upload setup_script.sql to stage and upgrade app:
+   ```sql
+   PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
+   ```
+Result: Stored procedures updated without container rebuild
 
 ## Fast Deploy (Control App Only)
 
