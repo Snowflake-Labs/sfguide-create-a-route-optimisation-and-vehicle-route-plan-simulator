@@ -53,3 +53,5 @@ privileges:
       description: "Execute tasks for background data processing"
   - EXECUTE MANAGED TASK:
       description: "Execute managed tasks for scheduled data pipelines"
+  - IMPORTED PRIVILEGES ON SNOWFLAKE DB:
+      description: "Required for Cortex AI agent, analyst, and LLM functions"

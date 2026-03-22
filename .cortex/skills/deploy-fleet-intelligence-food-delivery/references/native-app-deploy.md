@@ -146,21 +146,35 @@ ALTER APPLICATION FLEET_INTELLIGENCE_APP UPGRADE USING VERSION V1_2;
 
 ## Sub-step 2h: Grant Application Privileges
 
-These account-level grants allow the app to create infrastructure (compute pools, warehouses, services):
+All required privileges are declared in `manifest.yml`. After installation, the consumer
+is prompted to grant them via Snowsight or can grant them via SQL:
 
 ```sql
+-- Infrastructure privileges (declared in manifest.privileges)
 GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT CREATE WAREHOUSE ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT CREATE DATABASE ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT EXECUTE TASK ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
 GRANT EXECUTE MANAGED TASK ON ACCOUNT TO APPLICATION FLEET_INTELLIGENCE_APP;
+
+-- Cortex AI access (declared in manifest.privileges)
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION FLEET_INTELLIGENCE_APP;
 ```
 
-Grant Overture Maps marketplace data access:
+> **NOTE:** `IMPORTED PRIVILEGES ON SNOWFLAKE DB` is now declared in the manifest, so consumers
+> can grant it through the Snowsight UI prompt. This gives the app access to Cortex AI functions
+> (COMPLETE, AGENT, ANALYST) without needing the bridging role workaround.
+
+Bind Overture Maps databases (declared as references in manifest):
 ```sql
-GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION FLEET_INTELLIGENCE_APP;
-GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION FLEET_INTELLIGENCE_APP;
+CALL FLEET_INTELLIGENCE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+    'OVERTURE_PLACES_REF', 'ADD',
+    SYSTEM$REFERENCE('DATABASE', 'OVERTURE_MAPS__PLACES', 'PERSISTENT', 'IMPORTED PRIVILEGES'));
+
+CALL FLEET_INTELLIGENCE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+    'OVERTURE_ADDRESSES_REF', 'ADD',
+    SYSTEM$REFERENCE('DATABASE', 'OVERTURE_MAPS__ADDRESSES', 'PERSISTENT', 'IMPORTED PRIVILEGES'));
 ```
 
 Grant app roles to user roles:
@@ -169,12 +183,12 @@ GRANT APPLICATION ROLE FLEET_INTELLIGENCE_APP.APP_USER TO ROLE PUBLIC;
 GRANT APPLICATION ROLE FLEET_INTELLIGENCE_APP.ALL_AGENTS_ROLE TO ROLE PUBLIC;
 ```
 
-## Sub-step 2h-ii: Post-Install Cortex Agent Grants
+## Sub-step 2h-ii: Post-Install Cortex Agent Grants (DataOps / manual installs)
 
-> **CRITICAL:** The Cortex Agent requires a dedicated **regular Snowflake role** with Cortex database roles.
-> You CANNOT grant `IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` to an application, and granting
-> `DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION` does not work reliably on consumer instances.
-> The proven pattern is to create a regular role that bridges the Cortex database roles with the app roles.
+> **NOTE:** If the consumer granted `IMPORTED PRIVILEGES ON SNOWFLAKE DB` via the manifest prompt
+> (Sub-step 2h above), the bridging role below may not be strictly required. However, for
+> production DataOps deployments or if the manifest grant alone is insufficient, create the
+> bridging role as a belt-and-braces approach.
 
 ```sql
 CREATE ROLE IF NOT EXISTS FLEET_INTELLIGENCE;
