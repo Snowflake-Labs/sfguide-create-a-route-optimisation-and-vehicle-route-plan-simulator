@@ -58,7 +58,7 @@ function AgentChart({ spec }: { spec: ChartSpec }) {
             textAnchor="end"
             height={50}
           />
-          <YAxis tick={{ fill: '#A0B1BA', fontSize: 10 }} stroke="rgba(255,107,53,0.25)" />
+          <YAxis tick={{ fill: '#A0B1BA', fontSize: 10 }} stroke="rgba(255,107,53,0.25)" tickFormatter={fmtYAxis} />
           <Tooltip
             contentStyle={{
               background: 'rgba(26,42,58,0.95)',
@@ -110,6 +110,15 @@ function parseCharts(content: string): { text: string; charts: ChartSpec[] } {
   return { text, charts };
 }
 
+function fmtYAxis(v: number): string {
+  if (v === 0) return '0';
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1_000) return (v / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (abs < 1) return v.toFixed(2);
+  return v.toFixed(1).replace(/\.0$/, '');
+}
+
 function autoDetectChart(results: Record<string, any>[] | undefined): ChartSpec | null {
   if (!results || results.length < 2 || results.length > 100) return null;
   const keys = Object.keys(results[0]);
@@ -118,9 +127,13 @@ function autoDetectChart(results: Record<string, any>[] | undefined): ChartSpec 
   const isNumeric = (v: any) => v !== null && v !== undefined && !isNaN(Number(v)) && typeof v !== 'boolean';
   const isTimelike = (k: string) => /time|date|hour|day|month|year|period|week|shift/i.test(k);
   const isCategory = (k: string) => /name|type|city|status|cuisine|vehicle|id|courier|restaurant|category/i.test(k);
+  const isTimestamp = (k: string) => /^(order_time|pickup_time|delivery_time|created_at|updated_at|start_time|end_time|peak_time|observation_time|forecast_time|issued_at|call_time|incident_time|resolved_time|timestamp)$/i.test(k);
+  const isIdLike = (k: string) => /^(.*_id|id)$/i.test(k);
 
   const numericKeys = keys.filter(k => results!.every(r => r[k] === null || isNumeric(r[k])));
   const nonNumericKeys = keys.filter(k => !numericKeys.includes(k));
+
+  const metricKeys = numericKeys.filter(k => !isTimestamp(k) && !isIdLike(k));
 
   let xKey = '';
   const yKeys: { key: string; label: string }[] = [];
@@ -137,18 +150,33 @@ function autoDetectChart(results: Record<string, any>[] | undefined): ChartSpec 
     xKey = catKey;
   } else if (nonNumericKeys.length > 0) {
     xKey = nonNumericKeys[0];
-  } else if (numericKeys.length >= 2) {
-    xKey = numericKeys[0];
+  } else if (metricKeys.length >= 2) {
+    xKey = metricKeys[0];
   }
 
   if (!xKey) return null;
 
-  const candidates = numericKeys.filter(k => k !== xKey);
+  const candidates = metricKeys.filter(k => k !== xKey);
   if (candidates.length === 0) return null;
 
-  for (const k of candidates.slice(0, 4)) {
+  const medians = new Map<string, number>();
+  for (const k of candidates) {
+    const vals = results!.map(r => r[k] !== null ? Math.abs(Number(r[k])) : 0).filter(v => v > 0).sort((a, b) => a - b);
+    medians.set(k, vals.length > 0 ? vals[Math.floor(vals.length / 2)] : 0);
+  }
+
+  const sortedCandidates = [...candidates].sort((a, b) => (medians.get(a) || 0) - (medians.get(b) || 0));
+  const baseMed = medians.get(sortedCandidates[0]) || 1;
+  const compatible = sortedCandidates.filter(k => {
+    const m = medians.get(k) || 0;
+    return m === 0 || baseMed === 0 || (m / baseMed < 1000 && baseMed / m < 1000);
+  });
+
+  for (const k of compatible.slice(0, 4)) {
     yKeys.push({ key: k, label: k.replace(/_/g, ' ') });
   }
+
+  if (yKeys.length === 0) return null;
 
   const uniqueX = new Set(results!.map(r => String(r[xKey]))).size;
   const chartType: 'bar' | 'line' = (timeKey || numTimeKey || uniqueX > 8) ? 'line' : 'bar';
@@ -171,6 +199,13 @@ function autoDetectChart(results: Record<string, any>[] | undefined): ChartSpec 
   };
 }
 
+function hasWideContent(content: string, workings?: Working[]): boolean {
+  const pipeLines = content.split('\n').filter(l => (l.match(/\|/g) || []).length >= 3);
+  if (pipeLines.length >= 3) return true;
+  if (workings?.some(w => w.type === 'tool_result' && w.results && w.results.length > 0)) return true;
+  return false;
+}
+
 function MarkdownWithCharts({ content, workings }: { content: string; workings?: Working[] }) {
   const { text, charts } = useMemo(() => parseCharts(content), [content]);
   const autoChart = useMemo(() => {
@@ -190,6 +225,30 @@ function MarkdownWithCharts({ content, workings }: { content: string; workings?:
   );
 }
 
+function ResultDetailModal({ content, workings, onClose }: { content: string; workings?: Working[]; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div className="result-detail-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="result-detail-modal">
+        <div className="result-detail-header">
+          <span className="result-detail-title">Yum Drop Query Results</span>
+          <button className="result-detail-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="result-detail-body">
+          <div className="result-detail-content markdown-content">
+            <MarkdownWithCharts content={content} workings={workings} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function fmt(n: number | undefined | null): string {
   if (!n) return '0';
   return n.toLocaleString('en-US');
@@ -202,7 +261,7 @@ interface CompactStatsProps {
   selectedCity: string;
   statusFilter: StatusFilter;
   onStatusFilter: (f: StatusFilter) => void;
-  onMapFilter: (f: MapFilter) => void;
+  onMapFilter?: (f: MapFilter) => void;
   matrixSelection?: MatrixSelection | null;
 }
 
@@ -379,12 +438,14 @@ interface ChatPanelProps {
   selectedCity: string;
   statusFilter: StatusFilter;
   onStatusFilter: (f: StatusFilter) => void;
+  onMapFilter?: (filter: MapFilter) => void;
   matrixSelection?: MatrixSelection | null;
 }
 
 export default function ChatPanel({ agent, stats, activeStats, statsLoading, selectedCity, statusFilter, onStatusFilter, onMapFilter, matrixSelection }: ChatPanelProps) {
   const { messages, loading, sendMessage, clearChat, currentWorkings, streamingText, currentStatus } = agent;
   const [input, setInput] = useState('');
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevSelectionRef = useRef<string | null>(null);
 
@@ -394,7 +455,7 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
 
   const handleMapFilterFromAgent = useCallback((filterType: string, filterValue: string) => {
     const parsed = parseAgentFilter(filterType, filterValue);
-    onMapFilter(parsed);
+    onMapFilter?.(parsed);
   }, [onMapFilter]);
 
   useEffect(() => {
@@ -446,7 +507,7 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
         {messages.length === 0 && !loading && (
           <div>
             <div style={{ fontSize: 13, color: 'var(--sb-text-secondary)', marginBottom: 12 }}>
-              Ask the Fleet Intelligence Agent about deliveries, couriers, routes, and restaurant performance. Use the filters above to control what shows on the map.
+              Ask the Yum Drop Agent about deliveries, couriers, routes, and restaurant performance. Use the filters above to control what shows on the map.
             </div>
             <div className="quick-questions">
               {QUICK_QUESTIONS.map((q) => (
@@ -465,7 +526,9 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
         {messages.map((msg, i) => (
           <div key={i} className={`chat-message ${msg.role}`}>
             {msg.role === 'assistant' && (
-              <div className="message-label">Fleet Intelligence Agent</div>
+              <div className="message-label">
+                Yum Drop Agent
+              </div>
             )}
             {msg.role === 'assistant' && msg.workings && (
               <WorkingsPanel workings={msg.workings} defaultCollapsed={true} />
@@ -477,11 +540,19 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
             ) : (
               <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
             )}
+            {msg.role === 'assistant' && msg.content.length > 20 && (
+              <button className="expand-result-bar" onClick={() => setExpandedIdx(i)} title="View in full screen">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+                <span>Expand</span>
+              </button>
+            )}
           </div>
         ))}
         {loading && (
           <div className="chat-message assistant">
-            <div className="message-label">Fleet Intelligence Agent</div>
+            <div className="message-label">Yum Drop Agent</div>
             {currentWorkings.length > 0 && (
               <WorkingsPanel workings={currentWorkings} defaultCollapsed={false} />
             )}
@@ -505,6 +576,13 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
         )}
         <div ref={messagesEndRef} />
       </div>
+      {expandedIdx !== null && messages[expandedIdx] && (
+        <ResultDetailModal
+          content={messages[expandedIdx].content}
+          workings={messages[expandedIdx].workings}
+          onClose={() => setExpandedIdx(null)}
+        />
+      )}
       <div className="chat-input-container">
         {messages.length > 0 && (
           <button
@@ -523,7 +601,7 @@ export default function ChatPanel({ agent, stats, activeStats, statsLoading, sel
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Ask about fleet operations..."
+          placeholder="Ask about Yum Drop operations..."
           disabled={loading}
         />
         <button className="chat-send" onClick={() => handleSend()} disabled={loading || !input.trim()}>

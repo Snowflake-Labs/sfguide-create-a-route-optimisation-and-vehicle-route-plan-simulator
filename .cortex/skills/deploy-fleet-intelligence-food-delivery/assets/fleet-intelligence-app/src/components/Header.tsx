@@ -11,12 +11,17 @@ export default function Header({ onMatrixBuilder, onDataBuilder }: Props) {
       <div className="header-logo">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="40" height="40" rx="6" fill="#FF6B35" />
-          <path d="M10 28L14 12H20L24 20L28 12H34" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-          <circle cx="14" cy="28" r="3" fill="white" />
-          <circle cx="28" cy="28" r="3" fill="white" />
+          <circle cx="13" cy="30" r="3.5" stroke="white" strokeWidth="1.8" fill="none" />
+          <circle cx="27" cy="30" r="3.5" stroke="white" strokeWidth="1.8" fill="none" />
+          <path d="M16.5 30H23.5" stroke="white" strokeWidth="1.8" />
+          <path d="M13 26.5V18L20 14V22" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M20 22L27 26.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
+          <rect x="16" y="12" width="8" height="6" rx="1.5" stroke="white" strokeWidth="1.5" fill="none" />
+          <path d="M18 15H22" stroke="white" strokeWidth="1" strokeLinecap="round" />
+          <path d="M30 10L32 8M30 8L32 10" stroke="#FFD700" strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M8 12L10 10M8 10L10 12" stroke="#FFD700" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
-        <span className="header-title">SwiftBite Fleet Intelligence</span>
-        <span className="header-subtitle">California Delivery Operations</span>
+        <span className="header-title">Yum Drop Online Food Deliveries</span>
       </div>
       <div className="header-actions">
         {onDataBuilder && (
@@ -40,13 +45,7 @@ export default function Header({ onMatrixBuilder, onDataBuilder }: Props) {
           </button>
         )}
         <div className="header-badge">
-          <span>Powered by</span>
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
-            <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="#29B5E8" />
-            <path d="M2 17L12 22L22 17" stroke="#29B5E8" strokeWidth="2" />
-            <path d="M2 12L12 17L22 12" stroke="#29B5E8" strokeWidth="2" />
-          </svg>
-          <span style={{ fontWeight: 700, color: '#29B5E8' }}>Snowflake</span>
+          <img src="/snowflake-logo.png" alt="Snowflake" style={{ height: 22 }} />
         </div>
       </div>
     </div>

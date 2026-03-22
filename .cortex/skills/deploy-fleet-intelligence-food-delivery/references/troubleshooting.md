@@ -22,6 +22,10 @@
 | Endpoint "provisioning in progress" | Wait 2-3 minutes after READY |
 | Data not showing after build | Toggle city selector or reload page |
 | Agent error "Unknown function SNOWFLAKE.CORTEX.COMPLETE" | `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTELLIGENCE_APP` |
+| Agent error "database role is not granted for this user session" | Create a regular ROLE with all 4 Cortex database roles + app roles. See Sub-step 2h-ii in `native-app-deploy.md`. Key: `GRANT ROLE FLEET_INTELLIGENCE TO ROLE PUBLIC` so users inherit the Cortex roles. |
+| Agent error "FLEET_INTELLIGENCE role not properly granted" | Same as above — the Cortex Agent needs `CORTEX_USER`, `CORTEX_AGENT_USER`, `CORTEX_ANALYST_USER`, `CORTEX_REST_API_USER` via a bridging role, NOT granted directly to the application. |
+| `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION` fails | Not supported — the manifest must request it as a privilege. Use the bridging role pattern instead (Sub-step 2h-ii). |
+| `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION` doesn't work on production | Use the bridging role pattern: create `ROLE FLEET_INTELLIGENCE`, grant Cortex DB roles to it, grant app roles to it, grant it to `PUBLIC`. |
 | SPCS not picking up new image | Must use NEW tag and update manifest.yml + service YAML |
 | Consumer app not offered upgrade | Release directives must be set per-channel: `ALTER APPLICATION PACKAGE ... MODIFY RELEASE CHANNEL DEFAULT SET DEFAULT RELEASE DIRECTIVE VERSION=... PATCH=...` — the standard `SET DEFAULT RELEASE DIRECTIVE` (without channel) silently does nothing on packages with release channels |
 | `ADD PATCH` error 093359 | Manifest changes require full new VERSION (not patch) |

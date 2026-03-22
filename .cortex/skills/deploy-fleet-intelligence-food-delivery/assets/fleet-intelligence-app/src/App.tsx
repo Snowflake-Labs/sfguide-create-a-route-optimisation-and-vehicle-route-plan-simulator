@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import FleetMap from './components/FleetMap';
 import ChatPanel from './components/ChatPanel';
@@ -23,6 +23,8 @@ export default function App() {
   const [catchmentLoading, setCatchmentLoading] = useState(false);
   const [hoveredRestaurant, setHoveredRestaurant] = useState<CatchmentRestaurant | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sidebarWidth, setSidebarWidth] = useState(420);
+  const isDragging = useRef(false);
   const { stats, loading: statsLoading } = useFleetStats(refreshKey);
   const { activeStats } = useActiveStats(refreshKey);
   const agent = useAgent();
@@ -53,6 +55,29 @@ export default function App() {
     setMapFilter(DEFAULT_MAP_FILTER);
     setStatusFilter('all');
   }, []);
+
+  const handleSidebarDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!isDragging.current) return;
+      const newW = Math.min(Math.max(startW + (ev.clientX - startX), 320), 900);
+      setSidebarWidth(newW);
+    };
+    const onUp = () => {
+      isDragging.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [sidebarWidth]);
 
   const handleMatrixSelection = useCallback((sel: MatrixSelection | null) => {
     setMatrixSelection(sel);
@@ -111,7 +136,7 @@ export default function App() {
         );
       })}
       <div className="main-content">
-        <div className="sidebar">
+        <div className="sidebar" style={{ width: sidebarWidth }}>
           <div className="sidebar-city-selector">
             <select
               className="city-select"
@@ -137,6 +162,7 @@ export default function App() {
               matrixSelection={matrixSelection}
             />
           </div>
+          <div className="sidebar-resize-handle" onMouseDown={handleSidebarDragStart} />
         </div>
         <FleetMap
           city={selectedCity}

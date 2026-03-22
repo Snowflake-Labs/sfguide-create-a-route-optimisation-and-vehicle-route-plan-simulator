@@ -9,7 +9,7 @@ export interface MapZoomTarget {
   area: string;
 }
 
-export function useRoutes(city: string, mapFilter: MapFilter, dateFilter: string = '', refreshKey: number = 0) {
+export function useRoutes(city: string, mapFilter: MapFilter, dateFilter: string = '', hourFilter: number = -1, refreshKey: number = 0) {
   const [routes, setRoutes] = useState<RouteData[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -23,6 +23,7 @@ export function useRoutes(city: string, mapFilter: MapFilter, dateFilter: string
       params.set('filter_value', mapFilter.value);
     }
     if (dateFilter) params.set('date', dateFilter);
+    if (hourFilter >= 0) params.set('hour', String(hourFilter));
     fetch(`/api/routes?${params.toString()}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -59,7 +60,7 @@ export function useRoutes(city: string, mapFilter: MapFilter, dateFilter: string
         setRoutes([]);
         setLoading(false);
       });
-  }, [city, mapFilter.type, mapFilter.value, dateFilter, refreshKey]);
+  }, [city, mapFilter.type, mapFilter.value, dateFilter, hourFilter, refreshKey]);
 
   return { routes, loading };
 }

@@ -130,6 +130,7 @@ BEGIN
     GRANT SERVICE ROLE core.fleet_intelligence_service!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     GRANT OPERATE ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
     GRANT MONITOR ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
+    CALL core.create_fleet_data_query_function();
     RETURN 'UI service created';
 END;
 $$;
@@ -169,6 +170,11 @@ BEGIN
     GRANT SERVICE ROLE core.fleet_intelligence_service!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
     GRANT OPERATE ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
     GRANT MONITOR ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
+    BEGIN
+        CALL core.create_fleet_data_query_function();
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
     BEGIN
         CALL core.setup_semantic_view();
     EXCEPTION
@@ -1953,14 +1959,28 @@ GRANT USAGE ON FUNCTION core.FLEET_MAP_FILTER(VARCHAR, VARCHAR) TO APPLICATION R
 
 DROP PROCEDURE IF EXISTS core.FLEET_DATA_QUERY(VARCHAR);
 DROP FUNCTION IF EXISTS core.FLEET_DATA_QUERY(VARCHAR);
-CREATE OR REPLACE FUNCTION core.FLEET_DATA_QUERY(query VARCHAR)
-RETURNS VARIANT
-SERVICE = core.fleet_intelligence_service
-ENDPOINT = 'fleet-intel-ui'
-COMMENT = 'Query fleet delivery data via natural language. Routes to SPCS service for SQL generation and execution.'
-AS '/api/query';
-GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE app_user;
-GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE all_agents_role;
+
+CREATE OR REPLACE PROCEDURE core.create_fleet_data_query_function()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    CREATE OR REPLACE FUNCTION core.FLEET_DATA_QUERY(query VARCHAR)
+    RETURNS VARIANT
+    SERVICE = core.fleet_intelligence_service
+    ENDPOINT = 'fleet-intel-ui'
+    COMMENT = 'Query fleet delivery data via natural language. Routes to SPCS service for SQL generation and execution.'
+    AS '/api/query';
+    GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE app_user;
+    GRANT USAGE ON FUNCTION core.FLEET_DATA_QUERY(VARCHAR) TO APPLICATION ROLE all_agents_role;
+    RETURN 'FLEET_DATA_QUERY function created';
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN 'FLEET_DATA_QUERY deferred: ' || SQLERRM;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.create_fleet_data_query_function() TO APPLICATION ROLE app_user;
 
 DROP PROCEDURE IF EXISTS core.create_agent();
 DROP PROCEDURE IF EXISTS core.create_agent(VARCHAR);
@@ -1980,7 +2000,7 @@ def run(session, agent_warehouse):
         "models": {"orchestration": "claude-4-sonnet"},
         "instructions": {
             "orchestration": (
-                "You are SwiftBite Fleet Intelligence, an AI analyst for a food delivery company. "
+                "You are Yum Drop Online Food Deliveries, an AI analyst for a food delivery company. "
                 "IMPORTANT EFFICIENCY RULES: "
                 "1. Always ask ONE comprehensive question per fleet_data call. Never break a query into multiple calls. "
                 "2. For weather summaries, ask for aggregated data across all stations in one query. "
@@ -2000,7 +2020,7 @@ def run(session, agent_warehouse):
             )
         },
         "tools": [
-            {"tool_spec": {"type": "generic", "name": "fleet_data", "description": "Query SwiftBite food delivery fleet data including deliveries, couriers, restaurants, routes, timing, and speeds across multiple cities. Pass the user question as the query parameter.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "The natural language question about fleet delivery data"}}, "required": ["query"]}}},
+            {"tool_spec": {"type": "generic", "name": "fleet_data", "description": "Query Yum Drop food delivery fleet data including deliveries, couriers, restaurants, routes, timing, and speeds across multiple cities. Pass the user question as the query parameter.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "The natural language question about fleet delivery data"}}, "required": ["query"]}}},
             {"tool_spec": {"type": "generic", "name": "fleet_map_control", "description": "Control the dashboard map to filter and display specific delivery routes. Use filter_type and filter_value together to dynamically filter the map.", "input_schema": {"type": "object", "properties": {"filter_type": {"type": "string", "description": "The category to filter by: restaurant (filter by restaurant name), courier (filter by courier ID), status (filter by order status: active, in_transit, picked_up, delivered), cuisine (filter by cuisine type), vehicle (filter by vehicle type), shift (filter by shift type), or all (reset/show everything)"}, "filter_value": {"type": "string", "description": "The value to filter by within the chosen filter_type. For example: Starbucks, SAN-0029, active, Italian, bicycle, Lunch, or empty string for all"}}, "required": ["filter_type", "filter_value"]}}}
         ],
         "tool_resources": {
@@ -2018,7 +2038,7 @@ def run(session, agent_warehouse):
     }
     spec_str = _json.dumps(spec)
     escaped_spec = spec_str.replace("'", "''")
-    create_sql = f"CREATE OR REPLACE AGENT core.FLEET_INTELLIGENCE_AGENT COMMENT = 'SwiftBite Fleet Intelligence agent' FROM SPECIFICATION '{escaped_spec}'"
+    create_sql = f"CREATE OR REPLACE AGENT core.FLEET_INTELLIGENCE_AGENT COMMENT = 'Yum Drop Online Food Deliveries agent' FROM SPECIFICATION '{escaped_spec}'"
     session.sql(create_sql).collect()
     session.sql("GRANT USAGE ON AGENT core.FLEET_INTELLIGENCE_AGENT TO APPLICATION ROLE app_user").collect()
     session.sql("GRANT USAGE ON AGENT core.FLEET_INTELLIGENCE_AGENT TO APPLICATION ROLE all_agents_role").collect()

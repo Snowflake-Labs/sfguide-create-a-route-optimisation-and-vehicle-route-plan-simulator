@@ -236,7 +236,7 @@ try:
         <div class="header-content">
             <div class="logo-container">{TRUCK_SVG}</div>
             <div>
-                <h1 class="header-title">SwiftBite Fleet Intelligence</h1>
+                <h1 class="header-title">Yum Drop Online Food Deliveries</h1>
                 <p class="header-subtitle">Self-Contained Native App &bull; Powered by Snowflake Cortex AI</p>
             </div>
             <div class="status-badge {badge_class}">
@@ -501,7 +501,7 @@ try:
 
     st.markdown(f"""
     <div class="footer">
-        <strong style="color: {SB_ORANGE};">SwiftBite Fleet Intelligence</strong><br/>
+        <strong style="color: {SB_ORANGE};">Yum Drop Online Food Deliveries</strong><br/>
         Self-Contained Native App | {org_name}/{account_name}<br/>
         {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     </div>
@@ -513,7 +513,7 @@ except Exception as e:
         <div class="header-content">
             <div class="logo-container">{TRUCK_SVG}</div>
             <div>
-                <h1 class="header-title">SwiftBite Fleet Intelligence</h1>
+                <h1 class="header-title">Yum Drop Online Food Deliveries</h1>
                 <p class="header-subtitle">Self-Contained Native App &bull; Powered by Snowflake Cortex AI</p>
             </div>
             <div class="status-badge error">

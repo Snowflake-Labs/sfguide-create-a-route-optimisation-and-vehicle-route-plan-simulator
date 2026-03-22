@@ -8,6 +8,30 @@ import type { MapZoomTarget, FleetAlert } from '../hooks/useData';
 import type { RouteData, CityConfig, MapMode, TravelTimeHexData, MapFilter, StatusFilter, MatrixResolution, MatrixSelection, ReachabilityHexData, CatchmentRestaurant, CatchmentCustomer, AnimatedRoute } from '../types';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
+function chaikinSmooth(coords: number[][], iterations = 3): number[][] {
+  let pts = coords;
+  for (let it = 0; it < iterations; it++) {
+    const next: number[][] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i];
+      const [x1, y1] = pts[i + 1];
+      next.push([0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1]);
+      next.push([0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1]);
+    }
+    next.push(next[0]);
+    pts = next;
+  }
+  return pts;
+}
+
+function smoothGeoJson(geom: any): any {
+  if (!geom || geom.type !== 'Polygon') return geom;
+  return {
+    ...geom,
+    coordinates: geom.coordinates.map((ring: number[][]) => chaikinSmooth(ring, 4)),
+  };
+}
+
 const BASEMAP: any = {
   version: 8,
   sources: {
@@ -142,7 +166,8 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
   const [availableDates, setAvailableDates] = useState<{date: string; count: number}[]>([]);
   const [selectedDateIdx, setSelectedDateIdx] = useState<number>(-1);
   const selectedDate = selectedDateIdx >= 0 && selectedDateIdx < availableDates.length ? availableDates[selectedDateIdx].date : '';
-  const { routes, loading } = useRoutes(city, mapFilter, selectedDate, refreshKey);
+  const [selectedHour, setSelectedHour] = useState<number>(-1);
+  const { routes, loading } = useRoutes(city, mapFilter, selectedDate, selectedHour, refreshKey);
   const [viewState, setViewState] = useState({
     longitude: cityConfig.longitude,
     latitude: cityConfig.latitude,
@@ -182,9 +207,9 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     pickups: true,
     dropoffs: true,
     couriers: true,
+    floods: true,
   });
 
-  const [selectedHour, setSelectedHour] = useState<number>(-1);
   const [availableHours, setAvailableHours] = useState<{hour: number; activeOrders: number}[]>([]);
   const [courierPositions, setCourierPositions] = useState<any[]>([]);
   const [couriersLoading, setCouriersLoading] = useState(false);
@@ -357,7 +382,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
   const fetchRouteToRestaurant = useCallback((restaurant: CatchmentRestaurant) => {
     if (!selectedOrigin || !originCoords.lat) return;
     setRouteLoading(true);
-    setRouteLoadingMsg('Connecting to routing service...');
+    setRouteLoadingMsg('Starting routing service...');
     setAnimatedRoute(null);
     const params = new URLSearchParams({
       start_lon: String(originCoords.lon),
@@ -367,8 +392,10 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
       city: city,
       profile: 'driving-car',
     });
+    const timeout = setTimeout(() => setRouteLoadingMsg('Routing service is resuming, please wait...'), 8000);
     fetch(`/api/matrix/directions?${params}`)
       .then(async (r) => {
+        clearTimeout(timeout);
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
           throw new Error(err.error || `HTTP ${r.status}`);
@@ -381,9 +408,10 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         setRouteLoadingMsg('');
       })
       .catch((err) => {
+        clearTimeout(timeout);
         console.error('Route fetch error:', err);
-        setRouteLoading(false);
-        setRouteLoadingMsg('');
+        setRouteLoadingMsg(err.message || 'Route failed');
+        setTimeout(() => { setRouteLoading(false); setRouteLoadingMsg(''); }, 3000);
       });
   }, [selectedOrigin, originCoords, city]);
 
@@ -493,12 +521,18 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     [dropoffData]
   );
 
+  const filteredCourierPositions = useMemo(() => {
+    if (mapFilter.type === 'all') return courierPositions;
+    const visibleCouriers = new Set(routesWithCoords.map((r) => r.courier_id));
+    return courierPositions.filter((p: any) => visibleCouriers.has(p.courier_id));
+  }, [courierPositions, routesWithCoords, mapFilter]);
+
   const courierLayer = useMemo(
     () =>
-      courierPositions.length > 0
+      filteredCourierPositions.length > 0
         ? new ScatterplotLayer({
             id: 'courier-bikes',
-            data: courierPositions,
+            data: filteredCourierPositions,
             pickable: true,
             getPosition: (d: any) => [d.lon, d.lat],
             getFillColor: [255, 213, 79, 255],
@@ -510,7 +544,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             lineWidthMinPixels: 2,
           })
         : null,
-    [courierPositions]
+    [filteredCourierPositions]
   );
 
   const hexLayer = useMemo(
@@ -521,8 +555,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             data: heatData,
             pickable: true,
             filled: true,
-            extruded: true,
-            elevationScale: 1,
+            extruded: false,
             getHexagon: (d: any) => d.hex_id,
             getFillColor: (d: any) => {
               const intensity = Math.min(d.count / 20, 1);
@@ -533,7 +566,6 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
                 200,
               ];
             },
-            getElevation: (d: any) => Math.min(d.count * 50, 3000),
             opacity: 0.8,
             coverage: 0.9,
           })
@@ -808,16 +840,31 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     }
     const routeLayers: any[] = [];
     const floodFeatures = floodAlerts
-      .filter(a => a.type === 'flood' && a.area_geojson)
-      .map(a => ({ type: 'Feature' as const, properties: { title: a.title, severity: a.severity, description: a.description, water_level: a.water_level_m, roads: a.affected_roads }, geometry: a.area_geojson }));
-    if (floodFeatures.length > 0) {
+      .filter(a => {
+        if (a.type !== 'flood' || !a.area_geojson) return false;
+        if (selectedDate) {
+          try {
+            const startMs = a.start_time ? new Date(a.start_time).getTime() : 0;
+            const endMs = a.end_time ? new Date(a.end_time).getTime() : startMs + 86400000;
+            if (isNaN(startMs) || isNaN(endMs)) return true;
+            const startDay = new Date(startMs).toISOString().slice(0, 10);
+            const endDay = new Date(endMs).toISOString().slice(0, 10);
+            if (selectedDate < startDay || selectedDate > endDay) return false;
+          } catch { return true; }
+        }
+        return true;
+      })
+      .map(a => ({ type: 'Feature' as const, properties: { title: a.title, severity: a.severity, description: a.description, water_level: a.water_level_m, roads: a.affected_roads }, geometry: smoothGeoJson(a.area_geojson) }));
+    if (floodFeatures.length > 0 && layerVisibility.floods) {
       routeLayers.push(new GeoJsonLayer({
         id: 'flood-zones',
         data: { type: 'FeatureCollection', features: floodFeatures },
-        getFillColor: [255, 50, 50, 60],
-        getLineColor: [255, 80, 80, 200],
+        getFillColor: (f: any) => f.properties?.severity === 'severe' ? [255, 40, 40, 50] : [255, 140, 0, 40],
+        getLineColor: (f: any) => f.properties?.severity === 'severe' ? [255, 60, 60, 180] : [255, 160, 40, 160],
         getLineWidth: 2,
         lineWidthMinPixels: 2,
+        lineJointRounded: true,
+        lineCapRounded: true,
         pickable: true,
       }));
     }
@@ -826,7 +873,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
     if (layerVisibility.dropoffs) routeLayers.push(dropoffLayer);
     if (layerVisibility.couriers && courierLayer) routeLayers.push(courierLayer);
     return routeLayers;
-  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer, courierLayer, floodAlerts]);
+  }, [mapMode, hexLayer, matrixHexPickLayer, allRestaurantLayer, originLayer, reachLayer, pathLayer, pickupLayer, dropoffLayer, selectedOrigin, restaurantIconLayer, layerVisibility, animatedRouteLayer, routeTrailLayer, carLayer, carFallbackLayer, courierLayer, floodAlerts, selectedDate]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
@@ -1060,6 +1107,7 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
             { key: 'pickups', label: 'Pickups', color: '#66BB6A' },
             { key: 'dropoffs', label: 'Dropoffs', color: '#42A5F5' },
             { key: 'couriers', label: 'Couriers', color: '#FFD54F' },
+            { key: 'floods', label: 'Flood Zones', color: '#FF4444' },
           ].map((layer) => (
             <label key={layer.key} className="layer-toggle-item">
               <input
@@ -1075,57 +1123,40 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         </div>
       )}
 
-      {mapMode === 'routes' && availableDates.length > 1 && (
-        <div className="date-slider-panel">
-          <div className="date-slider-header">
-            <span className="date-slider-label">Day</span>
-            <span className="date-slider-value">
-              {selectedDateIdx === -1 ? 'All Days' : formatDateLabel(availableDates[selectedDateIdx].date, true)}
-              {selectedDateIdx >= 0 && ` (${availableDates[selectedDateIdx].count} orders)`}
-            </span>
-          </div>
-          <input
-            type="range"
-            min={-1}
-            max={availableDates.length - 1}
-            value={selectedDateIdx}
-            onChange={(e) => setSelectedDateIdx(Number(e.target.value))}
-            className="date-slider-input"
-          />
-          <div className="date-slider-ticks">
-            <span>All</span>
-            {availableDates.map((d) => (
-              <span key={d.date}>{formatDateLabel(d.date)}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {mapMode === 'routes' && selectedDate && (
-        <div className="date-slider-panel" style={{ top: availableDates.length > 1 ? '100px' : '12px' }}>
-          <div className="date-slider-header">
-            <span className="date-slider-label">Hour</span>
-            <span className="date-slider-value">
-              {selectedHour === -1 ? 'All Hours' : `${String(selectedHour).padStart(2, '0')}:00`}
-              {selectedHour >= 0 && courierPositions.length > 0 && ` (${courierPositions.length} couriers)`}
-              {couriersLoading && ' ...'}
-            </span>
-          </div>
-          <input
-            type="range"
-            min={-1}
-            max={23}
-            value={selectedHour}
-            onChange={(e) => setSelectedHour(Number(e.target.value))}
-            className="date-slider-input"
-          />
-          <div className="date-slider-ticks">
-            <span>All</span>
-            <span>06:00</span>
-            <span>12:00</span>
-            <span>18:00</span>
-            <span>23:00</span>
-          </div>
+      {mapMode === 'routes' && (availableDates.length > 1 || selectedDate) && (
+        <div className="time-control-panel">
+          {availableDates.length > 1 && (
+            <div className="time-control-row">
+              <span className="time-control-label">Day</span>
+              <input
+                type="range"
+                min={-1}
+                max={availableDates.length - 1}
+                value={selectedDateIdx}
+                onChange={(e) => setSelectedDateIdx(Number(e.target.value))}
+                className="time-control-range"
+              />
+              <span className="time-control-value">
+                {selectedDateIdx === -1 ? 'All' : formatDateLabel(availableDates[selectedDateIdx].date)}
+              </span>
+            </div>
+          )}
+          {selectedDate && (
+            <div className="time-control-row">
+              <span className="time-control-label">Hour</span>
+              <input
+                type="range"
+                min={-1}
+                max={23}
+                value={selectedHour}
+                onChange={(e) => setSelectedHour(Number(e.target.value))}
+                className="time-control-range"
+              />
+              <span className="time-control-value">
+                {selectedHour === -1 ? 'All' : `${String(selectedHour).padStart(2, '0')}:00`}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -1272,9 +1303,6 @@ export default function FleetMap({ city, cityConfig, mapMode, onMapModeChange, s
         )}
       </div>
 
-      <div className="map-attribution">
-        <span>Powered by OpenRouteService & Overture Maps</span>
-      </div>
     </div>
   );
 }

@@ -214,6 +214,7 @@ app.get('/api/routes', async (req, res) => {
     const city = req.query.city as string || 'Los Angeles';
     const statusFilter = req.query.status as string || '';
     const dateFilter = req.query.date as string || '';
+    const hourFilter = req.query.hour as string || '';
     const filterType = req.query.filter_type as string || '';
     const filterValue = req.query.filter_value as string || '';
     const conditions: string[] = [];
@@ -221,6 +222,14 @@ app.get('/api/routes', async (req, res) => {
     if (statusFilter === 'active') conditions.push(`ORDER_STATUS != 'delivered'`);
     else if (statusFilter && statusFilter !== 'all') conditions.push(`ORDER_STATUS = '${statusFilter.replace(/'/g, "''")}'`);
     if (dateFilter) conditions.push(`TO_VARCHAR(ORDER_TIME::DATE, 'YYYY-MM-DD') = '${dateFilter.replace(/'/g, "''")}'`);
+    if (hourFilter !== '' && dateFilter) {
+      const hr = parseInt(hourFilter, 10);
+      if (!isNaN(hr)) {
+        const hrEnd = hr + 1;
+        conditions.push(`ORDER_TIME < DATEADD(hour, ${hrEnd}, '${dateFilter}'::TIMESTAMP)`);
+        conditions.push(`COALESCE(DELIVERY_TIME, CURRENT_TIMESTAMP()) >= DATEADD(hour, ${hr}, '${dateFilter}'::TIMESTAMP)`);
+      }
+    }
     const safeVal = filterValue.replace(/'/g, "''");
     if (filterType && filterValue) {
       switch (filterType.toLowerCase()) {
@@ -618,7 +627,7 @@ app.post('/api/agent', async (req, res) => {
     const send = (obj: any) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
     if (IS_SPCS) {
-      send({ type: 'status', message: 'Connecting to Fleet Intelligence agent...' });
+      send({ type: 'status', message: 'Connecting to Yum Drop agent...' });
       const { host, token } = getSpcsConfig();
       const headers: Record<string, string> = {
         'Authorization': `Bearer ${token}`,
@@ -694,7 +703,7 @@ app.post('/api/agent', async (req, res) => {
                 filter_value: data.input.filter_value || '',
               });
             }
-            send({ type: 'status', message: data.name === 'fleet_map_control' ? 'Updating map display...' : 'Querying fleet intelligence data...' });
+            send({ type: 'status', message: data.name === 'fleet_map_control' ? 'Updating map display...' : 'Querying Yum Drop data...' });
             break;
           case 'response.tool_result.status':
             send({ type: 'status', message: data.status || 'Running query...' });
@@ -836,9 +845,9 @@ app.post('/api/agent', async (req, res) => {
       send({ type: 'status', message: 'Analyzing your question...' });
       send({ type: 'thinking_delta', text: 'Interpreting your question and generating a data query...\n' });
       send({ type: 'tool_use', tool_name: 'fleet_data', tool_type: 'cortex_analyst_text_to_sql' });
-      send({ type: 'status', message: 'Querying fleet intelligence data...' });
+      send({ type: 'status', message: 'Querying Yum Drop data...' });
 
-      const systemPrompt = `You are a fleet intelligence analyst for SwiftBite, a food delivery company operating across multiple cities including San Francisco, London, and Paris. Generate a SQL query for the user's question.
+      const systemPrompt = `You are a fleet intelligence analyst for Yum Drop, a food delivery company operating across multiple cities including San Francisco, London, and Paris. Generate a SQL query for the user's question.
 
 Available tables in ${SF_DATABASE}.${SF_SCHEMA}:
 - DELIVERY_SUMMARY: ORDER_ID, COURIER_ID, RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_ADDRESS, RESTAURANT_LOCATION (GEOGRAPHY), CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION (GEOGRAPHY), CITY, ORDER_TIME (TIMESTAMP), PICKUP_TIME (TIMESTAMP), DELIVERY_TIME (TIMESTAMP), ORDER_STATUS (values: 'delivered', 'in_transit', 'picked_up'), ROUTE_DISTANCE_METERS (FLOAT), ROUTE_DURATION_SECS (FLOAT), PREP_TIME_MINS, SHIFT_TYPE (Lunch/Dinner/Afternoon), VEHICLE_TYPE (car/scooter/bicycle), AVERAGE_KMH, MAX_KMH, GEOMETRY (GEOGRAPHY)
@@ -901,7 +910,7 @@ Keep queries efficient. Use fully qualified table names. Limit detail queries to
 
       send({ type: 'status', message: 'Generating response...' });
 
-      const responsePrompt = `You are a fleet intelligence analyst for SwiftBite food delivery. Present data clearly with context.
+      const responsePrompt = `You are a fleet intelligence analyst for Yum Drop food delivery. Present data clearly with context.
 Use markdown formatting with proper GFM tables when showing tabular data. Provide specific numbers and percentages when available.
 If the data query returned no results (0 rows), say clearly that no data was found. Do NOT make up or hallucinate data.
 
@@ -2074,17 +2083,17 @@ FROM forecast_days d CROSS JOIN hours h CROSS JOIN stations s`);
         const floodZones: Record<string, { name: string; polygon: string; desc: string }> = {
           'San Francisco': {
             name: 'Mission Creek Flash Flood',
-            polygon: 'POLYGON((-122.4000 37.7700, -122.3900 37.7700, -122.3900 37.7780, -122.3950 37.7810, -122.4000 37.7780, -122.4000 37.7700))',
+            polygon: 'POLYGON((-122.4010 37.7705, -122.3985 37.7695, -122.3960 37.7692, -122.3935 37.7698, -122.3912 37.7708, -122.3898 37.7725, -122.3892 37.7748, -122.3900 37.7770, -122.3915 37.7790, -122.3935 37.7805, -122.3955 37.7812, -122.3975 37.7808, -122.3992 37.7795, -122.4005 37.7775, -122.4012 37.7750, -122.4015 37.7730, -122.4010 37.7705))',
             desc: 'Flash flooding reported in the Mission Creek and SoMa area. Surface water flooding affecting roads and low-lying areas. Multiple road closures in effect. Drainage systems overwhelmed by sudden heavy rainfall.'
           },
           'London': {
             name: 'Thames Barrier Flash Flood',
-            polygon: 'POLYGON((-0.0600 51.4900, -0.0200 51.4900, -0.0200 51.5050, -0.0400 51.5100, -0.0600 51.5050, -0.0600 51.4900))',
+            polygon: 'POLYGON((-0.0590 51.4908, -0.0520 51.4895, -0.0440 51.4892, -0.0360 51.4900, -0.0280 51.4915, -0.0220 51.4938, -0.0210 51.4970, -0.0225 51.5005, -0.0260 51.5035, -0.0310 51.5058, -0.0380 51.5075, -0.0450 51.5072, -0.0520 51.5055, -0.0570 51.5030, -0.0598 51.4995, -0.0605 51.4955, -0.0590 51.4908))',
             desc: 'Flash flooding in the Greenwich and Isle of Dogs area. Surface water flooding affecting major roads. Thames Barrier activated. Multiple road closures.'
           },
           'Paris': {
             name: 'Seine Overflow Flash Flood',
-            polygon: 'POLYGON((2.3200 48.8450, 2.3600 48.8450, 2.3600 48.8600, 2.3400 48.8650, 2.3200 48.8600, 2.3200 48.8450))',
+            polygon: 'POLYGON((2.3215 48.8458, 2.3290 48.8448, 2.3370 48.8445, 2.3450 48.8452, 2.3530 48.8465, 2.3585 48.8490, 2.3598 48.8525, 2.3580 48.8558, 2.3545 48.8585, 2.3490 48.8605, 2.3420 48.8618, 2.3350 48.8612, 2.3285 48.8595, 2.3235 48.8568, 2.3210 48.8535, 2.3200 48.8498, 2.3215 48.8458))',
             desc: 'Flash flooding near the Seine river in the 5th and 13th arrondissements. Surface water affecting roads and metro stations.'
           },
         };
@@ -2111,14 +2120,14 @@ SELECT
   'FLOOD-002', '${(cities[0] === 'London' ? 'Wandsworth Surface Water' : cities[0] === 'Paris' ? 'Marais District Drainage' : 'Bayview Basin Overflow').replace(/'/g, "''")}',
   'moderate',
   TRY_TO_GEOGRAPHY('${
-    cities[0] === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
-    : cities[0] === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
-    : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))'
+    cities[0] === 'San Francisco' ? 'POLYGON((-122.3955 37.7258, -122.3930 37.7248, -122.3900 37.7245, -122.3870 37.7250, -122.3842 37.7262, -122.3820 37.7282, -122.3812 37.7305, -122.3825 37.7328, -122.3848 37.7348, -122.3878 37.7365, -122.3910 37.7372, -122.3938 37.7365, -122.3958 37.7345, -122.3965 37.7318, -122.3962 37.7290, -122.3955 37.7258))'
+    : cities[0] === 'London' ? 'POLYGON((-0.1990 51.4558, -0.1930 51.4548, -0.1865 51.4545, -0.1800 51.4555, -0.1745 51.4572, -0.1718 51.4600, -0.1712 51.4635, -0.1730 51.4665, -0.1770 51.4688, -0.1825 51.4702, -0.1890 51.4708, -0.1948 51.4698, -0.1985 51.4675, -0.2002 51.4645, -0.2005 51.4610, -0.1990 51.4558))'
+    : 'POLYGON((2.3510 48.8558, 2.3548 48.8548, 2.3585 48.8550, 2.3618 48.8562, 2.3640 48.8582, 2.3645 48.8608, 2.3632 48.8635, 2.3608 48.8655, 2.3575 48.8668, 2.3540 48.8672, 2.3508 48.8662, 2.3488 48.8642, 2.3482 48.8615, 2.3490 48.8588, 2.3510 48.8558))'
   }'),
   ST_CENTROID(TRY_TO_GEOGRAPHY('${
-    cities[0] === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
-    : cities[0] === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
-    : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))'
+    cities[0] === 'San Francisco' ? 'POLYGON((-122.3955 37.7258, -122.3930 37.7248, -122.3900 37.7245, -122.3870 37.7250, -122.3842 37.7262, -122.3820 37.7282, -122.3812 37.7305, -122.3825 37.7328, -122.3848 37.7348, -122.3878 37.7365, -122.3910 37.7372, -122.3938 37.7365, -122.3958 37.7345, -122.3965 37.7318, -122.3962 37.7290, -122.3955 37.7258))'
+    : cities[0] === 'London' ? 'POLYGON((-0.1990 51.4558, -0.1930 51.4548, -0.1865 51.4545, -0.1800 51.4555, -0.1745 51.4572, -0.1718 51.4600, -0.1712 51.4635, -0.1730 51.4665, -0.1770 51.4688, -0.1825 51.4702, -0.1890 51.4708, -0.1948 51.4698, -0.1985 51.4675, -0.2002 51.4645, -0.2005 51.4610, -0.1990 51.4558))'
+    : 'POLYGON((2.3510 48.8558, 2.3548 48.8548, 2.3585 48.8550, 2.3618 48.8562, 2.3640 48.8582, 2.3645 48.8608, 2.3632 48.8635, 2.3608 48.8655, 2.3575 48.8668, 2.3540 48.8672, 2.3508 48.8662, 2.3488 48.8642, 2.3482 48.8615, 2.3490 48.8588, 2.3510 48.8558))'
   }')),
   DATEADD('hour', 12, ${lastDay}::TIMESTAMP_NTZ),
   DATEADD('hour', 16, ${lastDay}::TIMESTAMP_NTZ),
@@ -3086,25 +3095,27 @@ FROM forecast_days d CROSS JOIN hours h CROSS JOIN stations s`);
       const floodZones: Record<string, { name: string; polygon: string; desc: string }> = {
         'San Francisco': {
           name: 'Mission Creek Flash Flood',
-          polygon: 'POLYGON((-122.4000 37.7700, -122.3900 37.7700, -122.3900 37.7780, -122.3950 37.7810, -122.4000 37.7780, -122.4000 37.7700))',
+          polygon: 'POLYGON((-122.4010 37.7705, -122.3985 37.7695, -122.3960 37.7692, -122.3935 37.7698, -122.3912 37.7708, -122.3898 37.7725, -122.3892 37.7748, -122.3900 37.7770, -122.3915 37.7790, -122.3935 37.7805, -122.3955 37.7812, -122.3975 37.7808, -122.3992 37.7795, -122.4005 37.7775, -122.4012 37.7750, -122.4015 37.7730, -122.4010 37.7705))',
           desc: 'Flash flooding reported in the Mission Creek and SoMa area. Surface water flooding affecting roads and low-lying areas. Multiple road closures in effect.'
         },
         'London': {
           name: 'Thames Barrier Flash Flood',
-          polygon: 'POLYGON((-0.0600 51.4900, -0.0200 51.4900, -0.0200 51.5050, -0.0400 51.5100, -0.0600 51.5050, -0.0600 51.4900))',
+          polygon: 'POLYGON((-0.0590 51.4908, -0.0520 51.4895, -0.0440 51.4892, -0.0360 51.4900, -0.0280 51.4915, -0.0220 51.4938, -0.0210 51.4970, -0.0225 51.5005, -0.0260 51.5035, -0.0310 51.5058, -0.0380 51.5075, -0.0450 51.5072, -0.0520 51.5055, -0.0570 51.5030, -0.0598 51.4995, -0.0605 51.4955, -0.0590 51.4908))',
           desc: 'Flash flooding in the Greenwich and Isle of Dogs area. Surface water flooding affecting major roads. Thames Barrier activated.'
         },
         'Paris': {
           name: 'Seine Overflow Flash Flood',
-          polygon: 'POLYGON((2.3200 48.8450, 2.3600 48.8450, 2.3600 48.8600, 2.3400 48.8650, 2.3200 48.8600, 2.3200 48.8450))',
+          polygon: 'POLYGON((2.3215 48.8458, 2.3290 48.8448, 2.3370 48.8445, 2.3450 48.8452, 2.3530 48.8465, 2.3585 48.8490, 2.3598 48.8525, 2.3580 48.8558, 2.3545 48.8585, 2.3490 48.8605, 2.3420 48.8618, 2.3350 48.8612, 2.3285 48.8595, 2.3235 48.8568, 2.3210 48.8535, 2.3200 48.8498, 2.3215 48.8458))',
           desc: 'Flash flooding near the Seine river in the 5th and 13th arrondissements. Surface water affecting roads and metro stations.'
         },
       };
       const zone = floodZones[city] || floodZones['San Francisco'];
       const zone2Name = city === 'London' ? 'Wandsworth Surface Water' : city === 'Paris' ? 'Marais District Drainage' : 'Bayview Basin Overflow';
-      const zone2Poly = city === 'San Francisco' ? 'POLYGON((-122.3950 37.7250, -122.3800 37.7250, -122.3800 37.7350, -122.3870 37.7380, -122.3950 37.7350, -122.3950 37.7250))'
-        : city === 'London' ? 'POLYGON((-0.2000 51.4550, -0.1700 51.4550, -0.1700 51.4700, -0.1850 51.4750, -0.2000 51.4700, -0.2000 51.4550))'
-        : 'POLYGON((2.3500 48.8550, 2.3650 48.8550, 2.3650 48.8650, 2.3575 48.8680, 2.3500 48.8650, 2.3500 48.8550))';
+      const zone2Poly = city === 'San Francisco'
+        ? 'POLYGON((-122.3955 37.7258, -122.3930 37.7248, -122.3900 37.7245, -122.3870 37.7250, -122.3842 37.7262, -122.3820 37.7282, -122.3812 37.7305, -122.3825 37.7328, -122.3848 37.7348, -122.3878 37.7365, -122.3910 37.7372, -122.3938 37.7365, -122.3958 37.7345, -122.3965 37.7318, -122.3962 37.7290, -122.3955 37.7258))'
+        : city === 'London'
+        ? 'POLYGON((-0.1990 51.4558, -0.1930 51.4548, -0.1865 51.4545, -0.1800 51.4555, -0.1745 51.4572, -0.1718 51.4600, -0.1712 51.4635, -0.1730 51.4665, -0.1770 51.4688, -0.1825 51.4702, -0.1890 51.4708, -0.1948 51.4698, -0.1985 51.4675, -0.2002 51.4645, -0.2005 51.4610, -0.1990 51.4558))'
+        : 'POLYGON((2.3510 48.8558, 2.3548 48.8548, 2.3585 48.8550, 2.3618 48.8562, 2.3640 48.8582, 2.3645 48.8608, 2.3632 48.8635, 2.3608 48.8655, 2.3575 48.8668, 2.3540 48.8672, 2.3508 48.8662, 2.3488 48.8642, 2.3482 48.8615, 2.3490 48.8588, 2.3510 48.8558))';
       const lastDay = `'${start_date}'::DATE`;
 
       await snowSql(`DELETE FROM ${DB}.DATA.FLOOD_MONITORING WHERE CITY IN (${cityList})`);
@@ -3373,9 +3384,10 @@ app.get('/api/matrix/directions', async (req, res) => {
       return res.status(400).json({ error: 'start_lon, start_lat, end_lon, end_lat required' });
     }
     const region = getOrsRegion(city);
-    const regionStatus = await checkOrsRegionReady(region);
-    if (regionStatus.serviceStatus === 'SUSPENDED') {
+    let regionStatus = await checkOrsRegionReady(region);
+    if (regionStatus.serviceStatus === 'SUSPENDED' || regionStatus.serviceStatus === 'NOT_FOUND') {
       const svcName = `ORS_SERVICE_${region.toUpperCase()}`;
+      console.log(`ORS service ${svcName} is ${regionStatus.serviceStatus}, attempting resume...`);
       try {
         await snowSql(`ALTER SERVICE ${SF_DATABASE}.ROUTING.${svcName} RESUME`);
         await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ROUTING_GATEWAY_SERVICE RESUME`);
@@ -3383,8 +3395,8 @@ app.get('/api/matrix/directions', async (req, res) => {
         console.log('ORS resume attempt:', e.message?.slice(0, 200));
       }
       for (let i = 0; i < 60; i++) {
-        const check = await checkOrsRegionReady(region);
-        if (check.serviceStatus === 'RUNNING' && check.functionExists) break;
+        regionStatus = await checkOrsRegionReady(region);
+        if (regionStatus.serviceStatus === 'RUNNING' && regionStatus.functionExists) break;
         await new Promise((r) => setTimeout(r, 5000));
       }
     }
