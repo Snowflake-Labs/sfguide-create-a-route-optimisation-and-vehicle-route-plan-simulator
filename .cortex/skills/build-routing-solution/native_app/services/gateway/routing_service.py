@@ -15,7 +15,7 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
-GATEWAY_VERSION = 'v0.9.4'
+GATEWAY_VERSION = 'v0.9.5'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -57,6 +57,16 @@ def readiness_probe():
     return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': ORS_HOST, 'vroom_host': VROOM_HOST}
 
 
+def _get_ors_health(ors_host=None):
+    host = ors_host or ORS_HOST
+    try:
+        health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
+        r = requests.get(url=health_url, timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def _get_ors_status(ors_host=None):
     host = ors_host or ORS_HOST
     try:
@@ -75,8 +85,10 @@ def _get_ors_status(ors_host=None):
                     'osm_date': profile_data.get('osm_date')
                 }
 
+        health_ready = _get_ors_health(host)
         status_data['bounds_info'] = bounds_info
         status_data['service_ready'] = len(bounds_info) > 0
+        status_data['health_ready'] = health_ready
         status_data['ors_host'] = host
         return status_data
     except requests.exceptions.ConnectionError:
@@ -86,14 +98,15 @@ def _get_ors_status(ors_host=None):
             'message': f'Cannot connect to ORS at {host}. Region may not be provisioned or service is suspended. '
                        f'Use SETUP_CITY_ORS(region) to provision.',
             'service_ready': False,
+            'health_ready': False,
             'ors_host': host
         }
     except requests.exceptions.Timeout:
         logger.error(f'ORS status request timed out on {host} - graphs may still be building')
-        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False, 'ors_host': host}
+        return {'error': 'timeout', 'message': 'ORS service not ready - graphs may still be building', 'service_ready': False, 'health_ready': False, 'ors_host': host}
     except Exception as e:
         logger.error(f'Error getting ORS status from {host}: {str(e)}')
-        return {'error': str(e), 'service_ready': False, 'ors_host': host}
+        return {'error': str(e), 'service_ready': False, 'health_ready': False, 'ors_host': host}
 
 
 @app.get("/ors_status")

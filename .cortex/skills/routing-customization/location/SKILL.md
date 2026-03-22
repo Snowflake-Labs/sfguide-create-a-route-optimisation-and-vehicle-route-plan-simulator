@@ -121,13 +121,13 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 **Option B — Manual editing (fallback):**
 
-1. **Edit** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`:
+1. **Edit** `.cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`
    - To: `source_file: /home/ors/files/<MAP_NAME>`
 
 2. **Upload** to stage:
    ```bash
-   snow stage copy build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated
@@ -138,7 +138,7 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 **Actions:**
 
-1. **Edit** `build-routing-solution/Native_app/services/openrouteservice/openrouteservice.yaml`:
+1. **Edit** `.cortex/skills/build-routing-solution/native_app/services/openrouteservice/openrouteservice.yaml`:
    
    - **Update all volume source paths** to new region:
      ```yaml
@@ -153,7 +153,7 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 2. **Upload** specification:
    ```bash
-   snow stage copy build-routing-solution/Native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/build-routing-solution/native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Update** service with new specification:

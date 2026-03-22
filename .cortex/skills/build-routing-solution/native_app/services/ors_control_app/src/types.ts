@@ -11,7 +11,9 @@ export interface OrsGraphInfo {
 
 export interface OrsRegionReadiness {
   service_ready: boolean;
+  health_ready?: boolean;
   profiles: string[];
+  expected_profiles?: string[];
   graphs: OrsGraphInfo[];
   error?: string;
 }

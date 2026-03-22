@@ -85,13 +85,13 @@ Profile selection is built into the CityProvisioner UI. Users select routing pro
 
 **Option C — Manual editing (fallback):**
 
-1. **Edit** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`:
+1. **Edit** `.cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml`:
    - For each profile, set `enabled: true` or `enabled: false`
    - Update `source_file` to match the region's PBF filename
 
 2. **Upload** modified file:
    ```bash
-   snow stage copy build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated with new profiles
@@ -105,7 +105,7 @@ After completing all steps in this subskill, return to the **routing-customizati
 | Issue | Solution |
 |-------|----------|
 | `WRITE_ORS_CONFIG` not found | App needs upgrade. Upload latest `setup_script.sql` and run `ALTER APPLICATION ... UPGRADE` |
-| Config file not found locally | Re-download from stage: `snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml build-routing-solution/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite` |
+| Config file not found locally | Re-download from stage: `snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite` |
 | Stage upload fails | Verify WRITE privilege on stage and correct `--connection` value |
 | Profile name typo | Use exact names from Available Profiles table above |
 

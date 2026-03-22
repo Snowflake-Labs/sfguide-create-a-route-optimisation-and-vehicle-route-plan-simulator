@@ -23,7 +23,7 @@ Common issues and their solutions when deploying the ORS Native App.
 ## Wrong Directory Error
 
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
-**Solution:** Ensure script runs from `Native_app/` directory, not `provider_setup/`
+**Solution:** Ensure script runs from `native_app/` directory, not `provider_setup/`
 
 ## ARM Mac esbuild Crash (ors_control_app)
 

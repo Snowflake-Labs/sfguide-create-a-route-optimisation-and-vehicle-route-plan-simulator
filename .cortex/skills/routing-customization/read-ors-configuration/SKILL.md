@@ -50,10 +50,10 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
 
 1. **Download** the ORS config file from stage:
    ```bash
-   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml build-routing-solution/Native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
-2. **Read** `build-routing-solution/Native_app/provider_setup/staged_files/ors-config.yml`
+2. **Read** `.cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml`
 
 3. **Parse** the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-electric`, `cycling-regular`, `foot-walking`

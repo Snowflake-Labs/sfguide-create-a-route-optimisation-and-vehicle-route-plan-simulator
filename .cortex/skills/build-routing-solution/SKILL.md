@@ -33,7 +33,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
-> All relative paths (e.g., `Native_app/`, `scripts/`) are relative to the `build-routing-solution/` directory.
+> All relative paths (e.g., `native_app/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
 
 ## Configuration
 
@@ -122,12 +122,12 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Upload** files from `Native_app/provider_setup/staged_files/` to stage:
+1. **Upload** files from `native_app/provider_setup/staged_files/` to stage:
    ```bash
-   snow stage copy "Native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
+   snow stage copy "native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
    
-   snow stage copy "Native_app/provider_setup/staged_files/ors-config.yml" \
+   snow stage copy "native_app/provider_setup/staged_files/ors-config.yml" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
 
    snow stage copy "scripts/download_map.py" \
@@ -167,7 +167,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
    ```bash
    # openrouteservice image
-   cd Native_app/services/openrouteservice
+   cd native_app/services/openrouteservice
    $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/openrouteservice:v9.0.0 .
    $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
    
@@ -178,8 +178,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    
    # gateway image
    cd ../gateway
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.9.4 .
-   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.9.4
+   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.9.5 .
+   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.9.5
    
    # vroom image
    cd ../vroom
@@ -203,9 +203,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CMD ["node", "dist-server/index.js"]
    RTEOF
    mv .dockerignore .dockerignore.bak 2>/dev/null
-   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.27 .
+   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.28 .
    mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.27
+   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.28
    
    # return to working directory
    cd ../../..
@@ -214,9 +214,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 4. **Monitor** progress (builds 5 images):
    - openrouteservice:v9.0.0
    - downloader:v0.0.3
-   - routing_reverse_proxy:v0.9.4
+   - routing_reverse_proxy:v0.9.5
    - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.27
+   - ors_control_app:v1.0.28
 
 **Output:** All 5 container images pushed to Snowflake image repository
 
@@ -238,7 +238,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 1. **Deploy the application:**
    ```bash
-   cd Native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
+   cd native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
 2. **Grant warehouse access to the app** (required for the React control app SQL API):
@@ -248,7 +248,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 3. **Open the application in browser:**
    ```bash
-   cd Native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
+   cd native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
 4. **Verify** deployment output includes:
@@ -325,7 +325,7 @@ Result: Fully operational ORS app with San Francisco routing
 ### Example 2: Rebuild control app only
 User says: "Update the control app to latest version"
 Actions:
-1. Use the Fast Deploy shortcut: `cd Native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
+1. Use the Fast Deploy shortcut: `cd native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
 Result: Control app image rebuilt and deployed, app upgraded
 
 ### Example 3: Update stored procedures only
@@ -343,7 +343,7 @@ Result: Stored procedures updated without container rebuild
 To rebuild and redeploy only the ORS Control App without rebuilding all images:
 
 ```bash
-cd build-routing-solution/Native_app/services/ors_control_app
+cd native_app/services/ors_control_app
 ./deploy.sh <connection> <version>
 # Example: ./deploy.sh fleet_test_evals v1.0.19
 ```

@@ -178,7 +178,52 @@ app.get('/api/status', async (_req, res) => {
 app.get('/api/config', (_req, res) => {
     res.json({ database: SF_DATABASE });
 });
-const APP_VERSION = '1.0.25';
+const APP_VERSION = '1.0.28';
+const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
+let cachedDefaultExpectedProfiles = null;
+async function getExpectedProfiles(region) {
+    if (region === 'default') {
+        if (cachedDefaultExpectedProfiles)
+            return cachedDefaultExpectedProfiles;
+        try {
+            const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))`);
+            const content = rows?.[0]?.CONTENT;
+            if (content && typeof content === 'string') {
+                const profileMatches = content.match(/profiles:\s*([\s\S]*?)(?:^\S|$)/m);
+                if (profileMatches) {
+                    const profiles = [];
+                    const enabledPattern = /([\w-]+):\s*\n[\s\S]*?enabled:\s*true/gm;
+                    const block = profileMatches[1];
+                    let m;
+                    while ((m = enabledPattern.exec(block)) !== null) {
+                        profiles.push(m[1]);
+                    }
+                    if (profiles.length > 0) {
+                        cachedDefaultExpectedProfiles = profiles;
+                        return profiles;
+                    }
+                }
+            }
+        }
+        catch (e) {
+            console.log(`[getExpectedProfiles] Could not parse config from stage: ${e.message}`);
+        }
+        cachedDefaultExpectedProfiles = DEFAULT_PROFILES;
+        return DEFAULT_PROFILES;
+    }
+    try {
+        const safeRegion = sanitizeIdentifier(region);
+        const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS='COMPLETED' ORDER BY COMPLETED_AT DESC LIMIT 1`);
+        const profileStr = rows?.[0]?.PROFILES;
+        if (profileStr && typeof profileStr === 'string') {
+            return profileStr.split(',').map((p) => p.trim()).filter(Boolean);
+        }
+    }
+    catch (e) {
+        console.log(`[getExpectedProfiles] Could not get profiles for ${region}: ${e.message}`);
+    }
+    return DEFAULT_PROFILES;
+}
 app.get('/api/health', async (_req, res) => {
     const result = { healthy: false, version: APP_VERSION, services: {} };
     try {
@@ -229,22 +274,33 @@ app.get('/api/health', async (_req, res) => {
 });
 app.get('/api/ors-readiness', async (_req, res) => {
     const readiness = {};
+    async function buildReadiness(regionKey, data) {
+        const builtProfiles = Object.keys(data.profiles || {});
+        const expectedProfiles = await getExpectedProfiles(regionKey);
+        const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
+        const graphs = allProfiles.map(p => ({
+            profile: p,
+            ready: builtProfiles.includes(p),
+            build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
+        }));
+        return {
+            service_ready: data.service_ready ?? false,
+            health_ready: data.health_ready ?? false,
+            profiles: builtProfiles,
+            expected_profiles: expectedProfiles,
+            graphs,
+        };
+    }
     try {
         const defaultRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
         const raw = defaultRows?.[0]?.S;
         if (raw) {
             const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            readiness['default'] = {
-                service_ready: data.service_ready ?? false,
-                profiles: Object.keys(data.profiles || {}),
-                graphs: Object.entries(data.bounds_info || {}).map(([p, v]) => ({
-                    profile: p, ready: v.ready ?? false, build_date: v.graph_build_date,
-                })),
-            };
+            readiness['default'] = await buildReadiness('default', data);
         }
     }
     catch (e) {
-        readiness['default'] = { service_ready: false, error: e.message };
+        readiness['default'] = { service_ready: false, health_ready: false, error: e.message };
     }
     try {
         const cities = JSON.parse(await callProcedure('LIST_CITIES()') || '[]');
@@ -255,17 +311,11 @@ app.get('/api/ors-readiness', async (_req, res) => {
                 const raw = rows?.[0]?.S;
                 if (raw) {
                     const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                    readiness[city.region] = {
-                        service_ready: data.service_ready ?? false,
-                        profiles: Object.keys(data.profiles || {}),
-                        graphs: Object.entries(data.bounds_info || {}).map(([p, v]) => ({
-                            profile: p, ready: v.ready ?? false, build_date: v.graph_build_date,
-                        })),
-                    };
+                    readiness[city.region] = await buildReadiness(city.region, data);
                 }
             }
             catch (e) {
-                readiness[city.region] = { service_ready: false, error: e.message };
+                readiness[city.region] = { service_ready: false, health_ready: false, error: e.message };
             }
         }
     }
