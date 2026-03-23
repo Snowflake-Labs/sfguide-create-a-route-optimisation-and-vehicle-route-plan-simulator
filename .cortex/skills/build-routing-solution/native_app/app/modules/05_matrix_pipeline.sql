@@ -326,7 +326,20 @@ BEGIN
     queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
 
-    IF (P_REGION IS NOT NULL AND UPPER(P_REGION) NOT IN ('DEFAULT', 'SAN_FRANCISCO')) THEN
+    LET is_default BOOLEAN DEFAULT TRUE;
+    IF (P_REGION IS NOT NULL AND UPPER(P_REGION) != 'DEFAULT') THEN
+        BEGIN
+            LET svc_rs RESULTSET := (EXECUTE IMMEDIATE
+                'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(P_REGION) || ''' IN SCHEMA CORE');
+            LET svc_c CURSOR FOR svc_rs;
+            FOR r IN svc_c DO
+                is_default := FALSE;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+
+    IF (NOT is_default) THEN
         matrix_call := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
     ELSE
         matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
@@ -675,6 +688,19 @@ BEGIN
 
     CALL core.ENSURE_MATRIX_TABLES(:P_REGION, :P_PROFILE, :P_RES);
 
+    LET is_default BOOLEAN DEFAULT TRUE;
+    IF (UPPER(P_REGION) != 'DEFAULT') THEN
+        BEGIN
+            LET svc_rs RESULTSET := (EXECUTE IMMEDIATE
+                'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(P_REGION) || ''' IN SCHEMA CORE');
+            LET svc_c CURSOR FOR svc_rs;
+            FOR r IN svc_c DO
+                is_default := FALSE;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+
     BEGIN
         ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
     EXCEPTION WHEN OTHER THEN NULL;
@@ -691,7 +717,6 @@ BEGIN
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
         wait_attempt := wait_attempt + 1;
         BEGIN
-            LET is_default BOOLEAN := (UPPER(P_REGION) IN ('DEFAULT', 'SAN_FRANCISCO'));
             IF (is_default) THEN
                 rs := (SELECT PARSE_JSON(TO_VARCHAR(core.ORS_STATUS())) AS S);
             ELSE
