@@ -71,3 +71,42 @@ podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.27
    CALL OPENROUTESERVICE_NATIVE_APP.CORE.CREATE_CONTROL_APP();
    ```
 **Key insight:** `ALTER SERVICE SET EXTERNAL_ACCESS_INTEGRATIONS` does NOT reliably enable DNS. The EAI must be present at `CREATE SERVICE` time. The `create_control_app` procedure now DROP+CREATEs the service to ensure this.
+
+## Services Going PENDING (Resource Exhaustion)
+
+**Symptom:** Services transition from RUNNING to PENDING with "Unschedulable due to insufficient resources" or silently fail to schedule.
+**Root Cause:** Compute pool has too many containers relative to available nodes. All containers in a service instance run on a single node; stage volume mounts limited to 8 per node.
+**Solution:**
+1. **Right-size instances:** ORS and gateway DON'T need the same count. Gateway is a lightweight proxy; 3 instances handles most workloads. ORS is heavy (graph loading); keep at 3 unless high traffic.
+2. **Use the 3-arg SCALE_SERVICES:** `CALL CORE.SCALE_SERVICES(ors_instances, gateway_instances, pool_nodes)` to set them independently.
+3. **Rule of thumb:** total_containers / 3 = minimum nodes. Example: 3 ORS + 3 gateway + 1 Berlin + 3 others = 10 containers → 4-5 nodes.
+4. **During matrix builds:** Suspend unused ORS_SERVICE if only building for a specific region (the region-specific ORS handles it).
+5. **Pool sizing formula:** `GREATEST(requested_nodes, CEIL(total_active_containers / 3))` to ensure at least 3 containers per node.
+
+## ALTER SESSION Not Allowed in EXECUTE AS OWNER
+
+**Symptom:** `Unsupported statement type 'ALTER_SESSION'` in stored procedures
+**Root Cause:** `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` is not allowed in EXECUTE AS OWNER procedures (which all Native App procedures use).
+**Solution:** Remove ALTER SESSION statements. Use retry+backoff logic and service resume instead of statement timeouts. Warehouse-level timeout can be set externally if needed.
+
+## Matrix Build 500 Errors from Gateway
+
+**Symptom:** `Request failed for external function MATRIX_TABULAR with remote service error: 500`
+**Root Causes and Fixes:**
+1. **Gateway can't reach ORS:** Service was PENDING/upgrading. Fix: Add service resume logic before build, reduce compute pressure.
+2. **Gateway Python bug (fixed in v0.9.6):** `resp.get('error', {}).get('code')` crashes with AttributeError when `error` is a string (connection failure) instead of a dict (ORS error). Fix: Check `isinstance(error_obj, dict)` before calling `.get('code')`.
+3. **MAX_BATCH_ROWS too high:** 100 rows × sequential ORS calls × ~2s each = 200s, exceeding gateway's 120s timeout. Fix: Use MAX_BATCH_ROWS=50 (50 × 2s = 100s, safe margin).
+
+## Matrix Build Performance Tuning
+
+**MAX_BATCH_ROWS settings for region-aware functions (MATRIX_TABULAR, MATRIX):**
+- Default (non-region): 1000 (uses the shared ORS_SERVICE with many instances)
+- Region-aware: **50** (routes to single-instance region ORS, processed sequentially)
+- Gateway timeout: 120s → max ~60 sequential ORS calls per batch
+- Each ORS matrix call (1 origin × ~2600 destinations): ~1-3s depending on graph size
+- **50 is the sweet spot**: 5x faster than 10, safe within 120s timeout
+
+## Stale/Zombie Build Jobs
+
+**Symptom:** Jobs stuck in RUNNING status indefinitely after services went PENDING
+**Solution:** BUILD_MATRIX_JOB_WRAPPER now auto-cleans jobs RUNNING for >2 hours before starting a new build. Manual fix: `UPDATE travel_matrix.MATRIX_BUILD_JOBS SET STATUS = 'ERROR' WHERE STATUS = 'RUNNING' AND STARTED_AT < DATEADD('HOUR', -2, CURRENT_TIMESTAMP())`

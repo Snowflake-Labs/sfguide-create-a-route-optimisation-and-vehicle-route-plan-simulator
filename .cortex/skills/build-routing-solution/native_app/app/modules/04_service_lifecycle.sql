@@ -124,6 +124,32 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE core.SCALE_SERVICES(INTEGER, INTEGER) TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE core.SCALE_SERVICES(P_ORS_INSTANCES INTEGER, P_GATEWAY_INSTANCES INTEGER, P_POOL_NODES INTEGER)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+AS
+$$
+DECLARE
+    region_svc_count INTEGER DEFAULT 0;
+BEGIN
+    ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = :P_ORS_INSTANCES MAX_INSTANCES = :P_ORS_INSTANCES;
+    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = :P_GATEWAY_INSTANCES MAX_INSTANCES = :P_GATEWAY_INSTANCES;
+
+    SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+    SELECT COUNT(*) INTO :region_svc_count FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE "status" != 'SUSPENDED';
+
+    LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
+    LET total_instances INTEGER := :P_ORS_INSTANCES + :P_GATEWAY_INSTANCES + :region_svc_count + 3;
+    LET min_nodes INTEGER := GREATEST(:P_POOL_NODES, CEIL(:total_instances / 3));
+    ALTER COMPUTE POOL IF EXISTS IDENTIFIER(:pool_name) SET MIN_NODES = :min_nodes MAX_NODES = :min_nodes;
+
+    RETURN 'Scaled ORS=' || :P_ORS_INSTANCES || ', gateway=' || :P_GATEWAY_INSTANCES || 
+           ', region_svcs=' || :region_svc_count || ', pool=' || :min_nodes || ' nodes';
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.SCALE_SERVICES(INTEGER, INTEGER, INTEGER) TO APPLICATION ROLE app_user;
+
 CREATE OR REPLACE PROCEDURE core.GET_STATUS()
 RETURNS STRING
 LANGUAGE SQL

@@ -274,6 +274,15 @@ BEGIN
                     IF (retry_count > max_retries) THEN
                         RAISE;
                     END IF;
+                    BEGIN
+                        ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
+                    EXCEPTION WHEN OTHER THEN
+                        BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
+                    END;
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || retry_wait || ')';
                     retry_wait := retry_wait * 2;
             END;
@@ -653,6 +662,14 @@ BEGIN
     prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
 
     UPDATE travel_matrix.MATRIX_BUILD_JOBS
+    SET STATUS = 'ERROR',
+        ERROR_MSG = 'Stale job: still RUNNING after 2+ hours, marked as zombie',
+        COMPLETED_AT = CURRENT_TIMESTAMP()
+    WHERE STATUS = 'RUNNING'
+      AND STARTED_AT < DATEADD('HOUR', -2, CURRENT_TIMESTAMP())
+      AND JOB_ID != :P_JOB_ID;
+
+    UPDATE travel_matrix.MATRIX_BUILD_JOBS
     SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=CURRENT_TIMESTAMP()
     WHERE JOB_ID = :P_JOB_ID;
 
@@ -715,6 +732,16 @@ BEGIN
     UPDATE travel_matrix.MATRIX_BUILD_JOBS
     SET STAGE='BUILDING', WORK_QUEUE_ROWS=:queue_count
     WHERE JOB_ID = :P_JOB_ID;
+
+    BEGIN
+        ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
+    EXCEPTION WHEN OTHER THEN
+        BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
 
     LET parallel_count INTEGER := 4;
     LET chunk_size INTEGER := GREATEST(CEIL(queue_count / parallel_count), 1);

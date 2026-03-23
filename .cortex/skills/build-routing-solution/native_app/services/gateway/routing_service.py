@@ -603,7 +603,8 @@ def post_matrix_tabular(format="json"):
         has_dest = len(row) == 4
         body = _build_matrix_body(row[1], row[2:], has_dest)
         resp = get_ors_response('matrix', row[1], body, format)
-        if isinstance(resp, dict) and resp.get('error', {}).get('code') == 6099 and has_dest:
+        error_obj = resp.get('error') if isinstance(resp, dict) else None
+        if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
             origin = row[2]
             destinations = row[3]
             if origin and not isinstance(origin[0], list):
@@ -640,7 +641,8 @@ def post_matrix_tabular_region(format="json"):
         has_dest = len(row) == 5
         body = _build_matrix_body(method, row[3:], has_dest)
         resp = get_ors_response('matrix', method, body, format, ors_host)
-        if isinstance(resp, dict) and resp.get('error', {}).get('code') == 6099 and has_dest:
+        error_obj = resp.get('error') if isinstance(resp, dict) else None
+        if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
             origin = row[3]
             destinations = row[4]
             if origin and not isinstance(origin[0], list):

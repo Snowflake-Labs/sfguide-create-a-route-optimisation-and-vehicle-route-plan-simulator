@@ -302,3 +302,96 @@ Run through this checklist before and after every `ALTER APPLICATION UPGRADE`.
 - [ ] All `PROCEDURE_OWNER` values show application name, not ACCOUNTADMIN
 - [ ] No stale `app/` copies remain on stage
 - [ ] Tested the changed functionality end-to-end (e.g., trigger a matrix build)
+
+## 11. Object Tracking Tags (MANDATORY)
+
+Every `CREATE` statement in the setup_script modules MUST include a tracking COMMENT tag. No exceptions.
+
+**Format:**
+```sql
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"<component>"}}'
+```
+
+Where `<component>` matches the module domain:
+
+| Module | Component tag |
+|--------|---------------|
+| `01_core_infra.sql` | `core` |
+| `02_routing_functions.sql` | `routing` |
+| `03_city_management.sql` | `provisioner` / `multi-city` |
+| `04_service_lifecycle.sql` | `lifecycle` |
+| `05_matrix_pipeline.sql` | `matrix` |
+| `06_matrix_ops.sql` | `matrix` |
+
+**Rules:**
+
+1. **Procedures** — COMMENT goes before `AS $$`. When `EXECUTE AS OWNER` is present, COMMENT must come BEFORE it:
+   ```sql
+   CREATE OR REPLACE PROCEDURE core.my_proc()
+   RETURNS VARCHAR
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}'
+   EXECUTE AS OWNER
+   AS
+   $$
+   ```
+
+2. **Tables** — COMMENT goes after column definitions:
+   ```sql
+   CREATE TABLE IF NOT EXISTS travel_matrix.MY_TABLE (
+       COL1 VARCHAR
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
+   ```
+   Note: `CREATE TABLE IF NOT EXISTS` does NOT update COMMENT on an existing table — use `ALTER TABLE ... SET COMMENT` if the table already exists.
+
+3. **Schemas** — COMMENT goes inline:
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS core
+       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+   ```
+
+4. **Streamlit / Services / Functions created at top level** — same pattern with appropriate component tag.
+
+5. **Dynamic objects (inside procedure bodies)** — use `ALTER ... SET COMMENT` after creation when the DDL syntax does not support inline COMMENT (e.g., CTAS, service functions with `SERVICE=` clause).
+
+6. **New modules** — if adding a new module file, register it in `setup_script.sql` with `EXECUTE IMMEDIATE FROM` and add a row to the module table above.
+
+7. **Pre-commit check** — before uploading, run: `grep -c COMMENT modules/*.sql` and verify every module has at least as many COMMENT clauses as CREATE statements.
+
+8. **`REBUILD_GRAPHS` must always be `"false"`** — in any ORS service spec (YAML or inline JSON), set `REBUILD_GRAPHS: "false"`. This tells ORS to load cached graphs from the persistent stage volume instead of rebuilding from the PBF file on every container start. Graphs are built automatically on first provision when no cache exists; subsequent restarts reuse the cache. Never set this to `"true"` unless explicitly performing a one-off forced rebuild.
+
+## 12. Compute Pool & Service Sizing Guidelines
+
+### Instance type
+- **HIGHMEM_X64_S** (6 vCPU, 58 GB RAM, 100 GB storage): Standard choice for ORS (memory-heavy graph loading).
+- All containers in a service instance run on a single node.
+- Stage volume mount limit: **8 per node** (across all services).
+
+### Service instance counts
+- **ORS_SERVICE** (default region): 3 instances for dev/test, 5-10 for production traffic.
+- **ROUTING_GATEWAY_SERVICE**: 3 instances is sufficient — it's a lightweight Flask reverse proxy.
+- **ORS_SERVICE_\<REGION\>** (city-specific): 1 instance per region.
+- **Other services** (downloader, vroom, control app): 1 instance each.
+- **Never set ORS and gateway to the same instance count** unless explicitly needed. Use the 3-arg `SCALE_SERVICES(ors, gateway, pool_nodes)` overload.
+
+### Pool node formula
+```
+total_containers = ors_instances + gateway_instances + region_services + 3  -- (downloader + vroom + control app)
+min_nodes = CEIL(total_containers / 3)  -- ~3 containers per node max
+```
+Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (use 5 for margin).
+
+### Preventing PENDING services
+1. Set `min_nodes = max_nodes` to avoid autoscaling surprises.
+2. Never exceed ~3 containers per node on HIGHMEM_X64_S.
+3. During matrix builds: suspend unused ORS_SERVICE if only the region-specific ORS is needed.
+4. After builds: resume ORS_SERVICE at reduced count and right-size pool.
+
+### MAX_BATCH_ROWS for service functions
+- Default (non-region) functions: `MAX_BATCH_ROWS=1000` (high concurrency, many ORS instances)
+- Region-aware functions: `MAX_BATCH_ROWS=50` (single ORS instance, gateway 120s timeout)
+- Formula: `max_rows = FLOOR(120 / avg_ors_call_seconds)` where avg is ~2s for typical matrix calls.
+
+### ALTER SESSION not allowed
+`ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` is **not supported** in EXECUTE AS OWNER procedures. Use retry+backoff logic and service resume instead.

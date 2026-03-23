@@ -205,7 +205,7 @@ BEGIN
       RETURNS VARIANT
       SERVICE=core.routing_gateway_service
       ENDPOINT='gateway'
-      MAX_BATCH_ROWS=10
+      MAX_BATCH_ROWS=50
       AS '/r/matrix_tabular';
    GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, VARCHAR, ARRAY) TO APPLICATION ROLE app_user;
 
@@ -213,7 +213,7 @@ BEGIN
       RETURNS VARIANT
       SERVICE=core.routing_gateway_service
       ENDPOINT='gateway'
-      MAX_BATCH_ROWS=10
+      MAX_BATCH_ROWS=50
       AS '/r/matrix';
    GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
 
@@ -221,7 +221,7 @@ BEGIN
       RETURNS VARIANT
       SERVICE=core.routing_gateway_service
       ENDPOINT='gateway'
-      MAX_BATCH_ROWS=10
+      MAX_BATCH_ROWS=50
       AS '/r/matrix_tabular';
    GRANT USAGE ON FUNCTION core.MATRIX_TABULAR(VARCHAR, VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
