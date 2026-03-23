@@ -49,11 +49,11 @@ BEGIN
    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
       INSTANCE_FAMILY = HIGHMEM_X64_S
       MIN_NODES = 1
-      MAX_NODES = 10
+      MAX_NODES = 5
       AUTO_RESUME = true
       AUTO_SUSPEND_SECS = 600;
 
-   ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET MIN_NODES = 10 MAX_NODES = 10;
+   ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET MIN_NODES = 5 MAX_NODES = 5;
 
    RETURN 'Compute Pool Created Successfully';
 
@@ -139,7 +139,7 @@ BEGIN
    -- account-level compute pool object prefixed with app name to prevent clashes
    LET pool_name := (SELECT CURRENT_DATABASE()) || '_compute_pool';
 
-   ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
+   ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = 3 MAX_INSTANCES = 3;
 
    ALTER SERVICE IF EXISTS core.ors_service
       FROM SPECIFICATION_FILE='services/openrouteservice/openrouteservice.yaml';
@@ -153,8 +153,8 @@ BEGIN
    CREATE SERVICE IF NOT EXISTS core.ors_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/openrouteservice/openrouteservice.yaml'
-      MIN_INSTANCES = 10
-      MAX_INSTANCES = 10
+      MIN_INSTANCES = 3
+      MAX_INSTANCES = 3
       AUTO_SUSPEND_SECS = 14400;
 
    CREATE SERVICE IF NOT EXISTS core.vroom_service
@@ -167,11 +167,11 @@ BEGIN
    CREATE SERVICE IF NOT EXISTS core.routing_gateway_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/gateway/routing-gateway-service.yaml'
-      MIN_INSTANCES = 10
-      MAX_INSTANCES = 10
+      MIN_INSTANCES = 3
+      MAX_INSTANCES = 3
       AUTO_SUSPEND_SECS = 14400;
 
-   ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 10 MAX_INSTANCES = 10;
+   ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 3 MAX_INSTANCES = 3;
 
    GRANT OPERATE ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.ors_service TO APPLICATION ROLE app_user;
