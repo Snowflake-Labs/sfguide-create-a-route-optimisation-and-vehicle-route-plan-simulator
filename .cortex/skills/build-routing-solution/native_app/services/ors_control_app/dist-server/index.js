@@ -37,7 +37,16 @@ async function waitForOrsGraphReady(region, maxWaitSecs = 600) {
     const interval = 15000;
     const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
     const safeRegion = region.replace(/[^A-Za-z0-9_]/g, '');
-    const isDefault = !safeRegion || safeRegion.toUpperCase() === 'DEFAULT' || safeRegion.toUpperCase() === 'SAN_FRANCISCO';
+    let isDefault = !safeRegion || safeRegion.toUpperCase() === 'DEFAULT';
+    if (!isDefault) {
+        try {
+            const svcRows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion.toUpperCase()}' IN SCHEMA ${SF_DATABASE}.CORE`);
+            isDefault = !svcRows || svcRows.length === 0;
+        }
+        catch {
+            isDefault = true;
+        }
+    }
     const statusSql = isDefault
         ? `SELECT ${SF_DATABASE}.CORE.ORS_STATUS() AS S`
         : `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;

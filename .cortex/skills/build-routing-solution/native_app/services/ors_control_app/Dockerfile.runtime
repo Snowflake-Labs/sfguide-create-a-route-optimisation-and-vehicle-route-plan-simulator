@@ -1,9 +1,0 @@
-FROM node:20-alpine
-WORKDIR /app
-COPY dist ./dist
-COPY dist-server ./dist-server
-COPY package.json ./
-COPY package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
-EXPOSE 3001
-CMD ["node", "dist-server/index.js"]
