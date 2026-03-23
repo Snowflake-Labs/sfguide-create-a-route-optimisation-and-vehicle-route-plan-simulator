@@ -155,6 +155,32 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **If error occurs:** See `references/build-images.md` Common Errors section or `references/troubleshooting.md`.
 
+**Next:** Proceed to Step 5b
+
+### Step 5b: Validate Image Version Consistency (MANDATORY)
+
+**Goal:** Ensure all image version tags match across manifest.yml, service YAMLs, and build instructions
+
+**CRITICAL:** This step MUST be run before `snow app run`. Skipping it risks deployment failure with `Image ... not found`.
+
+**Actions:**
+
+1. Run the validation script:
+   ```bash
+   bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+   ```
+
+2. If the script reports MISMATCH:
+   - Update the stale file(s) to match the version tags used in the build step
+   - Re-run the script to confirm all versions are consistent
+
+3. If no script available, manually verify with grep:
+   ```bash
+   grep -ohE '[a-z_-]+:v[0-9.]+' native_app/app/manifest.yml | sort
+   grep -rohE '[a-z_-]+:v[0-9.]+' native_app/services/*/*.yaml | sort -u
+   ```
+   All 5 image:tag pairs must match exactly.
+
 **Next:** Proceed to Step 6
 
 ### Step 6: Deploy Native App

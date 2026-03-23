@@ -25,6 +25,25 @@ Common issues and their solutions when deploying the ORS Native App.
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
 **Solution:** Ensure script runs from `native_app/` directory, not `provider_setup/`
 
+## Image Version Mismatch (Deployment Failure)
+
+**Symptom:** `snow app run` fails with:
+```
+Image /openrouteservice_setup/public/image_repository/<image>:<old_tag> not found.
+Please verify the image exists in the image repository.
+```
+
+**Root Cause:** `manifest.yml` references a different version tag than what was actually
+built and pushed. This happens when version tags are updated in service YAMLs or
+build-images.md but not in manifest.yml (or vice versa).
+
+**Solution:**
+1. Run `bash scripts/check_image_versions.sh` to identify which file is out of sync
+2. Update the stale version tag to match the version you built
+3. Re-run `snow app run`
+
+**Prevention:** Always run Step 5b (version validation) before deploying.
+
 ## ARM Mac esbuild Crash (ors_control_app)
 
 **Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`

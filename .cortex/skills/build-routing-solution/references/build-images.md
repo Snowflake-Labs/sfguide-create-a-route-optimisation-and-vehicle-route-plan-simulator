@@ -93,3 +93,22 @@ cd ../../..
 - **Docker daemon not running**: Start Docker Desktop
 - **ARM Mac esbuild crash**: Build React app locally first, use `Dockerfile.runtime` (see ors_control_app section above)
 - **Podman pushes to wrong registry**: Use manual `--creds` flag, see `references/troubleshooting.md`
+
+## CRITICAL: Pre-Deploy Version Check
+
+Before running `snow app run`, you MUST verify that all image version tags in
+`manifest.yml` match the tags you just built and pushed. A version mismatch
+causes deployment to fail with `Image ... not found`.
+
+Run the validation script:
+```bash
+bash scripts/check_image_versions.sh
+```
+
+Or manually compare:
+```bash
+grep -ohE '[a-z_-]+:v[0-9.]+' native_app/app/manifest.yml | sort
+grep -rohE '[a-z_-]+:v[0-9.]+' native_app/services/*/*.yaml | sort -u
+```
+
+All 5 pairs must match: openrouteservice, downloader, routing_reverse_proxy, vroom-docker, ors_control_app.
