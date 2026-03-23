@@ -1,6 +1,6 @@
 ---
 name: build-routing-solution
-description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images, deploy ORS native app to Snowflake. Do NOT use for: changing maps or routing profiles (use customize-main), deploying demo apps (use deploy-route-optimization-demo or deploy-fleet-intelligence-taxis). Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS native app, SPCS image build, OpenRouteService deployment."
+description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images, deploy ORS native app to Snowflake, redeploy native app, rebuild container images. Do NOT use for: changing maps or routing profiles (use routing-customization), deploying demo apps (use route-optimization or fleet-intelligence-taxis). Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS native app, redeploy app, rebuild images, SPCS image build, OpenRouteService deployment."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -10,6 +10,14 @@ metadata:
 # Deploy Route Optimizer
 
 Deploys the OpenRouteService route optimization application as a Snowflake Native App using Snowpark Container Services.
+
+## Execution Rules
+
+1. All relative paths (e.g., `native_app/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
+2. Replace `<connection>` with the user's active Snowflake connection name in all commands.
+3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
+4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
+5. Log failures to `logs/` following `logs/README.md` format. Do not create a log file if execution succeeds without issues.
 
 ## Prerequisites
 
@@ -33,8 +41,6 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
-> All relative paths (e.g., `native_app/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
-
 ## Configuration
 
 | Parameter | Default | Description |
@@ -44,10 +50,6 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 | WAREHOUSE_SIZE | `MEDIUM` | Size of the routing warehouse |
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
 | COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
-
-## Error Logging
-
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `build-routing-solution_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
 ## Workflow
 
@@ -96,21 +98,22 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Execute** environment setup SQL:
+1. **Execute** environment setup SQL (all objects include the tracking COMMENT tag):
    ```sql
-   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE)
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE)
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE)
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60
-       COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+   -- Tracking tag applied to all objects:
+   -- COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}'
+
+   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP COMMENT = '<tag>';
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE
+       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE
+       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE
+       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
+   CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY COMMENT = '<tag>';
+   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60 COMMENT = '<tag>';
    ```
+   Replace `<tag>` with the full COMMENT JSON shown above.
 
 **Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created
 
@@ -142,91 +145,15 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Build 5 container images and push to Snowflake image repository
 
-**Actions:**
+Follow the full build instructions in `references/build-images.md`. Summary:
 
-1. **Authenticate** with SPCS image registry:
-
-   **For Docker:**
-   ```bash
-   snow spcs image-registry login -c <connection>
-   ```
-
-   **For Podman:**
-   ```bash
-   REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
-   snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
-   ```
-
-2. **Get** repository URL:
-   ```bash
-   REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>)
-   echo $REPO_URL
-   ```
-
-3. **Build and push** images using the selected container runtime (`$CONTAINER_CMD` = podman or docker):
-
-   ```bash
-   # openrouteservice image
-   cd native_app/services/openrouteservice
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/openrouteservice:v9.0.0 .
-   $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
-   
-   # downloader image
-   cd ../downloader
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/downloader:v0.0.3 .
-   $CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
-   
-   # gateway image
-   cd ../gateway
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.9.5 .
-   $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.9.5
-   
-   # vroom image
-   cd ../vroom
-   $CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/vroom-docker:v1.0.1 .
-   $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
-   
-   # ors control app (React management UI)
-   cd ../ors_control_app
-   # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
-   # Build locally first, then use a runtime-only Dockerfile:
-   npm ci && npm run build && npm run build:server
-   cat > Dockerfile.runtime <<'RTEOF'
-   FROM node:20-alpine
-   WORKDIR /app
-   COPY dist ./dist
-   COPY dist-server ./dist-server
-   COPY package.json ./
-   COPY package-lock.json* ./
-   RUN npm ci --omit=dev || npm install --omit=dev
-   EXPOSE 3001
-   CMD ["node", "dist-server/index.js"]
-   RTEOF
-   mv .dockerignore .dockerignore.bak 2>/dev/null
-   $CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.28 .
-   mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-   $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.28
-   
-   # return to working directory
-   cd ../../..
-   ```
-
-4. **Monitor** progress (builds 5 images):
-   - openrouteservice:v9.0.0
-   - downloader:v0.0.3
-   - routing_reverse_proxy:v0.9.5
-   - vroom-docker:v1.0.1
-   - ors_control_app:v1.0.28
-
-**Output:** All 5 container images pushed to Snowflake image repository
+1. Authenticate with SPCS image registry (Docker or Podman)
+2. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
+3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v0.9.6), vroom-docker (v1.0.1), ors_control_app (v1.0.28)
 
 **Expected Duration:** 5-10 minutes
 
-**If error occurs:**
-- Authentication issue: Ensure you ran `snow spcs image-registry login`
-- Podman machine not running: `podman machine start`
-- Docker daemon not running: Start Docker Desktop
-- Build failures: Check container runtime status and retry
+**If error occurs:** See `references/build-images.md` Common Errors section or `references/troubleshooting.md`.
 
 **Next:** Proceed to Step 6
 
@@ -326,51 +253,33 @@ Result: Fully operational ORS app with San Francisco routing
 
 ### Example 2: Rebuild control app only
 User says: "Update the control app to latest version"
-Actions:
-1. Use the Fast Deploy shortcut: `cd native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
+Actions: Run `cd native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
 Result: Control app image rebuilt and deployed, app upgraded
 
 ### Example 3: Update stored procedures only
 User says: "I changed setup_script.sql, deploy it"
-Actions:
-1. Upload setup_script.sql to stage ROOT (NOT `app/` — see `references/snowflake-scripting-guidelines.md` §2) and upgrade app:
-   ```sql
-   PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
-   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
-   ```
+Actions: PUT to stage ROOT and upgrade (see Partial Deploys below)
 Result: Stored procedures updated without container rebuild
 
-## Fast Deploy (Control App Only)
+## Partial Deploys
 
-To rebuild and redeploy only the ORS Control App without rebuilding all images:
+### Control App Only (Fast Deploy)
 
 ```bash
 cd native_app/services/ors_control_app
 ./deploy.sh <connection> <version>
-# Example: ./deploy.sh fleet_test_evals v1.0.19
 ```
 
 This script: builds React + server locally, creates runtime Dockerfile, pushes image, updates service YAML version, uploads setup_script.sql to app package stage, and upgrades the native app.
 
-Alternatively, to update just the setup_script.sql (stored procedures) without rebuilding the container:
+### Stored Procedures Only
 
 ```sql
--- IMPORTANT: PUT to stage ROOT, not app/ — manifest reads from root
 PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
 ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
 ```
 
-## Coding Guidelines
-
-Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`. It covers:
-- Variable binding rules (colon prefix gotchas)
-- Stage file map (where each file must be PUT)
-- Pre-deployment and post-deployment checklists
-- Deployment verification SQL
-- Sandbox testing workflow
-- Common pitfalls and their fixes
-
-These guidelines exist because past issues were caused by wrong stage paths, incorrect variable syntax, and missing verification steps. Follow them to avoid repeating these mistakes.
+PUT to stage ROOT, NOT `app/` -- manifest reads from root. See `references/snowflake-scripting-guidelines.md` Section 2.
 
 ## Cleanup
 

@@ -7,6 +7,7 @@ import logging
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 SERVICE_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVICE_PORT = os.getenv('SERVER_PORT', 8080)
@@ -15,7 +16,8 @@ VROOM_PORT = os.getenv('VROOM_PORT', 3000)
 ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
-GATEWAY_VERSION = 'v0.9.5'
+MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
+GATEWAY_VERSION = 'v0.9.6'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -598,8 +600,7 @@ def post_matrix_tabular(format="json"):
     if not input_rows:
         return {}
 
-    output_rows = []
-    for row in input_rows:
+    def _process_row(row):
         has_dest = len(row) == 4
         body = _build_matrix_body(row[1], row[2:], has_dest)
         resp = get_ors_response('matrix', row[1], body, format)
@@ -613,7 +614,10 @@ def post_matrix_tabular(format="json"):
             sources_idx = list(range(len(origin)))
             destinations_idx = list(range(len(origin), len(locations)))
             resp = _retry_matrix_chunked(row[1], locations, sources_idx, destinations_idx, format, ORS_HOST)
-        output_rows.append([row[0], resp])
+        return [row[0], resp]
+
+    with ThreadPoolExecutor(max_workers=MATRIX_CONCURRENCY) as executor:
+        output_rows = list(executor.map(_process_row, input_rows))
 
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
@@ -633,8 +637,7 @@ def post_matrix_tabular_region(format="json"):
     if not input_rows:
         return {}
 
-    output_rows = []
-    for row in input_rows:
+    def _process_row(row):
         region = row[1]
         ors_host = resolve_ors_host(region)
         method = row[2]
@@ -651,7 +654,10 @@ def post_matrix_tabular_region(format="json"):
             sources_idx = list(range(len(origin)))
             destinations_idx = list(range(len(origin), len(locations)))
             resp = _retry_matrix_chunked(method, locations, sources_idx, destinations_idx, format, ors_host)
-        output_rows.append([row[0], resp])
+        return [row[0], resp]
+
+    with ThreadPoolExecutor(max_workers=MATRIX_CONCURRENCY) as executor:
+        output_rows = list(executor.map(_process_row, input_rows))
 
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)

@@ -267,7 +267,7 @@ export default function MatrixBuilder() {
                 </div>
                 <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%` }} /></div>
                 <div className="progress-stats">
-                  {job.stage === 'BUILDING' && <span>{formatNumber(job.raw_rows)} / {formatNumber(job.work_queue_rows)} origins</span>}
+                  {job.stage === 'BUILDING' && <span>{formatNumber(job.raw_rows)} / {formatNumber(job.work_queue_rows)} chunks ({formatNumber(job.hexagons)} origins)</span>}
                   {job.stage === 'HEXAGONS' && <span>{formatNumber(job.hexagons)} hexagons</span>}
                   <span>{pct.toFixed(1)}%</span>
                   <span>Started {timeAgo(job.started_at || job.created_at)}</span>

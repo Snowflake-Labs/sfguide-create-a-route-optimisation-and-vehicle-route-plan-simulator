@@ -185,6 +185,8 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 | Colon in assignment | Syntax error | Remove `:` — assignments use bare variables |
 | City ORS service auto-suspends mid-build | 500 Internal Server Error from MATRIX_TABULAR | Wrapper now suspends then resumes the city service before building to reset the auto-suspend timer. Traffic via gateway does NOT count as direct service activity for SPCS auto-suspend. |
 | `CREATE TEMPORARY TABLE` in native app | "Operation CREATE on TEMPORARY TABLE is not permitted within APPLICATION" | Native apps prohibit temporary tables. Replace with inline DELETE + INSERT using NOT IN subquery. Pattern: DELETE rows with NULL results, then INSERT missing SEQ_IDs from queue where SEQ_ID NOT IN (SELECT SEQ_ID FROM raw_table). |
+| Gateway processes rows sequentially (pre-v0.9.6) | Matrix builds very slow (~62s per batch of 50) | Gateway v0.9.6 uses `ThreadPoolExecutor(MATRIX_CONCURRENCY)` (default 6) for concurrent ORS calls within each batch. Do NOT revert to sequential processing. |
+| Work queue row has >1000 destinations | ORS error 6099 "too many locations" or gateway 500 | BUILD_WORK_QUEUE chunks destinations to max 1000 per row via `FLOOR((dest_seq - 1) / 1000)`. Do NOT revert to all-destinations-per-origin. |
 
 ## 8. Stage File Map
 
@@ -195,6 +197,13 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 ├── setup_script.sql          <-- app/setup_script.sql
 ├── manifest.yml              <-- app/manifest.yml
 ├── README.md                 <-- app/README.md
+├── modules/
+│   ├── 01_core_infra.sql
+│   ├── 02_routing_functions.sql
+│   ├── 03_city_management.sql
+│   ├── 04_service_lifecycle.sql
+│   ├── 05_matrix_pipeline.sql
+│   └── 06_matrix_ops.sql
 ├── services/
 │   ├── ors_control_app/
 │   │   └── ors_control_app_service.yaml
@@ -370,7 +379,7 @@ Where `<component>` matches the module domain:
 
 ### Service instance counts
 - **ORS_SERVICE** (default region): 3 instances for dev/test, 5-10 for production traffic.
-- **ROUTING_GATEWAY_SERVICE**: 3 instances is sufficient — it's a lightweight Flask reverse proxy.
+- **ROUTING_GATEWAY_SERVICE**: 3 instances is sufficient — lightweight gunicorn proxy (2 workers, 4 threads, 300s timeout). `MATRIX_CONCURRENCY=6` env var controls ThreadPoolExecutor parallelism per batch.
 - **ORS_SERVICE_\<REGION\>** (city-specific): 1 instance per region.
 - **Other services** (downloader, vroom, control app): 1 instance each.
 - **Never set ORS and gateway to the same instance count** unless explicitly needed. Use the 3-arg `SCALE_SERVICES(ors, gateway, pool_nodes)` overload.
@@ -390,8 +399,26 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 
 ### MAX_BATCH_ROWS for service functions
 - Default (non-region) functions: `MAX_BATCH_ROWS=1000` (high concurrency, many ORS instances)
-- Region-aware functions: `MAX_BATCH_ROWS=50` (single ORS instance, gateway 120s timeout)
-- Formula: `max_rows = FLOOR(120 / avg_ors_call_seconds)` where avg is ~2s for typical matrix calls.
+- Region-aware functions: `MAX_BATCH_ROWS=50` (single ORS instance)
+- With gateway v0.9.6 concurrency (6 threads), 50 rows complete in ~10-15s vs 100s sequentially.
+
+### Matrix parallel workers formula
+- `LEAST(GREATEST(service_instances * 2, 2), 4)` — adapts to ORS instance count.
+- Default ORS (3 instances) = 4 SQL workers; city ORS (1 instance) = 2 SQL workers.
+- Detected at runtime via `SHOW SERVICES LIKE 'ORS_SERVICE_%'`.
+- Benchmark: Berlin RES8 (2,611 hexagons, ~6.8M pairs, 1-instance city ORS, 2 workers) = **6 minutes**.
+
+### City ORS AUTO_SUSPEND
+- City services use `AUTO_SUSPEND_SECS=14400` (4 hours). Previous value of 3600s caused frequent mid-build suspensions because SPCS auto-suspend only counts direct API calls to the service, not traffic routed through the gateway.
 
 ### ALTER SESSION not allowed
 `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` is **not supported** in EXECUTE AS OWNER procedures. Use retry+backoff logic and service resume instead.
+
+### Current image tags
+| Service | Image | Tag |
+|---------|-------|-----|
+| ORS | openrouteservice | v9.0.0 |
+| Downloader | downloader | v0.0.3 |
+| Gateway | routing_reverse_proxy | v0.9.6 |
+| VROOM | vroom-docker | v1.0.1 |
+| Control App | ors_control_app | v1.0.28 |

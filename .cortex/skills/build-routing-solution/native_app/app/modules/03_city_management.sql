@@ -205,7 +205,7 @@ BEGIN
     ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
-    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
+    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 14400';
     EXECUTE IMMEDIATE :create_sql;
 
     EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';

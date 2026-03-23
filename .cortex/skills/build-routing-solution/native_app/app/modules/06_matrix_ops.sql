@@ -8,7 +8,29 @@ $$
 DECLARE
     result VARCHAR DEFAULT '[]';
     rs RESULTSET;
+    live_count INTEGER;
+    job_rs RESULTSET;
 BEGIN
+    job_rs := (
+        SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE
+        FROM travel_matrix.MATRIX_BUILD_JOBS
+        WHERE STATUS = 'RUNNING' AND STAGE = 'BUILDING'
+    );
+    LET jc CURSOR FOR job_rs;
+    FOR j IN jc DO
+        BEGIN
+            LET raw_tbl VARCHAR := 'travel_matrix.' || UPPER(j.REGION) || '_' ||
+                REPLACE(UPPER(j.PROFILE), '-', '_') || '_MATRIX_RAW_' || j.RESOLUTION;
+            LET cnt_rs RESULTSET := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || raw_tbl);
+            LET cc CURSOR FOR cnt_rs;
+            FOR r IN cc DO live_count := r.CNT; END FOR;
+            UPDATE travel_matrix.MATRIX_BUILD_JOBS
+            SET RAW_ROWS = :live_count
+            WHERE JOB_ID = j.JOB_ID;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
     rs := (
         SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
             'job_id', JOB_ID,

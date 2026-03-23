@@ -111,15 +111,33 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
 AS
 $$
+DECLARE
+    region_scaled INTEGER DEFAULT 0;
 BEGIN
     ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
     ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
 
+    BEGIN
+        SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+        LET rs RESULTSET := (
+            SELECT "name" AS svc_name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        );
+        LET cur CURSOR FOR rs;
+        FOR rec IN cur DO
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE core.' || rec.svc_name || ' SET MIN_INSTANCES = 1 MAX_INSTANCES = 1';
+                region_scaled := region_scaled + 1;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END FOR;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
-    LET pool_nodes INTEGER := GREATEST(:P_MAX_INSTANCES + 2, 3);
+    LET pool_nodes INTEGER := GREATEST(:P_MAX_INSTANCES + region_scaled + 2, 3);
     ALTER COMPUTE POOL IF EXISTS IDENTIFIER(:pool_name) SET MIN_NODES = :pool_nodes MAX_NODES = :pool_nodes;
 
-    RETURN 'Scaled ORS + gateway to ' || :P_MIN_INSTANCES || '-' || :P_MAX_INSTANCES || ' instances, pool to ' || :pool_nodes || ' nodes';
+    RETURN 'Scaled ORS + gateway to ' || :P_MIN_INSTANCES || '-' || :P_MAX_INSTANCES || ' instances, ' || :region_scaled || ' city services, pool to ' || :pool_nodes || ' nodes';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.SCALE_SERVICES(INTEGER, INTEGER) TO APPLICATION ROLE app_user;

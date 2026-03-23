@@ -45,7 +45,7 @@ Common issues and their solutions when deploying the ORS Native App.
 ```bash
 REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
 TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
-podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.27
+podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.28
 ```
 
 ## Basemap Tiles Not Loading (ENOTFOUND / 502)
@@ -95,16 +95,26 @@ podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.27
 **Root Causes and Fixes:**
 1. **Gateway can't reach ORS:** Service was PENDING/upgrading. Fix: Add service resume logic before build, reduce compute pressure.
 2. **Gateway Python bug (fixed in v0.9.6):** `resp.get('error', {}).get('code')` crashes with AttributeError when `error` is a string (connection failure) instead of a dict (ORS error). Fix: Check `isinstance(error_obj, dict)` before calling `.get('code')`.
-3. **MAX_BATCH_ROWS too high:** 100 rows × sequential ORS calls × ~2s each = 200s, exceeding gateway's 120s timeout. Fix: Use MAX_BATCH_ROWS=50 (50 × 2s = 100s, safe margin).
+3. **ORS overwhelmed:** Too many concurrent calls to a single-instance city ORS. Fix: Gateway v0.9.6 uses `MATRIX_CONCURRENCY=6` (configurable). Reduce to 3-4 if a city ORS is overwhelmed.
+4. **Recovery:** The 3-layer error recovery (per-batch retry, per-worker batched retry, wrapper-level sweep) handles transient 500 errors automatically. Check `MATRIX_BUILD_JOBS.MESSAGE` for error counts after build completes.
+
+## Matrix Build Slow for City Regions
+
+**Symptom:** City region matrix builds take much longer than default region builds (e.g., Berlin RES8: 163 min for 6M pairs)
+**Root Cause:** City ORS has 1 instance vs 3 for default. Pre-v0.9.6 gateway processed rows sequentially (50 rows × ~1.25s = 62s per batch).
+**Solution (all applied in v0.9.6):**
+1. **Gateway ThreadPoolExecutor**: 6 concurrent ORS calls per batch instead of sequential. Set via `MATRIX_CONCURRENCY` env var in `routing-gateway-service.yaml`.
+2. **Gunicorn server**: 2 workers + 4 threads (replaces Flask dev server). Handles concurrent SQL worker batches.
+3. **Adaptive parallelism**: City services get 2 SQL workers (`LEAST(GREATEST(1*2, 2), 4) = 2`). Default gets 4.
+4. **Actual result**: Berlin RES8 from 163min to **6min** (2,611 hexagons, ~6.8M pairs). ~27x speedup.
 
 ## Matrix Build Performance Tuning
 
-**MAX_BATCH_ROWS settings for region-aware functions (MATRIX_TABULAR, MATRIX):**
-- Default (non-region): 1000 (uses the shared ORS_SERVICE with many instances)
-- Region-aware: **50** (routes to single-instance region ORS, processed sequentially)
-- Gateway timeout: 120s → max ~60 sequential ORS calls per batch
-- Each ORS matrix call (1 origin × ~2600 destinations): ~1-3s depending on graph size
-- **50 is the sweet spot**: 5x faster than 10, safe within 120s timeout
+**Batch size:** Uniform `50` for all resolutions. Each batch calls MATRIX_TABULAR for 50 work queue rows.
+**Destination chunking:** Work queue rows are capped at 1000 destinations each via `FLOOR((dest_seq - 1) / 1000)` partitioning. A 2600-hex region produces ~3 chunks per origin.
+**Gateway concurrency:** `MATRIX_CONCURRENCY=6` (default). Each gateway instance processes up to 6 ORS calls in parallel via ThreadPoolExecutor. Reduce to 3-4 if error rate is high.
+**SQL worker parallelism:** `LEAST(GREATEST(service_instances * 2, 2), 4)`. Default ORS (3 instances) = 4 workers; city ORS (1 instance) = 2 workers.
+**Gateway server:** gunicorn with 2 workers, 4 threads, 300s timeout (replaced Flask dev server in v0.9.6).
 
 ## Stale/Zombie Build Jobs
 

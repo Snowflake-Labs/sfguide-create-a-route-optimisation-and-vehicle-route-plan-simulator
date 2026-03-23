@@ -156,30 +156,33 @@ BEGIN
 
     EXECUTE IMMEDIATE '
     INSERT INTO ' || queue_table || ' (SEQ_ID, ORIGIN_H3, ORIGIN_LON, ORIGIN_LAT, DEST_COORDS, DEST_HEX_IDS)
-    WITH pairs AS (
+    WITH numbered_pairs AS (
         SELECT
             a.H3_INDEX AS origin_h3,
             a.CENTER_LON AS origin_lon,
             a.CENTER_LAT AS origin_lat,
-            b.H3_INDEX AS dest_h3
+            b.H3_INDEX AS dest_h3,
+            b.CENTER_LON AS dest_lon,
+            b.CENTER_LAT AS dest_lat,
+            ROW_NUMBER() OVER (PARTITION BY a.H3_INDEX ORDER BY b.H3_INDEX) AS dest_seq
         FROM ' || hex_table || ' a
         CROSS JOIN ' || hex_table || ' b
         WHERE a.H3_INDEX != b.H3_INDEX
     ),
-    grouped AS (
+    chunked AS (
         SELECT
             origin_h3, origin_lon, origin_lat,
-            ARRAY_AGG(ARRAY_CONSTRUCT(d.CENTER_LON, d.CENTER_LAT)) AS dest_coords,
-            ARRAY_AGG(p.dest_h3) AS dest_hex_ids
-        FROM pairs p
-        JOIN ' || hex_table || ' d ON p.dest_h3 = d.H3_INDEX
-        GROUP BY origin_h3, origin_lon, origin_lat
+            FLOOR((dest_seq - 1) / 1000) AS chunk_idx,
+            ARRAY_AGG(ARRAY_CONSTRUCT(dest_lon, dest_lat)) AS dest_coords,
+            ARRAY_AGG(dest_h3) AS dest_hex_ids
+        FROM numbered_pairs
+        GROUP BY origin_h3, origin_lon, origin_lat, chunk_idx
     )
     SELECT
-        ROW_NUMBER() OVER (ORDER BY origin_h3) AS seq_id,
+        ROW_NUMBER() OVER (ORDER BY origin_h3, chunk_idx) AS seq_id,
         origin_h3, origin_lon, origin_lat,
         dest_coords, dest_hex_ids
-    FROM grouped';
+    FROM chunked';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || queue_table);
     LET c CURSOR FOR rs;
@@ -204,6 +207,8 @@ DECLARE
     current_pos INTEGER;
     batch_end INTEGER;
     batch_num INTEGER DEFAULT 0;
+    failed_batches INTEGER DEFAULT 0;
+    batch_failed BOOLEAN DEFAULT FALSE;
     queue_table VARCHAR;
     raw_table VARCHAR;
     safe_profile VARCHAR;
@@ -219,19 +224,7 @@ BEGIN
     queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
 
-    IF (P_RES = 'RES5') THEN
-        batch_size := 20;
-    ELSEIF (P_RES = 'RES6') THEN
-        batch_size := 50;
-    ELSEIF (P_RES = 'RES7') THEN
-        batch_size := 100;
-    ELSEIF (P_RES = 'RES8') THEN
-        batch_size := 200;
-    ELSEIF (P_RES = 'RES9') THEN
-        batch_size := 100;
-    ELSE
-        batch_size := 50;
-    END IF;
+    batch_size := 50;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
                   ') AS MAX_DONE FROM ' || raw_table ||
@@ -249,6 +242,7 @@ BEGIN
         batch_end := LEAST(current_pos + batch_size - 1, P_END_SEQ);
         retry_count := 0;
         retry_wait := 10;
+        batch_failed := FALSE;
 
         insert_sql := '
         INSERT INTO ' || raw_table || '
@@ -272,19 +266,22 @@ BEGIN
                 WHEN OTHER THEN
                     retry_count := retry_count + 1;
                     IF (retry_count > max_retries) THEN
-                        RAISE;
+                        failed_batches := failed_batches + 1;
+                        batch_failed := TRUE;
+                        retry_count := max_retries + 1;
+                    ELSE
+                        BEGIN
+                            ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
+                        EXCEPTION WHEN OTHER THEN NULL;
+                        END;
+                        BEGIN
+                            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
+                        EXCEPTION WHEN OTHER THEN
+                            BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
+                        END;
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || retry_wait || ')';
+                        retry_wait := retry_wait * 2;
                     END IF;
-                    BEGIN
-                        ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
-                    EXCEPTION WHEN OTHER THEN NULL;
-                    END;
-                    BEGIN
-                        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
-                    EXCEPTION WHEN OTHER THEN
-                        BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
-                    END;
-                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || retry_wait || ')';
-                    retry_wait := retry_wait * 2;
             END;
         END WHILE;
 
@@ -293,7 +290,7 @@ BEGIN
 
     RETURN P_RES || ' range [' || P_START_SEQ || '-' || P_END_SEQ ||
            '] complete: ' || batch_num || ' batches of ' || batch_size ||
-           ' (resumed from seq ' || max_done || ')';
+           ' (resumed from seq ' || max_done || ', failed_batches=' || failed_batches || ')';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE(VARCHAR, INTEGER, INTEGER, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
@@ -310,6 +307,8 @@ DECLARE
     current_pos INTEGER;
     batch_end INTEGER;
     batch_num INTEGER DEFAULT 0;
+    failed_batches INTEGER DEFAULT 0;
+    batch_failed BOOLEAN DEFAULT FALSE;
     queue_table VARCHAR;
     raw_table VARCHAR;
     safe_profile VARCHAR;
@@ -345,19 +344,7 @@ BEGIN
         matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
     END IF;
 
-    IF (P_RES = 'RES5') THEN
-        batch_size := 20;
-    ELSEIF (P_RES = 'RES6') THEN
-        batch_size := 50;
-    ELSEIF (P_RES = 'RES7') THEN
-        batch_size := 100;
-    ELSEIF (P_RES = 'RES8') THEN
-        batch_size := 200;
-    ELSEIF (P_RES = 'RES9') THEN
-        batch_size := 100;
-    ELSE
-        batch_size := 50;
-    END IF;
+    batch_size := 50;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
                   ') AS MAX_DONE FROM ' || raw_table ||
@@ -375,6 +362,7 @@ BEGIN
         batch_end := LEAST(current_pos + batch_size - 1, P_END_SEQ);
         retry_count := 0;
         retry_wait := 10;
+        batch_failed := FALSE;
 
         insert_sql := '
         INSERT INTO ' || raw_table || '
@@ -394,10 +382,13 @@ BEGIN
                 WHEN OTHER THEN
                     retry_count := retry_count + 1;
                     IF (retry_count > max_retries) THEN
-                        RAISE;
+                        failed_batches := failed_batches + 1;
+                        batch_failed := TRUE;
+                        retry_count := max_retries + 1;
+                    ELSE
+                        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || retry_wait || ')';
+                        retry_wait := retry_wait * 2;
                     END IF;
-                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || retry_wait || ')';
-                    retry_wait := retry_wait * 2;
             END;
         END WHILE;
 
@@ -406,7 +397,6 @@ BEGIN
 
     LET error_retry_sql VARCHAR;
     LET error_origin_count INTEGER DEFAULT 0;
-    LET fixed_count INTEGER DEFAULT 0;
     LET retry_pass INTEGER DEFAULT 0;
     LET max_error_retries INTEGER DEFAULT 3;
 
@@ -422,25 +412,45 @@ BEGIN
             retry_pass := max_error_retries;
         ELSE
             retry_pass := retry_pass + 1;
-            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
+            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
 
             EXECUTE IMMEDIATE 'DELETE FROM ' || raw_table ||
             ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
             ' AND MATRIX_RESULT:durations IS NULL';
 
-            EXECUTE IMMEDIATE '
-            INSERT INTO ' || raw_table || '
-            SELECT q.SEQ_ID, q.ORIGIN_H3, q.DEST_HEX_IDS, ' || matrix_call || '
-            FROM ' || queue_table || ' q
-            WHERE q.SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
-            ' AND q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || raw_table ||
-            ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ || ')';
+            LET retry_min INTEGER;
+            LET retry_max INTEGER;
+            rs := (EXECUTE IMMEDIATE '
+                SELECT MIN(q.SEQ_ID) AS MN, MAX(q.SEQ_ID) AS MX FROM ' || queue_table || ' q
+                WHERE q.SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
+                ' AND q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || raw_table ||
+                ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ || ')');
+            LET mc CURSOR FOR rs;
+            FOR r IN mc DO retry_min := r.MN; retry_max := r.MX; END FOR;
+
+            IF (retry_min IS NOT NULL) THEN
+                LET rpos INTEGER := retry_min;
+                WHILE (rpos <= retry_max) DO
+                    LET rend INTEGER := LEAST(rpos + batch_size - 1, retry_max);
+                    BEGIN
+                        EXECUTE IMMEDIATE '
+                        INSERT INTO ' || raw_table || '
+                        SELECT q.SEQ_ID, q.ORIGIN_H3, q.DEST_HEX_IDS, ' || matrix_call || '
+                        FROM ' || queue_table || ' q
+                        WHERE q.SEQ_ID BETWEEN ' || rpos || ' AND ' || rend ||
+                        ' AND q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || raw_table ||
+                        ' WHERE SEQ_ID BETWEEN ' || rpos || ' AND ' || rend || ')';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                    rpos := rend + 1;
+                END WHILE;
+            END IF;
         END IF;
     END WHILE;
 
     RETURN P_RES || ' range [' || P_START_SEQ || '-' || P_END_SEQ ||
            '] complete: ' || batch_num || ' batches of ' || batch_size ||
-           ' (resumed from seq ' || max_done || ', fn=' || P_MATRIX_FN || ')';
+           ' (resumed from seq ' || max_done || ', fn=' || P_MATRIX_FN || ', failed_batches=' || failed_batches || ')';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.BUILD_TRAVEL_TIME_RANGE_REGION(VARCHAR, INTEGER, INTEGER, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
@@ -553,6 +563,35 @@ BEGIN
     rs := (EXECUTE IMMEDIATE :count_sql);
     LET c4 CURSOR FOR rs;
     FOR r IN c4 DO queue_count := r.CNT; END FOR;
+
+    LET is_default_r BOOLEAN DEFAULT TRUE;
+    IF (UPPER(P_REGION) != 'DEFAULT') THEN
+        BEGIN
+            LET svc_rsr RESULTSET := (EXECUTE IMMEDIATE
+                'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(P_REGION) || ''' IN SCHEMA CORE');
+            LET svc_cr CURSOR FOR svc_rsr;
+            FOR r IN svc_cr DO
+                is_default_r := FALSE;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+    LET svc_inst INTEGER := 3;
+    IF (NOT is_default_r) THEN
+        BEGIN
+            SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+            LET sir RESULTSET := (
+                SELECT "min_instances"::INTEGER AS MI
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+                WHERE "name" = 'ORS_SERVICE_' || UPPER(P_REGION)
+                LIMIT 1
+            );
+            LET sic CURSOR FOR sir;
+            FOR r IN sic DO svc_inst := r.MI; END FOR;
+        EXCEPTION WHEN OTHER THEN svc_inst := 1;
+        END;
+    END IF;
+    parallel_count := LEAST(GREATEST(svc_inst * 2, 2), 4);
 
     chunk_size := GREATEST(CEIL(queue_count / parallel_count), 1);
     chunk_start := 1;
@@ -768,7 +807,22 @@ BEGIN
         BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
     END;
 
-    LET parallel_count INTEGER := 4;
+    LET svc_instances INTEGER := 3;
+    IF (NOT is_default) THEN
+        BEGIN
+            SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+            LET svc_rs2 RESULTSET := (
+                SELECT "min_instances"::INTEGER AS MI
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+                WHERE "name" = 'ORS_SERVICE_' || UPPER(P_REGION)
+                LIMIT 1
+            );
+            LET sc CURSOR FOR svc_rs2;
+            FOR r IN sc DO svc_instances := r.MI; END FOR;
+        EXCEPTION WHEN OTHER THEN svc_instances := 1;
+        END;
+    END IF;
+    LET parallel_count INTEGER := LEAST(GREATEST(svc_instances * 2, 2), 4);
     LET chunk_size INTEGER := GREATEST(CEIL(queue_count / parallel_count), 1);
     LET chunk_start INTEGER := 1;
     LET chunk_end INTEGER;
@@ -779,6 +833,64 @@ BEGIN
         chunk_start := chunk_end + 1;
     END WHILE;
     AWAIT ALL;
+
+    LET sweep_pass INTEGER := 0;
+    LET max_sweep INTEGER := 2;
+    LET sweep_batch INTEGER := 25;
+    LET sweep_missing INTEGER;
+    LET sweep_queue VARCHAR := prefix || '_WORK_QUEUE_' || P_RES;
+    LET sweep_raw VARCHAR := prefix || '_MATRIX_RAW_' || P_RES;
+
+    WHILE (sweep_pass < max_sweep) DO
+        EXECUTE IMMEDIATE 'DELETE FROM ' || sweep_raw ||
+            ' WHERE MATRIX_RESULT:durations IS NULL';
+
+        rs := (EXECUTE IMMEDIATE '
+            SELECT COUNT(*) AS CNT FROM ' || sweep_queue || ' q
+            WHERE q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || sweep_raw || ')');
+        LET sm_c CURSOR FOR rs;
+        FOR r IN sm_c DO sweep_missing := r.CNT; END FOR;
+
+        IF (sweep_missing = 0) THEN
+            sweep_pass := max_sweep;
+        ELSE
+            sweep_pass := sweep_pass + 1;
+            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+
+            LET sw_min INTEGER;
+            LET sw_max INTEGER;
+            rs := (EXECUTE IMMEDIATE '
+                SELECT MIN(q.SEQ_ID) AS MN, MAX(q.SEQ_ID) AS MX FROM ' || sweep_queue || ' q
+                WHERE q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || sweep_raw || ')');
+            LET sw_mc CURSOR FOR rs;
+            FOR r IN sw_mc DO sw_min := r.MN; sw_max := r.MX; END FOR;
+
+            IF (sw_min IS NOT NULL) THEN
+                LET matrix_call_w VARCHAR;
+                IF (NOT is_default) THEN
+                    matrix_call_w := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+                ELSE
+                    matrix_call_w := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+                END IF;
+
+                LET swpos INTEGER := sw_min;
+                WHILE (swpos <= sw_max) DO
+                    LET swend INTEGER := LEAST(swpos + sweep_batch - 1, sw_max);
+                    BEGIN
+                        EXECUTE IMMEDIATE '
+                        INSERT INTO ' || sweep_raw || '
+                        SELECT q.SEQ_ID, q.ORIGIN_H3, q.DEST_HEX_IDS, ' || matrix_call_w || '
+                        FROM ' || sweep_queue || ' q
+                        WHERE q.SEQ_ID BETWEEN ' || swpos || ' AND ' || swend ||
+                        ' AND q.SEQ_ID NOT IN (SELECT SEQ_ID FROM ' || sweep_raw ||
+                        ' WHERE SEQ_ID BETWEEN ' || swpos || ' AND ' || swend || ')';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                    swpos := swend + 1;
+                END WHILE;
+            END IF;
+        END IF;
+    END WHILE;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
     LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_count := r.CNT; END FOR;
