@@ -39,3 +39,6 @@ build/
 
 # Native app build output
 build-routing-solution/Native_app/output/
+
+# Cortex Code session artifacts
+.snowflake/cortex/plans/
