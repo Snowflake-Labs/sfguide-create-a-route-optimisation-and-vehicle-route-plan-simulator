@@ -1,0 +1,34 @@
+manifest_version: 2
+
+artifacts:
+  setup_script: setup_script.sql
+  container_services:
+    images:
+      - /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.25
+
+references:
+  - external_access_ref:
+      label: "External access for map basemap tiles"
+      description: "Required for the app to load Carto basemap tiles in the web UI"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: false
+
+lifecycle_callbacks:
+  version_initializer: core.version_init
+
+configuration:
+  log_level: DEBUG
+  trace_level: ALWAYS
+  grant_callback: core.grant_callback
+
+privileges:
+  - CREATE COMPUTE POOL:
+      description: "Create a compute pool for the Demo Dashboard service"
+  - CREATE WAREHOUSE:
+      description: "Create a warehouse for running SQL queries"
+  - BIND SERVICE ENDPOINT:
+      description: "Allow the app to expose a public endpoint for the web application"
