@@ -4,28 +4,30 @@ import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { RD_DB, RD_SCHEMA } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 const PIE_COLORS = ['#0DB048', '#29B5E8', '#E5A100', '#E5484D'];
 
 export default function DeviationDashboard() {
+  const { regionName } = useRegion();
   const { data: kpiRows, loading } = useSfQuery(
-    `SELECT COUNT(*) AS TOTAL_ROUTES, ROUND(AVG(DISTANCE_DEVIATION_PCT), 1) AS AVG_DEVIATION_PCT, ROUND(SUM(CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS ON_ROUTE_PCT, SUM(CASE WHEN DISTANCE_DEVIATION_PCT > 20 THEN 1 ELSE 0 END) AS HIGH_DEVIATIONS FROM TRIP_DEVIATION_ANALYSIS`,
-    RD_DB, RD_SCHEMA,
+    `SELECT COUNT(*) AS TOTAL_ROUTES, ROUND(AVG(DISTANCE_DEVIATION_PCT), 1) AS AVG_DEVIATION_PCT, ROUND(SUM(CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS ON_ROUTE_PCT, SUM(CASE WHEN DISTANCE_DEVIATION_PCT > 20 THEN 1 ELSE 0 END) AS HIGH_DEVIATIONS FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}'`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const { data: trends } = useSfQuery(
-    `SELECT TRIP_DATE, TOTAL_TRIPS AS ROUTES, ROUND(DEVIATION_RATE_PCT, 1) AS AVG_DEV_PCT FROM DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE LIMIT 30`,
-    RD_DB, RD_SCHEMA,
+    `SELECT TRIP_DATE, TOTAL_TRIPS AS ROUTES, ROUND(DEVIATION_RATE_PCT, 1) AS AVG_DEV_PCT FROM DAILY_DEVIATION_TRENDS WHERE REGION = '${regionName}' ORDER BY TRIP_DATE LIMIT 30`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const { data: buckets } = useSfQuery(
-    `SELECT CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN '0-5%' WHEN DISTANCE_DEVIATION_PCT <= 10 THEN '5-10%' WHEN DISTANCE_DEVIATION_PCT <= 20 THEN '10-20%' ELSE '20%+' END AS BUCKET, COUNT(*) AS CNT FROM TRIP_DEVIATION_ANALYSIS GROUP BY 1 ORDER BY 1`,
-    RD_DB, RD_SCHEMA,
+    `SELECT CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN '0-5%' WHEN DISTANCE_DEVIATION_PCT <= 10 THEN '5-10%' WHEN DISTANCE_DEVIATION_PCT <= 20 THEN '10-20%' ELSE '20%+' END AS BUCKET, COUNT(*) AS CNT FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' GROUP BY 1 ORDER BY 1`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const { data: topDeviators } = useSfQuery(
-    `SELECT DRIVER_ID, TOTAL_TRIPS AS ROUTES, ROUND(AVG_DISTANCE_DEVIATION_PCT, 1) AS AVG_DEV_PCT, ROUND(AVG_DURATION_DEVIATION_PCT, 1) AS AVG_TIME_DEV FROM DRIVER_DEVIATION_SUMMARY ORDER BY AVG_DISTANCE_DEVIATION_PCT DESC LIMIT 15`,
-    RD_DB, RD_SCHEMA,
+    `SELECT DRIVER_ID, TOTAL_TRIPS AS ROUTES, ROUND(AVG_DISTANCE_DEVIATION_PCT, 1) AS AVG_DEV_PCT, ROUND(AVG_DURATION_DEVIATION_PCT, 1) AS AVG_TIME_DEV FROM DRIVER_DEVIATION_SUMMARY WHERE REGION = '${regionName}' ORDER BY AVG_DISTANCE_DEVIATION_PCT DESC LIMIT 15`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const kpis = kpiRows[0] || {};
@@ -46,7 +48,7 @@ export default function DeviationDashboard() {
           <h3>Daily Trend</h3>
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={trends}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="TRIP_DATE" tick={{ fill: '#6E7681', fontSize: 10 }} />
               <YAxis tick={{ fill: '#6E7681', fontSize: 11 }} />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

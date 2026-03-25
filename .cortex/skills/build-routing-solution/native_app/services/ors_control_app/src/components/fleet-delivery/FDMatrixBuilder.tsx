@@ -26,9 +26,11 @@ export default function FDMatrixBuilder() {
 
   const hexLayer = useMemo(() => {
     if (!hexData.length) return null;
+    const validData = hexData.filter((d: any) => d.H3_INDEX && typeof d.H3_INDEX === 'string' && d.H3_INDEX.length >= 15);
+    if (!validData.length) return null;
     return new H3HexagonLayer({
       id: 'matrix-hexes',
-      data: hexData,
+      data: validData,
       pickable: true,
       filled: true,
       extruded: false,
@@ -66,7 +68,7 @@ export default function FDMatrixBuilder() {
         <DataTable data={registry} columns={['REGION_NAME', 'H3_RESOLUTION', 'TOTAL_HEXES', 'STATUS']} />
       </div>
       <div className="map-view">
-        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        {loading && <div className="map-loading-overlay">Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

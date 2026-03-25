@@ -4,6 +4,7 @@ import { ScatterplotLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { FT_DB, FT_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -11,17 +12,18 @@ const COLOR_RANGE: [number, number, number][] = [
 ];
 
 export default function HeatMap() {
+  const { regionName, center, zoom: regionZoom } = useRegion();
   const [metric, setMetric] = useState<'TRIP_COUNT' | 'AVG_SPEED'>('TRIP_COUNT');
   const [hour, setHour] = useState(-1);
   const [h3Res, setH3Res] = useState(7);
   const [showDrivers, setShowDrivers] = useState(false);
   const [driverDots, setDriverDots] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 45, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 45, bearing: 0 });
 
-  const hourFilter = hour >= 0 ? `WHERE HOUR(TRIP_START_TIME) = ${hour}` : '';
+  const hourFilter = hour >= 0 ? `WHERE HOUR(TRIP_START_TIME) = ${hour} AND REGION = '${regionName}'` : `WHERE REGION = '${regionName}'`;
   const { data: hexData, loading } = useSfQuery(
     `SELECT H3_POINT_TO_CELL_STRING(ORIGIN, ${h3Res}) AS H3_INDEX, COUNT(*) AS TRIP_COUNT, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 2) AS AVG_KM, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY ${hourFilter} GROUP BY 1 HAVING TRIP_COUNT >= 2 ORDER BY TRIP_COUNT DESC LIMIT 8000`,
-    FT_DB, FT_SCHEMA, [hour, h3Res],
+    FT_DB, FT_SCHEMA, [hour, h3Res, regionName],
   );
 
   const { query } = useSnowflake();
@@ -41,9 +43,11 @@ export default function HeatMap() {
 
   const hexLayer = useMemo(() => {
     if (!hexData.length) return null;
+    const validData = hexData.filter((d: any) => d.H3_INDEX && typeof d.H3_INDEX === 'string' && d.H3_INDEX.length >= 15);
+    if (!validData.length) return null;
     return new H3HexagonLayer({
       id: 'taxi-heatmap',
-      data: hexData,
+      data: validData,
       pickable: true,
       filled: true,
       extruded: true,
@@ -82,7 +86,7 @@ export default function HeatMap() {
   }, []);
 
   return (
-    <div className="page-full" style={{ flexDirection: 'column' }}>
+    <div className="page-full">
       <div className="page-overlay-panel">
         <h3>Heat Map</h3>
         <p>{loading ? 'Loading...' : `${hexData.length} hexagons · ${totalTrips.toLocaleString()} trips`}</p>
@@ -95,26 +99,26 @@ export default function HeatMap() {
             </select>
           </div>
           <div>
-            <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Hour: {hour < 0 ? 'All' : `${hour}:00`}</label>
+            <label className="range-label">Hour: {hour < 0 ? 'All' : `${hour}:00`}</label>
             <input type="range" min={-1} max={23} value={hour} onChange={e => setHour(Number(e.target.value))} style={{ width: '100%' }} />
           </div>
           <div>
-            <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>H3 Resolution: {h3Res}</label>
+            <label className="range-label">H3 Resolution: {h3Res}</label>
             <input type="range" min={5} max={9} value={h3Res} onChange={e => setH3Res(Number(e.target.value))} style={{ width: '100%' }} />
           </div>
-          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-secondary)' }}>
+          <label className="check-label">
             <input type="checkbox" checked={showDrivers} onChange={e => setShowDrivers(e.target.checked)} /> Show Drivers
           </label>
         </div>
       </div>
       <div className="map-view">
-        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        {loading && <div className="map-loading-overlay">Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-        <div style={{ position: 'absolute', bottom: 12, left: 12, right: 12 }}>
-          <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden' }}>
+        <div className="color-bar">
+          <div className="color-bar-track">
             {COLOR_RANGE.map((c, i) => <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />)}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)' }}><span>Low</span><span>High</span></div>
+          <div className="color-bar-labels"><span>Low</span><span>High</span></div>
         </div>
       </div>
     </div>

@@ -5,16 +5,18 @@ import MetricCard from '../../shared/MetricCard';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useSnowflake } from '../../hooks/useSnowflake';
 import { RD_DB, RD_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 export default function RouteComparison() {
+  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [actualPath, setActualPath] = useState<any[]>([]);
   const [expectedPath, setExpectedPath] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { data: routes, loading } = useSfQuery(
-    `SELECT TRIP_ID, DRIVER_ID, TRIP_DATE, ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT, ORIGIN_NAME, DEST_NAME FROM TRIP_DEVIATION_ANALYSIS ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 100`,
-    RD_DB, RD_SCHEMA,
+    `SELECT TRIP_ID, DRIVER_ID, TRIP_DATE, ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT, ORIGIN_NAME, DEST_NAME FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 100`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const { query } = useSnowflake();
@@ -68,23 +70,23 @@ export default function RouteComparison() {
             <MetricCard label="Destination" value={selected.DEST_NAME || '—'} />
           </div>
         )}
-        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 11 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 3, background: '#22C55E', display: 'inline-block' }} /> Expected</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 3, background: '#EF4444', display: 'inline-block' }} /> Actual</span>
+        <div className="route-legend">
+          <span className="route-legend-item"><span className="map-legend-line" style={{ background: '#22C55E' }} /> Expected</span>
+          <span className="route-legend-item"><span className="map-legend-line" style={{ background: '#EF4444' }} /> Actual</span>
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead><tr>{['Trip', 'Driver', 'Dev%'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{h}</th>)}</tr></thead>
+        <table className="sidebar-table">
+          <thead><tr>{['Trip', 'Driver', 'Dev%'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>{routes.map((r: any) => (
-            <tr key={r.TRIP_ID} onClick={() => loadRoute(r.TRIP_ID)} style={{ cursor: 'pointer', background: selectedRoute === r.TRIP_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-              <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{String(r.TRIP_ID).slice(-10)}</td>
-              <td style={{ padding: '6px 8px' }}>{r.DRIVER_ID}</td>
-              <td style={{ padding: '6px 8px', color: Number(r.DEV_PCT) > 20 ? '#E5484D' : undefined, fontWeight: 600 }}>{r.DEV_PCT}%</td>
+            <tr key={r.TRIP_ID} className={`clickable${selectedRoute === r.TRIP_ID ? ' selected' : ''}`} onClick={() => loadRoute(r.TRIP_ID)}>
+              <td className="mono">{String(r.TRIP_ID).slice(-10)}</td>
+              <td>{r.DRIVER_ID}</td>
+              <td className={Number(r.DEV_PCT) > 20 ? 'text-danger' : ''} style={{ fontWeight: 600 }}>{r.DEV_PCT}%</td>
             </tr>
           ))}</tbody>
         </table>
       </div>
       <div className="map-view">
-        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        {loading && <div className="map-loading-overlay">Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

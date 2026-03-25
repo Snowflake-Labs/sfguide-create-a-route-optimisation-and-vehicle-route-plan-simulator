@@ -15,6 +15,7 @@ import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Home from './components/Home';
+import RegionSwitcher from './shared/RegionSwitcher';
 
 interface SubPage { key: string; label: string; }
 
@@ -161,13 +162,14 @@ export default function App() {
             ))}
           </nav>
           <div className="sidebar-footer">
-            <span className="sidebar-version">v1.0.34</span>
+            <span className="sidebar-version">v1.0.39</span>
           </div>
         </aside>
 
         <div className="app-content">
           <header className="app-header">
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
+            <RegionSwitcher />
           </header>
           <main className="app-main">
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}

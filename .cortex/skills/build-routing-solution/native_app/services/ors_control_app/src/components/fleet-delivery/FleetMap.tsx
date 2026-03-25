@@ -5,19 +5,21 @@ import MetricCard from '../../shared/MetricCard';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useSnowflake } from '../../hooks/useSnowflake';
 import { FD_DB, FD_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 export default function FleetMap() {
+  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedCourier, setSelectedCourier] = useState<string | null>(null);
   const [routeGeo, setRouteGeo] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { data: kpiRows, loading: kpiLoading } = useSfQuery(
-    `SELECT COUNT(DISTINCT COURIER_ID) AS COURIERS, COUNT(DISTINCT DELIVERY_ID) AS DELIVERIES, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_DELIVERY_MIN FROM DELIVERIES`,
-    FD_DB, FD_SCHEMA,
+    `SELECT COUNT(DISTINCT COURIER_ID) AS COURIERS, COUNT(DISTINCT DELIVERY_ID) AS DELIVERIES, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_DELIVERY_MIN FROM DELIVERIES WHERE REGION = '${regionName}'`,
+    FD_DB, FD_SCHEMA, [regionName],
   );
   const { data: couriers, loading: couriersLoading } = useSfQuery(
-    `SELECT COURIER_ID, COUNT(*) AS TRIPS, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_MIN, MIN(ST_X(PICKUP_LOCATION)) AS LNG, MIN(ST_Y(PICKUP_LOCATION)) AS LAT FROM DELIVERIES GROUP BY COURIER_ID ORDER BY TRIPS DESC LIMIT 100`,
-    FD_DB, FD_SCHEMA,
+    `SELECT COURIER_ID, COUNT(*) AS TRIPS, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_MIN, MIN(ST_X(PICKUP_LOCATION)) AS LNG, MIN(ST_Y(PICKUP_LOCATION)) AS LAT FROM DELIVERIES WHERE REGION = '${regionName}' GROUP BY COURIER_ID ORDER BY TRIPS DESC LIMIT 100`,
+    FD_DB, FD_SCHEMA, [regionName],
   );
 
   const kpis = kpiRows[0] || {};
@@ -80,21 +82,21 @@ export default function FleetMap() {
           <MetricCard label="Avg Delivery" value={loading ? '...' : `${kpis.AVG_DELIVERY_MIN ?? '—'} min`} />
         </div>
         <h3>Couriers</h3>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead><tr>{['Courier', 'Trips', 'Avg'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
+        <table className="sidebar-table">
+          <thead><tr>{['Courier', 'Trips', 'Avg'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>
             {couriers.map((c: any) => (
-              <tr key={c.COURIER_ID} onClick={() => loadRoutes(c.COURIER_ID)} style={{ cursor: 'pointer', background: selectedCourier === c.COURIER_ID ? 'rgba(41,181,232,0.1)' : undefined, borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
-                <td style={{ padding: '6px 8px', fontSize: 11 }}>{c.COURIER_ID}</td>
-                <td style={{ padding: '6px 8px' }}>{c.TRIPS}</td>
-                <td style={{ padding: '6px 8px' }}>{c.AVG_MIN}m</td>
+              <tr key={c.COURIER_ID} className={`clickable${selectedCourier === c.COURIER_ID ? ' selected' : ''}`} onClick={() => loadRoutes(c.COURIER_ID)}>
+                <td>{c.COURIER_ID}</td>
+                <td>{c.TRIPS}</td>
+                <td>{c.AVG_MIN}m</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <div className="map-view">
-        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        {loading && <div className="map-loading-overlay">Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

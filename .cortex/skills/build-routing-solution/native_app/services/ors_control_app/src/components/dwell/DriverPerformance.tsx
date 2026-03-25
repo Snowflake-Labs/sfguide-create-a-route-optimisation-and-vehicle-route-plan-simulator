@@ -44,7 +44,7 @@ export default function DriverPerformance() {
           <h3>Avg Dwell by Driver</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="DRIVER_ID" tick={{ fill: '#6E7681', fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
               <YAxis tick={{ fill: '#6E7681', fontSize: 11 }} />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />
@@ -58,7 +58,7 @@ export default function DriverPerformance() {
           <h3>SLA Breach Rate by Driver</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="DRIVER_ID" tick={{ fill: '#6E7681', fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
               <YAxis tick={{ fill: '#6E7681', fontSize: 11 }} unit="%" />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

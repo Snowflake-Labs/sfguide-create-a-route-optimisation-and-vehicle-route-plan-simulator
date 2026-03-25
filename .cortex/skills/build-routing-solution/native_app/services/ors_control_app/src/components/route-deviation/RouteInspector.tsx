@@ -5,6 +5,7 @@ import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
 import MetricCard from '../../shared/MetricCard';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { RD_DB, RD_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -15,6 +16,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 export default function RouteInspector() {
+  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedTruck, setSelectedTruck] = useState('');
   const [truckTrips, setTruckTrips] = useState<any[]>([]);
   const [selectedTrip, setSelectedTrip] = useState('');
@@ -23,11 +25,11 @@ export default function RouteInspector() {
   const [showDetours, setShowDetours] = useState(true);
   const [hideTeleported, setHideTeleported] = useState(false);
   const [maxAccuracy, setMaxAccuracy] = useState(50);
-  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { data: trucks, loading } = useSfQuery(
-    `SELECT DISTINCT TRUCK_ID FROM TRIP_DEVIATION_ANALYSIS ORDER BY TRUCK_ID LIMIT 100`,
-    RD_DB, RD_SCHEMA,
+    `SELECT DISTINCT TRUCK_ID FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' ORDER BY TRUCK_ID LIMIT 100`,
+    RD_DB, RD_SCHEMA, [regionName],
   );
 
   const { query } = useSnowflake();
@@ -122,26 +124,26 @@ export default function RouteInspector() {
             <MetricCard label="Detours" value={detourCount} />
           </div>
         )}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={showTeleports} onChange={e => setShowTeleports(e.target.checked)} /> Show teleports (red)</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={hideTeleported} onChange={e => setHideTeleported(e.target.checked)} /> Hide teleported</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={showDetours} onChange={e => setShowDetours(e.target.checked)} /> Show detours (orange)</label>
+        <div className="check-group">
+          <label className="check-label"><input type="checkbox" checked={showTeleports} onChange={e => setShowTeleports(e.target.checked)} /> Show teleports (red)</label>
+          <label className="check-label"><input type="checkbox" checked={hideTeleported} onChange={e => setHideTeleported(e.target.checked)} /> Hide teleported</label>
+          <label className="check-label"><input type="checkbox" checked={showDetours} onChange={e => setShowDetours(e.target.checked)} /> Show detours (orange)</label>
           <div>
-            <label>Max GPS accuracy: {maxAccuracy}m</label>
+            <label className="range-label">Max GPS accuracy: {maxAccuracy}m</label>
             <input type="range" min={5} max={100} value={maxAccuracy} onChange={e => setMaxAccuracy(Number(e.target.value))} style={{ width: '100%' }} />
           </div>
         </div>
       </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div className="map-view" style={{ flex: 1 }}>
+      <div className="map-split">
+        <div className="map-view">
           <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
         </div>
         {speedData.length > 0 && (
-          <div className="chart-card" style={{ borderRadius: 0, borderTop: '1px solid var(--border)' }}>
+          <div className="chart-card chart-bottom">
             <h4>Speed vs Speed Limit</h4>
             <ResponsiveContainer width="100%" height={150}>
               <LineChart data={speedData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
                 <XAxis dataKey="idx" tick={{ fill: '#6E7681', fontSize: 10 }} />
                 <YAxis tick={{ fill: '#6E7681', fontSize: 10 }} unit=" km/h" />
                 <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />
@@ -152,11 +154,11 @@ export default function RouteInspector() {
           </div>
         )}
         {accuracyData.length > 0 && (
-          <div className="chart-card" style={{ borderRadius: 0, borderTop: '1px solid var(--border)' }}>
+          <div className="chart-card chart-bottom">
             <h4>GPS Accuracy</h4>
             <ResponsiveContainer width="100%" height={100}>
               <AreaChart data={accuracyData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
                 <XAxis dataKey="idx" tick={{ fill: '#6E7681', fontSize: 10 }} />
                 <YAxis tick={{ fill: '#6E7681', fontSize: 10 }} unit="m" />
                 <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

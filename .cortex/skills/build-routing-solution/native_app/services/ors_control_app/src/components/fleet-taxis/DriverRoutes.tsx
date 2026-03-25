@@ -4,8 +4,10 @@ import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { FT_DB, FT_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 export default function DriverRoutes() {
+  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
   const [routes, setRoutes] = useState<any[]>([]);
   const [gpsPoints, setGpsPoints] = useState<any[]>([]);
@@ -13,11 +15,11 @@ export default function DriverRoutes() {
   const [sliderIdx, setSliderIdx] = useState(0);
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { data: drivers, loading } = useSfQuery(
-    `SELECT DRIVER_ID, COUNT(*) AS TRIPS, ROUND(SUM(ROUTE_DISTANCE_METERS / 1000), 1) AS TOTAL_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY GROUP BY DRIVER_ID ORDER BY TRIPS DESC LIMIT 50`,
-    FT_DB, FT_SCHEMA,
+    `SELECT DRIVER_ID, COUNT(*) AS TRIPS, ROUND(SUM(ROUTE_DISTANCE_METERS / 1000), 1) AS TOTAL_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY WHERE REGION = '${regionName}' GROUP BY DRIVER_ID ORDER BY TRIPS DESC LIMIT 50`,
+    FT_DB, FT_SCHEMA, [regionName],
   );
 
   const { query } = useSnowflake();
@@ -83,50 +85,50 @@ export default function DriverRoutes() {
         <p>{loading ? 'Loading...' : `${drivers.length} drivers`}{selectedDriver && ` · ${selectedDriver} · ${routes.length} trips`}</p>
         {selectedTrip && gpsPoints.length > 1 && (
           <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Playback: point {sliderIdx}/{gpsPoints.length - 1}</label>
+            <label className="range-label">Playback: point {sliderIdx}/{gpsPoints.length - 1}</label>
             <input type="range" min={0} max={gpsPoints.length - 1} value={sliderIdx} onChange={e => setSliderIdx(Number(e.target.value))} style={{ width: '100%' }} />
             <button className="btn-primary" onClick={analyzeTrip} disabled={aiLoading} style={{ width: '100%', marginTop: 8 }}>{aiLoading ? 'Analyzing...' : 'AI Analysis'}</button>
-            {aiAnalysis && <div style={{ marginTop: 8, fontSize: 12, padding: 10, borderRadius: 6, background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.15)', whiteSpace: 'pre-wrap' }}>{aiAnalysis}</div>}
+            {aiAnalysis && <div className="info-box" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{aiAnalysis}</div>}
           </div>
         )}
         {routes.length > 0 && (
           <div style={{ marginBottom: 12 }}>
             <h3>Trips</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead><tr>{['Trip', 'Km', 'Min'].map(h => <th key={h} style={{ textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{h}</th>)}</tr></thead>
+            <table className="sidebar-table">
+              <thead><tr>{['Trip', 'Km', 'Min'].map(h => <th key={h}>{h}</th>)}</tr></thead>
               <tbody>{routes.map((r: any) => (
-                <tr key={r.TRIP_ID} onClick={() => loadTrip(r.TRIP_ID)} style={{ cursor: 'pointer', background: selectedTrip === r.TRIP_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-                  <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{String(r.TRIP_ID).slice(-10)}</td>
-                  <td style={{ padding: '4px 6px' }}>{r.TRIP_KM}</td>
-                  <td style={{ padding: '4px 6px' }}>{r.TRIP_MIN}</td>
+                <tr key={r.TRIP_ID} className={`clickable${selectedTrip === r.TRIP_ID ? ' selected' : ''}`} onClick={() => loadTrip(r.TRIP_ID)}>
+                  <td className="mono">{String(r.TRIP_ID).slice(-10)}</td>
+                  <td>{r.TRIP_KM}</td>
+                  <td>{r.TRIP_MIN}</td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
         )}
         <h3>Drivers</h3>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead><tr>{['Driver', 'Trips', 'Km', 'Spd'].map(h => <th key={h} style={{ textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{h}</th>)}</tr></thead>
+        <table className="sidebar-table">
+          <thead><tr>{['Driver', 'Trips', 'Km', 'Spd'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>{drivers.map((d: any) => (
-            <tr key={d.DRIVER_ID} onClick={() => loadRoutes(d.DRIVER_ID)} style={{ cursor: 'pointer', background: selectedDriver === d.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-              <td style={{ padding: '4px 6px' }}>{d.DRIVER_ID}</td>
-              <td style={{ padding: '4px 6px' }}>{d.TRIPS}</td>
-              <td style={{ padding: '4px 6px' }}>{d.TOTAL_KM}</td>
-              <td style={{ padding: '4px 6px' }}>{d.AVG_SPEED}</td>
+            <tr key={d.DRIVER_ID} className={`clickable${selectedDriver === d.DRIVER_ID ? ' selected' : ''}`} onClick={() => loadRoutes(d.DRIVER_ID)}>
+              <td>{d.DRIVER_ID}</td>
+              <td>{d.TRIPS}</td>
+              <td>{d.TOTAL_KM}</td>
+              <td>{d.AVG_SPEED}</td>
             </tr>
           ))}</tbody>
         </table>
       </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div className="map-view" style={{ flex: 1 }}>
+      <div className="map-split">
+        <div className="map-view">
           <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
         </div>
         {speedData.length > 0 && (
-          <div className="chart-card" style={{ borderRadius: 0, borderTop: '1px solid var(--border)' }}>
+          <div className="chart-card chart-bottom">
             <h4>Speed Profile</h4>
             <ResponsiveContainer width="100%" height={120}>
               <LineChart data={speedData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
                 <XAxis dataKey="idx" tick={{ fill: '#6E7681', fontSize: 10 }} />
                 <YAxis tick={{ fill: '#6E7681', fontSize: 10 }} unit=" km/h" />
                 <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

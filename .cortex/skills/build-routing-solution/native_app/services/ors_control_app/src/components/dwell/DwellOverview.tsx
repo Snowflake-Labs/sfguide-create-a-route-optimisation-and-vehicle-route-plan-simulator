@@ -50,7 +50,7 @@ export default function DwellOverview() {
           <h3>Daily Trends (Last 30 Days)</h3>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={trendData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="day" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <YAxis tick={{ fill: '#6E7681', fontSize: 11 }} />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />
@@ -63,7 +63,7 @@ export default function DwellOverview() {
           <h3>Top 10 Facilities by Visits</h3>
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={facilityData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis type="number" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#6E7681', fontSize: 10 }} />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

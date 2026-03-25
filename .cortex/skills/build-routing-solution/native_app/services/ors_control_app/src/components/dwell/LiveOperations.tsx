@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import { useSnowflake } from '../../hooks/useSnowflake';
 import { DWELL_DB, DWELL_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 const STATE_COLORS: Record<string, [number, number, number, number]> = {
   DRIVING: [41, 181, 232, 200],
@@ -12,10 +13,11 @@ const STATE_COLORS: Record<string, [number, number, number, number]> = {
 };
 
 export default function LiveOperations() {
+  const { center, zoom: regionZoom } = useRegion();
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [openDwells, setOpenDwells] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { query } = useSnowflake();
 
@@ -72,13 +74,13 @@ export default function LiveOperations() {
         <h2>Live Operations</h2>
         <p>{loading ? 'Refreshing...' : `${vehicles.length} vehicles tracked`} · Auto-refresh 30s</p>
         <button className="btn-primary" onClick={refresh} style={{ width: '100%', marginBottom: 12 }}>Refresh Now</button>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div className="state-grid">
           {Object.entries(STATE_COLORS).map(([state, color]) => (
-            <div key={state} style={{ padding: '6px 10px', borderRadius: 8, background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6, flex: '1 0 45%' }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: `rgba(${color.slice(0, 3).join(',')},1)` }} />
+            <div key={state} className="state-chip">
+              <div className="state-dot" style={{ background: `rgba(${color.slice(0, 3).join(',')},1)` }} />
               <div>
-                <div style={{ fontSize: 10, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>{state}</div>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{stateCounts[state] || 0}</div>
+                <div className="state-label">{state}</div>
+                <div className="state-value">{stateCounts[state] || 0}</div>
               </div>
             </div>
           ))}
@@ -86,13 +88,13 @@ export default function LiveOperations() {
         {openDwells.length > 0 && (
           <>
             <h3>Open Dwells</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr>{['Driver', 'Min', 'Left'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
+            <table className="sidebar-table">
+              <thead><tr>{['Driver', 'Min', 'Left'].map(h => <th key={h}>{h}</th>)}</tr></thead>
               <tbody>{openDwells.map((d: any, i: number) => (
-                <tr key={i} style={{ borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
-                  <td style={{ padding: '6px 8px' }}>{d.DRIVER_ID}</td>
-                  <td style={{ padding: '6px 8px' }}>{d.DWELL_DURATION_MIN}</td>
-                  <td style={{ padding: '6px 8px', color: Number(d.TIME_REMAINING) < 0 ? '#E5484D' : '#0DB048', fontWeight: 600 }}>{d.TIME_REMAINING}</td>
+                <tr key={i}>
+                  <td>{d.DRIVER_ID}</td>
+                  <td>{d.DWELL_DURATION_MIN}</td>
+                  <td className={Number(d.TIME_REMAINING) < 0 ? 'text-danger' : 'text-success'}>{d.TIME_REMAINING}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -100,7 +102,7 @@ export default function LiveOperations() {
         )}
       </div>
       <div className="map-view">
-        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Refreshing...</div>}
+        {loading && <div className="map-loading-overlay">Refreshing...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

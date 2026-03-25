@@ -35,7 +35,7 @@ export default function DataBuilder() {
           <h3>Table Sizes</h3>
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={tables.slice(0, 15)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis type="number" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <YAxis type="category" dataKey="TABLE_NAME" width={140} tick={{ fill: '#6E7681', fontSize: 10 }} />
               <Tooltip contentStyle={{ background: '#FFFFFF', border: '1px solid #E1E4E8', borderRadius: 8, fontSize: 12 }} />

@@ -3,12 +3,14 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { DWELL_DB, DWELL_SCHEMA, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
 
 export default function TripInspector() {
+  const { center, zoom: regionZoom } = useRegion();
   const [selectedTrip, setSelectedTrip] = useState<string | null>(null);
   const [tripPoints, setTripPoints] = useState<any[]>([]);
   const [dwellPoints, setDwellPoints] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
 
   const { data: trips, loading } = useSfQuery(
     `SELECT SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, SESSION_START AS START_TIME, SESSION_END AS END_TIME, NULL AS DISTANCE_KM, 1 AS DWELL_COUNT, ROUND(DWELL_MINUTES, 1) AS TOTAL_DWELL_MIN FROM DT_DWELL_ENRICHED ORDER BY SESSION_START DESC LIMIT 100`,
@@ -62,32 +64,32 @@ export default function TripInspector() {
         <h2>Trip Inspector</h2>
         <p>{loading ? 'Loading trips...' : `${trips.length} recent trips`}{selectedTrip && ` · Selected: ${String(selectedTrip).slice(-12)}`}</p>
         {selectedTrip && dwellPoints.length > 0 && (
-          <div style={{ marginBottom: 12, padding: 10, borderRadius: 6, background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.15)' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Dwell Stops ({dwellPoints.length})</div>
+          <div className="info-box">
+            <h4>Dwell Stops ({dwellPoints.length})</h4>
             {dwellPoints.map((d: any, i: number) => (
               <div key={i} style={{ fontSize: 12, marginBottom: 2 }}>
                 <strong>{d.FACILITY_NAME || 'Unknown'}</strong>: {d.DWELL_MIN} min
-                <span style={{ color: d.SLA_STATUS === 'OK' ? '#0DB048' : '#E5484D', marginLeft: 6, fontWeight: 600 }}>{d.SLA_STATUS}</span>
+                <span style={{ color: d.SLA_STATUS === 'OK' ? 'var(--green)' : 'var(--red)', marginLeft: 6, fontWeight: 600 }}>{d.SLA_STATUS}</span>
               </div>
             ))}
           </div>
         )}
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead><tr>{['Trip', 'Driver', 'Dwells'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
+        <table className="sidebar-table">
+          <thead><tr>{['Trip', 'Driver', 'Dwells'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>{trips.map((t: any) => (
-            <tr key={t.TRIP_ID} onClick={() => loadTrip(t.DRIVER_ID)} style={{ cursor: 'pointer', background: selectedTrip === t.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-              <td style={{ padding: '6px 8px', fontSize: 11, fontFamily: 'monospace' }}>{String(t.TRIP_ID).slice(-12)}</td>
-              <td style={{ padding: '6px 8px' }}>{t.DRIVER_ID}</td>
-              <td style={{ padding: '6px 8px' }}>{t.DWELL_COUNT}</td>
+            <tr key={t.TRIP_ID} className={`clickable${selectedTrip === t.DRIVER_ID ? ' selected' : ''}`} onClick={() => loadTrip(t.DRIVER_ID)}>
+              <td className="mono">{String(t.TRIP_ID).slice(-12)}</td>
+              <td>{t.DRIVER_ID}</td>
+              <td>{t.DWELL_COUNT}</td>
             </tr>
           ))}</tbody>
         </table>
       </div>
       <div className="map-view">
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-        <div className="legend" style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 12, background: 'rgba(255,255,255,0.9)', padding: '6px 12px', borderRadius: 6 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(34,197,94)' }} /> SLA OK</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(239,68,68)' }} /> Breach</div>
+        <div className="map-legend">
+          <div className="map-legend-item"><div className="map-legend-dot" style={{ background: 'rgb(34,197,94)' }} /> SLA OK</div>
+          <div className="map-legend-item"><div className="map-legend-dot" style={{ background: 'rgb(239,68,68)' }} /> Breach</div>
         </div>
       </div>
     </div>

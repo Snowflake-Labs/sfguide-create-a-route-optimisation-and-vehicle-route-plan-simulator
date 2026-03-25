@@ -35,7 +35,7 @@ export default function FacilityUtilization() {
           <h3>Top 15 Facilities</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={top15}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="FACILITY_NAME" tick={{ fill: '#6E7681', fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
               <YAxis yAxisId="left" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6E7681', fontSize: 11 }} />
@@ -49,7 +49,7 @@ export default function FacilityUtilization() {
           <h3>Throughput vs Dwell Time</h3>
           <ResponsiveContainer width="100%" height={300}>
             <ScatterChart>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey="TOTAL_VISITS" name="Visits" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <YAxis dataKey="AVG_DWELL_MINUTES" name="Avg Dwell (min)" tick={{ fill: '#6E7681', fontSize: 11 }} />
               <ZAxis dataKey="UNIQUE_DRIVERS" range={[40, 400]} name="Drivers" />
