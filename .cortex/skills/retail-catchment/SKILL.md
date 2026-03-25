@@ -1,6 +1,6 @@
 ---
 name: retail-catchment
-description: "Deploy the Retail Catchment Analysis Streamlit app with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis or fleet-intelligence-food-delivery), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
+description: "Deploy the Retail Catchment Analysis demo with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis or fleet-intelligence-food-delivery), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
 depends_on:
   - build-routing-solution
 metadata:
@@ -11,15 +11,13 @@ metadata:
 
 # Deploy Retail Catchment Demo
 
-Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, competitors, and address density using OpenRouteService isochrones and Overture Maps data.
+Deploy the Retail Catchment Analysis demo that visualizes trade areas, competitors, and address density using OpenRouteService isochrones and Overture Maps data. Dashboard pages are served via the shared React Demo Dashboard app.
 
 ## Configuration
 
 - **Database:** `FLEET_INTELLIGENCE`
 - **Schema:** `RETAIL_CATCHMENT`
 - **Warehouse:** `ROUTING_ANALYTICS`
-- **Streamlit App:** `RETAIL_CATCHMENT_APP`
-- **Stage:** `STREAMLIT_STAGE`
 
 ## Prerequisites
 
@@ -36,9 +34,7 @@ Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, 
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates RETAIL_CATCHMENT schema |
-| CREATE STAGE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates STREAMLIT_STAGE |
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
-| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Deploys RETAIL_CATCHMENT_APP |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS isochrone functions |
@@ -49,11 +45,42 @@ Deploy the Retail Catchment Analysis Streamlit app that visualizes trade areas, 
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `retail-catchment_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
+```
+
+If the table exists and has rows, data is already loaded. Skip to the Register with Demo Dashboard step.
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/retail-catchment/`.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('retail-catchment'));
+```
+
 ## Workflow
 
 > Full SQL for all steps: [references/sql-pipeline.md](references/sql-pipeline.md)
 
 ### Step 1: Set Query Tag for Tracking
+
+**Pre-check: If data already exists, skip to Step 6.** Run:
+```sql
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.COMPETITOR_ISOCHRONES;
+```
+If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deployment) as needed.
 
 **Goal:** Set session query tag for attribution tracking.
 
@@ -105,25 +132,46 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 > See `references/sql-pipeline.md` Step 5.
 
-### Step 6: Upload Streamlit Files
+### Step 6: Register with Demo Dashboard
 
-**Goal:** Upload all Streamlit app files to the stage.
+If the shared Demo Dashboard app is installed, register this demo:
 
-> See `references/sql-pipeline.md` Step 6.
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('retail-catch', 'Retail Catchment', 'POI analysis with Overture Maps', 'Retail Catchment', 'Store', 160, 'FLEET_INTELLIGENCE', 'RETAIL_CATCHMENT');
+```
 
-**Output:** 5 files uploaded to stage.
+Skip if DEMO_DASHBOARD_APP is not installed.
 
-### Step 7: Create Streamlit App
+### Step 7: Verify
 
-**Goal:** Create the Streamlit application in Snowflake.
-
-> See `references/sql-pipeline.md` Step 7.
-
-### Step 8: Verify and Launch
-
-**Goal:** Confirm the app is deployed and accessible.
+**Goal:** Confirm data tables exist and have rows.
 
 > See `references/sql-pipeline.md` Step 8.
+
+## Dashboard Schema Contract
+
+The React Demo Dashboard page queries these exact tables and columns. If the pipeline changes column names, the React page must be updated to match.
+
+### RETAIL_POIS
+| Column | Type | Used By |
+|--------|------|---------|
+| POI_ID | VARCHAR | RetailCatchment (store selection, competitor filter) |
+| POI_NAME | VARCHAR | RetailCatchment (store dropdown, metrics) |
+| BASIC_CATEGORY | VARCHAR | RetailCatchment (category filter, competitor breakdown) |
+| CITY | VARCHAR | RetailCatchment (city filter) |
+| GEOMETRY | GEOGRAPHY | RetailCatchment (ST_X/ST_Y for map, ST_WITHIN for competitors) |
+
+### CITIES_BY_STATE
+| Column | Type | Used By |
+|--------|------|---------|
+| CITY | VARCHAR | RetailCatchment (city dropdown) |
+
+### REGIONAL_ADDRESSES
+| Column | Type | Used By |
+|--------|------|---------|
+| GEOMETRY | GEOGRAPHY | RetailCatchment (H3 density, ST_WITHIN catchment filter) |
+
+---
 
 ## Features
 
@@ -138,8 +186,7 @@ The deployed app provides:
 
 - ✋ Step 2: Verify ORS is installed before proceeding
 - ✋ Step 3: Confirm marketplace data is accessible
-- ✋ Step 5: Verify optimized tables have data before uploading Streamlit files
-- ✋ Step 8: Verify app loads without errors
+- ✋ Step 5: Verify optimized tables have data before registering
 
 ## Troubleshooting
 
@@ -147,8 +194,7 @@ The deployed app provides:
 |-------|----------|
 | "No stores found" | Verify Overture Maps Places dataset is accessible |
 | Isochrone fails | Check ORS services are RUNNING |
-| Map not loading | Ensure pydeck is in environment.yml |
-| App crashes on load | Check warehouse is active and has credits |
+| Dashboard shows no data | Verify RETAIL_POIS table has rows; check column BASIC_CATEGORY, CITY exist |
 | RETAIL_POIS table empty | Check bounding box config and Overture Maps Places access |
 | REGIONAL_ADDRESSES table empty | Check bounding box config and Overture Maps Addresses access |
 | "Object does not exist" on table | Ensure Step 5 completed successfully before Step 6 |
@@ -158,27 +204,19 @@ The deployed app provides:
 Deployed resources:
 - Database: `FLEET_INTELLIGENCE`
 - Schema: `FLEET_INTELLIGENCE.RETAIL_CATCHMENT`
-- Streamlit App: `RETAIL_CATCHMENT_APP`
 - Warehouse: `ROUTING_ANALYTICS`
-- Stage: `STREAMLIT_STAGE` (with 5 files)
 - Tables: `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
-
-```sql
-SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_CATCHMENT_APP') AS streamlit_url;
-```
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: streamlit first, then tables, stage, schema
-DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_CATCHMENT_APP;
+-- Reverse dependency order: tables, schema
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
-DROP STAGE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.STREAMLIT_STAGE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT;
 ```
 

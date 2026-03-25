@@ -113,6 +113,31 @@ SELECT <P_ORS_APP>.CORE.ORS_STATUS();
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `travel-time-matrix_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX;
+```
+
+If the table exists and has rows, data is already loaded. Skip to the verification step.
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/travel-time-matrix/`.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('travel-time-matrix'));
+```
+
 ## Workflow
 
 ### Query Tag
@@ -378,6 +403,18 @@ FROM (
     FROM pairs GROUP BY origin_idx ORDER BY origin_idx
 );
 ```
+
+---
+
+### Step 10: Register with Demo Dashboard
+
+If the shared Demo Dashboard app is installed, register this demo:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('travel-time', 'Travel Time Explorer', 'H3 isochrone visualization', 'Travel Time Matrix', 'Clock', 200);
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
 
 ---
 

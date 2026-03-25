@@ -47,6 +47,11 @@ BEGIN
         MESSAGE='Inserting city metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
+    BEGIN
+        ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 0;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     MERGE INTO core.CITY_ORS_MAP t USING (
         SELECT :P_REGION AS REGION
     ) s ON t.REGION = s.REGION
@@ -59,6 +64,11 @@ BEGIN
     END IF;
     BEGIN
         EXECUTE IMMEDIATE 'SELECT core.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    BEGIN
+        ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 14400;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
@@ -97,6 +107,10 @@ BEGIN
                 profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
                 IF (:profile_count > 0) THEN
                     UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     UPDATE core.CITY_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
                         MESSAGE='City provisioned — ' || :profile_count || ' profile(s) ready',
@@ -109,6 +123,10 @@ BEGIN
         END;
     END FOR;
 
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
     UPDATE core.CITY_PROVISION_JOBS
     SET STATUS='COMPLETE', STAGE='READY',
@@ -120,6 +138,14 @@ BEGIN
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
+        BEGIN
+            ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 14400;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
         UPDATE core.CITY_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
@@ -202,10 +228,10 @@ BEGIN
         AUTO_RESUME = TRUE
         AUTO_SUSPEND_SECS = 14400;
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
-    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 14400';
+    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0';
     EXECUTE IMMEDIATE :create_sql;
 
     EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';

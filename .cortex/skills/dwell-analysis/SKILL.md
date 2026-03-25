@@ -78,6 +78,33 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `dwell-analysis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
+```
+
+If the table exists and has rows, data is already loaded. Skip to Step 1 (Run SQL Pipeline) — the seed only loads static tables, DTs must still be created.
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/dwell-analysis/`.
+
+After loading, you must still create the Dynamic Tables by running `references/sql-pipeline.sql` Steps 4-12. Dynamic Tables cannot be pre-baked. The seed loader also ensures the source telemetry tables exist in `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE`.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 0 (Check & Load Source Data).
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('dwell-analysis'));
+```
+
 ## Workflow
 
 ### Step 0: Check & Load Source Data
@@ -214,6 +241,22 @@ UNION ALL SELECT 'DT_DWELL_SESSIONS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANA
 UNION ALL SELECT 'DT_SLA_ALERTS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
 UNION ALL SELECT 'DT_DAILY_TRENDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 ```
+
+### Step 4: Register with Demo Dashboard
+
+If the shared Demo Dashboard app is installed, register this demo's pages:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-overview', 'Dwell Overview', 'KPIs, daily trends, and top facilities', 'Dwell Analysis', 'BarChart3', 10);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-congestion', 'Congestion Map', 'H3 hexagon congestion by hour', 'Dwell Analysis', 'Map', 20);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-utilization', 'Facility Utilization', 'Throughput vs dwell time', 'Dwell Analysis', 'Building2', 30);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-sla', 'SLA Alerts', 'SLA breach monitoring by severity', 'Dwell Analysis', 'AlertTriangle', 40);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-trip', 'Trip Inspector', 'Inspect individual trip GPS traces', 'Dwell Analysis', 'Route', 50);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-driver', 'Driver Performance', 'Driver dwell time benchmarks', 'Dwell Analysis', 'Users', 60);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-live', 'Live Operations', 'Real-time courier positions', 'Dwell Analysis', 'Radio', 70);
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
 
 ## SLA Threshold Tuning
 

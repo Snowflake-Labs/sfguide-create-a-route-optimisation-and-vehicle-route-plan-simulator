@@ -224,7 +224,7 @@ BEGIN
     queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
 
-    batch_size := 50;
+    batch_size := 100;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
                   ') AS MAX_DONE FROM ' || raw_table ||
@@ -344,7 +344,7 @@ BEGIN
         matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
     END IF;
 
-    batch_size := 50;
+    batch_size := 100;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
                   ') AS MAX_DONE FROM ' || raw_table ||
@@ -807,6 +807,16 @@ BEGIN
         BEGIN ALTER SERVICE IF EXISTS core.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
     END;
 
+    BEGIN
+        ALTER SERVICE IF EXISTS core.routing_gateway_service SET AUTO_SUSPEND_SECS = 0;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 0';
+    EXCEPTION WHEN OTHER THEN
+        BEGIN ALTER SERVICE IF EXISTS core.ors_service SET AUTO_SUSPEND_SECS = 0; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
+
     LET svc_instances INTEGER := 3;
     IF (NOT is_default) THEN
         BEGIN
@@ -956,10 +966,29 @@ BEGIN
     BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_WORK_QUEUE_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
     BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_MATRIX_RAW_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
 
+    BEGIN
+        ALTER SERVICE IF EXISTS core.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+    EXCEPTION WHEN OTHER THEN
+        BEGIN ALTER SERVICE IF EXISTS core.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
+
     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || matrix_count || ' travel time pairs';
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
+        BEGIN
+            ALTER SERVICE IF EXISTS core.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN
+            BEGIN ALTER SERVICE IF EXISTS core.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
+        END;
         UPDATE travel_matrix.MATRIX_BUILD_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;

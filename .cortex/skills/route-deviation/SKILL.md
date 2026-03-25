@@ -1,6 +1,6 @@
 ---
 name: route-deviation
-description: "Deploy the Route Deviation Analysis demo: load synthetic truck telemetry from S3, populate ORS route cache, run 5-step ETL pipeline, and deploy Streamlit dashboards. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
+description: "Deploy the Route Deviation Analysis demo: load synthetic truck telemetry from S3, populate ORS route cache, run 5-step ETL pipeline, and register React dashboard pages. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
 depends_on:
   - build-routing-solution
   - routing-customization
@@ -31,9 +31,8 @@ CRITICAL: Verify these before starting:
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS_GEO for route cache |
 | CREATE SCHEMA | Database (SYNTHETIC_DATASETS, FLEET_INTELLIGENCE) | Creates source, target, and route cache schemas |
 | CREATE TABLE | Schema (multiple) | Creates source tables, ETL tables, route cache |
-| CREATE STAGE | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE, FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Creates S3 external stage and Streamlit stage |
+| CREATE STAGE | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE) | Creates S3 external stage |
 | CREATE FILE FORMAT | Schema (SYNTHETIC_DATASETS.FLEET_INTELLIGENCE) | Creates PARQUET_FF file format |
-| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Deploys ROUTE_DEVIATION_DASHBOARD |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
@@ -61,6 +60,33 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 3. **Verify row counts after each CTAS and COPY INTO.** Catch silent failures early.
 4. **NEVER minimize ORS calls.** ORS runs inside Snowflake, is cheap, and there are NO constraints on number of calls.
 5. **Use `[0-9]` instead of `\d` in REGEXP_LIKE patterns.** Snowflake does not support `\d`.
+
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
+```
+
+If the table exists and has rows, data is already loaded. Skip to Step 7 (Verify End-to-End).
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/route-deviation/`.
+
+This also loads the ROUTE_CACHE table in FLEET_INTELLIGENCE.ROUTE_CACHE.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('route-deviation'));
+```
 
 ## Workflow
 
@@ -118,21 +144,73 @@ Execute all 5 ETL steps in order. Each is a CREATE OR REPLACE TABLE. Full SQL in
 
 Run the verification query after all 5 steps to confirm row counts.
 
-### Step 7: Deploy Streamlit Dashboards
-
-Two dashboard pages:
-- **Route Deviations** (page 10) — KPIs, driver rankings, daily trends, trip detail with maps
-- **Route Inspector** (page 11) — GPS point inspection with teleportation filtering
-
-Dashboard files are in the `dashboard/` directory. Ensure they reference the correct `{TARGET_DB}.{TARGET_SCHEMA}` schemas before deploying.
-
-Deploy via `snow streamlit deploy` or manual stage upload + CREATE STREAMLIT. See `references/sql-pipeline.md` > Streamlit Deployment.
-
-### Step 8: Verify End-to-End
+### Step 7: Verify End-to-End
 
 1. Check deviation distribution matches expected pattern (see `references/dataset-guide.md` > Expected Deviation Distribution)
 2. Check daily trends show 14 days with correct weekday/weekend patterns
-3. Get dashboard URL and confirm it loads
+
+### Step 8: Register with Demo Dashboard
+
+If the shared Demo Dashboard app is installed, register this demo's pages:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-dashboard', 'Deviation Dashboard', 'Route deviation analytics', 'Route Deviation', 'TrendingUp', 170, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-compare', 'Route Comparison', 'Expected vs actual route overlay', 'Route Deviation', 'GitCompare', 180, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-inspector', 'Route Inspector', 'GPS telemetry inspection with teleport detection', 'Route Deviation', 'Search', 185, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
+
+## Dashboard Schema Contract
+
+The React Demo Dashboard pages query these exact tables and columns. If the ETL pipeline changes column names, the React pages must be updated to match.
+
+### TRIP_DEVIATION_ANALYSIS
+| Column | Type | Used By |
+|--------|------|---------|
+| TRIP_ID | VARCHAR | DeviationDashboard, RouteComparison, RouteInspector |
+| DRIVER_ID | VARCHAR | DeviationDashboard |
+| TRUCK_ID | VARCHAR | RouteInspector (truck selector) |
+| TRIP_DATE | DATE | RouteComparison |
+| DISTANCE_DEVIATION_PCT | FLOAT | DeviationDashboard, RouteComparison |
+| DISTANCE_DEVIATION_KM | FLOAT | DeviationDashboard, RouteComparison |
+| ACTUAL_DISTANCE_KM | FLOAT | RouteComparison, RouteInspector |
+| ACTUAL_PATH | GEOGRAPHY | RouteComparison (LATERAL FLATTEN ST_ASGEOJSON) |
+| EXPECTED_PATH | GEOGRAPHY | RouteComparison (LATERAL FLATTEN ST_ASGEOJSON) |
+| ORIGIN_NAME | VARCHAR | RouteComparison |
+| DEST_NAME | VARCHAR | RouteComparison |
+
+### DAILY_DEVIATION_TRENDS
+| Column | Type | Used By |
+|--------|------|---------|
+| TRIP_DATE | DATE | DeviationDashboard |
+| TOTAL_TRIPS | NUMBER | DeviationDashboard |
+| DEVIATION_RATE_PCT | FLOAT | DeviationDashboard |
+
+### DRIVER_DEVIATION_SUMMARY
+| Column | Type | Used By |
+|--------|------|---------|
+| DRIVER_ID | VARCHAR | DeviationDashboard |
+| TOTAL_TRIPS | NUMBER | DeviationDashboard |
+| AVG_DISTANCE_DEVIATION_PCT | FLOAT | DeviationDashboard |
+| MAX_DISTANCE_DEVIATION_PCT | FLOAT | DeviationDashboard |
+| TOTAL_EXCESS_KM | FLOAT | DeviationDashboard |
+
+### Cross-Schema: SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FACT_TRUCK_TELEMETRY
+| Column | Type | Used By |
+|--------|------|---------|
+| TRIP_ID | VARCHAR | RouteInspector (filter) |
+| LATITUDE | FLOAT | RouteInspector (GPS track) |
+| LONGITUDE | FLOAT | RouteInspector (GPS track) |
+| SPEED_KMH | FLOAT | RouteInspector (speed chart) |
+| POSTED_SPEED_KMH | FLOAT | RouteInspector (speed limit line) |
+| GPS_ACCURACY_M | FLOAT | RouteInspector (accuracy chart, filter) |
+| IS_DETOUR | BOOLEAN | RouteInspector (detour highlight) |
+| IS_SPEEDING | BOOLEAN | RouteInspector |
+| TS | TIMESTAMP | RouteInspector (ordering, teleport detection) |
+| STATUS | VARCHAR | RouteInspector |
+
+---
 
 ## Common Scenarios
 
@@ -196,16 +274,14 @@ Complete Route Deviation Analysis demo with:
 - 5 source tables loaded from S3 (~15.1M telemetry points)
 - Route cache with ~9,343 OD pairs computed via ORS
 - 5 ETL analytics tables (trip metrics, expected routes, deviation analysis, driver summary, daily trends)
-- Streamlit dashboard with driver rankings, daily trends, and interactive route maps
+- React dashboard pages in Demo Dashboard (Deviation Dashboard, Route Comparison, Route Inspector)
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: streamlit first, then ETL tables, route cache, source tables, stages, schemas, warehouses, databases
-DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.ROUTE_DEVIATION_DASHBOARD;
-DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.STREAMLIT;
+-- Reverse dependency order: ETL tables, route cache, source tables, stages, schemas
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
