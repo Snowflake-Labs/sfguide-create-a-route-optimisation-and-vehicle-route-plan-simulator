@@ -1,42 +1,36 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
-import { sfQuery, cartoBasemap } from './helpers';
+import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
+import { DWELL_DB, DWELL_SCHEMA, cartoBasemap } from './helpers';
 
 export default function TripInspector() {
-  const [trips, setTrips] = useState<any[]>([]);
   const [selectedTrip, setSelectedTrip] = useState<string | null>(null);
   const [tripPoints, setTripPoints] = useState<any[]>([]);
   const [dwellPoints, setDwellPoints] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
 
-  useEffect(() => {
-    setLoading(true);
-    sfQuery(`SELECT SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, SESSION_START AS START_TIME, SESSION_END AS END_TIME, NULL AS DISTANCE_KM, 1 AS DWELL_COUNT, ROUND(DWELL_MINUTES, 1) AS TOTAL_DWELL_MIN FROM DT_DWELL_ENRICHED ORDER BY SESSION_START DESC LIMIT 100`)
-      .then(setTrips)
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: trips, loading } = useSfQuery(
+    `SELECT SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, SESSION_START AS START_TIME, SESSION_END AS END_TIME, NULL AS DISTANCE_KM, 1 AS DWELL_COUNT, ROUND(DWELL_MINUTES, 1) AS TOTAL_DWELL_MIN FROM DT_DWELL_ENRICHED ORDER BY SESSION_START DESC LIMIT 100`,
+    DWELL_DB, DWELL_SCHEMA,
+  );
+
+  const { query } = useSnowflake();
 
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
     const [points, dwells] = await Promise.all([
-      sfQuery(`SELECT LONGITUDE AS LNG, LATITUDE AS LAT, TS AS EVENT_TIMESTAMP, SPEED_KMH FROM DT_STATE_CHANGES WHERE TRUCK_ID = '${tripId}' ORDER BY TS LIMIT 2000`),
-      sfQuery(`SELECT AVG_LNG AS LNG, AVG_LAT AS LAT, LOCATION_NAME AS FACILITY_NAME, ROUND(DWELL_MINUTES, 1) AS DWELL_MIN, CASE WHEN DWELL_MINUTES > 30 THEN 'BREACH' ELSE 'OK' END AS SLA_STATUS FROM DT_DWELL_ENRICHED WHERE TRUCK_ID = '${tripId}'`),
+      query(`SELECT LONGITUDE AS LNG, LATITUDE AS LAT, TS AS EVENT_TIMESTAMP, SPEED_KMH FROM DT_STATE_CHANGES WHERE TRUCK_ID = '${tripId}' ORDER BY TS LIMIT 2000`, { database: DWELL_DB, schema: DWELL_SCHEMA }),
+      query(`SELECT AVG_LNG AS LNG, AVG_LAT AS LAT, LOCATION_NAME AS FACILITY_NAME, ROUND(DWELL_MINUTES, 1) AS DWELL_MIN, CASE WHEN DWELL_MINUTES > 30 THEN 'BREACH' ELSE 'OK' END AS SLA_STATUS FROM DT_DWELL_ENRICHED WHERE TRUCK_ID = '${tripId}'`, { database: DWELL_DB, schema: DWELL_SCHEMA }),
     ]);
     setTripPoints(points);
     setDwellPoints(dwells);
     if (points.length > 0) {
       const lngs = points.map((p: any) => Number(p.LNG));
       const lats = points.map((p: any) => Number(p.LAT));
-      setViewState(prev => ({
-        ...prev,
-        longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
-        latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
-        zoom: 11,
-      }));
+      setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 11 }));
     }
-  }, []);
+  }, [query]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -44,25 +38,10 @@ export default function TripInspector() {
     const result: any[] = [];
     if (tripPoints.length > 1) {
       const path = tripPoints.map((p: any) => [Number(p.LNG), Number(p.LAT)]);
-      result.push(new PathLayer({
-        id: 'trip-path',
-        data: [{ path }],
-        getPath: (d: any) => d.path,
-        getColor: [41, 181, 232, 200],
-        getWidth: 3,
-        widthMinPixels: 2,
-      }));
+      result.push(new PathLayer({ id: 'trip-path', data: [{ path }], getPath: (d: any) => d.path, getColor: [41, 181, 232, 200], getWidth: 3, widthMinPixels: 2 }));
     }
     if (dwellPoints.length) {
-      result.push(new ScatterplotLayer({
-        id: 'dwell-points',
-        data: dwellPoints,
-        getPosition: (d: any) => [Number(d.LNG), Number(d.LAT)],
-        getFillColor: (d: any) => d.SLA_STATUS === 'OK' ? [34, 197, 94, 220] : [239, 68, 68, 220],
-        getRadius: 80,
-        radiusMinPixels: 6,
-        pickable: true,
-      }));
+      result.push(new ScatterplotLayer({ id: 'dwell-points', data: dwellPoints, getPosition: (d: any) => [Number(d.LNG), Number(d.LAT)], getFillColor: (d: any) => d.SLA_STATUS === 'OK' ? [34, 197, 94, 220] : [239, 68, 68, 220], getRadius: 80, radiusMinPixels: 6, pickable: true }));
     }
     return result;
   }, [tripPoints, dwellPoints]);
@@ -72,78 +51,43 @@ export default function TripInspector() {
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.FACILITY_NAME !== undefined) {
-      return {
-        html: `<b>${object.FACILITY_NAME || 'Unknown'}</b><br/>Dwell: ${object.DWELL_MIN} min<br/>SLA: ${object.SLA_STATUS}`,
-        style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
-      };
+      return { html: `<b>${object.FACILITY_NAME || 'Unknown'}</b><br/>Dwell: ${object.DWELL_MIN} min<br/>SLA: ${object.SLA_STATUS}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     }
     return null;
   }, []);
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div>
-          <h2 style={{ fontSize: 20, margin: 0 }}>Trip Inspector</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: 0 }}>
-            {loading ? 'Loading trips...' : `${trips.length} recent trips`}
-            {selectedTrip && ` · Selected: ${String(selectedTrip).slice(-12)}`}
-          </p>
-        </div>
+    <div className="page-full">
+      <div className="page-sidebar-panel">
+        <h2>Trip Inspector</h2>
+        <p>{loading ? 'Loading trips...' : `${trips.length} recent trips`}{selectedTrip && ` · Selected: ${String(selectedTrip).slice(-12)}`}</p>
+        {selectedTrip && dwellPoints.length > 0 && (
+          <div style={{ marginBottom: 12, padding: 10, borderRadius: 6, background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.15)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Dwell Stops ({dwellPoints.length})</div>
+            {dwellPoints.map((d: any, i: number) => (
+              <div key={i} style={{ fontSize: 12, marginBottom: 2 }}>
+                <strong>{d.FACILITY_NAME || 'Unknown'}</strong>: {d.DWELL_MIN} min
+                <span style={{ color: d.SLA_STATUS === 'OK' ? '#0DB048' : '#E5484D', marginLeft: 6, fontWeight: 600 }}>{d.SLA_STATUS}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead><tr>{['Trip', 'Driver', 'Dwells'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
+          <tbody>{trips.map((t: any) => (
+            <tr key={t.TRIP_ID} onClick={() => loadTrip(t.DRIVER_ID)} style={{ cursor: 'pointer', background: selectedTrip === t.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
+              <td style={{ padding: '6px 8px', fontSize: 11, fontFamily: 'monospace' }}>{String(t.TRIP_ID).slice(-12)}</td>
+              <td style={{ padding: '6px 8px' }}>{t.DRIVER_ID}</td>
+              <td style={{ padding: '6px 8px' }}>{t.DWELL_COUNT}</td>
+            </tr>
+          ))}</tbody>
+        </table>
       </div>
-
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: '0 0 280px', maxHeight: 560, overflowY: 'auto' }}>
-          {selectedTrip && dwellPoints.length > 0 && (
-            <div style={{ marginBottom: 12, padding: 10, borderRadius: 6, background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.15)' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Dwell Stops ({dwellPoints.length})</div>
-              {dwellPoints.map((d: any, i: number) => (
-                <div key={i} style={{ fontSize: 12, marginBottom: 2 }}>
-                  <strong>{d.FACILITY_NAME || 'Unknown'}</strong>: {d.DWELL_MIN} min
-                  <span style={{ color: d.SLA_STATUS === 'OK' ? '#0DB048' : '#E5484D', marginLeft: 6, fontWeight: 600 }}>{d.SLA_STATUS}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr>
-                {['Trip', 'Driver', 'Dwells'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {trips.map((t: any) => (
-                <tr key={t.TRIP_ID} onClick={() => loadTrip(t.DRIVER_ID)} style={{ cursor: 'pointer', background: selectedTrip === t.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-                  <td style={{ padding: '6px 8px', fontSize: 11, fontFamily: 'monospace' }}>{String(t.TRIP_ID).slice(-12)}</td>
-                  <td style={{ padding: '6px 8px' }}>{t.DRIVER_ID}</td>
-                  <td style={{ padding: '6px 8px' }}>{t.DWELL_COUNT}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div style={{ flex: 1, minWidth: 300 }}>
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-            <DeckGL
-              viewState={viewState}
-              onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
-              controller={true}
-              layers={layers}
-              getTooltip={getTooltip}
-              style={{ width: '100%', height: '100%' }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(34,197,94)' }} /> SLA OK
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(239,68,68)' }} /> Breach
-            </div>
-          </div>
+      <div className="map-view">
+        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <div className="legend" style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 12, background: 'rgba(255,255,255,0.9)', padding: '6px 12px', borderRadius: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(34,197,94)' }} /> SLA OK</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(239,68,68)' }} /> Breach</div>
         </div>
       </div>
     </div>

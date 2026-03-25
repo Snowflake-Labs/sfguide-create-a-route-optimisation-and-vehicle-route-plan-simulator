@@ -88,30 +88,54 @@ export default function AgentPlayground() {
 
       if (reader) {
         let done = false;
+        let buffer = '';
         while (!done) {
           const { value, done: d } = await reader.read();
           done = d;
           if (value) {
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const parsed = JSON.parse(line.slice(6));
-                  if (parsed.type === 'text') {
-                    assistantContent += parsed.content || '';
-                    setMessages(prev => {
-                      const updated = [...prev];
-                      const last = updated[updated.length - 1];
-                      if (last?.role === 'assistant') last.content = assistantContent;
-                      else updated.push({ role: 'assistant', content: assistantContent, toolResults });
-                      return updated;
-                    });
-                  } else if (parsed.type === 'tool_result') {
-                    toolResults.push(parsed.result);
-                  }
-                } catch {}
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+            for (const block of blocks) {
+              let eventType = '';
+              let dataStr = '';
+              for (const line of block.split('\n')) {
+                if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+                else if (line.startsWith('data: ')) dataStr = line.slice(6);
               }
+              if (!dataStr) continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (eventType === 'result') {
+                  assistantContent = parsed.message || '';
+                  if (parsed.tool_results) toolResults.push(...parsed.tool_results);
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last?.role === 'assistant') { last.content = assistantContent; last.toolResults = toolResults; }
+                    else updated.push({ role: 'assistant', content: assistantContent, toolResults });
+                    return updated;
+                  });
+                } else if (eventType === 'progress') {
+                  const progressText = parsed.detail || parsed.step || 'Thinking...';
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last?.role === 'assistant') last.content = progressText;
+                    else updated.push({ role: 'assistant', content: progressText });
+                    return updated;
+                  });
+                } else if (eventType === 'error') {
+                  assistantContent = `Error: ${parsed.error || 'Unknown error'}`;
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last?.role === 'assistant') last.content = assistantContent;
+                    else updated.push({ role: 'assistant', content: assistantContent });
+                    return updated;
+                  });
+                }
+              } catch {}
             }
           }
         }

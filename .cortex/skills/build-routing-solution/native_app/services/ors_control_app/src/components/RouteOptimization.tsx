@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
@@ -172,17 +173,10 @@ export default function RouteOptimization() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, marginBottom: 12 }}>
-        {[
-          { label: 'Places', value: places.length },
-          { label: 'Job Templates', value: jobs.length },
-          { label: 'Vehicles', value: vehicles.length },
-        ].map(m => (
-          <div key={m.label} style={{ padding: 12, borderRadius: 8, background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>{m.label}</div>
-            <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>{m.value}</div>
-          </div>
-        ))}
+      <div className="metric-grid">
+        <MetricCard label="Places" value={places.length} />
+        <MetricCard label="Job Templates" value={jobs.length} />
+        <MetricCard label="Vehicles" value={vehicles.length} />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>

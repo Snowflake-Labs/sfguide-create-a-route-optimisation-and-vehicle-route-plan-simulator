@@ -1,29 +1,29 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer } from '@deck.gl/layers';
-import { sfQuery, cartoBasemap } from './helpers';
+import MetricCard from '../../shared/MetricCard';
+import { useSfQuery } from '../../hooks/useSnowflake';
+import { useSnowflake } from '../../hooks/useSnowflake';
+import { FD_DB, FD_SCHEMA, cartoBasemap } from './helpers';
 
 export default function CatchmentPanel() {
-  const [restaurants, setRestaurants] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
 
-  useEffect(() => {
-    setLoading(true);
-    sfQuery(`SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED ORDER BY TOTAL_ORDERS DESC LIMIT 100`)
-      .then(setRestaurants)
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: restaurants, loading } = useSfQuery(
+    `SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED ORDER BY TOTAL_ORDERS DESC LIMIT 100`,
+    FD_DB, FD_SCHEMA,
+  );
+
+  const { query } = useSnowflake();
+  const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
 
   const loadCatchment = useCallback(async (id: string) => {
     setSelectedId(id);
-    const c = await sfQuery(`SELECT ST_X(CUSTOMER_LOCATION) AS LNG, ST_Y(CUSTOMER_LOCATION) AS LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE RESTAURANT_ID = '${id}' LIMIT 500`);
+    const c = await query(`SELECT ST_X(CUSTOMER_LOCATION) AS LNG, ST_Y(CUSTOMER_LOCATION) AS LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE RESTAURANT_ID = '${id}' LIMIT 500`, { database: FD_DB, schema: FD_SCHEMA });
     setCustomers(c);
-  }, []);
-
-  const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
+  }, [query]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -64,42 +64,29 @@ export default function CatchmentPanel() {
   }, []);
 
   return (
-    <div>
-      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment Analysis</h2>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>Restaurant delivery catchment areas</p>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-        {[
-          { label: 'Selected', value: selected?.RESTAURANT_NAME || '—' },
-          { label: 'Orders', value: selected?.TOTAL_ORDERS ?? '—' },
-          { label: 'Customers', value: customers.length || '—' },
-        ].map(m => (
-          <div key={m.label} style={{ padding: 16, borderRadius: 8, background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>{m.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4 }}>{m.value}</div>
-          </div>
-        ))}
+    <div className="page-full">
+      <div className="page-sidebar-panel">
+        <h2>Catchment Analysis</h2>
+        <p>Restaurant delivery catchment areas</p>
+        <div className="metric-grid-vertical">
+          <MetricCard label="Selected" value={selected?.RESTAURANT_NAME || '—'} />
+          <MetricCard label="Orders" value={selected?.TOTAL_ORDERS ?? '—'} />
+          <MetricCard label="Customers" value={customers.length || '—'} />
+        </div>
+        <h3>Restaurants</h3>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead><tr>{['Name', 'Orders'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
+          <tbody>{restaurants.map((r: any) => (
+            <tr key={r.RESTAURANT_ID} onClick={() => loadCatchment(r.RESTAURANT_ID)} style={{ cursor: 'pointer', background: selectedId === r.RESTAURANT_ID ? 'rgba(41,181,232,0.1)' : undefined, borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
+              <td style={{ padding: '6px 8px', fontSize: 11 }}>{r.RESTAURANT_NAME}</td>
+              <td style={{ padding: '6px 8px' }}>{r.TOTAL_ORDERS}</td>
+            </tr>
+          ))}</tbody>
+        </table>
       </div>
-
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 300 }}>
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-            {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-            <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-          </div>
-        </div>
-        <div style={{ flex: '0 0 260px', maxHeight: 560, overflowY: 'auto' }}>
-          <h3 style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Restaurants</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead><tr>{['Name', 'Orders'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 500 }}>{h}</th>)}</tr></thead>
-            <tbody>{restaurants.map((r: any) => (
-              <tr key={r.RESTAURANT_ID} onClick={() => loadCatchment(r.RESTAURANT_ID)} style={{ cursor: 'pointer', background: selectedId === r.RESTAURANT_ID ? 'rgba(41,181,232,0.1)' : undefined, borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
-                <td style={{ padding: '6px 8px', fontSize: 11 }}>{r.RESTAURANT_NAME}</td>
-                <td style={{ padding: '6px 8px' }}>{r.TOTAL_ORDERS}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
+      <div className="map-view">
+        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>
   );

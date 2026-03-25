@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
@@ -110,63 +111,57 @@ export default function RetailCatchment() {
   }, []);
 
   return (
-    <div className="panel">
-      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Retail Catchment</h2>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>Multi-zone isochrone catchment analysis</p>
+    <div className="page-full">
+      <div className="page-sidebar-panel">
+        <h2>Retail Catchment</h2>
+        <p>Multi-zone isochrone catchment analysis</p>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div style={{ minWidth: 160 }}>
-          <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>City</label>
-          <select className="select" value={selectedCity} onChange={e => setSelectedCity(e.target.value)}>
-            <option value="">Select city...</option>
-            {cities.map(c => <option key={`${c.CITY}-${c.STATE}`} value={c.CITY}>{c.CITY}, {c.STATE}</option>)}
-          </select>
-        </div>
-        <div style={{ minWidth: 120 }}>
-          <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Travel Mode</label>
-          <select className="select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
-            <option value="driving-car">Car</option>
-            <option value="cycling-regular">Bicycle</option>
-            <option value="foot-walking">Walking</option>
-          </select>
-        </div>
-        <div style={{ minWidth: 120 }}>
-          <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Zones: {numZones}</label>
-          <input type="range" min={1} max={5} value={numZones} onChange={e => setNumZones(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div style={{ minWidth: 120 }}>
-          <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Max: {maxMinutes} min</label>
-          <input type="range" min={5} max={60} step={5} value={maxMinutes} onChange={e => setMaxMinutes(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
+      <div className="form-group">
+        <label>City</label>
+        <select className="form-select" value={selectedCity} onChange={e => setSelectedCity(e.target.value)}>
+          <option value="">Select city...</option>
+          {cities.map(c => <option key={`${c.CITY}-${c.STATE}`} value={c.CITY}>{c.CITY}, {c.STATE}</option>)}
+        </select>
+      </div>
+      <div className="form-group">
+        <label>Travel Mode</label>
+        <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
+          <option value="driving-car">Car</option>
+          <option value="cycling-regular">Bicycle</option>
+          <option value="foot-walking">Walking</option>
+        </select>
+      </div>
+      <div className="form-group">
+        <label>Zones: {numZones}</label>
+        <input type="range" min={1} max={5} value={numZones} onChange={e => setNumZones(Number(e.target.value))} style={{ width: '100%' }} />
+      </div>
+      <div className="form-group">
+        <label>Max: {maxMinutes} min</label>
+        <input type="range" min={5} max={60} step={5} value={maxMinutes} onChange={e => setMaxMinutes(Number(e.target.value))} style={{ width: '100%' }} />
       </div>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 12, fontSize: 12, color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={showCompetitors} onChange={e => setShowCompetitors(e.target.checked)} /> Competitors (red)</label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={showDensity} onChange={e => setShowDensity(e.target.checked)} /> Address Density</label>
-        {showDensity && <div style={{ minWidth: 120 }}><label>H3 Res: {h3Res}</label><input type="range" min={5} max={9} value={h3Res} onChange={e => setH3Res(Number(e.target.value))} style={{ width: '100%' }} /></div>}
+        {showDensity && <div><label>H3 Res: {h3Res}</label><input type="range" min={5} max={9} value={h3Res} onChange={e => setH3Res(Number(e.target.value))} style={{ width: '100%' }} /></div>}
       </div>
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 300 }}>
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-            {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-            <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8, fontSize: 11, flexWrap: 'wrap' }}>
-            {catchmentZones.map((z, i) => <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${ZONE_COLORS[z.zoneIdx % ZONE_COLORS.length].join(',')})` }} />{z.minutes} min</span>)}
-          </div>
-        </div>
-        <div style={{ flex: '0 0 260px', maxHeight: 560, overflowY: 'auto' }}>
-          <h3 style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>POIs</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead><tr>{['Name', 'Category'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{h}</th>)}</tr></thead>
-            <tbody>{pois.map((p: any) => (
-              <tr key={p.POI_ID} onClick={() => selectStore(p)} style={{ cursor: 'pointer', background: selectedStore?.POI_ID === p.POI_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-                <td style={{ padding: '6px 8px' }}>{p.NAME}</td>
-                <td style={{ padding: '6px 8px', fontSize: 10 }}>{p.CATEGORY}</td>
-              </tr>
-            ))}</tbody>
-          </table>
+      <h3>POIs</h3>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead><tr>{['Name', 'Category'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)' }}>{h}</th>)}</tr></thead>
+        <tbody>{pois.map((p: any) => (
+          <tr key={p.POI_ID} onClick={() => selectStore(p)} style={{ cursor: 'pointer', background: selectedStore?.POI_ID === p.POI_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
+            <td style={{ padding: '6px 8px' }}>{p.NAME}</td>
+            <td style={{ padding: '6px 8px', fontSize: 10 }}>{p.CATEGORY}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      </div>
+      <div className="map-view">
+        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
+        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <div className="legend" style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 8, background: 'rgba(255,255,255,0.9)', padding: '6px 12px', borderRadius: 6, fontSize: 11 }}>
+          {catchmentZones.map((z, i) => <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${ZONE_COLORS[z.zoneIdx % ZONE_COLORS.length].join(',')})` }} />{z.minutes} min</span>)}
         </div>
       </div>
     </div>
