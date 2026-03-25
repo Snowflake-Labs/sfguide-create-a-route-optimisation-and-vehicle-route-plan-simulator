@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Routing Service</title>
+    <title>Fleet Intelligence</title>
     <style>
       :root { --bg: #FFFFFF; --surface: #F8F9FB; --border: #E1E4E8; --text: #24323D; --text-secondary: #6E7681; --accent: #29B5E8; --accent-hover: #1DA1D1; --green: #0DB048; --yellow: #E5A100; --red: #E5484D; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -18,7 +18,7 @@
       ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
       .app { min-height: 100vh; height: 100vh; display: flex; flex-direction: row; overflow: hidden; }
-      .app-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 24px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
+      .app-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px 12px; border-bottom: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
       .app-logo { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
       .app-tabs { display: flex; gap: 4px; }
       .tab { padding: 8px 16px; border-radius: 6px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; transition: background 0.15s, color 0.15s; }
@@ -243,6 +243,12 @@
       .sidebar-footer { padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
       .sidebar-footer span { font-size: 11px; color: var(--text-secondary); }
       .sidebar-version { font-size: 10px; color: var(--text-secondary); opacity: 0.6; }
+      .sidebar-group { margin-bottom: 2px; }
+      .sidebar-link .chevron { margin-left: auto; opacity: 0.5; transition: transform 0.15s; }
+      .sidebar-sub-links { padding-left: 16px; }
+      .sidebar-sub-link { display: block; width: 100%; padding: 6px 12px 6px 28px; border-radius: 4px; border: none; background: none; color: var(--text-secondary); text-decoration: none; font-size: 12px; font-family: inherit; cursor: pointer; text-align: left; transition: background 0.15s, color 0.15s; }
+      .sidebar-sub-link:hover { background: rgba(0, 0, 0, 0.04); color: var(--text); }
+      .sidebar-sub-link.active { color: var(--accent); background: rgba(41,181,232,0.08); }
 
       .home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
       .home-card { display: flex; flex-direction: column; gap: 8px; padding: 20px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; text-align: left; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; font-family: inherit; }

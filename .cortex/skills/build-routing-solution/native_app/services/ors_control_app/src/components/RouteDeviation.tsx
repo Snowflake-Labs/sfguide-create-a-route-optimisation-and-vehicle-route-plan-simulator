@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import DeviationDashboard from './route-deviation/DeviationDashboard';
 import RouteComparison from './route-deviation/RouteComparison';
 import RouteInspector from './route-deviation/RouteInspector';
@@ -11,8 +11,16 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'inspector', label: 'Route Inspector' },
 ];
 
-export default function RouteDeviation() {
-  const [activeTab, setActiveTab] = useState<SubTab>('dashboard');
+interface Props { subTab?: string; }
+
+export default function RouteDeviation({ subTab }: Props) {
+  const [activeTab, setActiveTab] = useState<SubTab>((subTab as SubTab) || 'dashboard');
+
+  useEffect(() => {
+    if (subTab && SUB_TABS.some(t => t.key === subTab)) {
+      setActiveTab(subTab as SubTab);
+    }
+  }, [subTab]);
 
   return (
     <div className="panel">

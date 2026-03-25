@@ -14,13 +14,13 @@ export default function LiveOperations() {
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [openDwells, setOpenDwells] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
 
   const refresh = useCallback(async () => {
     setLoading(true);
     const [v, d] = await Promise.all([
-      sfQuery(`SELECT DRIVER_ID, CURRENT_STATE, ST_X(LAST_POSITION) AS LNG, ST_Y(LAST_POSITION) AS LAT, LAST_UPDATE, CURRENT_SPEED_KMH FROM DT_STATE_CHANGES QUALIFY ROW_NUMBER() OVER (PARTITION BY DRIVER_ID ORDER BY EVENT_TIMESTAMP DESC) = 1 LIMIT 500`),
-      sfQuery(`SELECT DRIVER_ID, FACILITY_NAME, DWELL_START, DWELL_DURATION_MIN, SLA_THRESHOLD_MIN, ROUND(SLA_THRESHOLD_MIN - DWELL_DURATION_MIN, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE DWELL_END IS NULL ORDER BY DWELL_DURATION_MIN DESC LIMIT 50`),
+      sfQuery(`SELECT TRUCK_ID AS DRIVER_ID, STATUS AS CURRENT_STATE, LONGITUDE AS LNG, LATITUDE AS LAT, TS AS LAST_UPDATE, SPEED_KMH AS CURRENT_SPEED_KMH FROM DT_STATE_CHANGES WHERE IS_STATE_CHANGE = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY TRUCK_ID ORDER BY TS DESC) = 1 LIMIT 500`),
+      sfQuery(`SELECT TRUCK_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SESSION_START AS DWELL_START, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, 30 AS SLA_THRESHOLD_MIN, ROUND(30 - DWELL_MINUTES, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE SESSION_END IS NULL ORDER BY DWELL_MINUTES DESC LIMIT 50`),
     ]);
     setVehicles(v);
     setOpenDwells(d);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import DwellOverview from './dwell/DwellOverview';
 import FacilityUtilization from './dwell/FacilityUtilization';
 import SLAAlerts from './dwell/SLAAlerts';
@@ -19,8 +19,16 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'live', label: 'Live Ops' },
 ];
 
-export default function DwellAnalysis() {
-  const [activeTab, setActiveTab] = useState<SubTab>('overview');
+interface Props { subTab?: string; }
+
+export default function DwellAnalysis({ subTab }: Props) {
+  const [activeTab, setActiveTab] = useState<SubTab>((subTab as SubTab) || 'overview');
+
+  useEffect(() => {
+    if (subTab && SUB_TABS.some(t => t.key === subTab)) {
+      setActiveTab(subTab as SubTab);
+    }
+  }, [subTab]);
 
   return (
     <div className="panel">

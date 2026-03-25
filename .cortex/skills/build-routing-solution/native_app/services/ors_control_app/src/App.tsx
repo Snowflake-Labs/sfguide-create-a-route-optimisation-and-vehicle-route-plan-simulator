@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { Home as HomeIcon, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench } from 'lucide-react';
+import { Home as HomeIcon, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import CityProvisioner from './components/CityProvisioner';
 import MatrixBuilder from './components/MatrixBuilder';
 import MatrixViewer from './components/MatrixViewer';
 import FunctionTester from './components/FunctionTester';
 import { useRegionProvider, RegionContext } from './hooks/useRegion';
-import TravelTimeExplorer from './components/TravelTimeExplorer';
 import DwellAnalysis from './components/DwellAnalysis';
 import FleetDelivery from './components/FleetDelivery';
 import FleetTaxis from './components/FleetTaxis';
@@ -17,49 +16,86 @@ import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Home from './components/Home';
 
-type CoreTab = 'home' | 'services' | 'cities' | 'matrix' | 'viewer' | 'functions' | 'travel-time' | 'dwell' | 'fleet-delivery' | 'fleet-taxis' | 'route-deviation' | 'route-opt' | 'retail' | 'agent' | 'studio';
+interface SubPage { key: string; label: string; }
 
-const DEMO_NAV: { key: CoreTab; label: string; icon: React.ComponentType<any> }[] = [
-  { key: 'travel-time', label: 'Travel Time', icon: Clock },
-  { key: 'dwell', label: 'Dwell Analysis', icon: Clock },
-  { key: 'fleet-delivery', label: 'Fleet Delivery', icon: Truck },
-  { key: 'fleet-taxis', label: 'Fleet Taxis', icon: CarTaxiFront },
-  { key: 'route-deviation', label: 'Route Deviation', icon: GitBranch },
+interface NavGroup {
+  key: string;
+  label: string;
+  icon: React.ComponentType<any>;
+  subPages?: SubPage[];
+}
+
+const DEMO_GROUPS: NavGroup[] = [
+  { key: 'dwell', label: 'Dwell Analysis', icon: Clock, subPages: [
+    { key: 'dwell:overview', label: 'Overview' },
+    { key: 'dwell:congestion', label: 'Congestion Map' },
+    { key: 'dwell:facilities', label: 'Facility Utilization' },
+    { key: 'dwell:sla', label: 'SLA Alerts' },
+    { key: 'dwell:trips', label: 'Trip Inspector' },
+    { key: 'dwell:drivers', label: 'Driver Performance' },
+    { key: 'dwell:live', label: 'Live Operations' },
+  ]},
+  { key: 'fleet-delivery', label: 'Fleet Delivery', icon: Truck, subPages: [
+    { key: 'fleet-delivery:map', label: 'Fleet Map' },
+    { key: 'fleet-delivery:data', label: 'Data Builder' },
+    { key: 'fleet-delivery:matrix', label: 'Matrix Builder' },
+    { key: 'fleet-delivery:catchment', label: 'Catchment Panel' },
+  ]},
+  { key: 'fleet-taxis', label: 'Fleet Taxis', icon: CarTaxiFront, subPages: [
+    { key: 'fleet-taxis:overview', label: 'Fleet Overview' },
+    { key: 'fleet-taxis:routes', label: 'Driver Routes' },
+    { key: 'fleet-taxis:heatmap', label: 'Heat Map' },
+  ]},
   { key: 'route-opt', label: 'Route Optimization', icon: Route },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
+  { key: 'route-deviation', label: 'Route Deviation', icon: GitBranch, subPages: [
+    { key: 'route-deviation:dashboard', label: 'Deviation Dashboard' },
+    { key: 'route-deviation:comparison', label: 'Route Comparison' },
+    { key: 'route-deviation:inspector', label: 'Route Inspector' },
+  ]},
   { key: 'agent', label: 'Routing Agent', icon: Bot },
   { key: 'studio', label: 'Data Studio', icon: Database },
 ];
 
-const ADMIN_NAV: { key: CoreTab; label: string; icon: React.ComponentType<any> }[] = [
+type AdminTab = 'services' | 'cities' | 'matrix' | 'viewer' | 'functions';
+
+const ADMIN_NAV: { key: AdminTab; label: string; icon: React.ComponentType<any> }[] = [
   { key: 'services', label: 'Status', icon: Activity },
   { key: 'cities', label: 'City Builder', icon: MapPin },
-  { key: 'matrix', label: 'Matrix Builder', icon: Grid3X3 },
-  { key: 'viewer', label: 'Matrix Viewer', icon: Eye },
+  { key: 'matrix', label: 'Travel Matrix Builder', icon: Grid3X3 },
+  { key: 'viewer', label: 'Travel Matrix Viewer', icon: Eye },
   { key: 'functions', label: 'Functions', icon: Wrench },
 ];
 
-const TAB_LABELS: Record<CoreTab, string> = {
-  home: 'Home',
-  'travel-time': 'Travel Time',
-  dwell: 'Dwell Analysis',
-  'fleet-delivery': 'Fleet Delivery',
-  'fleet-taxis': 'Fleet Taxis',
-  'route-deviation': 'Route Deviation',
-  'route-opt': 'Route Optimization',
-  retail: 'Retail Catchment',
-  agent: 'Routing Agent',
-  studio: 'Data Studio',
-  services: 'Status',
-  cities: 'City Builder',
-  matrix: 'Matrix Builder',
-  viewer: 'Matrix Viewer',
-  functions: 'Functions',
-};
+function getHeaderLabel(tab: string): string {
+  if (tab === 'home') return 'Home';
+  for (const g of DEMO_GROUPS) {
+    if (tab === g.key) return g.label;
+    if (g.subPages) {
+      const sp = g.subPages.find(p => p.key === tab);
+      if (sp) return `${g.label} — ${sp.label}`;
+    }
+  }
+  const admin = ADMIN_NAV.find(a => a.key === tab);
+  if (admin) return admin.label;
+  return '';
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<CoreTab>('home');
+  const [activeTab, setActiveTab] = useState<string>('home');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const region = useRegionProvider();
+
+  const toggleExpand = (groupKey: string) => {
+    setExpanded(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  };
+
+  const navigateTo = (tab: string) => {
+    setActiveTab(tab);
+  };
+
+  const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
+  const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
   return (
     <RegionContext.Provider value={region.value}>
@@ -67,25 +103,58 @@ export default function App() {
         <aside className="sidebar">
           <div className="sidebar-brand">
             <img src="/snowflake_h3.png" alt="Snowflake" />
-            <span>Routing Service</span>
+            <span>Fleet Intelligence</span>
           </div>
           <nav className="sidebar-nav">
-            <button className={`sidebar-link${activeTab === 'home' ? ' active' : ''}`} onClick={() => setActiveTab('home')}>
+            <button className={`sidebar-link${activeTab === 'home' ? ' active' : ''}`} onClick={() => navigateTo('home')}>
               <HomeIcon size={16} />
               Home
             </button>
 
             <div className="sidebar-section">Demos</div>
-            {DEMO_NAV.map(t => (
-              <button key={t.key} className={`sidebar-link${activeTab === t.key ? ' active' : ''}`} onClick={() => setActiveTab(t.key)}>
-                <t.icon size={16} />
-                {t.label}
-              </button>
-            ))}
+            {DEMO_GROUPS.map(g => {
+              const isGroupActive = activeCategory === g.key;
+              const isExpanded = expanded[g.key] ?? isGroupActive;
 
-            <div className="sidebar-section">Admin</div>
+              if (!g.subPages) {
+                return (
+                  <button key={g.key} className={`sidebar-link${isGroupActive ? ' active' : ''}`} onClick={() => navigateTo(g.key)}>
+                    <g.icon size={16} />
+                    {g.label}
+                  </button>
+                );
+              }
+
+              return (
+                <div key={g.key} className="sidebar-group">
+                  <button
+                    className={`sidebar-link sidebar-group-toggle${isGroupActive ? ' active' : ''}`}
+                    onClick={() => toggleExpand(g.key)}
+                  >
+                    <g.icon size={16} />
+                    {g.label}
+                    {isExpanded ? <ChevronDown size={14} className="chevron" /> : <ChevronRight size={14} className="chevron" />}
+                  </button>
+                  {isExpanded && (
+                    <div className="sidebar-sub-links">
+                      {g.subPages.map(sp => (
+                        <button
+                          key={sp.key}
+                          className={`sidebar-sub-link${activeTab === sp.key ? ' active' : ''}`}
+                          onClick={() => navigateTo(sp.key)}
+                        >
+                          {sp.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="sidebar-section">Routing Service</div>
             {ADMIN_NAV.map(t => (
-              <button key={t.key} className={`sidebar-link${activeTab === t.key ? ' active' : ''}`} onClick={() => setActiveTab(t.key)}>
+              <button key={t.key} className={`sidebar-link${activeTab === t.key ? ' active' : ''}`} onClick={() => navigateTo(t.key)}>
                 <t.icon size={16} />
                 {t.label}
               </button>
@@ -98,20 +167,19 @@ export default function App() {
 
         <div className="app-content">
           <header className="app-header">
-            <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{TAB_LABELS[activeTab]}</span>
+            <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
           </header>
           <main className="app-main">
-            {activeTab === 'home' && <Home onNavigate={setActiveTab} />}
+            {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'services' && <ServiceManager />}
             {activeTab === 'cities' && <CityProvisioner />}
             {activeTab === 'matrix' && <MatrixBuilder />}
             {activeTab === 'viewer' && <MatrixViewer />}
             {activeTab === 'functions' && <FunctionTester />}
-            {activeTab === 'travel-time' && <TravelTimeExplorer />}
-            {activeTab === 'dwell' && <DwellAnalysis />}
-            {activeTab === 'fleet-delivery' && <FleetDelivery />}
-            {activeTab === 'fleet-taxis' && <FleetTaxis />}
-            {activeTab === 'route-deviation' && <RouteDeviation />}
+            {activeCategory === 'dwell' && <DwellAnalysis subTab={activeSubTab} />}
+            {activeCategory === 'fleet-delivery' && <FleetDelivery subTab={activeSubTab} />}
+            {activeCategory === 'fleet-taxis' && <FleetTaxis subTab={activeSubTab} />}
+            {activeCategory === 'route-deviation' && <RouteDeviation subTab={activeSubTab} />}
             {activeTab === 'route-opt' && <RouteOptimization />}
             {activeTab === 'retail' && <RetailCatchment />}
             {activeTab === 'agent' && <AgentPlayground />}

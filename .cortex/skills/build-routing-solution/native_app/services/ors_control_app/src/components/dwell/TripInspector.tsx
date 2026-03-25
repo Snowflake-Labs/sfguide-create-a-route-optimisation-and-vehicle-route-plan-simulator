@@ -9,11 +9,11 @@ export default function TripInspector() {
   const [tripPoints, setTripPoints] = useState<any[]>([]);
   const [dwellPoints, setDwellPoints] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
-    sfQuery(`SELECT TRIP_ID, DRIVER_ID, START_TIME, END_TIME, ROUND(TOTAL_DISTANCE_KM, 1) AS DISTANCE_KM, DWELL_COUNT, ROUND(TOTAL_DWELL_MIN, 1) AS TOTAL_DWELL_MIN FROM DT_DWELL_ENRICHED ORDER BY START_TIME DESC LIMIT 100`)
+    sfQuery(`SELECT SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, SESSION_START AS START_TIME, SESSION_END AS END_TIME, NULL AS DISTANCE_KM, 1 AS DWELL_COUNT, ROUND(DWELL_MINUTES, 1) AS TOTAL_DWELL_MIN FROM DT_DWELL_ENRICHED ORDER BY SESSION_START DESC LIMIT 100`)
       .then(setTrips)
       .finally(() => setLoading(false));
   }, []);
@@ -21,8 +21,8 @@ export default function TripInspector() {
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
     const [points, dwells] = await Promise.all([
-      sfQuery(`SELECT ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT, EVENT_TIMESTAMP, SPEED_KMH FROM DT_STATE_CHANGES WHERE TRIP_ID = '${tripId}' ORDER BY EVENT_TIMESTAMP`),
-      sfQuery(`SELECT ST_X(DWELL_LOCATION) AS LNG, ST_Y(DWELL_LOCATION) AS LAT, FACILITY_NAME, ROUND(DWELL_DURATION_MIN, 1) AS DWELL_MIN, SLA_STATUS FROM DT_DWELL_ENRICHED WHERE TRIP_ID = '${tripId}'`),
+      sfQuery(`SELECT LONGITUDE AS LNG, LATITUDE AS LAT, TS AS EVENT_TIMESTAMP, SPEED_KMH FROM DT_STATE_CHANGES WHERE TRUCK_ID = '${tripId}' ORDER BY TS LIMIT 2000`),
+      sfQuery(`SELECT AVG_LNG AS LNG, AVG_LAT AS LAT, LOCATION_NAME AS FACILITY_NAME, ROUND(DWELL_MINUTES, 1) AS DWELL_MIN, CASE WHEN DWELL_MINUTES > 30 THEN 'BREACH' ELSE 'OK' END AS SLA_STATUS FROM DT_DWELL_ENRICHED WHERE TRUCK_ID = '${tripId}'`),
     ]);
     setTripPoints(points);
     setDwellPoints(dwells);
@@ -115,7 +115,7 @@ export default function TripInspector() {
             </thead>
             <tbody>
               {trips.map((t: any) => (
-                <tr key={t.TRIP_ID} onClick={() => loadTrip(t.TRIP_ID)} style={{ cursor: 'pointer', background: selectedTrip === t.TRIP_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
+                <tr key={t.TRIP_ID} onClick={() => loadTrip(t.DRIVER_ID)} style={{ cursor: 'pointer', background: selectedTrip === t.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
                   <td style={{ padding: '6px 8px', fontSize: 11, fontFamily: 'monospace' }}>{String(t.TRIP_ID).slice(-12)}</td>
                   <td style={{ padding: '6px 8px' }}>{t.DRIVER_ID}</td>
                   <td style={{ padding: '6px 8px' }}>{t.DWELL_COUNT}</td>

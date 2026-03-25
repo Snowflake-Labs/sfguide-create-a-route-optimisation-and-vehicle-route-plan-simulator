@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import FleetOverview from './fleet-taxis/FleetOverview';
 import DriverRoutes from './fleet-taxis/DriverRoutes';
 import HeatMap from './fleet-taxis/HeatMap';
@@ -11,8 +11,16 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'heatmap', label: 'Heat Map' },
 ];
 
-export default function FleetTaxis() {
-  const [activeTab, setActiveTab] = useState<SubTab>('overview');
+interface Props { subTab?: string; }
+
+export default function FleetTaxis({ subTab }: Props) {
+  const [activeTab, setActiveTab] = useState<SubTab>((subTab as SubTab) || 'overview');
+
+  useEffect(() => {
+    if (subTab && SUB_TABS.some(t => t.key === subTab)) {
+      setActiveTab(subTab as SubTab);
+    }
+  }, [subTab]);
 
   return (
     <div className="panel">

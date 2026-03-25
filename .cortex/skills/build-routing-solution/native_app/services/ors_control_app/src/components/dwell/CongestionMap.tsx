@@ -12,11 +12,11 @@ export default function CongestionMap() {
   const [hour, setHour] = useState(12);
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 45, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: 9.57, latitude: 50.91, zoom: 6, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
-    sfQuery(`SELECT H3_INDEX, HOUR_OF_DAY, DWELL_COUNT, AVG_DWELL_MIN FROM DT_H3_CONGESTION WHERE HOUR_OF_DAY = ${hour} LIMIT 5000`)
+    sfQuery(`SELECT H3_CELL_R7 AS H3_INDEX, EXTRACT(HOUR FROM HOUR_BUCKET) AS HOUR_OF_DAY, SUM(SESSION_COUNT) AS DWELL_COUNT, ROUND(AVG(AVG_DWELL_MIN),1) AS AVG_DWELL_MIN FROM DT_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = ${hour} GROUP BY H3_CELL_R7, EXTRACT(HOUR FROM HOUR_BUCKET) LIMIT 5000`)
       .then(setData)
       .finally(() => setLoading(false));
   }, [hour]);

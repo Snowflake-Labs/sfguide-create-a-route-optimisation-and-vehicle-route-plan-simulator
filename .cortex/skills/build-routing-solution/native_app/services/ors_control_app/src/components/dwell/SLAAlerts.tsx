@@ -12,10 +12,10 @@ export default function SLAAlerts() {
 
   useEffect(() => {
     setLoading(true);
-    const sevFilter = severity === 'ALL' ? '' : ` WHERE SEVERITY = '${severity}'`;
+    const sevFilter = severity === 'ALL' ? '' : ` WHERE SLA_STATUS = '${severity}'`;
     Promise.all([
-      sfQuery(`SELECT ALERT_ID, TRIP_ID, DRIVER_ID, FACILITY_NAME, SEVERITY, DWELL_DURATION_MIN, SLA_LIMIT_MIN, ALERT_TIME FROM DT_SLA_ALERTS${sevFilter} ORDER BY ALERT_TIME DESC LIMIT 100`),
-      sfQuery(`SELECT SEVERITY, COUNT(*) AS CNT FROM DT_SLA_ALERTS GROUP BY SEVERITY`),
+      sfQuery(`SELECT SESSION_ID AS ALERT_ID, SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SLA_STATUS AS SEVERITY, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, WARNING_MINUTES AS SLA_LIMIT_MIN, SESSION_START AS ALERT_TIME FROM DT_SLA_ALERTS${sevFilter} ORDER BY SESSION_START DESC LIMIT 100`),
+      sfQuery(`SELECT SLA_STATUS AS SEVERITY, COUNT(*) AS CNT FROM DT_SLA_ALERTS GROUP BY SLA_STATUS`),
     ]).then(([a, s]) => {
       setAlerts(a);
       setSummary(s);

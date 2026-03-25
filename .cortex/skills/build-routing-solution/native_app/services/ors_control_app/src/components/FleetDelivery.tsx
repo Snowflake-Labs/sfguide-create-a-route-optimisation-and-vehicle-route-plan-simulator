@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import FleetMap from './fleet-delivery/FleetMap';
 import DataBuilder from './fleet-delivery/DataBuilder';
 import FDMatrixBuilder from './fleet-delivery/FDMatrixBuilder';
@@ -13,8 +13,16 @@ const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'catchment', label: 'Catchment' },
 ];
 
-export default function FleetDelivery() {
-  const [activeTab, setActiveTab] = useState<SubTab>('map');
+interface Props { subTab?: string; }
+
+export default function FleetDelivery({ subTab }: Props) {
+  const [activeTab, setActiveTab] = useState<SubTab>((subTab as SubTab) || 'map');
+
+  useEffect(() => {
+    if (subTab && SUB_TABS.some(t => t.key === subTab)) {
+      setActiveTab(subTab as SubTab);
+    }
+  }, [subTab]);
 
   return (
     <div className="panel">
