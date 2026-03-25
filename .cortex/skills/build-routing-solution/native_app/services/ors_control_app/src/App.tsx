@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Home as HomeIcon, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
+import { Home as HomeIcon, Map, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import CityProvisioner from './components/CityProvisioner';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -14,6 +14,7 @@ import RouteOptimization from './components/RouteOptimization';
 import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
+import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
 
@@ -27,6 +28,7 @@ interface NavGroup {
 }
 
 const DEMO_GROUPS: NavGroup[] = [
+  { key: 'intro', label: 'Intro', icon: Map },
   { key: 'dwell', label: 'Dwell Analysis', icon: Clock, subPages: [
     { key: 'dwell:overview', label: 'Overview' },
     { key: 'dwell:congestion', label: 'Congestion Map' },
@@ -98,6 +100,9 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
+  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'fleet-taxis', 'route-deviation', 'route-opt', 'retail', 'agent'];
+  const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
+
   return (
     <RegionContext.Provider value={region.value}>
       <div className="app">
@@ -162,7 +167,7 @@ export default function App() {
             ))}
           </nav>
           <div className="sidebar-footer">
-            <span className="sidebar-version">v1.0.39</span>
+            <span className="sidebar-version">v1.0.46</span>
           </div>
         </aside>
 
@@ -171,8 +176,9 @@ export default function App() {
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
             <RegionSwitcher />
           </header>
-          <main className="app-main">
+          <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
+            {activeTab === 'intro' && <Intro />}
             {activeTab === 'services' && <ServiceManager />}
             {activeTab === 'cities' && <CityProvisioner />}
             {activeTab === 'matrix' && <MatrixBuilder />}

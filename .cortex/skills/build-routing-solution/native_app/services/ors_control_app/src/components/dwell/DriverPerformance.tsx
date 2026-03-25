@@ -1,9 +1,8 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { DWELL_DB, DWELL_SCHEMA } from './helpers';
+import { sfQuery } from './helpers';
 
 const barColor = (breachRate: number) => {
   if (breachRate > 20) return '#E5484D';
@@ -12,10 +11,18 @@ const barColor = (breachRate: number) => {
 };
 
 export default function DriverPerformance() {
-  const { data, loading } = useSfQuery(
-    `SELECT TRUCK_ID AS DRIVER_ID, UNIQUE_LOCATIONS AS TOTAL_TRIPS, TOTAL_DWELL_SESSIONS AS TOTAL_DWELLS, ROUND(AVG_SESSION_MIN,1) AS AVG_DWELL_MINUTES, SLA_BREACH_COUNT AS SLA_BREACHES, ROUND(SLA_BREACH_COUNT*100.0/NULLIF(TOTAL_DWELL_SESSIONS,0),1) AS BREACH_RATE, ROUND(TOTAL_DWELL_MIN,0) AS TOTAL_DWELL_MINUTES FROM DT_DRIVER_DWELL_SUMMARY ORDER BY TOTAL_DWELL_SESSIONS DESC LIMIT 30`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
+  const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    sfQuery(
+      `SELECT TRUCK_ID AS DRIVER_ID, UNIQUE_LOCATIONS AS TOTAL_TRIPS, TOTAL_DWELL_SESSIONS AS TOTAL_DWELLS, ROUND(AVG_SESSION_MIN,1) AS AVG_DWELL_MINUTES, SLA_BREACH_COUNT AS SLA_BREACHES, ROUND(SLA_BREACH_COUNT*100.0/NULLIF(TOTAL_DWELL_SESSIONS,0),1) AS BREACH_RATE, ROUND(TOTAL_DWELL_MIN,0) AS TOTAL_DWELL_MINUTES FROM DT_DRIVER_DWELL_SUMMARY ORDER BY TOTAL_DWELL_SESSIONS DESC LIMIT 30`
+    ).then(rows => {
+      setData(rows);
+      setLoading(false);
+    });
+  }, []);
 
   const drivers = data.length;
   const fleetAvg = useMemo(() => {
@@ -30,9 +37,9 @@ export default function DriverPerformance() {
   }, [data]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Driver Performance</h2>
-      <p>Individual driver dwell time analysis</p>
+    <div>
+      <h3>Driver Performance</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Individual driver dwell time analysis</p>
       <div className="metric-grid">
         <MetricCard label="Active Drivers" value={loading ? '...' : drivers} />
         <MetricCard label="Fleet Avg Dwell" value={loading ? '...' : `${fleetAvg} min`} />
@@ -71,7 +78,7 @@ export default function DriverPerformance() {
       </div>
       <h3>Driver Details</h3>
       <DataTable data={data} columns={['DRIVER_ID', 'TOTAL_TRIPS', 'TOTAL_DWELLS', 'AVG_DWELL_MINUTES', 'SLA_BREACHES', 'BREACH_RATE', 'TOTAL_DWELL_MINUTES']} />
-      {!loading && data.length === 0 && <div className="data-table-empty">No driver data found.</div>}
+      {!loading && data.length === 0 && <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>No driver data found.</div>}
     </div>
   );
 }

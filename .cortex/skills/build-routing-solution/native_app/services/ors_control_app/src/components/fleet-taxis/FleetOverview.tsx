@@ -1,30 +1,30 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { FT_DB, FT_SCHEMA, cartoBasemap } from './helpers';
-import { useRegion } from '../../hooks/useRegion';
+import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function FleetOverview() {
-  const { regionName, center, zoom } = useRegion();
-  const { data: kpiRows, loading: kpiLoading } = useSfQuery(
-    `SELECT COUNT(DISTINCT DRIVER_ID) AS DRIVERS, COUNT(DISTINCT TRIP_ID) AS TRIPS, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 1) AS AVG_DISTANCE_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION_MIN FROM TRIP_SUMMARY WHERE REGION = '${regionName}'`,
-    FT_DB, FT_SCHEMA, [regionName],
-  );
-  const { data: trips, loading: tripsLoading } = useSfQuery(
-    `SELECT TRIP_ID, DRIVER_ID, ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT, ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT, ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_DISTANCE_KM, ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN FROM TRIP_SUMMARY WHERE REGION = '${regionName}' ORDER BY TRIP_START_TIME DESC LIMIT 200`,
-    FT_DB, FT_SCHEMA, [regionName],
-  );
-  const { data: hourly } = useSfQuery(
-    `SELECT HOUR(TRIP_START_TIME) AS HOUR, COUNT(*) AS TRIPS FROM TRIP_SUMMARY WHERE REGION = '${regionName}' GROUP BY 1 ORDER BY 1`,
-    FT_DB, FT_SCHEMA, [regionName],
-  );
+  const [kpis, setKpis] = useState<any>({});
+  const [trips, setTrips] = useState<any[]>([]);
+  const [hourly, setHourly] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [viewState, setViewState] = useState({ longitude: -73.98, latitude: 40.75, zoom: 11, pitch: 0, bearing: 0 });
 
-  const kpis = kpiRows[0] || {};
-  const loading = kpiLoading || tripsLoading;
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sfQuery(`SELECT COUNT(DISTINCT DRIVER_ID) AS DRIVERS, COUNT(DISTINCT TRIP_ID) AS TRIPS, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 1) AS AVG_DISTANCE_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION_MIN FROM TRIP_SUMMARY`),
+      sfQuery(`SELECT TRIP_ID, DRIVER_ID, ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT, ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT, ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_DISTANCE_KM, ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN FROM TRIP_SUMMARY ORDER BY TRIP_START_TIME DESC LIMIT 200`),
+      sfQuery(`SELECT HOUR(TRIP_START_TIME) AS HOUR, COUNT(*) AS TRIPS FROM TRIP_SUMMARY GROUP BY 1 ORDER BY 1`),
+    ]).then(([k, t, h]) => {
+      setKpis(k[0] || {});
+      setTrips(t);
+      setHourly(h);
+      setLoading(false);
+    });
+  }, []);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -57,17 +57,17 @@ export default function FleetOverview() {
   const layers = useMemo(() => [basemap, routeLayer, pickupLayer].filter(Boolean), [basemap, routeLayer, pickupLayer]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Fleet Overview</h2>
-      <p>Taxi fleet analytics</p>
+    <div className="panel">
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Fleet Overview</h2>
+      <p className="subtitle">Taxi fleet analytics</p>
       <div className="metric-grid">
         <MetricCard label="Drivers" value={loading ? '...' : (kpis.DRIVERS ?? '—')} />
         <MetricCard label="Trips" value={loading ? '...' : (kpis.TRIPS ?? '—')} />
         <MetricCard label="Avg Distance" value={loading ? '...' : `${kpis.AVG_DISTANCE_KM ?? '—'} km`} />
         <MetricCard label="Avg Duration" value={loading ? '...' : `${kpis.AVG_DURATION_MIN ?? '—'} min`} />
       </div>
-      <div className="inline-map">
-        {loading && <div className="map-loading-overlay">Loading...</div>}
+      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginBottom: 12 }}>
+        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
       </div>
       {hourly.length > 0 && (

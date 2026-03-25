@@ -1,31 +1,29 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { useSnowflake } from '../../hooks/useSnowflake';
-import { FD_DB, FD_SCHEMA, cartoBasemap } from './helpers';
-import { useRegion } from '../../hooks/useRegion';
+import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function CatchmentPanel() {
-  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
+  const [restaurants, setRestaurants] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
 
-  const { data: restaurants, loading } = useSfQuery(
-    `SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED WHERE REGION = '${regionName}' ORDER BY TOTAL_ORDERS DESC LIMIT 100`,
-    FD_DB, FD_SCHEMA, [regionName],
-  );
+  useEffect(() => {
+    setLoading(true);
+    sfQuery(`SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED ORDER BY TOTAL_ORDERS DESC LIMIT 100`)
+      .then(r => { setRestaurants(r); setLoading(false); });
+  }, []);
 
-  const { query } = useSnowflake();
   const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
 
   const loadCatchment = useCallback(async (id: string) => {
     setSelectedId(id);
-    const c = await query(`SELECT ST_X(CUSTOMER_LOCATION) AS LNG, ST_Y(CUSTOMER_LOCATION) AS LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE RESTAURANT_ID = '${id}' LIMIT 500`, { database: FD_DB, schema: FD_SCHEMA });
+    const c = await sfQuery(`SELECT ST_X(CUSTOMER_LOCATION) AS LNG, ST_Y(CUSTOMER_LOCATION) AS LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE RESTAURANT_ID = '${id}' LIMIT 500`);
     setCustomers(c);
-  }, [query]);
+  }, []);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -66,16 +64,16 @@ export default function CatchmentPanel() {
   }, []);
 
   return (
-    <div className="page-full">
-      <div className="page-sidebar-panel">
-        <h2>Catchment Analysis</h2>
-        <p>Restaurant delivery catchment areas</p>
-        <div className="metric-grid-vertical">
-          <MetricCard label="Selected" value={selected?.RESTAURANT_NAME || '—'} />
-          <MetricCard label="Orders" value={selected?.TOTAL_ORDERS ?? '—'} />
-          <MetricCard label="Customers" value={customers.length || '—'} />
-        </div>
-        <h3>Restaurants</h3>
+    <div className="panel">
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment Analysis</h2>
+      <p className="subtitle">Restaurant delivery catchment areas</p>
+      <div className="metric-grid">
+        <MetricCard label="Selected" value={selected?.RESTAURANT_NAME || '—'} />
+        <MetricCard label="Orders" value={selected?.TOTAL_ORDERS ?? '—'} />
+        <MetricCard label="Customers" value={customers.length || '—'} />
+      </div>
+      <h3>Restaurants</h3>
+      <div style={{ maxHeight: 180, overflowY: 'auto', marginBottom: 12 }}>
         <table className="sidebar-table">
           <thead><tr>{['Name', 'Orders'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>{restaurants.map((r: any) => (
@@ -86,8 +84,8 @@ export default function CatchmentPanel() {
           ))}</tbody>
         </table>
       </div>
-      <div className="map-view">
-        {loading && <div className="map-loading-overlay">Loading...</div>}
+      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

@@ -1,15 +1,22 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { DWELL_DB, DWELL_SCHEMA } from './helpers';
+import { sfQuery } from './helpers';
 
 export default function FacilityUtilization() {
-  const { data, loading } = useSfQuery(
-    `SELECT LOCATION_NAME AS FACILITY_NAME, FACILITY_TYPE, SUM(TOTAL_SESSIONS) AS TOTAL_VISITS, ROUND(AVG(AVG_DWELL_MIN),1) AS AVG_DWELL_MINUTES, SUM(UNIQUE_VEHICLES) AS UNIQUE_DRIVERS, NULL AS PEAK_HOUR, 0 AS SLA_BREACH_RATE FROM DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME, FACILITY_TYPE ORDER BY TOTAL_VISITS DESC LIMIT 50`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
+  const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    sfQuery(
+      `SELECT LOCATION_NAME AS FACILITY_NAME, FACILITY_TYPE, SUM(TOTAL_SESSIONS) AS TOTAL_VISITS, ROUND(AVG(AVG_DWELL_MIN),1) AS AVG_DWELL_MINUTES, SUM(UNIQUE_VEHICLES) AS UNIQUE_DRIVERS, NULL AS PEAK_HOUR, 0 AS SLA_BREACH_RATE FROM DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME, FACILITY_TYPE ORDER BY TOTAL_VISITS DESC LIMIT 50`
+    ).then(rows => {
+      setData(rows);
+      setLoading(false);
+    });
+  }, []);
 
   const top15 = useMemo(() => data.slice(0, 15), [data]);
   const totalVisits = useMemo(() => data.reduce((s, r) => s + Number(r.TOTAL_VISITS || 0), 0), [data]);
@@ -21,9 +28,9 @@ export default function FacilityUtilization() {
   const types = useMemo(() => new Set(data.map(r => r.FACILITY_TYPE)).size, [data]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Facility Utilization</h2>
-      <p>Dwell time patterns across facilities</p>
+    <div>
+      <h3>Facility Utilization</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Dwell time patterns across facilities</p>
       <div className="metric-grid">
         <MetricCard label="Total Visits" value={loading ? '...' : totalVisits.toLocaleString()} />
         <MetricCard label="Avg Dwell" value={loading ? '...' : `${avgDwell} min`} />

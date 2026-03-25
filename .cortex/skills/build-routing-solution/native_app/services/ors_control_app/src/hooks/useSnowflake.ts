@@ -66,8 +66,9 @@ export function useSfQuery<T = Record<string, any>>(
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       const body = await res.json();
-      const rows = Array.isArray(body) ? body : (body.result || body);
-      if (mounted.current) setData(rows);
+      if (body.error) throw new Error(body.error);
+      const rows = Array.isArray(body) ? body : (body.result ?? []);
+      if (mounted.current) setData(Array.isArray(rows) ? rows : []);
     } catch (err: any) {
       if (mounted.current) setError(err.message);
     } finally {

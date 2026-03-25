@@ -1,29 +1,33 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { FD_SCHEMA, formatNumber, formatBytes } from './helpers';
+import { FD_SCHEMA, sfQuery, formatNumber, formatBytes } from './helpers';
 
 export default function DataBuilder() {
-  const { data: tables, loading: tablesLoading } = useSfQuery(
-    `SELECT TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${FD_SCHEMA}' ORDER BY ROW_COUNT DESC`,
-    'FLEET_INTELLIGENCE', 'INFORMATION_SCHEMA',
-  );
+  const [tables, setTables] = useState<any[]>([]);
+  const [cityStats, setCityStats] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const { data: cityStats, loading: citiesLoading } = useSfQuery(
-    `SELECT CITY_NAME, TOTAL_RESTAURANTS, TOTAL_CUSTOMERS, TOTAL_COURIERS, TOTAL_DELIVERIES FROM CITY_STATS ORDER BY TOTAL_DELIVERIES DESC LIMIT 10`,
-    'FLEET_INTELLIGENCE', FD_SCHEMA,
-  );
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sfQuery(`SELECT TABLE_NAME, ROW_COUNT, BYTES, LAST_ALTERED FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${FD_SCHEMA}' ORDER BY ROW_COUNT DESC`, 'FLEET_INTELLIGENCE', 'INFORMATION_SCHEMA'),
+      sfQuery(`SELECT CITY_NAME, TOTAL_RESTAURANTS, TOTAL_CUSTOMERS, TOTAL_COURIERS, TOTAL_DELIVERIES FROM CITY_STATS ORDER BY TOTAL_DELIVERIES DESC LIMIT 10`),
+    ]).then(([t, c]) => {
+      setTables(t);
+      setCityStats(c);
+      setLoading(false);
+    });
+  }, []);
 
-  const loading = tablesLoading || citiesLoading;
   const totalRows = useMemo(() => tables.reduce((s, t) => s + Number(t.ROW_COUNT || 0), 0), [tables]);
   const totalBytes = useMemo(() => tables.reduce((s, t) => s + Number(t.BYTES || 0), 0), [tables]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Data Builder</h2>
-      <p>Fleet delivery data inventory</p>
+    <div className="panel">
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Data Builder</h2>
+      <p className="subtitle">Fleet delivery data inventory</p>
       <div className="metric-grid">
         <MetricCard label="Tables" value={loading ? '...' : tables.length} />
         <MetricCard label="Total Rows" value={loading ? '...' : formatNumber(totalRows)} />

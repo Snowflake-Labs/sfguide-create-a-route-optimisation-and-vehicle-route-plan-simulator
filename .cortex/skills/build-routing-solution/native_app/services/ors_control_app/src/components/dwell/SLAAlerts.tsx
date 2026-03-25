@@ -1,26 +1,31 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { DWELL_DB, DWELL_SCHEMA } from './helpers';
+import { sfQuery } from './helpers';
 
 const SEV_COLORS: Record<string, string> = { CRITICAL: '#E5484D', WARNING: '#E5A100', INFO: '#29B5E8' };
 
 export default function SLAAlerts() {
   const [severity, setSeverity] = useState('ALL');
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [summary, setSummary] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const sevFilter = severity === 'ALL' ? '' : ` WHERE SLA_STATUS = '${severity}'`;
+  useEffect(() => {
+    sfQuery(`SELECT SLA_STATUS AS SEVERITY, COUNT(*) AS CNT FROM DT_SLA_ALERTS GROUP BY SLA_STATUS`).then(rows => setSummary(rows));
+  }, []);
 
-  const { data: alerts, loading } = useSfQuery(
-    `SELECT SESSION_ID AS ALERT_ID, SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SLA_STATUS AS SEVERITY, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, WARNING_MINUTES AS SLA_LIMIT_MIN, SESSION_START AS ALERT_TIME FROM DT_SLA_ALERTS${sevFilter} ORDER BY SESSION_START DESC LIMIT 100`,
-    DWELL_DB, DWELL_SCHEMA, [severity],
-  );
-
-  const { data: summary } = useSfQuery(
-    `SELECT SLA_STATUS AS SEVERITY, COUNT(*) AS CNT FROM DT_SLA_ALERTS GROUP BY SLA_STATUS`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
+  useEffect(() => {
+    setLoading(true);
+    const sevFilter = severity === 'ALL' ? '' : ` WHERE SLA_STATUS = '${severity}'`;
+    sfQuery(
+      `SELECT SESSION_ID AS ALERT_ID, SESSION_ID AS TRIP_ID, TRUCK_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SLA_STATUS AS SEVERITY, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, WARNING_MINUTES AS SLA_LIMIT_MIN, SESSION_START AS ALERT_TIME FROM DT_SLA_ALERTS${sevFilter} ORDER BY SESSION_START DESC LIMIT 100`
+    ).then(rows => {
+      setAlerts(rows);
+      setLoading(false);
+    });
+  }, [severity]);
 
   const total = useMemo(() => summary.reduce((s, r) => s + Number(r.CNT || 0), 0), [summary]);
   const critical = useMemo(() => Number(summary.find(r => r.SEVERITY === 'CRITICAL')?.CNT || 0), [summary]);
@@ -28,9 +33,9 @@ export default function SLAAlerts() {
   const pieData = useMemo(() => summary.map(r => ({ name: r.SEVERITY, value: Number(r.CNT) })), [summary]);
 
   return (
-    <div className="page-dashboard">
-      <h2>SLA Alerts</h2>
-      <p>Service level agreement breach monitoring</p>
+    <div>
+      <h3>SLA Alerts</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Service level agreement breach monitoring</p>
       <div className="metric-grid">
         <MetricCard label="Total Alerts" value={loading ? '...' : total.toLocaleString()} />
         <MetricCard label="Critical" value={loading ? '...' : critical.toLocaleString()} />
@@ -51,9 +56,9 @@ export default function SLAAlerts() {
           </div>
         )}
         <div className="chart-card">
-          <div className="form-group">
-            <label>Filter by Severity</label>
-            <select className="form-select" value={severity} onChange={e => setSeverity(e.target.value)}>
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Filter by Severity</label>
+            <select className="select" value={severity} onChange={e => setSeverity(e.target.value)}>
               <option value="ALL">All</option>
               <option value="CRITICAL">Critical</option>
               <option value="WARNING">Warning</option>
@@ -63,7 +68,7 @@ export default function SLAAlerts() {
       </div>
       <h3>Alert Log</h3>
       <DataTable data={alerts} columns={['ALERT_ID', 'TRIP_ID', 'DRIVER_ID', 'FACILITY_NAME', 'SEVERITY', 'DWELL_DURATION_MIN', 'SLA_LIMIT_MIN']} />
-      {!loading && alerts.length === 0 && <div className="data-table-empty">No alerts found.</div>}
+      {!loading && alerts.length === 0 && <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>No alerts found.</div>}
     </div>
   );
 }

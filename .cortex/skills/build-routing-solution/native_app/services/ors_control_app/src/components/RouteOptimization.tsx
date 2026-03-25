@@ -4,7 +4,6 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
-import { useRegion } from '../hooks/useRegion';
 
 const RO_DB = 'FLEET_INTELLIGENCE';
 const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
@@ -28,7 +27,6 @@ const ROUTE_COLORS: [number, number, number][] = [[41, 181, 232], [34, 197, 94],
 interface VehicleConfig { id: number; profile: string; startLng: number; startLat: number; endLng: number; endLat: number; capacity: number; }
 
 export default function RouteOptimization() {
-  const { regionName, center, zoom: regionZoom } = useRegion();
   const [searchText, setSearchText] = useState('');
   const [centerCoords, setCenterCoords] = useState<[number, number] | null>(null);
   const [radius, setRadius] = useState(5);
@@ -45,11 +43,11 @@ export default function RouteOptimization() {
   const [geocoding, setGeocoding] = useState(false);
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom + 1, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`).then(r => setIndustries(r));
-  }, [regionName]);
+    sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP ORDER BY INDUSTRY`).then(r => setIndustries(r));
+  }, []);
 
   const geocode = useCallback(async () => {
     if (!searchText.trim()) return;
@@ -71,8 +69,8 @@ export default function RouteOptimization() {
     setLoading(true);
     const indFilter = selectedIndustry ? ` AND CATEGORY = '${selectedIndustry}'` : '';
     const [p, j] = await Promise.all([
-      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
-      sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' LIMIT 30`),
+      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
+      sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE STATUS = 'active' LIMIT 30`),
     ]);
     setPlaces(p);
     setJobs(j);
@@ -218,8 +216,8 @@ export default function RouteOptimization() {
         </div>
       )}
 
-      <div className="inline-map">
-        {(loading || solving) && <div className="map-loading-overlay">{solving ? 'Solving VRP...' : 'Loading...'}</div>}
+      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+        {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving VRP...' : 'Loading...'}</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

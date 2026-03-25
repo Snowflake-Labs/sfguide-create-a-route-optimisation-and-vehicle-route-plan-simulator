@@ -1,42 +1,40 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { RD_DB, RD_SCHEMA } from './helpers';
-import { useRegion } from '../../hooks/useRegion';
+import { RD_DB, RD_SCHEMA, sfQuery } from './helpers';
 
 const PIE_COLORS = ['#0DB048', '#29B5E8', '#E5A100', '#E5484D'];
 
 export default function DeviationDashboard() {
-  const { regionName } = useRegion();
-  const { data: kpiRows, loading } = useSfQuery(
-    `SELECT COUNT(*) AS TOTAL_ROUTES, ROUND(AVG(DISTANCE_DEVIATION_PCT), 1) AS AVG_DEVIATION_PCT, ROUND(SUM(CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS ON_ROUTE_PCT, SUM(CASE WHEN DISTANCE_DEVIATION_PCT > 20 THEN 1 ELSE 0 END) AS HIGH_DEVIATIONS FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}'`,
-    RD_DB, RD_SCHEMA, [regionName],
-  );
+  const [kpis, setKpis] = useState<any>({});
+  const [trends, setTrends] = useState<any[]>([]);
+  const [buckets, setBuckets] = useState<any[]>([]);
+  const [topDeviators, setTopDeviators] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const { data: trends } = useSfQuery(
-    `SELECT TRIP_DATE, TOTAL_TRIPS AS ROUTES, ROUND(DEVIATION_RATE_PCT, 1) AS AVG_DEV_PCT FROM DAILY_DEVIATION_TRENDS WHERE REGION = '${regionName}' ORDER BY TRIP_DATE LIMIT 30`,
-    RD_DB, RD_SCHEMA, [regionName],
-  );
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sfQuery(`SELECT COUNT(*) AS TOTAL_ROUTES, ROUND(AVG(DISTANCE_DEVIATION_PCT), 1) AS AVG_DEVIATION_PCT, ROUND(SUM(CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS ON_ROUTE_PCT, SUM(CASE WHEN DISTANCE_DEVIATION_PCT > 20 THEN 1 ELSE 0 END) AS HIGH_DEVIATIONS FROM TRIP_DEVIATION_ANALYSIS`),
+      sfQuery(`SELECT TRIP_DATE, TOTAL_TRIPS AS ROUTES, ROUND(DEVIATION_RATE_PCT, 1) AS AVG_DEV_PCT FROM DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE LIMIT 30`),
+      sfQuery(`SELECT CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN '0-5%' WHEN DISTANCE_DEVIATION_PCT <= 10 THEN '5-10%' WHEN DISTANCE_DEVIATION_PCT <= 20 THEN '10-20%' ELSE '20%+' END AS BUCKET, COUNT(*) AS CNT FROM TRIP_DEVIATION_ANALYSIS GROUP BY 1 ORDER BY 1`),
+      sfQuery(`SELECT DRIVER_ID, TOTAL_TRIPS AS ROUTES, ROUND(AVG_DISTANCE_DEVIATION_PCT, 1) AS AVG_DEV_PCT, ROUND(AVG_DURATION_DEVIATION_PCT, 1) AS AVG_TIME_DEV FROM DRIVER_DEVIATION_SUMMARY ORDER BY AVG_DISTANCE_DEVIATION_PCT DESC LIMIT 15`),
+    ]).then(([k, t, b, d]) => {
+      setKpis(k[0] || {});
+      setTrends(t);
+      setBuckets(b);
+      setTopDeviators(d);
+      setLoading(false);
+    });
+  }, []);
 
-  const { data: buckets } = useSfQuery(
-    `SELECT CASE WHEN DISTANCE_DEVIATION_PCT <= 5 THEN '0-5%' WHEN DISTANCE_DEVIATION_PCT <= 10 THEN '5-10%' WHEN DISTANCE_DEVIATION_PCT <= 20 THEN '10-20%' ELSE '20%+' END AS BUCKET, COUNT(*) AS CNT FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' GROUP BY 1 ORDER BY 1`,
-    RD_DB, RD_SCHEMA, [regionName],
-  );
-
-  const { data: topDeviators } = useSfQuery(
-    `SELECT DRIVER_ID, TOTAL_TRIPS AS ROUTES, ROUND(AVG_DISTANCE_DEVIATION_PCT, 1) AS AVG_DEV_PCT, ROUND(AVG_DURATION_DEVIATION_PCT, 1) AS AVG_TIME_DEV FROM DRIVER_DEVIATION_SUMMARY WHERE REGION = '${regionName}' ORDER BY AVG_DISTANCE_DEVIATION_PCT DESC LIMIT 15`,
-    RD_DB, RD_SCHEMA, [regionName],
-  );
-
-  const kpis = kpiRows[0] || {};
   const pieData = useMemo(() => buckets.map(r => ({ name: r.BUCKET, value: Number(r.CNT) })), [buckets]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Deviation Dashboard</h2>
-      <p>Route deviation analytics overview</p>
+    <div className="panel">
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Deviation Dashboard</h2>
+      <p className="subtitle">Route deviation analytics overview</p>
       <div className="metric-grid">
         <MetricCard label="Total Routes" value={loading ? '...' : Number(kpis.TOTAL_ROUTES || 0).toLocaleString()} />
         <MetricCard label="Avg Deviation" value={loading ? '...' : `${kpis.AVG_DEVIATION_PCT ?? '—'}%`} />

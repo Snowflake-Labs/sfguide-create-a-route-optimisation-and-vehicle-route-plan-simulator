@@ -1,36 +1,34 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { useSnowflake } from '../../hooks/useSnowflake';
-import { FD_DB, FD_SCHEMA, cartoBasemap } from './helpers';
-import { useRegion } from '../../hooks/useRegion';
+import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function FleetMap() {
-  const { regionName, center, zoom: regionZoom } = useRegion();
   const [selectedCourier, setSelectedCourier] = useState<string | null>(null);
   const [routeGeo, setRouteGeo] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom: regionZoom, pitch: 0, bearing: 0 });
+  const [kpis, setKpis] = useState<any>({});
+  const [couriers, setCouriers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
 
-  const { data: kpiRows, loading: kpiLoading } = useSfQuery(
-    `SELECT COUNT(DISTINCT COURIER_ID) AS COURIERS, COUNT(DISTINCT DELIVERY_ID) AS DELIVERIES, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_DELIVERY_MIN FROM DELIVERIES WHERE REGION = '${regionName}'`,
-    FD_DB, FD_SCHEMA, [regionName],
-  );
-  const { data: couriers, loading: couriersLoading } = useSfQuery(
-    `SELECT COURIER_ID, COUNT(*) AS TRIPS, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_MIN, MIN(ST_X(PICKUP_LOCATION)) AS LNG, MIN(ST_Y(PICKUP_LOCATION)) AS LAT FROM DELIVERIES WHERE REGION = '${regionName}' GROUP BY COURIER_ID ORDER BY TRIPS DESC LIMIT 100`,
-    FD_DB, FD_SCHEMA, [regionName],
-  );
-
-  const kpis = kpiRows[0] || {};
-  const loading = kpiLoading || couriersLoading;
-  const { query } = useSnowflake();
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sfQuery(`SELECT COUNT(DISTINCT COURIER_ID) AS COURIERS, COUNT(DISTINCT DELIVERY_ID) AS DELIVERIES, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_DELIVERY_MIN FROM DELIVERIES`),
+      sfQuery(`SELECT COURIER_ID, COUNT(*) AS TRIPS, ROUND(AVG(DELIVERY_TIME_MIN), 1) AS AVG_MIN, MIN(ST_X(PICKUP_LOCATION)) AS LNG, MIN(ST_Y(PICKUP_LOCATION)) AS LAT FROM DELIVERIES GROUP BY COURIER_ID ORDER BY TRIPS DESC LIMIT 100`),
+    ]).then(([k, c]) => {
+      setKpis(k[0] || {});
+      setCouriers(c);
+      setLoading(false);
+    });
+  }, []);
 
   const loadRoutes = useCallback(async (courierId: string) => {
     setSelectedCourier(courierId);
-    const routes = await query(`SELECT ST_X(PICKUP_LOCATION) AS P_LNG, ST_Y(PICKUP_LOCATION) AS P_LAT, ST_X(DROPOFF_LOCATION) AS D_LNG, ST_Y(DROPOFF_LOCATION) AS D_LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE COURIER_ID = '${courierId}' LIMIT 50`, { database: FD_DB, schema: FD_SCHEMA });
+    const routes = await sfQuery(`SELECT ST_X(PICKUP_LOCATION) AS P_LNG, ST_Y(PICKUP_LOCATION) AS P_LAT, ST_X(DROPOFF_LOCATION) AS D_LNG, ST_Y(DROPOFF_LOCATION) AS D_LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE COURIER_ID = '${courierId}' LIMIT 50`);
     setRouteGeo(routes);
-  }, [query]);
+  }, []);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -72,16 +70,16 @@ export default function FleetMap() {
   }, []);
 
   return (
-    <div className="page-full">
-      <div className="page-sidebar-panel">
-        <h2>Fleet Map</h2>
-        <p>Courier positions and delivery routes</p>
-        <div className="metric-grid-vertical">
-          <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '—')} />
-          <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '—')} />
-          <MetricCard label="Avg Delivery" value={loading ? '...' : `${kpis.AVG_DELIVERY_MIN ?? '—'} min`} />
-        </div>
-        <h3>Couriers</h3>
+    <div className="panel">
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Fleet Map</h2>
+      <p className="subtitle">Courier positions and delivery routes</p>
+      <div className="metric-grid">
+        <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '—')} />
+        <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '—')} />
+        <MetricCard label="Avg Delivery" value={loading ? '...' : `${kpis.AVG_DELIVERY_MIN ?? '—'} min`} />
+      </div>
+      <h3>Couriers</h3>
+      <div style={{ maxHeight: 180, overflowY: 'auto', marginBottom: 12 }}>
         <table className="sidebar-table">
           <thead><tr>{['Courier', 'Trips', 'Avg'].map(h => <th key={h}>{h}</th>)}</tr></thead>
           <tbody>
@@ -95,8 +93,8 @@ export default function FleetMap() {
           </tbody>
         </table>
       </div>
-      <div className="map-view">
-        {loading && <div className="map-loading-overlay">Loading...</div>}
+      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+        {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>

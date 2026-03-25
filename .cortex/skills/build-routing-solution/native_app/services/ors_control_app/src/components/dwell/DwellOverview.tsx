@@ -1,24 +1,27 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
-import { useSfQuery } from '../../hooks/useSnowflake';
-import { DWELL_DB, DWELL_SCHEMA } from './helpers';
+import { sfQuery } from './helpers';
 
 export default function DwellOverview() {
-  const { data: kpis, loading } = useSfQuery(
-    `SELECT COUNT(DISTINCT SESSION_ID) AS TOTAL_TRIPS, ROUND(AVG(DWELL_MINUTES),1) AS AVG_DWELL, ROUND(SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0),1) AS SLA_PCT, COUNT(DISTINCT TRUCK_ID) AS ACTIVE_DRIVERS FROM DT_DWELL_ENRICHED`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
+  const [kpis, setKpis] = useState<any[]>([]);
+  const [trends, setTrends] = useState<any[]>([]);
+  const [topFacilities, setTopFacilities] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const { data: trends } = useSfQuery(
-    `SELECT TREND_DATE AS DAY, TOTAL_SESSIONS AS TOTAL_DWELLS, ACTIVE_VEHICLES AS TOTAL_TRIPS FROM DT_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
-
-  const { data: topFacilities } = useSfQuery(
-    `SELECT LOCATION_NAME AS FACILITY_NAME, SUM(TOTAL_SESSIONS) AS TOTAL_VISITS FROM DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY TOTAL_VISITS DESC LIMIT 10`,
-    DWELL_DB, DWELL_SCHEMA,
-  );
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      sfQuery(`SELECT COUNT(DISTINCT SESSION_ID) AS TOTAL_TRIPS, ROUND(AVG(DWELL_MINUTES),1) AS AVG_DWELL, ROUND(SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0),1) AS SLA_PCT, COUNT(DISTINCT TRUCK_ID) AS ACTIVE_DRIVERS FROM DT_DWELL_ENRICHED`),
+      sfQuery(`SELECT TREND_DATE AS DAY, TOTAL_SESSIONS AS TOTAL_DWELLS, ACTIVE_VEHICLES AS TOTAL_TRIPS FROM DT_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30`),
+      sfQuery(`SELECT LOCATION_NAME AS FACILITY_NAME, SUM(TOTAL_SESSIONS) AS TOTAL_VISITS FROM DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY TOTAL_VISITS DESC LIMIT 10`),
+    ]).then(([k, t, f]) => {
+      setKpis(k);
+      setTrends(t);
+      setTopFacilities(f);
+      setLoading(false);
+    });
+  }, []);
 
   const k = kpis[0] || {};
 
@@ -36,9 +39,9 @@ export default function DwellOverview() {
     })), [topFacilities]);
 
   return (
-    <div className="page-dashboard">
-      <h2>Dwell Analysis Overview</h2>
-      <p>Fleet dwell time analytics and SLA monitoring</p>
+    <div>
+      <h3>Dwell Analysis Overview</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Fleet dwell time analytics and SLA monitoring</p>
       <div className="metric-grid">
         <MetricCard label="Total Trips" value={loading ? '...' : (k.TOTAL_TRIPS ?? '—')} />
         <MetricCard label="Avg Dwell Time" value={loading ? '...' : `${k.AVG_DWELL ?? '—'} min`} />
