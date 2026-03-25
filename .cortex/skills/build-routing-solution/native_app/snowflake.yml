@@ -13,6 +13,7 @@ entities:
       - src: services/downloader/downloader_spec.yaml
       - src: services/vroom/vroom-service.yaml
       - src: services/ors_control_app/ors_control_app_service.yaml
+      - src: services/demo_dashboard/demo_dashboard_service.yaml
       - src: code_artifacts/streamlit/*
         dest: streamlit/
     meta:
