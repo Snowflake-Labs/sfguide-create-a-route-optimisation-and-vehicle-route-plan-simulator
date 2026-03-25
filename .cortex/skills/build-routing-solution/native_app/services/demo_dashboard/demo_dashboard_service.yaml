@@ -3,6 +3,7 @@ spec:
     - name: demo-dashboard
       image: /openrouteservice_setup/public/image_repository/demo-dashboard:v1.0.25
       env:
+        SNOWFLAKE_DATABASE: FLEET_INTELLIGENCE
         SNOWFLAKE_WAREHOUSE: ROUTING_ANALYTICS
         PORT: "8080"
       resources:
