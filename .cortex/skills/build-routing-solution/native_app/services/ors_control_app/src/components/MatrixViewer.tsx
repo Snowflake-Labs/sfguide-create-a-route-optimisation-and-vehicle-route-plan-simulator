@@ -82,6 +82,14 @@ export default function MatrixViewer() {
     if (regions.length > 0 && !selRegion) setSelRegion(regions[0]);
   }, [regions]);
 
+  const prevRegionRef = useRef(selRegion);
+  useEffect(() => {
+    if (selRegion && selRegion !== prevRegionRef.current) {
+      prevRegionRef.current = selRegion;
+      hasLoadedOnce.current = false;
+    }
+  }, [selRegion]);
+
   const profiles = useMemo(() =>
     [...new Set(inventory.filter(t => t.region === selRegion).map(t => t.profile))],
     [inventory, selRegion]
