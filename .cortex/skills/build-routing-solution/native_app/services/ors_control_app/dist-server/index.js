@@ -1250,14 +1250,34 @@ async function executeToolLocally(toolName, input) {
     }
 }
 function escAgentSqlStr(s) {
-    return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return s.replace(/'/g, "''");
 }
+const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+let agentModel = AGENT_MODELS[0];
 async function callCortexComplete(messages) {
     const msgArray = messages.map(m => {
         return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
     }).join(',');
-    const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-opus-4-6', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
-    const rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+    const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
+    console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
+    const startMs = Date.now();
+    let rows;
+    try {
+        rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+    }
+    catch (err) {
+        console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
+        if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
+            console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
+            agentModel = AGENT_MODELS[1];
+            const retrySql = sql.replace(AGENT_MODELS[0], agentModel);
+            rows = await runSql(retrySql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+        }
+        else {
+            throw err;
+        }
+    }
+    console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
     if (!rows || rows.length === 0)
         throw new Error('No response from CORTEX.COMPLETE');
     const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
@@ -1268,6 +1288,10 @@ async function callCortexComplete(messages) {
     }
     catch {
         content = String(raw);
+    }
+    if (!content) {
+        console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
+        throw new Error('Empty response from LLM');
     }
     return content.trim();
 }
@@ -1321,6 +1345,7 @@ function parseToolCall(text) {
 async function callCortexAgentWithToolLoop(message, threadId, parentMessageId, onProgress) {
     if (!IS_SPCS)
         throw new Error('Cortex Agent is only available in SPCS mode');
+    console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
     const messages = [
         { role: 'system', content: ROUTING_SYSTEM_PROMPT },
         { role: 'user', content: message },
@@ -1328,14 +1353,17 @@ async function callCortexAgentWithToolLoop(message, threadId, parentMessageId, o
     const maxIterations = 5;
     const allToolResults = [];
     for (let iter = 0; iter < maxIterations; iter++) {
-        onProgress?.({ step: 'calling_llm', detail: `Iteration ${iter}` });
+        onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
         const response = await callCortexComplete(messages);
+        console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
         const toolCall = parseToolCall(response);
         if (!toolCall) {
+            console.log(`[Agent] No tool call found, returning text response`);
             return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
         }
         const toolLabel = toolCall.name.replace('tool_', '');
         onProgress?.({ step: 'executing_tool', detail: toolLabel });
+        console.log(`[Agent] Executing tool: ${toolCall.name}`);
         messages.push({ role: 'assistant', content: response });
         const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
         allToolResults.push(toolResult);
@@ -1385,7 +1413,8 @@ app.post('/api/agent/chat', async (req, res) => {
         res.end();
     }
     catch (err) {
-        sendSseEvent(res, 'error', { error: err.message });
+        console.error(`[Agent] Chat endpoint error: ${err.message}`);
+        sendSseEvent(res, 'error', { error: err.message || 'Unknown agent error' });
         res.end();
     }
 });

@@ -75,11 +75,15 @@ export default function AgentPlayground() {
     setStreaming(true);
 
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg.content, history: messages }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       let assistantContent = '';
       const toolResults: any[] = [];
@@ -117,7 +121,9 @@ export default function AgentPlayground() {
                     return updated;
                   });
                 } else if (eventType === 'progress') {
-                  const progressText = parsed.detail || parsed.step || 'Thinking...';
+                  const stepLabels: Record<string, string> = { calling_llm: 'Thinking...', executing_tool: 'Running tool', formatting: 'Processing' };
+                  const label = stepLabels[parsed.step] || parsed.step || '';
+                  const progressText = parsed.detail && !parsed.detail.startsWith('Iteration') ? `${label} ${parsed.detail}`.trim() : label || 'Thinking...';
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
@@ -159,7 +165,14 @@ export default function AgentPlayground() {
         return updated;
       });
     } catch (err: any) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+      const errMsg = err.name === 'AbortError' ? 'Request timed out. The agent may be taking too long.' : `Error: ${err.message}`;
+      setMessages(prev => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === 'assistant') last.content = errMsg;
+        else updated.push({ role: 'assistant', content: errMsg });
+        return updated;
+      });
     }
     setStreaming(false);
   }, [input, streaming, messages]);
