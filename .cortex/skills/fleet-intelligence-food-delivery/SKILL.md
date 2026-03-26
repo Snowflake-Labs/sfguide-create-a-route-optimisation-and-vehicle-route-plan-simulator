@@ -128,6 +128,31 @@ Then add `"Riverside"` to the `CALIFORNIA_CITIES` list.
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-food-delivery_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS;
+```
+
+If the table exists and has rows, data is already loaded. Skip to Step 10 (Register with Demo Dashboard).
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/fleet-intelligence-food-delivery/`.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('fleet-intelligence-food-delivery'));
+```
+
 ## Workflow
 
 Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLDER}` values based on the user's chosen configuration before executing.
@@ -145,6 +170,12 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 > 4. **Verify row counts after each CTAS.** Run `SELECT COUNT(*) FROM <table>` after every `CREATE TABLE ... AS SELECT` to catch silent failures early.
 
 ### Step 1: Set Query Tag for Tracking
+
+**Pre-check: If data already exists, skip to Step 10.** Run:
+```sql
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS;
+```
+If `cnt > 0`, the data pipeline has already run. Skip to Step 10 (analytics views) or Step 11 (Streamlit deployment) as needed.
 
 ```sql
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
@@ -204,7 +235,9 @@ If either fails, install from Marketplace. See `references/sql-pipeline.md` Step
 
 **Read `references/native-app-deployment.md` for Docker build, push, and SPCS deployment.**
 
-Sub-steps: Docker build -> image push -> app package -> native app install -> privilege grants -> EAI setup -> service deployment -> verification.
+**DEPRECATED:** Step 12 is no longer needed. The demo-dashboard native app (`DEMO_DASHBOARD_APP`) has replaced the standalone `FLEET_INTEL_APP`. See `.cortex/skills/demo-dashboard/` for deployment instructions.
+
+> **Note:** The Fleet Intelligence app delegates all routing calls to the standalone `OPENROUTESERVICE_NATIVE_APP` via SQL wrapper functions. No ORS/vroom/gateway/downloader images need to be built — only the `fleet-intelligence` image.
 
 ---
 
@@ -219,6 +252,21 @@ Sub-steps: Docker build -> image push -> app package -> native app install -> pr
 
 ---
 
+### Step 13: Register with Demo Dashboard
+
+If the shared Demo Dashboard app is installed, register this demo's pages:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-map', 'Fleet Map', 'Courier fleet overview', 'Fleet Delivery', 'MapPin', 80);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-data', 'Data Builder', 'Data pipeline status', 'Fleet Delivery', 'Database', 90);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-matrix', 'Matrix Builder', 'Travel time matrix builder', 'Fleet Delivery', 'Grid3x3', 100);
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-catchment', 'Catchment Panel', 'Restaurant catchment areas', 'Fleet Delivery', 'Target', 110);
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
+
+---
+
 ## Troubleshooting
 
 | Issue | Solution |
@@ -230,7 +278,7 @@ Sub-steps: Docker build -> image push -> app package -> native app install -> pr
 | Out of memory | Use larger warehouse or reduce NUM_COURIERS |
 | Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/swiftbite/` |
 | PUT command fails | Ensure the file path is absolute and the file exists locally |
-| Bicycle routes failing | ORS may not have cycling profile enabled; check ors-config.yml |
+| Bicycle routes failing | ORS may not have cycling profile enabled; check OpenRouteService Native App configuration |
 
 For Docker/SPCS/Native App troubleshooting, see `references/native-app-deployment.md`.
 
@@ -239,13 +287,8 @@ For Docker/SPCS/Native App troubleshooting, see `references/native-app-deploymen
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: native app first, then streamlit, views, tables, stages, schemas, databases
-DROP APPLICATION IF EXISTS OPENROUTESERVICE_APP CASCADE;
-DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_PKG;
-DROP EXTERNAL ACCESS INTEGRATION IF EXISTS FLEET_INTEL_MAP_TILES_EAI;
-DROP NETWORK RULE IF EXISTS FLEET_INTEL_MAP_TILES_RULE;
-DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.FLEET_INTEL_REPO;
-DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
+-- Reverse dependency order: views, tables, stages, schemas
+-- NOTE: FLEET_INTEL_APP is deprecated; use DEMO_DASHBOARD_APP instead
 DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SWIFTBITE_DELIVERY_DASHBOARD;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN;

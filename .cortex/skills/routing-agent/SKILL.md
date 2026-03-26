@@ -45,6 +45,23 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-agent_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+No seed data needed. The routing agent consists of stored procedures and a Cortex Agent definition — there are no pre-computed data tables to load.
+
+### Load from S3
+
+The routing agent has no seed data — it consists of stored procedures and a Cortex Agent definition. Run the DDL from `references/agent-definitions.md` to create all objects.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('routing-agent'));
+```
+
 ## Workflow
 
 > All stored procedure and agent SQL definitions are in [references/agent-definitions.md](references/agent-definitions.md).
@@ -127,7 +144,7 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(.
 Create a Cortex Agent (`ROUTING_AGENT`) with three tool bindings pointing to the procedures above.
 
 ```sql
-CREATE OR REPLACE CORTEX AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT(...)
+CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 -- Full definition: see references/agent-definitions.md
 ```
 
@@ -172,6 +189,16 @@ SELECT CURRENT_ORGANIZATION_NAME() AS org_name, CURRENT_ACCOUNT_NAME() AS accoun
 ```
 
 Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
+
+### Step 11: Register with Demo Dashboard
+
+If the shared Demo Dashboard app is installed, register this demo:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('routing-agent', 'Routing Agent', 'AI-powered routing assistant', 'Routing Agent', 'Bot', 190);
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
 
 ## Stopping Points
 

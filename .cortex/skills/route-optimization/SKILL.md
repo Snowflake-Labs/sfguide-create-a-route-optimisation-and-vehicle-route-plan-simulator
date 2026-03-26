@@ -1,6 +1,6 @@
 ---
 name: route-optimization
-description: "Deploy the Route Optimization demo including Marketplace data, notebook, and Streamlit app. Use when: setting up the route optimization demo after native app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
+description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after native app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
 depends_on:
   - build-routing-solution
 metadata:
@@ -11,7 +11,7 @@ metadata:
 
 # Deploy Route Optimization Demo
 
-Deploys the complete Route Optimization demo including Snowflake Marketplace data, the exploration notebook, and the Streamlit simulator application.
+Deploys the complete Route Optimization demo including Snowflake Marketplace data and the exploration notebook. The interactive VRP simulator is served via the shared React Demo Dashboard app.
 
 ## Prerequisites
 
@@ -27,9 +27,8 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTE_OPTIMIZATION schema |
-| CREATE STAGE | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Creates NOTEBOOK and STREAMLIT stages |
+| CREATE STAGE | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Creates NOTEBOOK stage |
 | CREATE NOTEBOOK | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Deploys Carto data and AISQL notebooks |
-| CREATE STREAMLIT | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Deploys route simulator app |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS routing functions |
 | EXECUTE MANAGED TASK | Account | Enables ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION (optional) |
@@ -58,9 +57,40 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 3. Replace complete prompt strings, not individual words.
 4. Always validate JSON validity of modified `.ipynb` files before uploading.
 
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;
+```
+
+If the table exists and has rows, data is already loaded. Skip to the ORS configuration step.
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/route-optimization/`.
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('route-optimization'));
+```
+
 ## Workflow
 
 ### Step 1: Set Query Tag
+
+**Pre-check: If data already exists, skip to Step 7.** Run:
+```sql
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
+```
+If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (fleet simulation notebook) or Step 9 (Streamlit deployment) as needed.
 
 **Goal:** Set session query tag for attribution tracking.
 
@@ -131,25 +161,61 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 
 **Output:** AISQL notebook deployed with AI prompts customized for `<NOTEBOOK_CITY>`.
 
-### Step 9: Deploy Streamlit App
+### Step 9: Register with Demo Dashboard
 
-**Goal:** Deploy the route simulator Streamlit app, customized for the detected region.
+If the shared Demo Dashboard app is installed, register this demo:
 
-> See `references/streamlit-deployment.md` for landmark lookup, stage copy commands, and CREATE STREAMLIT SQL.
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('route-opt', 'Route Optimization', 'VRP solver with vehicle routing', 'Route Optimization', 'Waypoints', 150, 'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION');
+```
 
-**Output:** Streamlit app deployed with default location set to `<NOTEBOOK_CITY>`.
+Skip if DEMO_DASHBOARD_APP is not installed.
 
-### Step 10: Run the Demo
+## Dashboard Schema Contract
 
-**Goal:** Access and use the route simulator.
+The React Demo Dashboard page queries these exact tables and columns. If the pipeline changes column names, the React page must be updated to match.
 
-1. Access Streamlit app via URL
-2. Configure: sidebar > function location > industry > LLM model (recommend mistral-large2) > location > distance radius
-3. Select distributor and customers from dropdowns
-4. Configure vehicles: start/end times, profiles, skills
-5. Run optimization: generate routes, view maps and delivery instructions
+### PLACES
+| Column | Type | Used By |
+|--------|------|---------|
+| NAME | VARCHAR | RouteOptimization (place display) |
+| CATEGORY | VARCHAR | RouteOptimization (filtering) |
+| GEOMETRY | GEOGRAPHY | RouteOptimization (ST_X/ST_Y, ST_DWITHIN radius filter) |
 
-**Output:** Fully functional route optimization simulator.
+### JOB_TEMPLATE
+| Column | Type | Used By |
+|--------|------|---------|
+| ID | NUMBER | RouteOptimization (job assignment) |
+| SLOT_START | NUMBER | RouteOptimization (VRP time windows) |
+| SLOT_END | NUMBER | RouteOptimization (VRP time windows) |
+| SKILLS | NUMBER | RouteOptimization (VRP skills constraint) |
+| PRODUCT | VARCHAR | RouteOptimization |
+| STATUS | VARCHAR | RouteOptimization (active filter) |
+
+### LOOKUP
+| Column | Type | Used By |
+|--------|------|---------|
+| INDUSTRY | VARCHAR | RouteOptimization (industry selector) |
+| PA | VARCHAR | RouteOptimization (POI category filter) |
+| PB | VARCHAR | RouteOptimization |
+| PC | VARCHAR | RouteOptimization |
+
+### ORS Functions (cross-app)
+| Function | Used By |
+|----------|---------|
+| OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO | Catchment preview |
+| OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION | VRP solver |
+| OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO | Per-vehicle route geometry |
+| SNOWFLAKE.CORTEX.COMPLETE | AI geocoding |
+
+---
+
+### Step 10: Verify
+
+**Goal:** Confirm tables exist and Demo Dashboard shows the page.
+
+1. Verify PLACES, LOOKUP, JOB_TEMPLATE tables have rows
+2. Check Demo Dashboard loads Route Optimization page
 
 ## Stopping Points
 
@@ -159,7 +225,7 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 - Step 4: Verify Marketplace dataset accessible
 - Step 6: Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated
 - Step 7: Verify Claude model is available
-- Step 10: Verify app loads correctly with correct region
+- Step 9: Verify Demo Dashboard shows the Route Optimization page
 
 ## Troubleshooting
 
@@ -170,7 +236,7 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 | Notebook execution fails | `EXECUTE NOTEBOOK` errors | Check logs in Snowsight; verify `OVERTURE_MAPS__PLACES` accessible and warehouse active |
 | Cortex model unavailable | "model not found" error | Try fallback model or set `CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION'` |
 | Services not starting | SUSPENDED or FAILED status | `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES()`; check compute pool capacity |
-| Streamlit app errors | App fails to load | Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated |
+| Dashboard shows no data | Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated |
 | Stage upload fails | Permission error | Verify WRITE privilege on stage and correct `--connection` |
 | Wrong POI region | PLACES has wrong city data | Fix geohash in Step 6, re-run notebook |
 | Custom industries missing | Dropdown shows old industries | Verify LOOKUP table; re-run from Step 6 |
@@ -184,25 +250,19 @@ Re-running is safe: all statements use `IF NOT EXISTS` or `OR REPLACE`, and `sno
 Complete Route Optimization demo with:
 - Carto Overture Places dataset for POI data
 - Exploration notebook with AISQL examples
-- Interactive Streamlit simulator
+- React VRP simulator in Demo Dashboard
 - 3 configurable vehicles with skills
 - Real-world points of interest for routing scenarios
-
-```sql
-SELECT CONCAT('https://app.snowflake.com/', CURRENT_ORGANIZATION_NAME(), '/', CURRENT_ACCOUNT_NAME(), '/#/streamlit-apps/FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SIMULATOR') AS streamlit_url;
-```
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: streamlit/notebooks first, then tables, stages, schema
-DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SIMULATOR;
+-- Reverse dependency order: notebooks, tables, stages, schema
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
-DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.STREAMLIT;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION;
 ```

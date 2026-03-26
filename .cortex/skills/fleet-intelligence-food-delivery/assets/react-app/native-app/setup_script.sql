@@ -1,5 +1,11 @@
 CREATE APPLICATION ROLE IF NOT EXISTS app_user;
 
+-- =============================================================================
+-- DEPRECATED: This setup_script.sql was for the standalone FLEET_INTEL_APP.
+-- The demo-dashboard (DEMO_DASHBOARD_APP) has replaced this native app.
+-- See .cortex/skills/demo-dashboard/ for the current deployment.
+-- =============================================================================
+
 CREATE SCHEMA IF NOT EXISTS core;
 GRANT USAGE ON SCHEMA core TO APPLICATION ROLE app_user;
 
@@ -46,14 +52,6 @@ BEGIN
                 'type', 'CONFIGURATION',
                 'payload', OBJECT_CONSTRUCT(
                     'host_ports', ARRAY_CONSTRUCT('a.basemaps.cartocdn.com:443', 'b.basemaps.cartocdn.com:443', 'c.basemaps.cartocdn.com:443', 'd.basemaps.cartocdn.com:443'),
-                    'allowed_secrets', 'NONE'
-                )
-            )::STRING;
-        WHEN 'EXTERNAL_ACCESS_DOWNLOAD_REF' THEN
-            RETURN OBJECT_CONSTRUCT(
-                'type', 'CONFIGURATION',
-                'payload', OBJECT_CONSTRUCT(
-                    'host_ports', ARRAY_CONSTRUCT('download.bbbike.org:443', 'download.geofabrik.de:443'),
                     'allowed_secrets', 'NONE'
                 )
             )::STRING;
@@ -175,128 +173,8 @@ $$;
 GRANT USAGE ON PROCEDURE core.version_init() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
--- ROUTING: ORS compute pool, stages, services, SQL functions
+-- ROUTING: SQL wrapper functions delegating to OPENROUTESERVICE_NATIVE_APP
 -- =============================================================================
-
-CREATE OR REPLACE PROCEDURE routing.create_routing_pool()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    LET pool_name := (SELECT CURRENT_DATABASE()) || '_routing_pool';
-    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
-        INSTANCE_FAMILY = HIGHMEM_X64_S
-        MIN_NODES = 1
-        MAX_NODES = 10
-        AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400;
-    RETURN 'Routing compute pool created: ' || pool_name;
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.create_routing_pool() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.create_stages()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    CREATE STAGE IF NOT EXISTS routing.ORS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = (ENABLE = TRUE);
-    CREATE STAGE IF NOT EXISTS routing.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = (ENABLE = TRUE);
-    CREATE STAGE IF NOT EXISTS routing.ORS_ELEVATION_CACHE_SPCS_STAGE ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = (ENABLE = TRUE);
-
-    GRANT READ ON STAGE routing.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
-    GRANT WRITE ON STAGE routing.ORS_SPCS_STAGE TO APPLICATION ROLE app_user;
-    GRANT READ ON STAGE routing.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
-    GRANT WRITE ON STAGE routing.ORS_GRAPHS_SPCS_STAGE TO APPLICATION ROLE app_user;
-    GRANT READ ON STAGE routing.ORS_ELEVATION_CACHE_SPCS_STAGE TO APPLICATION ROLE app_user;
-    GRANT WRITE ON STAGE routing.ORS_ELEVATION_CACHE_SPCS_STAGE TO APPLICATION ROLE app_user;
-
-    RETURN 'Routing stages created';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.create_stages() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.start_downloader()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    LET pool_name := (SELECT CURRENT_DATABASE()) || '_routing_pool';
-
-    ALTER SERVICE IF EXISTS routing.downloader_service
-        FROM SPECIFICATION_FILE='services/downloader/downloader_spec.yaml';
-
-    CREATE SERVICE IF NOT EXISTS routing.downloader_service
-        IN COMPUTE POOL IDENTIFIER(:pool_name)
-        FROM SPECIFICATION_FILE='services/downloader/downloader_spec.yaml'
-        MIN_INSTANCES = 1
-        MAX_INSTANCES = 1
-        AUTO_SUSPEND_SECS = 600
-        EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_download_ref'));
-
-    GRANT OPERATE ON SERVICE routing.downloader_service TO APPLICATION ROLE app_user;
-    GRANT MONITOR ON SERVICE routing.downloader_service TO APPLICATION ROLE app_user;
-
-    CREATE OR REPLACE FUNCTION routing.DOWNLOAD_PBF(folder VARCHAR, filename VARCHAR, url VARCHAR)
-        RETURNS VARCHAR
-        SERVICE=routing.downloader_service
-        ENDPOINT='downloader'
-        MAX_BATCH_ROWS = 1
-        AS '/download_to_stage';
-    GRANT USAGE ON FUNCTION routing.DOWNLOAD_PBF(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
-
-    RETURN 'Downloader service started and DOWNLOAD_PBF function created';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.start_downloader() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.create_services()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    LET pool_name := (SELECT CURRENT_DATABASE()) || '_routing_pool';
-
-    DROP SERVICE IF EXISTS routing.ors_service;
-    DROP SERVICE IF EXISTS routing.vroom_service;
-    DROP SERVICE IF EXISTS routing.routing_gateway_service;
-
-    CREATE SERVICE routing.ors_service
-        IN COMPUTE POOL IDENTIFIER(:pool_name)
-        FROM SPECIFICATION_FILE='services/ors_service.yaml'
-        MIN_INSTANCES = 1
-        MAX_INSTANCES = 10
-        AUTO_SUSPEND_SECS = 14400;
-
-    CREATE SERVICE routing.vroom_service
-        IN COMPUTE POOL IDENTIFIER(:pool_name)
-        FROM SPECIFICATION_FILE='services/vroom_service.yaml'
-        MIN_INSTANCES = 1
-        MAX_INSTANCES = 1
-        AUTO_SUSPEND_SECS = 14400;
-
-    CREATE SERVICE routing.routing_gateway_service
-        IN COMPUTE POOL IDENTIFIER(:pool_name)
-        FROM SPECIFICATION_FILE='services/routing_gateway_service.yaml'
-        MIN_INSTANCES = 1
-        MAX_INSTANCES = 10
-        AUTO_SUSPEND_SECS = 14400;
-
-    GRANT OPERATE ON SERVICE routing.ors_service TO APPLICATION ROLE app_user;
-    GRANT MONITOR ON SERVICE routing.ors_service TO APPLICATION ROLE app_user;
-    GRANT OPERATE ON SERVICE routing.vroom_service TO APPLICATION ROLE app_user;
-    GRANT MONITOR ON SERVICE routing.vroom_service TO APPLICATION ROLE app_user;
-    GRANT OPERATE ON SERVICE routing.routing_gateway_service TO APPLICATION ROLE app_user;
-    GRANT MONITOR ON SERVICE routing.routing_gateway_service TO APPLICATION ROLE app_user;
-
-    RETURN 'Routing services created';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.create_services() TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE routing.create_functions()
 RETURNS STRING
@@ -306,152 +184,62 @@ $$
 BEGIN
     CREATE OR REPLACE FUNCTION routing.DIRECTIONS(method VARCHAR, jstart ARRAY, jend ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/directions_tabular';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(method, jstart, jend)';
     GRANT USAGE ON FUNCTION routing.DIRECTIONS(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.DIRECTIONS(method VARCHAR, locations VARIANT)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/directions';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(method, locations)';
     GRANT USAGE ON FUNCTION routing.DIRECTIONS(VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/isochrones_tabular';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(method, lon, lat, range)';
     GRANT USAGE ON FUNCTION routing.ISOCHRONES(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.MATRIX(method VARCHAR, locations ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/matrix_tabular';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX(method, locations)';
     GRANT USAGE ON FUNCTION routing.MATRIX(VARCHAR, ARRAY) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.MATRIX(method VARCHAR, options VARIANT)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 100
-        AS '/matrix';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX(method, options)';
     GRANT USAGE ON FUNCTION routing.MATRIX(VARCHAR, VARIANT) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.MATRIX_TABULAR(method VARCHAR, origin ARRAY, destinations ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/matrix_tabular';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX_TABULAR(method, origin, destinations)';
     GRANT USAGE ON FUNCTION routing.MATRIX_TABULAR(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.OPTIMIZATION(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/optimization_tabular';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(jobs, vehicles, matrices)';
     GRANT USAGE ON FUNCTION routing.OPTIMIZATION(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.OPTIMIZATION(challenge VARIANT)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1000
-        AS '/optimization';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(challenge)';
     GRANT USAGE ON FUNCTION routing.OPTIMIZATION(VARIANT) TO APPLICATION ROLE app_user;
 
     CREATE OR REPLACE FUNCTION routing.ORS_STATUS()
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT='gateway'
-        MAX_BATCH_ROWS = 1
-        AS '/ors_status';
+        LANGUAGE SQL
+        AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.GET_STATUS()';
     GRANT USAGE ON FUNCTION routing.ORS_STATUS() TO APPLICATION ROLE app_user;
 
-    RETURN 'Routing functions created';
+    RETURN 'Routing wrapper functions created (delegating to OPENROUTESERVICE_NATIVE_APP)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_functions() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.setup_ors()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    CALL routing.create_routing_pool();
-    CALL routing.create_stages();
-    BEGIN
-        CALL routing.start_downloader();
-    EXCEPTION
-        WHEN OTHER THEN NULL;
-    END;
-    CALL routing.create_services();
-    SELECT SYSTEM$WAIT(30);
-    CALL routing.create_functions();
-    RETURN 'ORS routing engine deployed (with downloader service)';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.setup_ors() TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.create_city_pool(P_REGION VARCHAR)
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    CALL routing.create_routing_pool();
-    RETURN 'Using shared routing pool for region ' || :P_REGION;
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.create_city_pool(VARCHAR) TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.create_city_ors_service(P_REGION VARCHAR)
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-DECLARE
-    db_name VARCHAR;
-    pool_name VARCHAR;
-    svc_name VARCHAR;
-    ors_spec VARCHAR;
-    create_sql VARCHAR;
-BEGIN
-    db_name := (SELECT CURRENT_DATABASE());
-    pool_name := db_name || '_routing_pool';
-    svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
-
-    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
-        INSTANCE_FAMILY = HIGHMEM_X64_S
-        MIN_NODES = 1
-        MAX_NODES = 10
-        AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400;
-
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
-
-    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS routing.' || svc_name;
-    create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
-    EXECUTE IMMEDIATE :create_sql;
-
-
-
-    EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE routing.' || svc_name || ' TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT MONITOR ON SERVICE routing.' || svc_name || ' TO APPLICATION ROLE app_user';
-
-    RETURN 'City ORS service created for region ' || :P_REGION || ': ' || svc_name || ' (shared pool and gateway)';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.create_city_ors_service(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE routing.create_city_functions(P_REGION VARCHAR)
 RETURNS STRING
@@ -459,74 +247,39 @@ LANGUAGE SQL
 AS
 $$
 BEGIN
-    LET fn_dir VARCHAR := 'DIRECTIONS_' || UPPER(:P_REGION);
-    LET city_path VARCHAR := '/city/' || :P_REGION;
+    LET region_upper VARCHAR := UPPER(:P_REGION);
 
     EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION routing.' || fn_dir || '(method VARCHAR, jstart ARRAY, jend ARRAY)
+    CREATE OR REPLACE FUNCTION routing.DIRECTIONS_' || region_upper || '(method VARCHAR, jstart ARRAY, jend ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/directions_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
+        LANGUAGE SQL
+        AS ''SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_' || region_upper || '(method, jstart, jend)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.DIRECTIONS_' || region_upper || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
     EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION routing.' || fn_dir || '(method VARCHAR, locations VARIANT)
+    CREATE OR REPLACE FUNCTION routing.DIRECTIONS_' || region_upper || '(method VARCHAR, locations VARIANT)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/directions''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.' || fn_dir || '(VARCHAR, VARIANT) TO APPLICATION ROLE app_user';
+        LANGUAGE SQL
+        AS ''SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_' || region_upper || '(method, locations)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.DIRECTIONS_' || region_upper || '(VARCHAR, VARIANT) TO APPLICATION ROLE app_user';
 
     EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(method VARCHAR, origin ARRAY, destinations ARRAY)
+    CREATE OR REPLACE FUNCTION routing.MATRIX_' || region_upper || '(method VARCHAR, origin ARRAY, destinations ARRAY)
         RETURNS VARIANT
-        SERVICE=routing.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/matrix_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.MATRIX_' || UPPER(:P_REGION) || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
+        LANGUAGE SQL
+        AS ''SELECT OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX_' || region_upper || '(method, origin, destinations)''';
+    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION routing.MATRIX_' || region_upper || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
 
-    RETURN 'City routing functions created for region ' || :P_REGION || ' (shared gateway with /city/ prefix)';
+    RETURN 'City routing wrapper functions created for ' || :P_REGION || ' (delegating to OPENROUTESERVICE_NATIVE_APP)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE routing.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE routing.setup_city_ors(P_REGION VARCHAR)
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    CALL routing.create_routing_pool();
-    CALL routing.create_stages();
-    CALL routing.create_city_ors_service(:P_REGION);
-    CALL routing.create_services();
-    SELECT SYSTEM$WAIT(30);
-    CALL routing.create_city_functions(:P_REGION);
-    RETURN 'City ORS deployed for region: ' || :P_REGION || ' (shared pool and gateway)';
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.setup_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
-
-CREATE OR REPLACE PROCEDURE routing.resume_city_ors(P_REGION VARCHAR)
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    EXECUTE IMMEDIATE 'ALTER SERVICE routing.' || svc_name || ' RESUME';
-    BEGIN
-        ALTER SERVICE IF EXISTS routing.routing_gateway_service RESUME;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    RETURN 'Resumed ORS services for ' || :P_REGION;
-END;
-$$;
-GRANT USAGE ON PROCEDURE routing.resume_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
+CREATE OR REPLACE FUNCTION routing.LIST_CITIES()
+    RETURNS VARIANT
+    LANGUAGE SQL
+    AS 'SELECT OPENROUTESERVICE_NATIVE_APP.CORE.LIST_CITIES()';
+GRANT USAGE ON FUNCTION routing.LIST_CITIES() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- DATA: Tables for food delivery + travel time matrix
@@ -1141,23 +894,6 @@ BEGIN
     queue_table := 'data.CA_WORK_QUEUE_' || P_RES;
     travel_table := 'data.CA_TRAVEL_TIME_' || P_RES;
 
-    BEGIN
-        ALTER SERVICE IF EXISTS routing.routing_gateway_service RESUME;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    IF (P_REGION = 'SanFrancisco') THEN
-        BEGIN
-            ALTER SERVICE IF EXISTS routing.ors_service RESUME;
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    ELSE
-        BEGIN
-            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS routing.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    END IF;
-    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
-
     CALL data.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON);
 
     count_sql := 'SELECT COUNT(*) AS CNT FROM ' || hex_table;
@@ -1523,8 +1259,8 @@ BEGIN
     CALL core.create_ui_compute_pool();
     CALL core.create_warehouse();
     CALL core.create_ui_service();
-    CALL routing.setup_ors();
-    RETURN 'Full deployment complete (UI + ORS routing)';
+    CALL routing.create_functions();
+    RETURN 'Full deployment complete (UI + routing wrappers to OPENROUTESERVICE_NATIVE_APP)';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.deploy_full() TO APPLICATION ROLE app_user;
@@ -1562,47 +1298,6 @@ BEGIN
         resumed_items := ARRAY_APPEND(resumed_items, 'service:fleet_intelligence_service');
     END IF;
 
-    BEGIN
-        LET routing_pool STRING := pool_name || '_routing';
-        LET rp_status STRING := 'NOT_FOUND';
-        SHOW COMPUTE POOLS LIKE :routing_pool;
-        SELECT "state" INTO :rp_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-        IF (rp_status IN ('SUSPENDED', 'STOPPING')) THEN
-            ALTER COMPUTE POOL IDENTIFIER(:routing_pool) RESUME;
-            resumed_items := ARRAY_APPEND(resumed_items, 'compute_pool:' || routing_pool);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL; END;
-
-    BEGIN
-        LET ors_status STRING := 'NOT_FOUND';
-        SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA routing;
-        SELECT "status" INTO :ors_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-        IF (ors_status = 'SUSPENDED') THEN
-            ALTER SERVICE routing.ors_service RESUME;
-            resumed_items := ARRAY_APPEND(resumed_items, 'service:ors_service');
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL; END;
-
-    BEGIN
-        LET gw_status STRING := 'NOT_FOUND';
-        SHOW SERVICES LIKE 'ROUTING_GATEWAY_SERVICE' IN SCHEMA routing;
-        SELECT "status" INTO :gw_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-        IF (gw_status = 'SUSPENDED') THEN
-            ALTER SERVICE routing.routing_gateway_service RESUME;
-            resumed_items := ARRAY_APPEND(resumed_items, 'service:routing_gateway_service');
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL; END;
-
-    BEGIN
-        LET vroom_status STRING := 'NOT_FOUND';
-        SHOW SERVICES LIKE 'VROOM_SERVICE' IN SCHEMA routing;
-        SELECT "status" INTO :vroom_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-        IF (vroom_status = 'SUSPENDED') THEN
-            ALTER SERVICE routing.vroom_service RESUME;
-            resumed_items := ARRAY_APPEND(resumed_items, 'service:vroom_service');
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL; END;
-
     IF (ARRAY_SIZE(resumed_items) = 0) THEN
         RETURN 'All services already running';
     END IF;
@@ -1619,9 +1314,8 @@ $$
 DECLARE
     overture_places BOOLEAN DEFAULT FALSE;
     overture_addresses BOOLEAN DEFAULT FALSE;
-    ors_db BOOLEAN DEFAULT FALSE;
-    ors_schema BOOLEAN DEFAULT FALSE;
-    ors_repo BOOLEAN DEFAULT FALSE;
+    ors_setup_db BOOLEAN DEFAULT FALSE;
+    ors_app_available BOOLEAN DEFAULT FALSE;
 BEGIN
     BEGIN
         SELECT COUNT(*) INTO :overture_places FROM OVERTURE_MAPS__PLACES.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'CARTO' AND TABLE_NAME = 'PLACE' LIMIT 1;
@@ -1634,20 +1328,20 @@ BEGIN
     EXCEPTION WHEN OTHER THEN overture_addresses := FALSE; END;
 
     BEGIN
-        SELECT 1 INTO :ors_db FROM OPENROUTESERVICE_SETUP.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PUBLIC' LIMIT 1;
-        ors_db := TRUE;
-    EXCEPTION WHEN OTHER THEN ors_db := FALSE; END;
+        SELECT 1 INTO :ors_setup_db FROM OPENROUTESERVICE_SETUP.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'PUBLIC' LIMIT 1;
+        ors_setup_db := TRUE;
+    EXCEPTION WHEN OTHER THEN ors_setup_db := FALSE; END;
 
     BEGIN
-        SHOW IMAGE REPOSITORIES LIKE 'IMAGE_REPOSITORY' IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
-        ors_repo := TRUE;
-    EXCEPTION WHEN OTHER THEN ors_repo := FALSE; END;
+        SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+        ors_app_available := TRUE;
+    EXCEPTION WHEN OTHER THEN ors_app_available := FALSE; END;
 
     RETURN OBJECT_CONSTRUCT(
         'overture_places', overture_places,
         'overture_addresses', overture_addresses,
-        'ors_database', ors_db,
-        'ors_image_repo', ors_repo
+        'ors_setup_database', ors_setup_db,
+        'ors_native_app', ors_app_available
     )::STRING;
 END;
 $$;
@@ -1690,9 +1384,9 @@ BEGIN
     EXCEPTION WHEN OTHER THEN ui_status := 'NOT_FOUND'; END;
 
     BEGIN
-        SHOW SERVICES LIKE 'ROUTING_GATEWAY_SERVICE' IN SCHEMA routing;
-        SELECT "status" INTO :ors_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-    EXCEPTION WHEN OTHER THEN ors_status := 'NOT_FOUND'; END;
+        SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+        ors_status := 'READY';
+    EXCEPTION WHEN OTHER THEN ors_status := 'UNAVAILABLE'; END;
 
     BEGIN
         SHOW ENDPOINTS IN SERVICE core.fleet_intelligence_service;
@@ -1731,47 +1425,29 @@ GRANT USAGE ON STREAMLIT core.status_app TO APPLICATION ROLE app_user;
 -- Manual grants needed:
 --
 -- 1. Cortex AI (for the AI agent):
---    GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION OPENROUTESERVICE_APP;
+--    GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION FLEET_INTEL_APP;
 --
--- 2. Image repository access (for ORS Docker images):
---    GRANT USAGE ON DATABASE OPENROUTESERVICE_SETUP TO APPLICATION OPENROUTESERVICE_APP;
---    GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.PUBLIC TO APPLICATION OPENROUTESERVICE_APP;
---    GRANT READ ON IMAGE REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY TO APPLICATION OPENROUTESERVICE_APP;
+-- 2. Image repository access (for Fleet Intelligence Docker image):
+--    GRANT USAGE ON DATABASE OPENROUTESERVICE_SETUP TO APPLICATION FLEET_INTEL_APP;
+--    GRANT USAGE ON SCHEMA OPENROUTESERVICE_SETUP.PUBLIC TO APPLICATION FLEET_INTEL_APP;
+--    GRANT READ ON IMAGE REPOSITORY OPENROUTESERVICE_SETUP.PUBLIC.FLEET_INTEL_REPO TO APPLICATION FLEET_INTEL_APP;
 --
--- 3. Overture Maps access (for food delivery data generation):
---    GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_APP;
---    GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION OPENROUTESERVICE_APP;
+-- 3. Standalone ORS access (routing functions delegate to this app):
+--    GRANT USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP TO APPLICATION FLEET_INTEL_APP;
 --
--- 4. External access for map tiles:
---    GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION OPENROUTESERVICE_APP;
---    CALL OPENROUTESERVICE_APP.core.register_single_callback(
+-- 4. Overture Maps access (for food delivery data generation):
+--    GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION FLEET_INTEL_APP;
+--    GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION FLEET_INTEL_APP;
+--
+-- 5. External access for map tiles:
+--    GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION FLEET_INTEL_APP;
+--    CALL FLEET_INTEL_APP.core.register_single_callback(
 --        'EXTERNAL_ACCESS_REF', 'ADD',
 --        SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'FLEET_INTEL_MAP_TILES_EAI', 'PERSISTENT', 'USAGE'));
 --
--- 4b. External access for PBF map data downloads (BBBike + Geofabrik):
---    CREATE OR REPLACE NETWORK RULE fleet_intel_download_nr
---        MODE = EGRESS TYPE = HOST_PORT
---        VALUE_LIST = ('download.bbbike.org:443', 'download.geofabrik.de:443');
---    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION fleet_intel_download_eai
---        ALLOWED_NETWORK_RULES = (fleet_intel_download_nr) ENABLED = TRUE;
---    GRANT USAGE ON INTEGRATION fleet_intel_download_eai TO APPLICATION OPENROUTESERVICE_APP;
---    CALL OPENROUTESERVICE_APP.core.register_single_callback(
---        'EXTERNAL_ACCESS_DOWNLOAD_REF', 'ADD',
---        SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'FLEET_INTEL_DOWNLOAD_EAI', 'PERSISTENT', 'USAGE'));
+-- 6. App role:
+--    GRANT APPLICATION ROLE FLEET_INTEL_APP.APP_USER TO ROLE <YOUR_ROLE>;
 --
--- 5. App role:
---    GRANT APPLICATION ROLE OPENROUTESERVICE_APP.APP_USER TO ROLE <YOUR_ROLE>;
---
--- 6. Deploy UI only:
---    CALL OPENROUTESERVICE_APP.core.deploy();
---
--- 7. Deploy ORS routing engine:
---    CALL OPENROUTESERVICE_APP.routing.setup_ors();
---
--- 8. Stage California map data (option A: use downloader service):
---    CALL OPENROUTESERVICE_APP.routing.start_downloader();
---    SELECT OPENROUTESERVICE_APP.ROUTING.DOWNLOAD_PBF('ors_spcs_stage/SanFrancisco', 'SanFrancisco.osm.pbf', 'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf');
---
---    Option B: manual upload to routing.ORS_SPCS_STAGE:
---    PUT 'file:///tmp/SanFrancisco.osm.pbf' @OPENROUTESERVICE_APP.routing.ORS_SPCS_STAGE/SanFrancisco/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+-- 7. Deploy UI + routing wrappers:
+--    CALL FLEET_INTEL_APP.core.deploy_full();
 -- =============================================================================

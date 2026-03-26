@@ -345,7 +345,7 @@ COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and 
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
-  orchestration: claude-4-sonnet
+  orchestration: claude-sonnet-4-5
 orchestration:
   budget:
     seconds: 120

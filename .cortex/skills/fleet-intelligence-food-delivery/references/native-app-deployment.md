@@ -1,4 +1,8 @@
-# Native App Deployment (Step 12)
+# Native App Deployment (Step 12) — DEPRECATED
+
+> **DEPRECATED:** The standalone `FLEET_INTEL_APP` native app has been replaced by the unified `DEMO_DASHBOARD_APP`.
+> See `.cortex/skills/demo-dashboard/` for the current deployment approach.
+> This file is retained for historical reference only.
 
 ---
 
@@ -10,6 +14,7 @@
 - Docker installed locally (`docker --version`)
 - `snow` CLI authenticated with the target connection
 - All data tables from Steps 4-10 already exist in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY`
+- **OpenRouteService Native App** (`OPENROUTESERVICE_NATIVE_APP`) installed and running — the Fleet Intelligence app delegates all routing calls to this standalone app via SQL wrapper functions
 
 ---
 
@@ -40,20 +45,20 @@ This takes ~1-2 minutes. The multi-stage build compiles the React frontend (`npm
 #### Sub-step 12c: Create Image Repository in Snowflake
 
 ```sql
-CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
-CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.FLEET_INTEL_REPO
+CREATE IMAGE REPOSITORY IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
 Then get the repository URL:
 
 ```sql
-SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
+SHOW IMAGE REPOSITORIES IN SCHEMA FLEET_INTELLIGENCE_SETUP.PUBLIC;
 ```
 
 Extract the `repository_url` from the result. It will look like:
-`<orgname>-<acctname>.registry.snowflakecomputing.com/openrouteservice_setup/public/fleet_intel_repo`
+`<orgname>-<acctname>.registry.snowflakecomputing.com/fleet_intelligence_setup/public/fleet_intel_repo`
 
 ---
 
@@ -77,11 +82,11 @@ Where `{REPO_URL}` is the `repository_url` from the previous step.
 #### Sub-step 12e: Create Application Package
 
 ```sql
-CREATE APPLICATION PACKAGE IF NOT EXISTS OPENROUTESERVICE_PKG
+CREATE APPLICATION PACKAGE IF NOT EXISTS FLEET_INTEL_PKG
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
-CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_PKG.stage_content
+CREATE SCHEMA IF NOT EXISTS FLEET_INTEL_PKG.stage_content
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
-CREATE OR REPLACE STAGE OPENROUTESERVICE_PKG.stage_content.app_code
+CREATE OR REPLACE STAGE FLEET_INTEL_PKG.stage_content.app_code
     DIRECTORY = (ENABLE = TRUE)
     ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
@@ -96,17 +101,17 @@ Upload all files from `assets/react-app/native-app/` to the stage:
 ```bash
 APP_DIR="assets/react-app/native-app"
 
-snow stage copy "${APP_DIR}/manifest.yml" @OPENROUTESERVICE_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/setup_script.sql" @OPENROUTESERVICE_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/services/fleet_intelligence_service.yaml" @OPENROUTESERVICE_PKG.stage_content.app_code/services/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/streamlit/status.py" @OPENROUTESERVICE_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/streamlit/environment.yml" @OPENROUTESERVICE_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/manifest.yml" @FLEET_INTEL_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/setup_script.sql" @FLEET_INTEL_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/services/fleet_intelligence_service.yaml" @FLEET_INTEL_PKG.stage_content.app_code/services/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/streamlit/status.py" @FLEET_INTEL_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/streamlit/environment.yml" @FLEET_INTEL_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
 ```
 
 Verify all 5 files are staged:
 
 ```sql
-LS @OPENROUTESERVICE_PKG.stage_content.app_code;
+LS @FLEET_INTEL_PKG.stage_content.app_code;
 ```
 
 Expected files: `manifest.yml`, `setup_script.sql`, `services/fleet_intelligence_service.yaml`, `streamlit/status.py`, `streamlit/environment.yml`
@@ -118,59 +123,67 @@ Expected files: `manifest.yml`, `setup_script.sql`, `services/fleet_intelligence
 **IMPORTANT:** If release channels are enabled (default on newer accounts), use `REGISTER VERSION` not `ADD VERSION`.
 
 ```sql
-ALTER APPLICATION PACKAGE OPENROUTESERVICE_PKG
+ALTER APPLICATION PACKAGE FLEET_INTEL_PKG
     REGISTER VERSION v1_0
-    USING '@OPENROUTESERVICE_PKG.stage_content.app_code';
+    USING '@FLEET_INTEL_PKG.stage_content.app_code';
 ```
 
 If you get error `512020` about release channels, you're using the right syntax above. If release channels are NOT enabled, use:
 
 ```sql
-ALTER APPLICATION PACKAGE OPENROUTESERVICE_PKG
+ALTER APPLICATION PACKAGE FLEET_INTEL_PKG
     ADD VERSION v1_0
-    USING '@OPENROUTESERVICE_PKG.stage_content.app_code';
+    USING '@FLEET_INTEL_PKG.stage_content.app_code';
 ```
 
 Install the application:
 
 ```sql
-CREATE APPLICATION OPENROUTESERVICE_APP
-    FROM APPLICATION PACKAGE OPENROUTESERVICE_PKG
+CREATE APPLICATION FLEET_INTEL_APP
+    FROM APPLICATION PACKAGE FLEET_INTEL_PKG
     USING VERSION v1_0
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"native-app"}}';
 ```
 
-> **Note:** If an object named `FLEET_INTELLIGENCE` already exists (e.g., a database), use `OPENROUTESERVICE_APP` as the application name to avoid conflicts.
+> **Note:** The app name `FLEET_INTEL_APP` is chosen to avoid conflicts with the `FLEET_INTELLIGENCE` database.
 
 ---
 
 #### Sub-step 12h: Grant Required Privileges
 
 ```sql
-GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION OPENROUTESERVICE_APP;
-GRANT CREATE WAREHOUSE ON ACCOUNT TO APPLICATION OPENROUTESERVICE_APP;
-GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION OPENROUTESERVICE_APP;
+GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION FLEET_INTEL_APP;
+GRANT CREATE WAREHOUSE ON ACCOUNT TO APPLICATION FLEET_INTEL_APP;
+GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION FLEET_INTEL_APP;
 ```
 
 **CRITICAL: Grant Cortex AI access (required for the AI agent to function):**
 
 ```sql
-GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION OPENROUTESERVICE_APP;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTEL_APP;
 ```
+
+**CRITICAL: Grant access to OpenRouteService Native App (required for routing):**
+
+```sql
+GRANT USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP TO APPLICATION FLEET_INTEL_APP;
+```
+
+> **Note:** The Fleet Intelligence app's `setup_script.sql` creates SQL wrapper functions (e.g., `routing.DIRECTIONS`) that delegate to `OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS`. This grant is required for those wrapper functions to work.
 
 **Grant data access:**
 
 ```sql
-GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_APP;
-GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION OPENROUTESERVICE_APP;
-GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION OPENROUTESERVICE_APP;
-GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION OPENROUTESERVICE_APP;
+GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION FLEET_INTEL_APP;
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTEL_APP;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTEL_APP;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY TO APPLICATION FLEET_INTEL_APP;
 ```
 
 **Grant app role to installer's role:**
 
 ```sql
-GRANT APPLICATION ROLE OPENROUTESERVICE_APP.APP_USER TO ROLE <YOUR_ROLE>;
+GRANT APPLICATION ROLE FLEET_INTEL_APP.APP_USER TO ROLE <YOUR_ROLE>;
 ```
 
 ---
@@ -195,13 +208,13 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION fleet_intel_map_tiles_eai
 Grant the EAI to the application and bind the reference:
 
 ```sql
-GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION OPENROUTESERVICE_APP;
+GRANT USAGE ON INTEGRATION fleet_intel_map_tiles_eai TO APPLICATION FLEET_INTEL_APP;
 ```
 
 **IMPORTANT:** To bind the EAI reference, you must use `SYSTEM$REFERENCE()` to create a reference handle and pass it to the app's register callback:
 
 ```sql
-USE DATABASE OPENROUTESERVICE_APP;
+USE DATABASE FLEET_INTEL_APP;
 USE SCHEMA CORE;
 CALL core.register_single_callback(
     'EXTERNAL_ACCESS_REF',
@@ -217,12 +230,12 @@ CALL core.register_single_callback(
 #### Sub-step 12j: Deploy the Service
 
 ```sql
-USE DATABASE OPENROUTESERVICE_APP;
+USE DATABASE FLEET_INTEL_APP;
 CALL core.deploy();
 ```
 
 This creates:
-1. A compute pool (`OPENROUTESERVICE_APP_compute_pool`, CPU_X64_S)
+1. A compute pool (`FLEET_INTEL_APP_compute_pool`, CPU_X64_S)
 2. A warehouse (`FLEET_INTEL_WH`, XSMALL)
 3. The SPCS service with the Docker container
 
@@ -233,13 +246,13 @@ This creates:
 Check container status (should show READY):
 
 ```sql
-SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.core.fleet_intelligence_service');
+SELECT SYSTEM$GET_SERVICE_STATUS('FLEET_INTEL_APP.core.fleet_intelligence_service');
 ```
 
 Check the endpoint URL (takes 2-3 minutes after container is READY):
 
 ```sql
-SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.core.fleet_intelligence_service;
+SHOW ENDPOINTS IN SERVICE FLEET_INTEL_APP.core.fleet_intelligence_service;
 ```
 
 The `ingress_url` will show "Endpoints provisioning in progress..." for 2-3 minutes, then resolve to a URL like `xxxxx-orgname-acctname.snowflakecomputing.app`.
@@ -247,7 +260,7 @@ The `ingress_url` will show "Endpoints provisioning in progress..." for 2-3 minu
 Check service logs to confirm it started correctly:
 
 ```sql
-SELECT SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_APP.core.fleet_intelligence_service', 0, 'fleet-intelligence', 50);
+SELECT SYSTEM$GET_SERVICE_LOGS('FLEET_INTEL_APP.core.fleet_intelligence_service', 0, 'fleet-intelligence', 50);
 ```
 
 Expected log output:
@@ -257,7 +270,7 @@ Mode: SPCS (service token)
 SNOWFLAKE_HOST: xxxxxx.snowflakecomputing.com
 ```
 
-**Output:** The Fleet Intelligence React app is accessible at `https://{ingress_url}`. The Snowsight Streamlit status page is available under Apps → OPENROUTESERVICE_APP.
+**Output:** The Fleet Intelligence React app is accessible at `https://{ingress_url}`. The Snowsight Streamlit status page is available under Apps → FLEET_INTEL_APP.
 
 ---
 
@@ -265,16 +278,16 @@ SNOWFLAKE_HOST: xxxxxx.snowflakecomputing.com
 
 | Component | Details |
 |-----------|---------|
-| **App Package** | `OPENROUTESERVICE_PKG` |
-| **Application** | `OPENROUTESERVICE_APP` |
-| **Image Repo** | `OPENROUTESERVICE_SETUP.PUBLIC.FLEET_INTEL_REPO` |
-| **Docker Image** | `fleet-intelligence:v1.1` (linux/amd64, Node 20) |
-| **Active Version** | V1_4 patch 0 |
-| **Compute Pool** | `OPENROUTESERVICE_APP_compute_pool` (CPU_X64_S) |
-| **Service** | `OPENROUTESERVICE_APP.core.fleet_intelligence_service` |
+| **App Package** | `FLEET_INTEL_PKG` |
+| **Application** | `FLEET_INTEL_APP` |
+| **Image Repo** | `FLEET_INTELLIGENCE_SETUP.PUBLIC.FLEET_INTEL_REPO` |
+| **Docker Image** | `fleet-intelligence:v1.9.27` (linux/amd64, Node 20) — only image; no ORS/vroom/gateway/downloader images |
+| **Compute Pool** | `FLEET_INTEL_APP_compute_pool` (CPU_X64_S) |
+| **Service** | `FLEET_INTEL_APP.core.fleet_intelligence_service` (only service — routing delegated to `OPENROUTESERVICE_NATIVE_APP`) |
 | **Port** | 8080 (SPCS) / 3001 (local dev) |
 | **Auth Mode** | SPCS service token (`/snowflake/session/token`) |
 | **EAI** | `fleet_intel_map_tiles_eai` (Carto basemap tiles) |
+| **Routing Dependency** | `OPENROUTESERVICE_NATIVE_APP` (standalone app, called via SQL wrapper functions in `routing` schema) |
 | **Streamlit** | Status/launcher page at `core.status_app` |
 
 #### Updating the App
@@ -300,11 +313,11 @@ docker push {REPO_URL}/fleet-intelligence:{NEW_TAG}
 ```bash
 # Re-upload all changed native app files
 APP_DIR="assets/react-app/native-app"
-snow stage copy "${APP_DIR}/manifest.yml" @OPENROUTESERVICE_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/setup_script.sql" @OPENROUTESERVICE_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/services/fleet_intelligence_service.yaml" @OPENROUTESERVICE_PKG.stage_content.app_code/services/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/streamlit/status.py" @OPENROUTESERVICE_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
-snow stage copy "${APP_DIR}/streamlit/environment.yml" @OPENROUTESERVICE_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/manifest.yml" @FLEET_INTEL_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/setup_script.sql" @FLEET_INTEL_PKG.stage_content.app_code/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/services/fleet_intelligence_service.yaml" @FLEET_INTEL_PKG.stage_content.app_code/services/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/streamlit/status.py" @FLEET_INTEL_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
+snow stage copy "${APP_DIR}/streamlit/environment.yml" @FLEET_INTEL_PKG.stage_content.app_code/streamlit/ -c {CONNECTION_NAME} --overwrite
 ```
 
 **If manifest.yml changed (image references, privileges)** — MUST register a full new VERSION:
@@ -313,26 +326,26 @@ snow stage copy "${APP_DIR}/streamlit/environment.yml" @OPENROUTESERVICE_PKG.sta
 
 ```sql
 -- Deregister old version if needed (max 2 unassigned)
-ALTER APPLICATION PACKAGE OPENROUTESERVICE_PKG DEREGISTER VERSION {OLD_VERSION};
+ALTER APPLICATION PACKAGE FLEET_INTEL_PKG DEREGISTER VERSION {OLD_VERSION};
 
 -- Register new version
-ALTER APPLICATION PACKAGE OPENROUTESERVICE_PKG
+ALTER APPLICATION PACKAGE FLEET_INTEL_PKG
     REGISTER VERSION {NEW_VERSION}
-    USING '@OPENROUTESERVICE_PKG.stage_content.app_code';
+    USING '@FLEET_INTEL_PKG.stage_content.app_code';
 ```
 
 **If only setup_script.sql / service specs / Streamlit changed** — use a PATCH:
 
 ```sql
-ALTER APPLICATION PACKAGE OPENROUTESERVICE_PKG
+ALTER APPLICATION PACKAGE FLEET_INTEL_PKG
     ADD PATCH FOR VERSION {CURRENT_VERSION}
-    USING '@OPENROUTESERVICE_PKG.stage_content.app_code';
+    USING '@FLEET_INTEL_PKG.stage_content.app_code';
 ```
 
 **Upgrade the installed app:**
 
 ```sql
-ALTER APPLICATION OPENROUTESERVICE_APP UPGRADE USING VERSION {VERSION};
+ALTER APPLICATION FLEET_INTEL_APP UPGRADE USING VERSION {VERSION};
 ```
 
 The service will automatically restart with the new image.
@@ -401,8 +414,9 @@ The Matrix Builder page shows:
 
 | Issue | Solution |
 |-------|----------|
-| ORS routes returning NULL | Location outside ORS configured region - verify map data |
-| ORS routes failing | Verify OpenRouteService Native App is installed and running |
+| ORS routes returning NULL | Location outside ORS configured region — verify map data in `OPENROUTESERVICE_NATIVE_APP` |
+| ORS routes failing | Verify `OPENROUTESERVICE_NATIVE_APP` is installed and running; check `GRANT USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP TO APPLICATION FLEET_INTEL_APP` was executed |
+| Routing wrapper functions fail | Ensure the `OPENROUTESERVICE_NATIVE_APP` grant is in place and the app is not suspended (`CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES()`) |
 | No restaurants found | Bounding box may be too restrictive; try expanding coordinates |
 | No addresses found | Verify Overture Maps Addresses share is installed |
 | Out of memory | Use larger warehouse or reduce NUM_COURIERS |
@@ -410,17 +424,17 @@ The Matrix Builder page shows:
 | Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/swiftbite/` |
 | Map centered wrong | Update `get_city()` call in Streamlit files |
 | PUT command fails | Ensure the file path is absolute and the file exists locally |
-| Bicycle routes failing | ORS may not have cycling profile enabled; check ors-config.yml |
+| Bicycle routes failing | ORS may not have cycling profile enabled; check OpenRouteService Native App configuration |
 | Docker build fails | Ensure Docker is running and has linux/amd64 platform support |
 | Image push fails | Run `snow spcs image-registry login -c {CONNECTION_NAME}` to refresh auth |
 | `ADD VERSION` error 512020 | Account has release channels enabled; use `REGISTER VERSION` instead |
-| App install name conflict | If `FLEET_INTELLIGENCE` database exists, use `OPENROUTESERVICE_APP` as the app name |
+| App install name conflict | If `FLEET_INTELLIGENCE` database exists, the app name `FLEET_INTEL_APP` avoids conflicts |
 | EAI bind fails with "Object does not exist" | Must use `SYSTEM$REFERENCE()` handle, not raw integration name |
 | Endpoint "provisioning in progress" | Normal — wait 2-3 minutes after container shows READY |
 | Service container not starting | Check logs: `SELECT SYSTEM$GET_SERVICE_LOGS(...)`. Verify image was pushed correctly |
 | Map tiles not loading in SPCS | EAI not bound. Re-run `register_single_callback` with `SYSTEM$REFERENCE()` |
 | Server shows "Mode: local" in SPCS | `/snowflake/session/token` file missing; check service spec mounts |
-| Agent error "Unknown function SNOWFLAKE.CORTEX.COMPLETE" | Missing Cortex grant: `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION OPENROUTESERVICE_APP` |
+| Agent error "Unknown function SNOWFLAKE.CORTEX.COMPLETE" | Missing Cortex grant: `GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION FLEET_INTEL_APP` |
 | Agent shows "error generating response" | Check Cortex grant AND data grants (USAGE on database/schema, SELECT on tables/views) |
 | SPCS not picking up new Docker image | Same tag won't re-pull. Must use NEW tag (e.g. v1.1 → v1.2) and update manifest.yml + service YAML |
 | `ADD PATCH` error 093359 | Cannot change manifest under `manifest_version: 2` via patch; must register a full new VERSION |

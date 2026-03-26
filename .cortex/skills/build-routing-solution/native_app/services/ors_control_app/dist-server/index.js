@@ -5,6 +5,7 @@ import { execSync } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { createStudioRouter } from './studio/routes.js';
 config();
 const app = express();
 app.use(cors());
@@ -94,9 +95,13 @@ function escapeString(val) {
 function getSpcsToken() {
     return readFileSync('/snowflake/session/token', 'utf-8').trim();
 }
-function snowSqlLocal(sql) {
+function snowSqlLocal(sql, database, schema) {
     const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
-    const fullSql = `USE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${SF_DATABASE};\n${sql};`;
+    const db = database || SF_DATABASE;
+    let fullSql = `USE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+    if (schema)
+        fullSql += `USE SCHEMA ${schema};\n`;
+    fullSql += `${sql};`;
     writeFileSync(tmpFile, fullSql);
     try {
         const result = execSync(`snow sql -c ${CONN} -f "${tmpFile}" --format json 2>/dev/null`, {
@@ -114,9 +119,9 @@ function snowSqlLocal(sql) {
         catch { }
     }
 }
-async function snowSqlSpcs(sql, timeoutSecs = 600) {
+async function snowSqlSpcs(sql, database, schema, timeoutSecs = 600) {
     const token = getSpcsToken();
-    const body = { statement: sql, timeout: timeoutSecs, database: SF_DATABASE, schema: 'CORE', warehouse: SF_WAREHOUSE };
+    const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE };
     const headers = {
         'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
         'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -165,10 +170,10 @@ async function snowSqlSpcs(sql, timeoutSecs = 600) {
         return obj;
     });
 }
-async function runSql(sql) {
+async function runSql(sql, database, schema) {
     if (IS_SPCS)
-        return snowSqlSpcs(sql);
-    return snowSqlLocal(sql);
+        return snowSqlSpcs(sql, database, schema);
+    return snowSqlLocal(sql, database, schema);
 }
 async function callProcedure(proc) {
     const rows = await runSql(`CALL ${SF_DATABASE}.CORE.${proc}`);
@@ -1079,9 +1084,344 @@ app.get('/api/matrix/ring-stats', async (req, res) => {
         res.json({ rings: [] });
     }
 });
+app.get('/api/regions', async (_req, res) => {
+    try {
+        const regions = await runSql(`SELECT REGION_NAME, DISPLAY_NAME, CENTER_LAT, CENTER_LON,
+              BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON,
+              ZOOM_LEVEL, ORS_REGION_KEY, DATA_SOURCE, IS_DEFAULT
+       FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+       ORDER BY IS_DEFAULT DESC, PROVISIONED_AT`, 'FLEET_INTELLIGENCE', 'CORE');
+        const active = regions.find((r) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || 'SanFrancisco';
+        res.json({ regions, active });
+    }
+    catch (err) {
+        if (err.message?.includes('does not exist')) {
+            res.json({
+                regions: [{
+                        REGION_NAME: 'SanFrancisco',
+                        DISPLAY_NAME: 'San Francisco',
+                        CENTER_LAT: 37.7749,
+                        CENTER_LON: -122.4194,
+                        BBOX_MIN_LAT: 37.700,
+                        BBOX_MAX_LAT: 37.820,
+                        BBOX_MIN_LON: -122.520,
+                        BBOX_MAX_LON: -122.350,
+                        ZOOM_LEVEL: 11,
+                        ORS_REGION_KEY: 'SanFrancisco',
+                        DATA_SOURCE: 'S3_BASELINE',
+                        IS_DEFAULT: true,
+                    }],
+                active: 'SanFrancisco',
+            });
+        }
+        else {
+            res.status(500).json({ error: err.message });
+        }
+    }
+});
+app.get('/api/regions/active', async (_req, res) => {
+    try {
+        const rows = await runSql(`SELECT REGION_NAME, DISPLAY_NAME, CENTER_LAT, CENTER_LON,
+              BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON,
+              ZOOM_LEVEL, ORS_REGION_KEY, DATA_SOURCE
+       FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+       WHERE IS_DEFAULT = TRUE LIMIT 1`, 'FLEET_INTELLIGENCE', 'CORE');
+        res.json(rows[0] || {
+            REGION_NAME: 'SanFrancisco',
+            DISPLAY_NAME: 'San Francisco',
+            CENTER_LAT: 37.7749,
+            CENTER_LON: -122.4194,
+            ZOOM_LEVEL: 11,
+        });
+    }
+    catch {
+        res.json({
+            REGION_NAME: 'SanFrancisco',
+            DISPLAY_NAME: 'San Francisco',
+            CENTER_LAT: 37.7749,
+            CENTER_LON: -122.4194,
+            ZOOM_LEVEL: 11,
+        });
+    }
+});
+app.post('/api/regions/active', async (req, res) => {
+    try {
+        const { region } = req.body;
+        if (!region)
+            return res.status(400).json({ error: 'region required' });
+        await runSql(`CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`, 'FLEET_INTELLIGENCE', 'CORE');
+        res.json({ ok: true, region });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+const TOOL_PROCEDURE_MAP = {
+    tool_directions: {
+        identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
+        params: ['locations_description', 'profile'],
+    },
+    tool_isochrone: {
+        identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
+        params: ['location_description', 'range_minutes', 'profile'],
+    },
+    tool_optimization: {
+        identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION',
+        params: ['jobs_description', 'vehicles_description', 'num_vehicles', 'profile'],
+    },
+};
+const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
+1. Driving/cycling/walking directions between locations
+2. Reachability analysis (isochrones) - areas reachable within X minutes
+3. Multi-stop delivery route optimization
+
+You have access to three tools. To call a tool, respond with EXACTLY this JSON format and NOTHING else:
+{"tool_call": {"name": "TOOL_NAME", "input": {PARAMS}}}
+
+Available tools:
+1. tool_directions - Get directions between locations
+   Input: {"locations_description": "string describing start/end/waypoints (required)", "profile": "string (default: driving-car)"}
+2. tool_isochrone - Get area reachable within specified minutes from a location
+   Input: {"location_description": "string describing the center location (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
+3. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
+   Input: {"jobs_description": "string describing all delivery/pickup locations (required)", "vehicles_description": "string describing vehicle start/end locations (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
+
+Transport profiles: driving-car, cycling-electric (for any bike/cycling request), driving-hgv (trucks)
+
+CRITICAL RULES:
+1. ALWAYS call the appropriate tool for ANY routing question. NEVER answer from general knowledge.
+2. When you need to call a tool, respond ONLY with the JSON tool_call object. No other text.
+3. After receiving tool results, format them clearly: distances in km, durations in minutes.
+4. If a tool returns an error, report it clearly. Do NOT provide alternative estimates.
+5. NEVER fabricate routing data.`;
+const AGENT_PROFILE_ALIASES = {
+    'bike': 'cycling-electric', 'bicycle': 'cycling-electric', 'cycling': 'cycling-electric',
+    'walk': 'foot-walking', 'walking': 'foot-walking', 'car': 'driving-car',
+    'drive': 'driving-car', 'driving': 'driving-car', 'truck': 'driving-hgv', 'hgv': 'driving-hgv',
+};
+const AGENT_VALID_PROFILES = new Set(['driving-car', 'driving-hgv', 'cycling-regular', 'cycling-mountain', 'cycling-road', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair']);
+function normalizeAgentProfile(profile) {
+    if (!profile)
+        return 'driving-car';
+    const lower = profile.toLowerCase().trim();
+    if (AGENT_VALID_PROFILES.has(lower))
+        return lower;
+    return AGENT_PROFILE_ALIASES[lower] || 'driving-car';
+}
+function escAgentSql(val) {
+    if (val === undefined || val === null)
+        return "''";
+    return "'" + String(val).replace(/'/g, "''") + "'";
+}
+async function executeToolLocally(toolName, input) {
+    const mapping = TOOL_PROCEDURE_MAP[toolName];
+    if (!mapping)
+        return { error: `Unknown tool: ${toolName}`, status: 'FAILED' };
+    const args = mapping.params.map(p => {
+        let val = input[p];
+        if (p === 'profile')
+            val = normalizeAgentProfile(val);
+        if (val === undefined || val === null)
+            return 'DEFAULT';
+        if (typeof val === 'number')
+            return String(val);
+        return escAgentSql(val);
+    });
+    const sql = `CALL ${mapping.identifier}(${args.join(', ')})`;
+    try {
+        const rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+        const result = rows?.[0];
+        if (result) {
+            const firstVal = Object.values(result)[0];
+            if (typeof firstVal === 'string') {
+                try {
+                    return JSON.parse(firstVal);
+                }
+                catch {
+                    return firstVal;
+                }
+            }
+            return firstVal;
+        }
+        return { error: 'No result from tool execution', status: 'FAILED' };
+    }
+    catch (err) {
+        return { error: `Tool execution failed: ${err.message}`, status: 'FAILED' };
+    }
+}
+function escAgentSqlStr(s) {
+    return s.replace(/'/g, "''");
+}
+const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+let agentModel = AGENT_MODELS[0];
+async function callCortexComplete(messages) {
+    const msgArray = messages.map(m => {
+        return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
+    }).join(',');
+    const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
+    console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
+    const startMs = Date.now();
+    let rows;
+    try {
+        rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+    }
+    catch (err) {
+        console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
+        if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
+            console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
+            agentModel = AGENT_MODELS[1];
+            const retrySql = sql.replace(AGENT_MODELS[0], agentModel);
+            rows = await runSql(retrySql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+        }
+        else {
+            throw err;
+        }
+    }
+    console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
+    if (!rows || rows.length === 0)
+        throw new Error('No response from CORTEX.COMPLETE');
+    const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
+    let content = '';
+    try {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
+    }
+    catch {
+        content = String(raw);
+    }
+    if (!content) {
+        console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
+        throw new Error('Empty response from LLM');
+    }
+    return content.trim();
+}
+function findMatchingBrace(s) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (esc) {
+            esc = false;
+            continue;
+        }
+        if (c === '\\') {
+            esc = true;
+            continue;
+        }
+        if (c === '"') {
+            inStr = !inStr;
+            continue;
+        }
+        if (inStr)
+            continue;
+        if (c === '{')
+            depth++;
+        if (c === '}') {
+            depth--;
+            if (depth === 0)
+                return i;
+        }
+    }
+    return -1;
+}
+function parseToolCall(text) {
+    try {
+        const match = text.match(/\{\s*"tool_call"\s*:/s);
+        if (!match)
+            return null;
+        const jsonStr = text.slice(text.indexOf('{'));
+        const braceEnd = findMatchingBrace(jsonStr);
+        if (braceEnd < 0)
+            return null;
+        const parsed = JSON.parse(jsonStr.slice(0, braceEnd + 1));
+        if (parsed.tool_call?.name && TOOL_PROCEDURE_MAP[parsed.tool_call.name]) {
+            return { name: parsed.tool_call.name, input: parsed.tool_call.input || {} };
+        }
+    }
+    catch { }
+    return null;
+}
+async function callCortexAgentWithToolLoop(message, threadId, parentMessageId, onProgress) {
+    if (!IS_SPCS)
+        throw new Error('Cortex Agent is only available in SPCS mode');
+    console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
+    const messages = [
+        { role: 'system', content: ROUTING_SYSTEM_PROMPT },
+        { role: 'user', content: message },
+    ];
+    const maxIterations = 5;
+    const allToolResults = [];
+    for (let iter = 0; iter < maxIterations; iter++) {
+        onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
+        const response = await callCortexComplete(messages);
+        console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
+        const toolCall = parseToolCall(response);
+        if (!toolCall) {
+            console.log(`[Agent] No tool call found, returning text response`);
+            return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
+        }
+        const toolLabel = toolCall.name.replace('tool_', '');
+        onProgress?.({ step: 'executing_tool', detail: toolLabel });
+        console.log(`[Agent] Executing tool: ${toolCall.name}`);
+        messages.push({ role: 'assistant', content: response });
+        const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
+        allToolResults.push(toolResult);
+        onProgress?.({ step: 'formatting', detail: 'Processing tool results' });
+        const resultStr = JSON.stringify(toolResult).slice(0, 30000);
+        messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
+    }
+    return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults };
+}
+function sendSseEvent(res, event, data) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+app.post('/api/agent/chat', async (req, res) => {
+    const { message, thread_id, parent_message_id } = req.body;
+    if (!message)
+        return res.status(400).json({ error: 'message required' });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    try {
+        const onProgress = (data) => { sendSseEvent(res, 'progress', data); };
+        const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress);
+        const content = agentResult?.content || [];
+        let msg = '';
+        let geometry = null;
+        const toolResults = agentResult?._toolResults || [];
+        for (const item of content) {
+            if (item.type === 'text')
+                msg += (msg ? '\n' : '') + item.text;
+        }
+        for (const tr of toolResults) {
+            if (tr && typeof tr === 'object' && tr.geometry && !geometry)
+                geometry = tr.geometry;
+        }
+        if (!msg)
+            msg = agentResult?.message || 'No response from agent';
+        const response = { message: msg, tool_results: toolResults };
+        if (geometry)
+            response.geometry = geometry;
+        if (agentResult?.metadata?.thread_id)
+            response.thread_id = agentResult.metadata.thread_id;
+        if (agentResult?.metadata?.message_id)
+            response.message_id = agentResult.metadata.message_id;
+        sendSseEvent(res, 'result', response);
+        res.end();
+    }
+    catch (err) {
+        console.error(`[Agent] Chat endpoint error: ${err.message}`);
+        sendSseEvent(res, 'error', { error: err.message || 'Unknown agent error' });
+        res.end();
+    }
+});
+app.use('/api/studio', createStudioRouter(runSql));
 app.post('/api/query', async (req, res) => {
     try {
-        const { sql } = req.body;
+        const { sql, database, schema } = req.body;
         if (!sql)
             return res.status(400).json({ error: 'sql required' });
         const trimmed = sql.trim().replace(/;+$/, '').trim();
@@ -1090,7 +1430,7 @@ app.post('/api/query', async (req, res) => {
         if (!ALLOWED.includes(firstWord)) {
             return res.status(403).json({ error: `Only read-only queries allowed. Got: ${firstWord}` });
         }
-        const rows = await runSql(trimmed);
+        const rows = await runSql(trimmed, database, schema);
         res.json({ result: rows });
     }
     catch (err) {

@@ -651,8 +651,10 @@ app.get('/api/matrix/regions', async (_req, res) => {
     const regions: any[] = [];
 
     let services: any[] = [];
+    let orsHealthy = false;
     try {
-      services = await snowSql(`SHOW SERVICES IN SCHEMA ${SF_DATABASE}.ROUTING`);
+      await snowSql(`SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH()`);
+      orsHealthy = true;
     } catch {}
 
     let functions: any[] = [];
@@ -661,13 +663,8 @@ app.get('/api/matrix/regions', async (_req, res) => {
     } catch {}
 
     for (const [region, cfg] of Object.entries(ORS_REGION_CONFIG)) {
-      const svcName = region === 'SanFrancisco' ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
       const matrixFnName = region === 'SanFrancisco' ? 'MATRIX_TABULAR' : `MATRIX_${region.toUpperCase()}`;
       const dirFnName = region === 'SanFrancisco' ? 'DIRECTIONS' : `DIRECTIONS_${region.toUpperCase()}`;
-
-      const svcRow = services.find((r: any) => (r.name || r.NAME) === svcName);
-      const serviceExists = !!svcRow;
-      const serviceStatus = svcRow ? (svcRow.status || svcRow.STATUS || 'UNKNOWN') : 'NOT_FOUND';
 
       const matrixFunctionExists = functions.some((r: any) => {
         const name = (r.arguments || r.ARGUMENTS || '');
@@ -678,8 +675,8 @@ app.get('/api/matrix/regions', async (_req, res) => {
         return name.startsWith(dirFnName + '(');
       });
 
-      const provisioned = serviceExists || matrixFunctionExists;
-      const ready = serviceExists && matrixFunctionExists && (serviceStatus === 'RUNNING' || serviceStatus === 'SUSPENDED');
+      const provisioned = orsHealthy && matrixFunctionExists;
+      const ready = orsHealthy && matrixFunctionExists;
 
       const cityEntry = Object.entries(CITY_ORS_MAP).find(([, c]) => c.orsRegion === region);
       const bounds = cityEntry ? cityEntry[1].bbox : { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 };
@@ -688,8 +685,8 @@ app.get('/api/matrix/regions', async (_req, res) => {
         region,
         label: region.replace(/([A-Z])/g, ' $1').trim(),
         bounds,
-        serviceStatus,
-        serviceExists,
+        serviceStatus: orsHealthy ? 'RUNNING' : 'UNAVAILABLE',
+        serviceExists: orsHealthy,
         matrixFunctionExists,
         directionsFunctionExists,
         ready,
@@ -930,14 +927,7 @@ app.post('/api/matrix/build', async (req, res) => {
     }
     matrixBuildJobs[region] = { region, resolutions, started: Date.now(), statuses };
 
-    try {
-      await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ROUTING_GATEWAY_SERVICE RESUME`);
-    } catch {}
-    if (region === 'SanFrancisco') {
-      try { await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ORS_SERVICE RESUME`); } catch {}
-    } else {
-      try { await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ORS_SERVICE_${region.toUpperCase()} RESUME`); } catch {}
-    }
+    await ensureRoutingFunctions(region);
 
     for (const r of resolutions) {
       const resLabel = `RES${r}`;
@@ -1437,32 +1427,18 @@ function updateCityDataStep(city: string, step: string, update: any) {
 }
 
 async function checkOrsRegionReady(region: string) {
-  const svcName = region === 'SanFrancisco' ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
-  let serviceExists = false, serviceStatus = 'NOT_FOUND', pbfExists = false, functionExists = false;
-  try {
-    const rows = await snowSql(`SHOW SERVICES LIKE '${svcName}' IN SCHEMA ${SF_DATABASE}.ROUTING`);
-    const row = rows.find((r: any) => (r.name || r.NAME) === svcName);
-    if (row) { serviceExists = true; serviceStatus = row.status || row.STATUS || 'UNKNOWN'; }
-  } catch {}
-  try {
-    const regionCfg = ORS_REGION_CONFIG[region];
-    if (regionCfg) {
-      const rows = await snowSql(`LIST @${SF_DATABASE}.ROUTING.ORS_SPCS_STAGE/${region}/`);
-      pbfExists = rows.some((r: any) => (r.name || '').includes('.osm.pbf'));
-    }
-    if (!pbfExists && region === 'SanFrancisco') {
-      const rows = await snowSql(`LIST @${SF_DATABASE}.ROUTING.ORS_SPCS_STAGE/California/`);
-      pbfExists = rows.some((r: any) => (r.name || '').includes('.osm.pbf'));
-    }
-  } catch {
-    if (serviceExists && serviceStatus === 'RUNNING') pbfExists = true;
-  }
+  let functionExists = false;
+  let orsHealthy = false;
   try {
     const fnName = region === 'SanFrancisco' ? 'DIRECTIONS' : `DIRECTIONS_${region.toUpperCase()}`;
     const rows = await snowSql(`SHOW FUNCTIONS LIKE '${fnName}' IN SCHEMA ${SF_DATABASE}.ROUTING`);
     functionExists = rows.length > 0;
   } catch {}
-  return { serviceExists, serviceStatus, pbfExists, functionExists };
+  try {
+    await snowSql(`SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH()`);
+    orsHealthy = true;
+  } catch {}
+  return { serviceExists: orsHealthy, serviceStatus: orsHealthy ? 'RUNNING' : 'UNAVAILABLE', pbfExists: orsHealthy, functionExists, orsHealthy };
 }
 
 async function putFileToStageSpcs(fileContent: string, stagePath: string, fileName: string): Promise<void> {
@@ -1508,18 +1484,12 @@ app.get('/api/city/:city/status', async (req, res) => {
       provisionState.message = undefined;
       provisionState.dataSteps = undefined;
     }
-    let downloaderReady = false;
-    try {
-      const rows = await snowSql(`SHOW FUNCTIONS LIKE 'DOWNLOAD_PBF' IN SCHEMA ${SF_DATABASE}.ROUTING`);
-      downloaderReady = rows.length > 0;
-    } catch {}
     res.json({
       city, region,
       orsServiceStatus: regionStatus.serviceStatus,
       orsServiceExists: regionStatus.serviceExists,
-      pbfDownloaded: regionStatus.pbfExists,
+      orsHealthy: regionStatus.orsHealthy,
       directionsFunctionExists: regionStatus.functionExists,
-      downloaderReady,
       orsReady: regionStatus.serviceStatus === 'RUNNING' && regionStatus.functionExists,
       hasData,
       provisionState: provisionState.status,
@@ -1532,149 +1502,19 @@ app.get('/api/city/:city/status', async (req, res) => {
   }
 });
 
-async function provisionOrsForRegion(region: string): Promise<void> {
+async function ensureRoutingFunctions(region: string): Promise<void> {
   const DB = SF_DATABASE;
-  const regionCfg = ORS_REGION_CONFIG[region];
-  if (!regionCfg) throw new Error(`Unknown ORS region: ${region}`);
-  const isSF = region === 'SanFrancisco';
-  const svcName = isSF ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
-  const stageDir = region;
   const existing = await checkOrsRegionReady(region);
-  if (existing.serviceStatus === 'RUNNING' && existing.functionExists) return;
-
-  if (!existing.pbfExists) {
-    const pbfUrl = regionCfg.pbfUrl;
-    const targetName = `${region}.osm.pbf`;
-    try { await snowSql(`CALL ${DB}.ROUTING.CREATE_STAGES()`); } catch (e: any) {
-      console.log('create_stages call info:', e.message?.slice(0, 200));
-    }
-    let downloaderReady = false;
-    try {
-      const rows = await snowSql(`SHOW FUNCTIONS LIKE 'DOWNLOAD_PBF' IN SCHEMA ${DB}.ROUTING`);
-      downloaderReady = rows.length > 0;
-    } catch {}
-    if (!downloaderReady) {
-      try {
-        await snowSql(`CALL ${DB}.ROUTING.CREATE_ROUTING_POOL()`);
-      } catch (e: any) {
-        console.log('create_routing_pool info:', e.message?.slice(0, 200));
-      }
-      for (let p = 0; p < 30; p++) {
-        try {
-          const pools = await snowSql(`DESCRIBE COMPUTE POOL ${DB}_ROUTING_POOL`);
-          const pool = pools[0];
-          const st = pool?.state || pool?.STATE || '';
-          if (st === 'ACTIVE' || st === 'IDLE') break;
-        } catch {}
-        await new Promise((r) => setTimeout(r, 10000));
-      }
-      try {
-        await snowSql(`CALL ${DB}.ROUTING.START_DOWNLOADER()`);
-        for (let d = 0; d < 30; d++) {
-          try {
-            const rows = await snowSql(`SHOW FUNCTIONS LIKE 'DOWNLOAD_PBF' IN SCHEMA ${DB}.ROUTING`);
-            if (rows.length > 0) { downloaderReady = true; break; }
-          } catch {}
-          await new Promise((r) => setTimeout(r, 10000));
-        }
-      } catch (e: any) {
-        console.log('start_downloader failed (EAI may not be granted):', e.message?.slice(0, 200));
-      }
-    }
-    if (downloaderReady) {
-      try {
-        await snowSql(`SELECT ${DB}.ROUTING.DOWNLOAD_PBF('ors_spcs_stage/${stageDir}', '${targetName}', '${pbfUrl}')`);
-      } catch (e: any) {
-        console.log('DOWNLOAD_PBF failed, trying local download+PUT fallback:', e.message?.slice(0, 200));
-        if (!IS_SPCS) {
-          await downloadPbfLocally(pbfUrl, targetName, stageDir, DB);
-        } else {
-          throw new Error(`PBF download failed in SPCS and no local fallback available: ${e.message?.slice(0, 200)}`);
-        }
-      }
-    } else {
-      if (!IS_SPCS) {
-        await downloadPbfLocally(pbfUrl, targetName, stageDir, DB);
-      } else {
-        throw new Error('Cannot download PBF: DOWNLOAD_PBF function not available and no local fallback in SPCS');
-      }
-    }
-
-    const orsConfigYaml = `ors:
-  engine:
-    profile_default:
-      build:
-        source_file: /home/ors/files/${targetName}
-        instructions: false
-        maximum_visited_nodes: 100000000
-    profiles:
-      driving-car:
-        enabled: true
-      driving-hgv:
-        enabled: true
-      cycling-regular:
-        enabled: true
-      cycling-road:
-        enabled: true
-  endpoints:
-    matrix:
-      maximum_visited_nodes: 100000000
-      maximum_routes: 250000`;
-
-    await uploadToStage(orsConfigYaml, `@${DB}.ROUTING.ORS_SPCS_STAGE/${stageDir}`, 'ors-config.yml');
+  if (!existing.orsHealthy) {
+    throw new Error('Standalone ORS (OPENROUTESERVICE_NATIVE_APP) is not available. Ensure it is running.');
   }
-
-  if (!existing.serviceExists || existing.serviceStatus === 'SUSPENDED') {
-    if (!isSF) {
-      await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_ORS_SERVICE('${region}')`);
-      try {
-        await snowSql(`CALL ${DB}.ROUTING.CREATE_SERVICES()`);
-      } catch (e: any) {
-        console.log('create_services for shared gateway info:', e.message?.slice(0, 200));
-      }
-    } else {
-      await snowSql(`CALL ${DB}.ROUTING.SETUP_ORS()`);
-    }
-  }
-
-  const servicesToWait = [svcName, 'ROUTING_GATEWAY_SERVICE'];
-  for (const waitSvc of servicesToWait) {
-    for (let i = 0; i < 60; i++) {
-      try {
-        const rows = await snowSql(`SHOW SERVICES LIKE '${waitSvc}' IN SCHEMA ${DB}.ROUTING`);
-        const row = rows.find((r: any) => (r.name || r.NAME) === waitSvc);
-        if (row && (row.status || row.STATUS) === 'RUNNING') break;
-      } catch {}
-      await new Promise((r) => setTimeout(r, 10000));
-    }
-  }
-
   if (!existing.functionExists) {
-    if (!isSF) {
-      await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_FUNCTIONS('${region}')`);
-    } else {
+    const isSF = region === 'SanFrancisco';
+    if (isSF) {
       await snowSql(`CALL ${DB}.ROUTING.CREATE_FUNCTIONS()`);
+    } else {
+      await snowSql(`CALL ${DB}.ROUTING.CREATE_CITY_FUNCTIONS('${region}')`);
     }
-  }
-}
-
-async function downloadPbfLocally(pbfUrl: string, targetName: string, stageDir: string, db: string): Promise<void> {
-  if (IS_SPCS) {
-    throw new Error(`Cannot download PBF locally in SPCS. Use DOWNLOAD_PBF function or ensure downloader service is running.`);
-  }
-  const tmpPbfDir = join(tmpdir(), `pbf_stage_${Date.now()}`);
-  mkdirSync(tmpPbfDir, { recursive: true });
-  const tmpPbf = join(tmpPbfDir, targetName);
-  try {
-    console.log(`Downloading PBF locally: ${pbfUrl}`);
-    await execAsync(`curl -L -o "${tmpPbf}" "${pbfUrl}"`, { timeout: 600000 });
-    console.log(`Uploading PBF to stage: @${db}.ROUTING.ORS_SPCS_STAGE/${stageDir}/`);
-    await putFileToStageLocal(tmpPbf, `@${db}.ROUTING.ORS_SPCS_STAGE/${stageDir}/`);
-    console.log('PBF uploaded successfully');
-  } catch (e: any) {
-    throw new Error(`Failed to download/upload PBF for ${stageDir}: ${e.message?.slice(0, 300)}`);
-  } finally {
-    try { unlinkSync(tmpPbf); rmSync(tmpPbfDir, { recursive: true, force: true }); } catch {}
   }
 }
 
@@ -1698,15 +1538,8 @@ app.post('/api/city/:city/provision', async (req, res) => {
   res.json({ status: 'started', city, region });
   (async () => {
     try {
-      const regionStatus = await checkOrsRegionReady(region);
-      let orsPromise: Promise<void> | null = null;
-      if (regionStatus.serviceStatus === 'RUNNING' && regionStatus.functionExists) {
-      } else {
-        orsPromise = provisionOrsForRegion(region).catch((e: any) => {
-          throw new Error(`ORS provisioning failed: ${e.message?.slice(0, 400)}`);
-        });
-      }
-      await runCityDataBuild(city, { num_couriers, num_days, start_date, shifts, orsPromise });
+      await ensureRoutingFunctions(region);
+      await runCityDataBuild(city, { num_couriers, num_days, start_date, shifts, orsPromise: null });
       updateCityState(city, { status: 'complete', message: `Data build complete for ${city}` });
     } catch (err: any) {
       updateCityState(city, { status: 'error', error: err.message?.slice(0, 500), message: 'Build failed' });
@@ -2069,22 +1902,15 @@ app.get('/api/matrix/directions', async (req, res) => {
     }
     const region = getOrsRegion(city);
     const regionStatus = await checkOrsRegionReady(region);
-    if (regionStatus.serviceStatus === 'SUSPENDED') {
-      const svcName = region === 'SanFrancisco' ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
-      try {
-        await snowSql(`ALTER SERVICE ${SF_DATABASE}.ROUTING.${svcName} RESUME`);
-        await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ROUTING_GATEWAY_SERVICE RESUME`);
-      } catch (e: any) {
-        console.log('ORS resume attempt:', e.message?.slice(0, 200));
-      }
-      for (let i = 0; i < 60; i++) {
-        const check = await checkOrsRegionReady(region);
-        if (check.serviceStatus === 'RUNNING' && check.functionExists) break;
-        await new Promise((r) => setTimeout(r, 5000));
-      }
+    if (!regionStatus.orsHealthy) {
+      return res.status(503).json({ error: 'Standalone ORS (OPENROUTESERVICE_NATIVE_APP) is not available.' });
     }
-    if (!regionStatus.functionExists && regionStatus.serviceStatus !== 'RUNNING') {
-      return res.status(503).json({ error: 'ORS routing service not available. Build city data first.' });
+    if (!regionStatus.functionExists) {
+      try {
+        await ensureRoutingFunctions(region);
+      } catch (e: any) {
+        return res.status(503).json({ error: 'ORS routing functions not available: ' + e.message?.slice(0, 200) });
+      }
     }
     const dirFn = getDirectionsFn(city);
     const sql = `

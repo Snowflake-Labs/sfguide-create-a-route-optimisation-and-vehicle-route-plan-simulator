@@ -1,6 +1,6 @@
 ---
 name: fleet-intelligence-taxis
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, deploy streamlit, fleet intelligence dashboard."
+description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
 depends_on:
   - build-routing-solution
   - routing-customization
@@ -52,19 +52,6 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 ---
 
-## Customizing Streamlit App for Your Location
-
-Update `CITY = get_city("New York")` in each Streamlit file to your target city name (must match a key in `city_config.py`).
-
-| File | What to Change |
-|------|----------------|
-| `Taxi_Control_Center.py` | `get_city("New York")` -> `get_city("Your City")` |
-| `pages/1_Driver_Routes.py` | `get_city("New York")` -> `get_city("Your City")` |
-| `pages/2_Heat_Map.py` | `get_city("New York")` -> `get_city("Your City")` |
-
-To add a new city, add an entry to the `CITIES` dictionary in `city_config.py` with `name`, `latitude`, `longitude`, and `zoom`.
-
----
 
 ## Recommended Warehouse Sizes
 
@@ -94,8 +81,7 @@ To add a new city, add an entry to the `CITIES` dictionary in `city_config.py` w
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates FLEET_INTELLIGENCE_TAXIS schema |
 | CREATE TABLE | Schema | Creates location, driver, trip, and route tables |
 | CREATE VIEW | Schema | Creates 5 analytics views |
-| CREATE STAGE | Schema | Creates STREAMLIT_STAGE for app deployment |
-| CREATE STREAMLIT | Schema | Deploys TAXI_CONTROL_CENTER |
+
 | USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls DIRECTIONS function for routing |
 | IMPORTED PRIVILEGES ON OVERTURE_MAPS__PLACES | Database | Reads POI locations |
 | IMPORTED PRIVILEGES ON OVERTURE_MAPS__ADDRESSES | Database | Reads address data |
@@ -107,6 +93,33 @@ To add a new city, add an entry to the `CITIES` dictionary in `city_config.py` w
 ## Error Logging
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-taxis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
+## Step 0: Load San Francisco Baseline (Recommended)
+
+The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+
+### Quick check
+
+```sql
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
+```
+
+If the table exists and has rows, data is already loaded. Skip to Step 10 (Register with Demo Dashboard).
+
+### Load from S3
+
+Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/fleet-intelligence-taxis/`.
+
+After loading, the seed script also creates the 5 analytics views (DRIVER_LOCATIONS_V, TRIPS_ASSIGNED_TO_DRIVERS, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIP_SUMMARY).
+
+### Generate data for other regions (optional)
+
+To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
+
+Or use the centralized provisioner:
+```sql
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('fleet-intelligence-taxis'));
+```
 
 ## Workflow
 
@@ -136,7 +149,13 @@ Set session query tag for attribution tracking.
 
 ### Step 3: Configure Database, Warehouse, and Schema
 
-Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, `FLEET_INTELLIGENCE_TAXIS` schema, and `STREAMLIT_STAGE` stage.
+**Pre-check: If data already exists, skip to Step 9.** Run:
+```sql
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_INTERPOLATED;
+```
+If `cnt > 0`, the data pipeline has already run. Skip to Step 9 (analytics views) or Step 10 (Streamlit deployment) as needed.
+
+Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_INTELLIGENCE_TAXIS` schema.
 
 ### Step 3b: Check & Install Overture Maps Datasets
 
@@ -179,7 +198,7 @@ Interpolate 15 points per trip along route geometry with driver states (`waiting
 
 ### Step 9: Create Analytics Views
 
-Create 5 views for Streamlit consumption:
+Create 5 analytics views:
 - `DRIVER_LOCATIONS_V` — locations with LAT/LON
 - `TRIPS_ASSIGNED_TO_DRIVERS` — trip assignments with geometry
 - `ROUTE_NAMES` — origin→destination labels
@@ -188,13 +207,49 @@ Create 5 views for Streamlit consumption:
 
 Verify all view row counts.
 
-### Step 10: Deploy Streamlit App
+### Step 10: Register with Demo Dashboard
 
-1. **Upload** Streamlit files to `@STREAMLIT_STAGE/taxi/` via PUT commands (main app, CSS, logo, env, city config, pages).
-2. **Verify** upload with `LIST @STREAMLIT_STAGE/taxi/`.
-3. **Create** Streamlit app `TAXI_CONTROL_CENTER` pointing to the stage.
-4. **Set live version** with `ALTER STREAMLIT ... ADD LIVE VERSION FROM LAST`.
-5. **Provide** the generated Snowsight URL to the user.
+If the shared Demo Dashboard app is installed, register this demo's pages:
+
+```sql
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-overview', 'Fleet Overview', 'Taxi fleet dashboard', 'Fleet Taxis', 'Car', 120, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-routes', 'Driver Routes', 'Individual driver route inspection', 'Fleet Taxis', 'Navigation', 130, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
+CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-heatmap', 'Heat Map', 'H3 hex trip density heatmap', 'Fleet Taxis', 'Flame', 140, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
+```
+
+Skip if DEMO_DASHBOARD_APP is not installed.
+
+---
+
+## Dashboard Schema Contract
+
+The React Demo Dashboard pages query these exact tables and columns. If the pipeline changes column names, the React pages must be updated to match.
+
+### TRIP_SUMMARY (view)
+| Column | Type | Used By |
+|--------|------|---------|
+| DRIVER_ID | VARCHAR | FleetOverview, DriverRoutes, HeatMap |
+| TRIP_ID | VARCHAR | FleetOverview, DriverRoutes |
+| ORIGIN | GEOGRAPHY | FleetOverview (ST_X/ST_Y), DriverRoutes, HeatMap (H3) |
+| DESTINATION | GEOGRAPHY | FleetOverview (ST_X/ST_Y), DriverRoutes |
+| ROUTE_DISTANCE_METERS | FLOAT | FleetOverview, DriverRoutes (/ 1000 for km) |
+| ROUTE_DURATION_SECS | FLOAT | FleetOverview, DriverRoutes (/ 60 for min) |
+| TRIP_START_TIME | TIMESTAMP | FleetOverview (HOUR), HeatMap (HOUR filter) |
+| AVERAGE_KMH | FLOAT | DriverRoutes, HeatMap |
+| ORIGIN_ADDRESS | VARCHAR | DriverRoutes (AI analysis) |
+| DESTINATION_ADDRESS | VARCHAR | DriverRoutes (AI analysis) |
+
+### DRIVER_LOCATIONS_V (view)
+| Column | Type | Used By |
+|--------|------|---------|
+| LON | FLOAT | DriverRoutes (GPS track), HeatMap (driver dots) |
+| LAT | FLOAT | DriverRoutes (GPS track), HeatMap (driver dots) |
+| TRIP_ID | VARCHAR | DriverRoutes (GPS filter) |
+| CURR_TIME | TIMESTAMP | DriverRoutes (time display), HeatMap (hour filter) |
+| KMH | FLOAT | DriverRoutes (speed chart) |
+| DRIVER_STATE | VARCHAR | DriverRoutes (state display) |
+| POINT_INDEX | NUMBER | DriverRoutes (ordering) |
+| DRIVER_ID | VARCHAR | HeatMap (driver dots) |
 
 ---
 
@@ -207,17 +262,14 @@ Verify all view row counts.
 | No locations found | Bounding box may be too restrictive or outside Overture coverage |
 | Out of memory | Use larger warehouse or batch processing |
 | Missing Overture data | Install shares from Snowflake Marketplace |
-| Streamlit not loading | Check all files uploaded to stage via `LIST @STREAMLIT_STAGE/taxi/` |
-| Map centered wrong | Update view_state coordinates in Streamlit files |
-| PUT command fails | Ensure the file path is absolute and the file exists locally |
+| Dashboard shows no data | Verify TRIP_SUMMARY view returns rows; check column names match React expectations |
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: streamlit first, then views, tables, stage, schema
-DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_CONTROL_CENTER;
+-- Reverse dependency order: views, tables, schema
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES;
@@ -232,7 +284,6 @@ DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS;
-DROP STAGE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS;
 ```
 

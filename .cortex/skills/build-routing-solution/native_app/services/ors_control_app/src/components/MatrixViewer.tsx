@@ -64,6 +64,7 @@ export default function MatrixViewer() {
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const hasLoadedOnce = useRef(false);
 
   useEffect(() => {
     fetch('/api/matrix/viewer-inventory')
@@ -80,6 +81,14 @@ export default function MatrixViewer() {
   useEffect(() => {
     if (regions.length > 0 && !selRegion) setSelRegion(regions[0]);
   }, [regions]);
+
+  const prevRegionRef = useRef(selRegion);
+  useEffect(() => {
+    if (selRegion && selRegion !== prevRegionRef.current) {
+      prevRegionRef.current = selRegion;
+      hasLoadedOnce.current = false;
+    }
+  }, [selRegion]);
 
   const profiles = useMemo(() =>
     [...new Set(inventory.filter(t => t.region === selRegion).map(t => t.profile))],
@@ -150,12 +159,15 @@ export default function MatrixViewer() {
       setDestinations(dests);
       const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
       setDriveTimeLimit(Math.ceil(maxVisible / 60) || sMax);
-      setViewState(prev => ({
-        ...prev,
-        longitude: originData.origin_lon,
-        latitude: originData.origin_lat,
-        zoom: 11,
-      }));
+      if (!hasLoadedOnce.current) {
+        setViewState(prev => ({
+          ...prev,
+          longitude: originData.origin_lon,
+          latitude: originData.origin_lat,
+          zoom: 11,
+        }));
+        hasLoadedOnce.current = true;
+      }
     } catch (e: any) {
       if (e.name !== 'AbortError') setDestinations([]);
     } finally {

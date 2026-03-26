@@ -1,0 +1,14 @@
+spec:
+  containers:
+    - name: demo-dashboard
+      image: /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.25
+      env:
+        SNOWFLAKE_WAREHOUSE: DEMO_DASHBOARD_WH
+        PORT: "8080"
+      readinessProbe:
+        path: /health
+        port: 8080
+  endpoints:
+    - name: dashboard-ui
+      port: 8080
+      public: true
