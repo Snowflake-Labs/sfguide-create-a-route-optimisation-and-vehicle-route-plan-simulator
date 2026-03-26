@@ -80,6 +80,7 @@ BEGIN
         MAX_NODES = 1
         AUTO_RESUME = TRUE
         AUTO_SUSPEND_SECS = 600;
+    ALTER COMPUTE POOL IF EXISTS IDENTIFIER(:pool_name) SET AUTO_SUSPEND_SECS = 600;
     RETURN 'UI compute pool created: ' || pool_name;
 END;
 $$;
@@ -108,6 +109,15 @@ AS
 $$
 BEGIN
     LET pool_name := (SELECT CURRENT_DATABASE()) || '_compute_pool';
+    BEGIN
+        ALTER SERVICE IF EXISTS routing.ors_service SET AUTO_SUSPEND_SECS = 600;
+        ALTER SERVICE IF EXISTS routing.vroom_service SET AUTO_SUSPEND_SECS = 600;
+        ALTER SERVICE IF EXISTS routing.routing_gateway_service SET AUTO_SUSPEND_SECS = 600;
+        ALTER SERVICE IF EXISTS routing.ors_service_sanfrancisco SET AUTO_SUSPEND_SECS = 600;
+        ALTER SERVICE IF EXISTS routing.downloader_service SET AUTO_SUSPEND_SECS = 600;
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
     DROP SERVICE IF EXISTS core.fleet_intelligence_service;
     BEGIN
         CREATE SERVICE core.fleet_intelligence_service
@@ -115,7 +125,6 @@ BEGIN
             FROM SPECIFICATION_FILE='services/fleet_intelligence_service.yaml'
             MIN_INSTANCES = 1
             MAX_INSTANCES = 1
-            AUTO_SUSPEND_SECS = 0
             EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_ref'));
     EXCEPTION
         WHEN OTHER THEN
@@ -123,8 +132,7 @@ BEGIN
                 IN COMPUTE POOL IDENTIFIER(:pool_name)
                 FROM SPECIFICATION_FILE='services/fleet_intelligence_service.yaml'
                 MIN_INSTANCES = 1
-                MAX_INSTANCES = 1
-                AUTO_SUSPEND_SECS = 0;
+                MAX_INSTANCES = 1;
     END;
     GRANT USAGE ON SERVICE core.fleet_intelligence_service TO APPLICATION ROLE app_user;
     GRANT SERVICE ROLE core.fleet_intelligence_service!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
@@ -150,7 +158,6 @@ BEGIN
             FROM SPECIFICATION_FILE='services/fleet_intelligence_service.yaml'
             MIN_INSTANCES = 1
             MAX_INSTANCES = 1
-            AUTO_SUSPEND_SECS = 0
             EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_ref'));
     EXCEPTION
         WHEN OTHER THEN
@@ -159,8 +166,7 @@ BEGIN
                     IN COMPUTE POOL IDENTIFIER(:pool_name)
                     FROM SPECIFICATION_FILE='services/fleet_intelligence_service.yaml'
                     MIN_INSTANCES = 1
-                    MAX_INSTANCES = 1
-                    AUTO_SUSPEND_SECS = 0;
+                    MAX_INSTANCES = 1;
             EXCEPTION
                 WHEN OTHER THEN
                     RETURN 'Version init - service deferred. Run DEPLOY() after grants.';
@@ -185,7 +191,12 @@ BEGIN
     EXCEPTION
         WHEN OTHER THEN NULL;
     END;
-    RETURN 'Version initialized';
+    BEGIN
+        ALTER SERVICE core.fleet_intelligence_service SUSPEND;
+    EXCEPTION
+        WHEN OTHER THEN NULL;
+    END;
+    RETURN 'Version initialized - service created and suspended';
 EXCEPTION
     WHEN OTHER THEN
         RETURN 'Version init deferred: ' || SQLERRM;
@@ -209,7 +220,8 @@ BEGIN
         MIN_NODES = 1
         MAX_NODES = 10
         AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400;
+        AUTO_SUSPEND_SECS = 600;
+    ALTER COMPUTE POOL IF EXISTS IDENTIFIER(:pool_name) SET AUTO_SUSPEND_SECS = 600;
     RETURN 'Routing compute pool created: ' || pool_name;
 END;
 $$;
@@ -289,21 +301,21 @@ BEGIN
         FROM SPECIFICATION_FILE='services/ors_service.yaml'
         MIN_INSTANCES = 1
         MAX_INSTANCES = 10
-        AUTO_SUSPEND_SECS = 14400;
+        AUTO_SUSPEND_SECS = 600;
 
     CREATE SERVICE routing.vroom_service
         IN COMPUTE POOL IDENTIFIER(:pool_name)
         FROM SPECIFICATION_FILE='services/vroom_service.yaml'
         MIN_INSTANCES = 1
         MAX_INSTANCES = 1
-        AUTO_SUSPEND_SECS = 14400;
+        AUTO_SUSPEND_SECS = 600;
 
     CREATE SERVICE routing.routing_gateway_service
         IN COMPUTE POOL IDENTIFIER(:pool_name)
         FROM SPECIFICATION_FILE='services/routing_gateway_service.yaml'
         MIN_INSTANCES = 1
         MAX_INSTANCES = 10
-        AUTO_SUSPEND_SECS = 14400;
+        AUTO_SUSPEND_SECS = 600;
 
     GRANT OPERATE ON SERVICE routing.ors_service TO APPLICATION ROLE app_user;
     GRANT MONITOR ON SERVICE routing.ors_service TO APPLICATION ROLE app_user;
@@ -518,12 +530,13 @@ BEGIN
         MIN_NODES = 1
         MAX_NODES = 10
         AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400;
+        AUTO_SUSPEND_SECS = 600;
+    ALTER COMPUTE POOL IF EXISTS IDENTIFIER(:pool_name) SET AUTO_SUSPEND_SECS = 600;
 
     ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"200G","ORS_ENGINE_PROFILES_CYCLING_ELECTRIC_ENABLED":"true","ORS_ENGINE_PROFILES_DRIVING_CAR_ENABLED":"false","ORS_ENGINE_PROFILES_DRIVING_HGV_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_REGULAR_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_ROAD_ENABLED":"false","ORS_ENGINE_PROFILES_CYCLING_MOUNTAIN_ENABLED":"false","ORS_ENGINE_PROFILES_FOOT_WALKING_ENABLED":"false","ORS_ENGINE_PROFILES_FOOT_HIKING_ENABLED":"false","ORS_ENGINE_PROFILES_WHEELCHAIR_ENABLED":"false"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@ROUTING.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@ROUTING.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS routing.' || svc_name;
-    create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 3600';
+    create_sql := 'CREATE SERVICE routing.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 600';
     EXECUTE IMMEDIATE :create_sql;
 
 

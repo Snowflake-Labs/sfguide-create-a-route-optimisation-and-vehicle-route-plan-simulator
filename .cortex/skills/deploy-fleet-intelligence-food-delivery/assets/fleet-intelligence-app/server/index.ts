@@ -2781,34 +2781,22 @@ FROM courier_assignments ca LEFT JOIN home_locations hl ON ca.courier_num = hl.r
       updateStep('couriers', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('couriers', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
-    updateStep('orders', { status: 'complete', message: 'Orders generated in routes step', rows: 0 });
-
-    if (opts.orsPromise) {
-      updateStep('routes', { status: 'waiting_for_ors', message: 'Waiting for ORS routing service to be ready...', started_at: Date.now() });
-      await opts.orsPromise;
-    }
-
-    updateStep('routes', { status: 'waiting_for_graph', message: 'Verifying ORS routing graph is loaded...', started_at: Date.now() });
-    const region = getOrsRegion(city);
-    await waitForOrsGraphReady(region);
-
-    updateStep('routes', { status: 'running', message: 'Generating routes via OpenRouteService...', started_at: Date.now() });
+    updateStep('orders', { status: 'running', message: 'Generating delivery orders...', started_at: Date.now() });
     try {
       const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
-      const sd = start_date;
-      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES WHERE CITY IN (${cityList})`);
-      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES
-WITH restaurants_numbered AS (
-  SELECT RESTAURANT_ID, LOCATION, NAME, CUISINE_TYPE, ADDRESS, CITY,
-    ROW_NUMBER() OVER (ORDER BY HASH(RESTAURANT_ID)) AS RN
-  FROM ${DB}.DATA.RESTAURANTS WHERE NAME IS NOT NULL AND LENGTH(NAME) > 2 AND CITY IN (${cityList})
-),
-addresses_numbered AS (
-  SELECT ADDRESS_ID, LOCATION, FULL_ADDRESS, CITY,
-    ROW_NUMBER() OVER (ORDER BY HASH(ADDRESS_ID)) AS RN
-  FROM ${DB}.DATA.CUSTOMER_ADDRESSES WHERE FULL_ADDRESS IS NOT NULL AND LENGTH(FULL_ADDRESS) > 3 AND CITY IN (${cityList})
-),
-courier_order_counts AS (
+      await snowSql(`DELETE FROM ${DB}.DATA.RESTAURANTS_NUMBERED WHERE 1=1`);
+      await snowSql(`INSERT INTO ${DB}.DATA.RESTAURANTS_NUMBERED
+SELECT RESTAURANT_ID, LOCATION, NAME, CUISINE_TYPE, ADDRESS,
+  ROW_NUMBER() OVER (ORDER BY HASH(RESTAURANT_ID)) AS RN
+FROM ${DB}.DATA.RESTAURANTS WHERE NAME IS NOT NULL AND LENGTH(NAME) > 2 AND CITY IN (${cityList})`);
+      await snowSql(`DELETE FROM ${DB}.DATA.ADDRESSES_NUMBERED WHERE 1=1`);
+      await snowSql(`INSERT INTO ${DB}.DATA.ADDRESSES_NUMBERED
+SELECT ADDRESS_ID, LOCATION, FULL_ADDRESS,
+  ROW_NUMBER() OVER (ORDER BY HASH(ADDRESS_ID)) AS RN
+FROM ${DB}.DATA.CUSTOMER_ADDRESSES WHERE FULL_ADDRESS IS NOT NULL AND LENGTH(FULL_ADDRESS) > 3 AND CITY IN (${cityList})`);
+      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_ORDERS WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_ORDERS
+WITH courier_order_counts AS (
   SELECT c.COURIER_ID, c.SHIFT_TYPE, c.SHIFT_START_HOUR, c.SHIFT_END_HOUR,
     c.SHIFT_CROSSES_MIDNIGHT, c.VEHICLE_TYPE,
     CASE c.SHIFT_TYPE WHEN 'Lunch' THEN UNIFORM(25,35,RANDOM()) WHEN 'Dinner' THEN UNIFORM(25,35,RANDOM())
@@ -2828,54 +2816,78 @@ orders_with_hours AS (
     ELSE os.SHIFT_START_HOUR + FLOOR((os.ORDER_NUMBER-1)*(os.SHIFT_END_HOUR-os.SHIFT_START_HOUR)/os.NUM_ORDERS) + UNIFORM(0,1,RANDOM())
     END AS ORDER_HOUR FROM order_sequence os
 ),
-rest_count AS (SELECT COUNT(*) AS cnt FROM restaurants_numbered),
-addr_count AS (SELECT COUNT(*) AS cnt FROM addresses_numbered),
-orders_indexed AS (
-  SELECT MD5(o.COURIER_ID||'-'||o.ORDER_NUMBER||'-'||RANDOM()) AS ORDER_ID, o.COURIER_ID,
-    o.ORDER_HOUR::INT AS ORDER_HOUR, o.ORDER_NUMBER::INT AS ORDER_NUMBER, o.SHIFT_TYPE, o.VEHICLE_TYPE,
-    MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'R')), rc.cnt)+1 AS RESTAURANT_IDX,
-    MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'C')), ac.cnt)+1 AS CUSTOMER_IDX,
-    UNIFORM(3,15,RANDOM()) AS PREP_TIME_MINS,
-    MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'D')), ${num_days}) AS DAY_OFFSET,
-    CASE
-      WHEN MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'D')), ${num_days}) = 0
-        THEN CASE WHEN UNIFORM(1,100,RANDOM())<=70 THEN 'delivered' WHEN UNIFORM(1,100,RANDOM())<=85 THEN 'in_transit' ELSE 'picked_up' END
-      ELSE 'delivered'
-    END AS ORDER_STATUS
-  FROM orders_with_hours o CROSS JOIN rest_count rc CROSS JOIN addr_count ac
-),
-orders_with_locations AS (
-  SELECT o.ORDER_ID, o.COURIER_ID, o.ORDER_HOUR, o.ORDER_NUMBER, o.SHIFT_TYPE, o.VEHICLE_TYPE,
-    r.RESTAURANT_ID, r.NAME AS RESTAURANT_NAME, r.CUISINE_TYPE, r.LOCATION AS RESTAURANT_LOCATION,
-    r.ADDRESS AS RESTAURANT_ADDRESS, a.ADDRESS_ID AS CUSTOMER_ADDRESS_ID, a.FULL_ADDRESS AS CUSTOMER_ADDRESS,
-    a.LOCATION AS CUSTOMER_LOCATION, o.PREP_TIME_MINS, o.ORDER_STATUS, o.DAY_OFFSET, r.CITY
-  FROM orders_indexed o
-  JOIN restaurants_numbered r ON o.RESTAURANT_IDX = r.RN
-  JOIN addresses_numbered a ON o.CUSTOMER_IDX = a.RN
-),
-routed AS (
-  SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
-    RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
-    CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS, DAY_OFFSET,
-    ${routingFn}(
-      '${vehicleType.replace(/'/g, "''")}',
-      ARRAY_CONSTRUCT(ST_X(RESTAURANT_LOCATION), ST_Y(RESTAURANT_LOCATION)),
-      ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
-    ) AS ROUTE_RESPONSE, CITY
-  FROM orders_with_locations
-),
-parsed AS (
-  SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
-    RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
-    CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS, DAY_OFFSET,
-    TRY_TO_GEOGRAPHY(PARSE_JSON(ROUTE_RESPONSE):features[0]:geometry) AS ROUTE_GEOMETRY,
-    PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:distance::FLOAT AS ROUTE_DISTANCE_METERS,
-    PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:duration::FLOAT AS ROUTE_DURATION_SECS, CITY
-  FROM routed WHERE ROUTE_RESPONSE IS NOT NULL
-),
-order_timing AS (
+rest_count AS (SELECT COUNT(*) AS cnt FROM ${DB}.DATA.RESTAURANTS_NUMBERED),
+addr_count AS (SELECT COUNT(*) AS cnt FROM ${DB}.DATA.ADDRESSES_NUMBERED)
+SELECT MD5(o.COURIER_ID||'-'||o.ORDER_NUMBER||'-'||RANDOM()) AS ORDER_ID, o.COURIER_ID,
+  o.ORDER_HOUR::INT AS ORDER_HOUR, o.ORDER_NUMBER::INT AS ORDER_NUMBER, o.SHIFT_TYPE, o.VEHICLE_TYPE,
+  MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'R')), rc.cnt)+1 AS RESTAURANT_IDX,
+  MOD(ABS(HASH(o.COURIER_ID||o.ORDER_NUMBER||'C')), ac.cnt)+1 AS CUSTOMER_IDX,
+  UNIFORM(3,15,RANDOM()) AS PREP_TIME_MINS,
+  CASE WHEN UNIFORM(1,100,RANDOM())<=70 THEN 'delivered' WHEN UNIFORM(1,100,RANDOM())<=85 THEN 'in_transit' ELSE 'picked_up' END AS ORDER_STATUS
+FROM orders_with_hours o CROSS JOIN rest_count rc CROSS JOIN addr_count ac`);
+      await snowSql(`DELETE FROM ${DB}.DATA.ORDERS_WITH_LOCATIONS WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      await snowSql(`INSERT INTO ${DB}.DATA.ORDERS_WITH_LOCATIONS
+SELECT o.ORDER_ID, o.COURIER_ID, o.ORDER_HOUR, o.ORDER_NUMBER, o.SHIFT_TYPE, o.VEHICLE_TYPE,
+  r.RESTAURANT_ID, r.NAME AS RESTAURANT_NAME, r.CUISINE_TYPE, r.LOCATION AS RESTAURANT_LOCATION,
+  r.ADDRESS AS RESTAURANT_ADDRESS, a.ADDRESS_ID AS CUSTOMER_ADDRESS_ID, a.FULL_ADDRESS AS CUSTOMER_ADDRESS,
+  a.LOCATION AS CUSTOMER_LOCATION, o.PREP_TIME_MINS, o.ORDER_STATUS
+FROM ${DB}.DATA.DELIVERY_ORDERS o
+JOIN ${DB}.DATA.RESTAURANTS_NUMBERED r ON o.RESTAURANT_IDX = r.RN
+JOIN ${DB}.DATA.ADDRESSES_NUMBERED a ON o.CUSTOMER_IDX = a.RN
+WHERE o.COURIER_ID LIKE '${cityPrefix}-%'`);
+      const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_ORDERS WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      updateStep('orders', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('orders', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    if (opts.orsPromise) {
+      updateStep('routes', { status: 'waiting_for_ors', message: 'Waiting for ORS routing service to be ready...', started_at: Date.now() });
+      await opts.orsPromise;
+    }
+
+    updateStep('routes', { status: 'waiting_for_graph', message: 'Verifying ORS routing graph is loaded...', started_at: Date.now() });
+    const region = getOrsRegion(city);
+    await waitForOrsGraphReady(region);
+
+    updateStep('routes', { status: 'running', message: 'Generating routes via OpenRouteService (this may take several minutes)...', started_at: Date.now() });
+    try {
+      const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
+      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_ROUTES WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_ROUTES
+SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
+  RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
+  CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS,
+  ${routingFn}(
+    '${vehicleType.replace(/'/g, "''")}',
+    ARRAY_CONSTRUCT(ST_X(RESTAURANT_LOCATION), ST_Y(RESTAURANT_LOCATION)),
+    ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
+  ) AS ROUTE_RESPONSE
+FROM ${DB}.DATA.ORDERS_WITH_LOCATIONS
+WHERE COURIER_ID LIKE '${cityPrefix}-%'`, 1800);
+      const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_ROUTES WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      updateStep('routes', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
+    } catch (err: any) { updateStep('routes', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
+
+    updateStep('geometries', { status: 'running', message: 'Parsing routes and computing geometries...', started_at: Date.now() });
+    try {
+      const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
+      const sd = start_date;
+      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_ROUTES_PARSED WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
+      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_ROUTES_PARSED
+SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
+  RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
+  CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS,
+  TRY_TO_GEOGRAPHY(PARSE_JSON(ROUTE_RESPONSE):features[0]:geometry) AS ROUTE_GEOMETRY,
+  PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:distance::FLOAT AS ROUTE_DISTANCE_METERS,
+  PARSE_JSON(ROUTE_RESPONSE):features[0]:properties:summary:duration::FLOAT AS ROUTE_DURATION_SECS
+FROM ${DB}.DATA.DELIVERY_ROUTES
+WHERE ROUTE_RESPONSE IS NOT NULL AND COURIER_ID LIKE '${cityPrefix}-%'`);
+
+      await snowSql(`DELETE FROM ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES WHERE CITY IN (${cityList})`);
+      await snowSql(`INSERT INTO ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES
+WITH order_timing AS (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY COURIER_ID ORDER BY ORDER_HOUR, ORDER_NUMBER) AS COURIER_ORDER_SEQ
-  FROM parsed WHERE ROUTE_GEOMETRY IS NOT NULL
+  FROM ${DB}.DATA.DELIVERY_ROUTES_PARSED
+  WHERE ROUTE_GEOMETRY IS NOT NULL AND COURIER_ID LIKE '${cityPrefix}-%'
 ),
 cumulative_timing AS (
   SELECT t.*,
@@ -2885,21 +2897,15 @@ cumulative_timing AS (
   FROM order_timing t
 )
 SELECT COURIER_ID, ORDER_ID,
-  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0), DATEADD('hour', ORDER_HOUR, DATEADD('day', -DAY_OFFSET, '${sd}'::TIMESTAMP_NTZ))) AS ORDER_TIME,
-  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0)+(PREP_TIME_MINS*60), DATEADD('hour', ORDER_HOUR, DATEADD('day', -DAY_OFFSET, '${sd}'::TIMESTAMP_NTZ))) AS PICKUP_TIME,
-  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0)+(PREP_TIME_MINS*60)+ROUTE_DURATION_SECS, DATEADD('hour', ORDER_HOUR, DATEADD('day', -DAY_OFFSET, '${sd}'::TIMESTAMP_NTZ))) AS DELIVERY_TIME,
+  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0), DATEADD('hour', ORDER_HOUR, '${sd}'::TIMESTAMP_NTZ)) AS ORDER_TIME,
+  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0)+(PREP_TIME_MINS*60), DATEADD('hour', ORDER_HOUR, '${sd}'::TIMESTAMP_NTZ)) AS PICKUP_TIME,
+  DATEADD('second', COALESCE(TIME_OFFSET_SECS,0)+(PREP_TIME_MINS*60)+ROUTE_DURATION_SECS, DATEADD('hour', ORDER_HOUR, '${sd}'::TIMESTAMP_NTZ)) AS DELIVERY_TIME,
   RESTAURANT_ID, RESTAURANT_NAME, CUISINE_TYPE, RESTAURANT_LOCATION, RESTAURANT_ADDRESS,
   CUSTOMER_ADDRESS_ID, CUSTOMER_ADDRESS, CUSTOMER_LOCATION, PREP_TIME_MINS, ORDER_STATUS,
   ROUTE_DURATION_SECS, ROUTE_DISTANCE_METERS, ROUTE_GEOMETRY AS GEOMETRY, SHIFT_TYPE, VEHICLE_TYPE,
-  CITY
-FROM cumulative_timing`, 1800);
-      updateStep('routes', { status: 'complete' });
-    } catch (err: any) { updateStep('routes', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
-
-    updateStep('geometries', { status: 'running', message: 'Counting results...', started_at: Date.now() });
-    try {
+  '${city.replace(/'/g, "''")}' AS CITY
+FROM cumulative_timing`);
       const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_ROUTE_GEOMETRIES WHERE CITY IN (${cityList})`);
-      updateStep('orders', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
       updateStep('geometries', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('geometries', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 

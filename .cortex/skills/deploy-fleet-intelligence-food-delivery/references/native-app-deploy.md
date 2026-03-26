@@ -2,29 +2,54 @@
 
 ## Prerequisites
 
-- Docker Desktop installed and running with `linux/amd64` support
+- Container runtime (**Podman** or **Docker**) installed and running — see `prerequisites-build-routing-solution` skill
 - Snow CLI (`snow`) authenticated with target connection
 - All images must be built with `--platform linux/amd64` (SPCS requirement)
 - When updating an image, always use a NEW tag — SPCS caches images by tag
 
-## Sub-step 2a: Verify Dockerfile Port
+> **Either Podman or Docker works.** You do not need both. Podman is recommended (no daemon required).
+
+## Sub-step 2a: Detect Container Runtime
+
+1. **Check** which runtimes are available:
+   ```bash
+   podman --version 2>/dev/null && echo "PODMAN_AVAILABLE=true" || echo "PODMAN_AVAILABLE=false"
+   docker --version 2>/dev/null && echo "DOCKER_AVAILABLE=true" || echo "DOCKER_AVAILABLE=false"
+   ```
+
+2. **Based on results:**
+   - If **both** installed: Ask user which they prefer (Podman or Docker)
+   - If **only Podman**: Use Podman
+   - If **only Docker**: Use Docker
+   - If **neither**: Stop — run the `prerequisites-build-routing-solution` skill first
+
+3. **Verify** the selected runtime is running:
+   - Podman: `podman info` (if fails: `podman machine start`)
+   - Docker: `docker info` (if fails: `open -a Docker` on macOS)
+
+4. **Set** the container command for all subsequent steps:
+   - `CONTAINER_CMD=podman` or `CONTAINER_CMD=docker`
+
+## Sub-step 2a-ii: Verify Dockerfile Port
 
 Ensure `assets/fleet-intelligence-app/Dockerfile` has `ENV PORT=8080` and `EXPOSE 8080`.
 
-## Sub-step 2b: Build Docker Images
+## Sub-step 2b: Build Container Images
+
+All commands below use `$CONTAINER_CMD` (either `podman` or `docker` from Sub-step 2a).
 
 ### Fleet Intelligence App (skill-specific)
 
 ```bash
 cd <SKILL_DIR>/assets/fleet-intelligence-app
-docker build --platform linux/amd64 -t fleet-intelligence:v1.2 .
+$CONTAINER_CMD build --platform linux/amd64 -t fleet-intelligence:v1.2 .
 ```
 
 ### Gateway (skill-specific — multi-city version)
 
 ```bash
 cd <SKILL_DIR>/assets/fleet-intelligence-app/native-app/services/gateway
-docker build --rm --platform linux/amd64 -t routing_reverse_proxy:v0.9.4 .
+$CONTAINER_CMD build --rm --platform linux/amd64 -t routing_reverse_proxy:v0.9.4 .
 ```
 
 ### Shared ORS Images (from build-routing-solution skill)
@@ -37,15 +62,15 @@ ORS_SERVICES_DIR="<REPO_ROOT>/oss-build-routing-solution-in-snowflake/Native_app
 
 # openrouteservice — identical to build-routing-solution
 cd "${ORS_SERVICES_DIR}/openrouteservice"
-docker build --rm --platform linux/amd64 -t openrouteservice:v9.0.0 .
+$CONTAINER_CMD build --rm --platform linux/amd64 -t openrouteservice:v9.0.0 .
 
 # vroom — identical to build-routing-solution
 cd "${ORS_SERVICES_DIR}/vroom"
-docker build --rm --platform linux/amd64 -t vroom-docker:v1.0.1 .
+$CONTAINER_CMD build --rm --platform linux/amd64 -t vroom-docker:v1.0.1 .
 
 # downloader — identical to build-routing-solution
 cd "${ORS_SERVICES_DIR}/downloader"
-docker build --rm --platform linux/amd64 -t downloader:v0.0.3 .
+$CONTAINER_CMD build --rm --platform linux/amd64 -t downloader:v0.0.3 .
 ```
 
 > **NOTE:** If these images were already built and pushed by the `build-routing-solution` skill
@@ -65,27 +90,40 @@ SHOW IMAGE REPOSITORIES IN SCHEMA FLEET_INTELLIGENCE_SETUP.PUBLIC;
 
 Extract `repository_url`: `<orgname>-<acctname>.registry.snowflakecomputing.com/fleet_intelligence_setup/public/fleet_intel_repo`
 
-## Sub-step 2d: Tag and Push All Docker Images
+## Sub-step 2d: Tag and Push All Container Images
 
+### Authenticate with SPCS image registry
+
+**Docker:**
 ```bash
 snow spcs image-registry login -c {CONNECTION_NAME}
+```
 
+**Podman:**
+```bash
+REGISTRY_URL=$(snow spcs image-repository url fleet_intelligence_setup.public.fleet_intel_repo -c {CONNECTION_NAME} | cut -d'/' -f1)
+snow spcs image-registry token --format=JSON -c {CONNECTION_NAME} | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
+```
+
+### Push images
+
+```bash
 # Fleet-intelligence-specific images
-docker tag fleet-intelligence:v1.2 {REPO_URL}/fleet-intelligence:v1.2
-docker push {REPO_URL}/fleet-intelligence:v1.2
+$CONTAINER_CMD tag fleet-intelligence:v1.2 {REPO_URL}/fleet-intelligence:v1.2
+$CONTAINER_CMD push {REPO_URL}/fleet-intelligence:v1.2
 
-docker tag routing_reverse_proxy:v0.9.4 {REPO_URL}/routing_reverse_proxy:v0.9.4
-docker push {REPO_URL}/routing_reverse_proxy:v0.9.4
+$CONTAINER_CMD tag routing_reverse_proxy:v0.9.4 {REPO_URL}/routing_reverse_proxy:v0.9.4
+$CONTAINER_CMD push {REPO_URL}/routing_reverse_proxy:v0.9.4
 
 # Shared images (from build-routing-solution source)
-docker tag openrouteservice:v9.0.0 {REPO_URL}/openrouteservice:v9.0.0
-docker push {REPO_URL}/openrouteservice:v9.0.0
+$CONTAINER_CMD tag openrouteservice:v9.0.0 {REPO_URL}/openrouteservice:v9.0.0
+$CONTAINER_CMD push {REPO_URL}/openrouteservice:v9.0.0
 
-docker tag vroom-docker:v1.0.1 {REPO_URL}/vroom-docker:v1.0.1
-docker push {REPO_URL}/vroom-docker:v1.0.1
+$CONTAINER_CMD tag vroom-docker:v1.0.1 {REPO_URL}/vroom-docker:v1.0.1
+$CONTAINER_CMD push {REPO_URL}/vroom-docker:v1.0.1
 
-docker tag downloader:v0.0.3 {REPO_URL}/downloader:v0.0.3
-docker push {REPO_URL}/downloader:v0.0.3
+$CONTAINER_CMD tag downloader:v0.0.3 {REPO_URL}/downloader:v0.0.3
+$CONTAINER_CMD push {REPO_URL}/downloader:v0.0.3
 ```
 
 ## Sub-step 2e: Create Application Package

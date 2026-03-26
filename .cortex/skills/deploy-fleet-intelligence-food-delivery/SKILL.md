@@ -1,15 +1,33 @@
 ---
 name: deploy-fleet-intelligence-food-delivery
-description: "Deploy the Fleet Intelligence food delivery solution: native app with built-in OpenRouteService routing, Overture Maps data, courier simulation, and Streamlit dashboard. Supports 11 cities worldwide. Triggers: deploy fleet intelligence, install fleet app, food delivery demo, generate courier data."
+description: "Deploy the Fleet Intelligence food delivery solution. Two demos: (1) React Native App on SPCS with built-in routing, fleet UI, and matrix builder; (2) Streamlit dashboard with courier simulation and analytics views. Supports 11 cities worldwide. Triggers: deploy fleet intelligence, install fleet app, food delivery demo, generate courier data."
 ---
 
 # Deploy Fleet Intelligence Food Delivery Solution
 
+## Two Demos
+
+This skill deploys **two independent demos** that share the same ORS routing engine but have separate UIs and data:
+
+| | Demo 1: React Native App | Demo 2: Streamlit Dashboard |
+|---|---|---|
+| **UI** | React + Express on SPCS | Streamlit in Snowsight |
+| **Name** | Fleet Intelligence App | SwiftBite Delivery Control Center |
+| **Deployed as** | Native App (`FLEET_INTELLIGENCE_APP`) | Streamlit app + SQL tables/views |
+| **Data location** | `FLEET_INTELLIGENCE_APP.DATA` (built-in) | `FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELIVERY` |
+| **Matrix data** | Multi-res (7,8,9) via Matrix Builder UI | Single-res (9) via Step 12 SQL |
+| **Steps** | 1-2 (Native App deploy) | 1, 3-11 (Data gen + Streamlit) |
+| **Docker required** | Yes | No |
+| **Can deploy independently** | Yes | Yes (but needs ORS from Step 2 for route generation) |
+
+> **You can deploy one or both.** The React native app is self-contained. The Streamlit demo needs ORS routing functions from the native app to generate routes in Steps 8-9.
+
 ## When to Use
 
-- User wants to deploy the Fleet Intelligence food delivery demo
+- User wants to deploy the React Fleet Intelligence native app (Demo 1)
+- User wants to deploy the Streamlit SwiftBite dashboard (Demo 2)
+- User wants both demos
 - User wants to generate delivery simulation data (couriers, orders, routes)
-- User asks about the SwiftBite delivery dashboard
 
 ## Prerequisites
 
@@ -34,27 +52,33 @@ description: "Deploy the Fleet Intelligence food delivery solution: native app w
 Start
   |
   v
-Step 1: Query Tag + Overture Maps
+Step 1: Query Tag + Overture Maps             (SHARED — both demos)
   |
-  v
-Step 2: Deploy Native App + ORS Routing      <-- Load references/native-app-deploy.md
-  |     (Docker build, push, install,              Load references/maps-and-locations.md
-  |      EAIs, deploy service, provision ORS)
-  v
-Step 3: Create Database/Warehouse/Schema
-  |
-  v
-Steps 4-9: Generate Simulation Data          <-- Load references/data-generation.md
-  |
-  v
-Steps 10-11: Analytics Views + Streamlit     <-- Load references/analytics-and-streamlit.md
-  |
-  v
-Step 12: Travel Time Matrix (Optional)       <-- Load references/analytics-and-streamlit.md
-  |
-  v
-Done (or troubleshoot)                        <-- Load references/troubleshooting.md
+  +------------------------------------------+
+  |                                          |
+  v                                          v
+  DEMO 1: React Native App                   DEMO 2: Streamlit Dashboard
+  |                                          |
+  v                                          v
+Step 2: Deploy Native App + ORS Routing      Step 3: Create Database/Warehouse/Schema
+  |     <-- references/native-app-deploy.md  |
+  |         references/maps-and-locations.md v
+  |                                          Steps 4-9: Generate Simulation Data
+  v                                            <-- references/data-generation.md
+  DONE (React app is self-contained)         |
+                                             v
+                                             Steps 10-11: Analytics Views + Streamlit
+                                               <-- references/analytics-and-streamlit.md
+                                             |
+                                             v
+                                             Step 12: Travel Time Matrix (Optional)
+                                               <-- references/analytics-and-streamlit.md
+                                             |
+                                             v
+                                             DONE
 ```
+
+> **If deploying both:** Run Step 1 → Step 2 (React app) → Steps 3-11 (Streamlit). Step 2 must come first because Steps 8-9 need ORS routing functions from the native app.
 
 ### Execution Rules
 
@@ -99,7 +123,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 ---
 
-### Step 2: Deploy Native App, EAIs, and ORS Routing
+### Step 2: Deploy Native App, EAIs, and ORS Routing (Demo 1: React)
 
 This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP native app with ORS routing.
 
@@ -130,7 +154,7 @@ This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP nativ
 
 ---
 
-### Step 3: Configure Database, Warehouse, and Schema
+### Step 3: Configure Database, Warehouse, and Schema (Demo 2: Streamlit)
 
 ```sql
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP
@@ -161,7 +185,7 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELI
 
 ---
 
-### Steps 4-9: Generate Simulation Data
+### Steps 4-9: Generate Simulation Data (Demo 2: Streamlit)
 
 **Load** `references/data-generation.md` and execute Steps 4-9 in order.
 
@@ -169,7 +193,7 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE_SETUP.FLEET_INTELLIGENCE_FOOD_DELI
 
 ---
 
-### Steps 10-11: Analytics Views and Streamlit
+### Steps 10-11: Analytics Views and Streamlit (Demo 2: Streamlit)
 
 **Load** `references/analytics-and-streamlit.md` and execute Steps 10-11.
 
@@ -177,7 +201,7 @@ Replace `<SKILL_DIR>` with the absolute path to this skill directory when execut
 
 ---
 
-### Step 12: Travel Time Matrix — Streamlit (Optional)
+### Step 12: Travel Time Matrix (Demo 2: Streamlit — Optional)
 
 **Load** `references/analytics-and-streamlit.md` — Step 12 section.
 
