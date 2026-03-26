@@ -544,8 +544,18 @@ export default function DataBuilder({ open, onClose, initialCity, onDataBuilt }:
             {loading && <span className="matrix-existing">Checking...</span>}
           </div>
           <div className="matrix-footer-actions">
-            <button className="matrix-btn secondary" onClick={onClose}>
-              {hasData || provStatus === 'complete' ? 'Done' : 'Cancel'}
+            <button className="matrix-btn secondary" onClick={isActive ? async () => {
+              try {
+                await fetch(`/api/city/${encodeURIComponent(city)}/cancel`, { method: 'POST' });
+                if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+                if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
+                setIsBuilding(false);
+                setProgress({ status: 'error', error: 'Cancelled', orsRegion: '' });
+                fetchStatus();
+              } catch {}
+            } : onClose}>
+              {hasData || provStatus === 'complete' ? 'Done' : isActive ? 'Cancel Build' : 'Close'}
             </button>
             {!hasData && (
               <button

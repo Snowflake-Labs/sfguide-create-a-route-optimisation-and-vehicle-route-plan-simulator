@@ -94,10 +94,17 @@ $$
 BEGIN
     CREATE WAREHOUSE IF NOT EXISTS FLEET_INTEL_WH
         WAREHOUSE_SIZE = 'XSMALL'
+        MAX_CLUSTER_COUNT = 4
+        MIN_CLUSTER_COUNT = 1
+        SCALING_POLICY = 'STANDARD'
         AUTO_SUSPEND = 60
         AUTO_RESUME = TRUE
         INITIALLY_SUSPENDED = TRUE;
-    RETURN 'Warehouse created';
+    ALTER WAREHOUSE FLEET_INTEL_WH SET
+        MAX_CLUSTER_COUNT = 4
+        MIN_CLUSTER_COUNT = 1
+        SCALING_POLICY = 'STANDARD';
+    RETURN 'Multi-cluster warehouse created';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.create_warehouse() TO APPLICATION ROLE app_user;
@@ -1270,7 +1277,7 @@ DECLARE
     max_done INTEGER DEFAULT 0;
     rs RESULTSET;
     retry_count INTEGER DEFAULT 0;
-    max_retries INTEGER DEFAULT 5;
+    max_retries INTEGER DEFAULT 10;
     retry_wait INTEGER DEFAULT 10;
 BEGIN
     queue_table := 'data.CA_WORK_QUEUE_' || P_RES;
@@ -1280,8 +1287,10 @@ BEGIN
         batch_size := 100;
     ELSEIF (P_RES = 'RES8') THEN
         batch_size := 1000;
+    ELSEIF (P_RES = 'RES9') THEN
+        batch_size := 1000;
     ELSE
-        batch_size := 2000;
+        batch_size := 500;
     END IF;
 
     resume_sql := 'SELECT COALESCE(MAX(SEQ_ID), ' || (P_START_SEQ - 1) ||
@@ -1487,6 +1496,65 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE data.BUILD_MATRIX_FOR_REGION(VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE data.SCALE_MATRIX_INFRASTRUCTURE(P_REGION VARCHAR, P_SCALE_UP BOOLEAN)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    wh_name VARCHAR;
+    pool_name VARCHAR;
+    ors_svc VARCHAR;
+    gw_svc VARCHAR;
+    max_clusters INTEGER;
+    max_instances INTEGER;
+    max_nodes INTEGER;
+BEGIN
+    wh_name := 'FLEET_INTEL_WH';
+    pool_name := (SELECT CURRENT_DATABASE()) || '_ROUTING_POOL';
+    ors_svc := 'routing.ORS_SERVICE_' || UPPER(P_REGION);
+    gw_svc := 'routing.ROUTING_GATEWAY_SERVICE';
+
+    IF (P_SCALE_UP) THEN
+        max_clusters := 4;
+        max_instances := 4;
+        max_nodes := 10;
+    ELSE
+        max_clusters := 1;
+        max_instances := 1;
+        max_nodes := 1;
+    END IF;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER WAREHOUSE IF EXISTS ' || wh_name || ' SET MAX_CLUSTER_COUNT = ' || max_clusters || ' MIN_CLUSTER_COUNT = 1 SCALING_POLICY = ''STANDARD''';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || pool_name || ' SET MAX_NODES = ' || max_nodes;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS ' || ors_svc || ' SET MAX_INSTANCES = ' || max_instances;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS ' || gw_svc || ' SET MAX_INSTANCES = ' || max_instances;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    IF (P_SCALE_UP) THEN
+        RETURN 'Scaled UP for ' || P_REGION || ': warehouse max_clusters=' || max_clusters || ', pool max_nodes=' || max_nodes || ', ORS max_instances=' || max_instances;
+    ELSE
+        RETURN 'Scaled DOWN for ' || P_REGION || ': warehouse max_clusters=1, pool max_nodes=1, ORS max_instances=1';
+    END IF;
+END;
+$$;
+GRANT USAGE ON PROCEDURE data.SCALE_MATRIX_INFRASTRUCTURE(VARCHAR, BOOLEAN) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE data.FLATTEN_MATRIX_RAW(P_RES VARCHAR, P_REGION VARCHAR, P_VEHICLE_TYPE VARCHAR)
 RETURNS VARCHAR

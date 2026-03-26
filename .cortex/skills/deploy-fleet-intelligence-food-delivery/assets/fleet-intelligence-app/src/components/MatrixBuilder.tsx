@@ -838,7 +838,18 @@ INSERT INTO DATA.CA_TRAVEL_TIME_RES7
             >
               Restore Matrix
             </button>
-            <button className="matrix-btn secondary" onClick={onClose}>Cancel</button>
+            <button className="matrix-btn secondary" onClick={isBuilding ? async () => {
+              try {
+                await fetch('/api/matrix/cancel', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ region: selectedRegion }),
+                });
+                if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                setIsBuilding(false);
+                setBuildStatus((prev) => prev.map((s) => s.status === 'building' ? { ...s, status: 'error', error: 'Cancelled' } : s));
+              } catch {}
+            } : onClose}>{isBuilding ? 'Cancel Build' : 'Close'}</button>
             <button
               className="matrix-btn primary"
               onClick={startBuild}

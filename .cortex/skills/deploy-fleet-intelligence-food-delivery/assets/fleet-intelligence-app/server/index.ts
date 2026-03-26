@@ -74,6 +74,39 @@ for (const [city, cfg] of Object.entries(CITY_ORS_MAP)) {
 }
 
 const cityProvisionStates: Record<string, any> = {};
+const activeStatements: Record<string, Set<string>> = {};
+const cancelledJobs: Set<string> = new Set();
+
+function trackStatement(jobKey: string, handle: string) {
+  if (!activeStatements[jobKey]) activeStatements[jobKey] = new Set();
+  activeStatements[jobKey].add(handle);
+}
+
+function untrackStatement(jobKey: string, handle: string) {
+  activeStatements[jobKey]?.delete(handle);
+}
+
+async function cancelActiveStatements(jobKey: string): Promise<number> {
+  cancelledJobs.add(jobKey);
+  const handles = activeStatements[jobKey];
+  if (!handles || handles.size === 0) return 0;
+  let cancelled = 0;
+  const token = getSpcsToken();
+  const host = SNOWFLAKE_HOST;
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+  };
+  for (const handle of handles) {
+    try {
+      await fetch(`https://${host}/api/v2/statements/${handle}/cancel`, { method: 'POST', headers });
+      cancelled++;
+    } catch {}
+  }
+  handles.clear();
+  return cancelled;
+}
 
 function getSpcsToken(): string {
   return readFileSync('/snowflake/session/token', 'utf-8').trim();
@@ -128,7 +161,8 @@ function snowSqlLocal(sql: string): any[] {
   }
 }
 
-async function snowSqlSpcs(sql: string, timeoutSecs: number = 600): Promise<any[]> {
+async function snowSqlSpcs(sql: string, timeoutSecs: number = 600, jobKey?: string): Promise<any[]> {
+  if (jobKey && cancelledJobs.has(jobKey)) throw new Error('Job cancelled');
   const token = getSpcsToken();
   const host = SNOWFLAKE_HOST;
   const statementsUrl = `https://${host}/api/v2/statements`;
@@ -153,52 +187,59 @@ async function snowSqlSpcs(sql: string, timeoutSecs: number = 600): Promise<any[
   }
 
   let result: any = await res.json();
+  const handle = result.statementHandle;
+  if (jobKey && handle) trackStatement(jobKey, handle);
 
-  if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
-    const pollUrl = `https://${host}${result.statementStatusUrl}`;
-    const deadline = Date.now() + timeoutSecs * 1000;
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2000));
-      const pollRes = await fetch(pollUrl, { method: 'GET', headers });
-      if (!pollRes.ok) {
-        const errText = await pollRes.text();
-        throw new Error(`Snowflake poll error ${pollRes.status}: ${errText.slice(0, 500)}`);
-      }
-      result = await pollRes.json();
-      if (result.data || (result.statementStatusUrl == null && result.message !== 'Statement is still running.')) break;
-      if (result.message?.includes('error') || result.code === '000001') {
-        throw new Error(`Query failed: ${result.message?.slice(0, 500)}`);
-      }
-    }
-  }
-
-  if (!result.data) return [];
-
-  const columns = result.resultSetMetaData?.rowType?.map((c: any) => c.name) || [];
-  let allData = [...result.data];
-  const partitions = result.resultSetMetaData?.partitionInfo || [];
-  const statementHandle = result.statementHandle;
-
-  if (partitions.length > 1 && statementHandle) {
-    for (let p = 1; p < partitions.length; p++) {
-      const partUrl = `https://${host}/api/v2/statements/${statementHandle}?partition=${p}`;
-      const partRes = await fetch(partUrl, { method: 'GET', headers });
-      if (partRes.ok) {
-        const partData: any = await partRes.json();
-        if (partData.data) allData = allData.concat(partData.data);
+  try {
+    if (result.statementStatusUrl && (!result.data || result.code === '333334')) {
+      const pollUrl = `https://${host}${result.statementStatusUrl}`;
+      const deadline = Date.now() + timeoutSecs * 1000;
+      while (Date.now() < deadline) {
+        if (jobKey && cancelledJobs.has(jobKey)) throw new Error('Job cancelled');
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch(pollUrl, { method: 'GET', headers });
+        if (!pollRes.ok) {
+          const errText = await pollRes.text();
+          throw new Error(`Snowflake poll error ${pollRes.status}: ${errText.slice(0, 500)}`);
+        }
+        result = await pollRes.json();
+        if (result.data || (result.statementStatusUrl == null && result.message !== 'Statement is still running.')) break;
+        if (result.message?.includes('error') || result.code === '000001') {
+          throw new Error(`Query failed: ${result.message?.slice(0, 500)}`);
+        }
       }
     }
-  }
 
-  return allData.map((row: any[]) => {
-    const obj: any = {};
-    columns.forEach((col: string, i: number) => { obj[col] = row[i]; });
-    return obj;
-  });
+    if (!result.data) return [];
+
+    const columns = result.resultSetMetaData?.rowType?.map((c: any) => c.name) || [];
+    let allData = [...result.data];
+    const partitions = result.resultSetMetaData?.partitionInfo || [];
+    const statementHandle = result.statementHandle;
+
+    if (partitions.length > 1 && statementHandle) {
+      for (let p = 1; p < partitions.length; p++) {
+        const partUrl = `https://${host}/api/v2/statements/${statementHandle}?partition=${p}`;
+        const partRes = await fetch(partUrl, { method: 'GET', headers });
+        if (partRes.ok) {
+          const partData: any = await partRes.json();
+          if (partData.data) allData = allData.concat(partData.data);
+        }
+      }
+    }
+
+    return allData.map((row: any[]) => {
+      const obj: any = {};
+      columns.forEach((col: string, i: number) => { obj[col] = row[i]; });
+      return obj;
+    });
+  } finally {
+    if (jobKey && handle) untrackStatement(jobKey, handle);
+  }
 }
 
-async function snowSql(sql: string, timeoutSecs?: number): Promise<any[]> {
-  if (IS_SPCS) return snowSqlSpcs(sql, timeoutSecs || 600);
+async function snowSql(sql: string, timeoutSecs?: number, jobKey?: string): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, timeoutSecs || 600, jobKey);
   return snowSqlLocal(sql);
 }
 
@@ -1261,6 +1302,8 @@ app.post('/api/matrix/build', async (req, res) => {
       };
     }
     matrixBuildJobs[region] = { region, resolutions, started: Date.now(), statuses };
+    const matrixJobKey = `matrix_${region}`;
+    cancelledJobs.delete(matrixJobKey);
 
     try {
       await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ROUTING_GATEWAY_SERVICE RESUME`);
@@ -1271,14 +1314,59 @@ app.post('/api/matrix/build', async (req, res) => {
       try { await snowSql(`ALTER SERVICE IF EXISTS ${SF_DATABASE}.ROUTING.ORS_SERVICE_${region.toUpperCase()} RESUME`); } catch {}
     }
 
+    try {
+      await snowSql(`CALL ${SF_DATABASE}.DATA.SCALE_MATRIX_INFRASTRUCTURE('${region}', TRUE)`);
+      console.log(`[matrix] Scaled UP infrastructure for ${region}`);
+    } catch (e: any) {
+      console.log(`[matrix] Scale up warning: ${e.message}`);
+    }
+
+    const WORKERS_BY_RES: Record<number, number> = { 7: 4, 8: 4, 9: 2, 10: 1 };
+
     for (const r of resolutions) {
       const resLabel = `RES${r}`;
+      const numWorkers = WORKERS_BY_RES[r] || 2;
 
       (async () => {
         try {
-          statuses[r].stage = 'HEXAGONS_READY';
-          const result = await snowSql(
-            `CALL ${SF_DATABASE}.DATA.BUILD_MATRIX_FOR_REGION('${resLabel}', ${bounds.minLat}, ${bounds.maxLat}, ${bounds.minLon}, ${bounds.maxLon}, '${matrixFn}', '${region}', '${vehicleProfile}')`
+          statuses[r].stage = 'BUILDING_HEXAGONS';
+          await snowSql(`CALL ${SF_DATABASE}.DATA.BUILD_HEXAGONS('${resLabel}', ${bounds.minLat}, ${bounds.maxLat}, ${bounds.minLon}, ${bounds.maxLon})`);
+
+          statuses[r].stage = 'BUILDING_WORK_QUEUE';
+          await snowSql(`CALL ${SF_DATABASE}.DATA.BUILD_WORK_QUEUE('${resLabel}')`);
+
+          const qRows = await snowSql(`SELECT COUNT(*) AS CNT FROM ${SF_DATABASE}.DATA.CA_WORK_QUEUE_${resLabel}`);
+          const queueCount = Number(qRows[0]?.CNT || 0);
+          statuses[r].work_queue = queueCount;
+          statuses[r].total_origins = queueCount;
+
+          await snowSql(`DELETE FROM ${SF_DATABASE}.DATA.CA_MATRIX_RAW_${resLabel}`);
+
+          statuses[r].stage = 'COMPUTING_MATRIX';
+          const chunkSize = Math.ceil(queueCount / numWorkers);
+          const workerPromises: Promise<any>[] = [];
+          for (let w = 0; w < numWorkers; w++) {
+            const startSeq = w * chunkSize + 1;
+            const endSeq = Math.min((w + 1) * chunkSize, queueCount);
+            if (startSeq > queueCount) break;
+            workerPromises.push(
+              snowSql(
+                `CALL ${SF_DATABASE}.DATA.BUILD_TRAVEL_TIME_RANGE_REGION('${resLabel}', ${startSeq}, ${endSeq}, '${matrixFn}', '${vehicleProfile}')`,
+                7200,
+                matrixJobKey
+              ).catch((err: any) => {
+                console.error(`[matrix] Worker ${w} (${startSeq}-${endSeq}) error: ${err.message}`);
+                throw err;
+              })
+            );
+          }
+          console.log(`[matrix] ${resLabel}: launched ${workerPromises.length} parallel workers for ${queueCount} origins`);
+          await Promise.all(workerPromises);
+
+          statuses[r].stage = 'FLATTENING';
+          await snowSql(
+            `CALL ${SF_DATABASE}.DATA.FLATTEN_MATRIX_RAW('${resLabel}', '${region}', '${vehicleProfile}')`,
+            3600
           );
 
           const travelRows = await snowSql(
@@ -1299,7 +1387,48 @@ app.post('/api/matrix/build', async (req, res) => {
       })();
     }
 
+    (async () => {
+      const checkInterval = setInterval(async () => {
+        const allDone = Object.values(statuses).every(s => s.status !== 'building');
+        if (allDone) {
+          clearInterval(checkInterval);
+          try {
+            await snowSql(`CALL ${SF_DATABASE}.DATA.SCALE_MATRIX_INFRASTRUCTURE('${region}', FALSE)`);
+            console.log(`[matrix] Scaled DOWN infrastructure for ${region}`);
+          } catch (e: any) {
+            console.log(`[matrix] Scale down warning: ${e.message}`);
+          }
+        }
+      }, 30000);
+    })();
+
     res.json({ status: 'started', jobId, region, vehicle_type: vehicleProfile });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/matrix/cancel', async (req, res) => {
+  try {
+    const { region } = req.body || {};
+    if (!region) return res.status(400).json({ error: 'region required' });
+    const jobKey = `matrix_${region}`;
+    const cancelled = await cancelActiveStatements(jobKey);
+    const job = matrixBuildJobs[region];
+    if (job) {
+      for (const r of job.resolutions) {
+        if (job.statuses[r].status === 'building') {
+          job.statuses[r].status = 'error';
+          job.statuses[r].error = 'Cancelled by user';
+          job.statuses[r].stage = 'CANCELLED';
+        }
+      }
+    }
+    try {
+      await snowSql(`CALL ${SF_DATABASE}.DATA.SCALE_MATRIX_INFRASTRUCTURE('${region}', FALSE)`);
+    } catch {}
+    console.log(`[cancel] Matrix build cancelled for ${region}: ${cancelled} statements`);
+    res.json({ status: 'cancelled', region, statements_cancelled: cancelled });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2673,6 +2802,8 @@ app.post('/api/city/:city/provision', async (req, res) => {
 });
 
 async function runCityDataBuild(city: string, opts: { num_couriers: number; num_days: number; start_date: string; shifts?: any; vehicle_type?: string; orsPromise?: Promise<void> | null }) {
+  const jobKey = `city_${city}`;
+  cancelledJobs.delete(jobKey);
   const DB = SF_DATABASE;
   const { num_couriers, num_days, start_date } = opts;
   const vehicleType = mapOrsProfile(opts.vehicle_type || 'cycling-electric');
@@ -2691,6 +2822,7 @@ async function runCityDataBuild(city: string, opts: { num_couriers: number; num_
   const steps = DATA_BUILD_STEPS.map((s) => ({ step: s.id, status: 'idle' }));
   updateCityState(city, { status: 'building_data', dataSteps: steps });
   function updateStep(step: string, update: any) { updateCityDataStep(city, step, update); }
+  function checkCancelled() { if (cancelledJobs.has(jobKey)) throw new Error('Build cancelled by user'); }
 
   try {
     updateStep('restaurants', { status: 'running', message: 'Loading restaurants from Overture Maps...', started_at: Date.now() });
@@ -2716,6 +2848,7 @@ WHERE ST_Y(GEOMETRY) BETWEEN ${cityBbox.minLat} AND ${cityBbox.maxLat}
       updateStep('restaurants', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('restaurants', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+    checkCancelled();
     updateStep('addresses', { status: 'running', message: 'Loading addresses from Overture Maps...', started_at: Date.now() });
     try {
       await snowSql(`DELETE FROM ${DB}.DATA.CUSTOMER_ADDRESSES WHERE CITY IN (${cityList})`);
@@ -2748,6 +2881,7 @@ WHERE ${getGeohashFilter(city)}
       updateStep('addresses', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('addresses', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+    checkCancelled();
     updateStep('couriers', { status: 'running', message: 'Creating courier fleet...', started_at: Date.now() });
     try {
       const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
@@ -2781,6 +2915,7 @@ FROM courier_assignments ca LEFT JOIN home_locations hl ON ca.courier_num = hl.r
       updateStep('couriers', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('couriers', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+    checkCancelled();
     updateStep('orders', { status: 'running', message: 'Generating delivery orders...', started_at: Date.now() });
     try {
       const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
@@ -2840,6 +2975,7 @@ WHERE o.COURIER_ID LIKE '${cityPrefix}-%'`);
     } catch (err: any) { updateStep('orders', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
     if (opts.orsPromise) {
+    checkCancelled();
       updateStep('routes', { status: 'waiting_for_ors', message: 'Waiting for ORS routing service to be ready...', started_at: Date.now() });
       await opts.orsPromise;
     }
@@ -2862,11 +2998,12 @@ SELECT COURIER_ID, ORDER_ID, ORDER_HOUR, ORDER_NUMBER, SHIFT_TYPE, VEHICLE_TYPE,
     ARRAY_CONSTRUCT(ST_X(CUSTOMER_LOCATION), ST_Y(CUSTOMER_LOCATION))
   ) AS ROUTE_RESPONSE
 FROM ${DB}.DATA.ORDERS_WITH_LOCATIONS
-WHERE COURIER_ID LIKE '${cityPrefix}-%'`, 1800);
+WHERE COURIER_ID LIKE '${cityPrefix}-%'`, 1800, jobKey);
       const rc = await snowSql(`SELECT COUNT(*) AS CNT FROM ${DB}.DATA.DELIVERY_ROUTES WHERE COURIER_ID LIKE '${cityPrefix}-%'`);
       updateStep('routes', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('routes', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+    checkCancelled();
     updateStep('geometries', { status: 'running', message: 'Parsing routes and computing geometries...', started_at: Date.now() });
     try {
       const cityPrefix = city.replace(/\s/g, '').slice(0, 3).toUpperCase();
@@ -2909,6 +3046,7 @@ FROM cumulative_timing`);
       updateStep('geometries', { status: 'complete', rows: Number(rc[0]?.CNT || 0) });
     } catch (err: any) { updateStep('geometries', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
+    checkCancelled();
     updateStep('locations', { status: 'running', message: 'Interpolating courier positions...', started_at: Date.now() });
     try {
       await snowSql(`DELETE FROM ${DB}.DATA.COURIER_LOCATIONS WHERE CITY IN (${cityList})`);
@@ -2961,6 +3099,7 @@ FROM expanded`, 1200);
     } catch (err: any) { updateStep('locations', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
     // Step 8: Weather Observations
+    checkCancelled();
     updateStep('weather', { status: 'running', message: 'Generating weather observations...', started_at: Date.now() });
     try {
       const weatherStations: Record<string, { name: string; lat: number; lon: number }[]> = {
@@ -3095,6 +3234,7 @@ FROM forecast_days d CROSS JOIN hours h CROSS JOIN stations s`);
     } catch (err: any) { updateStep('weather', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
     // Step 9: Flood Monitoring
+    checkCancelled();
     updateStep('floods', { status: 'running', message: 'Generating flood monitoring data...', started_at: Date.now() });
     try {
       const safeCity = city.replace(/'/g, "''");
@@ -3149,6 +3289,7 @@ SELECT 'FLOOD-002', '${zone2Name.replace(/'/g, "''")}', 'moderate',
     } catch (err: any) { updateStep('floods', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
     // Step 10: Delivery Incidents
+    checkCancelled();
     updateStep('incidents', { status: 'running', message: 'Generating delivery incidents...', started_at: Date.now() });
     try {
       const lastDay = `'${start_date}'::DATE`;
@@ -3235,6 +3376,7 @@ FROM (
     } catch (err: any) { updateStep('incidents', { status: 'error', message: err.message?.slice(0, 300) }); throw err; }
 
     // Step 11: Customer Calls
+    checkCancelled();
     updateStep('calls', { status: 'running', message: 'Generating customer calls...', started_at: Date.now() });
     try {
       await snowSql(`DELETE FROM ${DB}.DATA.CUSTOMER_CALLS WHERE CITY IN (${cityList})`);
@@ -3321,6 +3463,19 @@ app.get('/api/city/:city/progress', (req, res) => {
   const city = decodeURIComponent(req.params.city);
   const state = getCityProvisionState(city);
   res.json(state);
+});
+
+app.post('/api/city/:city/cancel', async (req, res) => {
+  try {
+    const city = decodeURIComponent(req.params.city);
+    const jobKey = `city_${city}`;
+    const cancelled = await cancelActiveStatements(jobKey);
+    updateCityState(city, { status: 'idle', message: `Build cancelled (${cancelled} queries stopped)`, error: undefined, dataSteps: undefined });
+    console.log(`[cancel] City build cancelled for ${city}: ${cancelled} statements`);
+    res.json({ status: 'cancelled', city, statements_cancelled: cancelled });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const CITY_DATA_TABLES = ['CUSTOMER_CALLS', 'DELIVERY_INCIDENTS', 'FLOOD_MONITORING', 'WEATHER_FORECASTS', 'WEATHER_OBSERVATIONS', 'COURIER_LOCATIONS', 'DELIVERY_ROUTE_GEOMETRIES', 'COURIERS'];
