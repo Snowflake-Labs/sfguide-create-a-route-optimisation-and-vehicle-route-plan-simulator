@@ -386,48 +386,6 @@ END;
 $$;
 GRANT USAGE ON PROCEDURE core.create_control_app() TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.create_demo_dashboard()
-RETURNS STRING
-LANGUAGE SQL
-AS
-$$
-BEGIN
-    LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
-
-    DROP SERVICE IF EXISTS core.demo_dashboard;
-
-    BEGIN
-        CREATE SERVICE core.demo_dashboard
-            IN COMPUTE POOL IDENTIFIER(:pool_name)
-            FROM SPECIFICATION_FILE='services/demo_dashboard/demo_dashboard_service.yaml'
-            MIN_INSTANCES = 1
-            MAX_INSTANCES = 1
-            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'));
-    EXCEPTION
-        WHEN OTHER THEN
-            CREATE SERVICE core.demo_dashboard
-                IN COMPUTE POOL IDENTIFIER(:pool_name)
-                FROM SPECIFICATION_FILE='services/demo_dashboard/demo_dashboard_service.yaml'
-                MIN_INSTANCES = 1
-                MAX_INSTANCES = 1;
-    END;
-
-    GRANT USAGE ON SERVICE core.demo_dashboard TO APPLICATION ROLE app_user;
-    GRANT SERVICE ROLE core.demo_dashboard!ALL_ENDPOINTS_USAGE TO APPLICATION ROLE app_user;
-    GRANT OPERATE ON SERVICE core.demo_dashboard TO APPLICATION ROLE app_user;
-    GRANT MONITOR ON SERVICE core.demo_dashboard TO APPLICATION ROLE app_user;
-
-    BEGIN
-        ALTER SERVICE core.demo_dashboard SET QUERY_WAREHOUSE = ROUTING_ANALYTICS;
-    EXCEPTION
-        WHEN OTHER THEN NULL;
-    END;
-
-    RETURN 'Demo dashboard service created';
-END;
-$$;
-GRANT USAGE ON PROCEDURE core.create_demo_dashboard() TO APPLICATION ROLE app_user;
-
 CREATE OR REPLACE STREAMLIT core.control_app
      FROM '/streamlit'
      MAIN_FILE = '/app.py'
