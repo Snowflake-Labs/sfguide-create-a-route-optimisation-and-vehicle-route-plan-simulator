@@ -88,6 +88,9 @@ export default function FleetDataStudio() {
   const [coverage, setCoverage] = useState<CoverageEntry[]>([]);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['fleet', 'time']));
   const logRef = useRef<HTMLDivElement>(null);
+  const evtSourceRef = useRef<EventSource | null>(null);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -134,19 +137,26 @@ export default function FleetDataStudio() {
     fetchCoverage();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      evtSourceRef.current?.close();
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, []);
+
   const selectTemplate = (t: ProfileTemplate) => {
     setSelectedTemplate(t);
     setSelectedPreset(null);
-    setEditConfig(JSON.parse(JSON.stringify(t.defaultConfig)));
+    setEditConfig(t.defaultConfig ? JSON.parse(JSON.stringify(t.defaultConfig)) : {});
     setEditName(t.name);
-    setEditRegion(t.defaultConfig.region || 'SanFrancisco');
+    setEditRegion(t.defaultConfig?.region || 'SanFrancisco');
     setEditProfile(t.orsProfile);
   };
 
   const selectPreset = (p: Preset) => {
     setSelectedPreset(p);
     setSelectedTemplate(null);
-    setEditConfig(JSON.parse(JSON.stringify(p.config)));
+    setEditConfig(p.config ? JSON.parse(JSON.stringify(p.config)) : {});
     setEditName(p.name);
     setEditRegion(p.region);
     setEditProfile(p.ors_profile);
@@ -162,7 +172,7 @@ export default function FleetDataStudio() {
 
   const updateConfig = (path: string, value: any) => {
     setEditConfig((prev: any) => {
-      const next = JSON.parse(JSON.stringify(prev));
+      const next = JSON.parse(JSON.stringify(prev || {}));
       const keys = path.split('.');
       let obj = next;
       for (let i = 0; i < keys.length - 1; i++) {
@@ -174,9 +184,87 @@ export default function FleetDataStudio() {
     });
   };
 
+  const connectSSE = useCallback((jobId: string) => {
+    evtSourceRef.current?.close();
+    const evtSource = new EventSource(`/api/studio/jobs/${jobId}/stream`);
+    evtSourceRef.current = evtSource;
+
+    evtSource.addEventListener('progress', (e) => {
+      if (!e.data) return;
+      retryCountRef.current = 0;
+      const data = JSON.parse(e.data);
+      let msg = data.status || JSON.stringify(data);
+      if (data.routeFailures > 0) msg += ` (${data.routeFailures} route failures)`;
+      setLogLines(prev => [...prev.slice(-50), msg]);
+      setActiveJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, pointsGenerated: data.totalPoints || j.pointsGenerated, tripsGenerated: data.totalTrips || j.tripsGenerated } : j));
+    });
+    evtSource.addEventListener('batch', (e) => {
+      if (!e.data) return;
+      retryCountRef.current = 0;
+      const data = JSON.parse(e.data);
+      setLogLines(prev => [...prev.slice(-50), `Batch: ${data.inserted?.toLocaleString()} pts (total: ${data.total?.toLocaleString()})`]);
+    });
+    evtSource.addEventListener('complete', (e) => {
+      if (!e.data) return;
+      const data = JSON.parse(e.data);
+      setLogLines(prev => [...prev, `Complete: ${data.pointsGenerated?.toLocaleString()} points, ${data.tripsGenerated?.toLocaleString()} trips`]);
+      setGenerating(false);
+      evtSource.close();
+      fetchJobs(); fetchStats(); fetchCoverage();
+    });
+    evtSource.addEventListener('stopped', (e) => {
+      if (!e.data) return;
+      const d = JSON.parse(e.data);
+      setLogLines(prev => [
+        ...prev,
+        '--- Generation Stopped ---',
+        `Reason: ${d.reason}`,
+        `Days completed: ${d.completedDays} / ${d.totalDays}`,
+        `Points generated: ${d.pointsGenerated?.toLocaleString()}`,
+        `Trips generated: ${d.tripsGenerated?.toLocaleString()}`,
+        `Routes: ${d.routeSuccesses} succeeded, ${d.routeFailures} failed`,
+        'Data saved. Resume ORS and re-run to complete remaining days.',
+      ]);
+      setGenerating(false);
+      evtSource.close();
+      fetchJobs(); fetchStats(); fetchCoverage();
+    });
+    evtSource.addEventListener('error', (e: any) => {
+      evtSource.close();
+      let isServerError = false;
+      try {
+        const errData = JSON.parse(e.data);
+        setLogLines(prev => [...prev, `Error: ${errData.error}`]);
+        isServerError = true;
+      } catch {}
+      if (isServerError) {
+        setGenerating(false);
+        fetchJobs();
+        return;
+      }
+      if (retryCountRef.current >= 20) {
+        setLogLines(prev => [...prev, 'Connection lost after 20 retries. Job may still be running server-side.']);
+        setGenerating(false);
+        fetchJobs();
+        return;
+      }
+      const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
+      retryCountRef.current++;
+      setLogLines(prev => [...prev, `Connection lost, retrying in ${(delay / 1000).toFixed(0)}s (attempt ${retryCountRef.current}/20)...`]);
+      retryTimerRef.current = setTimeout(() => connectSSE(jobId), delay);
+    });
+    evtSource.addEventListener('cancelled', () => {
+      setLogLines(prev => [...prev, 'Job cancelled']);
+      setGenerating(false);
+      evtSource.close();
+      fetchJobs();
+    });
+  }, [fetchJobs, fetchStats, fetchCoverage]);
+
   const startGeneration = async () => {
     setGenerating(true);
     setLogLines(['Starting generation...']);
+    retryCountRef.current = 0;
     try {
       const body = selectedPreset
         ? { preset_id: selectedPreset.preset_id }
@@ -197,40 +285,21 @@ export default function FleetDataStudio() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (res.status === 409) {
+        const err = await res.json();
+        setLogLines(prev => [...prev, `Cannot start: ${err.error}`]);
+        setGenerating(false);
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json();
+        setLogLines(prev => [...prev, `Error: ${err.error || res.statusText}`]);
+        setGenerating(false);
+        return;
+      }
       const { job_id } = await res.json();
       setLogLines(prev => [...prev, `Job started: ${job_id}`]);
-
-      const evtSource = new EventSource(`/api/studio/jobs/${job_id}/stream`);
-      evtSource.addEventListener('progress', (e) => {
-        const data = JSON.parse(e.data);
-        setLogLines(prev => [...prev.slice(-50), data.status || JSON.stringify(data)]);
-        setActiveJobs(prev => prev.map(j => j.jobId === job_id ? { ...j, pointsGenerated: data.totalPoints || j.pointsGenerated, tripsGenerated: data.totalTrips || j.tripsGenerated } : j));
-      });
-      evtSource.addEventListener('batch', (e) => {
-        const data = JSON.parse(e.data);
-        setLogLines(prev => [...prev.slice(-50), `Batch: ${data.inserted?.toLocaleString()} pts (total: ${data.total?.toLocaleString()})`]);
-      });
-      evtSource.addEventListener('complete', (e) => {
-        const data = JSON.parse(e.data);
-        setLogLines(prev => [...prev, `Complete: ${data.pointsGenerated?.toLocaleString()} points, ${data.tripsGenerated?.toLocaleString()} trips`]);
-        setGenerating(false);
-        evtSource.close();
-        fetchJobs();
-        fetchStats();
-        fetchCoverage();
-      });
-      evtSource.addEventListener('error', (e: any) => {
-        try { setLogLines(prev => [...prev, `Error: ${JSON.parse(e.data).error}`]); } catch { setLogLines(prev => [...prev, 'Connection lost']); }
-        setGenerating(false);
-        evtSource.close();
-        fetchJobs();
-      });
-      evtSource.addEventListener('cancelled', () => {
-        setLogLines(prev => [...prev, 'Job cancelled']);
-        setGenerating(false);
-        evtSource.close();
-        fetchJobs();
-      });
+      connectSSE(job_id);
       fetchJobs();
     } catch (err: any) {
       setLogLines(prev => [...prev, `Error: ${err.message}`]);
