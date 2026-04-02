@@ -325,7 +325,7 @@ export default function FleetDataStudio() {
         <MetricCard label="Jobs Run" value={jobHistory.length} />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr 340px', gap: 16, marginTop: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginTop: 16 }}>
         {/* Panel 1: Profile Picker */}
         <div className="chart-card" style={{ padding: 16 }}>
           <h3 style={{ fontSize: 14, marginBottom: 12 }}>Profile Templates</h3>
@@ -390,7 +390,7 @@ export default function FleetDataStudio() {
         </div>
 
         {/* Panel 2: Configuration Editor */}
-        <div className="chart-card" style={{ padding: 16, overflowY: 'auto', maxHeight: 620 }}>
+        <div className="chart-card" style={{ padding: 16 }}>
           {!editConfig ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9CA3AF' }}>
               <Database size={40} strokeWidth={1.2} />
