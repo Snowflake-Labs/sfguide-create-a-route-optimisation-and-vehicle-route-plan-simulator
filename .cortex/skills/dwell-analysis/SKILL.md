@@ -244,19 +244,7 @@ UNION ALL SELECT 'DT_DAILY_TRENDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALY
 
 ### Step 4: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo's pages:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-overview', 'Dwell Overview', 'KPIs, daily trends, and top facilities', 'Dwell Analysis', 'BarChart3', 10);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-congestion', 'Congestion Map', 'H3 hexagon congestion by hour', 'Dwell Analysis', 'Map', 20);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-utilization', 'Facility Utilization', 'Throughput vs dwell time', 'Dwell Analysis', 'Building2', 30);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-sla', 'SLA Alerts', 'SLA breach monitoring by severity', 'Dwell Analysis', 'AlertTriangle', 40);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-trip', 'Trip Inspector', 'Inspect individual trip GPS traces', 'Dwell Analysis', 'Route', 50);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-driver', 'Driver Performance', 'Driver dwell time benchmarks', 'Dwell Analysis', 'Users', 60);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('dwell-live', 'Live Operations', 'Real-time courier positions', 'Dwell Analysis', 'Radio', 70);
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Dwell Analysis pages are available automatically in the ORS sidebar.
 
 ## SLA Threshold Tuning
 

@@ -209,15 +209,7 @@ Verify all view row counts.
 
 ### Step 10: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo's pages:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-overview', 'Fleet Overview', 'Taxi fleet dashboard', 'Fleet Taxis', 'Car', 120, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-routes', 'Driver Routes', 'Individual driver route inspection', 'Fleet Taxis', 'Navigation', 130, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('taxi-heatmap', 'Heat Map', 'H3 hex trip density heatmap', 'Fleet Taxis', 'Flame', 140, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Fleet Taxis pages are available automatically in the ORS sidebar.
 
 ---
 

@@ -1,4 +1,4 @@
-import { haversineKm, lognormalSample, calculateHeading, addGpsJitter, createRng, rngInt, rngFloat, uuid, } from './profiles.js';
+import { haversineKm, lognormalSample, calculateHeading, addGpsJitter, createRng, rngInt, rngFloat, uuid, resolveVehicleType, } from './profiles.js';
 export async function loadPOIs(config, snowSql) {
     const { bbox } = config;
     const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'office'];
@@ -78,8 +78,7 @@ export function buildFleet(config, pois, rng) {
             true);
     if (homePois.length === 0)
         homePois.push(...pois.slice(0, Math.min(10, pois.length)));
-    const vehicleType = config.ors_profile === 'cycling-electric' ? 'bicycle'
-        : config.ors_profile === 'driving-hgv' ? 'truck' : 'car';
+    const vt = resolveVehicleType(config);
     for (let i = 0; i < num_vehicles; i++) {
         let profileType = 'COMPLIANT';
         let profileCfg = profiles[0][1];
@@ -96,8 +95,8 @@ export function buildFleet(config, pois, rng) {
         const shiftIdx = i % config.shifts.length;
         const shift = config.shifts[shiftIdx];
         const home = homePois[i % homePois.length];
-        const baseSpeed = vehicleType === 'bicycle' ? rngFloat(rng, 15, 22)
-            : vehicleType === 'truck' ? rngFloat(rng, 60, 85)
+        const baseSpeed = vt === 'ebike' ? rngFloat(rng, 15, 22)
+            : vt === 'hgv' ? rngFloat(rng, 60, 85)
                 : rngFloat(rng, 30, 55);
         fleet.push({
             vehicle_id: `V-${config.ors_profile.slice(0, 3).toUpperCase()}-${i.toString().padStart(5, '0')}`,
@@ -111,8 +110,8 @@ export function buildFleet(config, pois, rng) {
             hos_violation_prob: profileCfg.hos_violation_probability || 0,
             speed_variance: profileCfg.speed_variance,
             base_speed_kmh: baseSpeed,
-            vehicle_type: vehicleType,
-            battery_pct: vehicleType === 'bicycle' ? 100 : -1,
+            vehicle_type: vt,
+            battery_pct: vt === 'ebike' ? 100 : -1,
         });
     }
     return fleet;
@@ -123,6 +122,38 @@ async function fetchRoute(originLat, originLng, destLat, destLng, profile, snowS
       '${profile}',
       OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${originLng},${originLat})),
       OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${destLng},${destLat})),
+      'geojson'
+    ) AS ROUTE`;
+    try {
+        const rows = await snowSql(sql);
+        if (!rows.length)
+            return null;
+        const raw = typeof rows[0].ROUTE === 'string' ? JSON.parse(rows[0].ROUTE) : rows[0].ROUTE;
+        const feature = raw?.features?.[0];
+        if (!feature)
+            return null;
+        const coords = feature.geometry?.coordinates || [];
+        const summary = feature.properties?.summary || {};
+        return {
+            coordinates: coords.map(c => [c[1], c[0]]),
+            distance_m: summary.distance || 0,
+            duration_sec: summary.duration || 0,
+        };
+    }
+    catch {
+        return null;
+    }
+}
+async function fetchDetourRoute(originLat, originLng, waypointLat, waypointLng, destLat, destLng, profile, snowSql) {
+    const sql = `
+    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+      '${profile}',
+      OBJECT_CONSTRUCT('type','MultiPoint','coordinates',ARRAY_CONSTRUCT(
+        ARRAY_CONSTRUCT(${originLng},${originLat}),
+        ARRAY_CONSTRUCT(${waypointLng},${waypointLat}),
+        ARRAY_CONSTRUCT(${destLng},${destLat})
+      )),
+      NULL,
       'geojson'
     ) AS ROUTE`;
     try {
@@ -162,11 +193,24 @@ function pickDestination(origin, pois, config, rng) {
     const pool = nearby.length > 0 ? nearby : destPois;
     return pool[Math.floor(rng() * pool.length)];
 }
-function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng) {
+function pickDetourWaypoint(origin, dest, pois, rng) {
+    const midLat = (origin.lat + dest.lat) / 2;
+    const midLng = (origin.lng + dest.lng) / 2;
+    const directDist = haversineKm(origin.lat, origin.lng, dest.lat, dest.lng);
+    const maxOffset = directDist * 0.5;
+    const candidates = pois.filter(p => p.location_id !== origin.location_id &&
+        p.location_id !== dest.location_id &&
+        haversineKm(midLat, midLng, p.lat, p.lng) <= maxOffset);
+    if (candidates.length === 0)
+        return null;
+    return candidates[Math.floor(rng() * candidates.length)];
+}
+function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng, isDetour) {
     const points = [];
     const coords = route.coordinates;
     if (coords.length < 2)
         return points;
+    const vt = resolveVehicleType(config);
     const segments = [0];
     let totalDist = 0;
     for (let i = 1; i < coords.length; i++) {
@@ -184,7 +228,12 @@ function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng) {
     const speedingThreshold = 1.08;
     let elapsed = 0;
     const vehicle = lifecycle.vehicle;
+    const hosMaxDriveMin = config.breaks?.max_daily_driving_hours
+        ? config.breaks.max_daily_driving_hours * 60 : Infinity;
     while (elapsed < durationSec) {
+        if (vt === 'hgv' && lifecycle.dailyDrivingMin >= hosMaxDriveMin) {
+            break;
+        }
         const progress = Math.min(elapsed / durationSec, 1);
         const distAtProgress = progress * totalDist;
         let segIdx = 0;
@@ -210,15 +259,27 @@ function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng) {
         const isSpeeding = rng() < vehicle.speeding_prob && speedKmh > postedSpeed * speedingThreshold;
         if (isSpeeding)
             speedKmh = postedSpeed * rngFloat(rng, 1.1, 1.25);
+        const isHosViolation = vt === 'hgv' &&
+            !!config.breaks?.max_daily_driving_hours &&
+            lifecycle.dailyDrivingMin > config.breaks.max_daily_driving_hours * 60 &&
+            rng() < vehicle.hos_violation_prob;
         const heading = calculateHeading(lat, lng, coords[Math.min(segIdx + 1, coords.length - 1)][0], coords[Math.min(segIdx + 1, coords.length - 1)][1]);
         const jitterM = rng() < jitterCfg.multipath_probability
             ? rngFloat(rng, 50, jitterCfg.multipath_max_m)
             : rngFloat(rng, 2, jitterCfg.typical_m);
         const [jLat, jLng] = addGpsJitter(lat, lng, jitterM, rng);
         const ts = new Date(lifecycle.currentTime.getTime() + elapsed * 1000);
+        let batteryPct = null;
+        if (vt === 'ebike' && config.battery) {
+            const kmTraveled = distAtProgress;
+            const drain = kmTraveled * config.battery.drain_per_km;
+            batteryPct = Math.max(0, vehicle.battery_pct - drain);
+        }
+        lifecycle.odometerKm += (speedKmh / 3600) * pingMean;
         points.push({
             telemetry_id: uuid(rng),
             region: config.region,
+            vehicle_type: vt,
             vehicle_id: vehicle.vehicle_id,
             trip_id: tripId,
             ts,
@@ -229,14 +290,15 @@ function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng) {
             posted_speed_kmh: postedSpeed,
             status: 'MOVING',
             is_speeding: isSpeeding,
-            is_hos_violation: false,
-            is_detour: rng() < vehicle.detour_prob * 0.1,
+            is_hos_violation: isHosViolation,
+            is_detour: isDetour,
             gps_accuracy_m: jitterM,
             location_id: null,
             location_type: null,
             ors_profile: config.ors_profile,
-            vehicle_type: vehicle.vehicle_type,
-            battery_pct: vehicle.battery_pct > 0 ? Math.max(0, vehicle.battery_pct - (totalDist * (config.battery?.drain_per_km || 0) * progress / 100)) * 100 / 100 : null,
+            battery_pct: batteryPct,
+            odometer_km: Math.round(lifecycle.odometerKm * 100) / 100,
+            point_index: lifecycle.pointIndex++,
         });
         const interval = Math.max(5, pingMean + (rng() - 0.5) * 2 * pingStd);
         elapsed += interval;
@@ -246,10 +308,15 @@ function interpolateRoute(route, config, lifecycle, tripId, destPoi, rng) {
     lifecycle.currentTime = new Date(lifecycle.currentTime.getTime() + durationSec * 1000);
     lifecycle.dailyDrivingMin += durationSec / 60;
     lifecycle.minSinceBreak += durationSec / 60;
+    if (vt === 'ebike' && config.battery) {
+        const kmTraveled = totalDist;
+        vehicle.battery_pct = Math.max(0, vehicle.battery_pct - kmTraveled * config.battery.drain_per_km);
+    }
     return points;
 }
 function emitDwell(lifecycle, config, tripId, dwellConfig, status, poi, rng) {
     const points = [];
+    const vt = resolveVehicleType(config);
     let dwellMin = lognormalSample(dwellConfig.median_min, dwellConfig.sigma, dwellConfig.max_min, rng);
     if (dwellConfig.long_wait_probability && rng() < dwellConfig.long_wait_probability) {
         dwellMin = rngFloat(rng, dwellConfig.max_min, dwellConfig.max_min * 2);
@@ -264,6 +331,7 @@ function emitDwell(lifecycle, config, tripId, dwellConfig, status, poi, rng) {
         points.push({
             telemetry_id: uuid(rng),
             region: config.region,
+            vehicle_type: vt,
             vehicle_id: lifecycle.vehicle.vehicle_id,
             trip_id: tripId,
             ts,
@@ -280,8 +348,9 @@ function emitDwell(lifecycle, config, tripId, dwellConfig, status, poi, rng) {
             location_id: poi?.location_id || null,
             location_type: poi?.location_type || null,
             ors_profile: config.ors_profile,
-            vehicle_type: lifecycle.vehicle.vehicle_type,
             battery_pct: lifecycle.vehicle.battery_pct > 0 ? lifecycle.vehicle.battery_pct : null,
+            odometer_km: Math.round(lifecycle.odometerKm * 100) / 100,
+            point_index: lifecycle.pointIndex++,
         });
         elapsed += rngFloat(rng, pingMin, pingMax);
     }
@@ -293,11 +362,12 @@ function emitDwell(lifecycle, config, tripId, dwellConfig, status, poi, rng) {
 }
 export async function* generateTelemetry(config, snowSql, onProgress, abortSignal) {
     const rng = createRng(config.time.start_date.length * 31 + config.fleet.num_vehicles);
-    console.log(`[Studio] Loading POIs for ${config.region}...`);
+    const vt = resolveVehicleType(config);
+    console.log(`[Studio] Loading POIs for ${config.region} (${vt})...`);
     const pois = await loadPOIs(config, snowSql);
     console.log(`[Studio] Loaded ${pois.length} POIs`);
     const fleet = buildFleet(config, pois, rng);
-    console.log(`[Studio] Built fleet of ${fleet.length} vehicles`);
+    console.log(`[Studio] Built fleet of ${fleet.length} ${vt} vehicles`);
     const startDate = new Date(config.time.start_date + 'T00:00:00');
     const endDate = new Date(config.time.end_date + 'T23:59:59');
     const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
@@ -318,7 +388,7 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 continue;
             const shiftStart = member.shift_start;
             const lifecycle = {
-                vehicle: member,
+                vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
                 lat: member.home_poi.lat,
                 lng: member.home_poi.lng,
                 currentTime: new Date(currentDay.getFullYear(), currentDay.getMonth(), currentDay.getDate(), shiftStart, rngInt(rng, 0, 30)),
@@ -328,6 +398,8 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 dailyDrivingMin: 0,
                 minSinceBreak: 0,
                 tripSeq: 0,
+                odometerKm: 0,
+                pointIndex: 0,
             };
             const numTrips = rngInt(rng, config.fleet.trips_per_day.min, config.fleet.trips_per_day.max);
             let currentOriginPoi = member.home_poi;
@@ -347,31 +419,82 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 }
                 if (config.breaks?.max_daily_driving_hours && lifecycle.dailyDrivingMin >= config.breaks.max_daily_driving_hours * 60)
                     break;
+                if (vt === 'ebike' && config.battery && lifecycle.vehicle.battery_pct <= (config.battery.recharge_threshold_pct || 15)) {
+                    const rechargeDwell = { median_min: 20, sigma: 0.3, max_min: 40 };
+                    dayBatch.push(...emitDwell(lifecycle, config, null, rechargeDwell, 'DWELL_RECHARGE', currentOriginPoi, rng));
+                    lifecycle.vehicle.battery_pct = 100;
+                }
                 const destPoi = pickDestination(currentOriginPoi, pois, config, rng);
                 const tripId = uuid(rng);
                 totalTrips++;
+                const tripStartTime = new Date(lifecycle.currentTime);
                 const originDwellKey = config.mode === 'food_delivery' ? 'origin' : (currentOriginPoi.location_type === 'WAREHOUSE' ? 'warehouse' : 'origin');
                 let originDwell = config.dwell[originDwellKey];
                 if (!originDwell || !('median_min' in originDwell)) {
                     originDwell = { median_min: 5, sigma: 0.5, max_min: 20 };
                 }
                 dayBatch.push(...emitDwell(lifecycle, config, tripId, originDwell, 'DWELL_ORIGIN', currentOriginPoi, rng));
-                const route = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
-                if (route && route.coordinates.length >= 2) {
+                const detourProb = config.detour?.probability ?? config.routing.detour_probability ?? 0.05;
+                const shouldDetour = rng() < detourProb;
+                let plannedRoute = null;
+                let actualRoute = null;
+                let isDetour = false;
+                plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+                if (shouldDetour && plannedRoute) {
+                    const waypoint = pickDetourWaypoint(currentOriginPoi, destPoi, pois, rng);
+                    if (waypoint) {
+                        const detoured = await fetchDetourRoute(lifecycle.lat, lifecycle.lng, waypoint.lat, waypoint.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+                        if (detoured && detoured.coordinates.length >= 2) {
+                            actualRoute = detoured;
+                            isDetour = true;
+                        }
+                    }
+                }
+                const routeToFollow = actualRoute || plannedRoute;
+                if (routeToFollow && routeToFollow.coordinates.length >= 2) {
                     lifecycle.state = 'MOVING';
-                    dayBatch.push(...interpolateRoute(route, config, lifecycle, tripId, destPoi, rng));
+                    dayBatch.push(...interpolateRoute(routeToFollow, config, lifecycle, tripId, destPoi, rng, isDetour));
                 }
                 else {
                     lifecycle.lat = destPoi.lat;
                     lifecycle.lng = destPoi.lng;
                     lifecycle.currentTime = new Date(lifecycle.currentTime.getTime() + rngInt(rng, 300, 1200) * 1000);
                 }
-                const destDwellKey = config.mode === 'food_delivery' ? 'destination' : 'destination';
+                const destDwellKey = 'destination';
                 let destDwell = config.dwell[destDwellKey];
                 if (!destDwell || !('median_min' in destDwell)) {
                     destDwell = { median_min: 3, sigma: 0.5, max_min: 15 };
                 }
                 dayBatch.push(...emitDwell(lifecycle, config, tripId, destDwell, 'DWELL_DESTINATION', destPoi, rng));
+                const tripEndTime = new Date(lifecycle.currentTime);
+                const actualDistKm = routeToFollow ? routeToFollow.distance_m / 1000 : haversineKm(currentOriginPoi.lat, currentOriginPoi.lng, destPoi.lat, destPoi.lng);
+                const plannedDistKm = plannedRoute ? plannedRoute.distance_m / 1000 : actualDistKm;
+                const durationMin = (tripEndTime.getTime() - tripStartTime.getTime()) / 60000;
+                const tripRecord = {
+                    trip_id: tripId,
+                    vehicle_id: member.vehicle_id,
+                    driver_id: member.driver_id,
+                    vehicle_type: vt,
+                    region: config.region,
+                    origin_poi_id: currentOriginPoi.location_id,
+                    destination_poi_id: destPoi.location_id,
+                    origin_lat: currentOriginPoi.lat,
+                    origin_lon: currentOriginPoi.lng,
+                    destination_lat: destPoi.lat,
+                    destination_lon: destPoi.lng,
+                    route_coordinates: (routeToFollow?.coordinates || []),
+                    distance_km: Math.round(actualDistKm * 100) / 100,
+                    duration_minutes: Math.round(durationMin * 100) / 100,
+                    planned_route_coordinates: isDetour && plannedRoute ? plannedRoute.coordinates : null,
+                    planned_distance_km: isDetour ? Math.round(plannedDistKm * 100) / 100 : null,
+                    is_detour: isDetour,
+                    detour_distance_km: isDetour ? Math.round((actualDistKm - plannedDistKm) * 100) / 100 : null,
+                    trip_start: tripStartTime,
+                    trip_end: tripEndTime,
+                    status: 'COMPLETED',
+                    ors_profile: config.ors_profile,
+                };
+                yield { type: 'trip', record: tripRecord };
                 currentOriginPoi = destPoi;
                 lifecycle.tripSeq++;
             }
@@ -387,10 +510,10 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
             pointsToday: dayBatch.length,
             totalPoints,
             totalTrips,
-            status: `Day ${dayOffset + 1}/${totalDays}: ${dayBatch.length.toLocaleString()} points`,
+            status: `Day ${dayOffset + 1}/${totalDays}: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips`,
         });
         if (dayBatch.length > 0) {
-            yield dayBatch;
+            yield { type: 'telemetry', points: dayBatch };
         }
     }
 }

@@ -151,15 +151,7 @@ Run the verification query after all 5 steps to confirm row counts.
 
 ### Step 8: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo's pages:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-dashboard', 'Deviation Dashboard', 'Route deviation analytics', 'Route Deviation', 'TrendingUp', 170, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-compare', 'Route Comparison', 'Expected vs actual route overlay', 'Route Deviation', 'GitCompare', 180, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('deviation-inspector', 'Route Inspector', 'GPS telemetry inspection with teleport detection', 'Route Deviation', 'Search', 185, 'FLEET_INTELLIGENCE', 'ROUTE_DEVIATION');
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Route Deviation pages are available automatically in the ORS sidebar.
 
 ## Dashboard Schema Contract
 

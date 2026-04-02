@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: demo-dashboard
-      image: /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.25
+      image: /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.26
       env:
         SNOWFLAKE_WAREHOUSE: DEMO_DASHBOARD_WH
         PORT: "8080"

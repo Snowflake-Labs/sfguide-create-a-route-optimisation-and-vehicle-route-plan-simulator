@@ -4,7 +4,7 @@ artifacts:
   setup_script: setup_script.sql
   container_services:
     images:
-      - /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.25
+      - /demo_dashboard_setup/public/demo_dashboard_repo/demo-dashboard:v1.0.26
 
 references:
   - external_access_ref:

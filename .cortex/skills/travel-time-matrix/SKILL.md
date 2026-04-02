@@ -408,13 +408,7 @@ FROM (
 
 ### Step 10: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('travel-time', 'Travel Time Explorer', 'H3 isochrone visualization', 'Travel Time Matrix', 'Clock', 200);
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Travel Time Explorer is available automatically in the ORS sidebar.
 
 ---
 

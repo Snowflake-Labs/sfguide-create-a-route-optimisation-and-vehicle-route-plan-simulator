@@ -1,17 +1,20 @@
 ---
-name: demo-dashboard
-description: "Deploy the shared React demo dashboard as an SPCS native app. All demo skills register pages here via DEMO_REGISTRY. Use when: deploying demo dashboard, installing shared demo UI, setting up demo platform, upgrading dashboard, rebuilding dashboard image. Do NOT use for: individual demo data pipelines (use skill per demo), ORS admin (use build-routing-solution). Triggers: demo dashboard, demo app, demo application, deploy demo, install demo, shared dashboard, demo platform, demo UI, upgrade dashboard."
+name: demo-dashboard-old-deprecated
+description: "DEPRECATED -- DO NOT USE. This skill has been fully superseded by ORS_CONTROL_APP in build-routing-solution. All functionality including Data Studio has been migrated there. This directory is preserved only as historical reference. Never deploy, build, or reference this skill."
 depends_on:
   - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.15
-  category: demo-platform
+  category: deprecated
 ---
 
-# Demo Dashboard
+# [DEPRECATED] Demo Dashboard
 
-Deploy and manage the shared React demo application as an SPCS native app. This is the unified demo platform where all demo skills register their pages.
+> **DO NOT USE THIS SKILL.** It has been fully replaced by `ORS_CONTROL_APP` in the `build-routing-solution` skill.
+> All Data Studio, demo pages, and deployment functionality now lives in
+> `.cortex/skills/build-routing-solution/native_app/services/ors_control_app/`.
+> The only native app is `OPENROUTESERVICE_NATIVE_APP`. `DEMO_DASHBOARD_APP` should be dropped.
 
 ## Prerequisites
 

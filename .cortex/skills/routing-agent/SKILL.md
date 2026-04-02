@@ -192,13 +192,7 @@ Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
 
 ### Step 11: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('routing-agent', 'Routing Agent', 'AI-powered routing assistant', 'Routing Agent', 'Bot', 190);
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Routing Agent is available automatically in the ORS sidebar.
 
 ## Stopping Points
 

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { CarTaxiFront, Bike, Truck, Play, Square, Save, ChevronDown, ChevronRight, CheckCircle, AlertCircle, Clock, Database } from 'lucide-react';
-import MetricCard from '../shared/MetricCard';
-import DataTable from '../shared/DataTable';
+import MetricCard from '../../shared/MetricCard';
+import DataTable from '../../shared/DataTable';
 
 interface Preset {
   preset_id: string;

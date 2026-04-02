@@ -134,13 +134,7 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 
 ### Step 6: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('retail-catch', 'Retail Catchment', 'POI analysis with Overture Maps', 'Retail Catchment', 'Store', 160, 'FLEET_INTELLIGENCE', 'RETAIL_CATCHMENT');
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Retail Catchment is available automatically in the ORS sidebar.
 
 ### Step 7: Verify
 

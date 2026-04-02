@@ -1,11 +1,67 @@
 import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration } from './jobs.js';
-import { GenerationConfig } from './profiles.js';
+import { GenerationConfig, PROFILE_TEMPLATES } from './profiles.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
 export function createStudioRouter(snowSql: SnowSqlFn): Router {
   const router = Router();
+
+  router.get('/templates', (_req, res) => {
+    res.json(PROFILE_TEMPLATES.map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      vehicleType: t.vehicleType,
+      orsProfile: t.orsProfile,
+      regionScale: t.regionScale,
+      feeds: t.feeds,
+      defaultConfig: t.defaultConfig,
+    })));
+  });
+
+  router.get('/regions', async (_req, res) => {
+    try {
+      const rows = await snowSql(
+        `SELECT REGION_NAME, BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON, ORS_PROFILES, STATUS
+         FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY ORDER BY REGION_NAME`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+      res.json(rows);
+    } catch {
+      res.json([]);
+    }
+  });
+
+  router.get('/coverage', async (_req, res) => {
+    try {
+      const telemetryStats = await snowSql(
+        `SELECT VEHICLE_TYPE, REGION, ORS_PROFILE,
+                COUNT(*) AS TELEMETRY_ROWS,
+                COUNT(DISTINCT VEHICLE_ID) AS VEHICLES,
+                COUNT(DISTINCT TRIP_ID) AS TRIPS
+         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
+         GROUP BY VEHICLE_TYPE, REGION, ORS_PROFILE`,
+        'SYNTHETIC_DATASETS', 'UNIFIED'
+      );
+      let tripStats: any[] = [];
+      try {
+        tripStats = await snowSql(
+          `SELECT VEHICLE_TYPE, REGION, COUNT(*) AS TRIP_ROWS
+           FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+           GROUP BY VEHICLE_TYPE, REGION`,
+          'SYNTHETIC_DATASETS', 'UNIFIED'
+        );
+      } catch {}
+      const merged = telemetryStats.map((t: any) => {
+        const ts = tripStats.find((s: any) => s.VEHICLE_TYPE === t.VEHICLE_TYPE && s.REGION === t.REGION);
+        return { ...t, TRIP_ROWS: ts?.TRIP_ROWS || 0 };
+      });
+      res.json(merged);
+    } catch {
+      res.json([]);
+    }
+  });
 
   router.get('/presets', async (_req, res) => {
     try {
@@ -184,7 +240,7 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         'SYNTHETIC_DATASETS', 'UNIFIED'
       );
       res.json(rows);
-    } catch (err: any) {
+    } catch {
       res.json([]);
     }
   });

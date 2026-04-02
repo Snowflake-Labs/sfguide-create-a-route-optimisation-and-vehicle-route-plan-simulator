@@ -235,7 +235,7 @@ If either fails, install from Marketplace. See `references/sql-pipeline.md` Step
 
 **Read `references/native-app-deployment.md` for Docker build, push, and SPCS deployment.**
 
-**DEPRECATED:** Step 12 is no longer needed. The demo-dashboard native app (`DEMO_DASHBOARD_APP`) has replaced the standalone `FLEET_INTEL_APP`. See `.cortex/skills/demo-dashboard/` for deployment instructions.
+**DEPRECATED:** Step 12 is no longer needed. Both `FLEET_INTEL_APP` and `DEMO_DASHBOARD_APP` have been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). See `.cortex/skills/build-routing-solution/` for deployment instructions.
 
 > **Note:** The Fleet Intelligence app delegates all routing calls to the standalone `OPENROUTESERVICE_NATIVE_APP` via SQL wrapper functions. No ORS/vroom/gateway/downloader images need to be built — only the `fleet-intelligence` image.
 
@@ -254,16 +254,7 @@ If either fails, install from Marketplace. See `references/sql-pipeline.md` Step
 
 ### Step 13: Register with Demo Dashboard
 
-If the shared Demo Dashboard app is installed, register this demo's pages:
-
-```sql
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-map', 'Fleet Map', 'Courier fleet overview', 'Fleet Delivery', 'MapPin', 80);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-data', 'Data Builder', 'Data pipeline status', 'Fleet Delivery', 'Database', 90);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-matrix', 'Matrix Builder', 'Travel time matrix builder', 'Fleet Delivery', 'Grid3x3', 100);
-CALL DEMO_DASHBOARD_APP.CORE.REGISTER_DEMO('fleet-catchment', 'Catchment Panel', 'Restaurant catchment areas', 'Fleet Delivery', 'Target', 110);
-```
-
-Skip if DEMO_DASHBOARD_APP is not installed.
+> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Fleet Delivery pages are available automatically in the ORS sidebar.
 
 ---
 
@@ -288,7 +279,7 @@ To remove all objects created by this skill:
 
 ```sql
 -- Reverse dependency order: views, tables, stages, schemas
--- NOTE: FLEET_INTEL_APP is deprecated; use DEMO_DASHBOARD_APP instead
+-- NOTE: Both FLEET_INTEL_APP and DEMO_DASHBOARD_APP are deprecated; use ORS_CONTROL_APP in OPENROUTESERVICE_NATIVE_APP instead
 DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SWIFTBITE_DELIVERY_DASHBOARD;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN;
