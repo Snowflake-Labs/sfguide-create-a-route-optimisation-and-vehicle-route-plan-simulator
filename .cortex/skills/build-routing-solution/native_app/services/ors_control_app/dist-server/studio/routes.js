@@ -1,6 +1,24 @@
 import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration } from './jobs.js';
 import { PROFILE_TEMPLATES } from './profiles.js';
+async function checkOrsReadiness(snowSql, orsProfile) {
+    try {
+        const rows = await snowSql(`SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ORS_STATUS() AS STATUS`);
+        const raw = rows[0]?.STATUS;
+        const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!status?.service_ready) {
+            return { ready: false, error: 'ORS service is not running (suspended or starting up). Resume the service from the Service Lifecycle page before generating.' };
+        }
+        const profiles = Object.keys(status.profiles || {});
+        if (!profiles.includes(orsProfile)) {
+            return { ready: false, error: `ORS profile "${orsProfile}" is not built. Available profiles: ${profiles.join(', ') || 'none'}. Build the graph for this profile first.` };
+        }
+    }
+    catch (e) {
+        return { ready: false, error: `Cannot reach ORS service: ${e.message?.slice(0, 120)}. The app may not be installed.` };
+    }
+    return { ready: true };
+}
 export function createStudioRouter(snowSql) {
     const router = Router();
     router.get('/templates', (_req, res) => {
@@ -143,6 +161,10 @@ export function createStudioRouter(snowSql) {
             else {
                 return res.status(400).json({ error: 'preset_id or config required' });
             }
+            const health = await checkOrsReadiness(snowSql, config.ors_profile);
+            if (!health.ready) {
+                return res.status(409).json({ error: health.error, code: 'ORS_NOT_READY' });
+            }
             const jobId = await startGeneration(config, name, snowSql);
             res.json({ job_id: jobId, status: 'RUNNING' });
         }
@@ -181,11 +203,20 @@ export function createStudioRouter(snowSql) {
         };
         send('status', { jobId, status: job.status, points: job.pointsGenerated, trips: job.tripsGenerated });
         if (job.status !== 'RUNNING') {
-            send(job.status === 'COMPLETED' ? 'complete' : 'error', { status: job.status });
+            send(job.status === 'COMPLETED' ? 'complete' : job.status === 'STOPPED' ? 'stopped' : 'error', { status: job.status });
             return res.end();
         }
+        const heartbeat = setInterval(() => {
+            try {
+                res.write(': heartbeat\n\n');
+            }
+            catch { }
+        }, 15000);
         const unsub = subscribeJob(jobId, send);
-        req.on('close', unsub);
+        req.on('close', () => {
+            clearInterval(heartbeat);
+            unsub();
+        });
     });
     router.post('/jobs/:id/cancel', (_req, res) => {
         const ok = cancelJob(_req.params.id);

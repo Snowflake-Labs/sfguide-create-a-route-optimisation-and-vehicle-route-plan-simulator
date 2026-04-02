@@ -26,60 +26,30 @@ FULL_IMAGE="${REGISTRY}/${REPO}/${IMAGE_NAME}:${NEW_TAG}"
 echo "=== Deploying ${IMAGE_NAME}:${NEW_TAG} (was v${CURRENT_TAG}) ==="
 echo "    Image: ${FULL_IMAGE}"
 
-echo "--- [1/8] Building client + server ---"
+echo "--- [1/7] Building client + server ---"
 cd "$SCRIPT_DIR"
 npm run build
 npm run build:server
 
-echo "--- [2/8] Docker build (linux/amd64, runtime-only) ---"
+echo "--- [2/7] Docker build (linux/amd64, runtime-only) ---"
 mv .dockerignore .dockerignore.bak 2>/dev/null || true
 docker build --platform linux/amd64 -f Dockerfile.runtime -t "${FULL_IMAGE}" .
 mv .dockerignore.bak .dockerignore 2>/dev/null || true
 
-echo "--- [3/8] Docker push ---"
+echo "--- [3/7] Docker push ---"
 snow spcs image-registry login -c "$CONNECTION"
 docker push "${FULL_IMAGE}"
 
-echo "--- [4/8] Update local YAML ---"
+echo "--- [4/7] Update local YAML ---"
 sed -i.bak "s|${IMAGE_NAME}:v${CURRENT_TAG}|${IMAGE_NAME}:${NEW_TAG}|" "$YAML" && rm -f "${YAML}.bak"
 
-echo "--- [5/8] Upload YAML to package stage (prevents version_init revert) ---"
+echo "--- [5/7] Upload YAML to package stage (prevents version_init revert) ---"
 snow sql -c "$CONNECTION" -q "PUT 'file://${YAML}' ${PKG_STAGE}/services/ors_control_app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;"
 
-echo "--- [6/8] ALTER SERVICE (inline spec) ---"
-SQL_FILE=$(mktemp /tmp/deploy_spec.XXXXXX.sql)
-cat > "$SQL_FILE" <<SPECSQL
-ALTER SERVICE ${SERVICE} FROM SPECIFICATION
-\$\$
-spec:
-  containers:
-    - name: ors-control-app
-      image: /${REPO}/${IMAGE_NAME}:${NEW_TAG}
-      env:
-        SNOWFLAKE_DATABASE: "OPENROUTESERVICE_NATIVE_APP"
-        SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"
-      resources:
-        requests:
-          cpu: "0.5"
-          memory: "512Mi"
-        limits:
-          cpu: "1"
-          memory: "1Gi"
-  endpoints:
-    - name: ors-control-ui
-      port: 3001
-      public: true
-\$\$;
-SPECSQL
-snow sql -c "$CONNECTION" -f "$SQL_FILE"
-rm -f "$SQL_FILE"
+echo "--- [6/7] Upgrade native app (triggers version_init -> create_control_app) ---"
+snow sql -c "$CONNECTION" -q "ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING ${PKG_STAGE};"
 
-echo "--- [7/8] SUSPEND + RESUME ---"
-snow sql -c "$CONNECTION" -q "ALTER SERVICE ${SERVICE} SUSPEND;"
-sleep 2
-snow sql -c "$CONNECTION" -q "ALTER SERVICE ${SERVICE} RESUME;"
-
-echo "--- [8/8] Waiting for READY + verifying image ---"
+echo "--- [7/7] Waiting for READY + verifying image ---"
 STATUS="UNKNOWN"
 for i in $(seq 1 30); do
   STATUS=$(snow sql -c "$CONNECTION" -q "SELECT PARSE_JSON(SYSTEM\$GET_SERVICE_STATUS('${SERVICE}'))[0]['status']::VARCHAR AS S;" --format json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['S'])" 2>/dev/null || echo "UNKNOWN")

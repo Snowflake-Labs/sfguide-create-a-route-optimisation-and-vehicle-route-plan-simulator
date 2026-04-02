@@ -243,6 +243,7 @@ export async function startGeneration(config, presetName, snowSql) {
             await insertDimFleet(fleet, config, snowSql);
             broadcast(job, 'progress', { status: `Loaded ${pois.length} POIs, built ${fleet.length} vehicles` });
             const pendingTrips = [];
+            let stoppedEvent = null;
             const gen = generateTelemetry(config, snowSql, (p) => {
                 job.pointsGenerated = p.totalPoints;
                 job.tripsGenerated = p.totalTrips;
@@ -261,16 +262,39 @@ export async function startGeneration(config, presetName, snowSql) {
                         await insertTripBatch(pendingTrips.splice(0), snowSql);
                     }
                 }
+                else if (event.type === 'stopped') {
+                    stoppedEvent = event;
+                    break;
+                }
             }
             if (pendingTrips.length > 0) {
                 await insertTripBatch(pendingTrips, snowSql);
             }
-            job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
-            job.completedAt = new Date();
-            broadcast(job, 'complete', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
+            if (stoppedEvent) {
+                job.status = 'STOPPED';
+                job.completedAt = new Date();
+                broadcast(job, 'stopped', {
+                    reason: stoppedEvent.reason,
+                    pointsGenerated: job.pointsGenerated,
+                    tripsGenerated: job.tripsGenerated,
+                    completedDays: stoppedEvent.completedDays,
+                    totalDays: stoppedEvent.totalDays,
+                    routeSuccesses: stoppedEvent.routeSuccesses,
+                    routeFailures: stoppedEvent.routeFailures,
+                });
+            }
+            else {
+                job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
+                job.completedAt = new Date();
+                broadcast(job, job.status === 'COMPLETED' ? 'complete' : 'cancelled', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
+            }
             try {
+                const errMsg = stoppedEvent
+                    ? `ORS stopped: ${stoppedEvent.reason}. ${stoppedEvent.completedDays}/${stoppedEvent.totalDays} days completed.`
+                    : null;
                 await snowSql(`UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='${job.status}',
            POINTS_GENERATED=${job.pointsGenerated}, TRIPS_GENERATED=${job.tripsGenerated},
+           ${errMsg ? `ERROR_MESSAGE=${escVal(errMsg)},` : ''}
            COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`, 'FLEET_INTELLIGENCE', 'CORE');
             }
             catch { }

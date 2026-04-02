@@ -293,10 +293,12 @@ Result: Stored procedures updated without container rebuild
 
 ```bash
 cd native_app/services/ors_control_app
-./deploy.sh <connection> <version>
+./deploy.sh -c <connection>
 ```
 
-This script: builds React + server locally, creates runtime Dockerfile, pushes image, updates service YAML version, uploads setup_script.sql to app package stage, and upgrades the native app.
+This script: builds React + server locally, creates a runtime Docker image, pushes image to the SPCS registry, auto-bumps the version tag in the service YAML, uploads the YAML to the app package stage, and runs `ALTER APPLICATION ... UPGRADE` to apply the new image.
+
+**Why UPGRADE instead of ALTER SERVICE:** The ORS control app service uses `reference('external_access_carto_ref')` for its external access integration. This native app reference can only be resolved inside the app's own stored procedures (via `version_init` -> `create_control_app`). Running `ALTER SERVICE FROM SPECIFICATION` or `SUSPEND/RESUME` from outside the app context fails because the reference cannot be resolved. `ALTER APPLICATION UPGRADE` triggers the app lifecycle callback which recreates the service with proper reference bindings.
 
 ### Stored Procedures Only
 

@@ -373,6 +373,10 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
     const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
     let totalPoints = 0;
     let totalTrips = 0;
+    let routeSuccesses = 0;
+    let routeFailures = 0;
+    let consecutiveFails = 0;
+    const MAX_CONSECUTIVE_FAILURES = 10;
     for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
         if (abortSignal?.aborted)
             return;
@@ -440,6 +444,34 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 let actualRoute = null;
                 let isDetour = false;
                 plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+                if (plannedRoute) {
+                    routeSuccesses++;
+                    consecutiveFails = 0;
+                }
+                else {
+                    routeFailures++;
+                    consecutiveFails++;
+                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES && routeSuccesses === 0) {
+                        throw new Error(`ORS unavailable: ${routeFailures} consecutive route requests failed. ` +
+                            `Check that ORS is running and "${config.ors_profile}" is built for "${config.region}".`);
+                    }
+                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES) {
+                        console.log(`[Studio] ORS stopped responding after ${consecutiveFails} consecutive failures. Stopping gracefully.`);
+                        if (dayBatch.length > 0) {
+                            totalPoints += dayBatch.length;
+                            yield { type: 'telemetry', points: dayBatch };
+                        }
+                        yield {
+                            type: 'stopped',
+                            reason: `ORS became unavailable after ${consecutiveFails} consecutive route failures`,
+                            completedDays: dayOffset,
+                            totalDays,
+                            routeSuccesses,
+                            routeFailures,
+                        };
+                        return;
+                    }
+                }
                 if (shouldDetour && plannedRoute) {
                     const waypoint = pickDetourWaypoint(currentOriginPoi, destPoi, pois, rng);
                     if (waypoint) {
@@ -510,6 +542,8 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
             pointsToday: dayBatch.length,
             totalPoints,
             totalTrips,
+            routeSuccesses,
+            routeFailures,
             status: `Day ${dayOffset + 1}/${totalDays}: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips`,
         });
         if (dayBatch.length > 0) {
