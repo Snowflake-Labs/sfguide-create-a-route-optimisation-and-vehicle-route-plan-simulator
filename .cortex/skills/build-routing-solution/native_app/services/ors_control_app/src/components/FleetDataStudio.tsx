@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { CarTaxiFront, Bike, Truck, Play, Square, Save, ChevronDown, ChevronRight, CheckCircle, AlertCircle, Clock, Database } from 'lucide-react';
 import MetricCard from '../shared/MetricCard';
-import DataTable from '../shared/DataTable';
+
 
 interface Preset {
   preset_id: string;
@@ -91,6 +91,7 @@ export default function FleetDataStudio() {
   const evtSourceRef = useRef<EventSource | null>(null);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectedRef = useRef(false);
 
   const fetchTemplates = useCallback(async () => {
     try {
@@ -112,7 +113,8 @@ export default function FleetDataStudio() {
       const data = await res.json();
       setActiveJobs(data.active || []);
       setJobHistory(data.history || []);
-    } catch {}
+      return data.active || [];
+    } catch { return []; }
   }, []);
 
   const fetchStats = useCallback(async () => {
@@ -132,7 +134,6 @@ export default function FleetDataStudio() {
   useEffect(() => {
     fetchTemplates();
     fetchPresets();
-    fetchJobs();
     fetchStats();
     fetchCoverage();
   }, []);
@@ -260,6 +261,24 @@ export default function FleetDataStudio() {
       fetchJobs();
     });
   }, [fetchJobs, fetchStats, fetchCoverage]);
+
+  useEffect(() => {
+    if (reconnectedRef.current) return;
+    reconnectedRef.current = true;
+    (async () => {
+      const jobs = await fetchJobs();
+      const running = jobs.find((j: any) => j.status === 'RUNNING');
+      if (running) {
+        setGenerating(true);
+        setLogLines([
+          `Reconnected to running job: ${running.jobId}`,
+          `${running.presetName} | ${running.region} | ${running.orsProfile}`,
+          `Progress: ${running.pointsGenerated?.toLocaleString() || 0} pts, ${running.tripsGenerated?.toLocaleString() || 0} trips`,
+        ]);
+        connectSSE(running.jobId);
+      }
+    })();
+  }, [fetchJobs, connectSSE]);
 
   const startGeneration = async () => {
     setGenerating(true);
@@ -663,9 +682,62 @@ export default function FleetDataStudio() {
       </div>
 
       {jobHistory.length > 0 && (
-        <div className="chart-card" style={{ marginTop: 16 }}>
-          <h3>Job History</h3>
-          <DataTable data={jobHistory} columns={['PRESET_NAME', 'REGION', 'ORS_PROFILE', 'STATUS', 'POINTS_GENERATED', 'TRIPS_GENERATED', 'STARTED_AT']} />
+        <div className="chart-card" style={{ marginTop: 16, padding: 16 }}>
+          <h3 style={{ fontSize: 14, marginBottom: 12 }}>Job History</h3>
+          <div className="data-table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="data-table-th">Preset</th>
+                  <th className="data-table-th">Region</th>
+                  <th className="data-table-th">Profile</th>
+                  <th className="data-table-th">Vehicles</th>
+                  <th className="data-table-th">Status</th>
+                  <th className="data-table-th">Points</th>
+                  <th className="data-table-th">Trips</th>
+                  <th className="data-table-th">Duration</th>
+                  <th className="data-table-th">Started</th>
+                  <th className="data-table-th">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobHistory.map((j: any, i: number) => {
+                  const status = j.STATUS || '';
+                  const statusColor = status === 'COMPLETED' ? '#1B7A3D' : status === 'FAILED' ? '#D32F2F' : status === 'STOPPED' ? '#E65100' : status === 'CANCELLED' ? '#6E7681' : status === 'RUNNING' ? '#1A73E8' : '#6E7681';
+                  const statusBg = status === 'COMPLETED' ? '#E6F9ED' : status === 'FAILED' ? '#FFEBEE' : status === 'STOPPED' ? '#FFF3E0' : status === 'CANCELLED' ? '#F5F5F5' : status === 'RUNNING' ? '#E6F0FF' : '#F5F5F5';
+                  const dur = j.DURATION_SEC;
+                  const durStr = dur != null ? (dur >= 3600 ? `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}m` : dur >= 60 ? `${Math.floor(dur / 60)}m ${dur % 60}s` : `${dur}s`) : '-';
+                  const started = j.STARTED_AT ? new Date(j.STARTED_AT).toLocaleString() : '-';
+                  return (
+                    <tr key={j.JOB_ID || i}>
+                      <td style={{ fontWeight: 500, fontSize: 12 }}>{j.PRESET_NAME || '-'}</td>
+                      <td style={{ fontSize: 12 }}>{j.REGION || '-'}</td>
+                      <td style={{ fontSize: 12 }}>{j.ORS_PROFILE || '-'}</td>
+                      <td style={{ fontSize: 12, textAlign: 'right' }}>{j.NUM_VEHICLES ?? '-'}</td>
+                      <td>
+                        <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: statusBg, color: statusColor, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          {status}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 12, textAlign: 'right', fontWeight: 500 }}>{j.POINTS_GENERATED?.toLocaleString() || '0'}</td>
+                      <td style={{ fontSize: 12, textAlign: 'right' }}>{j.TRIPS_GENERATED?.toLocaleString() || '0'}</td>
+                      <td style={{ fontSize: 12, textAlign: 'right', color: '#6E7681' }}>{durStr}</td>
+                      <td style={{ fontSize: 11, color: '#6E7681', whiteSpace: 'nowrap' }}>{started}</td>
+                      <td style={{ fontSize: 11, maxWidth: 200 }}>
+                        {j.ERROR_MESSAGE ? (
+                          <span title={j.ERROR_MESSAGE} style={{ color: '#D32F2F', cursor: 'help', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
+                            {j.ERROR_MESSAGE}
+                          </span>
+                        ) : (
+                          <span style={{ color: '#9CA3AF' }}>-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

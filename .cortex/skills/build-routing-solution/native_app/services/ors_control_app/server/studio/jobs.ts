@@ -265,7 +265,9 @@ export async function startGeneration(
        PARSE_JSON(${escVal(JSON.stringify(config))}))`,
       'FLEET_INTELLIGENCE', 'CORE'
     );
-  } catch {}
+  } catch (e: any) {
+    log('ERROR', 'Studio', `Failed to insert job record for ${jobId}: ${e.message?.slice(0, 300)}`, { jobId });
+  }
 
   (async () => {
     try {
@@ -350,7 +352,9 @@ export async function startGeneration(
            COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
-      } catch {}
+      } catch (e2: any) {
+        log('ERROR', 'Studio', `Failed to update job status for ${jobId}: ${e2.message?.slice(0, 200)}`, { jobId });
+      }
     } catch (e: any) {
       job.status = 'FAILED';
       job.error = e.message;
@@ -364,7 +368,9 @@ export async function startGeneration(
            COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
-      } catch {}
+      } catch (e3: any) {
+        log('ERROR', 'Studio', `Failed to update failed job status for ${jobId}: ${e3.message?.slice(0, 200)}`, { jobId });
+      }
     }
   })();
 
