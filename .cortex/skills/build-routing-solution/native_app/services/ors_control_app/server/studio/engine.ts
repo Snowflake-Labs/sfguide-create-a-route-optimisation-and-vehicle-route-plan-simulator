@@ -250,26 +250,25 @@ async function fetchRoute(
   snowSql: SnowSqlFn,
 ): Promise<RouteGeometry | null> {
   const sql = `
-    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
       '${profile}',
-      OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${originLng},${originLat})),
-      OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${destLng},${destLat})),
-      'geojson'
-    ) AS ROUTE`;
+      ARRAY_CONSTRUCT(${originLng},${originLat}),
+      ARRAY_CONSTRUCT(${destLng},${destLat})
+    ))`;
   try {
     const rows = await snowSql(sql);
     if (!rows.length) return null;
-    const raw = typeof rows[0].ROUTE === 'string' ? JSON.parse(rows[0].ROUTE) : rows[0].ROUTE;
-    const feature = raw?.features?.[0];
-    if (!feature) return null;
-    const coords: [number, number][] = feature.geometry?.coordinates || [];
-    const summary = feature.properties?.summary || {};
+    const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
+    const coords: [number, number][] = geo?.coordinates || [];
+    if (coords.length < 2) return null;
     return {
       coordinates: coords.map(c => [c[1], c[0]]),
-      distance_m: summary.distance || 0,
-      duration_sec: summary.duration || 0,
+      distance_m: Number(rows[0].DISTANCE) || 0,
+      duration_sec: Number(rows[0].DURATION) || 0,
     };
-  } catch {
+  } catch (e: any) {
+    console.error(`[Studio] Route fetch failed: ${e.message?.slice(0, 200)}`);
     return null;
   }
 }
@@ -281,31 +280,32 @@ async function fetchDetourRoute(
   profile: string,
   snowSql: SnowSqlFn,
 ): Promise<RouteGeometry | null> {
+  const coordsJson = JSON.stringify({
+    coordinates: [
+      [originLng, originLat],
+      [waypointLng, waypointLat],
+      [destLng, destLat],
+    ],
+  }).replace(/'/g, "''");
   const sql = `
-    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
       '${profile}',
-      OBJECT_CONSTRUCT('type','MultiPoint','coordinates',ARRAY_CONSTRUCT(
-        ARRAY_CONSTRUCT(${originLng},${originLat}),
-        ARRAY_CONSTRUCT(${waypointLng},${waypointLat}),
-        ARRAY_CONSTRUCT(${destLng},${destLat})
-      )),
-      NULL,
-      'geojson'
-    ) AS ROUTE`;
+      PARSE_JSON('${coordsJson}')::VARIANT
+    ))`;
   try {
     const rows = await snowSql(sql);
     if (!rows.length) return null;
-    const raw = typeof rows[0].ROUTE === 'string' ? JSON.parse(rows[0].ROUTE) : rows[0].ROUTE;
-    const feature = raw?.features?.[0];
-    if (!feature) return null;
-    const coords: [number, number][] = feature.geometry?.coordinates || [];
-    const summary = feature.properties?.summary || {};
+    const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
+    const coords: [number, number][] = geo?.coordinates || [];
+    if (coords.length < 2) return null;
     return {
       coordinates: coords.map(c => [c[1], c[0]]),
-      distance_m: summary.distance || 0,
-      duration_sec: summary.duration || 0,
+      distance_m: Number(rows[0].DISTANCE) || 0,
+      duration_sec: Number(rows[0].DURATION) || 0,
     };
-  } catch {
+  } catch (e: any) {
+    console.error(`[Studio] Detour route fetch failed: ${e.message?.slice(0, 200)}`);
     return null;
   }
 }
