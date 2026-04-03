@@ -1,5 +1,6 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles.js';
 import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress } from './engine.js';
+import { log } from '../diagnostics.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -112,6 +113,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
   for (const ddl of ddls) {
     try { await snowSql(ddl, UNIFIED_DB, UNIFIED_SCHEMA); } catch (e: any) {
       console.error(`[Studio] DDL error: ${e.message?.slice(0, 200)}`);
+      log('ERROR', 'Studio', `DDL error: ${e.message?.slice(0, 200)}`);
     }
   }
 }
@@ -141,7 +143,7 @@ async function insertTelemetryBatch(points: TelemetryPoint[], snowSql: SnowSqlFn
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
     } catch (e: any) {
-      console.error(`[Studio] Telemetry insert error: ${e.message?.slice(0, 200)}`);
+      log('ERROR', 'Studio', `Telemetry insert error`, { detail: e.message?.slice(0, 200) });
     }
   }
   return inserted;
@@ -181,7 +183,7 @@ async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn): Promise
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
     } catch (e: any) {
-      console.error(`[Studio] Trip insert error: ${e.message?.slice(0, 200)}`);
+      log('ERROR', 'Studio', `Trip insert error`, { detail: e.message?.slice(0, 200) });
     }
   }
   return inserted;
@@ -203,7 +205,7 @@ async function insertDimFleet(fleet: any[], config: GenerationConfig, snowSql: S
   try {
     await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
   } catch (e: any) {
-    console.error(`[Studio] DIM_FLEET insert error: ${e.message?.slice(0, 200)}`);
+    log('ERROR', 'Studio', `DIM_FLEET insert error`, { detail: e.message?.slice(0, 200) });
   }
 }
 
@@ -222,7 +224,7 @@ async function insertDimPois(pois: any[], config: GenerationConfig, snowSql: Sno
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
     } catch (e: any) {
-      console.error(`[Studio] DIM_POIS insert error: ${e.message?.slice(0, 200)}`);
+      log('ERROR', 'Studio', `DIM_POIS insert error`, { detail: e.message?.slice(0, 200) });
     }
   }
 }
@@ -235,6 +237,8 @@ export async function startGeneration(
   const rng = createRng(Date.now());
   const jobId = uuid(rng);
   const vt = resolveVehicleType(config);
+
+  log('INFO', 'Studio', `Job ${jobId} started: ${presetName} (${config.region}, ${config.ors_profile})`, { jobId });
 
   const job: Job = {
     jobId,
@@ -312,6 +316,10 @@ export async function startGeneration(
       if (stoppedEvent) {
         job.status = 'STOPPED';
         job.completedAt = new Date();
+        log('WARN', 'Studio', `Job ${jobId} stopped: ${stoppedEvent.reason}`, {
+          jobId,
+          detail: { days: `${stoppedEvent.completedDays}/${stoppedEvent.totalDays}`, successes: stoppedEvent.routeSuccesses, failures: stoppedEvent.routeFailures },
+        });
         broadcast(job, 'stopped', {
           reason: stoppedEvent.reason,
           pointsGenerated: job.pointsGenerated,
@@ -324,6 +332,7 @@ export async function startGeneration(
       } else {
         job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
         job.completedAt = new Date();
+        log('INFO', 'Studio', `Job ${jobId} ${job.status}: ${job.pointsGenerated} pts, ${job.tripsGenerated} trips`, { jobId });
         broadcast(job, job.status === 'COMPLETED' ? 'complete' : 'cancelled', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
       }
 
@@ -343,6 +352,7 @@ export async function startGeneration(
       job.status = 'FAILED';
       job.error = e.message;
       job.completedAt = new Date();
+      log('ERROR', 'Studio', `Job ${jobId} failed: ${e.message?.slice(0, 300)}`, { jobId });
       broadcast(job, 'error', { error: e.message });
       try {
         await snowSql(

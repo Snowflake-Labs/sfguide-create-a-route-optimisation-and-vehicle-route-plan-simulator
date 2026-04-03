@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Home as HomeIcon, Map, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
+import { Home as HomeIcon, Map, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import CityProvisioner from './components/CityProvisioner';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -15,6 +15,7 @@ import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import TravelTimeExplorer from './components/TravelTimeExplorer';
+import Diagnostics from './components/Diagnostics';
 import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
@@ -62,7 +63,7 @@ const DEMO_GROUPS: NavGroup[] = [
   { key: 'studio', label: 'Data Studio', icon: Database },
 ];
 
-type AdminTab = 'services' | 'cities' | 'matrix' | 'viewer' | 'functions';
+type AdminTab = 'services' | 'cities' | 'matrix' | 'viewer' | 'functions' | 'diagnostics';
 
 const ADMIN_NAV: { key: AdminTab; label: string; icon: React.ComponentType<any> }[] = [
   { key: 'services', label: 'Status', icon: Activity },
@@ -70,6 +71,7 @@ const ADMIN_NAV: { key: AdminTab; label: string; icon: React.ComponentType<any> 
   { key: 'matrix', label: 'Travel Matrix Builder', icon: Grid3X3 },
   { key: 'viewer', label: 'Travel Matrix Viewer', icon: Eye },
   { key: 'functions', label: 'Functions', icon: Wrench },
+  { key: 'diagnostics', label: 'Diagnostics', icon: Stethoscope },
 ];
 
 function getHeaderLabel(tab: string): string {
@@ -195,6 +197,7 @@ export default function App() {
             {activeTab === 'agent' && <AgentPlayground />}
             {activeTab === 'travel-time' && <TravelTimeExplorer />}
             {activeTab === 'studio' && <FleetDataStudio />}
+            {activeTab === 'diagnostics' && <Diagnostics />}
           </main>
         </div>
       </div>
