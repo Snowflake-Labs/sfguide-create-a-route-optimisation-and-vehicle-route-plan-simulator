@@ -52,6 +52,9 @@ snow sql -c "$CONN" -q "GRANT USAGE ON ALL SCHEMAS IN DATABASE SYNTHETIC_DATASET
 snow sql -c "$CONN" -q "GRANT SELECT ON ALL TABLES IN DATABASE SYNTHETIC_DATASETS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
 snow sql -c "$CONN" -q "GRANT SELECT ON ALL VIEWS IN DATABASE SYNTHETIC_DATASETS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
 
+echo "==> Granting access to OVERTURE_MAPS__PLACES (Overture Maps POI data share)..."
+snow sql -c "$CONN" -q "GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || echo "  (Overture Maps share not available -- Data Studio POIs will fail)"
+
 echo "==> Checking for ACCOUNTADMIN-owned objects..."
 ACCT_OBJS=$(snow sql -c "$CONN" --format json -q "
   SELECT 'ACCT_OWN: ' || procedure_name || argument_signature AS obj

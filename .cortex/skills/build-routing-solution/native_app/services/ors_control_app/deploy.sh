@@ -49,6 +49,9 @@ snow sql -c "$CONNECTION" -q "PUT 'file://${YAML}' ${PKG_STAGE}/services/ors_con
 echo "--- [6/7] Upgrade native app (triggers version_init -> create_control_app) ---"
 snow sql -c "$CONNECTION" -q "ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING ${PKG_STAGE};"
 
+echo "--- [6.5/7] Ensuring Overture Maps access ---"
+snow sql -c "$CONNECTION" -q "GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || echo "  (Overture Maps share not available -- Data Studio POIs will fail)"
+
 echo "--- [7/7] Waiting for READY + verifying image ---"
 STATUS="UNKNOWN"
 for i in $(seq 1 30); do

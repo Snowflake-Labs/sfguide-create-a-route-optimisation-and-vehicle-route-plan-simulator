@@ -244,7 +244,11 @@ export async function startGeneration(config, presetName, snowSql) {
             const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
             await insertDimPois(pois, config, snowSql);
             await insertDimFleet(fleet, config, snowSql);
-            broadcast(job, 'progress', { status: `Loaded ${pois.length} POIs, built ${fleet.length} vehicles` });
+            const catCounts = {};
+            for (const p of pois)
+                catCounts[p.category || p.location_type] = (catCounts[p.category || p.location_type] || 0) + 1;
+            const catSummary = Object.entries(catCounts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}: ${v}`).join(', ');
+            broadcast(job, 'progress', { status: `Loaded ${pois.length} POIs (${catSummary}), built ${fleet.length} vehicles` });
             const pendingTrips = [];
             let stoppedEvent = null;
             const gen = generateTelemetry(config, snowSql, (p) => {
