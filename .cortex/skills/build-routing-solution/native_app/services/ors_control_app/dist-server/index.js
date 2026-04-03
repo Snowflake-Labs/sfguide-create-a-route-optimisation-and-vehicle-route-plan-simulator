@@ -6,6 +6,7 @@ import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
+import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 config();
 const app = express();
 app.use(cors());
@@ -127,10 +128,11 @@ async function snowSqlSpcs(sql, database, schema, timeoutSecs = 600) {
         'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
     };
     console.log(`[SQL API] Executing: ${sql.slice(0, 200)} (WH: ${SF_WAREHOUSE}, DB: ${SF_DATABASE}, HOST: ${SNOWFLAKE_HOST})`);
+    const sqlStart = Date.now();
     const res = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
     if (!res.ok) {
         const errBody = (await res.text()).slice(0, 500);
-        console.error(`[SQL API] Error ${res.status}: ${errBody}`);
+        log('ERROR', 'SQL', `API error ${res.status}: ${errBody.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
         throw new Error(`SQL API error ${res.status}: ${errBody}`);
     }
     let result = await res.json();
@@ -145,7 +147,7 @@ async function snowSqlSpcs(sql, database, schema, timeoutSecs = 600) {
         }
     }
     if (result.message && !result.data) {
-        console.error(`[SQL API] Statement error: ${result.message}`);
+        log('ERROR', 'SQL', `Statement error: ${result.message?.slice(0, 200)}`, { durationMs: Date.now() - sqlStart });
         throw new Error(`SQL error: ${result.message}`);
     }
     if (!result.data)
@@ -185,14 +187,14 @@ app.get('/api/status', async (_req, res) => {
         res.json(JSON.parse(result));
     }
     catch (err) {
-        console.error(`[/api/status] Error: ${err.message}`);
+        log('ERROR', 'Health', `/api/status error: ${err.message?.slice(0, 200)}`);
         res.json({ compute_pool: 'ERROR', services: [], error: err.message });
     }
 });
 app.get('/api/config', (_req, res) => {
     res.json({ database: SF_DATABASE });
 });
-const APP_VERSION = '1.0.28';
+const APP_VERSION = '1.0.51';
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles = null;
 async function getExpectedProfiles(region) {
@@ -1418,6 +1420,76 @@ app.post('/api/agent/chat', async (req, res) => {
         res.end();
     }
 });
+app.get('/api/diagnostics/logs', (_req, res) => {
+    const { level, tag, jobId, since, limit } = _req.query;
+    const entries = getEntries({
+        level: level,
+        tag: tag,
+        jobId: jobId,
+        since: since,
+        limit: limit ? Number(limit) : undefined,
+    });
+    res.json({ entries, total: entries.length });
+});
+app.get('/api/diagnostics/env', (_req, res) => {
+    const mem = process.memoryUsage();
+    res.json({
+        version: APP_VERSION,
+        uptimeMs: getUptimeMs(),
+        uptime: formatUptime(getUptimeMs()),
+        isSpcs: IS_SPCS,
+        database: SF_DATABASE,
+        warehouse: SF_WAREHOUSE,
+        nodeVersion: process.version,
+        memoryMb: {
+            rss: Math.round(mem.rss / 1048576),
+            heapUsed: Math.round(mem.heapUsed / 1048576),
+            heapTotal: Math.round(mem.heapTotal / 1048576),
+        },
+    });
+});
+app.get('/api/diagnostics/probe', async (_req, res) => {
+    const results = {};
+    let t = Date.now();
+    try {
+        await runSql('SELECT 1 AS PING');
+        results.snowflakeSql = { ok: true, ms: Date.now() - t };
+    }
+    catch (e) {
+        results.snowflakeSql = { ok: false, ms: Date.now() - t, detail: e.message?.slice(0, 200) };
+    }
+    t = Date.now();
+    try {
+        const rows = await runSql(`SELECT ${SF_DATABASE}.CORE.ORS_STATUS() AS S`);
+        const raw = rows?.[0]?.S;
+        const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const profiles = Object.keys(status?.profiles || {});
+        results.orsService = { ok: !!status?.service_ready, ms: Date.now() - t, detail: `profiles: ${profiles.join(', ') || 'none'}` };
+    }
+    catch (e) {
+        results.orsService = { ok: false, ms: Date.now() - t, detail: e.message?.slice(0, 200) };
+    }
+    t = Date.now();
+    try {
+        await runSql('SELECT 1 FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1', 'OVERTURE_MAPS__PLACES', 'CARTO');
+        results.overtureMaps = { ok: true, ms: Date.now() - t };
+    }
+    catch (e) {
+        results.overtureMaps = { ok: false, ms: Date.now() - t, detail: e.message?.slice(0, 200) };
+    }
+    log('INFO', 'Diagnostics', 'Connectivity probe completed', { detail: results });
+    res.json(results);
+});
+app.post('/api/diagnostics/logs/clear', (_req, res) => {
+    clearEntries();
+    res.json({ ok: true });
+});
+function formatUptime(ms) {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
+}
 app.use('/api/studio', createStudioRouter(runSql));
 app.post('/api/query', async (req, res) => {
     try {

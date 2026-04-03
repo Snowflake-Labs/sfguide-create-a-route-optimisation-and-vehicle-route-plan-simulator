@@ -1,4 +1,5 @@
 import { haversineKm, lognormalSample, calculateHeading, addGpsJitter, createRng, rngInt, rngFloat, uuid, resolveVehicleType, } from './profiles.js';
+import { log } from '../diagnostics.js';
 export async function loadPOIs(config, snowSql) {
     const { bbox } = config;
     const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'office'];
@@ -26,7 +27,7 @@ export async function loadPOIs(config, snowSql) {
         }
     }
     catch (e) {
-        console.log(`[Studio] Overture Maps not available (${e.message?.slice(0, 80)}), generating synthetic POIs`);
+        log('INFO', 'Studio', `Overture Maps not available, generating synthetic POIs`, { detail: e.message?.slice(0, 120) });
     }
     return generateSyntheticPOIs(config);
 }
@@ -118,61 +119,69 @@ export function buildFleet(config, pois, rng) {
 }
 async function fetchRoute(originLat, originLng, destLat, destLng, profile, snowSql) {
     const sql = `
-    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
       '${profile}',
-      OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${originLng},${originLat})),
-      OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(${destLng},${destLat})),
-      'geojson'
-    ) AS ROUTE`;
+      ARRAY_CONSTRUCT(${originLng},${originLat}),
+      ARRAY_CONSTRUCT(${destLng},${destLat})
+    ))`;
     try {
         const rows = await snowSql(sql);
-        if (!rows.length)
+        if (!rows.length) {
+            log('WARN', 'Studio', 'Route returned empty result', {
+                detail: { origin: [originLat, originLng], dest: [destLat, destLng], profile },
+            });
             return null;
-        const raw = typeof rows[0].ROUTE === 'string' ? JSON.parse(rows[0].ROUTE) : rows[0].ROUTE;
-        const feature = raw?.features?.[0];
-        if (!feature)
+        }
+        const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
+        const coords = geo?.coordinates || [];
+        if (coords.length < 2)
             return null;
-        const coords = feature.geometry?.coordinates || [];
-        const summary = feature.properties?.summary || {};
         return {
             coordinates: coords.map(c => [c[1], c[0]]),
-            distance_m: summary.distance || 0,
-            duration_sec: summary.duration || 0,
+            distance_m: Number(rows[0].DISTANCE) || 0,
+            duration_sec: Number(rows[0].DURATION) || 0,
         };
     }
-    catch {
+    catch (e) {
+        log('WARN', 'Studio', `Route fetch failed: ${e.message?.slice(0, 300)}`, {
+            detail: { origin: [originLat, originLng], dest: [destLat, destLng], profile },
+        });
         return null;
     }
 }
 async function fetchDetourRoute(originLat, originLng, waypointLat, waypointLng, destLat, destLng, profile, snowSql) {
+    const coordsJson = JSON.stringify({
+        coordinates: [
+            [originLng, originLat],
+            [waypointLng, waypointLat],
+            [destLng, destLat],
+        ],
+    }).replace(/'/g, "''");
     const sql = `
-    SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
       '${profile}',
-      OBJECT_CONSTRUCT('type','MultiPoint','coordinates',ARRAY_CONSTRUCT(
-        ARRAY_CONSTRUCT(${originLng},${originLat}),
-        ARRAY_CONSTRUCT(${waypointLng},${waypointLat}),
-        ARRAY_CONSTRUCT(${destLng},${destLat})
-      )),
-      NULL,
-      'geojson'
-    ) AS ROUTE`;
+      PARSE_JSON('${coordsJson}')::VARIANT
+    ))`;
     try {
         const rows = await snowSql(sql);
         if (!rows.length)
             return null;
-        const raw = typeof rows[0].ROUTE === 'string' ? JSON.parse(rows[0].ROUTE) : rows[0].ROUTE;
-        const feature = raw?.features?.[0];
-        if (!feature)
+        const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
+        const coords = geo?.coordinates || [];
+        if (coords.length < 2)
             return null;
-        const coords = feature.geometry?.coordinates || [];
-        const summary = feature.properties?.summary || {};
         return {
             coordinates: coords.map(c => [c[1], c[0]]),
-            distance_m: summary.distance || 0,
-            duration_sec: summary.duration || 0,
+            distance_m: Number(rows[0].DISTANCE) || 0,
+            duration_sec: Number(rows[0].DURATION) || 0,
         };
     }
-    catch {
+    catch (e) {
+        log('WARN', 'Studio', `Detour route fetch failed: ${e.message?.slice(0, 300)}`, {
+            detail: { profile },
+        });
         return null;
     }
 }
@@ -363,11 +372,13 @@ function emitDwell(lifecycle, config, tripId, dwellConfig, status, poi, rng) {
 export async function* generateTelemetry(config, snowSql, onProgress, abortSignal) {
     const rng = createRng(config.time.start_date.length * 31 + config.fleet.num_vehicles);
     const vt = resolveVehicleType(config);
-    console.log(`[Studio] Loading POIs for ${config.region} (${vt})...`);
+    log('INFO', 'Studio', `Starting generation for ${config.region} (${vt}, ${config.ors_profile})`, {
+        detail: { vehicles: config.fleet.num_vehicles, days: config.time.start_date + ' to ' + config.time.end_date },
+    });
     const pois = await loadPOIs(config, snowSql);
-    console.log(`[Studio] Loaded ${pois.length} POIs`);
+    log('INFO', 'Studio', `Loaded ${pois.length} POIs for ${config.region}`);
     const fleet = buildFleet(config, pois, rng);
-    console.log(`[Studio] Built fleet of ${fleet.length} ${vt} vehicles`);
+    log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles`);
     const startDate = new Date(config.time.start_date + 'T00:00:00');
     const endDate = new Date(config.time.end_date + 'T23:59:59');
     const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
@@ -376,7 +387,9 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
     let routeSuccesses = 0;
     let routeFailures = 0;
     let consecutiveFails = 0;
-    const MAX_CONSECUTIVE_FAILURES = 10;
+    const MAX_CONSECUTIVE_FAILURES = 25;
+    const MIN_ATTEMPTS_BEFORE_STOP = 20;
+    const MAX_ROUTE_RETRIES = 3;
     for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
         if (abortSignal?.aborted)
             return;
@@ -428,9 +441,8 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                     dayBatch.push(...emitDwell(lifecycle, config, null, rechargeDwell, 'DWELL_RECHARGE', currentOriginPoi, rng));
                     lifecycle.vehicle.battery_pct = 100;
                 }
-                const destPoi = pickDestination(currentOriginPoi, pois, config, rng);
+                let destPoi = pickDestination(currentOriginPoi, pois, config, rng);
                 const tripId = uuid(rng);
-                totalTrips++;
                 const tripStartTime = new Date(lifecycle.currentTime);
                 const originDwellKey = config.mode === 'food_delivery' ? 'origin' : (currentOriginPoi.location_type === 'WAREHOUSE' ? 'warehouse' : 'origin');
                 let originDwell = config.dwell[originDwellKey];
@@ -443,22 +455,36 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 let plannedRoute = null;
                 let actualRoute = null;
                 let isDetour = false;
-                plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+                for (let attempt = 0; attempt < MAX_ROUTE_RETRIES; attempt++) {
+                    plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+                    if (plannedRoute)
+                        break;
+                    if (attempt < MAX_ROUTE_RETRIES - 1) {
+                        destPoi = pickDestination(currentOriginPoi, pois, config, rng);
+                    }
+                }
                 if (plannedRoute) {
                     routeSuccesses++;
                     consecutiveFails = 0;
+                    totalTrips++;
                 }
                 else {
                     routeFailures++;
                     consecutiveFails++;
-                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES && routeSuccesses === 0) {
+                    const totalAttempts = routeSuccesses + routeFailures;
+                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES && totalAttempts >= MIN_ATTEMPTS_BEFORE_STOP && routeSuccesses === 0) {
+                        log('ERROR', 'Studio', `ORS unavailable: ${routeFailures} consecutive failures, 0 successes`, {
+                            detail: { region: config.region, profile: config.ors_profile },
+                        });
                         throw new Error(`ORS unavailable: ${routeFailures} consecutive route requests failed. ` +
                             `Check that ORS is running and "${config.ors_profile}" is built for "${config.region}".`);
                     }
-                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES) {
-                        console.log(`[Studio] ORS stopped responding after ${consecutiveFails} consecutive failures. Stopping gracefully.`);
+                    if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES && totalAttempts >= MIN_ATTEMPTS_BEFORE_STOP) {
+                        log('WARN', 'Studio', `Stopping: ${consecutiveFails} consecutive failures after ${routeSuccesses} successes`, {
+                            detail: { region: config.region, profile: config.ors_profile, totalAttempts },
+                        });
+                        totalPoints += dayBatch.length;
                         if (dayBatch.length > 0) {
-                            totalPoints += dayBatch.length;
                             yield { type: 'telemetry', points: dayBatch };
                         }
                         yield {
@@ -534,6 +560,17 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
             if (idleDwell && 'median_min' in idleDwell) {
                 dayBatch.push(...emitDwell(lifecycle, config, null, idleDwell, 'IDLE', currentOriginPoi, rng));
             }
+            onProgress?.({
+                day: dayOffset + 1,
+                totalDays,
+                vehicleId: member.vehicle_id,
+                pointsToday: dayBatch.length,
+                totalPoints: totalPoints + dayBatch.length,
+                totalTrips,
+                routeSuccesses,
+                routeFailures,
+                status: `Day ${dayOffset + 1}: ${member.vehicle_id} (${dayBatch.length} pts, ${totalTrips} trips)`,
+            });
         }
         totalPoints += dayBatch.length;
         onProgress?.({
@@ -544,7 +581,7 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
             totalTrips,
             routeSuccesses,
             routeFailures,
-            status: `Day ${dayOffset + 1}/${totalDays}: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips`,
+            status: `Day ${dayOffset + 1}/${totalDays} complete: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips`,
         });
         if (dayBatch.length > 0) {
             yield { type: 'telemetry', points: dayBatch };

@@ -40,7 +40,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       telemetry: { ping_interval_moving: { mean_sec: 10, std_sec: 3 }, ping_interval_dwell: { min_sec: 30, max_sec: 120 }, gps_jitter: { typical_m: 6, multipath_probability: 0.02, multipath_max_m: 80 } },
       dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12 }, destination: { median_min: 2, sigma: 0.4, max_min: 8 }, idle: { median_min: 5, sigma: 0.5, max_min: 20 } },
       detour: { probability: 0.05, max_detour_factor: 1.4 },
-      poi_categories: ['restaurant', 'bar', 'hotel', 'office', 'shopping_mall', 'hospital', 'airport'],
+      poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
     },
   },
   {
@@ -72,7 +72,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       battery: { range_km: 60, drain_per_km: 1.67, recharge_threshold_pct: 15 },
       delivery_sla: { target_minutes: 30, warning_minutes: 25 },
       detour: { probability: 0.03, max_detour_factor: 1.3 },
-      poi_categories: ['restaurant', 'fast_food', 'cafe', 'bakery', 'pizza', 'sushi'],
+      poi_categories: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
     },
   },
   {
@@ -102,7 +102,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       dwell: { origin: { median_min: 15, sigma: 0.6, max_min: 45 }, destination: { median_min: 20, sigma: 0.7, max_min: 60 }, idle: { median_min: 10, sigma: 0.5, max_min: 30 } },
       breaks: { driving_hours_between_breaks: 4.5, mandatory_break_duration_min: 45, max_daily_driving_hours: 9 },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
-      poi_categories: ['warehouse', 'industrial', 'logistics', 'fuel', 'rest_area', 'parking'],
+      poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
     },
   },
 ];

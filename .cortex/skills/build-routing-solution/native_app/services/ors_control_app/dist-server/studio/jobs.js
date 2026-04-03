@@ -1,5 +1,6 @@
 import { createRng, uuid, resolveVehicleType } from './profiles.js';
 import { generateTelemetry } from './engine.js';
+import { log } from '../diagnostics.js';
 const activeJobs = new Map();
 export function getJobs() {
     return [...activeJobs.values()].map(j => ({ ...j, abort: undefined, listeners: undefined }));
@@ -96,6 +97,7 @@ async function ensureTables(snowSql) {
         }
         catch (e) {
             console.error(`[Studio] DDL error: ${e.message?.slice(0, 200)}`);
+            log('ERROR', 'Studio', `DDL error: ${e.message?.slice(0, 200)}`);
         }
     }
 }
@@ -123,7 +125,7 @@ async function insertTelemetryBatch(points, snowSql) {
             inserted += chunk.length;
         }
         catch (e) {
-            console.error(`[Studio] Telemetry insert error: ${e.message?.slice(0, 200)}`);
+            log('ERROR', 'Studio', `Telemetry insert error`, { detail: e.message?.slice(0, 200) });
         }
     }
     return inserted;
@@ -163,7 +165,7 @@ async function insertTripBatch(trips, snowSql) {
             inserted += chunk.length;
         }
         catch (e) {
-            console.error(`[Studio] Trip insert error: ${e.message?.slice(0, 200)}`);
+            log('ERROR', 'Studio', `Trip insert error`, { detail: e.message?.slice(0, 200) });
         }
     }
     return inserted;
@@ -184,7 +186,7 @@ async function insertDimFleet(fleet, config, snowSql) {
         await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
     }
     catch (e) {
-        console.error(`[Studio] DIM_FLEET insert error: ${e.message?.slice(0, 200)}`);
+        log('ERROR', 'Studio', `DIM_FLEET insert error`, { detail: e.message?.slice(0, 200) });
     }
 }
 async function insertDimPois(pois, config, snowSql) {
@@ -202,7 +204,7 @@ async function insertDimPois(pois, config, snowSql) {
             await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
         }
         catch (e) {
-            console.error(`[Studio] DIM_POIS insert error: ${e.message?.slice(0, 200)}`);
+            log('ERROR', 'Studio', `DIM_POIS insert error`, { detail: e.message?.slice(0, 200) });
         }
     }
 }
@@ -210,6 +212,7 @@ export async function startGeneration(config, presetName, snowSql) {
     const rng = createRng(Date.now());
     const jobId = uuid(rng);
     const vt = resolveVehicleType(config);
+    log('INFO', 'Studio', `Job ${jobId} started: ${presetName} (${config.region}, ${config.ors_profile})`, { jobId });
     const job = {
         jobId,
         presetName,
@@ -273,6 +276,10 @@ export async function startGeneration(config, presetName, snowSql) {
             if (stoppedEvent) {
                 job.status = 'STOPPED';
                 job.completedAt = new Date();
+                log('WARN', 'Studio', `Job ${jobId} stopped: ${stoppedEvent.reason}`, {
+                    jobId,
+                    detail: { days: `${stoppedEvent.completedDays}/${stoppedEvent.totalDays}`, successes: stoppedEvent.routeSuccesses, failures: stoppedEvent.routeFailures },
+                });
                 broadcast(job, 'stopped', {
                     reason: stoppedEvent.reason,
                     pointsGenerated: job.pointsGenerated,
@@ -286,6 +293,7 @@ export async function startGeneration(config, presetName, snowSql) {
             else {
                 job.status = job.abort.aborted ? 'CANCELLED' : 'COMPLETED';
                 job.completedAt = new Date();
+                log('INFO', 'Studio', `Job ${jobId} ${job.status}: ${job.pointsGenerated} pts, ${job.tripsGenerated} trips`, { jobId });
                 broadcast(job, job.status === 'COMPLETED' ? 'complete' : 'cancelled', { pointsGenerated: job.pointsGenerated, tripsGenerated: job.tripsGenerated });
             }
             try {
@@ -303,6 +311,7 @@ export async function startGeneration(config, presetName, snowSql) {
             job.status = 'FAILED';
             job.error = e.message;
             job.completedAt = new Date();
+            log('ERROR', 'Studio', `Job ${jobId} failed: ${e.message?.slice(0, 300)}`, { jobId });
             broadcast(job, 'error', { error: e.message });
             try {
                 await snowSql(`UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='FAILED',

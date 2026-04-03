@@ -127,21 +127,24 @@ export async function loadPOIs(
   snowSql: SnowSqlFn,
 ): Promise<POI[]> {
   const { bbox } = config;
-  const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'office'];
+  const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'corporate_or_business_office'];
   const catFilter = cats.map(c => `'${c}'`).join(',');
   const sql = `
     SELECT ID AS LOCATION_ID, NAMES::VARIANT:primary AS NAME,
-           CATEGORIES::VARIANT[0]::STRING AS CATEGORY,
+           BASIC_CATEGORY AS CATEGORY,
            ST_Y(GEOMETRY) AS LAT, ST_X(GEOMETRY) AS LNG
     FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
     WHERE ST_Y(GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
       AND ST_X(GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
-      AND CATEGORIES::VARIANT[0]::STRING IN (${catFilter})
+      AND BASIC_CATEGORY IN (${catFilter})
     LIMIT 5000`;
+  log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
+    detail: { categories: cats, bbox, mode: config.mode, sql: sql.trim().replace(/\s+/g, ' ') },
+  });
   try {
     const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
     if (rows.length > 0) {
-      return rows.map((r: any) => ({
+      const pois = rows.map((r: any) => ({
         location_id: r.LOCATION_ID || uuid(Math.random),
         name: r.NAME || 'Unknown',
         location_type: mapCategoryToType(r.CATEGORY || '', config.mode),
@@ -149,50 +152,48 @@ export async function loadPOIs(
         lng: Number(r.LNG),
         category: r.CATEGORY || '',
       }));
+      const catCounts: Record<string, number> = {};
+      const typeCounts: Record<string, number> = {};
+      for (const p of pois) {
+        catCounts[p.category] = (catCounts[p.category] || 0) + 1;
+        typeCounts[p.location_type] = (typeCounts[p.location_type] || 0) + 1;
+      }
+      log('INFO', 'Studio', `Loaded ${pois.length} POIs from Overture Maps`, {
+        detail: { source: 'overture', categories: catCounts, types: typeCounts },
+      });
+      return pois;
     }
+    log('ERROR', 'Studio', `Overture Maps returned 0 POIs for bbox`, {
+      detail: { bbox, categories: cats },
+    });
+    throw new Error(
+      `No POIs found in Overture Maps for region bbox ` +
+      `[${bbox.min_lat},${bbox.min_lng} to ${bbox.max_lat},${bbox.max_lng}] ` +
+      `with categories [${cats.join(', ')}]. Expand the bbox or change categories.`
+    );
   } catch (e: any) {
-    log('INFO', 'Studio', `Overture Maps not available, generating synthetic POIs`, { detail: e.message?.slice(0, 120) });
+    if (e.message?.startsWith('No POIs found')) throw e;
+    log('ERROR', 'Studio', `Overture Maps query failed`, {
+      detail: { error: e.message?.slice(0, 200), bbox, categories: cats },
+    });
+    throw new Error(
+      `Cannot load POIs: Overture Maps is not accessible. ` +
+      `Ensure the OVERTURE_MAPS__PLACES share is mounted. Error: ${e.message?.slice(0, 200)}`
+    );
   }
-  return generateSyntheticPOIs(config);
 }
 
 function mapCategoryToType(category: string, mode: string): string {
   if (mode === 'food_delivery') {
-    if (['restaurant', 'fast_food', 'cafe', 'bakery', 'pizza', 'sushi'].includes(category)) return 'RESTAURANT';
+    if (['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'].includes(category)) return 'RESTAURANT';
     return 'ADDRESS';
   }
   if (mode === 'trucking') {
-    if (['warehouse', 'industrial', 'logistics'].includes(category)) return 'WAREHOUSE';
-    if (['fuel', 'rest_area', 'parking'].includes(category)) return 'REST_STOP';
+    if (['warehouse', 'storage_facility', 'b2b_transportation_and_storage_service', 'industrial_facility_or_service'].includes(category)) return 'WAREHOUSE';
+    if (['gas_station', 'parking', 'transportation_location', 'ground_transport_facility_or_service'].includes(category)) return 'REST_STOP';
     return 'DESTINATION';
   }
   return 'LOCATION';
-}
-
-function generateSyntheticPOIs(config: GenerationConfig): POI[] {
-  const rng = createRng(42);
-  const { bbox } = config;
-  const pois: POI[] = [];
-  const numPois = Math.max(200, config.fleet.num_vehicles * 10);
-  const types = config.mode === 'food_delivery'
-    ? ['RESTAURANT', 'ADDRESS']
-    : config.mode === 'trucking'
-      ? ['WAREHOUSE', 'DESTINATION', 'REST_STOP']
-      : ['LOCATION'];
-
-  for (let i = 0; i < numPois; i++) {
-    const lat = rngFloat(rng, bbox.min_lat, bbox.max_lat);
-    const lng = rngFloat(rng, bbox.min_lng, bbox.max_lng);
-    const typeIdx = i % types.length;
-    pois.push({
-      location_id: `POI-${i.toString().padStart(5, '0')}`,
-      name: `${types[typeIdx]}-${i}`,
-      location_type: types[typeIdx],
-      lat, lng,
-      category: types[typeIdx].toLowerCase(),
-    });
-  }
-  return pois;
 }
 
 export function buildFleet(config: GenerationConfig, pois: POI[], rng: () => number): FleetMember[] {
@@ -542,14 +543,28 @@ export async function* generateTelemetry(
 ): AsyncGenerator<GenerationEvent, void, void> {
   const rng = createRng(config.time.start_date.length * 31 + config.fleet.num_vehicles);
   const vt = resolveVehicleType(config);
-  log('INFO', 'Studio', `Starting generation for ${config.region} (${vt}, ${config.ors_profile})`, {
-    detail: { vehicles: config.fleet.num_vehicles, days: config.time.start_date + ' to ' + config.time.end_date },
+  log('INFO', 'Studio', `Starting generation for ${config.region}`, {
+    detail: {
+      vehicleType: vt, profile: config.ors_profile, mode: config.mode,
+      vehicles: config.fleet.num_vehicles, tripsPerDay: config.fleet.trips_per_day,
+      days: config.time.start_date + ' to ' + config.time.end_date,
+      bbox: config.bbox,
+      driverProfiles: Object.keys(config.driver_profiles),
+    },
   });
   const pois = await loadPOIs(config, snowSql);
-  log('INFO', 'Studio', `Loaded ${pois.length} POIs for ${config.region}`);
 
   const fleet = buildFleet(config, pois, rng);
-  log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles`);
+  const profileBreakdown: Record<string, number> = {};
+  for (const m of fleet) profileBreakdown[m.profile_type] = (profileBreakdown[m.profile_type] || 0) + 1;
+  const shiftBreakdown: Record<string, number> = {};
+  for (const m of fleet) {
+    const key = `${m.shift_start}:00-${m.shift_end}:00`;
+    shiftBreakdown[key] = (shiftBreakdown[key] || 0) + 1;
+  }
+  log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles`, {
+    detail: { driverProfiles: profileBreakdown, shifts: shiftBreakdown, homePoisUsed: new Set(fleet.map(m => m.home_poi.location_id)).size },
+  });
 
   const startDate = new Date(config.time.start_date + 'T00:00:00');
   const endDate = new Date(config.time.end_date + 'T23:59:59');

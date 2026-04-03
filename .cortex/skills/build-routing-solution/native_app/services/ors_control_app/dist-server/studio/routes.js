@@ -1,20 +1,24 @@
 import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration } from './jobs.js';
 import { PROFILE_TEMPLATES } from './profiles.js';
+import { log } from '../diagnostics.js';
 async function checkOrsReadiness(snowSql, orsProfile) {
     try {
         const rows = await snowSql(`SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ORS_STATUS() AS STATUS`);
         const raw = rows[0]?.STATUS;
         const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (!status?.service_ready) {
+            log('WARN', 'ORS', `ORS readiness check failed: service not ready (profile: ${orsProfile})`);
             return { ready: false, error: 'ORS service is not running (suspended or starting up). Resume the service from the Service Lifecycle page before generating.' };
         }
         const profiles = Object.keys(status.profiles || {});
         if (!profiles.includes(orsProfile)) {
+            log('WARN', 'ORS', `ORS profile "${orsProfile}" not built. Available: ${profiles.join(', ')}`);
             return { ready: false, error: `ORS profile "${orsProfile}" is not built. Available profiles: ${profiles.join(', ') || 'none'}. Build the graph for this profile first.` };
         }
     }
     catch (e) {
+        log('ERROR', 'ORS', `ORS readiness check exception: ${e.message?.slice(0, 200)}`);
         return { ready: false, error: `Cannot reach ORS service: ${e.message?.slice(0, 120)}. The app may not be installed.` };
     }
     return { ready: true };
