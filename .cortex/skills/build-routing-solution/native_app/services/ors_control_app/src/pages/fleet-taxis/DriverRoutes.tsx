@@ -38,7 +38,8 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
               ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT,
               ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_KM,
               ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_MIN,
-              ORIGIN_ADDRESS, DESTINATION_ADDRESS
+              ORIGIN_ADDRESS, DESTINATION_ADDRESS,
+              ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON
        FROM TRIP_SUMMARY WHERE DRIVER_ID = '${driverId}' AND REGION = '${regionName}' ORDER BY TRIP_START_TIME DESC LIMIT 50`,
       { database: sourceDb, schema: sourceSchema });
     setRoutes(r);
@@ -101,9 +102,15 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
     } else if (routes.length) {
       l.push(new PathLayer({
         id: 'driver-routes',
-        data: routes.filter((r: any) => r.P_LNG && r.D_LNG).map((r: any) => ({
-          path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]],
-        })),
+        data: routes.filter((r: any) => r.P_LNG && r.D_LNG).map((r: any) => {
+          if (r.ROUTE_GEOJSON) {
+            try {
+              const geo = JSON.parse(r.ROUTE_GEOJSON);
+              if (geo.coordinates?.length > 1) return { path: geo.coordinates };
+            } catch {}
+          }
+          return { path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]] };
+        }),
         getPath: (d: any) => d.path, getColor: [255, 107, 53, 180], getWidth: 3, widthMinPixels: 2,
       }));
       l.push(new ScatterplotLayer({
@@ -141,10 +148,33 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
 
   const sel = drivers.find((d: any) => d.DRIVER_ID === selectedDriver);
 
+  const selTrip = routes.find((r: any) => r.TRIP_ID === selectedTrip);
+
+  const handleDriverChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v) loadRoutes(v); else { setSelectedDriver(null); setRoutes([]); setGpsPoints([]); setSelectedTrip(null); }
+  }, [loadRoutes]);
+
+  const handleTripChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v) loadTrip(v); else { setSelectedTrip(null); setGpsPoints([]); }
+  }, [loadTrip]);
+
   return (
     <div className="page-full">
       <div className="page-sidebar-panel">
         <h2>Driver Routes</h2>
+        <div className="form-group">
+          <label>Driver</label>
+          <select className="form-select" value={selectedDriver || ''} onChange={handleDriverChange}>
+            <option value="">Select a driver...</option>
+            {drivers.map((d: any) => (
+              <option key={d.DRIVER_ID} value={d.DRIVER_ID}>
+                {String(d.DRIVER_ID).slice(-8)} — {d.TRIPS} trips, {d.TOTAL_KM} km
+              </option>
+            ))}
+          </select>
+        </div>
         {sel && (
           <div className="metric-grid-vertical">
             <MetricCard label="Driver" value={String(sel.DRIVER_ID).slice(-8)} />
@@ -154,20 +184,24 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
           </div>
         )}
         {selectedDriver && routes.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            <h3 style={{ fontSize: 13, marginBottom: 6 }}>Trips</h3>
-            <div className="data-table-container" style={{ maxHeight: 150 }}>
-              <table className="data-table">
-                <thead><tr><th className="data-table-th">Trip</th><th className="data-table-th">Km</th><th className="data-table-th">Min</th></tr></thead>
-                <tbody>{routes.map((r: any) => (
-                  <tr key={r.TRIP_ID} onClick={() => loadTrip(r.TRIP_ID)}
-                    style={{ cursor: 'pointer', background: selectedTrip === r.TRIP_ID ? 'rgba(41,181,232,0.15)' : undefined }}>
-                    <td style={{ fontSize: 10 }}>{String(r.TRIP_ID).slice(0, 8)}</td>
-                    <td>{r.TRIP_KM}</td><td>{r.TRIP_MIN}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
+          <div className="form-group">
+            <label>Trip</label>
+            <select className="form-select" value={selectedTrip || ''} onChange={handleTripChange}>
+              <option value="">Select a trip...</option>
+              {routes.map((r: any) => (
+                <option key={r.TRIP_ID} value={r.TRIP_ID}>
+                  {String(r.TRIP_ID).slice(0, 8)} — {r.TRIP_KM} km, {r.TRIP_MIN} min
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {selTrip && (
+          <div className="metric-grid-vertical">
+            <MetricCard label="Distance" value={`${selTrip.TRIP_KM} km`} />
+            <MetricCard label="Duration" value={`${selTrip.TRIP_MIN} min`} />
+            {selTrip.ORIGIN_ADDRESS && <MetricCard label="From" value={selTrip.ORIGIN_ADDRESS} />}
+            {selTrip.DESTINATION_ADDRESS && <MetricCard label="To" value={selTrip.DESTINATION_ADDRESS} />}
           </div>
         )}
         {gpsPoints.length > 1 && (
@@ -177,8 +211,10 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
               onChange={e => setSliderIdx(Number(e.target.value))} style={{ width: '100%' }} />
             {currentPoint && (
               <div style={{ fontSize: 11, color: '#6E7681', marginTop: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#24292F', marginBottom: 2 }}>
+                  {String(currentPoint.CURR_TIME).slice(11, 19)}
+                </div>
                 <div>Speed: {currentPoint.KMH} km/h | State: {currentPoint.DRIVER_STATE}</div>
-                <div>Time: {String(currentPoint.CURR_TIME).slice(11, 19)}</div>
               </div>
             )}
             <div style={{ marginTop: 8 }}>
@@ -203,18 +239,6 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
             )}
           </div>
         )}
-        <h3 style={{ fontSize: 13, marginBottom: 8, marginTop: 12 }}>All Drivers</h3>
-        <div className="data-table-container" style={{ maxHeight: selectedDriver ? 150 : 350 }}>
-          <table className="data-table">
-            <thead><tr><th className="data-table-th">Driver</th><th className="data-table-th">Trips</th><th className="data-table-th">Km</th></tr></thead>
-            <tbody>{drivers.map((d: any) => (
-              <tr key={d.DRIVER_ID} onClick={() => loadRoutes(d.DRIVER_ID)}
-                style={{ cursor: 'pointer', background: selectedDriver === d.DRIVER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-                <td style={{ fontSize: 11 }}>{String(d.DRIVER_ID).slice(-8)}</td><td>{d.TRIPS}</td><td>{d.TOTAL_KM}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
       </div>
       <MapView layers={layers} initialViewState={viewState} />
     </div>

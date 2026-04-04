@@ -22,7 +22,8 @@ export default function FleetOverview({ sourceDb, sourceSchema, config }: Props)
             ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT,
             ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT,
             ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_DISTANCE_KM,
-            ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN
+            ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN,
+            ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON
      FROM TRIP_SUMMARY WHERE REGION = '${regionName}' ORDER BY TRIP_START_TIME DESC LIMIT 200`, sourceDb, sourceSchema, [regionName]);
 
   const { data: hourly } = useSfQuery(
@@ -32,9 +33,15 @@ export default function FleetOverview({ sourceDb, sourceSchema, config }: Props)
   const k = kpis[0] || {};
 
   const paths = useMemo(() =>
-    recent.filter((r: any) => r.P_LNG && r.D_LNG).map((r: any) => ({
-      path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]],
-    })), [recent]);
+    recent.filter((r: any) => r.P_LNG && r.D_LNG).map((r: any) => {
+      if (r.ROUTE_GEOJSON) {
+        try {
+          const geo = JSON.parse(r.ROUTE_GEOJSON);
+          if (geo.coordinates?.length > 1) return { path: geo.coordinates };
+        } catch {}
+      }
+      return { path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]] };
+    }), [recent]);
 
   const layers = useMemo(() => {
     const l: any[] = [];

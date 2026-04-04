@@ -105,7 +105,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'fleet-taxis', 'route-deviation', 'route-opt', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'route-deviation', 'route-opt', 'retail', 'agent'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   return (

@@ -16,7 +16,7 @@ export default function FleetOverview() {
     setLoading(true);
     Promise.all([
       sfQuery(`SELECT COUNT(DISTINCT DRIVER_ID) AS DRIVERS, COUNT(DISTINCT TRIP_ID) AS TRIPS, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 1) AS AVG_DISTANCE_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION_MIN FROM TRIP_SUMMARY`),
-      sfQuery(`SELECT TRIP_ID, DRIVER_ID, ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT, ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT, ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_DISTANCE_KM, ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN FROM TRIP_SUMMARY ORDER BY TRIP_START_TIME DESC LIMIT 200`),
+      sfQuery(`SELECT TRIP_ID, DRIVER_ID, ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT, ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT, ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_DISTANCE_KM, ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_DURATION_MIN, ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON FROM TRIP_SUMMARY ORDER BY TRIP_START_TIME DESC LIMIT 200`),
       sfQuery(`SELECT HOUR(TRIP_START_TIME) AS HOUR, COUNT(*) AS TRIPS FROM TRIP_SUMMARY GROUP BY 1 ORDER BY 1`),
     ]).then(([k, t, h]) => {
       setKpis(k[0] || {});
@@ -37,9 +37,15 @@ export default function FleetOverview() {
     if (!trips.length) return null;
     return new PathLayer({
       id: 'taxi-routes',
-      data: trips.filter((t: any) => t.P_LNG && t.P_LAT && t.D_LNG && t.D_LAT).map((t: any) => ({
-        path: [[Number(t.P_LNG), Number(t.P_LAT)], [Number(t.D_LNG), Number(t.D_LAT)]],
-      })),
+      data: trips.filter((t: any) => t.P_LNG && t.P_LAT && t.D_LNG && t.D_LAT).map((t: any) => {
+        if (t.ROUTE_GEOJSON) {
+          try {
+            const geo = JSON.parse(t.ROUTE_GEOJSON);
+            if (geo.coordinates?.length > 1) return { path: geo.coordinates };
+          } catch {}
+        }
+        return { path: [[Number(t.P_LNG), Number(t.P_LAT)], [Number(t.D_LNG), Number(t.D_LAT)]] };
+      }),
       getPath: (d: any) => d.path,
       getColor: [41, 181, 232, 80],
       getWidth: 2,

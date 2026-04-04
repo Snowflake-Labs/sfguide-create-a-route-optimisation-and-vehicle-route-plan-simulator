@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
-import { ScatterplotLayer } from '@deck.gl/layers';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
 import { useSfQuery } from '../../hooks/useSnowflake';
@@ -21,7 +20,6 @@ export default function HeatMap({ sourceDb, sourceSchema, config }: Props) {
   const [metric, setMetric] = useState<'TRIP_COUNT' | 'AVG_SPEED'>('TRIP_COUNT');
   const [hour, setHour] = useState<number | null>(null);
   const [h3Res, setH3Res] = useState(8);
-  const [showDrivers, setShowDrivers] = useState(false);
 
   const hourFilter = hour !== null
     ? `WHERE REGION = '${regionName}' AND HOUR(TRIP_START_TIME) = ${hour}`
@@ -35,13 +33,6 @@ export default function HeatMap({ sourceDb, sourceSchema, config }: Props) {
      FROM TRIP_SUMMARY ${hourFilter}
      GROUP BY 1 HAVING TRIP_COUNT >= 2
      ORDER BY TRIP_COUNT DESC LIMIT 8000`, sourceDb, sourceSchema, [hour, h3Res, regionName]);
-
-  const { data: driverPts } = useSfQuery(
-    showDrivers
-      ? `SELECT DISTINCT DRIVER_ID, FIRST_VALUE(LON) OVER (PARTITION BY DRIVER_ID ORDER BY CURR_TIME DESC) AS LON,
-                FIRST_VALUE(LAT) OVER (PARTITION BY DRIVER_ID ORDER BY CURR_TIME DESC) AS LAT
-         FROM DRIVER_LOCATIONS_V WHERE REGION = '${regionName}'${hour !== null ? ` AND HOUR(CURR_TIME) = ${hour}` : ''} LIMIT 200`
-      : '', sourceDb, sourceSchema, [showDrivers, hour, regionName]);
 
   const maxVal = useMemo(() => Math.max(1, ...data.map((d: any) => Number(d[metric]) || 1)), [data, metric]);
 
@@ -61,16 +52,8 @@ export default function HeatMap({ sourceDb, sourceSchema, config }: Props) {
         updateTriggers: { getFillColor: [maxVal, metric], getElevation: [metric] },
       }));
     }
-    if (showDrivers && driverPts.length) {
-      l.push(new ScatterplotLayer({
-        id: 'driver-dots', data: driverPts.filter((p: any) => p.LON), pickable: true,
-        getPosition: (d: any) => [Number(d.LON), Number(d.LAT)],
-        getFillColor: [255, 255, 255, 220], getLineColor: [41, 181, 232, 255],
-        getRadius: 40, radiusMinPixels: 4, stroked: true, lineWidthMinPixels: 2,
-      }));
-    }
     return l;
-  }, [data, maxVal, metric, showDrivers, driverPts]);
+  }, [data, maxVal, metric]);
 
   const viewState = useMemo(() => {
     if (data.length) {
@@ -108,12 +91,6 @@ export default function HeatMap({ sourceDb, sourceSchema, config }: Props) {
           <label>H3 Resolution ({h3Res})</label>
           <input type="range" min={6} max={10} value={h3Res}
             onChange={e => setH3Res(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div className="form-group" style={{ marginTop: 8 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="checkbox" checked={showDrivers} onChange={e => setShowDrivers(e.target.checked)} />
-            Show Drivers
-          </label>
         </div>
         <div style={{ marginTop: 12 }}>
           <MetricCard label="Total Trips" value={data.reduce((s: number, d: any) => s + Number(d.TRIP_COUNT), 0).toLocaleString()} />
