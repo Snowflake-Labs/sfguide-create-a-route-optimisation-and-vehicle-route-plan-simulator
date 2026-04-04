@@ -1,10 +1,9 @@
 /*
  * seed-data.sql — Dwell Analysis
- * Load San Francisco baseline source data from S3.
- * Only loads GEOFENCE_POLYGONS and SLA_THRESHOLDS (static config).
+ * Load San Francisco baseline data from S3.
+ * Only loads GEOFENCE_POLYGONS, SLA_THRESHOLDS, and CONFIG (static config).
  * Dynamic Tables must be created via DDL after seed loading (see sql-pipeline.sql).
- * Source telemetry data is loaded by the route-deviation seed loader
- * into SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.
+ * Source telemetry data comes from SYNTHETIC_DATASETS.UNIFIED via projection views.
  */
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
@@ -13,6 +12,18 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/dwell-analysis/'
     FILE_FORMAT = (TYPE = PARQUET);
+
+--------------------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+);
+MERGE INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG tgt
+USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
 --------------------------------------------------------------------
 -- GEOFENCE_POLYGONS
@@ -57,80 +68,14 @@ WHERE NOT EXISTS (
 );
 
 --------------------------------------------------------------------
--- POST-SEED: Source telemetry for Dynamic Tables
--- The dwell-analysis DTs source from SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.
--- That data is loaded by the synthetic-datasets-generator S3 loader.
--- Load it here if not already present:
---------------------------------------------------------------------
-CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS;
-CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE;
-
-CREATE STAGE IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.DWELL_SEED_STAGE
-    URL = 's3://fleet-intelligence/SanFrancisco/synthetic-datasets/'
-    FILE_FORMAT = (TYPE = PARQUET);
-
-CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.FACT_TRUCK_TELEMETRY (
-    REGION           VARCHAR NOT NULL DEFAULT 'SanFrancisco',
-    TELEMETRY_ID     VARCHAR,
-    TRUCK_ID         VARCHAR,
-    TRIP_ID          VARCHAR,
-    TS               TIMESTAMP_NTZ,
-    LATITUDE         FLOAT,
-    LONGITUDE        FLOAT,
-    SPEED_KMH        FLOAT,
-    HEADING_DEG      FLOAT,
-    POSTED_SPEED_KMH FLOAT,
-    GPS_ACCURACY_M   FLOAT,
-    STATUS           VARCHAR,
-    LOCATION_ID      VARCHAR,
-    LOCATION_TYPE    VARCHAR,
-    IS_DETOUR        BOOLEAN,
-    IS_SPEEDING      BOOLEAN,
-    IS_HOS_VIOLATION BOOLEAN
-);
-
-CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.TRUCK_FLEET (
-    REGION         VARCHAR NOT NULL DEFAULT 'SanFrancisco',
-    TRUCK_ID       VARCHAR,
-    TRUCK_TYPE     VARCHAR,
-    HOME_BASE_ID   VARCHAR,
-    HOME_BASE_NAME VARCHAR,
-    HOME_CITY      VARCHAR,
-    DRIVER_ID      VARCHAR,
-    DRIVER_PROFILE VARCHAR
-);
-
-CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_DESTINATIONS (
-    REGION        VARCHAR NOT NULL DEFAULT 'SanFrancisco',
-    LOCATION_ID   VARCHAR,
-    NAME          VARCHAR,
-    CITY          VARCHAR,
-    LOCATION_TYPE VARCHAR,
-    LATITUDE      FLOAT,
-    LONGITUDE     FLOAT,
-    GEOMETRY      GEOGRAPHY
-);
-
-CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.FLEET_INTELLIGENCE.GERMANY_REST_STOPS (
-    REGION        VARCHAR NOT NULL DEFAULT 'SanFrancisco',
-    LOCATION_ID   VARCHAR,
-    NAME          VARCHAR,
-    CITY          VARCHAR,
-    LOCATION_TYPE VARCHAR,
-    LATITUDE      FLOAT,
-    LONGITUDE     FLOAT,
-    GEOMETRY      GEOGRAPHY
-);
-
---------------------------------------------------------------------
 -- POST-SEED DDL: Dynamic Tables
--- Run the DT creation statements from sql-pipeline.sql Steps 4-12
--- after ensuring source data is loaded.
+-- Run the DT creation statements from sql-pipeline.sql Steps 5-13
+-- after ensuring source data exists in SYNTHETIC_DATASETS.UNIFIED.
 -- These cannot be pre-baked as they are live refresh objects.
 --------------------------------------------------------------------
 
 --------------------------------------------------------------------
 -- VALIDATION
 --------------------------------------------------------------------
-SELECT 'GEOFENCE_POLYGONS' AS TBL, COUNT(*) AS ROWS FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS
+SELECT 'GEOFENCE_POLYGONS' AS TBL, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS
 UNION ALL SELECT 'SLA_THRESHOLDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS;
