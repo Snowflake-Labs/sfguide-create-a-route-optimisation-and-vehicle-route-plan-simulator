@@ -197,6 +197,10 @@ The React ORS Control Center pages query these exact tables and columns. If the 
 **Cause:** `ROWS` is a reserved word in Snowflake
 **Solution:** Use `ROW_CNT` as the column alias instead
 
+### DIM_TRIP_SCHEDULE has 0 rows
+**Cause:** Data Studio may not have populated this table yet
+**Solution:** LEFT JOINs to VW_TRIP_SCHEDULE will return NULLs for ROUTE_VARIATION and TRIP_TYPE columns -- this is acceptable and does not affect deviation calculations
+
 ## Recovery
 
 All statements use `CREATE OR REPLACE` or `IF NOT EXISTS`, making re-runs safe. No manual cleanup needed -- fix the underlying issue and re-run from the failed step.

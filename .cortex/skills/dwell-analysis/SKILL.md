@@ -35,7 +35,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates DWELL_ANALYSIS schema |
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates GEOFENCE_POLYGONS, SLA_THRESHOLDS, SLA_ALERT_LOG |
 | CREATE DYNAMIC TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates 8 Dynamic Tables (DT_STATE_CHANGES through DT_DAILY_TRENDS) |
-| CREATE STREAM | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates TELEMETRY_STREAM |
+| CREATE STREAM | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Not currently used (subquery views don't support change tracking) |
 | CREATE TASK | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates LOG_SLA_ALERTS task |
 | EXECUTE TASK | Account | Enables scheduled task execution |
 
@@ -66,7 +66,7 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
     |
     +---> DT_H3_CONGESTION (hourly H3 heatmap)
     +---> DT_SLA_ALERTS (WARNING/CRITICAL breach detection)
-    |       +---> SLA_ALERT_LOG (Stream + Task MERGE, 5-min schedule)
+    |       +---> SLA_ALERT_LOG (Task MERGE, 5-min schedule)
     +---> DT_FACILITY_UTILIZATION (daily visit stats)
     +---> DT_DRIVER_DWELL_SUMMARY (per-driver breach counts)
     +---> DT_DAILY_TRENDS (fleet-wide daily aggregates)
@@ -126,12 +126,12 @@ Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each s
 | 10 | DT_FACILITY_UTILIZATION | Dynamic Table | Daily facility visit stats |
 | 11 | DT_DRIVER_DWELL_SUMMARY | Dynamic Table | Per-driver dwell + breach counts |
 | 12 | DT_DAILY_TRENDS | Dynamic Table | Fleet-wide daily aggregates |
-| 13 | SLA_ALERT_LOG + Stream + Task | Table + Stream + Task | MERGE-based alert logging |
+| 13 | SLA_ALERT_LOG + Task | Table + Task | Schedule-based alert logging (every 5 min) |
 
 ### Step 2: Verify Pipeline
 
 ```sql
-SELECT 'DT_STATE_CHANGES' AS DT, COUNT(*) AS ROWS FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
+SELECT 'DT_STATE_CHANGES' AS DT, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
 UNION ALL SELECT 'DT_DWELL_SESSIONS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS
 UNION ALL SELECT 'DT_SLA_ALERTS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
 UNION ALL SELECT 'DT_DAILY_TRENDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
@@ -172,6 +172,10 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 | Task not running | Run `ALTER TASK ... RESUME` and verify COMPUTE_WH is active |
 | Dynamic Tables stale | Check `SHOW DYNAMIC TABLES` for refresh status and errors |
 | VW_ views return 0 rows | Verify CONFIG table has correct VEHICLE_TYPE and REGION matching UNIFIED data |
+| All DTs show FULL refresh mode | Expected -- VW_ views use CONFIG subquery expressions which prevent incremental change tracking |
+| Stream creation fails | Expected -- subquery views don't support change tracking; the task uses a 5-minute schedule instead |
+| DT_DWELL_ENRICHED has more rows than DT_DWELL_SESSIONS | Duplicate LOCATION_IDs in DIM_POIS cause fan-out in the enrichment join; the sql-pipeline uses deduplication CTEs to prevent this |
+| DIM_TRIP_SCHEDULE has 0 rows | Data Studio may not have populated this table yet; VW_TRIP_SCHEDULE will return 0 rows until data exists |
 
 ## Cleanup
 
