@@ -1152,6 +1152,19 @@ app.post('/api/regions/active', async (req, res) => {
         if (!region)
             return res.status(400).json({ error: 'region required' });
         await runSql(`CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`, 'FLEET_INTELLIGENCE', 'CORE');
+        const safeRegion = escapeString(region);
+        const CONFIG_SCHEMAS = [
+            'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
+            'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
+            'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
+            'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
+        ];
+        for (const schema of CONFIG_SCHEMAS) {
+            try {
+                await runSql(`UPDATE ${schema}.CONFIG SET REGION = '${safeRegion}'`);
+            }
+            catch { }
+        }
         res.json({ ok: true, region });
     }
     catch (err) {
@@ -1172,6 +1185,54 @@ const TOOL_PROCEDURE_MAP = {
         params: ['jobs_description', 'vehicles_description', 'num_vehicles', 'profile'],
     },
 };
+const FLEET_CONFIG_SCHEMAS = [
+    'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
+    'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
+    'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
+    'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
+];
+app.get('/api/fleet-config', async (_req, res) => {
+    try {
+        let vehicleType = 'hgv';
+        let region = 'SanFrancisco';
+        try {
+            const rows = await runSql('SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
+            if (rows?.[0]) {
+                vehicleType = rows[0].VEHICLE_TYPE || vehicleType;
+                region = rows[0].REGION || region;
+            }
+        }
+        catch { }
+        let availableTypes = [];
+        try {
+            const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY ORDER BY VEHICLE_TYPE');
+            availableTypes = rows.map((r) => r.VEHICLE_TYPE).filter(Boolean);
+        }
+        catch { }
+        res.json({ vehicleType, region, availableTypes });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+app.post('/api/fleet-config/vehicle-type', async (req, res) => {
+    try {
+        const { vehicleType } = req.body;
+        if (!vehicleType)
+            return res.status(400).json({ error: 'vehicleType required' });
+        const safeType = escapeString(vehicleType);
+        for (const schema of FLEET_CONFIG_SCHEMAS) {
+            try {
+                await runSql(`UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeType}'`);
+            }
+            catch { }
+        }
+        res.json({ ok: true, vehicleType });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
 1. Driving/cycling/walking directions between locations
 2. Reachability analysis (isochrones) - areas reachable within X minutes
