@@ -1088,37 +1088,47 @@ app.get('/api/matrix/ring-stats', async (req, res) => {
 });
 app.get('/api/regions', async (_req, res) => {
     try {
-        const regions = await runSql(`SELECT REGION_NAME, DISPLAY_NAME, CENTER_LAT, CENTER_LON,
-              BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON,
-              ZOOM_LEVEL, ORS_REGION_KEY, DATA_SOURCE, IS_DEFAULT
-       FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
-       ORDER BY IS_DEFAULT DESC, PROVISIONED_AT`, 'FLEET_INTELLIGENCE', 'CORE');
-        const active = regions.find((r) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || 'SanFrancisco';
+        let regions = [];
+        try {
+            regions = await runSql(`SELECT REGION_NAME, DISPLAY_NAME, CENTER_LAT, CENTER_LON,
+                BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON,
+                ZOOM_LEVEL, ORS_REGION_KEY, DATA_SOURCE, IS_DEFAULT
+         FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+         ORDER BY IS_DEFAULT DESC, PROVISIONED_AT`, 'FLEET_INTELLIGENCE', 'CORE');
+        }
+        catch { }
+        const knownNames = new Set(regions.map((r) => r.REGION_NAME));
+        try {
+            const synthRows = await runSql('SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY');
+            for (const row of synthRows) {
+                if (row.REGION && !knownNames.has(row.REGION)) {
+                    regions.push({
+                        REGION_NAME: row.REGION,
+                        DISPLAY_NAME: row.REGION.replace(/([A-Z])/g, ' $1').trim(),
+                        CENTER_LAT: 0, CENTER_LON: 0,
+                        BBOX_MIN_LAT: null, BBOX_MAX_LAT: null, BBOX_MIN_LON: null, BBOX_MAX_LON: null,
+                        ZOOM_LEVEL: 11, ORS_REGION_KEY: null,
+                        DATA_SOURCE: 'SYNTHETIC', IS_DEFAULT: false,
+                    });
+                }
+            }
+        }
+        catch { }
+        if (regions.length === 0) {
+            regions = [{
+                    REGION_NAME: 'SanFrancisco',
+                    DISPLAY_NAME: 'San Francisco',
+                    CENTER_LAT: 37.7749, CENTER_LON: -122.4194,
+                    BBOX_MIN_LAT: 37.700, BBOX_MAX_LAT: 37.820, BBOX_MIN_LON: -122.520, BBOX_MAX_LON: -122.350,
+                    ZOOM_LEVEL: 11, ORS_REGION_KEY: 'SanFrancisco',
+                    DATA_SOURCE: 'S3_BASELINE', IS_DEFAULT: true,
+                }];
+        }
+        const active = regions.find((r) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
         res.json({ regions, active });
     }
     catch (err) {
-        if (err.message?.includes('does not exist')) {
-            res.json({
-                regions: [{
-                        REGION_NAME: 'SanFrancisco',
-                        DISPLAY_NAME: 'San Francisco',
-                        CENTER_LAT: 37.7749,
-                        CENTER_LON: -122.4194,
-                        BBOX_MIN_LAT: 37.700,
-                        BBOX_MAX_LAT: 37.820,
-                        BBOX_MIN_LON: -122.520,
-                        BBOX_MAX_LON: -122.350,
-                        ZOOM_LEVEL: 11,
-                        ORS_REGION_KEY: 'SanFrancisco',
-                        DATA_SOURCE: 'S3_BASELINE',
-                        IS_DEFAULT: true,
-                    }],
-                active: 'SanFrancisco',
-            });
-        }
-        else {
-            res.status(500).json({ error: err.message });
-        }
+        res.status(500).json({ error: err.message });
     }
 });
 app.get('/api/regions/active', async (_req, res) => {
@@ -1193,7 +1203,7 @@ const FLEET_CONFIG_SCHEMAS = [
 ];
 app.get('/api/fleet-config', async (_req, res) => {
     try {
-        let vehicleType = 'hgv';
+        let vehicleType = 'ebike';
         let region = 'SanFrancisco';
         try {
             const rows = await runSql('SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
@@ -1209,6 +1219,10 @@ app.get('/api/fleet-config', async (_req, res) => {
             availableTypes = rows.map((r) => r.VEHICLE_TYPE).filter(Boolean);
         }
         catch { }
+        if (vehicleType && !availableTypes.includes(vehicleType))
+            availableTypes.push(vehicleType);
+        if (availableTypes.length === 0)
+            availableTypes = [vehicleType];
         res.json({ vehicleType, region, availableTypes });
     }
     catch (err) {

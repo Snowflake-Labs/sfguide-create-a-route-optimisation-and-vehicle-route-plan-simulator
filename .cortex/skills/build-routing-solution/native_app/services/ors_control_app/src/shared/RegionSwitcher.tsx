@@ -15,15 +15,6 @@ export default function RegionSwitcher() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  if (regions.length <= 1) {
-    return (
-      <div className="region-badge">
-        <MapPin size={14} />
-        <span>{displayName}</span>
-      </div>
-    );
-  }
-
   return (
     <div className="region-switcher" ref={ref}>
       <button className="region-trigger" onClick={() => setOpen(!open)}>

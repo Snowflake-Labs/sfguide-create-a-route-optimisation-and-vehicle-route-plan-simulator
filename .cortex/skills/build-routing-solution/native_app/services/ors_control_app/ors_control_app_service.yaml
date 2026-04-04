@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: ors-control-app
-      image: /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.65
+      image: /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.69
       env:
         SNOWFLAKE_DATABASE: "OPENROUTESERVICE_NATIVE_APP"
         SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"

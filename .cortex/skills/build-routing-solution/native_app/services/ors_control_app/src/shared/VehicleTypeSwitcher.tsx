@@ -22,15 +22,6 @@ export default function VehicleTypeSwitcher() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  if (availableTypes.length <= 1) {
-    return (
-      <div className="region-badge">
-        <Truck size={14} />
-        <span>{TYPE_LABELS[vehicleType] || vehicleType}</span>
-      </div>
-    );
-  }
-
   return (
     <div className="region-switcher" ref={ref}>
       <button className="region-trigger" onClick={() => setOpen(!open)}>

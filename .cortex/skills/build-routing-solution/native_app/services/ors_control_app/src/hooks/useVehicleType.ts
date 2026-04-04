@@ -8,7 +8,7 @@ interface VehicleTypeContextValue {
 }
 
 const defaults: VehicleTypeContextValue = {
-  vehicleType: 'hgv',
+  vehicleType: 'ebike',
   availableTypes: [],
   loading: true,
   switchVehicleType: async () => {},

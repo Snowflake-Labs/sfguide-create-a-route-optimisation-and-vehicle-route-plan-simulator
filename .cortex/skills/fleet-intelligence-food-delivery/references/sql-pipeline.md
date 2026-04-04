@@ -1,4 +1,8 @@
-# SQL Pipeline (Steps 4-9)
+# SQL Pipeline (Steps 3b-9) -- DEPRECATED
+
+> **DEPRECATED:** Steps 3b-9 are no longer the primary data path. Use **Data Studio** in the ORS Control Panel to generate synthetic datasets. Data Studio writes to `SYNTHETIC_DATASETS.UNIFIED` tables, and projection views (Step 10 in `streamlit-deployment.md`) read from them.
+>
+> This file is preserved for reference only. The projection views in Step 10 of `streamlit-deployment.md` are still active.
 
 ---
 

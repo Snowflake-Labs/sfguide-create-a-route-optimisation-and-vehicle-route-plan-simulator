@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
 import FleetMap from './fleet-delivery/FleetMap';
-import DataBuilder from './fleet-delivery/DataBuilder';
-import FDMatrixBuilder from './fleet-delivery/FDMatrixBuilder';
 import CatchmentPanel from './fleet-delivery/CatchmentPanel';
 
-type SubTab = 'map' | 'data' | 'matrix' | 'catchment';
+type SubTab = 'map' | 'catchment';
 
-const VALID: SubTab[] = ['map', 'data', 'matrix', 'catchment'];
+const VALID: SubTab[] = ['map', 'catchment'];
 
 interface Props { subTab?: string; }
 
@@ -22,8 +20,6 @@ export default function FleetDelivery({ subTab }: Props) {
   return (
     <>
       {activeTab === 'map' && <FleetMap />}
-      {activeTab === 'data' && <DataBuilder />}
-      {activeTab === 'matrix' && <FDMatrixBuilder />}
       {activeTab === 'catchment' && <CatchmentPanel />}
     </>
   );

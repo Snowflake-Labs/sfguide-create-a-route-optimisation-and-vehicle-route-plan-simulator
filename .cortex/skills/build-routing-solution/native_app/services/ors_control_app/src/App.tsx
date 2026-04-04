@@ -44,8 +44,6 @@ const DEMO_GROUPS: NavGroup[] = [
   ]},
   { key: 'fleet-delivery', label: 'Fleet Delivery', icon: Truck, subPages: [
     { key: 'fleet-delivery:map', label: 'Fleet Map' },
-    { key: 'fleet-delivery:data', label: 'Data Builder' },
-    { key: 'fleet-delivery:matrix', label: 'Matrix Builder' },
     { key: 'fleet-delivery:catchment', label: 'Catchment Panel' },
   ]},
   { key: 'fleet-taxis', label: 'Fleet Taxis', icon: CarTaxiFront, subPages: [

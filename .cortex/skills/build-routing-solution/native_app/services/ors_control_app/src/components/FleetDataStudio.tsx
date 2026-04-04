@@ -64,6 +64,7 @@ const VEHICLE_LABELS: Record<string, string> = {
 };
 
 const SKILL_MAP: Record<string, string> = {
+  'dwell-analysis': 'Dwell Analysis',
   'fleet-intelligence-taxis': 'Fleet Taxis',
   'fleet-intelligence-food-delivery': 'Food Delivery',
   'route-deviation': 'Route Deviation',
@@ -415,12 +416,10 @@ export default function FleetDataStudio() {
   const activeVehicleType = selectedTemplate?.vehicleType
     || (editProfile === 'cycling-electric' ? 'ebike' : editProfile === 'driving-hgv' ? 'hgv' : 'car');
 
-  const skillsReady = (coverage || []).reduce((acc: Record<string, boolean>, c: CoverageEntry) => {
-    if (c.VEHICLE_TYPE === 'car' && c.TELEMETRY_ROWS > 0) acc['fleet-intelligence-taxis'] = true;
-    if (c.VEHICLE_TYPE === 'ebike' && c.TELEMETRY_ROWS > 0) acc['fleet-intelligence-food-delivery'] = true;
-    if (c.VEHICLE_TYPE === 'hgv' && c.TELEMETRY_ROWS > 0) acc['route-deviation'] = true;
-    return acc;
-  }, {} as Record<string, boolean>);
+  const hasAnyData = (coverage || []).some(c => c.TELEMETRY_ROWS > 0);
+  const skillsReady = hasAnyData
+    ? Object.keys(SKILL_MAP).reduce((acc, id) => ({ ...acc, [id]: true }), {} as Record<string, boolean>)
+    : ({} as Record<string, boolean>);
 
   return (
     <div className="page-dashboard data-studio">
@@ -664,23 +663,23 @@ export default function FleetDataStudio() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
             {Object.entries(SKILL_MAP).map(([skillId, skillName]) => {
               const ready = skillsReady[skillId];
-              const vt = skillId === 'fleet-intelligence-taxis' ? 'car' : skillId === 'fleet-intelligence-food-delivery' ? 'ebike' : 'hgv';
-              const color = VEHICLE_COLORS[vt];
-              const cov = coverage.find(c => c.VEHICLE_TYPE === vt);
+              const totalTelemetry = (coverage || []).reduce((s, c) => s + (c.TELEMETRY_ROWS || 0), 0);
+              const totalTripsC = (coverage || []).reduce((s, c) => s + (c.TRIP_ROWS || 0), 0);
+              const totalVehiclesC = (coverage || []).reduce((s, c) => s + (c.VEHICLES || 0), 0);
               return (
                 <div key={skillId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, background: ready ? '#F6FFF8' : '#FAFBFC', border: `1px solid ${ready ? '#C8E6C9' : '#E1E4E8'}` }}>
                   {ready ? <CheckCircle size={14} color="#4CAF50" /> : <AlertCircle size={14} color="#9CA3AF" />}
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 12, fontWeight: 500, color: '#24292F' }}>{skillName}</div>
-                    {cov ? (
+                    {ready ? (
                       <div style={{ fontSize: 10, color: '#6E7681' }}>
-                        {cov.TELEMETRY_ROWS?.toLocaleString()} pts | {cov.TRIP_ROWS?.toLocaleString()} trips | {cov.VEHICLES} vehicles
+                        {totalTelemetry.toLocaleString()} pts | {totalTripsC.toLocaleString()} trips | {totalVehiclesC} vehicles
                       </div>
                     ) : (
                       <div style={{ fontSize: 10, color: '#9CA3AF' }}>No data generated</div>
                     )}
                   </div>
-                  <span style={{ width: 8, height: 8, borderRadius: 4, background: color }} />
+                  <span style={{ width: 8, height: 8, borderRadius: 4, background: ready ? '#4CAF50' : '#E1E4E8' }} />
                 </div>
               );
             })}
