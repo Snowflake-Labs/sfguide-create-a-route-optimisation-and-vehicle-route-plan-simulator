@@ -1,6 +1,6 @@
 ---
 name: fleet-intelligence-taxis
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
+description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
 depends_on:
   - build-routing-solution
   - routing-customization
@@ -12,7 +12,7 @@ metadata:
 
 # Generate Driver Locations & Deploy Fleet Intelligence Dashboard
 
-Generates realistic taxi driver location data using Overture Maps Places/Addresses, OpenRouteService Native App routing, route interpolation, and configurable location/fleet size.
+Generates realistic taxi driver location data using Overture Maps Places/Addresses, OpenRouteService Native App routing, route interpolation, and configurable location/fleet size. Also provides Data Studio projection views that read from `SYNTHETIC_DATASETS.UNIFIED` filtered by CONFIG table (vehicle type + region), making it compatible with any synthetic dataset.
 
 ---
 

@@ -43,7 +43,8 @@ export function createStudioRouter(snowSql) {
          FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY ORDER BY REGION_NAME`, 'FLEET_INTELLIGENCE', 'CORE');
             res.json(rows);
         }
-        catch {
+        catch (e) {
+            log('WARN', 'Studio', `Failed to load regions: ${e.message?.slice(0, 200)}`);
             res.json([]);
         }
     });
@@ -61,14 +62,17 @@ export function createStudioRouter(snowSql) {
            FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
            GROUP BY VEHICLE_TYPE, REGION`, 'SYNTHETIC_DATASETS', 'UNIFIED');
             }
-            catch { }
+            catch (e) {
+                log('WARN', 'Studio', `Failed to load trip stats for coverage: ${e.message?.slice(0, 200)}`);
+            }
             const merged = telemetryStats.map((t) => {
                 const ts = tripStats.find((s) => s.VEHICLE_TYPE === t.VEHICLE_TYPE && s.REGION === t.REGION);
                 return { ...t, TRIP_ROWS: ts?.TRIP_ROWS || 0 };
             });
             res.json(merged);
         }
-        catch {
+        catch (e) {
+            log('WARN', 'Studio', `Failed to load coverage: ${e.message?.slice(0, 200)}`);
             res.json([]);
         }
     });
@@ -97,9 +101,9 @@ export function createStudioRouter(snowSql) {
             if (!name || !ors_profile || !region || !config) {
                 return res.status(400).json({ error: 'name, ors_profile, region, config required' });
             }
-            const configStr = JSON.stringify(config).replace(/'/g, "''");
+            const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
             await snowSql(`INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_PRESETS (PRESET_ID, NAME, ORS_PROFILE, REGION, CONFIG)
-         SELECT UUID_STRING(), '${name.replace(/'/g, "''")}', '${ors_profile}', '${region}', PARSE_JSON('${configStr}')`, 'FLEET_INTELLIGENCE', 'CORE');
+         SELECT UUID_STRING(), '${name.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '')}', '${ors_profile}', '${region}', PARSE_JSON($$${configJson}$$)`, 'FLEET_INTELLIGENCE', 'CORE');
             res.json({ ok: true });
         }
         catch (err) {
@@ -109,12 +113,12 @@ export function createStudioRouter(snowSql) {
     router.put('/presets/:id', async (req, res) => {
         try {
             const { name, ors_profile, region, config } = req.body;
-            const configStr = JSON.stringify(config).replace(/'/g, "''");
+            const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
             await snowSql(`UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_PRESETS
-         SET NAME='${(name || '').replace(/'/g, "''")}',
+         SET NAME='${(name || '').replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '')}',
              ORS_PROFILE='${ors_profile || ''}',
              REGION='${region || ''}',
-             CONFIG=PARSE_JSON('${configStr}'),
+             CONFIG=PARSE_JSON($$${configJson}$$),
              UPDATED_AT=CURRENT_TIMESTAMP()
          WHERE PRESET_ID='${req.params.id}'`, 'FLEET_INTELLIGENCE', 'CORE');
             res.json({ ok: true });
@@ -182,10 +186,14 @@ export function createStudioRouter(snowSql) {
             let dbJobs = [];
             try {
                 dbJobs = await snowSql(`SELECT JOB_ID, PRESET_NAME, REGION, ORS_PROFILE, NUM_VEHICLES, STATUS,
-                  POINTS_GENERATED, TRIPS_GENERATED, STARTED_AT, COMPLETED_AT, ERROR_MESSAGE
-           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ORDER BY STARTED_AT DESC LIMIT 20`, 'FLEET_INTELLIGENCE', 'CORE');
+                  POINTS_GENERATED, TRIPS_GENERATED, STARTED_AT, COMPLETED_AT, ERROR_MESSAGE,
+                  DATEDIFF('second', STARTED_AT, COALESCE(COMPLETED_AT, CURRENT_TIMESTAMP())) AS DURATION_SEC,
+                  START_DATE, END_DATE
+           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ORDER BY STARTED_AT DESC LIMIT 50`, 'FLEET_INTELLIGENCE', 'CORE');
             }
-            catch { }
+            catch (e) {
+                log('WARN', 'Studio', `Failed to load job history: ${e.message?.slice(0, 200)}`);
+            }
             res.json({ active: memoryJobs, history: dbJobs });
         }
         catch (err) {
@@ -214,7 +222,9 @@ export function createStudioRouter(snowSql) {
             try {
                 res.write(': heartbeat\n\n');
             }
-            catch { }
+            catch (e) {
+                log('DEBUG', 'Studio', `Heartbeat write failed (client likely disconnected)`);
+            }
         }, 15000);
         const unsub = subscribeJob(jobId, send);
         req.on('close', () => {
@@ -233,7 +243,8 @@ export function createStudioRouter(snowSql) {
          GROUP BY ORS_PROFILE, VEHICLE_TYPE, REGION`, 'SYNTHETIC_DATASETS', 'UNIFIED');
             res.json(rows);
         }
-        catch {
+        catch (e) {
+            log('WARN', 'Studio', `Failed to load stats: ${e.message?.slice(0, 200)}`);
             res.json([]);
         }
     });

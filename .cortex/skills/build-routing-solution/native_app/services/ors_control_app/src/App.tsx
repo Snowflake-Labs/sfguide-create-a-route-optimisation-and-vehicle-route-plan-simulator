@@ -6,6 +6,7 @@ import MatrixBuilder from './components/MatrixBuilder';
 import MatrixViewer from './components/MatrixViewer';
 import FunctionTester from './components/FunctionTester';
 import { useRegionProvider, RegionContext } from './hooks/useRegion';
+import { useVehicleTypeProvider, VehicleTypeContext } from './hooks/useVehicleType';
 import DwellAnalysis from './components/DwellAnalysis';
 import FleetDelivery from './components/FleetDelivery';
 import FleetTaxis from './components/FleetTaxis';
@@ -19,6 +20,7 @@ import Diagnostics from './components/Diagnostics';
 import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
+import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
 
 interface SubPage { key: string; label: string; }
 
@@ -92,6 +94,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('home');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const region = useRegionProvider();
+  const vehicleTypeCtx = useVehicleTypeProvider();
 
   const toggleExpand = (groupKey: string) => {
     setExpanded(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
@@ -109,6 +112,7 @@ export default function App() {
 
   return (
     <RegionContext.Provider value={region.value}>
+      <VehicleTypeContext.Provider value={vehicleTypeCtx.value}>
       <div className="app">
         <aside className="sidebar">
           <div className="sidebar-brand">
@@ -178,7 +182,10 @@ export default function App() {
         <div className="app-content">
           <header className="app-header">
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
-            <RegionSwitcher />
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <VehicleTypeSwitcher />
+              <RegionSwitcher />
+            </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
@@ -201,6 +208,7 @@ export default function App() {
           </main>
         </div>
       </div>
+      </VehicleTypeContext.Provider>
     </RegionContext.Provider>
   );
 }

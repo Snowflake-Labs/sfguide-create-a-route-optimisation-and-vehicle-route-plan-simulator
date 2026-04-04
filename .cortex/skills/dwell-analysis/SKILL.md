@@ -1,6 +1,6 @@
 ---
 name: dwell-analysis
-description: "Deploy the Dwell & Congestion Analysis demo: create a 12-step Dynamic Table pipeline for state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Includes local Streamlit dashboard and Snowflake-native SiS app. Uses FACT_TRUCK_TELEMETRY from the synthetic fleet dataset. Use when: setting up dwell analysis demo, congestion analytics, SLA breach monitoring, facility utilization tracking. Do NOT use for: route deviation analysis (use route-deviation), food delivery fleet (use fleet-intelligence-food-delivery), taxi fleet (use fleet-intelligence-taxis). Triggers: deploy dwell analysis, dwell analytics, congestion analysis, SLA alerts, facility utilization, dwell demo, H3 heatmap."
+description: "Deploy the Dwell & Congestion Analysis demo: create a 12-step Dynamic Table pipeline for state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Includes local Streamlit dashboard and Snowflake-native SiS app. Works with any vehicle type from SYNTHETIC_DATASETS.UNIFIED, configured via CONFIG table. Use when: setting up dwell analysis demo, congestion analytics, SLA breach monitoring, facility utilization tracking. Do NOT use for: route deviation analysis (use route-deviation), food delivery fleet (use fleet-intelligence-food-delivery), taxi fleet (use fleet-intelligence-taxis). Triggers: deploy dwell analysis, dwell analytics, congestion analysis, SLA alerts, facility utilization, dwell demo, H3 heatmap."
 depends_on:
   - route-deviation
   - synthetic-datasets-generator
@@ -12,17 +12,17 @@ metadata:
 
 # Deploy Dwell & Congestion Analysis
 
-Deploys a 12-step Dynamic Table pipeline that transforms raw truck telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Includes two Streamlit dashboards (local and Snowflake-native).
+Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type. Includes two Streamlit dashboards (local and Snowflake-native).
 
 ## Prerequisites
 
-1. Synthetic fleet telemetry dataset loaded in `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE`:
-   - `FACT_TRUCK_TELEMETRY` -- GPS pings with STATUS column
-   - `GERMANY_DESTINATIONS` -- warehouse/store/destination locations
-   - `GERMANY_REST_STOPS` -- rest stop locations
-   - `TRUCK_FLEET` -- truck metadata and driver profiles
-2. `COMPUTE_WH` warehouse available
-3. A role with privileges listed in the Required Privileges section below
+1. Synthetic fleet data in `SYNTHETIC_DATASETS.UNIFIED` (any vehicle type):
+   - `FACT_VEHICLE_TELEMETRY` -- GPS pings with STATUS column
+   - `DIM_POIS` -- POI locations (warehouses, stores, rest stops)
+   - `DIM_FLEET` -- vehicle metadata and driver profiles
+2. CONFIG table set to desired VEHICLE_TYPE and REGION (created automatically during deployment)
+3. `COMPUTE_WH` warehouse available
+4. A role with privileges listed in the Required Privileges section below
 
 ## Required Privileges
 
@@ -31,7 +31,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms raw truck telemetry int
 | CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
 | USAGE ON WAREHOUSE COMPUTE_WH | Warehouse | Used by all Dynamic Tables and tasks |
 | USAGE ON DATABASE SYNTHETIC_DATASETS | Database | Reads source telemetry and fleet tables |
-| USAGE ON SCHEMA SYNTHETIC_DATASETS.FLEET_INTELLIGENCE | Schema | Reads FACT_TRUCK_TELEMETRY, GERMANY_DESTINATIONS, GERMANY_REST_STOPS, TRUCK_FLEET |
+| USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED | Schema | Reads FACT_VEHICLE_TELEMETRY, DIM_POIS, DIM_FLEET |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates DWELL_ANALYSIS schema |
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates GEOFENCE_POLYGONS, SLA_THRESHOLDS, SLA_ALERT_LOG |
 | CREATE DYNAMIC TABLE | Schema (FLEET_INTELLIGENCE.DWELL_ANALYSIS) | Creates 8 Dynamic Tables (DT_STATE_CHANGES through DT_DAILY_TRENDS) |

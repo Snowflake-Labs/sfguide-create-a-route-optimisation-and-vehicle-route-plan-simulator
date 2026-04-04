@@ -1,6 +1,6 @@
 ---
 name: route-deviation
-description: "Deploy the Route Deviation Analysis demo: load synthetic truck telemetry from S3, populate ORS route cache, run 5-step ETL pipeline, and register React dashboard pages. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
+description: "Deploy the Route Deviation Analysis demo: load synthetic fleet telemetry, populate ORS route cache, run 5-step ETL pipeline, and register React dashboard pages. Works with any vehicle type from SYNTHETIC_DATASETS.UNIFIED, configured via CONFIG table. Use when: setting up route deviation demo, detour analytics, fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy route deviation, deploy detour analytics, setup deviation analysis, route deviation demo."
 depends_on:
   - build-routing-solution
   - routing-customization
@@ -13,14 +13,16 @@ metadata:
 
 # Deploy Route Deviation Analysis Demo
 
-End-to-end deployment of a Route Deviation Analysis demo comparing actual truck GPS paths against expected ORS routes to detect detours, delays, and anomalies across a 500-truck German fleet.
+End-to-end deployment of a Route Deviation Analysis demo comparing actual GPS paths against expected ORS routes to detect detours, delays, and anomalies. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type via CONFIG table.
 
 ## Prerequisites
 
 CRITICAL: Verify these before starting:
-- OpenRouteService Native App deployed, activated, and configured for **Germany** map
+- OpenRouteService Native App deployed, activated, and configured for the target region
+- Synthetic fleet data in `SYNTHETIC_DATASETS.UNIFIED` (any vehicle type)
+- CONFIG table set to desired VEHICLE_TYPE and REGION (created automatically during deployment)
 - Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
-- Compute warehouse available (MEDIUM recommended for 15M-row telemetry ETL)
+- Compute warehouse available (MEDIUM recommended for large telemetry ETL)
 
 ## Required Privileges
 

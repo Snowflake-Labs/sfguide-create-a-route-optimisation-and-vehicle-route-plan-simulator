@@ -23,7 +23,9 @@ function broadcast(job, event, data) {
         try {
             cb(event, data);
         }
-        catch { }
+        catch (e) {
+            log('WARN', 'Studio', `SSE broadcast failed: ${e.message?.slice(0, 100)}`);
+        }
     }
 }
 export function subscribeJob(jobId, cb) {
@@ -42,13 +44,14 @@ function escVal(v) {
         return String(v);
     if (v instanceof Date)
         return `'${v.toISOString().replace('T', ' ').replace('Z', '')}'`;
-    return `'${String(v).replace(/'/g, "''")}'`;
+    const s = String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '');
+    return `'${s}'`;
 }
 const UNIFIED_DB = 'SYNTHETIC_DATASETS';
 const UNIFIED_SCHEMA = 'UNIFIED';
 async function ensureTables(snowSql) {
     const ddls = [
-        `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY (
+        { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY (
       TELEMETRY_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       VEHICLE_ID VARCHAR, TRIP_ID VARCHAR,
       TS TIMESTAMP_NTZ, LATITUDE FLOAT, LONGITUDE FLOAT,
@@ -56,8 +59,8 @@ async function ensureTables(snowSql) {
       STATUS VARCHAR(30), IS_SPEEDING BOOLEAN, IS_HOS_VIOLATION BOOLEAN, IS_DETOUR BOOLEAN,
       GPS_ACCURACY_M FLOAT, LOCATION_ID VARCHAR, LOCATION_TYPE VARCHAR(30),
       ORS_PROFILE VARCHAR(30), BATTERY_PCT FLOAT, ODOMETER_KM FLOAT, POINT_INDEX INT
-    )`,
-        `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS (
+    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+        { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS (
       TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
       ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR,
@@ -68,20 +71,20 @@ async function ensureTables(snowSql) {
       IS_DETOUR BOOLEAN, DETOUR_DISTANCE_KM FLOAT,
       TRIP_START TIMESTAMP_NTZ, TRIP_END TIMESTAMP_NTZ,
       STATUS VARCHAR(20), ORS_PROFILE VARCHAR(30)
-    )`,
-        `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET (
+    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+        { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET (
       VEHICLE_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORS_PROFILE VARCHAR(30), SHIFT_TYPE VARCHAR(30),
       SHIFT_START_HOUR INT, SHIFT_END_HOUR INT,
       HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR(20),
       OPERATING_MODE VARCHAR(30), BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT
-    )`,
-        `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
+    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+        { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
       LOCATION_ID VARCHAR, REGION VARCHAR(100), NAME VARCHAR,
       LOCATION_TYPE VARCHAR(30), CATEGORY VARCHAR(50),
       LAT FLOAT, LNG FLOAT, POINT_GEOM GEOGRAPHY, SOURCE VARCHAR(20)
-    )`,
-        `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE (
+    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+        { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE (
       SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
       TRIP_DATE DATE, TRIP_SEQ INT,
@@ -89,15 +92,35 @@ async function ensureTables(snowSql) {
       PLANNED_START TIMESTAMP_NTZ, PLANNED_END TIMESTAMP_NTZ,
       SHIFT_TYPE VARCHAR(30), ORS_PROFILE VARCHAR(30),
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20)
-    )`,
+    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+        { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
+      JOB_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
+      ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,
+      START_DATE VARCHAR, END_DATE VARCHAR,
+      STATUS VARCHAR(20), CONFIG VARIANT,
+      POINTS_GENERATED INT DEFAULT 0, TRIPS_GENERATED INT DEFAULT 0,
+      ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+      COMPLETED_AT TIMESTAMP_NTZ
+    )`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     ];
-    for (const ddl of ddls) {
+    for (const { sql, db, schema } of ddls) {
         try {
-            await snowSql(ddl, UNIFIED_DB, UNIFIED_SCHEMA);
+            await snowSql(sql, db, schema);
         }
         catch (e) {
-            console.error(`[Studio] DDL error: ${e.message?.slice(0, 200)}`);
-            log('ERROR', 'Studio', `DDL error: ${e.message?.slice(0, 200)}`);
+            const raw = e.message || '';
+            if (raw.includes('Insufficient privileges') || raw.includes('42501') || raw.includes('access control')) {
+                const hint = `Missing privileges on ${db}.${schema}. ` +
+                    `Run this in a Snowsight worksheet as ACCOUNTADMIN:\n\n` +
+                    `  CALL OPENROUTESERVICE_NATIVE_APP.CORE.SETUP_DATA_STUDIO();\n\n` +
+                    `This creates the required databases/schemas and grants access to the app.`;
+                log('ERROR', 'Studio', hint);
+                throw new Error(hint);
+            }
+            const msg = `DDL error (${db}.${schema}): ${raw.slice(0, 200)}`;
+            console.error(`[Studio] ${msg}`);
+            log('ERROR', 'Studio', msg);
+            throw new Error(msg);
         }
     }
 }
@@ -125,7 +148,9 @@ async function insertTelemetryBatch(points, snowSql) {
             inserted += chunk.length;
         }
         catch (e) {
-            log('ERROR', 'Studio', `Telemetry insert error`, { detail: e.message?.slice(0, 200) });
+            const msg = `Telemetry insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+            log('ERROR', 'Studio', msg);
+            throw new Error(msg);
         }
     }
     return inserted;
@@ -137,35 +162,37 @@ async function insertTripBatch(trips, snowSql) {
     let inserted = 0;
     for (let i = 0; i < trips.length; i += batchSize) {
         const chunk = trips.slice(i, i + batchSize);
-        const values = chunk.map(t => {
+        const selects = chunk.map(t => {
             const routeGeo = t.route_coordinates.length >= 2
                 ? `TO_GEOGRAPHY('LINESTRING(${t.route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})')`
-                : 'NULL';
+                : 'TO_GEOGRAPHY(NULL)';
             const plannedGeo = t.planned_route_coordinates && t.planned_route_coordinates.length >= 2
                 ? `TO_GEOGRAPHY('LINESTRING(${t.planned_route_coordinates.map(c => `${c[1]} ${c[0]}`).join(',')})')`
-                : 'NULL';
-            return `(${escVal(t.trip_id)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
+                : 'TO_GEOGRAPHY(NULL)';
+            return `SELECT ${escVal(t.trip_id)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
                 `${escVal(t.vehicle_type)},${escVal(t.region)},` +
                 `${escVal(t.origin_poi_id)},${escVal(t.destination_poi_id)},` +
                 `${t.origin_lat},${t.origin_lon},${t.destination_lat},${t.destination_lon},` +
                 `${routeGeo},${t.distance_km},${t.duration_minutes},` +
                 `${plannedGeo},${t.planned_distance_km !== null ? t.planned_distance_km : 'NULL'},` +
                 `${escVal(t.is_detour)},${t.detour_distance_km !== null ? t.detour_distance_km : 'NULL'},` +
-                `${escVal(t.trip_start)},${escVal(t.trip_end)},${escVal(t.status)},${escVal(t.ors_profile)})`;
-        }).join(',\n');
+                `${escVal(t.trip_start)},${escVal(t.trip_end)},${escVal(t.status)},${escVal(t.ors_profile)}`;
+        }).join(' UNION ALL\n');
         const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS
       (TRIP_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
        ORIGIN_POI_ID,DESTINATION_POI_ID,ORIGIN_LAT,ORIGIN_LON,DESTINATION_LAT,DESTINATION_LON,
        ROUTE_GEOG,DISTANCE_KM,DURATION_MINUTES,
        PLANNED_ROUTE_GEOG,PLANNED_DISTANCE_KM,
        IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE)
-      VALUES ${values}`;
+      ${selects}`;
         try {
             await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
             inserted += chunk.length;
         }
         catch (e) {
-            log('ERROR', 'Studio', `Trip insert error`, { detail: e.message?.slice(0, 200) });
+            const msg = `Trip insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+            log('ERROR', 'Studio', msg);
+            throw new Error(msg);
         }
     }
     return inserted;
@@ -186,7 +213,9 @@ async function insertDimFleet(fleet, config, snowSql) {
         await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
     }
     catch (e) {
-        log('ERROR', 'Studio', `DIM_FLEET insert error`, { detail: e.message?.slice(0, 200) });
+        const msg = `DIM_FLEET insert error: ${e.message?.slice(0, 200)}`;
+        log('ERROR', 'Studio', msg);
+        throw new Error(msg);
     }
 }
 async function insertDimPois(pois, config, snowSql) {
@@ -195,16 +224,18 @@ async function insertDimPois(pois, config, snowSql) {
     const batchSize = 500;
     for (let i = 0; i < pois.length; i += batchSize) {
         const chunk = pois.slice(i, i + batchSize);
-        const values = chunk.map((p) => `(${escVal(p.location_id)},${escVal(config.region)},${escVal(p.name)},${escVal(p.location_type)},` +
-            `${escVal(p.category)},${p.lat},${p.lng},ST_MAKEPOINT(${p.lng},${p.lat}),${escVal(p.source || 'generated')})`).join(',\n');
+        const selects = chunk.map((p) => `SELECT ${escVal(p.location_id)},${escVal(config.region)},${escVal(p.name)},${escVal(p.location_type)},` +
+            `${escVal(p.category)},${p.lat},${p.lng},ST_MAKEPOINT(${p.lng},${p.lat}),${escVal(p.source || 'generated')}`).join(' UNION ALL\n');
         const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS
       (LOCATION_ID,REGION,NAME,LOCATION_TYPE,CATEGORY,LAT,LNG,POINT_GEOM,SOURCE)
-      VALUES ${values}`;
+      ${selects}`;
         try {
             await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
         }
         catch (e) {
-            log('ERROR', 'Studio', `DIM_POIS insert error`, { detail: e.message?.slice(0, 200) });
+            const msg = `DIM_POIS insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+            log('ERROR', 'Studio', msg);
+            throw new Error(msg);
         }
     }
 }
@@ -229,21 +260,38 @@ export async function startGeneration(config, presetName, snowSql) {
         listeners: new Set(),
     };
     activeJobs.set(jobId, job);
-    try {
-        await snowSql(`INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (JOB_ID,PRESET_NAME,REGION,ORS_PROFILE,NUM_VEHICLES,START_DATE,END_DATE,STATUS,CONFIG)
-       VALUES (${escVal(jobId)},${escVal(presetName)},${escVal(config.region)},${escVal(config.ors_profile)},
-       ${config.fleet.num_vehicles},${escVal(config.time.start_date)},${escVal(config.time.end_date)},'RUNNING',
-       PARSE_JSON(${escVal(JSON.stringify(config))}))`, 'FLEET_INTELLIGENCE', 'CORE');
-    }
-    catch { }
     (async () => {
         try {
             await ensureTables(snowSql);
+            try {
+                const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
+                await snowSql(`INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (JOB_ID,PRESET_NAME,REGION,ORS_PROFILE,NUM_VEHICLES,START_DATE,END_DATE,STATUS,CONFIG)
+           SELECT ${escVal(jobId)},${escVal(presetName)},${escVal(config.region)},${escVal(config.ors_profile)},
+           ${config.fleet.num_vehicles},${escVal(config.time.start_date)},${escVal(config.time.end_date)},'RUNNING',
+           PARSE_JSON($$${configJson}$$)`, 'FLEET_INTELLIGENCE', 'CORE');
+            }
+            catch (e) {
+                const msg = `Failed to record job in history: ${e.message?.slice(0, 300)}`;
+                log('ERROR', 'Studio', msg, { jobId });
+                broadcast(job, 'warning', { message: msg });
+            }
             const { loadPOIs, buildFleet } = await import('./engine.js');
             const pois = await loadPOIs(config, snowSql);
             const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
-            await insertDimPois(pois, config, snowSql);
-            await insertDimFleet(fleet, config, snowSql);
+            try {
+                await insertDimPois(pois, config, snowSql);
+            }
+            catch (e) {
+                log('WARN', 'Studio', `DIM_POIS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+                broadcast(job, 'warning', { message: `DIM_POIS insert failed: ${e.message?.slice(0, 150)}` });
+            }
+            try {
+                await insertDimFleet(fleet, config, snowSql);
+            }
+            catch (e) {
+                log('WARN', 'Studio', `DIM_FLEET insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+                broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });
+            }
             const catCounts = {};
             for (const p of pois)
                 catCounts[p.category || p.location_type] = (catCounts[p.category || p.location_type] || 0) + 1;
@@ -260,13 +308,25 @@ export async function startGeneration(config, presetName, snowSql) {
                 if (job.abort.aborted)
                     break;
                 if (event.type === 'telemetry') {
-                    await insertTelemetryBatch(event.points, snowSql);
+                    try {
+                        await insertTelemetryBatch(event.points, snowSql);
+                    }
+                    catch (e) {
+                        log('ERROR', 'Studio', `Telemetry insert failed: ${e.message?.slice(0, 200)}`, { jobId });
+                        broadcast(job, 'warning', { message: `Telemetry insert failed: ${e.message?.slice(0, 150)}` });
+                    }
                     broadcast(job, 'batch', { inserted: event.points.length, total: job.pointsGenerated });
                 }
                 else if (event.type === 'trip') {
                     pendingTrips.push(event.record);
                     if (pendingTrips.length >= 50) {
-                        await insertTripBatch(pendingTrips.splice(0), snowSql);
+                        try {
+                            await insertTripBatch(pendingTrips.splice(0), snowSql);
+                        }
+                        catch (e) {
+                            log('ERROR', 'Studio', `Trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
+                            broadcast(job, 'warning', { message: `Trip insert failed: ${e.message?.slice(0, 150)}` });
+                        }
                     }
                 }
                 else if (event.type === 'stopped') {
@@ -275,7 +335,13 @@ export async function startGeneration(config, presetName, snowSql) {
                 }
             }
             if (pendingTrips.length > 0) {
-                await insertTripBatch(pendingTrips, snowSql);
+                try {
+                    await insertTripBatch(pendingTrips, snowSql);
+                }
+                catch (e) {
+                    log('ERROR', 'Studio', `Final trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
+                    broadcast(job, 'warning', { message: `Final trip insert failed: ${e.message?.slice(0, 150)}` });
+                }
             }
             if (stoppedEvent) {
                 job.status = 'STOPPED';
@@ -309,7 +375,11 @@ export async function startGeneration(config, presetName, snowSql) {
            ${errMsg ? `ERROR_MESSAGE=${escVal(errMsg)},` : ''}
            COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`, 'FLEET_INTELLIGENCE', 'CORE');
             }
-            catch { }
+            catch (e2) {
+                const msg = `Failed to update job status for ${jobId}: ${e2.message?.slice(0, 200)}`;
+                log('ERROR', 'Studio', msg, { jobId });
+                broadcast(job, 'warning', { message: msg });
+            }
         }
         catch (e) {
             job.status = 'FAILED';
@@ -322,7 +392,11 @@ export async function startGeneration(config, presetName, snowSql) {
            ERROR_MESSAGE=${escVal(e.message?.slice(0, 500))},
            COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`, 'FLEET_INTELLIGENCE', 'CORE');
             }
-            catch { }
+            catch (e3) {
+                const msg = `Failed to update failed-job status for ${jobId}: ${e3.message?.slice(0, 200)}`;
+                log('ERROR', 'Studio', msg, { jobId });
+                broadcast(job, 'warning', { message: msg });
+            }
         }
     })();
     return jobId;

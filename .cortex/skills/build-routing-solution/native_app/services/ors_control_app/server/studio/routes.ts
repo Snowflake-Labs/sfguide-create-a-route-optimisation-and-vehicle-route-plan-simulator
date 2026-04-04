@@ -55,7 +55,8 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         'FLEET_INTELLIGENCE', 'CORE'
       );
       res.json(rows);
-    } catch {
+    } catch (e: any) {
+      log('WARN', 'Studio', `Failed to load regions: ${e.message?.slice(0, 200)}`);
       res.json([]);
     }
   });
@@ -79,13 +80,16 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
            GROUP BY VEHICLE_TYPE, REGION`,
           'SYNTHETIC_DATASETS', 'UNIFIED'
         );
-      } catch {}
+      } catch (e: any) {
+        log('WARN', 'Studio', `Failed to load trip stats for coverage: ${e.message?.slice(0, 200)}`);
+      }
       const merged = telemetryStats.map((t: any) => {
         const ts = tripStats.find((s: any) => s.VEHICLE_TYPE === t.VEHICLE_TYPE && s.REGION === t.REGION);
         return { ...t, TRIP_ROWS: ts?.TRIP_ROWS || 0 };
       });
       res.json(merged);
-    } catch {
+    } catch (e: any) {
+      log('WARN', 'Studio', `Failed to load coverage: ${e.message?.slice(0, 200)}`);
       res.json([]);
     }
   });
@@ -118,10 +122,10 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
       if (!name || !ors_profile || !region || !config) {
         return res.status(400).json({ error: 'name, ors_profile, region, config required' });
       }
-      const configStr = JSON.stringify(config).replace(/'/g, "''");
+      const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
       await snowSql(
         `INSERT INTO FLEET_INTELLIGENCE.CORE.GENERATION_PRESETS (PRESET_ID, NAME, ORS_PROFILE, REGION, CONFIG)
-         SELECT UUID_STRING(), '${name.replace(/'/g, "''")}', '${ors_profile}', '${region}', PARSE_JSON('${configStr}')`,
+         SELECT UUID_STRING(), '${name.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '')}', '${ors_profile}', '${region}', PARSE_JSON($$${configJson}$$)`,
         'FLEET_INTELLIGENCE', 'CORE'
       );
       res.json({ ok: true });
@@ -133,13 +137,13 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
   router.put('/presets/:id', async (req, res) => {
     try {
       const { name, ors_profile, region, config } = req.body;
-      const configStr = JSON.stringify(config).replace(/'/g, "''");
+      const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
       await snowSql(
         `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_PRESETS
-         SET NAME='${(name || '').replace(/'/g, "''")}',
+         SET NAME='${(name || '').replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '')}',
              ORS_PROFILE='${ors_profile || ''}',
              REGION='${region || ''}',
-             CONFIG=PARSE_JSON('${configStr}'),
+             CONFIG=PARSE_JSON($$${configJson}$$),
              UPDATED_AT=CURRENT_TIMESTAMP()
          WHERE PRESET_ID='${req.params.id}'`,
         'FLEET_INTELLIGENCE', 'CORE'
@@ -227,7 +231,9 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
            FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ORDER BY STARTED_AT DESC LIMIT 50`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
-      } catch {}
+      } catch (e: any) {
+        log('WARN', 'Studio', `Failed to load job history: ${e.message?.slice(0, 200)}`);
+      }
       res.json({ active: memoryJobs, history: dbJobs });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -257,7 +263,9 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
     }
 
     const heartbeat = setInterval(() => {
-      try { res.write(': heartbeat\n\n'); } catch {}
+      try { res.write(': heartbeat\n\n'); } catch (e: any) {
+        log('DEBUG', 'Studio', `Heartbeat write failed (client likely disconnected)`);
+      }
     }, 15000);
 
     const unsub = subscribeJob(jobId, send);
@@ -281,7 +289,8 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         'SYNTHETIC_DATASETS', 'UNIFIED'
       );
       res.json(rows);
-    } catch {
+    } catch (e: any) {
+      log('WARN', 'Studio', `Failed to load stats: ${e.message?.slice(0, 200)}`);
       res.json([]);
     }
   });

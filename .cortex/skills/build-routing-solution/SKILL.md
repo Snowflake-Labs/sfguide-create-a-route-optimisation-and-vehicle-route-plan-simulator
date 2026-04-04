@@ -30,7 +30,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
-| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP database |
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP, SYNTHETIC_DATASETS, and FLEET_INTELLIGENCE databases |
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | CREATE APPLICATION | Account | Deploys OPENROUTESERVICE_NATIVE_APP |
 | CREATE APPLICATION PACKAGE | Account | Creates OPENROUTESERVICE_NATIVE_APP_PKG |
@@ -199,12 +199,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    ```
 
-3. **Open the application in browser:**
+3. **Grant Data Studio access** (required for synthetic data generation):
+   ```sql
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.SETUP_DATA_STUDIO();
+   ```
+   This creates `SYNTHETIC_DATASETS.UNIFIED` and `FLEET_INTELLIGENCE.CORE` databases/schemas
+   and grants the app access to write generated fleet telemetry data.
+
+4. **Open the application in browser:**
    ```bash
    cd native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
-4. **Verify** deployment output includes:
+5. **Verify** deployment output includes:
    - Application package created: `OPENROUTESERVICE_NATIVE_APP_PKG`
    - Application created: `OPENROUTESERVICE_NATIVE_APP`
    - Snowsight URL provided

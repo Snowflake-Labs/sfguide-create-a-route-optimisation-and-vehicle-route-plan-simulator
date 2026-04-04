@@ -734,31 +734,33 @@ export async function* generateTelemetry(
         const plannedDistKm = plannedRoute ? plannedRoute.distance_m / 1000 : actualDistKm;
         const durationMin = (tripEndTime.getTime() - tripStartTime.getTime()) / 60000;
 
-        const tripRecord: TripRecord = {
-          trip_id: tripId,
-          vehicle_id: member.vehicle_id,
-          driver_id: member.driver_id,
-          vehicle_type: vt,
-          region: config.region,
-          origin_poi_id: currentOriginPoi.location_id,
-          destination_poi_id: destPoi.location_id,
-          origin_lat: currentOriginPoi.lat,
-          origin_lon: currentOriginPoi.lng,
-          destination_lat: destPoi.lat,
-          destination_lon: destPoi.lng,
-          route_coordinates: (routeToFollow?.coordinates || []) as [number, number][],
-          distance_km: Math.round(actualDistKm * 100) / 100,
-          duration_minutes: Math.round(durationMin * 100) / 100,
-          planned_route_coordinates: isDetour && plannedRoute ? plannedRoute.coordinates as [number, number][] : null,
-          planned_distance_km: isDetour ? Math.round(plannedDistKm * 100) / 100 : null,
-          is_detour: isDetour,
-          detour_distance_km: isDetour ? Math.round((actualDistKm - plannedDistKm) * 100) / 100 : null,
-          trip_start: tripStartTime,
-          trip_end: tripEndTime,
-          status: 'COMPLETED',
-          ors_profile: config.ors_profile,
-        };
-        yield { type: 'trip', record: tripRecord };
+        if (routeToFollow && routeToFollow.coordinates.length >= 2) {
+          const tripRecord: TripRecord = {
+            trip_id: tripId,
+            vehicle_id: member.vehicle_id,
+            driver_id: member.driver_id,
+            vehicle_type: vt,
+            region: config.region,
+            origin_poi_id: currentOriginPoi.location_id,
+            destination_poi_id: destPoi.location_id,
+            origin_lat: currentOriginPoi.lat,
+            origin_lon: currentOriginPoi.lng,
+            destination_lat: destPoi.lat,
+            destination_lon: destPoi.lng,
+            route_coordinates: routeToFollow.coordinates as [number, number][],
+            distance_km: Math.round(actualDistKm * 100) / 100,
+            duration_minutes: Math.round(durationMin * 100) / 100,
+            planned_route_coordinates: isDetour && plannedRoute ? plannedRoute.coordinates as [number, number][] : null,
+            planned_distance_km: isDetour ? Math.round(plannedDistKm * 100) / 100 : null,
+            is_detour: isDetour,
+            detour_distance_km: isDetour ? Math.round((actualDistKm - plannedDistKm) * 100) / 100 : null,
+            trip_start: tripStartTime,
+            trip_end: tripEndTime,
+            status: 'COMPLETED',
+            ors_profile: config.ors_profile,
+          };
+          yield { type: 'trip', record: tripRecord };
+        }
 
         currentOriginPoi = destPoi;
         lifecycle.tripSeq++;

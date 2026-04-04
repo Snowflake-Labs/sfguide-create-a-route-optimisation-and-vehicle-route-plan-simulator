@@ -97,14 +97,18 @@ export default function FleetDataStudio() {
     try {
       const res = await fetch('/api/studio/templates');
       setTemplates(await res.json());
-    } catch {}
+    } catch (e: any) {
+      console.error('Failed to fetch templates:', e);
+    }
   }, []);
 
   const fetchPresets = useCallback(async () => {
     try {
       const res = await fetch('/api/studio/presets');
       setPresets(await res.json());
-    } catch {}
+    } catch (e: any) {
+      console.error('Failed to fetch presets:', e);
+    }
   }, []);
 
   const fetchJobs = useCallback(async () => {
@@ -114,21 +118,28 @@ export default function FleetDataStudio() {
       setActiveJobs(data.active || []);
       setJobHistory(data.history || []);
       return data.active || [];
-    } catch { return []; }
+    } catch (e: any) {
+      console.error('Failed to fetch jobs:', e);
+      return [];
+    }
   }, []);
 
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch('/api/studio/stats');
       setStats(await res.json());
-    } catch {}
+    } catch (e: any) {
+      console.error('Failed to fetch stats:', e);
+    }
   }, []);
 
   const fetchCoverage = useCallback(async () => {
     try {
       const res = await fetch('/api/studio/coverage');
       setCoverage(await res.json());
-    } catch {}
+    } catch (e: any) {
+      console.error('Failed to fetch coverage:', e);
+    }
   }, []);
 
   useEffect(() => {
@@ -205,6 +216,12 @@ export default function FleetDataStudio() {
       const data = JSON.parse(e.data);
       setLogLines(prev => [...prev.slice(-50), `Batch: ${data.inserted?.toLocaleString()} pts (total: ${data.total?.toLocaleString()})`]);
     });
+    evtSource.addEventListener('warning', (e) => {
+      if (!e.data) return;
+      const data = JSON.parse(e.data);
+      setLogLines(prev => [...prev.slice(-50), `WARNING: ${data.message}`]);
+      console.warn('[Studio SSE warning]', data.message);
+    });
     evtSource.addEventListener('complete', (e) => {
       if (!e.data) return;
       const data = JSON.parse(e.data);
@@ -237,7 +254,9 @@ export default function FleetDataStudio() {
         const errData = JSON.parse(e.data);
         setLogLines(prev => [...prev, `Error: ${errData.error}`]);
         isServerError = true;
-      } catch {}
+      } catch (e: any) {
+        console.error('SSE error parse failed (likely a connection drop, not a server error):', e);
+      }
       if (isServerError) {
         setGenerating(false);
         fetchJobs();
@@ -341,7 +360,9 @@ export default function FleetDataStudio() {
         body: JSON.stringify({ name: editName, ors_profile: editProfile, region: editRegion, config: editConfig }),
       });
       fetchPresets();
-    } catch {}
+    } catch (e: any) {
+      console.error('Failed to save preset:', e);
+    }
   };
 
   useEffect(() => {

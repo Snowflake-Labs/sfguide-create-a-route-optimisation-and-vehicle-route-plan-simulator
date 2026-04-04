@@ -91,7 +91,7 @@ function sanitizeInt(val) {
     return n;
 }
 function escapeString(val) {
-    return val.replace(/'/g, "''");
+    return val.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, '');
 }
 function getSpcsToken() {
     return readFileSync('/snowflake/session/token', 'utf-8').trim();
@@ -1252,7 +1252,7 @@ async function executeToolLocally(toolName, input) {
     }
 }
 function escAgentSqlStr(s) {
-    return s.replace(/'/g, "''");
+    return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
 }
 const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
 let agentModel = AGENT_MODELS[0];

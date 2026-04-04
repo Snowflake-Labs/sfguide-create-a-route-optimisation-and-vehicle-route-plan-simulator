@@ -1,6 +1,6 @@
 ---
 name: fleet-intelligence-food-delivery
-description: "Generate realistic food delivery courier location data for the SwiftBite Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. California statewide coverage with city-level filtering. Configurable location, number of couriers (default 50), days of simulation (default 1), and shift patterns. Includes deploying the Fleet Intelligence React native app to SPCS (Docker build, push, app package, install). Use when: setting up food delivery data, generating route-based simulation, deploying fleet dashboard, installing native app. Do NOT use for: taxi fleet simulation (use fleet-intelligence-taxis), route deviation analysis, or route optimization demos. Triggers: generate courier locations, create delivery data, setup food delivery fleet, deploy streamlit, deploy native app, install fleet intelligence, swiftbite dashboard, food delivery intelligence."
+description: "Generate realistic food delivery courier location data for the SwiftBite Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. California statewide coverage with city-level filtering. Configurable location, number of couriers (default 50), days of simulation (default 1), and shift patterns. Includes deploying the Fleet Intelligence React native app to SPCS (Docker build, push, app package, install). Use when: setting up food delivery data, generating route-based simulation, deploying fleet dashboard, installing native app. Do NOT use for: taxi fleet simulation (use fleet-intelligence-taxis), route deviation analysis, or route optimization demos. Triggers: generate courier locations, create delivery data, setup food delivery fleet, deploy streamlit, deploy native app, install fleet intelligence, swiftbite dashboard, food delivery intelligence."
 depends_on:
   - build-routing-solution
   - routing-customization
@@ -19,6 +19,7 @@ Generates realistic food delivery courier location data for the SwiftBite Fleet 
 - **Route Interpolation** - Courier positions along actual roads
 - **City-level Filtering** - San Francisco, Los Angeles, San Diego, San Jose, Sacramento, and more
 - **Configurable Fleet Size** - Set number of couriers and simulation days
+- **Data Studio Projection Views** - Also reads from `SYNTHETIC_DATASETS.UNIFIED` via CONFIG table, compatible with any vehicle type
 - **Pre-computed Travel Time Matrix** - 1.1M+ H3 hex-pair travel times for instant ETA lookups
 
 ---
