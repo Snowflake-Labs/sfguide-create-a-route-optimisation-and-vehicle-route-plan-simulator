@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function FleetOverview() {
@@ -74,8 +75,8 @@ export default function FleetOverview() {
       <div className="metric-grid">
         <MetricCard label="Drivers" value={loading ? '...' : (kpis.DRIVERS ?? '—')} />
         <MetricCard label="Trips" value={loading ? '...' : (kpis.TRIPS ?? '—')} />
-        <MetricCard label="Avg Distance" value={loading ? '...' : `${kpis.AVG_DISTANCE_KM ?? '—'} km`} />
-        <MetricCard label="Avg Duration" value={loading ? '...' : `${kpis.AVG_DURATION_MIN ?? '—'} min`} />
+        <MetricCard label="Avg Distance" value={loading ? '...' : `${fmtDec(kpis.AVG_DISTANCE_KM)} km`} />
+        <MetricCard label="Avg Duration" value={loading ? '...' : `${fmtDec(kpis.AVG_DURATION_MIN)} min`} />
       </div>
       <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginBottom: 12 }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -49,8 +50,8 @@ export default function DeviationDashboard({ sourceDb, sourceSchema }: Props) {
       <h2>Route Deviation Dashboard</h2>
       <div className="metric-grid">
         <MetricCard label="Total Routes" value={Number(k.TOTAL_ROUTES || 0).toLocaleString()} />
-        <MetricCard label="Avg Deviation" value={`${k.AVG_DEVIATION_PCT || 0}%`} subtitle={`${k.AVG_DEVIATION_KM || 0} km`} />
-        <MetricCard label="On-Route" value={`${k.ON_ROUTE_PCT || 0}%`} subtitle="within 5% deviation" />
+        <MetricCard label="Avg Deviation" value={`${fmtDec(k.AVG_DEVIATION_PCT)}%`} subtitle={`${fmtDec(k.AVG_DEVIATION_KM)} km`} />
+        <MetricCard label="On-Route" value={`${fmtDec(k.ON_ROUTE_PCT)}%`} subtitle="within 5% deviation" />
         <MetricCard label="High Deviations" value={Number(k.HIGH_DEVIATION_COUNT || 0).toLocaleString()} subtitle=">20% deviation" />
       </div>
       <div className="chart-row">

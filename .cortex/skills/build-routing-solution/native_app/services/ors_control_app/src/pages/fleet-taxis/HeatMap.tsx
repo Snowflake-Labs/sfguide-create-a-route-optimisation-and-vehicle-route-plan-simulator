@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 

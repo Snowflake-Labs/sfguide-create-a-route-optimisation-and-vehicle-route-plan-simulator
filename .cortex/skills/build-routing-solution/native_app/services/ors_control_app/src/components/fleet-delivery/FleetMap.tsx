@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function FleetMap() {
@@ -64,7 +65,7 @@ export default function FleetMap() {
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.COURIER_ID) return null;
     return {
-      html: `<b>${object.COURIER_ID}</b><br/>Trips: ${object.TRIPS}<br/>Avg: ${object.AVG_MIN} min`,
+      html: `<b>${object.COURIER_ID}</b><br/>Trips: ${object.TRIPS}<br/>Avg: ${fmtDec(object.AVG_MIN)} min`,
       style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
     };
   }, []);
@@ -76,7 +77,7 @@ export default function FleetMap() {
       <div className="metric-grid">
         <MetricCard label="Couriers" value={loading ? '...' : (kpis.COURIERS ?? '—')} />
         <MetricCard label="Deliveries" value={loading ? '...' : (kpis.DELIVERIES ?? '—')} />
-        <MetricCard label="Avg Delivery" value={loading ? '...' : `${kpis.AVG_DELIVERY_MIN ?? '—'} min`} />
+        <MetricCard label="Avg Delivery" value={loading ? '...' : `${fmtDec(kpis.AVG_DELIVERY_MIN)} min`} />
       </div>
       <h3>Couriers</h3>
       <div style={{ maxHeight: 180, overflowY: 'auto', marginBottom: 12 }}>
@@ -87,7 +88,7 @@ export default function FleetMap() {
               <tr key={c.COURIER_ID} className={`clickable${selectedCourier === c.COURIER_ID ? ' selected' : ''}`} onClick={() => loadRoutes(c.COURIER_ID)}>
                 <td>{c.COURIER_ID}</td>
                 <td>{c.TRIPS}</td>
-                <td>{c.AVG_MIN}m</td>
+                <td>{fmtDec(c.AVG_MIN)}m</td>
               </tr>
             ))}
           </tbody>

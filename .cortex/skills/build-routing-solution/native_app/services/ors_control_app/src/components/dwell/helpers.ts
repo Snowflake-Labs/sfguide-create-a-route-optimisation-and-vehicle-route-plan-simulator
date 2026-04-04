@@ -15,9 +15,14 @@ export async function sfQuery(sql: string, database = DWELL_DB, schema = DWELL_S
       body: JSON.stringify({ sql, database, schema }),
     });
     const body = await res.json();
+    if (body.error) {
+      console.error('[sfQuery]', body.error, sql.slice(0, 120));
+      return [];
+    }
     const rows = Array.isArray(body) ? body : (body.result ?? []);
     return Array.isArray(rows) ? rows : [];
-  } catch {
+  } catch (err) {
+    console.error('[sfQuery] fetch failed:', err);
     return [];
   }
 }

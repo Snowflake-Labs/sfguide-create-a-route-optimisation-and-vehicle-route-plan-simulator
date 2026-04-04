@@ -3,6 +3,7 @@ import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -87,8 +88,8 @@ export default function FleetOverview({ sourceDb, sourceSchema, config }: Props)
         <div className="metric-grid-vertical">
           <MetricCard label="Drivers" value={k.DRIVERS || '...'} />
           <MetricCard label="Total Trips" value={Number(k.TRIPS || 0).toLocaleString()} />
-          <MetricCard label="Avg Distance" value={`${k.AVG_DISTANCE_KM || '...'} km`} />
-          <MetricCard label="Avg Duration" value={`${k.AVG_DURATION_MIN || '...'} min`} />
+          <MetricCard label="Avg Distance" value={`${fmtDec(k.AVG_DISTANCE_KM)} km`} />
+          <MetricCard label="Avg Duration" value={`${fmtDec(k.AVG_DURATION_MIN)} min`} />
         </div>
         <div className="chart-card">
           <h3>Trips by Hour</h3>

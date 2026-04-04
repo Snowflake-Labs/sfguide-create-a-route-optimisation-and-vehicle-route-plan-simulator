@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { fmtDec } from '../../shared/format';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -53,7 +54,7 @@ export default function HeatMap() {
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.H3_INDEX) return null;
-    return { html: `<b>${object.H3_INDEX}</b><br/>Trips: ${object.TRIP_COUNT}<br/>Avg Speed: ${object.AVG_SPEED} km/h`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
+    return { html: `<b>${object.H3_INDEX}</b><br/>Trips: ${object.TRIP_COUNT}<br/>Avg Speed: ${fmtDec(object.AVG_SPEED)} km/h`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
   }, []);
 
   return (

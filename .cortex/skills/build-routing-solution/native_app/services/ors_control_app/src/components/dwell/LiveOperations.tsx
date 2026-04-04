@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import { sfQuery, cartoBasemap } from './helpers';
+import { fmtDec } from '../../shared/format';
 
 const STATE_COLORS: Record<string, [number, number, number, number]> = {
   DRIVING: [41, 181, 232, 200],
@@ -61,7 +62,7 @@ export default function LiveOperations() {
   const getTooltip = useCallback(({ object }: any) => {
     if (!object || !object.DRIVER_ID) return null;
     return {
-      html: `<b>${object.DRIVER_ID}</b><br/>State: ${object.CURRENT_STATE}<br/>Speed: ${object.CURRENT_SPEED_KMH || 0} km/h`,
+      html: `<b>${object.DRIVER_ID}</b><br/>State: ${object.CURRENT_STATE}<br/>Speed: ${fmtDec(object.CURRENT_SPEED_KMH)} km/h`,
       style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
     };
   }, []);
@@ -103,8 +104,8 @@ export default function LiveOperations() {
                   <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ padding: '6px 8px' }}>{d.DRIVER_ID}</td>
                     <td style={{ padding: '6px 8px' }}>{d.FACILITY_NAME}</td>
-                    <td style={{ padding: '6px 8px' }}>{d.DWELL_DURATION_MIN}</td>
-                    <td style={{ padding: '6px 8px', color: Number(d.TIME_REMAINING) < 0 ? '#E5484D' : '#0DB048', fontWeight: 600 }}>{d.TIME_REMAINING}</td>
+                    <td style={{ padding: '6px 8px' }}>{fmtDec(d.DWELL_DURATION_MIN)}</td>
+                    <td style={{ padding: '6px 8px', color: Number(d.TIME_REMAINING) < 0 ? '#E5484D' : '#0DB048', fontWeight: 600 }}>{fmtDec(d.TIME_REMAINING)}</td>
                   </tr>
                 ))}
               </tbody>

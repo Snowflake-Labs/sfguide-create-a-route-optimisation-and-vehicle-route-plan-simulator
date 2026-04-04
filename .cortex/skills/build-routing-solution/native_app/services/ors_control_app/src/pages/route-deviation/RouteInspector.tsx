@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -135,7 +136,7 @@ export default function RouteInspector({ sourceDb, sourceSchema }: Props) {
             <label>Trip</label>
             <select className="form-select" value={selectedTrip || ''} onChange={e => e.target.value && loadTrip(e.target.value)}>
               <option value="">Select trip...</option>
-              {trips.map((t: any) => <option key={t.TRIP_ID} value={t.TRIP_ID}>{String(t.TRIP_ID).slice(0, 12)} ({t.DEV_PCT}% dev, {t.ACTUAL_KM}km)</option>)}
+              {trips.map((t: any) => <option key={t.TRIP_ID} value={t.TRIP_ID}>{String(t.TRIP_ID).slice(0, 12)} ({fmtDec(t.DEV_PCT)}% dev, {fmtDec(t.ACTUAL_KM)}km)</option>)}
             </select>
           </div>
         )}

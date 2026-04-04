@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -54,8 +55,8 @@ export default function Overview({ sourceDb, sourceSchema }: Props) {
       <h2>Dwell Analytics Overview</h2>
       <div className="metric-grid">
         <MetricCard label="Total Trips" value={kpiLoading ? '...' : Number(k.TOTAL_TRIPS || 0).toLocaleString()} subtitle="across all drivers" />
-        <MetricCard label="Avg Dwell Time" value={kpiLoading ? '...' : `${k.AVG_DWELL_MIN || 0} min`} subtitle={`Median: ${k.MEDIAN_DWELL_MIN || 0} min`} />
-        <MetricCard label="SLA Compliance" value={kpiLoading ? '...' : `${k.SLA_COMPLIANCE_PCT || 0}%`} subtitle="dwells within SLA" />
+        <MetricCard label="Avg Dwell Time" value={kpiLoading ? '...' : `${fmtDec(k.AVG_DWELL_MIN)} min`} subtitle={`Median: ${fmtDec(k.MEDIAN_DWELL_MIN)} min`} />
+        <MetricCard label="SLA Compliance" value={kpiLoading ? '...' : `${fmtDec(k.SLA_COMPLIANCE_PCT)}%`} subtitle="dwells within SLA" />
         <MetricCard label="Active Drivers" value={kpiLoading ? '...' : Number(k.ACTIVE_DRIVERS || 0).toLocaleString()} />
       </div>
       <div className="chart-row">

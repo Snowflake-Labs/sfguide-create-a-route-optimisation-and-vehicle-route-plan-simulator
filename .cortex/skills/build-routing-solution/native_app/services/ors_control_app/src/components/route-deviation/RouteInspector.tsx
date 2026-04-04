@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -112,7 +113,7 @@ export default function RouteInspector() {
             <label>Trip</label>
             <select className="form-select" value={selectedTrip} onChange={e => loadTrip(e.target.value)}>
               <option value="">Select...</option>
-              {truckTrips.map(t => <option key={t.TRIP_ID} value={t.TRIP_ID}>{String(t.TRIP_ID).slice(-12)} ({t.DEV_PCT}% · {t.PTS} pts)</option>)}
+              {truckTrips.map(t => <option key={t.TRIP_ID} value={t.TRIP_ID}>{String(t.TRIP_ID).slice(-12)} ({fmtDec(t.DEV_PCT)}% · {t.PTS} pts)</option>)}
             </select>
           </div>
         )}

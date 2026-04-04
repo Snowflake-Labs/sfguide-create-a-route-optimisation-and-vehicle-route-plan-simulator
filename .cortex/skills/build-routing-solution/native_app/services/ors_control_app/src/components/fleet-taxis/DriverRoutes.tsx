@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function DriverRoutes() {
@@ -109,7 +110,7 @@ export default function DriverRoutes() {
             <option value="">Select a driver...</option>
             {drivers.map((d: any) => (
               <option key={d.DRIVER_ID} value={d.DRIVER_ID}>
-                {d.DRIVER_ID} \u2014 {d.TRIPS} trips, {d.TOTAL_KM} km
+                {d.DRIVER_ID} \u2014 {d.TRIPS} trips, {fmtDec(d.TOTAL_KM)} km
               </option>
             ))}
           </select>
@@ -121,7 +122,7 @@ export default function DriverRoutes() {
               <option value="">Select a trip...</option>
               {routes.map((r: any) => (
                 <option key={r.TRIP_ID} value={r.TRIP_ID}>
-                  {String(r.TRIP_ID).slice(-10)} \u2014 {r.TRIP_KM} km, {r.TRIP_MIN} min
+                  {String(r.TRIP_ID).slice(-10)} \u2014 {r.TRIP_KM} km, {fmtDec(r.TRIP_MIN)} min
                 </option>
               ))}
             </select>
@@ -131,15 +132,15 @@ export default function DriverRoutes() {
       {sel && (
         <div className="metric-grid" style={{ marginBottom: 12 }}>
           <MetricCard label="Trips" value={sel.TRIPS} />
-          <MetricCard label="Total Km" value={sel.TOTAL_KM} />
-          <MetricCard label="Avg Speed" value={`${sel.AVG_SPEED} km/h`} />
-          <MetricCard label="Avg Duration" value={`${sel.AVG_DURATION} min`} />
+          <MetricCard label="Total Km" value={`${fmtDec(sel.TOTAL_KM)} km`} />
+          <MetricCard label="Avg Speed" value={`${fmtDec(sel.AVG_SPEED)} km/h`} />
+          <MetricCard label="Avg Duration" value={`${fmtDec(sel.AVG_DURATION)} min`} />
         </div>
       )}
       {selTrip && (
         <div className="metric-grid" style={{ marginBottom: 12 }}>
-          <MetricCard label="Distance" value={`${selTrip.TRIP_KM} km`} />
-          <MetricCard label="Duration" value={`${selTrip.TRIP_MIN} min`} />
+          <MetricCard label="Distance" value={`${fmtDec(selTrip.TRIP_KM)} km`} />
+          <MetricCard label="Duration" value={`${fmtDec(selTrip.TRIP_MIN)} min`} />
           {selTrip.ORIGIN_ADDRESS && <MetricCard label="From" value={selTrip.ORIGIN_ADDRESS} />}
           {selTrip.DESTINATION_ADDRESS && <MetricCard label="To" value={selTrip.DESTINATION_ADDRESS} />}
         </div>
@@ -150,7 +151,7 @@ export default function DriverRoutes() {
           <input type="range" min={0} max={gpsPoints.length - 1} value={sliderIdx} onChange={e => setSliderIdx(Number(e.target.value))} style={{ width: '100%' }} />
           {gpsPoints[sliderIdx] && (
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
-              Speed: {gpsPoints[sliderIdx].KMH} km/h | State: {gpsPoints[sliderIdx].DRIVER_STATE}
+              Speed: {fmtDec(gpsPoints[sliderIdx].KMH)} km/h | State: {gpsPoints[sliderIdx].DRIVER_STATE}
             </div>
           )}
           <button className="btn-primary" onClick={analyzeTrip} disabled={aiLoading} style={{ width: '100%', marginTop: 8 }}>{aiLoading ? 'Analyzing...' : 'AI Analysis'}</button>

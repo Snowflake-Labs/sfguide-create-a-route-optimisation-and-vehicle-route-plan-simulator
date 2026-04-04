@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import MapView from '../../shared/MapView';
 import DataTable from '../../shared/DataTable';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -91,7 +92,7 @@ export default function TripInspector({ sourceDb, sourceSchema }: Props) {
             <h4 style={{ fontSize: 13, marginBottom: 6 }}>Dwell Stops ({dwellPoints.length})</h4>
             {dwellPoints.map((d: any, i: number) => (
               <div key={i} className="placeholder-note" style={{ marginBottom: 4 }}>
-                <strong>{d.FACILITY_NAME || 'Unknown'}</strong>: {d.DWELL_MIN} min
+                <strong>{d.FACILITY_NAME || 'Unknown'}</strong>: {fmtDec(d.DWELL_MIN)} min
                 <span style={{ color: d.SLA_STATUS === 'OK' ? '#0DB048' : '#E5484D', marginLeft: 6 }}>{d.SLA_STATUS}</span>
               </div>
             ))}

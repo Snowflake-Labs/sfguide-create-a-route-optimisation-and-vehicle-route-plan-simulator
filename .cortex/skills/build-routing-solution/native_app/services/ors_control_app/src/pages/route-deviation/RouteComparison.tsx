@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -93,8 +94,8 @@ export default function RouteComparison({ sourceDb, sourceSchema }: Props) {
         <h2>Route Comparison</h2>
         {sel && (
           <div className="metric-grid-vertical">
-            <MetricCard label="Deviation" value={`${sel.DEV_PCT}%`} subtitle={`${sel.DEV_KM} km`} />
-            <MetricCard label="Actual Distance" value={`${sel.ACTUAL_KM} km`} />
+            <MetricCard label="Deviation" value={`${fmtDec(sel.DEV_PCT)}%`} subtitle={`${fmtDec(sel.DEV_KM)} km`} />
+            <MetricCard label="Actual Distance" value={`${fmtDec(sel.ACTUAL_KM)} km`} />
             <MetricCard label="From" value={String(sel.ORIGIN_NAME || '').slice(0, 20)} />
             <MetricCard label="To" value={String(sel.DEST_NAME || '').slice(0, 20)} />
           </div>
@@ -116,8 +117,8 @@ export default function RouteComparison({ sourceDb, sourceSchema }: Props) {
             <tbody>{routes.map((r: any) => (
               <tr key={r.TRIP_ID} onClick={() => loadRoute(r.TRIP_ID)} style={{ cursor: 'pointer', background: selectedRoute === r.TRIP_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
                 <td style={{ fontSize: 11 }}>{String(r.TRIP_ID).slice(-12)}</td>
-                <td style={{ color: Number(r.DEV_PCT) > 20 ? '#E5484D' : Number(r.DEV_PCT) > 10 ? '#E5A100' : '#0DB048' }}>{r.DEV_PCT}%</td>
-                <td>{r.DEV_KM}</td>
+                <td style={{ color: Number(r.DEV_PCT) > 20 ? '#E5484D' : Number(r.DEV_PCT) > 10 ? '#E5A100' : '#0DB048' }}>{fmtDec(r.DEV_PCT)}%</td>
+                <td>{fmtDec(r.DEV_KM)}</td>
               </tr>
             ))}</tbody>
           </table>

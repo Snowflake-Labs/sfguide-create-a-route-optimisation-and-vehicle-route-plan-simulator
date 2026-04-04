@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -66,7 +67,7 @@ export default function FleetMap({ sourceDb, sourceSchema }: Props) {
         <div className="metric-grid-vertical">
           <MetricCard label="Couriers" value={s.COURIERS || '...'} />
           <MetricCard label="Deliveries" value={s.DELIVERIES || '...'} />
-          <MetricCard label="Avg Delivery" value={s.AVG_DELIVERY_MIN ? `${s.AVG_DELIVERY_MIN} min` : '...'} />
+          <MetricCard label="Avg Delivery" value={s.AVG_DELIVERY_MIN ? `${fmtDec(s.AVG_DELIVERY_MIN)} min` : '...'} />
         </div>
         {selectedRoute && <p style={{ fontSize: 12, color: '#29B5E8', marginBottom: 8 }}>Showing routes for {selectedRoute}</p>}
         <h3 style={{ fontSize: 13, marginBottom: 8 }}>Top Couriers</h3>
@@ -75,7 +76,7 @@ export default function FleetMap({ sourceDb, sourceSchema }: Props) {
             <thead><tr><th className="data-table-th">Courier</th><th className="data-table-th">Trips</th><th className="data-table-th">Avg Min</th></tr></thead>
             <tbody>{couriers.map((c: any) => (
               <tr key={c.COURIER_ID} onClick={() => loadRoute(c.COURIER_ID)} style={{ cursor: 'pointer', background: selectedRoute === c.COURIER_ID ? 'rgba(41,181,232,0.1)' : undefined }}>
-                <td style={{ fontSize: 11 }}>{String(c.COURIER_ID).slice(-8)}</td><td>{c.TRIPS}</td><td>{c.AVG_MIN}</td>
+                <td style={{ fontSize: 11 }}>{String(c.COURIER_ID).slice(-8)}</td><td>{c.TRIPS}</td><td>{fmtDec(c.AVG_MIN)}</td>
               </tr>
             ))}</tbody>
           </table>

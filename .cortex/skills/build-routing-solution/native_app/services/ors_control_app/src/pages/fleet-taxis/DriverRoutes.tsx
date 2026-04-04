@@ -3,6 +3,7 @@ import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSfQuery, useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -170,7 +171,7 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
             <option value="">Select a driver...</option>
             {drivers.map((d: any) => (
               <option key={d.DRIVER_ID} value={d.DRIVER_ID}>
-                {String(d.DRIVER_ID).slice(-8)} — {d.TRIPS} trips, {d.TOTAL_KM} km
+                {String(d.DRIVER_ID).slice(-8)} — {d.TRIPS} trips, {fmtDec(d.TOTAL_KM)} km
               </option>
             ))}
           </select>
@@ -179,8 +180,8 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
           <div className="metric-grid-vertical">
             <MetricCard label="Driver" value={String(sel.DRIVER_ID).slice(-8)} />
             <MetricCard label="Trips" value={sel.TRIPS} />
-            <MetricCard label="Total Km" value={sel.TOTAL_KM} />
-            <MetricCard label="Avg Speed" value={`${sel.AVG_SPEED} km/h`} />
+            <MetricCard label="Total Km" value={`${fmtDec(sel.TOTAL_KM)} km`} />
+            <MetricCard label="Avg Speed" value={`${fmtDec(sel.AVG_SPEED)} km/h`} />
           </div>
         )}
         {selectedDriver && routes.length > 0 && (
@@ -190,7 +191,7 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
               <option value="">Select a trip...</option>
               {routes.map((r: any) => (
                 <option key={r.TRIP_ID} value={r.TRIP_ID}>
-                  {String(r.TRIP_ID).slice(0, 8)} — {r.TRIP_KM} km, {r.TRIP_MIN} min
+                  {String(r.TRIP_ID).slice(0, 8)} — {fmtDec(r.TRIP_KM)} km, {fmtDec(r.TRIP_MIN)} min
                 </option>
               ))}
             </select>
@@ -198,8 +199,8 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
         )}
         {selTrip && (
           <div className="metric-grid-vertical">
-            <MetricCard label="Distance" value={`${selTrip.TRIP_KM} km`} />
-            <MetricCard label="Duration" value={`${selTrip.TRIP_MIN} min`} />
+            <MetricCard label="Distance" value={`${fmtDec(selTrip.TRIP_KM)} km`} />
+            <MetricCard label="Duration" value={`${fmtDec(selTrip.TRIP_MIN)} min`} />
             {selTrip.ORIGIN_ADDRESS && <MetricCard label="From" value={selTrip.ORIGIN_ADDRESS} />}
             {selTrip.DESTINATION_ADDRESS && <MetricCard label="To" value={selTrip.DESTINATION_ADDRESS} />}
           </div>
@@ -214,7 +215,7 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#24292F', marginBottom: 2 }}>
                   {String(currentPoint.CURR_TIME).slice(11, 19)}
                 </div>
-                <div>Speed: {currentPoint.KMH} km/h | State: {currentPoint.DRIVER_STATE}</div>
+                <div>Speed: {fmtDec(currentPoint.KMH)} km/h | State: {currentPoint.DRIVER_STATE}</div>
               </div>
             )}
             <div style={{ marginTop: 8 }}>

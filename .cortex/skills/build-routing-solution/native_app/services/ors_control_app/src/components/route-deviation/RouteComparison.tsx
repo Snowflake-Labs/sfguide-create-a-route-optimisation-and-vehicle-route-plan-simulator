@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 
 export default function RouteComparison() {
@@ -60,7 +61,7 @@ export default function RouteComparison() {
       <p className="subtitle">Expected vs actual route overlay</p>
       {selected && (
         <div className="metric-grid">
-          <MetricCard label="Deviation" value={`${selected.DEV_PCT}%`} />
+          <MetricCard label="Deviation" value={`${fmtDec(selected.DEV_PCT)}%`} />
           <MetricCard label="Origin" value={selected.ORIGIN_NAME || '—'} />
           <MetricCard label="Destination" value={selected.DEST_NAME || '—'} />
         </div>
@@ -76,7 +77,7 @@ export default function RouteComparison() {
             <tr key={r.TRIP_ID} className={`clickable${selectedRoute === r.TRIP_ID ? ' selected' : ''}`} onClick={() => loadRoute(r.TRIP_ID)}>
               <td className="mono">{String(r.TRIP_ID).slice(-10)}</td>
               <td>{r.DRIVER_ID}</td>
-              <td className={Number(r.DEV_PCT) > 20 ? 'text-danger' : ''} style={{ fontWeight: 600 }}>{r.DEV_PCT}%</td>
+              <td className={Number(r.DEV_PCT) > 20 ? 'text-danger' : ''} style={{ fontWeight: 600 }}>{fmtDec(r.DEV_PCT)}%</td>
             </tr>
           ))}</tbody>
         </table>

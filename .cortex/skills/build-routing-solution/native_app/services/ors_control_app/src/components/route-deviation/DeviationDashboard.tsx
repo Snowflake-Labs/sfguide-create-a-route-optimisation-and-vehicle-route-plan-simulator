@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
+import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery } from './helpers';
 
 const PIE_COLORS = ['#0DB048', '#29B5E8', '#E5A100', '#E5484D'];
@@ -37,8 +38,8 @@ export default function DeviationDashboard() {
       <p className="subtitle">Route deviation analytics overview</p>
       <div className="metric-grid">
         <MetricCard label="Total Routes" value={loading ? '...' : Number(kpis.TOTAL_ROUTES || 0).toLocaleString()} />
-        <MetricCard label="Avg Deviation" value={loading ? '...' : `${kpis.AVG_DEVIATION_PCT ?? '—'}%`} />
-        <MetricCard label="On-Route %" value={loading ? '...' : `${kpis.ON_ROUTE_PCT ?? '—'}%`} />
+        <MetricCard label="Avg Deviation" value={loading ? '...' : `${fmtDec(kpis.AVG_DEVIATION_PCT)}%`} />
+        <MetricCard label="On-Route %" value={loading ? '...' : `${fmtDec(kpis.ON_ROUTE_PCT)}%`} />
         <MetricCard label="High Deviations" value={loading ? '...' : (kpis.HIGH_DEVIATIONS ?? '—')} />
       </div>
       <div className="chart-row">

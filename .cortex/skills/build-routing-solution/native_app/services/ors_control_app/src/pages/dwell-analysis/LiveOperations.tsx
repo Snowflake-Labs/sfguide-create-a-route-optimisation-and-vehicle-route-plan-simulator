@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import MapView from '../../shared/MapView';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { useSnowflake } from '../../hooks/useSnowflake';
 import { useRegion } from '../../hooks/useRegion';
 
@@ -97,8 +98,8 @@ export default function LiveOperations({ sourceDb, sourceSchema }: Props) {
                   {openDwells.map((d: any, i: number) => (
                     <tr key={i}>
                       <td>{d.DRIVER_ID}</td>
-                      <td>{d.DWELL_DURATION_MIN}</td>
-                      <td style={{ color: Number(d.TIME_REMAINING) < 0 ? '#E5484D' : '#0DB048' }}>{d.TIME_REMAINING}</td>
+                      <td>{fmtDec(d.DWELL_DURATION_MIN)}</td>
+                      <td style={{ color: Number(d.TIME_REMAINING) < 0 ? '#E5484D' : '#0DB048' }}>{fmtDec(d.TIME_REMAINING)}</td>
                     </tr>
                   ))}
                 </tbody>

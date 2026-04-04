@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
+import { fmtDec } from '../../shared/format';
 import { sfQuery } from './helpers';
 
 export default function DwellOverview() {
@@ -44,8 +45,8 @@ export default function DwellOverview() {
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Fleet dwell time analytics and SLA monitoring</p>
       <div className="metric-grid">
         <MetricCard label="Total Trips" value={loading ? '...' : (k.TOTAL_TRIPS ?? '—')} />
-        <MetricCard label="Avg Dwell Time" value={loading ? '...' : `${k.AVG_DWELL ?? '—'} min`} />
-        <MetricCard label="SLA Compliance" value={loading ? '...' : `${k.SLA_PCT ?? '—'}%`} />
+        <MetricCard label="Avg Dwell Time" value={loading ? '...' : `${fmtDec(k.AVG_DWELL)} min`} />
+        <MetricCard label="SLA Compliance" value={loading ? '...' : `${fmtDec(k.SLA_PCT)}%`} />
         <MetricCard label="Active Drivers" value={loading ? '...' : (k.ACTIVE_DRIVERS ?? '—')} />
       </div>
       <div className="chart-row">
