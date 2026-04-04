@@ -215,7 +215,6 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 │   │   └── downloader_spec.yaml
 │   └── vroom/
 │       └── vroom-service.yaml
-└── streamlit/                <-- code_artifacts/streamlit/*
 ```
 
 | Local File (relative to `native_app/`) | Stage Destination | Deployed By |
@@ -228,7 +227,6 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 | `services/openrouteservice/openrouteservice.yaml` | `@STAGE/services/openrouteservice/` | `snow app run` |
 | `services/downloader/downloader_spec.yaml` | `@STAGE/services/downloader/` | `snow app run` |
 | `services/vroom/vroom-service.yaml` | `@STAGE/services/vroom/` | `snow app run` |
-| `code_artifacts/streamlit/*` | `@STAGE/streamlit/` | `snow app run` |
 
 If you see `@STAGE/app/setup_script.sql` on the stage, it is a **stale leftover**. `deploy.sh` automatically removes it. If deploying manually, remove it:
 ```sql

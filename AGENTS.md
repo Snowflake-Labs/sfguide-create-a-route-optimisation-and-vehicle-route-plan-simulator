@@ -15,7 +15,7 @@ Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook a
   ├── <skill-name>/
   │   ├── SKILL.md           # Skill definition (frontmatter + instructions)
   │   ├── references/        # Detailed SQL, code, docs (loaded on demand)
-  │   └── assets/            # Streamlit apps, notebooks, React apps
+  │   └── assets/            # Notebooks and other deployable artifacts
   ├── evals/                 # Eval framework (trigger, quality, xref)
 build-routing-solution/      # ORS native app build artifacts (Dockerfiles, configs)
 docs/                        # Documentation (dev/ and guides/)
@@ -44,11 +44,11 @@ No global build/lint step — each skill is independently deployable via its own
 | `build-routing-solution` | infrastructure | Builds and deploys the ORS native app on SPCS |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
-| `route-optimization` | demo | VRP demo with Marketplace data, notebook, Streamlit |
-| `fleet-intelligence-taxis` | fleet-intelligence | Taxi GPS telemetry generation + Streamlit dashboard |
+| `route-optimization` | demo | VRP demo with Marketplace data + notebook |
+| `fleet-intelligence-taxis` | fleet-intelligence | Taxi GPS telemetry generation + React dashboard |
 | `fleet-intelligence-food-delivery` | fleet-intelligence | Food delivery courier telemetry + React native app |
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
-| `route-deviation` | demo | Detour detection ETL pipeline + Streamlit dashboards |
+| `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
 | `synthetic-datasets-generator` | fleet-intelligence | Synthetic HGV truck GPS telemetry generator |
 | `travel-time-matrix` | advanced | H3-based travel time matrices via ORS MATRIX_TABULAR |
@@ -82,7 +82,7 @@ Key rules:
 1. Create folder: `.cortex/skills/my-new-skill/`
 2. Create `SKILL.md` with YAML frontmatter + body (use `skill-optimiser` for the template)
 3. Add `references/` for detailed SQL/code if body would exceed 5,000 words
-4. Add `assets/` for Streamlit apps, notebooks, or other deployable artifacts
+4. Add `assets/` for notebooks or other deployable artifacts
 5. Audit: invoke `skill-optimiser` or run `python3 .cortex/skills/evals/run_evals.py`
 6. Update the Skills Inventory table above
 
@@ -95,13 +95,12 @@ Key rules:
   ```
 - **Skip the object COMMENT** — every CREATE statement must include a COMMENT tracking tag (or `ALTER ... SET COMMENT` for CTAS):
   ```sql
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|streamlit|notebook|native-app>"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|native-app>"}}';
   ```
 - **Assume ORS is running** — always verify with `SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;` (all 4 services must be RUNNING)
 - **Hardcode city/region** — skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** — all docs go in SKILL.md or `references/`
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
-- **Deploy Streamlit without `OR REPLACE`** — always use `CREATE OR REPLACE STREAMLIT`
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
 - **Run CREATE PROCEDURE/TABLE/FUNCTION directly in OPENROUTESERVICE_NATIVE_APP** — objects created as ACCOUNTADMIN are invisible to the app context and will cause runtime errors
@@ -205,18 +204,16 @@ graph TD
 
 **Legend:** Orange = core infrastructure. Blue = configuration/prerequisites. White = demo/feature skills.
 
-Deploy order (top → bottom). Teardown order (bottom → top). See `docs/dev/SHARED-INFRASTRUCTURE.md` for shared object details.
+Deploy order (top → bottom). Teardown order (bottom → top).
 
 ## Common Patterns
 
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
-- **Streamlit deployment**: CREATE stage → upload files via `snow stage copy` → `CREATE OR REPLACE STREAMLIT` → `ALTER STREAMLIT ... ADD LIVE VERSION FROM LAST`.
+- **ORS Control App deployment**: Rebuild Docker image → push to registry → update service YAML version → `deploy.sh`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 
 ## Documentation
 
-- `docs/dev/` — Development notes, audit reports, architecture decisions
-- `docs/dev/SHARED-INFRASTRUCTURE.md` — Database/warehouse ownership map across skills
 - `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
 - `docs/README.md` — Full index

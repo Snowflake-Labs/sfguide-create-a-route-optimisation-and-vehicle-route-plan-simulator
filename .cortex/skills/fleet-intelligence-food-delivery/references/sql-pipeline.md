@@ -1,8 +1,8 @@
 # SQL Pipeline (Steps 3b-9) -- DEPRECATED
 
-> **DEPRECATED:** Steps 3b-9 are no longer the primary data path. Use **Data Studio** in the ORS Control Panel to generate synthetic datasets. Data Studio writes to `SYNTHETIC_DATASETS.UNIFIED` tables, and projection views (Step 10 in `streamlit-deployment.md`) read from them.
+> **DEPRECATED:** Steps 3b-9 are no longer the primary data path. Use **Data Studio** in the ORS Control Panel to generate synthetic datasets. Data Studio writes to `SYNTHETIC_DATASETS.UNIFIED` tables, and projection views read from them.
 >
-> This file is preserved for reference only. The projection views in Step 10 of `streamlit-deployment.md` are still active.
+> This file is preserved for reference only.
 
 ---
 
@@ -752,7 +752,8 @@ SELECT
     t.REGION
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
 WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
-  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1);
+  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 ```
 
 #### VW_DELIVERY_SUMMARY

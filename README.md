@@ -13,7 +13,7 @@ A collection of Cortex Code skills that deploy routing, fleet intelligence, and 
 1. Open this repository in Cortex Code
 2. Invoke any skill by name — Cortex Code will guide you through the full deployment
 
-All skills live in `.cortex/skills/` and follow the Anthropic skill format. Each skill contains a `SKILL.md` with step-by-step instructions, optional `references/` for detailed SQL/code, and `assets/` for Streamlit apps or notebooks.
+All skills live in `.cortex/skills/` and follow the Anthropic skill format. Each skill contains a `SKILL.md` with step-by-step instructions, optional `references/` for detailed SQL/code, and `assets/` for notebooks or other deployable artifacts.
 
 ## Skills
 
@@ -27,17 +27,17 @@ All skills live in `.cortex/skills/` and follow the Anthropic skill format. Each
 
 ### Demo Solutions
 
-**route-optimization** — Deploys a route optimization demo with Marketplace data, a Snowflake notebook, and a Streamlit dashboard. Demonstrates the ORS OPTIMIZATION endpoint for vehicle routing problems (VRP) with time windows and capacity constraints. Invoke: `deploy route optimization demo`.
+**route-optimization** — Deploys a route optimization demo with Marketplace data and a Snowflake notebook. Demonstrates the ORS OPTIMIZATION endpoint for vehicle routing problems (VRP) with time windows and capacity constraints. Invoke: `deploy route optimization demo`.
 
-**fleet-intelligence-taxis** — Generates realistic taxi driver GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable for any city (New York, London, San Francisco, etc.), number of drivers, and shift patterns. Includes a Streamlit fleet dashboard. Invoke: `generate driver locations`.
+**fleet-intelligence-taxis** — Generates realistic taxi driver GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable for any city (New York, London, San Francisco, etc.), number of drivers, and shift patterns. Dashboard via ORS Control App. Invoke: `generate driver locations`.
 
 **fleet-intelligence-food-delivery** — Generates food delivery courier telemetry for the SwiftBite solution across California cities. Uses Overture Maps restaurants/POIs, ORS routes, and configurable courier counts. Includes a React native app deployed to SPCS and optional travel-time matrix integration. Invoke: `setup food delivery fleet`.
 
-**retail-catchment** — Deploys a Retail Catchment Analysis Streamlit app using Overture Maps data to analyze store locations, trade areas, and competitive proximity with isochrone-based catchment zones. Invoke: `deploy retail catchment`.
+**retail-catchment** — Deploys a Retail Catchment Analysis using Overture Maps data to analyze store locations, trade areas, and competitive proximity with isochrone-based catchment zones. Dashboard via ORS Control App. Invoke: `deploy retail catchment`.
 
-**route-deviation** — Deploys the Route Deviation Analysis demo: loads synthetic truck telemetry from S3, populates the ORS route cache, runs a 5-step ETL pipeline, and deploys Streamlit dashboards for detour detection and analysis. Invoke: `deploy route deviation`.
+**route-deviation** — Deploys the Route Deviation Analysis demo: loads synthetic truck telemetry from S3, populates the ORS route cache, and runs a 5-step ETL pipeline for detour detection and analysis. Dashboard via ORS Control App. Invoke: `deploy route deviation`.
 
-**dwell-analysis** — Creates a 12-step Dynamic Table pipeline for dwell and congestion analysis: state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Includes both a local Streamlit dashboard and a Snowflake-native SiS app. Invoke: `deploy dwell analysis`.
+**dwell-analysis** — Creates a 12-step Dynamic Table pipeline for dwell and congestion analysis: state detection, dwell sessionization, H3 congestion heatmaps, SLA alerts, facility utilization, and daily trends. Dashboard via ORS Control App. Invoke: `deploy dwell analysis`.
 
 ### Advanced
 
@@ -56,7 +56,7 @@ All skills live in `.cortex/skills/` and follow the Anthropic skill format. Each
   ├── <skill-name>/
   │   ├── SKILL.md       # Skill definition (frontmatter + instructions)
   │   ├── references/    # Detailed SQL, code, and documentation
-  │   └── assets/        # Streamlit apps, notebooks, React apps
+  │   └── assets/        # Notebooks and other deployable artifacts
 build-routing-solution/  # ORS native app build artifacts (Dockerfiles, configs)
-archive/                 # Archived materials (hands-on-lab)
+archive/                 # Archived materials (hands-on-lab, deprecated code)
 ```

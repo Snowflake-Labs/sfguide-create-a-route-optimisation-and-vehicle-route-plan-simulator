@@ -275,6 +275,18 @@ export async function startGeneration(config, presetName, snowSql) {
                 log('ERROR', 'Studio', msg, { jobId });
                 broadcast(job, 'warning', { message: msg });
             }
+            broadcast(job, 'progress', { status: 'Cleaning previous data for this region/profile...' });
+            try {
+                await snowSql(`DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY WHERE REGION = ${escVal(config.region)} AND VEHICLE_TYPE = ${escVal(vt)} AND ORS_PROFILE = ${escVal(config.ors_profile)}`, UNIFIED_DB, UNIFIED_SCHEMA);
+                await snowSql(`DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS WHERE REGION = ${escVal(config.region)} AND VEHICLE_TYPE = ${escVal(vt)} AND ORS_PROFILE = ${escVal(config.ors_profile)}`, UNIFIED_DB, UNIFIED_SCHEMA);
+                await snowSql(`DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET WHERE REGION = ${escVal(config.region)} AND VEHICLE_TYPE = ${escVal(vt)}`, UNIFIED_DB, UNIFIED_SCHEMA);
+                await snowSql(`DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS WHERE REGION = ${escVal(config.region)}`, UNIFIED_DB, UNIFIED_SCHEMA);
+                log('INFO', 'Studio', `Cleaned previous data for ${config.region}/${vt}/${config.ors_profile}`, { jobId });
+            }
+            catch (e) {
+                log('WARN', 'Studio', `Pre-generation cleanup failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+                broadcast(job, 'warning', { message: `Cleanup failed: ${e.message?.slice(0, 150)}. Duplicates may occur.` });
+            }
             const { loadPOIs, buildFleet } = await import('./engine.js');
             const pois = await loadPOIs(config, snowSql);
             const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
