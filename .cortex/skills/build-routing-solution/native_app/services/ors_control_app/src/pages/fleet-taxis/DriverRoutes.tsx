@@ -50,7 +50,7 @@ export default function DriverRoutes({ sourceDb, sourceSchema, config }: Props) 
     setSliderIdx(0);
     setAiAnalysis(null);
     const pts = await query(
-      `SELECT LON, LAT, CURR_TIME, KMH, DRIVER_STATE, POINT_INDEX
+      `SELECT LON, LAT, TO_VARCHAR(CURR_TIME, 'YYYY-MM-DD HH24:MI:SS') AS CURR_TIME, KMH, DRIVER_STATE, POINT_INDEX
        FROM DRIVER_LOCATIONS_V WHERE TRIP_ID = '${tripId}' AND REGION = '${regionName}'
        ORDER BY POINT_INDEX`, { database: sourceDb, schema: sourceSchema });
     setGpsPoints(pts);

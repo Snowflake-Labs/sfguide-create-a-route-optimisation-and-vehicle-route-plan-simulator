@@ -40,7 +40,7 @@ export default function DriverRoutes() {
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
     setSliderIdx(0);
-    const pts = await sfQuery(`SELECT LON, LAT, CURR_TIME, KMH, DRIVER_STATE, POINT_INDEX FROM DRIVER_LOCATIONS_V WHERE TRIP_ID = '${tripId}' ORDER BY POINT_INDEX`);
+    const pts = await sfQuery(`SELECT LON, LAT, TO_VARCHAR(CURR_TIME, 'YYYY-MM-DD HH24:MI:SS') AS CURR_TIME, KMH, DRIVER_STATE, POINT_INDEX FROM DRIVER_LOCATIONS_V WHERE TRIP_ID = '${tripId}' ORDER BY POINT_INDEX`);
     setGpsPoints(pts);
     if (pts.length > 0) setViewState(prev => ({ ...prev, longitude: Number(pts[0].LON), latitude: Number(pts[0].LAT), zoom: 13 }));
   }, []);
