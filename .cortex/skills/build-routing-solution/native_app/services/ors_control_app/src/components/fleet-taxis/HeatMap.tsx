@@ -17,7 +17,7 @@ export default function HeatMap() {
   const [driverDots, setDriverDots] = useState<any[]>([]);
   const [hexData, setHexData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -73.98, latitude: 40.75, zoom: 11, pitch: 45, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.42, latitude: 37.77, zoom: 11, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);

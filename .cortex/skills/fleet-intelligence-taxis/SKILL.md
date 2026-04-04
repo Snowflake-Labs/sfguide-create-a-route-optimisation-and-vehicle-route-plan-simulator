@@ -104,13 +104,13 @@ The fastest path to a working demo. Loads pre-computed San Francisco data from S
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 ```
 
-If the table exists and has rows, data is already loaded. Skip to Step 10 (Register with Demo Dashboard).
+If the table exists and has rows, data is already loaded. Grant native app access (see end of `seed-data.sql`), then skip to Step 10 (Register with Demo Dashboard).
 
 ### Load from S3
 
 Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/fleet-intelligence-taxis/`.
 
-After loading, the seed script also creates the 5 analytics views (DRIVER_LOCATIONS_V, TRIPS_ASSIGNED_TO_DRIVERS, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIP_SUMMARY).
+After loading, the seed script also creates the 5 analytics views and grants SELECT access to the native app (DRIVER_LOCATIONS_V, TRIPS_ASSIGNED_TO_DRIVERS, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIP_SUMMARY).
 
 ### Generate data for other regions (optional)
 

@@ -15,9 +15,11 @@ export async function sfQuery(sql: string, database = FT_DB, schema = FT_SCHEMA)
       body: JSON.stringify({ sql, database, schema }),
     });
     const body = await res.json();
+    if (body.error) console.warn('[sfQuery]', body.error, '\nSQL:', sql.slice(0, 200));
     const rows = Array.isArray(body) ? body : (body.result ?? []);
     return Array.isArray(rows) ? rows : [];
-  } catch {
+  } catch (err) {
+    console.warn('[sfQuery] fetch failed:', err);
     return [];
   }
 }

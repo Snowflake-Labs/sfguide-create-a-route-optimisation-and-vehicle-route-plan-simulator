@@ -10,7 +10,7 @@ export default function FleetOverview() {
   const [trips, setTrips] = useState<any[]>([]);
   const [hourly, setHourly] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -73.98, latitude: 40.75, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.42, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -21,6 +21,11 @@ export default function FleetOverview() {
     ]).then(([k, t, h]) => {
       setKpis(k[0] || {});
       setTrips(t);
+      if (t.length) {
+        const lngs = t.filter((r: any) => r.P_LNG).map((r: any) => Number(r.P_LNG));
+        const lats = t.filter((r: any) => r.P_LAT).map((r: any) => Number(r.P_LAT));
+        if (lngs.length) setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2 }));
+      }
       setHourly(h);
       setLoading(false);
     });
