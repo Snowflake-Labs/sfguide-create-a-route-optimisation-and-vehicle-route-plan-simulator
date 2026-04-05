@@ -68,6 +68,28 @@ function escVal(v: any): string {
 const UNIFIED_DB = 'SYNTHETIC_DATASETS';
 const UNIFIED_SCHEMA = 'UNIFIED';
 
+async function disableOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
+  const stmts = [
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 0',
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 0',
+  ];
+  for (const sql of stmts) {
+    try { await snowSql(sql); } catch (_) { /* best-effort */ }
+  }
+  log('INFO', 'Studio', 'Disabled ORS auto-suspend for generation');
+}
+
+async function restoreOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
+  const stmts = [
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 14400',
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 14400',
+  ];
+  for (const sql of stmts) {
+    try { await snowSql(sql); } catch (_) { /* best-effort */ }
+  }
+  log('INFO', 'Studio', 'Restored ORS auto-suspend after generation');
+}
+
 async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
   const ddls: { sql: string; db: string; schema: string }[] = [
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY (
@@ -293,6 +315,7 @@ export async function startGeneration(
   (async () => {
     try {
       await ensureTables(snowSql);
+      await disableOrsAutoSuspend(snowSql);
 
       try {
         const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
@@ -448,6 +471,8 @@ export async function startGeneration(
         log('ERROR', 'Studio', msg, { jobId });
         broadcast(job, 'warning', { message: msg });
       }
+    } finally {
+      await restoreOrsAutoSuspend(snowSql);
     }
   })();
 

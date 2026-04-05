@@ -405,6 +405,8 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
     const MAX_CONSECUTIVE_FAILURES = 25;
     const MIN_ATTEMPTS_BEFORE_STOP = 20;
     const MAX_ROUTE_RETRIES = 3;
+    const RECOVERY_THRESHOLD = 10;
+    let recoveryAttempted = false;
     for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
         if (abortSignal?.aborted)
             return;
@@ -486,6 +488,21 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 else {
                     routeFailures++;
                     consecutiveFails++;
+                    if (consecutiveFails === RECOVERY_THRESHOLD && !recoveryAttempted) {
+                        recoveryAttempted = true;
+                        log('WARN', 'Studio', `${consecutiveFails} consecutive failures, attempting ORS service recovery...`, {
+                            detail: { region: config.region, profile: config.ors_profile, routeSuccesses },
+                        });
+                        try {
+                            await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME');
+                            await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME');
+                            await new Promise(resolve => setTimeout(resolve, 30000));
+                            log('INFO', 'Studio', 'ORS recovery attempt complete, resuming generation');
+                        }
+                        catch (e) {
+                            log('WARN', 'Studio', `ORS recovery failed: ${e.message?.slice(0, 200)}`);
+                        }
+                    }
                     const totalAttempts = routeSuccesses + routeFailures;
                     if (consecutiveFails >= MAX_CONSECUTIVE_FAILURES && totalAttempts >= MIN_ATTEMPTS_BEFORE_STOP && routeSuccesses === 0) {
                         log('ERROR', 'Studio', `ORS unavailable: ${routeFailures} consecutive failures, 0 successes`, {
