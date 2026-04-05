@@ -78,40 +78,26 @@ function generateSql(fnName: string, city: CityOption | null, profile: string = 
   const job2 = offsetPoint(center, 0.004, 0.004);
   const depot = offsetPoint(center, -0.008, 0.002);
   const dest2 = offsetPoint(center, 0.008, -0.003);
-  const rp = isRegionCity(city) ? `'${city!.region}', ` : '';
+  const rg = isRegionCity(city) ? `'${city!.region}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
 
   switch (fnName) {
     case 'LIST_REGIONS':
       return `SELECT * FROM TABLE(${p}.LIST_REGIONS())`;
     case 'ORS_STATUS':
-      return isRegionCity(city)
-        ? `SELECT ${p}.ORS_STATUS('${city!.region}')`
-        : `SELECT ${p}.ORS_STATUS()`;
+      return `SELECT ${p}.ORS_STATUS(${rg})`;
     case 'CHECK_HEALTH':
       return `SELECT ${p}.CHECK_HEALTH()`;
     case 'DIRECTIONS':
-      return isRegionCity(city)
-        ? `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), '${city!.region}'))`
-        : `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
-
+      return `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ${rg}))`;
     case 'ISOCHRONES':
-      return isRegionCity(city)
-        ? `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10, '${city!.region}'))`
-        : `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
-
+      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10, ${rg}))`;
     case 'MATRIX':
-      return isRegionCity(city)
-        ? `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'), '${city!.region}')`
-        : `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
+      return `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'), ${rg})`;
     case 'MATRIX_TABULAR':
-      return isRegionCity(city)
-        ? `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})), '${city!.region}')`
-        : `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
+      return `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})), ${rg})`;
     case 'OPTIMIZATION':
-      return isRegionCity(city)
-        ? `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  ),\n  [], '${city!.region}'\n))`
-        : `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n))`;
+      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  ),\n  [], ${rg}\n))`;
 
     default:
       return '';
@@ -398,9 +384,8 @@ export default function FunctionTester() {
     setProfilesLoading(true);
     try {
       const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const statusSql = isRegionCity(city)
-        ? `SELECT ${pfx}.ORS_STATUS('${city!.region}')`
-        : `SELECT ${pfx}.ORS_STATUS()`;
+      const rg = isRegionCity(city) ? `'${city!.region}'` : 'NULL::VARCHAR';
+      const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
       const resp = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
