@@ -330,6 +330,15 @@ FROM {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS
 ORDER BY TRIP_DATE;
 ```
 
+## FACT_TRUCK_TELEMETRY View
+
+The RouteInspector page queries `FACT_TRUCK_TELEMETRY` directly for GPS trace data. Ensure it points to the projection view (not the old `SYNTHETIC_DATASETS.FLEET_INTELLIGENCE` source):
+
+```sql
+CREATE OR REPLACE VIEW {TARGET_DB}.{TARGET_SCHEMA}.FACT_TRUCK_TELEMETRY AS
+SELECT * FROM {TARGET_DB}.{TARGET_SCHEMA}.VW_TRUCK_TELEMETRY;
+```
+
 ## Grant Access to Native App
 
 ```sql

@@ -18,6 +18,19 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAG
     FILE_FORMAT = (TYPE = PARQUET);
 
 --------------------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+);
+MERGE INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG tgt
+USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION)
+    VALUES (src.VEHICLE_TYPE, src.REGION);
+
+--------------------------------------------------------------------
 -- TAXI_LOCATIONS
 --------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS (

@@ -1173,7 +1173,9 @@ app.post('/api/regions/active', async (req, res) => {
             try {
                 await runSql(`UPDATE ${schema}.CONFIG SET REGION = '${safeRegion}'`);
             }
-            catch { }
+            catch (e) {
+                log('WARN', 'CONFIG', `Failed to update ${schema}.CONFIG region: ${e.message}`);
+            }
         }
         res.json({ ok: true, region });
     }
@@ -1239,7 +1241,9 @@ app.post('/api/fleet-config/vehicle-type', async (req, res) => {
             try {
                 await runSql(`UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeType}'`);
             }
-            catch { }
+            catch (e) {
+                log('WARN', 'CONFIG', `Failed to update ${schema}.CONFIG vehicleType: ${e.message}`);
+            }
         }
         res.json({ ok: true, vehicleType });
     }
