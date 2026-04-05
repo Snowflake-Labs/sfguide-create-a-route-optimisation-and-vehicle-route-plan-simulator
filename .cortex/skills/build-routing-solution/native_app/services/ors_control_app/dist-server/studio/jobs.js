@@ -166,9 +166,8 @@ async function ensureTables(snowSql) {
             const raw = e.message || '';
             if (raw.includes('Insufficient privileges') || raw.includes('42501') || raw.includes('access control')) {
                 const hint = `Missing privileges on ${db}.${schema}. ` +
-                    `Run this in a Snowsight worksheet as ACCOUNTADMIN:\n\n` +
-                    `  CALL OPENROUTESERVICE_NATIVE_APP.CORE.SETUP_DATA_STUDIO();\n\n` +
-                    `This creates the required databases/schemas and grants access to the app.`;
+                    `Run the Data Studio setup SQL from SKILL.md Step 6.3 as ACCOUNTADMIN, ` +
+                    `or re-run deploy.sh which grants all required privileges automatically.`;
                 log('ERROR', 'Studio', hint);
                 throw new Error(hint);
             }
