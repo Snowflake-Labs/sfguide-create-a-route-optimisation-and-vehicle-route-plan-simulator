@@ -1,27 +1,44 @@
-# Available Functions
+# Available Functions (v2.0 — Consolidated)
 
 The app registers the following SQL functions in the `CORE` schema.
+All routing functions accept an optional `region` as the **last** parameter (DEFAULT NULL).
+When omitted, the default ORS instance is used. When provided, routes to the named city ORS instance.
 
-## Scalar Functions
+## Routing Table Functions
 
-Return VARIANT with full ORS JSON response:
+Return structured TABLE results with parsed GEOGRAPHY columns:
 
-- `DIRECTIONS(method, jstart, jend)` / `DIRECTIONS(method, locations)`
-- `ISOCHRONES(method, lon, lat, range)`
-- `OPTIMIZATION(jobs, vehicles, matrices)` / `OPTIMIZATION(challenge)`
-- `MATRIX(method, sources, destinations)` / `MATRIX_TABULAR(...)`
+| Function | Returns |
+|----------|---------|
+| `DIRECTIONS(method, jstart, jend [, region])` | TABLE (RESPONSE, GEOJSON, DISTANCE, DURATION) |
+| `DIRECTIONS(method, locations [, region])` | TABLE (RESPONSE, GEOJSON, DISTANCE, DURATION) |
+| `ISOCHRONES(method, lon, lat, range [, region])` | TABLE (RESPONSE, GEOJSON) |
+| `OPTIMIZATION(jobs, vehicles [, matrices, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
+| `OPTIMIZATION(challenge [, region])` | TABLE (RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS) |
 
-## GEO Table Functions
+Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
+With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
 
-Return parsed GEOGRAPHY column alongside response:
+## Matrix / Status Scalar Functions
 
-- `DIRECTIONS_GEO(method, jstart, jend)` → RESPONSE, GEOJSON, DISTANCE, DURATION
-- `DIRECTIONS_GEO(method, locations)` → RESPONSE, GEOJSON, DISTANCE, DURATION
-- `ISOCHRONES_GEO(method, lon, lat, range)` → RESPONSE, GEOJSON
-- `OPTIMIZATION_GEO(jobs, vehicles, matrices)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
-- `OPTIMIZATION_GEO(challenge)` → RESPONSE, GEOJSON, VEHICLE, DURATION, STEPS
+Return VARIANT:
 
-The `_GEO` variants are table functions that parse the GeoJSON from ORS responses into Snowflake GEOGRAPHY columns, making it easy to use with spatial joins and visualization.
+| Function | Description |
+|----------|-------------|
+| `MATRIX(method, locations [, region])` | Full NxN distance/duration matrix |
+| `MATRIX(method, options [, region])` | Matrix with advanced options |
+| `MATRIX_TABULAR(method, origin, destinations [, region])` | Origin-to-destinations matrix |
+| `ORS_STATUS([region])` | Service status JSON |
+
+Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
+
+## Utility Functions
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `CHECK_HEALTH()` | BOOLEAN | True if ORS gateway responds |
+| `LIST_REGIONS()` | TABLE (REGION, DISPLAY_NAME, STATUS, ...) | All provisioned regions |
+| `DOWNLOAD(folder, filename, URL)` | VARIANT | Downloads a file to stage |
 
 ## Lifecycle Management Procedures
 
@@ -29,14 +46,17 @@ The `_GEO` variants are table functions that parse the GeoJSON from ORS response
 - `SUSPEND_ALL_SERVICES()` — Suspends all services except the control app
 - `SCALE_SERVICES(min, max)` — Scales ORS + gateway + all city ORS instances and pool nodes
 - `GET_STATUS()` — Returns JSON with compute pool state and all service statuses
-- `CHECK_HEALTH()` — Returns BOOLEAN, true if ORS gateway responds
 
 ## Multi-City Procedures
 
-- `SETUP_CITY_ORS(region)` — Provisions a new city with its own ORS service + functions
-- `DROP_CITY_ORS(region)` — Removes a city's service, functions, and metadata
+- `SETUP_CITY_ORS(region)` — Provisions a new city with its own ORS service
+- `DROP_CITY_ORS(region)` — Removes a city's service and metadata
 - `LIST_CITIES()` — Returns JSON array of all provisioned cities
-- City-specific functions: `DIRECTIONS_{REGION}`, `ISOCHRONES_{REGION}`, `MATRIX_{REGION}`, `OPTIMIZATION_{REGION}`
+
+Note: Per-city function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
+```sql
+SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start, end, 'berlin'))
+```
 
 ## Travel Time Matrix Procedures
 
@@ -67,7 +87,7 @@ The `_GEO` variants are table functions that parse the GeoJSON from ORS response
 - Uniform `batch_size = 50` for all resolutions. Each batch INSERT...SELECTs 50 work queue rows, each calling MATRIX_TABULAR.
 
 ### Gateway Concurrency
-- Gateway v0.9.6 uses **ThreadPoolExecutor** to process rows concurrently within each batch.
+- Gateway v1.0.0 uses **ThreadPoolExecutor** to process rows concurrently within each batch.
 - `MATRIX_CONCURRENCY=6` (configurable via env var in `routing-gateway-service.yaml`).
 - Gunicorn server: 2 workers, 4 threads, 300s timeout.
 - Effective throughput: 50 rows × 6 concurrent = ~8-10 ORS calls in flight per gateway instance.

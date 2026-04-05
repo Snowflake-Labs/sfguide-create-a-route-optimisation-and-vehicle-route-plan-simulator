@@ -253,7 +253,7 @@ async function fetchRoute(
 ): Promise<RouteGeometry | null> {
   const sql = `
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
-    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
       '${profile}',
       ARRAY_CONSTRUCT(${originLng},${originLat}),
       ARRAY_CONSTRUCT(${destLng},${destLat})
@@ -298,7 +298,7 @@ async function fetchDetourRoute(
   }).replace(/'/g, "''");
   const sql = `
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
-    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
+    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
       '${profile}',
       PARSE_JSON('${coordsJson}')::VARIANT
     ))`;

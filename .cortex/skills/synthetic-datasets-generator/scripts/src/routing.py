@@ -228,7 +228,8 @@ class ORSRouter:
             profile = self.ors_config.get('profile', 'driving-hgv')
             
             query = f"""
-            SELECT TO_JSON({service}(
+            SELECT TO_JSON(RESPONSE)::VARCHAR as route_response
+            FROM TABLE({service}(
                 '{profile}',
                 OBJECT_CONSTRUCT(
                     'coordinates', ARRAY_CONSTRUCT(
@@ -236,7 +237,7 @@ class ORSRouter:
                         ARRAY_CONSTRUCT({dest_lng}, {dest_lat})
                     )
                 )
-            ))::VARCHAR as route_response
+            ))
             """
             
             cursor.execute(query)

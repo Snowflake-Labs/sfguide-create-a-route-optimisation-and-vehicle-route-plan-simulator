@@ -247,60 +247,12 @@ GRANT USAGE ON PROCEDURE core.create_city_ors_service(VARCHAR) TO APPLICATION RO
 CREATE OR REPLACE PROCEDURE core.create_city_functions(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"multi-city"}}'
 EXECUTE AS OWNER
 AS
 $$
 BEGIN
-    LET fn_dir VARCHAR := 'DIRECTIONS_' || UPPER(:P_REGION);
-    LET city_path VARCHAR := '/city/' || :P_REGION;
-
-    EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION core.' || fn_dir || '(method VARCHAR, jstart ARRAY, jend ARRAY)
-        RETURNS VARIANT
-        SERVICE=core.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/directions_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION core.' || fn_dir || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
-
-    EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION core.' || fn_dir || '(method VARCHAR, locations VARIANT)
-        RETURNS VARIANT
-        SERVICE=core.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/directions''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION core.' || fn_dir || '(VARCHAR, VARIANT) TO APPLICATION ROLE app_user';
-
-    EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION core.ISOCHRONES_' || UPPER(:P_REGION) || '(method TEXT, lon FLOAT, lat FLOAT, range INT)
-        RETURNS VARIANT
-        SERVICE=core.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/isochrones_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION core.ISOCHRONES_' || UPPER(:P_REGION) || '(TEXT, FLOAT, FLOAT, INT) TO APPLICATION ROLE app_user';
-
-    EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION core.MATRIX_' || UPPER(:P_REGION) || '(method VARCHAR, origin ARRAY, destinations ARRAY)
-        RETURNS VARIANT
-        SERVICE=core.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/matrix_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION core.MATRIX_' || UPPER(:P_REGION) || '(VARCHAR, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
-
-    EXECUTE IMMEDIATE '
-    CREATE OR REPLACE FUNCTION core.OPTIMIZATION_' || UPPER(:P_REGION) || '(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [])
-        RETURNS VARIANT
-        SERVICE=core.routing_gateway_service
-        ENDPOINT=''gateway''
-        MAX_BATCH_ROWS = 1000
-        AS ''' || city_path || '/optimization_tabular''';
-    EXECUTE IMMEDIATE 'GRANT USAGE ON FUNCTION core.OPTIMIZATION_' || UPPER(:P_REGION) || '(ARRAY, ARRAY, ARRAY) TO APPLICATION ROLE app_user';
-
-    RETURN 'City routing functions created for region ' || :P_REGION;
+    RETURN 'No-op: per-city function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(core.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;

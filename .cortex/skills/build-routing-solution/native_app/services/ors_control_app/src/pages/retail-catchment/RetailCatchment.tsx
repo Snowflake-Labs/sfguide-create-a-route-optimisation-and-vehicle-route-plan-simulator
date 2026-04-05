@@ -65,7 +65,7 @@ export default function RetailCatchment({ sourceDb, sourceSchema, config }: Prop
       for (let i = numZones; i >= 1; i--) {
         const minutes = Math.round(maxMinutes * (i / numZones));
         const result = await query(
-          `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO(
+          `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
             '${travelMode}', ${selectedStore.LNG}::FLOAT, ${selectedStore.LAT}::FLOAT, ${minutes}::INT))`,
           { database: 'OPENROUTESERVICE_NATIVE_APP', schema: 'CORE' });
         if (result[0]?.GEO) {

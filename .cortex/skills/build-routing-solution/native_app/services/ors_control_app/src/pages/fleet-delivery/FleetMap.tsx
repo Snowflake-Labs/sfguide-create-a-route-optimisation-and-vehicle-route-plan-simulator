@@ -29,7 +29,7 @@ export default function FleetMap({ sourceDb, sourceSchema }: Props) {
     const r = await query(
       `SELECT ST_X(PICKUP_LOCATION) AS P_LNG, ST_Y(PICKUP_LOCATION) AS P_LAT,
               ST_X(DROPOFF_LOCATION) AS D_LNG, ST_Y(DROPOFF_LOCATION) AS D_LAT,
-              DELIVERY_TIME_MIN
+              DELIVERY_TIME_MIN, ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON
        FROM DELIVERIES WHERE COURIER_ID = '${courierId}' LIMIT 50`,
       { database: sourceDb, schema: sourceSchema });
     setRouteGeo(r);
@@ -49,9 +49,15 @@ export default function FleetMap({ sourceDb, sourceSchema }: Props) {
     if (routeGeo?.length) {
       l.push(new PathLayer({
         id: 'delivery-routes',
-        data: routeGeo.map((r: any) => ({
-          path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]],
-        })),
+        data: routeGeo.filter((r: any) => r.P_LNG && r.P_LAT && r.D_LNG && r.D_LAT).map((r: any) => {
+          if (r.ROUTE_GEOJSON) {
+            try {
+              const geo = JSON.parse(r.ROUTE_GEOJSON);
+              if (geo.coordinates?.length > 1) return { path: geo.coordinates };
+            } catch {}
+          }
+          return { path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]] };
+        }),
         getPath: (d: any) => d.path, getColor: [255, 107, 53, 160], getWidth: 2, widthMinPixels: 1,
       }));
     }

@@ -27,7 +27,7 @@ export default function FleetMap() {
 
   const loadRoutes = useCallback(async (courierId: string) => {
     setSelectedCourier(courierId);
-    const routes = await sfQuery(`SELECT ST_X(PICKUP_LOCATION) AS P_LNG, ST_Y(PICKUP_LOCATION) AS P_LAT, ST_X(DROPOFF_LOCATION) AS D_LNG, ST_Y(DROPOFF_LOCATION) AS D_LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE COURIER_ID = '${courierId}' LIMIT 50`);
+    const routes = await sfQuery(`SELECT ST_X(PICKUP_LOCATION) AS P_LNG, ST_Y(PICKUP_LOCATION) AS P_LAT, ST_X(DROPOFF_LOCATION) AS D_LNG, ST_Y(DROPOFF_LOCATION) AS D_LAT, DELIVERY_TIME_MIN, ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON FROM DELIVERIES WHERE COURIER_ID = '${courierId}' LIMIT 50`);
     setRouteGeo(routes);
   }, []);
 
@@ -52,7 +52,15 @@ export default function FleetMap() {
     if (!routeGeo.length) return null;
     return new PathLayer({
       id: 'delivery-routes',
-      data: routeGeo.map((r: any) => ({ path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]] })),
+      data: routeGeo.filter((r: any) => r.P_LNG && r.P_LAT && r.D_LNG && r.D_LAT).map((r: any) => {
+        if (r.ROUTE_GEOJSON) {
+          try {
+            const geo = JSON.parse(r.ROUTE_GEOJSON);
+            if (geo.coordinates?.length > 1) return { path: geo.coordinates };
+          } catch {}
+        }
+        return { path: [[Number(r.P_LNG), Number(r.P_LAT)], [Number(r.D_LNG), Number(r.D_LAT)]] };
+      }),
       getPath: (d: any) => d.path,
       getColor: [41, 181, 232, 150],
       getWidth: 2,

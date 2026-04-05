@@ -77,7 +77,7 @@ export default function RouteOptimization({ sourceDb, sourceSchema, config }: Pr
     if (!centerCoords) return;
     try {
       const r = await query(
-        `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO(
+        `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(
           '${vehicles[0]?.profile || 'driving-car'}', ${centerCoords.lng}::FLOAT, ${centerCoords.lat}::FLOAT, ${isoMinutes}::INT))`,
         { database: 'OPENROUTESERVICE_NATIVE_APP', schema: 'CORE' });
       if (r[0]?.GEO) setCatchmentGeoJson(JSON.parse(r[0].GEO));
@@ -134,7 +134,7 @@ export default function RouteOptimization({ sourceDb, sourceSchema, config }: Pr
               if (coords.length > 1) {
                 try {
                   const dirResult = await query(
-                    `SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO(
+                    `SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
                       '${route.vehicle_profile || vehicles[ri]?.profile || 'driving-car'}',
                       PARSE_JSON('${JSON.stringify({ coordinates: coords }).replace(/'/g, "''")}')::VARIANT))`,
                     { database: 'OPENROUTESERVICE_NATIVE_APP', schema: 'CORE' });

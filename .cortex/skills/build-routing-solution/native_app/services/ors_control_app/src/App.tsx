@@ -43,8 +43,10 @@ const DEMO_GROUPS: NavGroup[] = [
     { key: 'dwell:live', label: 'Live Operations' },
   ]},
   { key: 'fleet-delivery', label: 'Fleet Delivery', icon: Truck, subPages: [
+    { key: 'fleet-delivery:dashboard', label: 'Dashboard' },
     { key: 'fleet-delivery:map', label: 'Fleet Map' },
     { key: 'fleet-delivery:catchment', label: 'Catchment Panel' },
+    { key: 'fleet-delivery:heatmap', label: 'Courier Heatmap' },
   ]},
   { key: 'fleet-taxis', label: 'Fleet Taxis', icon: CarTaxiFront, subPages: [
     { key: 'fleet-taxis:overview', label: 'Fleet Overview' },
@@ -173,7 +175,7 @@ export default function App() {
             ))}
           </nav>
           <div className="sidebar-footer">
-            <span className="sidebar-version">v1.0.51</span>
+            <span className="sidebar-version">v1.0.79</span>
           </div>
         </aside>
 

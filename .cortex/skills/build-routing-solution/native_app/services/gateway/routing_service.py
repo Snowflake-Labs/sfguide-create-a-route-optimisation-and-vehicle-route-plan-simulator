@@ -17,7 +17,7 @@ ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
-GATEWAY_VERSION = 'v0.9.6'
+GATEWAY_VERSION = 'v1.0.0'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -52,6 +52,14 @@ def _parse_rows(message):
     if message is None or not message.get('data'):
         return None
     return message['data']
+
+
+def _extract_region(row, region_index):
+    if region_index < len(row):
+        val = row[region_index]
+        if val is not None and str(val).strip() != '':
+            return str(val).strip()
+    return None
 
 
 @app.get("/health")
@@ -118,25 +126,17 @@ def get_ors_status():
 
 @app.post("/ors_status")
 def post_ors_status():
+    """
+    row = [id, region]  -- region can be NULL
+    """
     message = request.json
     logger.debug(f'Received status request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {"data": [[0, _get_ors_status()]]}
-    status = _get_ors_status()
-    return _make_response([[row[0], status] for row in input_rows])
-
-
-@app.post("/r/ors_status")
-def post_ors_status_region():
-    message = request.json
-    logger.debug(f'Received region status request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {"data": [[0, _get_ors_status()]]}
     output_rows = []
     for row in input_rows:
-        region = row[1]
+        region = _extract_region(row, 1)
         ors_host = resolve_ors_host(region)
         output_rows.append([row[0], _get_ors_status(ors_host)])
     return _make_response(output_rows)
@@ -307,56 +307,49 @@ def _reconstruct_geometry(routes, profile, ors_host, locations=None):
 
 @app.post("/optimization_tabular")
 def post_optimization_tabular():
-    '''
-    row[1] - jobs array
-    row[2] - vehicles array
-    row[3] - matrices object (optional)
-    '''
+    """
+    row = [id, jobs, vehicles, matrices, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
-    output_rows = _handle_optimization_tabular(input_rows)
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/r/optimization_tabular")
-def post_optimization_tabular_region():
-    '''
-    row[1] - region string
-    row[2] - jobs array
-    row[3] - vehicles array
-    row[4] - matrices object (optional)
-    '''
-    message = request.json
-    logger.debug(f'Received region optimization request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
-    region = input_rows[0][1] if input_rows else None
-    ors_host = resolve_ors_host(region) if region else ORS_HOST
-    shifted_rows = []
+    region = _extract_region(input_rows[0], -1)
+    ors_host = resolve_ors_host(region) if region else None
+    stripped_rows = []
     for row in input_rows:
-        shifted = [row[0]] + list(row[2:])
-        shifted_rows.append(shifted)
-    output_rows = _handle_optimization_tabular(shifted_rows, ors_host_override=ors_host)
+        stripped_rows.append(row[:-1])
+    output_rows = _handle_optimization_tabular(stripped_rows, ors_host_override=ors_host)
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
 
 @app.post("/optimization")
 def post_optimization():
-    '''
-    row[1] - problem varchar
-    '''
+    """
+    row = [id, challenge, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
-    output_rows = [[row[0], get_vroom_response(row[1])] for row in input_rows]
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, -1)
+        ors_host = resolve_ors_host(region) if region else None
+        if ors_host:
+            shifted = [row[0], row[1]]
+            tabular_rows = _handle_optimization_tabular(
+                [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', [])]],
+                ors_host_override=ors_host
+            )
+            output_rows.append(tabular_rows[0])
+        else:
+            output_rows.append([row[0], get_vroom_response(row[1])])
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
@@ -372,31 +365,20 @@ def _handle_directions_tabular(input_rows, format, ors_host=None):
 @app.post("/directions_tabular")
 @app.post("/directions_tabular/<format>")
 def post_directions_tabular_with_format(format="geojson"):
+    """
+    row = [id, method, start, end, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
-    output_rows = _handle_directions_tabular(input_rows, format)
-    return _make_response(output_rows)
-
-
-@app.post("/r/directions_tabular")
-@app.post("/r/directions_tabular/<format>")
-def post_directions_tabular_region(format="geojson"):
-    '''
-    row[1] - region, row[2] - method, row[3] - start, row[4] - end
-    '''
-    message = request.json
-    logger.debug(f'Received region directions request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
     output_rows = []
     for row in input_rows:
-        ors_host = resolve_ors_host(row[1])
-        shifted = [row[0], row[2], row[3], row[4]]
-        output_rows.append([row[0], get_ors_response('directions', row[2], {'coordinates': [row[3], row[4]]}, format, ors_host)])
+        region = _extract_region(row, 4)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format, ors_host)])
     return _make_response(output_rows)
 
 
@@ -408,30 +390,20 @@ def _handle_directions(input_rows, format, ors_host=None):
 @app.post("/directions")
 @app.post("/directions/<format>")
 def post_directions_with_format(format="geojson"):
+    """
+    row = [id, method, locations, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
-    output_rows = _handle_directions(input_rows, format)
-    return _make_response(output_rows)
-
-
-@app.post("/r/directions")
-@app.post("/r/directions/<format>")
-def post_directions_region(format="geojson"):
-    '''
-    row[1] - region, row[2] - method, row[3] - locations
-    '''
-    message = request.json
-    logger.debug(f'Received region directions request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
     output_rows = []
     for row in input_rows:
-        ors_host = resolve_ors_host(row[1])
-        output_rows.append([row[0], get_ors_response('directions', row[2], row[3], format, ors_host)])
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('directions', row[1], row[2], format, ors_host)])
     return _make_response(output_rows)
 
 
@@ -452,69 +424,26 @@ def _handle_isochrones_tabular(input_rows, format, ors_host=None):
 @app.post("/isochrones_tabular")
 @app.post("/isochrones_tabular/<format>")
 def post_isochrones_tabular(format="geojson"):
+    """
+    row = [id, method, lon, lat, range, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
     if not input_rows:
         return {}
-    output_rows = _handle_isochrones_tabular(input_rows, format)
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/r/isochrones_tabular")
-@app.post("/r/isochrones_tabular/<format>")
-def post_isochrones_tabular_region(format="geojson"):
-    '''
-    row[1] - region, row[2] - method, row[3] - lon, row[4] - lat, row[5] - range
-    '''
-    message = request.json
-    logger.debug(f'Received region isochrones request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
     output_rows = []
     for row in input_rows:
-        ors_host = resolve_ors_host(row[1])
-        output_rows.append([row[0], get_ors_response('isochrones', row[2], {
-            'locations': [[row[3], row[4]]],
-            'range': [row[5] * 60],
+        region = _extract_region(row, 5)
+        ors_host = resolve_ors_host(region)
+        output_rows.append([row[0], get_ors_response('isochrones', row[1], {
+            'locations': [[row[2], row[3]]],
+            'range': [row[4] * 60],
             'location_type': 'start',
             'range_type': 'time',
             'smoothing': 10
         }, format, ors_host)])
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/isochrones")
-@app.post("/isochrones/<format>")
-def post_isochrones(format="geojson"):
-    message = request.json
-    logger.debug(f'Received request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
-    output_rows = [[row[0], get_ors_response('isochrones', row[1], json.loads(row[2]), format)] for row in input_rows]
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/r/isochrones")
-@app.post("/r/isochrones/<format>")
-def post_isochrones_region(format="geojson"):
-    '''
-    row[1] - region, row[2] - method, row[3] - options json string
-    '''
-    message = request.json
-    logger.debug(f'Received region isochrones request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
-    output_rows = []
-    for row in input_rows:
-        ors_host = resolve_ors_host(row[1])
-        output_rows.append([row[0], get_ors_response('isochrones', row[2], json.loads(row[3]), format, ors_host)])
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
@@ -590,10 +519,11 @@ def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, for
 @app.post("/matrix_tabular")
 @app.post("/matrix_tabular/<format>")
 def post_matrix_tabular(format="json"):
-    '''
-    2-arg: MATRIX(method, locations)        -> row = [id, method, locations]
-    3-arg: MATRIX_TABULAR(method, origin, destinations) -> row = [id, method, origin, destinations]
-    '''
+    """
+    row = [id, method, origin, destinations, region]  (MATRIX_TABULAR 3-arg)
+    row = [id, method, locations, region]              (MATRIX 2-arg)
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
@@ -601,53 +531,17 @@ def post_matrix_tabular(format="json"):
         return {}
 
     def _process_row(row):
-        has_dest = len(row) == 4
-        body = _build_matrix_body(row[1], row[2:], has_dest)
-        resp = get_ors_response('matrix', row[1], body, format)
-        error_obj = resp.get('error') if isinstance(resp, dict) else None
-        if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
-            origin = row[2]
-            destinations = row[3]
-            if origin and not isinstance(origin[0], list):
-                origin = [origin]
-            locations = origin + destinations
-            sources_idx = list(range(len(origin)))
-            destinations_idx = list(range(len(origin), len(locations)))
-            resp = _retry_matrix_chunked(row[1], locations, sources_idx, destinations_idx, format, ORS_HOST)
-        return [row[0], resp]
-
-    with ThreadPoolExecutor(max_workers=MATRIX_CONCURRENCY) as executor:
-        output_rows = list(executor.map(_process_row, input_rows))
-
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/r/matrix_tabular")
-@app.post("/r/matrix_tabular/<format>")
-def post_matrix_tabular_region(format="json"):
-    '''
-    Region-aware matrix:
-    2-arg: MATRIX(region, method, locations)        -> row = [id, region, method, locations]
-    3-arg: MATRIX_TABULAR(region, method, origin, destinations) -> row = [id, region, method, origin, destinations]
-    '''
-    message = request.json
-    logger.debug(f'Received region matrix request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
-
-    def _process_row(row):
-        region = row[1]
+        region = _extract_region(row, -1)
         ors_host = resolve_ors_host(region)
-        method = row[2]
-        has_dest = len(row) == 5
-        body = _build_matrix_body(method, row[3:], has_dest)
+        data_cols = row[1:-1]
+        method = data_cols[0]
+        has_dest = len(data_cols) == 3
+        body = _build_matrix_body(method, data_cols[1:], has_dest)
         resp = get_ors_response('matrix', method, body, format, ors_host)
         error_obj = resp.get('error') if isinstance(resp, dict) else None
         if isinstance(error_obj, dict) and error_obj.get('code') == 6099 and has_dest:
-            origin = row[3]
-            destinations = row[4]
+            origin = data_cols[1]
+            destinations = data_cols[2]
             if origin and not isinstance(origin[0], list):
                 origin = [origin]
             locations = origin + destinations
@@ -666,10 +560,10 @@ def post_matrix_tabular_region(format="json"):
 @app.post("/matrix")
 @app.post("/matrix/<format>")
 def post_matrix(format="json"):
-    '''
-    row[1] - method/profile string
-    row[2] - full matrix options as JSON/variant
-    '''
+    """
+    row = [id, method, options, region]
+    region is the LAST column and can be NULL.
+    """
     message = request.json
     logger.debug(f'Received request: {message}')
     input_rows = _parse_rows(message)
@@ -678,6 +572,8 @@ def post_matrix(format="json"):
 
     output_rows = []
     for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
         body = row[2]
         if isinstance(body, list):
             body = {
@@ -685,35 +581,7 @@ def post_matrix(format="json"):
                 'metrics': ['distance', 'duration'],
                 'resolve_locations': True
             }
-        output_rows.append([row[0], get_ors_response('matrix', row[1], body, format)])
-
-    logger.info(f'Produced {len(output_rows)} rows')
-    return _make_response(output_rows)
-
-
-@app.post("/r/matrix")
-@app.post("/r/matrix/<format>")
-def post_matrix_region(format="json"):
-    '''
-    row[1] - region, row[2] - method, row[3] - full matrix options
-    '''
-    message = request.json
-    logger.debug(f'Received region matrix request: {message}')
-    input_rows = _parse_rows(message)
-    if not input_rows:
-        return {}
-
-    output_rows = []
-    for row in input_rows:
-        ors_host = resolve_ors_host(row[1])
-        body = row[3]
-        if isinstance(body, list):
-            body = {
-                'locations': body,
-                'metrics': ['distance', 'duration'],
-                'resolve_locations': True
-            }
-        output_rows.append([row[0], get_ors_response('matrix', row[2], body, format, ors_host)])
+        output_rows.append([row[0], get_ors_response('matrix', row[1], body, format, ors_host)])
 
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)

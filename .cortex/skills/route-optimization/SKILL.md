@@ -197,9 +197,9 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 ### ORS Functions (cross-app)
 | Function | Used By |
 |----------|---------|
-| OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES_GEO | Catchment preview |
+| OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES | Catchment preview (TABLE function) |
 | OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION | VRP solver |
-| OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS_GEO | Per-vehicle route geometry |
+| OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS | Per-vehicle route geometry (TABLE function) |
 | SNOWFLAKE.CORTEX.COMPLETE | AI geocoding |
 
 ---

@@ -34,9 +34,9 @@ DECLARE
             GROUP BY geocoded_result
         ),
         directions AS (
-            SELECT geo, coords,
-                   OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(?, OBJECT_CONSTRUCT('coordinates', coords)) AS dir_result
-            FROM coordinates
+            SELECT geo, coords, d.RESPONSE AS dir_result
+            FROM coordinates,
+                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(?, OBJECT_CONSTRUCT('coordinates', coords))) d
         )
         SELECT
             geo:locations AS locations,
@@ -126,9 +126,9 @@ DECLARE
             ) AS geocoded_result
         ),
         isochrone AS (
-            SELECT geocoded_result AS geo,
-                   OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(?, geo:longitude::FLOAT, geo:latitude::FLOAT, ?) AS iso_result
-            FROM geocoded
+            SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
+            FROM geocoded,
+                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(?, geo:longitude::FLOAT, geo:latitude::FLOAT, ?)) i
         )
         SELECT
             geo AS center,
@@ -273,10 +273,10 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         vehicles_json = json.dumps(vehicles).replace("'", "''")
 
         opt_query = f"""
-        SELECT OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
+        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
             PARSE_JSON('{jobs_json}'),
             PARSE_JSON('{vehicles_json}')
-        ) AS result
+        ))
         """
         opt_result = session.sql(opt_query).collect()[0]['RESULT']
         opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result

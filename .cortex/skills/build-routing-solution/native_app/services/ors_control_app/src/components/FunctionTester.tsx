@@ -43,14 +43,11 @@ const PROFILE_LABELS: Record<string, string> = {
 };
 
 const FUNCTIONS = [
-  { name: 'DIRECTIONS', sig: '([region,] method, start, end)' },
-  { name: 'DIRECTIONS_GEO', sig: '([region,] method, start, end) → TABLE' },
-  { name: 'ISOCHRONES', sig: '([region,] method, lon, lat, range)' },
-  { name: 'ISOCHRONES_GEO', sig: '([region,] method, lon, lat, range) → TABLE' },
-  { name: 'OPTIMIZATION', sig: '([region,] jobs, vehicles)' },
-  { name: 'OPTIMIZATION_GEO', sig: '([region,] jobs, vehicles) → TABLE' },
-  { name: 'MATRIX', sig: '([region,] method, locations)' },
-  { name: 'MATRIX_TABULAR', sig: '([region,] method, origin, destinations)' },
+  { name: 'DIRECTIONS', sig: '(method, start, end [, region]) → TABLE' },
+  { name: 'ISOCHRONES', sig: '(method, lon, lat, range [, region]) → TABLE' },
+  { name: 'OPTIMIZATION', sig: '(jobs, vehicles [, matrices, region]) → TABLE' },
+  { name: 'MATRIX', sig: '(method, locations [, region])' },
+  { name: 'MATRIX_TABULAR', sig: '(method, origin, destinations [, region])' },
   { name: 'ORS_STATUS', sig: '([region])' },
   { name: 'CHECK_HEALTH', sig: '() → BOOLEAN' },
   { name: 'LIST_REGIONS', sig: '() → TABLE' },
@@ -94,21 +91,28 @@ function generateSql(fnName: string, city: CityOption | null, profile: string = 
     case 'CHECK_HEALTH':
       return `SELECT ${p}.CHECK_HEALTH()`;
     case 'DIRECTIONS':
-      return `SELECT ${p}.DIRECTIONS(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}))`;
-    case 'DIRECTIONS_GEO':
-      return `SELECT * FROM TABLE(${p}.DIRECTIONS_GEO(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
+      return isRegionCity(city)
+        ? `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), '${city!.region}'))`
+        : `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]})))`;
+
     case 'ISOCHRONES':
-      return `SELECT ${p}.ISOCHRONES(${rp}'${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10)`;
-    case 'ISOCHRONES_GEO':
-      return `SELECT * FROM TABLE(${p}.ISOCHRONES_GEO(${rp}'${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
+      return isRegionCity(city)
+        ? `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10, '${city!.region}'))`
+        : `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10))`;
+
     case 'MATRIX':
-      return `SELECT ${p}.MATRIX(${rp}'${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
+      return isRegionCity(city)
+        ? `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'), '${city!.region}')`
+        : `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'))`;
     case 'MATRIX_TABULAR':
-      return `SELECT ${p}.MATRIX_TABULAR(${rp}'${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
+      return isRegionCity(city)
+        ? `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})), '${city!.region}')`
+        : `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})))`;
     case 'OPTIMIZATION':
-      return `SELECT ${p}.OPTIMIZATION(${rp}\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n)`;
-    case 'OPTIMIZATION_GEO':
-      return `SELECT * FROM TABLE(${p}.OPTIMIZATION_GEO(${rp}\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n))`;
+      return isRegionCity(city)
+        ? `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  ),\n  [], '${city!.region}'\n))`
+        : `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  )\n))`;
+
     default:
       return '';
   }
