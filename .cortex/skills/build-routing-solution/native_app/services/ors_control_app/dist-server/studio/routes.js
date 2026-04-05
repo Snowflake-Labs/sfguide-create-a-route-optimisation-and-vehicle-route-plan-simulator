@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getJobs, getJob, cancelJob, subscribeJob, startGeneration } from './jobs.js';
+import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData } from './jobs.js';
 import { PROFILE_TEMPLATES } from './profiles.js';
 import { log } from '../diagnostics.js';
 async function checkOrsReadiness(snowSql, orsProfile) {
@@ -235,6 +235,19 @@ export function createStudioRouter(snowSql) {
     router.post('/jobs/:id/cancel', (_req, res) => {
         const ok = cancelJob(_req.params.id);
         res.json({ ok });
+    });
+    router.delete('/jobs/:id', async (req, res) => {
+        try {
+            const job = getJob(req.params.id);
+            if (job && job.status === 'RUNNING') {
+                return res.status(409).json({ error: 'Cannot delete data for a running job. Cancel it first.' });
+            }
+            const result = await deleteJobData(req.params.id, snowSql);
+            res.json(result);
+        }
+        catch (err) {
+            res.status(500).json({ error: err.message });
+        }
     });
     router.get('/stats', async (_req, res) => {
         try {

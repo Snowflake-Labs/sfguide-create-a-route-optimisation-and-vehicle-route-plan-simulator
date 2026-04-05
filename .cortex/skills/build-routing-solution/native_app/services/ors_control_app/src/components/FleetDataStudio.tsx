@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { CarTaxiFront, Bike, Truck, Play, Square, Save, ChevronDown, ChevronRight, CheckCircle, AlertCircle, Clock, Database } from 'lucide-react';
+import { CarTaxiFront, Bike, Truck, Play, Square, Save, ChevronDown, ChevronRight, CheckCircle, AlertCircle, Clock, Database, Trash2 } from 'lucide-react';
 import MetricCard from '../shared/MetricCard';
 
 
@@ -84,6 +84,7 @@ export default function FleetDataStudio() {
   const [activeJobs, setActiveJobs] = useState<JobInfo[]>([]);
   const [jobHistory, setJobHistory] = useState<any[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [deletingJob, setDeletingJob] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [stats, setStats] = useState<any[]>([]);
   const [coverage, setCoverage] = useState<CoverageEntry[]>([]);
@@ -350,6 +351,24 @@ export default function FleetDataStudio() {
     const running = activeJobs.find(j => j.status === 'RUNNING');
     if (running) {
       await fetch(`/api/studio/jobs/${running.jobId}/cancel`, { method: 'POST' });
+    }
+  };
+
+  const deleteJobData = async (jobId: string) => {
+    if (!confirm(`Delete all generated data for this job? This cannot be undone.`)) return;
+    setDeletingJob(jobId);
+    try {
+      const res = await fetch(`/api/studio/jobs/${jobId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Delete failed: ${err.error}`);
+        return;
+      }
+      fetchJobs(); fetchStats(); fetchCoverage();
+    } catch (e: any) {
+      alert(`Delete failed: ${e.message}`);
+    } finally {
+      setDeletingJob(null);
     }
   };
 
@@ -718,6 +737,7 @@ export default function FleetDataStudio() {
                   <th className="data-table-th">Duration</th>
                   <th className="data-table-th">Started</th>
                   <th className="data-table-th">Details</th>
+                  <th className="data-table-th"></th>
                 </tr>
               </thead>
               <tbody>
@@ -750,6 +770,18 @@ export default function FleetDataStudio() {
                           </span>
                         ) : (
                           <span style={{ color: '#9CA3AF' }}>-</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {status !== 'RUNNING' && status !== 'DELETED' && (
+                          <button
+                            onClick={() => deleteJobData(j.JOB_ID)}
+                            disabled={deletingJob === j.JOB_ID}
+                            title="Delete generated data for this job"
+                            style={{ background: 'none', border: 'none', cursor: deletingJob === j.JOB_ID ? 'wait' : 'pointer', padding: 4, borderRadius: 4, opacity: deletingJob === j.JOB_ID ? 0.4 : 0.6 }}
+                          >
+                            <Trash2 size={14} color="#D32F2F" />
+                          </button>
                         )}
                       </td>
                     </tr>
