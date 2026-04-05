@@ -30,14 +30,14 @@ export default function RouteInspector({ sourceDb, sourceSchema }: Props) {
   const { query } = useSnowflake();
 
   const { data: trucks } = useSfQuery(
-    `SELECT DISTINCT TRUCK_ID FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' ORDER BY TRUCK_ID LIMIT 100`, sourceDb, sourceSchema, [regionName]);
+    `SELECT DISTINCT VEHICLE_ID FROM TRIP_DEVIATION_ANALYSIS WHERE REGION = '${regionName}' ORDER BY VEHICLE_ID LIMIT 100`, sourceDb, sourceSchema, [regionName]);
 
   const { data: trips } = useSfQuery(
     selectedTruck
       ? `SELECT TRIP_ID, TRIP_DATE,
                 ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT,
                 ROUND(ACTUAL_DISTANCE_KM, 1) AS ACTUAL_KM
-         FROM TRIP_DEVIATION_ANALYSIS WHERE TRUCK_ID = '${selectedTruck}' AND REGION = '${regionName}'
+         FROM TRIP_DEVIATION_ANALYSIS WHERE VEHICLE_ID = '${selectedTruck}' AND REGION = '${regionName}'
          ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 50`
       : '', sourceDb, sourceSchema, [selectedTruck, regionName]);
 
@@ -46,7 +46,7 @@ export default function RouteInspector({ sourceDb, sourceSchema }: Props) {
     const pts = await query(
       `SELECT LATITUDE, LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH,
               GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS
-       FROM ${sourceDb}.${sourceSchema}.FACT_TRUCK_TELEMETRY
+       FROM ${sourceDb}.${sourceSchema}.VW_VEHICLE_TELEMETRY
        WHERE TRIP_ID = '${tripId}' AND REGION = '${regionName}' ORDER BY TS`,
       { database: sourceDb, schema: sourceSchema });
 
@@ -128,7 +128,7 @@ export default function RouteInspector({ sourceDb, sourceSchema }: Props) {
           <label>Truck</label>
           <select className="form-select" value={selectedTruck || ''} onChange={e => { setSelectedTruck(e.target.value || null); setSelectedTrip(null); setGpsPoints([]); }}>
             <option value="">Select truck...</option>
-            {trucks.map((t: any) => <option key={t.TRUCK_ID} value={t.TRUCK_ID}>{t.TRUCK_ID}</option>)}
+            {trucks.map((t: any) => <option key={t.VEHICLE_ID} value={t.VEHICLE_ID}>{t.VEHICLE_ID}</option>)}
           </select>
         </div>
         {trips.length > 0 && (

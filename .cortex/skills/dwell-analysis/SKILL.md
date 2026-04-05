@@ -53,7 +53,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
 ## Pipeline Architecture
 
 ```
-VW_TRUCK_TELEMETRY (source, from SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY)
+VW_VEHICLE_TELEMETRY (source, from SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY)
     |
     v
 DT_STATE_CHANGES (Layer 1: LAG-based state detection)
@@ -115,7 +115,7 @@ Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each s
 |------|--------|------|-------------|
 | 1 | Database + Schema | DDL | Create FLEET_INTELLIGENCE.DWELL_ANALYSIS |
 | 1b | CONFIG | Table | Single-row vehicle type and region config |
-| 2 | VW_TRUCK_TELEMETRY, VW_TRUCK_FLEET, VW_DESTINATIONS, VW_REST_STOPS, VW_TRIP_SCHEDULE | Views | Projection views from UNIFIED |
+| 2 | VW_VEHICLE_TELEMETRY, VW_VEHICLE_FLEET, VW_DESTINATIONS, VW_REST_STOPS, VW_TRIP_SCHEDULE | Views | Projection views from UNIFIED |
 | 3 | GEOFENCE_POLYGONS | Table | Destinations + rest stops with buffer radii |
 | 4 | SLA_THRESHOLDS | Table + INSERT | WARNING/CRITICAL minutes per location type (2 calls) |
 | 5 | DT_STATE_CHANGES | Dynamic Table | LAG-based state change detection |
@@ -165,7 +165,7 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 
 | Issue | Solution |
 |-------|----------|
-| DT_STATE_CHANGES empty | Verify VW_TRUCK_TELEMETRY has data with matching STATUS values |
+| DT_STATE_CHANGES empty | Verify VW_VEHICLE_TELEMETRY has data with matching STATUS values |
 | DT_DWELL_SESSIONS zero rows | Check STATUS LIKE 'DWELL%' filter matches your telemetry data |
 | SLA alerts not appearing | Verify SLA_THRESHOLDS has matching LOCATION_TYPE values |
 | H3 cells NULL | Ensure latitude/longitude values are valid (not NULL or 0) |
@@ -197,8 +197,8 @@ DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_TRUCK_TELEMETRY;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_TRUCK_FLEET;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_FLEET;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_DESTINATIONS;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_REST_STOPS;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_TRIP_SCHEDULE;

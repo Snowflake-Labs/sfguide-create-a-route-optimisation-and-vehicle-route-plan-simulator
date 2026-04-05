@@ -29,19 +29,19 @@ export default function RouteInspector() {
 
   useEffect(() => {
     setLoading(true);
-    sfQuery(`SELECT DISTINCT TRUCK_ID FROM TRIP_DEVIATION_ANALYSIS ORDER BY TRUCK_ID LIMIT 100`)
+    sfQuery(`SELECT DISTINCT VEHICLE_ID FROM TRIP_DEVIATION_ANALYSIS ORDER BY VEHICLE_ID LIMIT 100`)
       .then(t => { setTrucks(t); setLoading(false); });
   }, []);
 
   useEffect(() => {
     if (!selectedTruck) return;
-    sfQuery(`SELECT TRIP_ID, TRIP_DATE, ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT, POINT_COUNT AS PTS FROM TRIP_DEVIATION_ANALYSIS WHERE TRUCK_ID = '${selectedTruck}' ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 50`)
+    sfQuery(`SELECT TRIP_ID, TRIP_DATE, ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT, POINT_COUNT AS PTS FROM TRIP_DEVIATION_ANALYSIS WHERE VEHICLE_ID = '${selectedTruck}' ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 50`)
       .then(setTruckTrips);
   }, [selectedTruck]);
 
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
-    const pts = await sfQuery(`SELECT LATITUDE, LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH, GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS FROM ${RD_DB}.${RD_SCHEMA}.FACT_TRUCK_TELEMETRY WHERE TRIP_ID = '${tripId}' ORDER BY TS`);
+    const pts = await sfQuery(`SELECT LATITUDE, LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH, GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS FROM ${RD_DB}.${RD_SCHEMA}.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = '${tripId}' ORDER BY TS`);
     setGpsPoints(pts);
     if (pts.length > 0) {
       const lngs = pts.map((p: any) => Number(p.LONGITUDE));
@@ -105,7 +105,7 @@ export default function RouteInspector() {
           <label>Truck</label>
           <select className="form-select" value={selectedTruck} onChange={e => setSelectedTruck(e.target.value)}>
             <option value="">Select...</option>
-            {trucks.map(t => <option key={t.TRUCK_ID} value={t.TRUCK_ID}>{t.TRUCK_ID}</option>)}
+            {trucks.map(t => <option key={t.VEHICLE_ID} value={t.VEHICLE_ID}>{t.VEHICLE_ID}</option>)}
           </select>
         </div>
         {truckTrips.length > 0 && (

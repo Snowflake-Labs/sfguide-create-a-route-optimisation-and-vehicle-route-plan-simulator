@@ -31,7 +31,7 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, sr
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS (
     REGION                   VARCHAR NOT NULL DEFAULT 'SanFrancisco',
     TRIP_ID                  VARCHAR,
-    TRUCK_ID                 VARCHAR,
+    VEHICLE_ID                 VARCHAR,
     DRIVER_ID                VARCHAR,
     TRIP_DATE                DATE,
     ROUTE_VARIATION          VARCHAR,
@@ -70,10 +70,10 @@ FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE ON_ERROR 
 --------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY (
     REGION                     VARCHAR NOT NULL DEFAULT 'SanFrancisco',
-    TRUCK_ID                   VARCHAR,
+    VEHICLE_ID                   VARCHAR,
     DRIVER_ID                  VARCHAR,
     DRIVER_PROFILE             VARCHAR,
-    TRUCK_TYPE                 VARCHAR,
+    OPERATING_MODE             VARCHAR,
     HOME_CITY                  VARCHAR,
     TOTAL_TRIPS                INT,
     DEVIATION_TRIPS            INT,
