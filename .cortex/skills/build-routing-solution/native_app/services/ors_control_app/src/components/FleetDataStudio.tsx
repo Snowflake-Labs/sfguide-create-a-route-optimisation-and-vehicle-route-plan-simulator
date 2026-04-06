@@ -129,7 +129,9 @@ export default function FleetDataStudio() {
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch('/api/studio/stats');
-      setStats(await res.json());
+      if (!res.ok) return;
+      const data = await res.json();
+      setStats(Array.isArray(data) ? data : []);
     } catch (e: any) {
       console.error('Failed to fetch stats:', e);
     }
@@ -138,7 +140,9 @@ export default function FleetDataStudio() {
   const fetchCoverage = useCallback(async () => {
     try {
       const res = await fetch('/api/studio/coverage');
-      setCoverage(await res.json());
+      if (!res.ok) return;
+      const data = await res.json();
+      setCoverage(Array.isArray(data) ? data : []);
     } catch (e: any) {
       console.error('Failed to fetch coverage:', e);
     }
@@ -389,10 +393,11 @@ export default function FleetDataStudio() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logLines]);
 
-  const totalPoints = stats.reduce((s: number, r: any) => s + Number(r.POINT_COUNT || 0), 0);
-  const totalVehicles = stats.reduce((s: number, r: any) => s + Number(r.VEHICLES || 0), 0);
-  const totalTrips = stats.reduce((s: number, r: any) => s + Number(r.TRIPS || 0), 0);
-  const profileData = stats.map((r: any) => ({
+  const safeStats = Array.isArray(stats) ? stats : [];
+  const totalPoints = safeStats.reduce((s: number, r: any) => s + Number(r.POINT_COUNT || 0), 0);
+  const totalVehicles = safeStats.reduce((s: number, r: any) => s + Number(r.VEHICLES || 0), 0);
+  const totalTrips = safeStats.reduce((s: number, r: any) => s + Number(r.TRIPS || 0), 0);
+  const profileData = safeStats.map((r: any) => ({
     name: VEHICLE_LABELS[r.VEHICLE_TYPE] || r.ORS_PROFILE,
     value: Number(r.POINT_COUNT || 0),
     vehicleType: r.VEHICLE_TYPE,
