@@ -255,6 +255,39 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** User confirmation received that app is fully operational
 
+### Step 8: Load Seed Datasets
+
+**Goal:** Pre-load Intro page routes and synthetic SF ebike data so the app is fully populated on first launch
+
+**Actions:**
+
+1. **Upload Parquet files to stage:**
+   ```bash
+   snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite
+   snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive
+   snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite
+   ```
+
+2. **Run the loader script:**
+   ```bash
+   snow sql -f datasets/load-seed-data.sql -c <connection>
+   ```
+
+3. **Verify** the data loaded:
+   ```sql
+   SELECT 'INTRO_TRIPS' AS TBL, COUNT(*) AS CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS
+   UNION ALL SELECT 'TELEMETRY', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
+   UNION ALL SELECT 'TRIPS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+   UNION ALL SELECT 'FLEET', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+   UNION ALL SELECT 'POIS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+   UNION ALL SELECT 'JOBS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+   UNION ALL SELECT 'REGIONS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY;
+   ```
+
+   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1
+
+**Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job
+
 ## Stopping Points
 
 - Step 2: After detecting container runtime — confirm user's choice if both available
@@ -278,6 +311,7 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - Application: `OPENROUTESERVICE_NATIVE_APP`
 - 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
+- Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs)
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
