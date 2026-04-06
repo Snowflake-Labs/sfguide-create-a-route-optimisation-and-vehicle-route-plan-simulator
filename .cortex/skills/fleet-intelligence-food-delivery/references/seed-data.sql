@@ -4,12 +4,17 @@
  * Idempotent: only loads if tables are empty for the target region.
  */
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/fleet-intelligence-food-delivery/'
-    FILE_FORMAT = (TYPE = PARQUET);
+    FILE_FORMAT = (TYPE = PARQUET)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- RESTAURANTS
@@ -23,7 +28,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.R
     ADDRESS        VARCHAR,
     CITY           VARCHAR,
     STATE          VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/RESTAURANTS/
@@ -41,7 +47,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.C
     POSTCODE      VARCHAR,
     STATE         VARCHAR,
     CITY          VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/CUSTOMER_ADDRESSES/
@@ -59,7 +66,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.C
     SHIFT_END_HOUR          INT,
     SHIFT_CROSSES_MIDNIGHT  VARCHAR,
     VEHICLE_TYPE            VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIERS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/COURIERS/
@@ -76,7 +84,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.R
     CUISINE_TYPE   VARCHAR,
     ADDRESS        VARCHAR,
     RN             INT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/RESTAURANTS_NUMBERED/
@@ -91,7 +100,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.A
     LOCATION     GEOGRAPHY,
     FULL_ADDRESS VARCHAR,
     RN           INT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/ADDRESSES_NUMBERED/
@@ -112,7 +122,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.D
     CUSTOMER_IDX    INT,
     PREP_TIME_MINS  FLOAT,
     ORDER_STATUS    VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/DELIVERY_ORDERS/
@@ -139,7 +150,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.O
     CUSTOMER_LOCATION     GEOGRAPHY,
     PREP_TIME_MINS        FLOAT,
     ORDER_STATUS          VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/ORDERS_WITH_LOCATIONS/
@@ -167,7 +179,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.D
     PREP_TIME_MINS        FLOAT,
     ORDER_STATUS          VARCHAR,
     ROUTE_RESPONSE        VARIANT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/DELIVERY_ROUTES/
@@ -197,7 +210,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.D
     ROUTE_GEOMETRY        GEOGRAPHY,
     ROUTE_DISTANCE_METERS FLOAT,
     ROUTE_DURATION_SECS   FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES_PARSED
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/DELIVERY_ROUTES_PARSED/
@@ -228,7 +242,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.D
     GEOMETRY              GEOGRAPHY,
     SHIFT_TYPE            VARCHAR,
     VEHICLE_TYPE          VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/DELIVERY_ROUTE_GEOMETRIES/
@@ -252,7 +267,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.C
     POINT_INDEX         INT,
     COURIER_STATE       VARCHAR,
     KMH                 FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SEED_STAGE/COURIER_LOCATIONS/

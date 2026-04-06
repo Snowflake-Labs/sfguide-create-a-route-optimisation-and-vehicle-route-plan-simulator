@@ -1,3 +1,5 @@
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 USE ROLE ACCOUNTADMIN;
 USE WAREHOUSE ROUTING_ANALYTICS;
 
@@ -10,21 +12,24 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_
     DEST_H3 VARCHAR(20),
     TRAVEL_TIME_SECONDS FLOAT,
     TRAVEL_DISTANCE_METERS FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8 (
     ORIGIN_H3 VARCHAR(20),
     DEST_H3 VARCHAR(20),
     TRAVEL_TIME_SECONDS FLOAT,
     TRAVEL_DISTANCE_METERS FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES9 (
     ORIGIN_H3 VARCHAR(20),
     DEST_H3 VARCHAR(20),
     TRAVEL_TIME_SECONDS FLOAT,
     TRAVEL_DISTANCE_METERS FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ============================================================
 -- BATCHED PROCEDURES using MATRIX_TABULAR (1×N, sources:["0"])
@@ -35,6 +40,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES7()
 RETURNS VARCHAR
 LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -113,6 +119,7 @@ $$;
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES8()
 RETURNS VARCHAR
 LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -189,6 +196,7 @@ $$;
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES9()
 RETURNS VARCHAR
 LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -275,18 +283,21 @@ ALTER TASK FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_01_BUILD_HEXAGONS_7_8 SUSP
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_08_BUILD_TRAVEL_TIME_RES7
     WAREHOUSE = ROUTING_ANALYTICS
     AFTER FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_02_BUILD_PAIRS_RES7
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
     CALL FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES7();
 
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_09_BUILD_TRAVEL_TIME_RES8
     WAREHOUSE = ROUTING_ANALYTICS
     AFTER FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_03_BUILD_PAIRS_RES8
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
     CALL FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES8();
 
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_10_BUILD_TRAVEL_TIME_RES9
     WAREHOUSE = ROUTING_ANALYTICS
     AFTER FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.TASK_05_BUILD_PAIRS_RES9
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
     CALL FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_MATRIX_RES9();
 

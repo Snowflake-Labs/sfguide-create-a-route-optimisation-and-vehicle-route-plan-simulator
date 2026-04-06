@@ -6,12 +6,17 @@
  * Source telemetry data comes from SYNTHETIC_DATASETS.UNIFIED via projection views.
  */
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/dwell-analysis/'
-    FILE_FORMAT = (TYPE = PARQUET);
+    FILE_FORMAT = (TYPE = PARQUET)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -19,7 +24,8 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SEED_STAGE
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (
     VEHICLE_TYPE VARCHAR NOT NULL,
     REGION       VARCHAR NOT NULL
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 MERGE INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
@@ -38,7 +44,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS (
     LNG             FLOAT,
     CENTER_POINT    GEOGRAPHY,
     BUFFER_RADIUS_M FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS
 FROM @FLEET_INTELLIGENCE.DWELL_ANALYSIS.SEED_STAGE/GEOFENCE_POLYGONS/
@@ -52,7 +59,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS (
     LOCATION_TYPE    VARCHAR,
     WARNING_MINUTES  NUMBER,
     CRITICAL_MINUTES NUMBER
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 INSERT INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS (REGION, LOCATION_TYPE, WARNING_MINUTES, CRITICAL_MINUTES)
 SELECT 'SanFrancisco', column1, column2, column3

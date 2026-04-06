@@ -10,6 +10,8 @@
 --   Country (~50M origins): INSTANCES=20, CLUSTERS=20, WORKERS=20
 -- =============================================================================
 
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 USE ROLE ACCOUNTADMIN;
 
 -- =============================================================================
@@ -43,12 +45,14 @@ CREATE OR REPLACE WAREHOUSE ROUTING_ANALYTICS
     MAX_CLUSTER_COUNT = $P_CLUSTERS
     SCALING_POLICY = 'STANDARD'
     AUTO_SUSPEND = 300
-    AUTO_RESUME = TRUE;
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE WAREHOUSE IF NOT EXISTS FLATTEN_WH
     WITH WAREHOUSE_SIZE = 'XLARGE'
     AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE;
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- =============================================================================
 -- 2. COMPUTE POOL

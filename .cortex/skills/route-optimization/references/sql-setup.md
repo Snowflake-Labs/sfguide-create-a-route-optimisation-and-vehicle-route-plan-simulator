@@ -5,7 +5,7 @@ SQL commands for Steps 1, 2, 4, and 5 of the route-optimization workflow.
 ## Step 1: Set Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-route-optimization-demo","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## Step 2: Verify Services
@@ -43,14 +43,14 @@ Requires IMPORT SHARE privilege.
 ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```

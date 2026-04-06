@@ -4,12 +4,17 @@
  * Idempotent: only loads if tables are empty for the target region.
  */
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/route-optimization/'
-    FILE_FORMAT = (TYPE = PARQUET);
+    FILE_FORMAT = (TYPE = PARQUET)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- PLACES (Overture Maps POIs materialized)
@@ -23,7 +28,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (
     CITY      VARCHAR,
     STATE     VARCHAR,
     POSTCODE  VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
 FROM @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_STAGE/PLACES/
@@ -38,7 +44,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     PA       VARCHAR,
     PB       VARCHAR,
     PC       VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
 FROM @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_STAGE/LOOKUP/
@@ -55,7 +62,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (
     SKILLS      VARCHAR,
     PRODUCT     VARCHAR,
     STATUS      VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE
 FROM @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_STAGE/JOB_TEMPLATE/

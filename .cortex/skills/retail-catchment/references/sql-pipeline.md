@@ -3,7 +3,7 @@
 ## Step 1: Set Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment-analysis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## Step 2: Verify OpenRouteService Installation
@@ -62,17 +62,17 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE)
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ## Step 5: Create Optimized Data Tables
@@ -123,7 +123,7 @@ AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
 ```
 
 ```sql
-ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **5c. Create pre-aggregated cities table:**
@@ -142,7 +142,7 @@ ORDER BY STATE, POI_COUNT DESC;
 ```
 
 ```sql
-ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **5d. Create addresses table within bounding box:**
@@ -164,7 +164,7 @@ AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
 ```
 
 ```sql
-ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **5e. Store region configuration:**
@@ -181,7 +181,7 @@ SELECT
 ```
 
 ```sql
-ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 **5f. Add search optimization:**
@@ -233,7 +233,7 @@ CREATE OR REPLACE STREAMLIT FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_CATCHMENT
     MAIN_FILE = 'retail_catchment.py'
     QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
     TITLE = 'Retail Catchment Application'
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment-analysis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"streamlit"}}';
 
 ALTER STREAMLIT FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_CATCHMENT_APP ADD LIVE VERSION FROM LAST;
 ```

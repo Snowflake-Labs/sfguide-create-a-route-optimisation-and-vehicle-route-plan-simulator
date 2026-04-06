@@ -201,10 +201,14 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 3. **Set up Data Studio databases** (required for synthetic data generation):
    ```sql
-   CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS;
-   CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED;
-   CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-   CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE;
+   CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    GRANT USAGE ON DATABASE SYNTHETIC_DATASETS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;

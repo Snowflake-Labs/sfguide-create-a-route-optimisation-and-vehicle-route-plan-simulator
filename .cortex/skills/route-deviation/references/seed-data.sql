@@ -6,12 +6,17 @@
  * Idempotent: only loads if tables are empty.
  */
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/route-deviation/'
-    FILE_FORMAT = (TYPE = PARQUET);
+    FILE_FORMAT = (TYPE = PARQUET)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -19,7 +24,8 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.SEED_STAGE
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG (
     VEHICLE_TYPE VARCHAR NOT NULL,
     REGION       VARCHAR NOT NULL
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 MERGE INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
@@ -59,7 +65,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANA
     IS_ROUTE_DEVIATION       BOOLEAN,
     ACTUAL_PATH              GEOGRAPHY,
     EXPECTED_PATH            GEOGRAPHY
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
 FROM @FLEET_INTELLIGENCE.ROUTE_DEVIATION.SEED_STAGE/TRIP_DEVIATION_ANALYSIS/
@@ -84,7 +91,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_S
     AVG_DURATION_DEVIATION_PCT FLOAT,
     MAX_DISTANCE_DEVIATION_PCT FLOAT,
     MAX_DURATION_DEVIATION_PCT FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY
 FROM @FLEET_INTELLIGENCE.ROUTE_DEVIATION.SEED_STAGE/DRIVER_DEVIATION_SUMMARY/
@@ -104,7 +112,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TR
     TOTAL_EXCESS_DURATION_MIN FLOAT,
     AVG_DISTANCE_DEVIATION_PCT FLOAT,
     AVG_DURATION_DEVIATION_PCT FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS
 FROM @FLEET_INTELLIGENCE.ROUTE_DEVIATION.SEED_STAGE/DAILY_DEVIATION_TRENDS/

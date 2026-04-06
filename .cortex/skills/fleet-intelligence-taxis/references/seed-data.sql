@@ -6,16 +6,17 @@
  * After loading, run the view creation DDL from sql-pipeline.md Step 9.
  */
 
--- Config
--- SET S3_BUCKET = 's3://fleet-intelligence';  -- change if bucket moves
--- SET REGION = 'SanFrancisco';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS;
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE
     URL = 's3://fleet-intelligence/SanFrancisco/fleet-intelligence-taxis/'
-    FILE_FORMAT = (TYPE = PARQUET);
+    FILE_FORMAT = (TYPE = PARQUET)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -23,7 +24,8 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAG
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG (
     VEHICLE_TYPE VARCHAR NOT NULL,
     REGION       VARCHAR NOT NULL
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 MERGE INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
@@ -40,7 +42,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCA
     NAME           VARCHAR,
     CATEGORY       VARCHAR,
     SOURCE_TYPE    VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/TAXI_LOCATIONS/
@@ -59,7 +62,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIV
     SHIFT_START_HOUR        INT,
     SHIFT_END_HOUR          INT,
     SHIFT_CROSSES_MIDNIGHT  VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/TAXI_DRIVERS/
@@ -76,7 +80,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCA
     POINT_GEOM  GEOGRAPHY,
     NAME        VARCHAR,
     RN          INT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/TAXI_LOCATIONS_NUMBERED/
@@ -96,7 +101,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TR
     SHIFT_TYPE      VARCHAR,
     PICKUP_LOC_ID   INT,
     DROPOFF_LOC_ID  INT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_TRIPS/
@@ -118,7 +124,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TR
     PICKUP_NAME     VARCHAR,
     DROPOFF_GEOM    GEOGRAPHY,
     DROPOFF_NAME    VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_TRIPS_WITH_COORDS/
@@ -141,7 +148,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_RO
     DROPOFF_GEOM     GEOGRAPHY,
     DROPOFF_NAME     VARCHAR,
     ROUTE_RESPONSE   VARIANT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_ROUTES/
@@ -166,7 +174,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_RO
     ROUTE_GEOMETRY        GEOGRAPHY,
     ROUTE_DISTANCE_METERS FLOAT,
     ROUTE_DURATION_SECS   FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_ROUTES_PARSED/
@@ -191,7 +200,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_RO
     ORIGIN                GEOGRAPHY,
     DESTINATION           GEOGRAPHY,
     SHIFT_TYPE            VARCHAR
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_ROUTE_GEOMETRIES/
@@ -216,7 +226,8 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LO
     POINT_INDEX      INT,
     DRIVER_STATE     VARCHAR,
     KMH              FLOAT
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 COPY INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS
 FROM @FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.SEED_STAGE/DRIVER_LOCATIONS/
@@ -227,22 +238,30 @@ ON_ERROR = CONTINUE;
 --------------------------------------------------------------------
 -- POST-SEED DDL: Analytics Views
 --------------------------------------------------------------------
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT TRIP_ID, DRIVER_ID, PICKUP_TIME, DROPOFF_TIME, PICKUP_LOCATION, DROPOFF_LOCATION,
     ROUTE, POINT_GEOM, ST_X(POINT_GEOM) AS LON, ST_Y(POINT_GEOM) AS LAT,
     CURR_TIME, CURR_TIME AS POINT_TIME, POINT_INDEX, DRIVER_STATE, KMH, REGION
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT DRIVER_ID, TRIP_ID, GEOMETRY, ORIGIN, DESTINATION, ORIGIN_ADDRESS, DESTINATION_ADDRESS,
     TRIP_START_TIME AS PICKUP_TIME, TRIP_END_TIME AS DROPOFF_TIME, REGION
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT TRIP_ID, ORIGIN_ADDRESS || ' -> ' || DESTINATION_ADDRESS AS TRIP_NAME, REGION
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT rg.TRIP_ID, rg.DRIVER_ID, rg.ORIGIN_ADDRESS, rg.ORIGIN_ADDRESS AS ORIGIN_STREET,
     rg.DESTINATION_ADDRESS, rg.DESTINATION_ADDRESS AS DESTINATION_STREET,
     rg.TRIP_START_TIME AS PICKUP_TIME, rg.TRIP_END_TIME AS DROPOFF_TIME,
@@ -253,7 +272,9 @@ SELECT rg.TRIP_ID, rg.DRIVER_ID, rg.ORIGIN_ADDRESS, rg.ORIGIN_ADDRESS AS ORIGIN_
     )))) AS ROUTE
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 WITH trip_stats AS (
     SELECT TRIP_ID, AVG(KMH) AS AVERAGE_KMH, MAX(KMH) AS MAX_KMH
     FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS

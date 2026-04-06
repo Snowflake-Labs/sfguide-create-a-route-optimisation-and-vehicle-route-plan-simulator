@@ -130,7 +130,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       GPS_ACCURACY_M FLOAT, LOCATION_ID VARCHAR, LOCATION_TYPE VARCHAR(30),
       ORS_PROFILE VARCHAR(30), BATTERY_PCT FLOAT, ODOMETER_KM FLOAT, POINT_INDEX INT,
       JOB_ID VARCHAR
-    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS (
       TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
@@ -143,7 +143,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       TRIP_START TIMESTAMP_NTZ, TRIP_END TIMESTAMP_NTZ,
       STATUS VARCHAR(20), ORS_PROFILE VARCHAR(30),
       JOB_ID VARCHAR
-    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET (
       VEHICLE_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORS_PROFILE VARCHAR(30), SHIFT_TYPE VARCHAR(30),
@@ -151,13 +151,13 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR(20),
       OPERATING_MODE VARCHAR(30), BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT,
       JOB_ID VARCHAR
-    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
       LOCATION_ID VARCHAR, REGION VARCHAR(100), NAME VARCHAR,
       LOCATION_TYPE VARCHAR(30), CATEGORY VARCHAR(50),
       LAT FLOAT, LNG FLOAT, POINT_GEOM GEOGRAPHY, SOURCE VARCHAR(20),
       JOB_ID VARCHAR
-    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE (
       SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
@@ -167,7 +167,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       SHIFT_TYPE VARCHAR(30), ORS_PROFILE VARCHAR(30),
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20),
       JOB_ID VARCHAR
-    )`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
       JOB_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
       ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,
@@ -176,7 +176,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       POINTS_GENERATED INT DEFAULT 0, TRIPS_GENERATED INT DEFAULT 0,
       ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
       COMPLETED_AT TIMESTAMP_NTZ
-    )`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
   for (const { sql, db, schema } of ddls) {
     try {

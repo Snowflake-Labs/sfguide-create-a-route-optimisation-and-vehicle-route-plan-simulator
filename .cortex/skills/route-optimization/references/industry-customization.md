@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     CTYPE ARRAY,
     STYPE ARRAY
 )
-COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
 SELECT '<Industry1>', '<Product A>', '<Product B>', '<Product C>',

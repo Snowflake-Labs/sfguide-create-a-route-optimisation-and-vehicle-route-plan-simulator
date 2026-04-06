@@ -99,7 +99,7 @@ function getSpcsToken() {
 function snowSqlLocal(sql, database, schema) {
     const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
     const db = database || SF_DATABASE;
-    let fullSql = `USE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+    let fullSql = `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
     if (schema)
         fullSql += `USE SCHEMA ${schema};\n`;
     fullSql += `${sql};`;

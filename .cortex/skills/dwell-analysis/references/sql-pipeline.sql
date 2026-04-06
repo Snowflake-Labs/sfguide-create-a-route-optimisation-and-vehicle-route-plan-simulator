@@ -8,8 +8,10 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Step 1: Infrastructure
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE;
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Step 1b: Skill Configuration Table
 -- Single-row config controlling which vehicle type and region this skill processes.
@@ -17,7 +19,8 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS;
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (
     VEHICLE_TYPE VARCHAR NOT NULL,
     REGION       VARCHAR NOT NULL
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 MERGE INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
@@ -26,7 +29,9 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, sr
 -- Step 2: Data Studio Projection Views
 -- These views read from SYNTHETIC_DATASETS.UNIFIED, filtered by CONFIG table.
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     t.TELEMETRY_ID,
     t.VEHICLE_ID,
@@ -60,7 +65,9 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYS
   AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_FLEET AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_FLEET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     f.VEHICLE_ID,
     f.HOME_LOCATION_ID AS HOME_BASE_ID,
@@ -76,7 +83,9 @@ WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYS
   AND f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_DESTINATIONS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_DESTINATIONS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     p.LOCATION_ID AS ID,
     p.NAME,
@@ -92,7 +101,9 @@ WHERE p.LOCATION_TYPE NOT IN ('REST_STOP')
   AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_REST_STOPS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_REST_STOPS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     p.LOCATION_ID AS REST_STOP_ID,
     p.NAME,
@@ -106,7 +117,9 @@ WHERE p.LOCATION_TYPE = 'REST_STOP'
   AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_TRIP_SCHEDULE AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_TRIP_SCHEDULE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     s.TRIP_ID AS SCHEDULE_ID,
     s.VEHICLE_ID,
@@ -136,11 +149,13 @@ SELECT
     LAT, LNG, CENTER_POINT,
     150 AS BUFFER_RADIUS_M
 FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_REST_STOPS;
+ALTER TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Step 4: SLA Thresholds Configuration (idempotent)
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS (
     LOCATION_TYPE VARCHAR, WARNING_MINUTES NUMBER, CRITICAL_MINUTES NUMBER
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 INSERT INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS
     (LOCATION_TYPE, WARNING_MINUTES, CRITICAL_MINUTES)
 SELECT column1, column2, column3 FROM VALUES
@@ -157,6 +172,7 @@ WHERE NOT EXISTS (
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
   TARGET_LAG = '5 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
     TELEMETRY_ID, VEHICLE_ID, TRIP_ID, TS, LATITUDE, LONGITUDE,
@@ -172,6 +188,7 @@ WHERE STATUS IN ('MOVING','DWELL_WAREHOUSE','DWELL_DESTINATION',
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS
   TARGET_LAG = '5 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 WITH sessions AS (
   SELECT *,
@@ -195,6 +212,7 @@ GROUP BY VEHICLE_ID, SESSION_ID, TRIP_ID, STATUS, LOCATION_ID;
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
   TARGET_LAG = '5 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
@@ -214,6 +232,7 @@ LEFT JOIN FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_FLEET tf ON s.VEHICLE_ID 
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION
   TARGET_LAG = '10 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   H3_CELL_R7,
@@ -230,6 +249,7 @@ GROUP BY H3_CELL_R7, HOUR_BUCKET;
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
   TARGET_LAG = '5 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID,
@@ -252,6 +272,7 @@ WHERE e.DWELL_MINUTES >= t.WARNING_MINUTES AND e.STATUS LIKE 'DWELL%';
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION
   TARGET_LAG = '10 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE,
@@ -270,6 +291,7 @@ GROUP BY LOCATION_ID, LOCATION_NAME, CITY, FACILITY_TYPE, LOC_TYPE, VISIT_DATE;
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
   TARGET_LAG = '10 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME,
@@ -290,6 +312,7 @@ GROUP BY e.VEHICLE_ID, e.DRIVER_PROFILE, e.OPERATING_MODE, e.HOME_BASE_NAME;
 CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS
   TARGET_LAG = '10 minutes'
   WAREHOUSE = COMPUTE_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   DATE_TRUNC('day', SESSION_START)::DATE AS TREND_DATE,
@@ -317,7 +340,8 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG (
     HOME_BASE_NAME VARCHAR, OPERATING_MODE VARCHAR, DRIVER_PROFILE VARCHAR,
     WARNING_MINUTES NUMBER, CRITICAL_MINUTES NUMBER, SLA_STATUS VARCHAR,
     MINUTES_OVER_WARNING FLOAT, ALERT_TS TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-);
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- NOTE: Stream on VW_VEHICLE_TELEMETRY is not supported because the view uses subquery expressions
 -- for CONFIG filtering. The LOG_SLA_ALERTS task runs on a schedule instead of stream-triggered.
@@ -328,6 +352,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG (
 CREATE OR REPLACE TASK FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS
   WAREHOUSE = COMPUTE_WH
   SCHEDULE = '5 MINUTE'
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
   MERGE INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_ALERT_LOG tgt
   USING (SELECT * FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS) src

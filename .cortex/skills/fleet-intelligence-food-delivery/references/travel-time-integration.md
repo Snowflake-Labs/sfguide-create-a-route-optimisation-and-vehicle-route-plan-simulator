@@ -296,7 +296,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES
     travel_distance_meters FLOAT,
     calculated_at TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES8 (
     origin_h3 VARCHAR,
@@ -305,7 +305,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES
     travel_distance_meters FLOAT,
     calculated_at TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 (
     origin_h3 VARCHAR,
@@ -314,7 +314,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES
     travel_distance_meters FLOAT,
     calculated_at TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 2: Add Travel Time Lookup to Orders
@@ -367,7 +367,7 @@ LEFT JOIN FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 tt7
     ON (oh.restaurant_h3_res7 = tt7.origin_h3 AND oh.customer_h3_res7 = tt7.dest_h3)
     OR (oh.restaurant_h3_res7 = tt7.dest_h3 AND oh.customer_h3_res7 = tt7.origin_h3);
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 3: Create ETA Prediction Function
@@ -432,7 +432,7 @@ $$
     FROM travel_lookup
 $$;
 
-ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 4: Use ETA Predictions in Delivery Routes
@@ -498,7 +498,7 @@ SELECT
     eta_info:resolution_used::STRING AS TRAVEL_TIME_SOURCE
 FROM cumulative_timing;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 5: Real-time ETA Updates View
@@ -550,7 +550,7 @@ WHERE cl.POINT_INDEX = (
     WHERE cl2.ORDER_ID = cl.ORDER_ID
 );
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Performance Comparison: Matrix Lookup vs ORS Calls

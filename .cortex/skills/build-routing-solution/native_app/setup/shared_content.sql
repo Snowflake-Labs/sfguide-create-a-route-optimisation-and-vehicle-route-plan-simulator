@@ -4,7 +4,9 @@ CREATE SCHEMA IF NOT EXISTS SHARED_SCHEMA
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 USE SCHEMA SHARED_SCHEMA;
 
-CREATE OR REPLACE SECURE VIEW OSM_DATA AS (
+CREATE OR REPLACE SECURE VIEW OSM_DATA
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}'
+AS (
 SELECT 
     'ors_spcs_stage' as STAGE,
      RELATIVE_PATH, 

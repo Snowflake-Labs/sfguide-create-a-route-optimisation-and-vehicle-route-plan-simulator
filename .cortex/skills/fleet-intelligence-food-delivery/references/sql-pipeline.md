@@ -6,6 +6,14 @@
 
 ---
 
+### Query Tag
+
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
+---
+
 ### Step 3b: Check & Install Overture Maps Datasets
 
 Check if datasets are accessible:
@@ -76,7 +84,7 @@ WHERE
         OR CATEGORIES:primary::STRING ILIKE '%fast_food%'
     );
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -125,7 +133,7 @@ WHERE
     AND ADDRESS_LEVELS[0]:value::STRING = 'CA'
     AND STREET IS NOT NULL;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -203,7 +211,7 @@ SELECT
 FROM courier_assignments ca
 LEFT JOIN home_locations hl ON ca.courier_num = hl.rn;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -242,7 +250,7 @@ SELECT
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
 WHERE NAME IS NOT NULL AND LENGTH(NAME) > 2;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -255,7 +263,7 @@ SELECT
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
 WHERE FULL_ADDRESS IS NOT NULL AND LENGTH(FULL_ADDRESS) > 3;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then generate the orders:
@@ -330,7 +338,7 @@ FROM orders_with_hours o
 CROSS JOIN rest_count rc
 CROSS JOIN addr_count ac;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -356,7 +364,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ORDERS o
 JOIN FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_NUMBERED r ON o.RESTAURANT_IDX = r.rn
 JOIN FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ADDRESSES_NUMBERED a ON o.CUSTOMER_IDX = a.rn;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -422,7 +430,7 @@ SELECT
     ) AS ROUTE_RESPONSE
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 > **TABLE Alternative:** Combine route + parsing into a single step using `DIRECTIONS` (TABLE function):
@@ -471,7 +479,7 @@ SELECT
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES
 WHERE ROUTE_RESPONSE IS NOT NULL;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES_PARSED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTES_PARSED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -522,7 +530,7 @@ SELECT
     VEHICLE_TYPE
 FROM cumulative_timing;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -681,7 +689,7 @@ SELECT
     END AS KMH
 FROM expanded;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-a-fleet-intelligence-solution-for-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Then verify:
@@ -727,6 +735,9 @@ MERGE INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
+
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 #### VW_COURIER_LOCATIONS
@@ -756,6 +767,11 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELL
 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 ```
 
+```sql
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.VW_COURIER_LOCATIONS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 #### VW_DELIVERY_SUMMARY
 
 ```sql
@@ -781,4 +797,9 @@ SELECT
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
 WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
   AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1);
+```
+
+```sql
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.VW_DELIVERY_SUMMARY SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```

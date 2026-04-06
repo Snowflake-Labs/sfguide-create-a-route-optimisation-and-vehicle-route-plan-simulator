@@ -5,23 +5,23 @@ All SQL for the Route Deviation Analysis ETL pipeline. Execute statements one at
 ## Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ## Infrastructure Setup
 
 ```sql
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE WAREHOUSE IF NOT EXISTS {WAREHOUSE}
     WAREHOUSE_SIZE = 'MEDIUM'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ## Step 1: CONFIG Table
@@ -37,6 +37,9 @@ MERGE INTO {TARGET_DB}.{TARGET_SCHEMA}.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
+
+ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.CONFIG SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ## Step 2: Data Studio Projection Views
@@ -74,6 +77,11 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {TARGET_DB}.{TARGET_SCHEMA}.CON
 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 ```
 
+```sql
+ALTER VIEW {TARGET_DB}.{TARGET_SCHEMA}.VW_VEHICLE_TELEMETRY SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### VW_TRIP_DEVIATION
 
 ```sql
@@ -106,6 +114,11 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {TARGET_DB}.{TARGET_SCHEMA}.CON
   AND t.REGION = (SELECT REGION FROM {TARGET_DB}.{TARGET_SCHEMA}.CONFIG LIMIT 1);
 ```
 
+```sql
+ALTER VIEW {TARGET_DB}.{TARGET_SCHEMA}.VW_TRIP_DEVIATION SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### VW_FLEET
 
 ```sql
@@ -121,6 +134,11 @@ FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
 WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {TARGET_DB}.{TARGET_SCHEMA}.CONFIG LIMIT 1)
   AND f.REGION = (SELECT REGION FROM {TARGET_DB}.{TARGET_SCHEMA}.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
+```
+
+```sql
+ALTER VIEW {TARGET_DB}.{TARGET_SCHEMA}.VW_FLEET SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### VW_TRIP_SCHEDULE
@@ -144,6 +162,11 @@ FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE s
 WHERE s.REGION = (SELECT REGION FROM {TARGET_DB}.{TARGET_SCHEMA}.CONFIG LIMIT 1);
 ```
 
+```sql
+ALTER VIEW {TARGET_DB}.{TARGET_SCHEMA}.VW_TRIP_SCHEDULE SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
 ### VW_POIS
 
 ```sql
@@ -160,6 +183,11 @@ SELECT
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
 WHERE p.REGION = (SELECT REGION FROM {TARGET_DB}.{TARGET_SCHEMA}.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
+```
+
+```sql
+ALTER VIEW {TARGET_DB}.{TARGET_SCHEMA}.VW_POIS SET
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ## Verify UNIFIED Data
@@ -242,7 +270,7 @@ LEFT JOIN dedup_pois pd ON t.DESTINATION_POI_ID = pd.ID AND pd.RN = 1
 WHERE t.ACTUAL_PATH IS NOT NULL;
 
 ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS;`
@@ -273,7 +301,7 @@ LEFT JOIN {TARGET_DB}.{TARGET_SCHEMA}.VW_FLEET f ON d.VEHICLE_ID = f.VEHICLE_ID
 GROUP BY d.VEHICLE_ID, d.DRIVER_ID, f.DRIVER_PROFILE, f.OPERATING_MODE, f.HOME_CITY;
 
 ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY;`
@@ -296,7 +324,7 @@ FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS
 GROUP BY TRIP_DATE;
 
 ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"deploy-route-deviation","version":{"major":1,"minor":0}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS;`

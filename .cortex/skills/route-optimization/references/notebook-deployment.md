@@ -56,7 +56,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
    CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook 
    DIRECTORY = (ENABLE = TRUE) 
    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-route-optimization-demo", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
+   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
    ```
 
 2. Upload notebook files:

@@ -25,7 +25,7 @@ This skill queries `INFORMATION_SCHEMA` and `SHOW` commands to discover all tagg
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | TRACKING_TAG | `sf_sit-is-fleet` | Origin tag to search for in COMMENT fields |
-| SKILL_FILTER | (all) | Optional: filter to a specific skill name (e.g., `oss-deploy-route-deviation`) |
+| SKILL_FILTER | (all) | Optional: filter to a specific skill name (e.g., `oss-oss-route-deviation`) |
 | DRY_RUN | `true` | When true, only generates DROP statements without executing |
 | INCLUDE_DATABASES | `false` | Whether to DROP entire databases (destructive — requires explicit confirmation) |
 
@@ -190,18 +190,18 @@ To clean up objects from a single skill, filter discovery by the skill's trackin
 | Skill | Tracking Name |
 |-------|--------------|
 | build-routing-solution | `oss-build-routing-solution-in-snowflake` |
-| route-optimization | `oss-deploy-route-optimization-demo` |
-| fleet-intelligence-taxis | `oss-deploy-a-fleet-intelligence-solution-for-taxis` |
-| fleet-intelligence-food-delivery | `oss-deploy-a-fleet-intelligence-solution-for-food-delivery` |
-| retail-catchment | `oss-retail-catchment-analysis` |
-| route-deviation | `deploy-route-deviation` |
+| route-optimization | `oss-route-optimization` |
+| fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` |
+| fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` |
+| retail-catchment | `oss-retail-catchment` |
+| route-deviation | `oss-route-deviation` |
 | dwell-analysis | `oss-dwell-analysis` |
 | synthetic-datasets-generator | `synthetic-datasets-genertor` |
 | travel-time-matrix | `oss-travel-time-matrix` |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` |
 
 ```sql
-SET SKILL_FILTER = 'oss-deploy-route-optimization-demo';
+SET SKILL_FILTER = 'oss-route-optimization';
 SELECT * FROM INFORMATION_SCHEMA.TABLES
 WHERE COMMENT LIKE '%' || $SKILL_FILTER || '%';
 ```

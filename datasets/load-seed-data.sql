@@ -25,7 +25,8 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
-  TYPE = PARQUET;
+  TYPE = PARQUET
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- 1. INTRO_TRIPS (Intro page)
