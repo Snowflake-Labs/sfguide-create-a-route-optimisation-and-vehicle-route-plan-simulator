@@ -5,6 +5,7 @@ metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
   category: infrastructure
+  depends_on: []
 ---
 
 # Deploy Route Optimizer
@@ -17,11 +18,11 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 2. Replace `<connection>` with the user's active Snowflake connection name in all commands.
 3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
 4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
-5. Log failures to `logs/` following `logs/README.md` format. Do not create a log file if execution succeeds without issues.
 
 ## Prerequisites
 
 - Container runtime (Podman or Docker) installed and running
+- Node.js >= 20 and npm (required for building ors_control_app)
 - Snowflake CLI (`snow`) installed
 - Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
 - Repository cloned; working directory set to repo root
@@ -46,12 +47,14 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | DATABASE | `OPENROUTESERVICE_SETUP` | Database for ORS infrastructure objects |
-| WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for ORS operations (MEDIUM) |
+| WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for ORS operations |
 | WAREHOUSE_SIZE | `MEDIUM` | Size of the routing warehouse |
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
 | COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
 
 ## Workflow
+
+> **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` -- never `ALTER TABLE ADD COLUMN` or other schema migration statements. Do NOT run `deploy.sh` as part of the fresh install -- it contains migration logic for upgrading pre-existing installations.
 
 ### Step 1: Set Query Tag for Tracking
 
@@ -63,23 +66,25 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Output:** Query tag set for session tracking
 
-### Step 2: Detect Container Runtime
+### Step 2: Detect Container Runtime and Node.js
 
-**Goal:** Identify available container runtime and let user choose
+**Goal:** Identify available container runtime and verify Node.js is installed
 
 **Actions:**
 
-1. **Check** which container runtimes are installed:
+1. **Check** which container runtimes and Node.js are installed:
    ```bash
    podman --version 2>/dev/null && echo "PODMAN_AVAILABLE=true" || echo "PODMAN_AVAILABLE=false"
    docker --version 2>/dev/null && echo "DOCKER_AVAILABLE=true" || echo "DOCKER_AVAILABLE=false"
+   node --version 2>/dev/null && echo "NODE_AVAILABLE=true" || echo "NODE_AVAILABLE=false"
    ```
 
 2. **Based on results:**
-   - If **both** are installed: Ask user which they prefer (Podman or Docker)
+   - If **both** container runtimes are installed: Ask user which they prefer (Podman or Docker)
    - If **only Podman**: Use Podman
    - If **only Docker**: Use Docker
    - If **neither**: Stop and ask user to install one (see check-prerequisites skill)
+   - If **Node.js missing**: Stop and ask user to install Node.js >= 20 (required for ors_control_app build)
 
 3. **Verify** the selected runtime is running:
    - For Podman: `podman info` (if fails: `podman machine start`)
@@ -88,7 +93,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 4. **Set** the container command variable for subsequent steps:
    - `CONTAINER_CMD=podman` or `CONTAINER_CMD=docker`
 
-**Output:** Container runtime selected and verified running
+**Output:** Container runtime selected and verified running, Node.js available
 
 **Next:** Proceed to Step 3
 
@@ -111,11 +116,21 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE
        ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
    CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY COMMENT = '<tag>';
-   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS AUTO_SUSPEND = 60 COMMENT = '<tag>';
+   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = MEDIUM AUTO_SUSPEND = 60 COMMENT = '<tag>';
    ```
    Replace `<tag>` with the full COMMENT JSON shown above.
 
-**Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created
+2. **Verify** infrastructure was created:
+   ```sql
+   SHOW STAGES IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
+   SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
+   SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
+   ```
+   Expected: 3 stages (ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE), 1 image repository (IMAGE_REPOSITORY), 1 warehouse (ROUTING_ANALYTICS).
+
+   **If any object is missing:** Check that the role has the required privileges from the Required Privileges section above.
+
+**Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created and verified
 
 **Next:** Proceed to Step 4
 
@@ -149,11 +164,13 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 1. Authenticate with SPCS image registry (Docker or Podman)
 2. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
-3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v0.9.6), vroom-docker (v1.0.1), ors_control_app (v1.0.28)
+3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v1.0.0), vroom-docker (v1.0.1), ors_control_app (v1.0.87)
 
 **Expected Duration:** 5-10 minutes
 
-**If error occurs:** See `references/build-images.md` Common Errors section or `references/troubleshooting.md`.
+**If authentication fails:** Run `snow spcs image-registry login -c <connection>`. For Podman, see `references/troubleshooting.md` > "Podman Registry Auth".
+
+**If ARM Mac esbuild crash:** Build React app locally first, use `Dockerfile.runtime`. See `references/build-images.md` > ors_control_app section.
 
 **Next:** Proceed to Step 5b
 
@@ -214,12 +231,15 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    GRANT USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT CREATE TABLE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
    GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT CREATE TABLE ON SCHEMA FLEET_INTELLIGENCE.CORE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA FLEET_INTELLIGENCE.CORE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    GRANT SELECT ON ALL VIEWS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT SELECT ON FUTURE VIEWS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    ```
    This creates the databases/schemas and grants the app full access to write generated fleet telemetry data.
    The `deploy.sh` scripts also run these grants automatically on each deploy.
@@ -229,10 +249,13 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    cd native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
-5. **Verify** deployment output includes:
-   - Application package created: `OPENROUTESERVICE_NATIVE_APP_PKG`
-   - Application created: `OPENROUTESERVICE_NATIVE_APP`
-   - Snowsight URL provided
+5. **Verify** deployment:
+   ```sql
+   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+   Expected: 5 services listed. They may take 1-3 minutes to reach RUNNING status. Check again if status shows PENDING.
+
+   **If 0 services appear:** The grant_callback may not have fired. See Step 7 SQL Fallback.
 
 **Output:** Native app deployed and accessible via Snowsight URL
 
@@ -257,6 +280,16 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **IMPORTANT:** Do NOT mark this skill as complete until the user confirms all the above steps are done.
 
+**SQL Fallback (if Snowsight activation was skipped or services are not running):**
+```sql
+SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+-- If 0 services, the grant_callback may not have fired. Run manually:
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.GRANT_CALLBACK(ARRAY_CONSTRUCT('CREATE COMPUTE POOL'));
+-- Wait 2-3 minutes, then verify:
+SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE');
+SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP');
+```
+
 **Output:** User confirmation received that app is fully operational
 
 ### Step 8: Load Seed Datasets
@@ -265,19 +298,25 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Actions:**
 
-1. **Upload Parquet files to stage:**
+1. **Create the seed data stage** (not created in Step 3):
+   ```sql
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   ```
+
+2. **Upload Parquet files to stage:**
    ```bash
    snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite
    snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive
    snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite
    ```
 
-2. **Run the loader script:**
+3. **Run the loader script:**
    ```bash
    snow sql -f datasets/load-seed-data.sql -c <connection>
    ```
 
-3. **Verify** the data loaded:
+4. **Verify** the data loaded:
    ```sql
    SELECT 'INTRO_TRIPS' AS TBL, COUNT(*) AS CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS
    UNION ALL SELECT 'TELEMETRY', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
@@ -292,11 +331,54 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job
 
+### Step 9: Select and Deploy Demos (Optional)
+
+**Goal:** Ask the user which demo skills to deploy on top of the base ORS installation
+
+**Actions:**
+
+1. **Present the available demos** and ask the user to select which ones to deploy:
+
+   | Demo | Description | Time | Prerequisites |
+   |------|-------------|------|---------------|
+   | **Fleet Intelligence: Food Delivery** | E-bike courier fleet with projection views from seed data | ~2 min | Seed data (Step 8) |
+   | **Route Deviation** | Detour detection ETL comparing actual vs planned routes | ~5 min | Seed data (Step 8) |
+   | **Dwell Analysis** | 12-step Dynamic Table pipeline for dwell/congestion/SLA alerts | ~10 min | Seed data (Step 8) |
+   | **Fleet Intelligence: Taxis** | Taxi GPS telemetry with Overture Maps POIs + driver routes | ~5 min | Overture Maps Marketplace share |
+   | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps Marketplace share |
+   | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps + Cortex AI access |
+   | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
+   | **Travel Time Matrix** | H3-based travel time matrices at scale (advanced) | 5 min - 34 hrs | Scaled compute pool |
+
+   **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
+   These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
+
+2. **Deploy selected demos in dependency order:**
+   - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
+   - **Then:** Route Deviation (needs SYNTHETIC_DATASETS data)
+   - **Then:** Dwell Analysis (needs SYNTHETIC_DATASETS data)
+   - **Last:** Travel Time Matrix (longest running, can run in background)
+
+3. **For each selected demo**, invoke the corresponding skill:
+   - Fleet Intelligence: Food Delivery -> Read and follow `.cortex/skills/fleet-intelligence-food-delivery/SKILL.md`
+   - Fleet Intelligence: Taxis -> Read and follow `.cortex/skills/fleet-intelligence-taxis/SKILL.md`
+   - Route Deviation -> Read and follow `.cortex/skills/route-deviation/SKILL.md`
+   - Dwell Analysis -> Read and follow `.cortex/skills/dwell-analysis/SKILL.md`
+   - Retail Catchment -> Read and follow `.cortex/skills/retail-catchment/SKILL.md`
+   - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
+   - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
+   - Travel Time Matrix -> Read and follow `.cortex/skills/travel-time-matrix/SKILL.md`
+
+4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
+
+**Output:** Selected demos deployed and verified in the ORS Control App
+
 ## Stopping Points
 
 - Step 2: After detecting container runtime — confirm user's choice if both available
 - Step 5: After starting container build — monitor for authentication errors
 - Step 6: After deployment — verify application created successfully
+- Step 9: After presenting demo list — wait for user selection before deploying
 
 ## Troubleshooting
 
@@ -316,29 +398,32 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
 - Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs)
+- Optional: User-selected demo skills deployed on top of the base installation
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
 See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
 
-Access via: Snowsight → Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It may take a minute or two.
+Access via: Snowsight -> Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It may take a minute or two.
 
 ## Examples
 
-### Example 1: Fresh deployment
+### Example 1: Fresh deployment with demos
 User says: "Set up the OpenRouteService native app from scratch"
 Actions:
-1. Detect container runtime (Step 2)
+1. Detect container runtime and Node.js (Step 2)
 2. Create database and stages (Step 3)
 3. Upload config files (Step 4)
 4. Build and push all 5 images (Step 5)
 5. Deploy native app (Step 6)
 6. Guide user through Snowsight activation (Step 7)
-Result: Fully operational ORS app with San Francisco routing
+7. Load seed datasets (Step 8)
+8. Ask user which demos to deploy, deploy selected (Step 9)
+Result: Fully operational ORS app with San Francisco routing and user-selected demos
 
 ### Example 2: Rebuild control app only
 User says: "Update the control app to latest version"
-Actions: Run `cd native_app/services/ors_control_app && ./deploy.sh <connection> v1.0.28`
+Actions: Run `cd native_app/services/ors_control_app && ./deploy.sh -c <connection>`
 Result: Control app image rebuilt and deployed, app upgraded
 
 ### Example 3: Update stored procedures only
@@ -347,6 +432,8 @@ Actions: PUT to stage ROOT and upgrade (see Partial Deploys below)
 Result: Stored procedures updated without container rebuild
 
 ## Partial Deploys
+
+> **Migration note:** The `deploy.sh` scripts below contain migration logic (`ALTER TABLE ADD COLUMN IF NOT EXISTS JOB_ID`) for upgrading pre-existing installations where tables may lack newer columns. This is NOT needed for fresh installs -- `load-seed-data.sql` already creates all tables with complete schemas.
 
 ### Control App Only (Fast Deploy)
 
@@ -378,10 +465,13 @@ DROP APPLICATION IF EXISTS OPENROUTESERVICE_NATIVE_APP CASCADE;
 DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_NATIVE_APP_PKG;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE;
 DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE;
 DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE;
 DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE;
 DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
+DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
+DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

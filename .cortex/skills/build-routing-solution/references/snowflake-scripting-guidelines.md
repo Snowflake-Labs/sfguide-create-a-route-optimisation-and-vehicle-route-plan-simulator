@@ -142,6 +142,8 @@ DROP PROCEDURE OPENROUTESERVICE_SETUP.PUBLIC.TEST_MY_PATTERN();
 
 ## 5. Table Schema Checklist
 
+> **Note:** This pattern applies only when evolving an already-deployed schema (partial deploys, upgrades). The fresh install workflow in SKILL.md creates all tables from scratch with complete schemas -- do not add ALTER TABLE ADD COLUMN statements to the fresh install steps.
+
 When adding a new column to a table (e.g., `MATRIX_BUILD_JOBS`):
 1. Add the column to the `CREATE TABLE IF NOT EXISTS` DDL in `setup_script.sql`
 2. Also run `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on the live table (CREATE TABLE IF NOT EXISTS won't modify an existing table)

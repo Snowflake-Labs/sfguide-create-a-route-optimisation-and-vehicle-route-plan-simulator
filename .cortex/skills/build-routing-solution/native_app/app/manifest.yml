@@ -11,10 +11,9 @@ artifacts:
     images:
       - /openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0
       - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
-      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v0.9.6
+      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v1.0.0
       - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
-      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.70
-      - /openrouteservice_setup/public/image_repository/demo-dashboard:v1.0.25
+      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.87
   default_web_endpoint:
     service: core.ors_control_app
     endpoint: ors-control-ui

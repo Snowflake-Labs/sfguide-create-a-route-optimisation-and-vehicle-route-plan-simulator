@@ -2,6 +2,8 @@
 
 Authenticate, build, and push all 5 container images to the Snowflake SPCS image repository.
 
+All paths below are relative to the skill directory (`.cortex/skills/build-routing-solution/`). Each build command uses `-f` and a build context path so no `cd` commands are needed.
+
 ## 1. Authenticate with SPCS Image Registry
 
 **Docker:**
@@ -24,53 +26,48 @@ echo $REPO_URL
 
 ## 3. Build and Push Images
 
-Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workflow.
+Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workflow. All commands run from the skill directory without changing directories.
 
 ```bash
 # openrouteservice image
-cd native_app/services/openrouteservice
-$CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/openrouteservice:v9.0.0 .
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -t $REPO_URL/openrouteservice:v9.0.0 \
+  native_app/services/openrouteservice
 $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
 
 # downloader image
-cd ../downloader
-$CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/downloader:v0.0.3 .
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -t $REPO_URL/downloader:v0.0.3 \
+  native_app/services/downloader
 $CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
 
 # gateway image (gunicorn, ThreadPoolExecutor concurrency)
-cd ../gateway
-$CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/routing_reverse_proxy:v0.9.6 .
-$CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v0.9.6
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -t $REPO_URL/routing_reverse_proxy:v1.0.0 \
+  native_app/services/gateway
+$CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v1.0.0
 
 # vroom image
-cd ../vroom
-$CONTAINER_CMD build --rm --platform linux/amd64 -t $REPO_URL/vroom-docker:v1.0.1 .
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -t $REPO_URL/vroom-docker:v1.0.1 \
+  native_app/services/vroom
 $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
 
 # ors control app (React management UI)
-cd ../ors_control_app
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
-# Build locally first, then use a runtime-only Dockerfile:
+# Build the React app and server locally first, then use the runtime-only Dockerfile:
+cd native_app/services/ors_control_app
 npm ci && npm run build && npm run build:server
-cat > Dockerfile.runtime <<'RTEOF'
-FROM node:20-alpine
-WORKDIR /app
-COPY dist ./dist
-COPY dist-server ./dist-server
-COPY package.json ./
-COPY package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
-EXPOSE 3001
-CMD ["node", "dist-server/index.js"]
-RTEOF
-mv .dockerignore .dockerignore.bak 2>/dev/null
-$CONTAINER_CMD build --rm --platform linux/amd64 -f Dockerfile.runtime -t $REPO_URL/ors_control_app:v1.0.28 .
-mv .dockerignore.bak .dockerignore 2>/dev/null; rm -f Dockerfile.runtime
-$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.28
-
-# return to working directory
+mv .dockerignore .dockerignore.bak 2>/dev/null || true
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -f Dockerfile.runtime \
+  -t $REPO_URL/ors_control_app:v1.0.87 .
+mv .dockerignore.bak .dockerignore 2>/dev/null || true
+$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.87
 cd ../../..
 ```
+
+**Note:** The ors_control_app build requires `cd` because `npm ci` must run in the package directory and `.dockerignore` must be renamed in place. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
 
 ## Image Inventory
 
@@ -78,9 +75,9 @@ cd ../../..
 |---------|-------|-----|
 | OpenRouteService | openrouteservice | v9.0.0 |
 | Downloader | downloader | v0.0.3 |
-| Gateway | routing_reverse_proxy | v0.9.6 |
+| Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.28 |
+| Control App | ors_control_app | v1.0.87 |
 
 ## Expected Duration
 
