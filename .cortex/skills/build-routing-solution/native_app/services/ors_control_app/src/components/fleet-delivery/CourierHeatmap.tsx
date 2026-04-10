@@ -21,7 +21,7 @@ export default function CourierHeatmap() {
     setLoading(true);
     const hourFilter = hour >= 0 ? `AND HOUR(TS) = ${hour}` : '';
     sfQuery(
-      `SELECT H3_POINT_TO_CELL_STRING(ST_MAKEPOINT(LONGITUDE, LATITUDE), ${h3Res}) AS H3_INDEX,
+      `SELECT H3_POINT_TO_CELL_STRING(POINT_GEOM, ${h3Res}) AS H3_INDEX,
               COUNT(*) AS PING_COUNT,
               ROUND(AVG(SPEED_KMH), 1) AS AVG_SPEED
        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY

@@ -124,7 +124,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY (
       TELEMETRY_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       VEHICLE_ID VARCHAR, TRIP_ID VARCHAR,
-      TS TIMESTAMP_NTZ, LATITUDE FLOAT, LONGITUDE FLOAT,
+      TS TIMESTAMP_NTZ, LATITUDE FLOAT, LONGITUDE FLOAT, POINT_GEOM GEOGRAPHY,
       SPEED_KMH FLOAT, HEADING_DEG FLOAT, POSTED_SPEED_KMH FLOAT,
       STATUS VARCHAR(30), IS_SPEEDING BOOLEAN, IS_HOS_VIOLATION BOOLEAN, IS_DETOUR BOOLEAN,
       GPS_ACCURACY_M FLOAT, LOCATION_ID VARCHAR, LOCATION_TYPE VARCHAR(30),
@@ -135,8 +135,8 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR,
       VEHICLE_TYPE VARCHAR(20), REGION VARCHAR(100),
       ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR,
-      ORIGIN_LAT FLOAT, ORIGIN_LON FLOAT,
-      DESTINATION_LAT FLOAT, DESTINATION_LON FLOAT,
+      ORIGIN_LAT FLOAT, ORIGIN_LON FLOAT, ORIGIN GEOGRAPHY,
+      DESTINATION_LAT FLOAT, DESTINATION_LON FLOAT, DESTINATION GEOGRAPHY,
       ROUTE_GEOG GEOGRAPHY, DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT,
       PLANNED_ROUTE_GEOG GEOGRAPHY, PLANNED_DISTANCE_KM FLOAT,
       IS_DETOUR BOOLEAN, DETOUR_DISTANCE_KM FLOAT,
@@ -197,13 +197,20 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
     }
   }
 
-  const migrationTables = [
-    'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE',
+  const migrationColumns: { table: string; col: string; type: string }[] = [
+    { table: 'FACT_VEHICLE_TELEMETRY', col: 'JOB_ID', type: 'VARCHAR' },
+    { table: 'FACT_VEHICLE_TELEMETRY', col: 'POINT_GEOM', type: 'GEOGRAPHY' },
+    { table: 'FACT_TRIPS', col: 'JOB_ID', type: 'VARCHAR' },
+    { table: 'FACT_TRIPS', col: 'ORIGIN', type: 'GEOGRAPHY' },
+    { table: 'FACT_TRIPS', col: 'DESTINATION', type: 'GEOGRAPHY' },
+    { table: 'DIM_FLEET', col: 'JOB_ID', type: 'VARCHAR' },
+    { table: 'DIM_POIS', col: 'JOB_ID', type: 'VARCHAR' },
+    { table: 'DIM_TRIP_SCHEDULE', col: 'JOB_ID', type: 'VARCHAR' },
   ];
-  for (const tbl of migrationTables) {
+  for (const { table, col, type } of migrationColumns) {
     try {
       await snowSql(
-        `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.${tbl} ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+        `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.${table} ADD COLUMN IF NOT EXISTS ${col} ${type}`,
         UNIFIED_DB, UNIFIED_SCHEMA
       );
     } catch (_) { /* best-effort: column may already exist */ }
@@ -216,22 +223,23 @@ async function insertTelemetryBatch(points: TelemetryPoint[], snowSql: SnowSqlFn
   let inserted = 0;
   for (let i = 0; i < points.length; i += batchSize) {
     const chunk = points.slice(i, i + batchSize);
-    const values = chunk.map(p =>
-      `(${escVal(p.telemetry_id)},${escVal(p.region)},${escVal(p.vehicle_type)},` +
+    const selects = chunk.map(p =>
+      `SELECT ${escVal(p.telemetry_id)},${escVal(p.region)},${escVal(p.vehicle_type)},` +
       `${escVal(p.vehicle_id)},${escVal(p.trip_id)},` +
-      `${escVal(p.ts)},${p.latitude},${p.longitude},${p.speed_kmh},${p.heading_deg},` +
+      `${escVal(p.ts)},${p.latitude},${p.longitude},ST_MAKEPOINT(${p.longitude},${p.latitude}),` +
+      `${p.speed_kmh},${p.heading_deg},` +
       `${p.posted_speed_kmh},${escVal(p.status)},${escVal(p.is_speeding)},${escVal(p.is_hos_violation)},` +
       `${escVal(p.is_detour)},${p.gps_accuracy_m},${escVal(p.location_id)},${escVal(p.location_type)},` +
       `${escVal(p.ors_profile)},${p.battery_pct !== null ? p.battery_pct : 'NULL'},` +
       `${p.odometer_km !== null ? p.odometer_km : 'NULL'},${p.point_index !== null ? p.point_index : 'NULL'},` +
-      `${escVal(jobId)})`
-    ).join(',\n');
+      `${escVal(jobId)}`
+    ).join(' UNION ALL\n');
 
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_VEHICLE_TELEMETRY
-      (TELEMETRY_ID,REGION,VEHICLE_TYPE,VEHICLE_ID,TRIP_ID,TS,LATITUDE,LONGITUDE,SPEED_KMH,HEADING_DEG,
+      (TELEMETRY_ID,REGION,VEHICLE_TYPE,VEHICLE_ID,TRIP_ID,TS,LATITUDE,LONGITUDE,POINT_GEOM,SPEED_KMH,HEADING_DEG,
        POSTED_SPEED_KMH,STATUS,IS_SPEEDING,IS_HOS_VIOLATION,IS_DETOUR,GPS_ACCURACY_M,
        LOCATION_ID,LOCATION_TYPE,ORS_PROFILE,BATTERY_PCT,ODOMETER_KM,POINT_INDEX,JOB_ID)
-      VALUES ${values}`;
+      ${selects}`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
@@ -260,7 +268,8 @@ async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, jobId: s
       return `SELECT ${escVal(t.trip_id)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
         `${escVal(t.vehicle_type)},${escVal(t.region)},` +
         `${escVal(t.origin_poi_id)},${escVal(t.destination_poi_id)},` +
-        `${t.origin_lat},${t.origin_lon},${t.destination_lat},${t.destination_lon},` +
+        `${t.origin_lat},${t.origin_lon},ST_MAKEPOINT(${t.origin_lon},${t.origin_lat}),` +
+        `${t.destination_lat},${t.destination_lon},ST_MAKEPOINT(${t.destination_lon},${t.destination_lat}),` +
         `${routeGeo},${t.distance_km},${t.duration_minutes},` +
         `${plannedGeo},${t.planned_distance_km !== null ? t.planned_distance_km : 'NULL'},` +
         `${escVal(t.is_detour)},${t.detour_distance_km !== null ? t.detour_distance_km : 'NULL'},` +
@@ -270,7 +279,8 @@ async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, jobId: s
 
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_TRIPS
       (TRIP_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
-       ORIGIN_POI_ID,DESTINATION_POI_ID,ORIGIN_LAT,ORIGIN_LON,DESTINATION_LAT,DESTINATION_LON,
+       ORIGIN_POI_ID,DESTINATION_POI_ID,ORIGIN_LAT,ORIGIN_LON,ORIGIN,
+       DESTINATION_LAT,DESTINATION_LON,DESTINATION,
        ROUTE_GEOG,DISTANCE_KM,DURATION_MINUTES,
        PLANNED_ROUTE_GEOG,PLANNED_DISTANCE_KM,
        IS_DETOUR,DETOUR_DISTANCE_KM,TRIP_START,TRIP_END,STATUS,ORS_PROFILE,JOB_ID)

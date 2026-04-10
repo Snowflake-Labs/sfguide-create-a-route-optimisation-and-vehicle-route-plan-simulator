@@ -214,6 +214,54 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 - **ORS Control App deployment**: Rebuild Docker image → push to registry → update service YAML version → `deploy.sh`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 
+## Geospatial Conventions
+
+### GEOGRAPHY-First Schema Design
+- Store point locations as `GEOGRAPHY` columns (not separate FLOAT lat/lon).
+- Construct via `ST_MAKEPOINT(longitude, latitude)` — note: **longitude first**.
+- Line/polygon geometries: use `TO_GEOGRAPHY('LINESTRING(lon lat, ...)')` or `ST_MAKELINE`.
+- Keep redundant FLOAT lat/lon only when required (CLUSTER BY, ORS ARRAY_CONSTRUCT API args, bounding-box configs).
+
+### Preferred Functions
+| Instead of | Use |
+|---|---|
+| `H3_LATLNG_TO_CELL(lat, lon, res)` | `H3_POINT_TO_CELL_STRING(geography, res)` |
+| `HAVERSINE(lat1, lon1, lat2, lon2)` (returns km) | `ST_DISTANCE(geog_a, geog_b) / 1000` (meters→km) |
+| `ST_DISTANCE` + filter | `ST_DWITHIN(geog_a, geog_b, meters)` (uses spatial index) |
+| Separate FLOAT lat/lon in WHERE | `ST_WITHIN`, `ST_INTERSECTS`, `ST_CONTAINS` |
+
+### H3 Index Storage
+- Always store H3 indices as `VARCHAR` (string format, e.g. `'8928308280fffff'`).
+- Use `H3_POINT_TO_CELL_STRING` (returns VARCHAR directly) — not `H3_LATLNG_TO_CELL` which returns NUMBER.
+- Never cast H3 between NUMBER and STRING at query time — store as string from the start.
+
+### Loading GEOGRAPHY Data
+- **COPY INTO with transform**: use `ST_MAKEPOINT($col_lon, $col_lat)` or `TO_GEOGRAPHY($col_wkb)` in the SELECT.
+- **INSERT via SELECT…UNION ALL**: compute `ST_MAKEPOINT(lon, lat)` inline (VALUES clauses cannot contain function calls).
+- `MATCH_BY_COLUMN_NAME` cannot be used when adding computed columns — switch to explicit transform SELECT.
+
+### Direct GEOGRAPHY Column References
+All tables are created with GEOGRAPHY columns from the start. Reference them directly:
+```sql
+t.POINT_GEOM    -- telemetry point
+t.ORIGIN        -- trip origin
+t.DESTINATION   -- trip destination
+```
+
+### deck.gl Layer Selection
+| Layer | Data format | Extraction |
+|---|---|---|
+| `ScatterplotLayer` | `[lng, lat]` array | `ST_X(geog)` / `ST_Y(geog)` in SQL |
+| `H3HexagonLayer` | H3 string index | `H3_POINT_TO_CELL_STRING(geog, res)` in SQL |
+| `GeoJsonLayer` | GeoJSON string | `ST_ASGEOJSON(geog)::STRING` in SQL |
+| `PathLayer` | coordinate array | `ST_ASGEOJSON(geog)` → parse coords client-side |
+
+### When FLOAT lat/lon is Acceptable
+- ORS function arguments (`ARRAY_CONSTRUCT` of numeric coords for DIRECTIONS/MATRIX)
+- Bounding-box configs (REGION_REGISTRY, city provisioner)
+- `CLUSTER BY` expressions (GEOGRAPHY not supported in CLUSTER BY)
+- Direct deck.gl `getPosition` callbacks expecting `[Number, Number]`
+
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
