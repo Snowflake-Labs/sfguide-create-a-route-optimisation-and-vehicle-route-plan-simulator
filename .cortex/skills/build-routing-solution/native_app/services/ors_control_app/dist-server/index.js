@@ -117,8 +117,8 @@ function snowSqlLocal(sql, database, schema) {
 }
 async function snowSqlSpcs(sql, database, schema, timeoutSecs = 600) {
     const token = getSpcsToken();
-    const taggedSql = `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'; ${sql}`;
-    const body = { statement: taggedSql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { MULTI_STATEMENT_COUNT: '0' } };
+    const QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG } };
     const headers = {
         'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
         'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',

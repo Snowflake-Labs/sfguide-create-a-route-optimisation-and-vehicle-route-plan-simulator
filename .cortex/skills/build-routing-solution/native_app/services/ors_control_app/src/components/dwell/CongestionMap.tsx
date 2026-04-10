@@ -9,7 +9,7 @@ const COLOR_RANGE: [number, number, number][] = [
 ];
 
 export default function CongestionMap() {
-  const [hour, setHour] = useState(12);
+  const [hour, setHour] = useState(19);
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 45, bearing: 0 });

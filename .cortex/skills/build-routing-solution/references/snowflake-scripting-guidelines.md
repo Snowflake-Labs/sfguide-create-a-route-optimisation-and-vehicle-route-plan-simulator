@@ -142,13 +142,12 @@ DROP PROCEDURE OPENROUTESERVICE_SETUP.PUBLIC.TEST_MY_PATTERN();
 
 ## 5. Table Schema Checklist
 
-> **Note:** This pattern applies only when evolving an already-deployed schema (partial deploys, upgrades). The fresh install workflow in SKILL.md creates all tables from scratch with complete schemas -- do not add ALTER TABLE ADD COLUMN statements to the fresh install steps.
+All tables are created with complete schemas from the start via `CREATE OR REPLACE TABLE` or `CREATE TABLE IF NOT EXISTS`. Define all columns (including JOB_ID, GEOGRAPHY columns, etc.) in the initial DDL. Do not use `ALTER TABLE ADD COLUMN` as a migration step -- assume a clean install.
 
-When adding a new column to a table (e.g., `MATRIX_BUILD_JOBS`):
-1. Add the column to the `CREATE TABLE IF NOT EXISTS` DDL in `setup_script.sql`
-2. Also run `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on the live table (CREATE TABLE IF NOT EXISTS won't modify an existing table)
-3. Update every procedure that reads/writes to the table to use the new column
-4. Sandbox-test the procedure against the live table with the new column
+When adding a new column to a table:
+1. Add the column to the `CREATE TABLE` DDL in the relevant SQL file (e.g., `load-seed-data.sql`, `ensureTables()` in `jobs.ts`)
+2. Update every procedure that reads/writes to the table to use the new column
+3. Sandbox-test the procedure against the live table with the new column
 
 ## 6. EXECUTE IMMEDIATE Patterns
 
@@ -182,7 +181,7 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 | PUT to wrong stage path | Upgrades don't apply changes | PUT to stage ROOT, not `app/` |
 | Computed expression in DML SET | "invalid identifier" | Pre-compute with LET, then use `:var` |
 | Direct procedure CREATE in app DB | GRANT fails "Insufficient privileges" | Only create via setup_script + upgrade |
-| Missing column in existing table | "invalid identifier 'COL'" | ALTER TABLE ADD COLUMN on live table |
+| Missing column in existing table | "invalid identifier 'COL'" | Add column to CREATE TABLE DDL and re-run (CREATE OR REPLACE) |
 | Bare variable in static DML | "invalid identifier" | Add `:` prefix |
 | Colon in assignment | Syntax error | Remove `:` — assignments use bare variables |
 | City ORS service auto-suspends mid-build | 500 Internal Server Error from MATRIX_TABULAR | Wrapper now suspends then resumes the city service before building to reset the auto-suspend timer. Traffic via gateway does NOT count as direct service activity for SPCS auto-suspend. |
@@ -303,7 +302,7 @@ Run through this checklist before and after every `ALTER APPLICATION UPGRADE`.
 - [ ] No stale `@STAGE/app/setup_script.sql` on stage (remove if present)
 - [ ] `manifest.yml` image tags match the actually pushed image tags
 - [ ] Service YAML image tags match the actually pushed image tags
-- [ ] Any new table columns added via `ALTER TABLE ADD COLUMN` on the live table (Section 5)
+- [ ] Any new table columns included in the CREATE TABLE DDL (Section 5)
 
 ### After deploying
 

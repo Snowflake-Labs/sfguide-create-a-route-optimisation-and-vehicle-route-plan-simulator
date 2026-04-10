@@ -54,7 +54,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 ## Workflow
 
-> **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` -- never `ALTER TABLE ADD COLUMN` or other schema migration statements. Do NOT run `deploy.sh` as part of the fresh install -- it contains migration logic for upgrading pre-existing installations.
+> **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` with complete schemas from the start. All columns (JOB_ID, GEOGRAPHY, etc.) are defined in the initial CREATE TABLE statements -- no ALTER TABLE migration steps are needed.
 
 ### Step 1: Set Query Tag for Tracking
 
@@ -432,8 +432,6 @@ Actions: PUT to stage ROOT and upgrade (see Partial Deploys below)
 Result: Stored procedures updated without container rebuild
 
 ## Partial Deploys
-
-> **Migration note:** The `deploy.sh` scripts below contain migration logic (`ALTER TABLE ADD COLUMN IF NOT EXISTS JOB_ID`) for upgrading pre-existing installations where tables may lack newer columns. This is NOT needed for fresh installs -- `load-seed-data.sql` already creates all tables with complete schemas.
 
 ### Control App Only (Fast Deploy)
 

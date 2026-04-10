@@ -177,22 +177,6 @@ async function ensureTables(snowSql) {
             throw new Error(msg);
         }
     }
-    const migrationColumns = [
-        { table: 'FACT_VEHICLE_TELEMETRY', col: 'JOB_ID', type: 'VARCHAR' },
-        { table: 'FACT_VEHICLE_TELEMETRY', col: 'POINT_GEOM', type: 'GEOGRAPHY' },
-        { table: 'FACT_TRIPS', col: 'JOB_ID', type: 'VARCHAR' },
-        { table: 'FACT_TRIPS', col: 'ORIGIN', type: 'GEOGRAPHY' },
-        { table: 'FACT_TRIPS', col: 'DESTINATION', type: 'GEOGRAPHY' },
-        { table: 'DIM_FLEET', col: 'JOB_ID', type: 'VARCHAR' },
-        { table: 'DIM_POIS', col: 'JOB_ID', type: 'VARCHAR' },
-        { table: 'DIM_TRIP_SCHEDULE', col: 'JOB_ID', type: 'VARCHAR' },
-    ];
-    for (const { table, col, type } of migrationColumns) {
-        try {
-            await snowSql(`ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.${table} ADD COLUMN IF NOT EXISTS ${col} ${type}`, UNIFIED_DB, UNIFIED_SCHEMA);
-        }
-        catch (_) { /* best-effort: column may already exist */ }
-    }
 }
 async function insertTelemetryBatch(points, snowSql, jobId) {
     if (points.length === 0)

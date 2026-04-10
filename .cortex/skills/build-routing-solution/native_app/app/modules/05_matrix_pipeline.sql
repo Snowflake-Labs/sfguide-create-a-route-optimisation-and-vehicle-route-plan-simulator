@@ -44,12 +44,12 @@ BEGIN
     raw_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_RAW_' || P_RES;
     matrix_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || list_table || ' (H3_INDEX VARCHAR, CENTER_LAT FLOAT, CENTER_LON FLOAT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || list_table || ' (H3_INDEX VARCHAR, CENTER_POINT GEOGRAPHY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
     EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT TRUNCATE ON TABLE ' || list_table || ' TO APPLICATION ROLE app_user';
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || wq_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_LON FLOAT, ORIGIN_LAT FLOAT, DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || wq_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, ORIGIN_POINT GEOGRAPHY, DEST_COORDS ARRAY, DEST_HEX_IDS ARRAY) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
     EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT TRUNCATE ON TABLE ' || wq_table || ' TO APPLICATION ROLE app_user';
@@ -106,11 +106,10 @@ BEGIN
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
     EXECUTE IMMEDIATE '
-    INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_LAT, CENTER_LON)
+    INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
     SELECT
         h.VALUE::VARCHAR AS h3_index,
-        ST_Y(H3_CELL_TO_POINT(h.VALUE::VARCHAR)) AS center_lat,
-        ST_X(H3_CELL_TO_POINT(h.VALUE::VARCHAR)) AS center_lon
+        H3_CELL_TO_POINT(h.VALUE::VARCHAR) AS center_point
     FROM TABLE(FLATTEN(
         H3_POLYGON_TO_CELLS_STRINGS(
             TO_GEOGRAPHY(''POLYGON((' ||
@@ -155,15 +154,13 @@ BEGIN
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || queue_table;
 
     EXECUTE IMMEDIATE '
-    INSERT INTO ' || queue_table || ' (SEQ_ID, ORIGIN_H3, ORIGIN_LON, ORIGIN_LAT, DEST_COORDS, DEST_HEX_IDS)
+    INSERT INTO ' || queue_table || ' (SEQ_ID, ORIGIN_H3, ORIGIN_POINT, DEST_COORDS, DEST_HEX_IDS)
     WITH numbered_pairs AS (
         SELECT
             a.H3_INDEX AS origin_h3,
-            a.CENTER_LON AS origin_lon,
-            a.CENTER_LAT AS origin_lat,
+            a.CENTER_POINT AS origin_point,
             b.H3_INDEX AS dest_h3,
-            b.CENTER_LON AS dest_lon,
-            b.CENTER_LAT AS dest_lat,
+            b.CENTER_POINT AS dest_point,
             ROW_NUMBER() OVER (PARTITION BY a.H3_INDEX ORDER BY b.H3_INDEX) AS dest_seq
         FROM ' || hex_table || ' a
         CROSS JOIN ' || hex_table || ' b
@@ -171,16 +168,16 @@ BEGIN
     ),
     chunked AS (
         SELECT
-            origin_h3, origin_lon, origin_lat,
+            origin_h3, origin_point,
             FLOOR((dest_seq - 1) / 1000) AS chunk_idx,
-            ARRAY_AGG(ARRAY_CONSTRUCT(dest_lon, dest_lat)) AS dest_coords,
+            ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(dest_point), ST_Y(dest_point))) AS dest_coords,
             ARRAY_AGG(dest_h3) AS dest_hex_ids
         FROM numbered_pairs
-        GROUP BY origin_h3, origin_lon, origin_lat, chunk_idx
+        GROUP BY origin_h3, origin_point, chunk_idx
     )
     SELECT
         ROW_NUMBER() OVER (ORDER BY origin_h3, chunk_idx) AS seq_id,
-        origin_h3, origin_lon, origin_lat,
+        origin_h3, origin_point,
         dest_coords, dest_hex_ids
     FROM chunked';
 
@@ -252,7 +249,7 @@ BEGIN
             q.DEST_HEX_IDS,
             core.MATRIX_TABULAR(
                 ''' || P_PROFILE || ''',
-                ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT),
+                ARRAY_CONSTRUCT(ST_X(q.ORIGIN_POINT), ST_Y(q.ORIGIN_POINT)),
                 q.DEST_COORDS
             )
         FROM ' || queue_table || ' q
@@ -339,9 +336,9 @@ BEGIN
     END IF;
 
     IF (NOT is_default) THEN
-        matrix_call := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+        matrix_call := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(ST_X(q.ORIGIN_POINT), ST_Y(q.ORIGIN_POINT)), q.DEST_COORDS)';
     ELSE
-        matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+        matrix_call := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(ST_X(q.ORIGIN_POINT), ST_Y(q.ORIGIN_POINT)), q.DEST_COORDS)';
     END IF;
 
     batch_size := 100;
@@ -879,9 +876,9 @@ BEGIN
             IF (sw_min IS NOT NULL) THEN
                 LET matrix_call_w VARCHAR;
                 IF (NOT is_default) THEN
-                    matrix_call_w := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+                    matrix_call_w := P_MATRIX_FN || '(''' || P_REGION || ''', ''' || P_PROFILE || ''', ARRAY_CONSTRUCT(ST_X(q.ORIGIN_POINT), ST_Y(q.ORIGIN_POINT)), q.DEST_COORDS)';
                 ELSE
-                    matrix_call_w := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(q.ORIGIN_LON, q.ORIGIN_LAT), q.DEST_COORDS)';
+                    matrix_call_w := P_MATRIX_FN || '(''' || P_PROFILE || ''', ARRAY_CONSTRUCT(ST_X(q.ORIGIN_POINT), ST_Y(q.ORIGIN_POINT)), q.DEST_COORDS)';
                 END IF;
 
                 LET swpos INTEGER := sw_min;
