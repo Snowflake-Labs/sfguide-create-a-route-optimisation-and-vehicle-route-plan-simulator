@@ -71,6 +71,9 @@ BEGIN
       MAX_BATCH_ROWS = 100
       AS '/matrix';
 
+   -- NOTE: Service functions (SERVICE=...) do not support ALTER FUNCTION SET COMMENT.
+   -- They are tracked via the parent procedure's COMMENT and the session query_tag.
+
    -- ===== PUBLIC TABLE FUNCTIONS (granted to app_user) =====
    -- These wrap _RAW internals and parse GEOGRAPHY columns.
    -- Region uses DEFAULT NULL so callers can omit it for default routing.
@@ -86,6 +89,7 @@ BEGIN
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
          FROM (SELECT core._DIRECTIONS_TABULAR_RAW(method, jstart, jend, region) AS resp)';
    GRANT USAGE ON FUNCTION core.DIRECTIONS(VARCHAR, ARRAY, ARRAY, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.DIRECTIONS(VARCHAR, ARRAY, ARRAY, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- DIRECTIONS (raw: locations variant)
    CREATE OR REPLACE FUNCTION core.DIRECTIONS(method VARCHAR, locations VARIANT, region VARCHAR DEFAULT NULL)
@@ -98,6 +102,7 @@ BEGIN
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
          FROM (SELECT core._DIRECTIONS_RAW(method, locations, region) AS resp)';
    GRANT USAGE ON FUNCTION core.DIRECTIONS(VARCHAR, VARIANT, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.DIRECTIONS(VARCHAR, VARIANT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- ISOCHRONES
    CREATE OR REPLACE FUNCTION core.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR DEFAULT NULL)
@@ -108,6 +113,7 @@ BEGIN
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
          FROM (SELECT core._ISOCHRONES_RAW(method, lon, lat, range, region) AS resp)';
    GRANT USAGE ON FUNCTION core.ISOCHRONES(TEXT, FLOAT, FLOAT, INT, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.ISOCHRONES(TEXT, FLOAT, FLOAT, INT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- OPTIMIZATION (tabular: jobs/vehicles/matrices)
    CREATE OR REPLACE FUNCTION core.OPTIMIZATION(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [], region VARCHAR DEFAULT NULL)
@@ -122,6 +128,7 @@ BEGIN
          FROM (SELECT core._OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region) AS resp),
             LATERAL FLATTEN(input => resp:routes) f';
    GRANT USAGE ON FUNCTION core.OPTIMIZATION(ARRAY, ARRAY, ARRAY, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.OPTIMIZATION(ARRAY, ARRAY, ARRAY, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- OPTIMIZATION (challenge variant)
    CREATE OR REPLACE FUNCTION core.OPTIMIZATION(challenge VARIANT, region VARCHAR DEFAULT NULL)
@@ -136,6 +143,7 @@ BEGIN
          FROM (SELECT core._OPTIMIZATION_RAW(challenge, region) AS resp),
             LATERAL FLATTEN(input => resp:routes) f';
    GRANT USAGE ON FUNCTION core.OPTIMIZATION(VARIANT, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.OPTIMIZATION(VARIANT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- MATRIX (locations array) - returns VARIANT (no geography to parse)
    CREATE OR REPLACE FUNCTION core.MATRIX(method VARCHAR, locations ARRAY, region VARCHAR DEFAULT NULL)
@@ -144,6 +152,7 @@ BEGIN
       AS
       'SELECT core._MATRIX_RAW(method, OBJECT_CONSTRUCT(''locations'', locations, ''metrics'', ARRAY_CONSTRUCT(''distance'', ''duration''), ''resolve_locations'', true), region)';
    GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, ARRAY, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.MATRIX(VARCHAR, ARRAY, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- MATRIX (options variant) - returns VARIANT
    CREATE OR REPLACE FUNCTION core.MATRIX(method VARCHAR, options VARIANT, region VARCHAR DEFAULT NULL)
@@ -152,6 +161,7 @@ BEGIN
       AS
       'SELECT core._MATRIX_RAW(method, options, region)';
    GRANT USAGE ON FUNCTION core.MATRIX(VARCHAR, VARIANT, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.MATRIX(VARCHAR, VARIANT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- MATRIX_TABULAR (origin + destinations) - returns VARIANT
    CREATE OR REPLACE FUNCTION core.MATRIX_TABULAR(method VARCHAR, origin ARRAY, destinations ARRAY, region VARCHAR DEFAULT NULL)
@@ -160,6 +170,7 @@ BEGIN
       AS
       'SELECT core._MATRIX_TABULAR_RAW(method, origin, destinations, region)';
    GRANT USAGE ON FUNCTION core.MATRIX_TABULAR(VARCHAR, ARRAY, ARRAY, VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.MATRIX_TABULAR(VARCHAR, ARRAY, ARRAY, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- ORS_STATUS - returns VARIANT
    CREATE OR REPLACE FUNCTION core.ORS_STATUS(region VARCHAR DEFAULT NULL)
@@ -168,6 +179,7 @@ BEGIN
       AS
       'SELECT core._ORS_STATUS_RAW(region)';
    GRANT USAGE ON FUNCTION core.ORS_STATUS(VARCHAR) TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.ORS_STATUS(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    -- ===== UTILITY FUNCTIONS (unchanged) =====
 
@@ -196,6 +208,7 @@ BEGIN
    AS
    'SELECT CASE WHEN core._ORS_STATUS_RAW(NULL) IS NOT NULL THEN TRUE ELSE FALSE END';
    GRANT USAGE ON FUNCTION core.CHECK_HEALTH() TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.CHECK_HEALTH() SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    CREATE OR REPLACE FUNCTION core.LIST_REGIONS()
       RETURNS TABLE (REGION VARCHAR, DISPLAY_NAME VARCHAR, STATUS VARCHAR, MIN_LAT FLOAT, MAX_LAT FLOAT, MIN_LON FLOAT, MAX_LON FLOAT)
@@ -203,6 +216,7 @@ BEGIN
       AS
       'SELECT REGION, DISPLAY_NAME, STATUS, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM core.CITY_ORS_MAP';
    GRANT USAGE ON FUNCTION core.LIST_REGIONS() TO APPLICATION ROLE app_user;
+   ALTER FUNCTION core.LIST_REGIONS() SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
    MERGE INTO core.VERSION_INFO t USING (SELECT 'setup_script' AS COMPONENT) s
      ON t.COMPONENT = s.COMPONENT

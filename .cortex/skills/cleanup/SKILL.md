@@ -40,9 +40,11 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Step 1: Discover Tagged Objects
 
-Run the discovery query. This searches across all accessible databases for objects tagged with the tracking origin.
+Set the session query tag, then run the discovery query. This searches across all accessible databases for objects tagged with the tracking origin.
 
 ```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-cleanup","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 SET TRACKING_TAG = 'sf_sit-is-fleet';
 
 SELECT 

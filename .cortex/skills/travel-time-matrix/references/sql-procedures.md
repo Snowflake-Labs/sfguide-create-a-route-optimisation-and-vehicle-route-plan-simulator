@@ -146,6 +146,8 @@ BEGIN
         TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT
     )';
 
+    EXECUTE IMMEDIATE 'ALTER TABLE ' || target_table || ' SET COMMENT = ''{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-travel-time-matrix\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}''';
+
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || target_table;
 
     EXECUTE IMMEDIATE '
@@ -242,6 +244,7 @@ BEGIN
                ' WAREHOUSE = ' || P_FLATTEN_WH ||
                ' AS SELECT ''Work queue ' || P_REGION || ' ' || res_label || ' ready: ' || total_rows || ' origins''';
         EXECUTE IMMEDIATE ddl;
+        EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label || ' SET COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}''';
 
         w := 1;
         WHILE (w <= P_NUM_WORKERS) DO
@@ -254,7 +257,7 @@ BEGIN
                        ' AFTER ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_BUILD_QUEUE_' || P_REGION || '_' || res_label ||
                        ' AS CALL ' || P_DB || '.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE(''' || P_REGION || ''', ' || res || ', ' || start_seq || ', ' || end_seq || ', ''' || P_ORS_APP || ''')';
                 EXECUTE IMMEDIATE ddl;
-                total_tasks := total_tasks + 1;
+                EXECUTE IMMEDIATE 'ALTER TASK ' || task_name || ' SET COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}''';                total_tasks := total_tasks + 1;
             END IF;
             w := w + 1;
         END WHILE;
@@ -276,6 +279,7 @@ BEGIN
                ' AFTER ' || worker_list ||
                ' AS CALL ' || P_DB || '.TRAVEL_TIME_MATRIX.FLATTEN_MATRIX_RAW(''' || P_REGION || ''', ' || res || ')';
         EXECUTE IMMEDIATE ddl;
+        EXECUTE IMMEDIATE 'ALTER TASK ' || P_DB || '.TRAVEL_TIME_MATRIX.TASK_FLATTEN_' || P_REGION || '_' || res_label || ' SET COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}''';
         total_tasks := total_tasks + 2;
     END FOR;
 

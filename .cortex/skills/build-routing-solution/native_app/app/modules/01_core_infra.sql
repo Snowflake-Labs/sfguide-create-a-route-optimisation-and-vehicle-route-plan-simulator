@@ -57,6 +57,8 @@ BEGIN
       AUTO_RESUME = true
       AUTO_SUSPEND_SECS = 600;
 
+   ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
    ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET MIN_NODES = 5 MAX_NODES = 5;
 
    RETURN 'Compute Pool Created Successfully';
@@ -104,7 +106,8 @@ BEGIN
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/downloader/downloader_spec.yaml'
       AUTO_SUSPEND_SECS = 14400
-      EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_integration_ref'));
+      EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_integration_ref'))
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
    GRANT OPERATE ON SERVICE core.downloader TO APPLICATION ROLE app_user;
    GRANT MONITOR ON SERVICE core.downloader TO APPLICATION ROLE app_user;
@@ -115,6 +118,8 @@ BEGIN
       ENDPOINT='downloader'
       MAX_BATCH_ROWS = 1000
       AS '/download_to_stage';
+   -- NOTE: Service functions (SERVICE=...) do not support ALTER FUNCTION SET COMMENT.
+   -- Tracked via parent procedure COMMENT and session query_tag.
 
    GRANT USAGE ON FUNCTION core.download (varchar, varchar, varchar) TO APPLICATION ROLE app_user;
 
@@ -159,21 +164,24 @@ BEGIN
       FROM spec='services/openrouteservice/openrouteservice.yaml'
       MIN_INSTANCES = 3
       MAX_INSTANCES = 3
-      AUTO_SUSPEND_SECS = 14400;
+      AUTO_SUSPEND_SECS = 14400
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
    CREATE SERVICE IF NOT EXISTS core.vroom_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/vroom/vroom-service.yaml'
       MIN_INSTANCES = 1
       MAX_INSTANCES = 1
-      AUTO_SUSPEND_SECS = 14400;
+      AUTO_SUSPEND_SECS = 14400
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
    CREATE SERVICE IF NOT EXISTS core.routing_gateway_service
       IN COMPUTE POOL identifier(:pool_name)
       FROM spec='services/gateway/routing-gateway-service.yaml'
       MIN_INSTANCES = 3
       MAX_INSTANCES = 3
-      AUTO_SUSPEND_SECS = 14400;
+      AUTO_SUSPEND_SECS = 14400
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = 3 MAX_INSTANCES = 3;
 
@@ -381,7 +389,8 @@ BEGIN
             MIN_INSTANCES = 1
             MAX_INSTANCES = 1
             AUTO_SUSPEND_SECS = 0
-            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'));
+            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'))
+            COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
     EXCEPTION
         WHEN OTHER THEN
             CREATE SERVICE core.ors_control_app
@@ -389,7 +398,8 @@ BEGIN
                 FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
                 MIN_INSTANCES = 1
                 MAX_INSTANCES = 1
-                AUTO_SUSPEND_SECS = 0;
+                AUTO_SUSPEND_SECS = 0
+                COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
     END;
 
     GRANT USAGE ON SERVICE core.ors_control_app TO APPLICATION ROLE app_user;

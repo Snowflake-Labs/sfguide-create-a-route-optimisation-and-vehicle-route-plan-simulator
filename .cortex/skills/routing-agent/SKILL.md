@@ -66,9 +66,9 @@ CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('r
 
 > All stored procedure and agent SQL definitions are in [references/agent-definitions.md](references/agent-definitions.md).
 
-### Step 1: Set Query Tag for Tracking (Optional)
+### Step 1: Set Query Tag for Tracking
 
-Set session query tag for attribution tracking. This step is optional and only affects session-level tracking.
+Set session query tag for attribution tracking.
 
 ```sql
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
