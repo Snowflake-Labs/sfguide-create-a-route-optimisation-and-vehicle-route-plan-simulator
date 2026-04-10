@@ -41,7 +41,7 @@ export default function RouteInspector() {
 
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
-    const pts = await sfQuery(`SELECT LATITUDE, LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH, GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS FROM ${RD_DB}.${RD_SCHEMA}.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = '${tripId}' ORDER BY TS`);
+    const pts = await sfQuery(`SELECT ST_Y(POINT_GEOM) AS LATITUDE, ST_X(POINT_GEOM) AS LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH, GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS FROM ${RD_DB}.${RD_SCHEMA}.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = '${tripId}' ORDER BY TS`);
     setGpsPoints(pts);
     if (pts.length > 0) {
       const lngs = pts.map((p: any) => Number(p.LONGITUDE));
