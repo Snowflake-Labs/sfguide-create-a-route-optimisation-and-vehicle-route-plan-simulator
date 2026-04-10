@@ -12,8 +12,6 @@
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-USE ROLE ACCOUNTADMIN;
-
 -- =============================================================================
 -- VARIABLES — Set these for your region
 -- =============================================================================

@@ -132,9 +132,6 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 
 > See `references/sql-pipeline.md` Step 5.
 
-### Step 6: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Retail Catchment is available automatically in the ORS sidebar.
 
 ### Step 7: Verify
 

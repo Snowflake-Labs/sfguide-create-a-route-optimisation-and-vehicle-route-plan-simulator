@@ -196,7 +196,7 @@ To clean up objects from a single skill, filter discovery by the skill's trackin
 | retail-catchment | `oss-retail-catchment` |
 | route-deviation | `oss-route-deviation` |
 | dwell-analysis | `oss-dwell-analysis` |
-| synthetic-datasets-generator | `synthetic-datasets-genertor` |
+| synthetic-datasets-generator | `synthetic-datasets-generator` |
 | travel-time-matrix | `oss-travel-time-matrix` |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` |
 

@@ -21,7 +21,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
    - `DIM_FLEET` -- vehicle metadata and driver profiles
    - `DIM_TRIP_SCHEDULE` -- trip schedule with OD pairs
 2. CONFIG table set to desired VEHICLE_TYPE and REGION (created automatically during deployment)
-3. `COMPUTE_WH` warehouse available
+3. `ROUTING_ANALYTICS` warehouse available
 4. A role with privileges listed in the Required Privileges section below
 
 ## Required Privileges
@@ -29,7 +29,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
 | CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
-| USAGE ON WAREHOUSE COMPUTE_WH | Warehouse | Used by all Dynamic Tables and tasks |
+| USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Used by all Dynamic Tables and tasks |
 | USAGE ON DATABASE SYNTHETIC_DATASETS | Database | Reads source telemetry and fleet tables |
 | USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED | Schema | Reads FACT_VEHICLE_TELEMETRY, DIM_POIS, DIM_FLEET, DIM_TRIP_SCHEDULE |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates DWELL_ANALYSIS schema |
@@ -47,7 +47,7 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
 |-----------|---------|-------------|
 | Database | `FLEET_INTELLIGENCE` | Target database |
 | Schema | `DWELL_ANALYSIS` | Target schema |
-| Warehouse | `COMPUTE_WH` | Used by all Dynamic Tables |
+| Warehouse | `ROUTING_ANALYTICS` | Used by all Dynamic Tables |
 | Target Lag | 5-10 min | DT refresh interval |
 
 ## Pipeline Architecture
@@ -137,9 +137,6 @@ UNION ALL SELECT 'DT_SLA_ALERTS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSI
 UNION ALL SELECT 'DT_DAILY_TRENDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 ```
 
-### Step 3: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed -- Dwell Analysis pages are available automatically in the ORS sidebar.
 
 ## SLA Threshold Tuning
 
@@ -169,7 +166,7 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 | DT_DWELL_SESSIONS zero rows | Check STATUS LIKE 'DWELL%' filter matches your telemetry data |
 | SLA alerts not appearing | Verify SLA_THRESHOLDS has matching LOCATION_TYPE values |
 | H3 cells NULL | Ensure latitude/longitude values are valid (not NULL or 0) |
-| Task not running | Run `ALTER TASK ... RESUME` and verify COMPUTE_WH is active |
+| Task not running | Run `ALTER TASK ... RESUME` and verify ROUTING_ANALYTICS is active |
 | Dynamic Tables stale | Check `SHOW DYNAMIC TABLES` for refresh status and errors |
 | VW_ views return 0 rows | Verify CONFIG table has correct VEHICLE_TYPE and REGION matching UNIFIED data |
 | All DTs show FULL refresh mode | Expected -- VW_ views use CONFIG subquery expressions which prevent incremental change tracking |

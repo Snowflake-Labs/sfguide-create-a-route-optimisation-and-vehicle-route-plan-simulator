@@ -97,23 +97,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-int
 
 Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_INTELLIGENCE_FOOD_DELIVERY` schema.
 
-### Steps 3-9: DEPRECATED
-
-> **DEPRECATED:** Steps 3-9 (Overture Maps data loading + ORS route generation pipeline) are no longer needed. Use **Data Studio** in the ORS Control Panel to generate synthetic datasets instead. Data Studio writes to `SYNTHETIC_DATASETS.UNIFIED` tables, and projection views in Step 10 read from them.
->
-> The legacy SQL pipeline is preserved in `references/sql-pipeline.md` for reference only.
-
 ### Step 10: Create Projection Views
 
 Run [`references/sql-projection-views.sql`](references/sql-projection-views.sql) to create CONFIG table + projection views from `SYNTHETIC_DATASETS.UNIFIED`. Creates 3 objects: 1 config table + 2 React views (DELIVERIES, RESTAURANTS_ENRICHED).
-
-### Step 12: DEPRECATED
-
-> **DEPRECATED:** The standalone React native app has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). See `.cortex/skills/build-routing-solution/` for deployment instructions.
-
-### Step 13: DEPRECATED
-
-> **DEPRECATED:** No registration step is needed. Fleet Delivery pages are available automatically in the ORS Control Panel sidebar.
 
 ---
 

@@ -22,13 +22,17 @@ BEGIN
    BEGIN
       CALL core.create_control_app();
    EXCEPTION
-      WHEN OTHER THEN NULL;
+      WHEN OTHER THEN
+         LET err1 STRING := 'create_control_app failed: ' || SQLERRM;
+         SYSTEM$LOG_INFO(err1);
    END;
 
    BEGIN
       CALL core.create_functions();
    EXCEPTION
-      WHEN OTHER THEN NULL;
+      WHEN OTHER THEN
+         LET err2 STRING := 'create_functions failed: ' || SQLERRM;
+         SYSTEM$LOG_INFO(err2);
    END;
 
    RETURN 'DONE';
@@ -396,7 +400,8 @@ BEGIN
     BEGIN
         ALTER SERVICE core.ors_control_app SET QUERY_WAREHOUSE = ROUTING_ANALYTICS;
     EXCEPTION
-        WHEN OTHER THEN NULL;
+        WHEN OTHER THEN
+            SYSTEM$LOG_INFO('SET QUERY_WAREHOUSE failed: ' || SQLERRM || '. Control app may not be able to query consumer tables.');
     END;
 
     RETURN 'ORS Control App service created';

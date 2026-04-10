@@ -493,7 +493,8 @@ BEGIN
       EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
       EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
       EXECUTE IMMEDIATE 'GRANT DELETE ON TABLE ' || target_table || ' TO APPLICATION ROLE app_user';
-    EXCEPTION WHEN OTHER THEN NULL;
+    EXCEPTION WHEN OTHER THEN
+      SYSTEM$LOG_INFO('GRANT on ' || target_table || ' failed: ' || SQLERRM);
     END;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || target_table);

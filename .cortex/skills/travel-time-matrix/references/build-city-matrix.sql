@@ -1,6 +1,5 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-travel-time-matrix","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-USE ROLE ACCOUNTADMIN;
 USE WAREHOUSE ROUTING_ANALYTICS;
 
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.BUILD_CITY_MATRIX(

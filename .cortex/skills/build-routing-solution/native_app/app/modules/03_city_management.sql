@@ -64,7 +64,11 @@ BEGIN
     END IF;
     BEGIN
         EXECUTE IMMEDIATE 'SELECT core.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
-    EXCEPTION WHEN OTHER THEN NULL;
+    EXCEPTION WHEN OTHER THEN
+        LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
+        SYSTEM$LOG_INFO(dl_err);
+        UPDATE core.CITY_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+        RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
     END;
 
     BEGIN

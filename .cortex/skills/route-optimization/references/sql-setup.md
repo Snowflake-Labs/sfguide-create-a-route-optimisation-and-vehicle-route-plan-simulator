@@ -40,10 +40,16 @@ Requires IMPORT SHARE privilege.
 ## Step 5: Setup Snowflake Objects
 
 ```sql
-ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
-
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
+
+## Grant Access to Native App
+
+```sql
+GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';

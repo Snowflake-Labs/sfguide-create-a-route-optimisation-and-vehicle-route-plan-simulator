@@ -331,7 +331,7 @@ for w in $(seq 0 $((WORKERS - 1))); do
     [ $end_seq -gt $TOTAL ] && end_seq=$TOTAL
     [ $start_seq -gt $TOTAL ] && break
     snow sql -c $CONNECTION -q "
-        USE ROLE ACCOUNTADMIN; USE WAREHOUSE ROUTING_ANALYTICS;
+        USE WAREHOUSE ROUTING_ANALYTICS;
         CALL ${DB}.TRAVEL_TIME_MATRIX.BUILD_TRAVEL_TIME_RANGE('${REGION}', ${RES}, ${start_seq}, ${end_seq});
     " 2>/dev/null &
     sleep 3
@@ -403,12 +403,6 @@ FROM (
     FROM pairs GROUP BY origin_idx ORDER BY origin_idx
 );
 ```
-
----
-
-### Step 10: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Travel Time Explorer is available automatically in the ORS sidebar.
 
 ---
 

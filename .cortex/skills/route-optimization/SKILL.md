@@ -161,9 +161,6 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 
 **Output:** AISQL notebook deployed with AI prompts customized for `<NOTEBOOK_CITY>`.
 
-### Step 9: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Route Optimization is available automatically in the ORS sidebar.
 
 ## Dashboard Schema Contract
 

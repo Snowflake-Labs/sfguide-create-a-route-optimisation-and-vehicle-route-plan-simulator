@@ -190,9 +190,6 @@ SELECT CURRENT_ORGANIZATION_NAME() AS org_name, CURRENT_ACCOUNT_NAME() AS accoun
 
 Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
 
-### Step 11: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Routing Agent is available automatically in the ORS sidebar.
 
 ## Stopping Points
 

@@ -7,19 +7,13 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
+import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
 
 config();
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-
-const IS_SPCS = existsSync('/snowflake/session/token');
-const rawDb = process.env.SNOWFLAKE_DATABASE || '';
-const SF_DATABASE = (rawDb && !rawDb.includes('{{')) ? rawDb : 'OPENROUTESERVICE_NATIVE_APP';
-let SF_WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || '';
-const CONN = process.env.SNOWFLAKE_CONNECTION_NAME || 'FREE_TRIAL';
-const SNOWFLAKE_HOST = process.env.SNOWFLAKE_HOST || '';
 
 async function detectWarehouse(): Promise<void> {
   if (SF_WAREHOUSE) return;
@@ -28,10 +22,10 @@ async function detectWarehouse(): Promise<void> {
       ? await snowSqlSpcs('SHOW WAREHOUSES LIMIT 1')
       : snowSqlLocal('SHOW WAREHOUSES LIMIT 1');
     const name = (rows as any[])?.[0]?.name || (rows as any[])?.[0]?.NAME;
-    if (name) SF_WAREHOUSE = name;
-    else SF_WAREHOUSE = 'COMPUTE_WH';
+    if (name) setWarehouse(name);
+    else setWarehouse(DEFAULT_WAREHOUSE);
   } catch {
-    SF_WAREHOUSE = 'COMPUTE_WH';
+    setWarehouse(DEFAULT_WAREHOUSE);
   }
 }
 

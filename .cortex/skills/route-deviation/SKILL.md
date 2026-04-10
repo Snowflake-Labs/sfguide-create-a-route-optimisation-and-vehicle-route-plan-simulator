@@ -26,7 +26,7 @@ CRITICAL: Verify these before starting:
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
 | CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
-| CREATE WAREHOUSE | Account | Creates COMPUTE_WH warehouse |
+| CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | USAGE ON DATABASE SYNTHETIC_DATASETS | Database | Reads UNIFIED source data |
 | USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED | Schema | Reads FACT_VEHICLE_TELEMETRY, FACT_TRIPS, DIM_FLEET, DIM_POIS, DIM_TRIP_SCHEDULE |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTE_DEVIATION schema |
@@ -41,7 +41,7 @@ CRITICAL: Verify these before starting:
 |-----------|---------|-------------|
 | `TARGET_DB` | `FLEET_INTELLIGENCE` | Database for ETL output tables |
 | `TARGET_SCHEMA` | `ROUTE_DEVIATION` | Schema for ETL output tables |
-| `WAREHOUSE` | `COMPUTE_WH` | Warehouse for ETL execution |
+| `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for ETL execution |
 
 ## Error Logging
 
@@ -112,9 +112,6 @@ Run the verification query after all 3 steps to confirm row counts.
 1. Check deviation distribution matches expected pattern (see `references/dataset-guide.md`)
 2. Check daily trends show correct weekday/weekend patterns
 
-### Step 6: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed -- Route Deviation pages are available automatically in the ORS sidebar.
 
 ## Dashboard Schema Contract
 

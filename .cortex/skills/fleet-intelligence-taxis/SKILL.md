@@ -207,9 +207,6 @@ Create 5 analytics views:
 
 Verify all view row counts.
 
-### Step 10: Register with Demo Dashboard
-
-> **DEPRECATED:** `DEMO_DASHBOARD_APP` has been removed. All demo pages are now built into `ORS_CONTROL_APP` (in `OPENROUTESERVICE_NATIVE_APP`). No registration step is needed — Fleet Taxis pages are available automatically in the ORS sidebar.
 
 ---
 
