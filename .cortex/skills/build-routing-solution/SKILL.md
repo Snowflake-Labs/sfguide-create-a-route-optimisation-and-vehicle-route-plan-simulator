@@ -293,7 +293,7 @@ SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_A
 
 ### Step 8: Load Seed Datasets
 
-**Goal:** Pre-load Intro page routes and synthetic SF ebike data so the app is fully populated on first launch
+**Goal:** Pre-load Intro page routes, synthetic SF ebike data, and a pre-computed travel time matrix so the app is fully populated on first launch
 
 **Actions:**
 
@@ -311,6 +311,8 @@ SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_A
    snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite
    snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive
    snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite
+   snow stage copy datasets/matrix/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite
+   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite
    ```
 
 3. **Run the loader script:**
@@ -326,12 +328,13 @@ SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_A
    UNION ALL SELECT 'FLEET', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
    UNION ALL SELECT 'POIS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
    UNION ALL SELECT 'JOBS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
-   UNION ALL SELECT 'REGIONS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY;
+   UNION ALL SELECT 'REGIONS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
+   UNION ALL SELECT 'MATRIX', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8;
    ```
 
-   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1
+   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1, MATRIX=29402
 
-**Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job
+**Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs)
 
 ### Step 9: Select and Deploy Demos (Optional)
 
@@ -399,7 +402,7 @@ Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
 - Application: `OPENROUTESERVICE_NATIVE_APP`
 - 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
-- Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs)
+- Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs), pre-computed SanFrancisco cycling-electric RES8 travel time matrix (29K pairs)
 - Optional: User-selected demo skills deployed on top of the base installation
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
