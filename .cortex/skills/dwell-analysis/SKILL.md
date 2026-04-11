@@ -76,9 +76,9 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `dwell-analysis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
-## Step 0: Load San Francisco Baseline (Recommended)
+## Step 0: Create Projection Views and Seed Tables (Recommended)
 
-The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), computes GEOFENCE_POLYGONS, and inserts SLA_THRESHOLDS. No S3 stages needed.
 
 ### Quick check
 
@@ -86,11 +86,11 @@ The fastest path to a working demo. Loads pre-computed San Francisco data from S
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
 ```
 
-If the table exists and has rows, data is already loaded. Skip to Step 1 (Run SQL Pipeline) -- the seed only loads static tables, DTs must still be created.
+If the table exists and has rows, data is already loaded. Skip to Step 1 (Run SQL Pipeline) -- the seed only creates views and static tables, DTs must still be created.
 
-### Load from S3
+### Create views and tables
 
-Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/dwell-analysis/`.
+Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, GEOFENCE_POLYGONS (computed from views), and SLA_THRESHOLDS.
 
 After loading, you must still create the Dynamic Tables by running `references/sql-pipeline.sql` Steps 5-13. Dynamic Tables cannot be pre-baked.
 

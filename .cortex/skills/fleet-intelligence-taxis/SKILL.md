@@ -94,9 +94,9 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-taxis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
-## Step 0: Load San Francisco Baseline (Recommended)
+## Step 0: Create Projection Views (Recommended)
 
-The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8). No ORS calls or S3 stages needed.
 
 ### Quick check
 
@@ -104,13 +104,11 @@ The fastest path to a working demo. Loads pre-computed San Francisco data from S
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 ```
 
-If the table exists and has rows, data is already loaded. Grant native app access (see end of `seed-data.sql`), then skip to Step 10 (Register with Demo Dashboard).
+If the view exists and has rows, views are already created. Grant native app access (see end of `seed-data.sql`), then skip to Step 10 (Register with Demo Dashboard).
 
-### Load from S3
+### Create views
 
-Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/fleet-intelligence-taxis/`.
-
-After loading, the seed script also creates the 5 analytics views and grants SELECT access to the native app (DRIVER_LOCATIONS_V, TRIPS_ASSIGNED_TO_DRIVERS, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIP_SUMMARY).
+Execute `references/seed-data.sql`. This creates CONFIG, VW_DRIVER_LOCATIONS, VW_TRIP_SUMMARY, and 5 wrapper views (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIPS_ASSIGNED_TO_DRIVERS) over UNIFIED data, plus grants SELECT access to the native app.
 
 ### Generate data for other regions (optional)
 

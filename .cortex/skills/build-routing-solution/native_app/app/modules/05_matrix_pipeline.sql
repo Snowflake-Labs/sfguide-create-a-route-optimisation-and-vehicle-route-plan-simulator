@@ -168,12 +168,12 @@ BEGIN
     ),
     chunked AS (
         SELECT
-            origin_h3, origin_point,
+            origin_h3, ANY_VALUE(origin_point) AS origin_point,
             FLOOR((dest_seq - 1) / 1000) AS chunk_idx,
             ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(dest_point), ST_Y(dest_point))) AS dest_coords,
             ARRAY_AGG(dest_h3) AS dest_hex_ids
         FROM numbered_pairs
-        GROUP BY origin_h3, origin_point, chunk_idx
+        GROUP BY origin_h3, chunk_idx
     )
     SELECT
         ROW_NUMBER() OVER (ORDER BY origin_h3, chunk_idx) AS seq_id,

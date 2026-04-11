@@ -2,6 +2,9 @@
  * seed-data.sql — Route Optimization
  * Load San Francisco baseline data from S3.
  * Idempotent: only loads if tables are empty for the target region.
+ *
+ * NOTE: The S3 bucket may be empty. If COPY INTO loads 0 rows, generate data
+ * via the route-optimization skill pipeline using Marketplace data.
  */
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -72,6 +75,6 @@ FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE ON_ERROR 
 --------------------------------------------------------------------
 -- VALIDATION
 --------------------------------------------------------------------
-SELECT 'PLACES' AS TBL, COUNT(*) AS ROWS FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+SELECT 'PLACES' AS TBL, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
 UNION ALL SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
 UNION ALL SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;

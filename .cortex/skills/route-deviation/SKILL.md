@@ -53,9 +53,9 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 2. **Always use fully qualified object names.** `{TARGET_DB}.{TARGET_SCHEMA}.<table>`.
 3. **Verify row counts after each CTAS.** Catch silent failures early.
 
-## Step 0: Load San Francisco Baseline (Recommended)
+## Step 0: Create Projection Views and Run ETL (Recommended)
 
-The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No Data Studio generation needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), then runs ETL to produce analysis tables. No S3 stages or Data Studio generation needed.
 
 ### Quick check
 
@@ -65,9 +65,9 @@ SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
 
 If the table exists and has rows, data is already loaded. Skip to Step 5 (Verify End-to-End).
 
-### Load from S3
+### Create views and run ETL
 
-Execute `references/seed-data.sql`. This creates all ETL output tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/route-deviation/`.
+Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, and 3 ETL tables (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) computed from the views.
 
 ## Workflow
 

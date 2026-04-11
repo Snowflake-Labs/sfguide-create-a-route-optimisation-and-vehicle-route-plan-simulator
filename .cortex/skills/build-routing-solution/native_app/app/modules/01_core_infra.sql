@@ -383,7 +383,7 @@ BEGIN
     DROP SERVICE IF EXISTS core.ors_control_app;
 
     BEGIN
-        CREATE SERVICE core.ors_control_app
+        CREATE SERVICE IF NOT EXISTS core.ors_control_app
             IN COMPUTE POOL IDENTIFIER(:pool_name)
             FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
             MIN_INSTANCES = 1
@@ -393,7 +393,7 @@ BEGIN
             COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
     EXCEPTION
         WHEN OTHER THEN
-            CREATE SERVICE core.ors_control_app
+            CREATE SERVICE IF NOT EXISTS core.ors_control_app
                 IN COMPUTE POOL IDENTIFIER(:pool_name)
                 FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
                 MIN_INSTANCES = 1

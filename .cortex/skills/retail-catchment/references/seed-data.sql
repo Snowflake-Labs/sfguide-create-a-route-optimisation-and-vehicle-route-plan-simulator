@@ -2,6 +2,9 @@
  * seed-data.sql — Retail Catchment
  * Load San Francisco baseline data from S3.
  * Idempotent: only loads if tables are empty for the target region.
+ *
+ * NOTE: The S3 bucket may be empty. If COPY INTO loads 0 rows, generate data
+ * via the retail-catchment skill pipeline using Overture Maps POI data.
  */
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -98,7 +101,7 @@ FILE_FORMAT = (TYPE = PARQUET) MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE ON_ERROR 
 --------------------------------------------------------------------
 -- VALIDATION
 --------------------------------------------------------------------
-SELECT 'RETAIL_POIS' AS TBL, COUNT(*) AS ROWS FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+SELECT 'RETAIL_POIS' AS TBL, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
 UNION ALL SELECT 'CITIES_BY_STATE', COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
 UNION ALL SELECT 'REGIONAL_ADDRESSES', COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
 UNION ALL SELECT 'REGION_CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG;
