@@ -389,7 +389,7 @@ BEGIN
             MIN_INSTANCES = 1
             MAX_INSTANCES = 1
             AUTO_SUSPEND_SECS = 0
-            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'))
+            EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_carto_ref'), reference('external_access_integration_ref'))
             COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
     EXCEPTION
         WHEN OTHER THEN
@@ -399,6 +399,7 @@ BEGIN
                 MIN_INSTANCES = 1
                 MAX_INSTANCES = 1
                 AUTO_SUSPEND_SECS = 0
+                EXTERNAL_ACCESS_INTEGRATIONS = (reference('external_access_integration_ref'))
                 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
     END;
 

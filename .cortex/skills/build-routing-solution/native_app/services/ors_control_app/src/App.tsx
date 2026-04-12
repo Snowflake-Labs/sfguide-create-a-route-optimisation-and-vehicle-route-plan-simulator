@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Home as HomeIcon, Map, Clock, Truck, CarTaxiFront, GitBranch, Route, Store, Bot, Database, Activity, MapPin, Grid3X3, Eye, Wrench, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
-import CityProvisioner from './components/CityProvisioner';
+import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
 import MatrixViewer from './components/MatrixViewer';
 import FunctionTester from './components/FunctionTester';
@@ -65,11 +65,11 @@ const DEMO_GROUPS: NavGroup[] = [
   { key: 'studio', label: 'Data Studio', icon: Database },
 ];
 
-type AdminTab = 'services' | 'cities' | 'matrix' | 'viewer' | 'functions' | 'diagnostics';
+type AdminTab = 'services' | 'regions' | 'matrix' | 'viewer' | 'functions' | 'diagnostics';
 
 const ADMIN_NAV: { key: AdminTab; label: string; icon: React.ComponentType<any> }[] = [
   { key: 'services', label: 'Status', icon: Activity },
-  { key: 'cities', label: 'City Builder', icon: MapPin },
+  { key: 'regions', label: 'Region Builder', icon: MapPin },
   { key: 'matrix', label: 'Travel Matrix Builder', icon: Grid3X3 },
   { key: 'viewer', label: 'Travel Matrix Viewer', icon: Eye },
   { key: 'functions', label: 'Functions', icon: Wrench },
@@ -93,8 +93,13 @@ function getHeaderLabel(tab: string): string {
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('home');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [appVersion, setAppVersion] = useState('');
   const region = useRegionProvider();
   const vehicleTypeCtx = useVehicleTypeProvider();
+
+  useEffect(() => {
+    fetch('/api/health').then(r => r.json()).then(d => setAppVersion(d.version || '')).catch(() => {});
+  }, []);
 
   const toggleExpand = (groupKey: string) => {
     setExpanded(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
@@ -175,7 +180,7 @@ export default function App() {
             ))}
           </nav>
           <div className="sidebar-footer">
-            <span className="sidebar-version">v1.0.79</span>
+            <span className="sidebar-version">{appVersion ? `v${appVersion}` : ''}</span>
           </div>
         </aside>
 
@@ -191,7 +196,7 @@ export default function App() {
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'intro' && <Intro />}
             {activeTab === 'services' && <ServiceManager />}
-            {activeTab === 'cities' && <CityProvisioner />}
+            {activeTab === 'regions' && <RegionBuilder />}
             {activeTab === 'matrix' && <MatrixBuilder />}
             {activeTab === 'viewer' && <MatrixViewer />}
             {activeTab === 'functions' && <FunctionTester />}

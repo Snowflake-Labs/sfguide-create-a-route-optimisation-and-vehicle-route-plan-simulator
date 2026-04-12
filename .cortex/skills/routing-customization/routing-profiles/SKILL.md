@@ -66,7 +66,7 @@ When any step fails or produces unexpected results, log the issue to `logs/` fol
 **Actions:**
 
 **Option A — For new cities provisioned via the Cities tab UI:**
-Profile selection is built into the CityProvisioner UI. Users select routing profile checkboxes before clicking Deploy. No manual config editing needed.
+Profile selection is built into the RegionBuilder UI. Users select routing profile checkboxes before clicking Deploy. No manual config editing needed.
 
 **Option B — For the default (San Francisco) instance or existing cities:**
 

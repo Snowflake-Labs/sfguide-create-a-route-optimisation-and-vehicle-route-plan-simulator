@@ -367,9 +367,9 @@ export default function FunctionTester() {
         setSfDatabase(db);
       } catch {}
       try {
-        const r = await fetch('/api/cities');
+        const r = await fetch('/api/regions/provisioned');
         const data = await r.json();
-        const cityList: CityOption[] = data.cities || [];
+        const cityList: CityOption[] = data.regions || [];
         setCities(cityList);
         const def = cityList.find((c) => c.isDefault) || cityList[0];
         if (def) {

@@ -9,7 +9,7 @@ GRANT USAGE ON SCHEMA travel_matrix TO APPLICATION ROLE app_user;
 
 EXECUTE IMMEDIATE FROM 'modules/01_core_infra.sql';
 EXECUTE IMMEDIATE FROM 'modules/02_routing_functions.sql';
-EXECUTE IMMEDIATE FROM 'modules/03_city_management.sql';
+EXECUTE IMMEDIATE FROM 'modules/03_region_management.sql';
 EXECUTE IMMEDIATE FROM 'modules/04_service_lifecycle.sql';
 EXECUTE IMMEDIATE FROM 'modules/05_matrix_pipeline.sql';
 EXECUTE IMMEDIATE FROM 'modules/06_matrix_ops.sql';

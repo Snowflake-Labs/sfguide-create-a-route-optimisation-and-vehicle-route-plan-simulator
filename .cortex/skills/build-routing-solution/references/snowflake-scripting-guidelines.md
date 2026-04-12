@@ -201,7 +201,7 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 ├── modules/
 │   ├── 01_core_infra.sql
 │   ├── 02_routing_functions.sql
-│   ├── 03_city_management.sql
+│   ├── 03_region_management.sql
 │   ├── 04_service_lifecycle.sql
 │   ├── 05_matrix_pipeline.sql
 │   └── 06_matrix_ops.sql
@@ -326,7 +326,7 @@ Where `<component>` matches the module domain:
 |--------|---------------|
 | `01_core_infra.sql` | `core` |
 | `02_routing_functions.sql` | `routing` |
-| `03_city_management.sql` | `provisioner` / `multi-city` |
+| `03_region_management.sql` | `region-catalog` / `provisioner` / `multi-region` |
 | `04_service_lifecycle.sql` | `lifecycle` |
 | `05_matrix_pipeline.sql` | `matrix` |
 | `06_matrix_ops.sql` | `matrix` |

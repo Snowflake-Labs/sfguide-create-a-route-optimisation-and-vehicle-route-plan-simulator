@@ -47,13 +47,14 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 - `SCALE_SERVICES(min, max)` — Scales ORS + gateway + all city ORS instances and pool nodes
 - `GET_STATUS()` — Returns JSON with compute pool state and all service statuses
 
-## Multi-City Procedures
+## Multi-Region Procedures
 
-- `SETUP_CITY_ORS(region)` — Provisions a new city with its own ORS service
-- `DROP_CITY_ORS(region)` — Removes a city's service and metadata
-- `LIST_CITIES()` — Returns JSON array of all provisioned cities
+- `SETUP_REGION_ORS(region)` — Provisions a new region with its own ORS service
+- `DROP_REGION_ORS(region)` — Removes a region's service and metadata
+- `LIST_REGIONS()` — Returns JSON array of all provisioned regions
+- `REFRESH_REGION_CATALOG()` — Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
 
-Note: Per-city function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
+Note: Per-region function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
 ```sql
 SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start, end, 'berlin'))
 ```

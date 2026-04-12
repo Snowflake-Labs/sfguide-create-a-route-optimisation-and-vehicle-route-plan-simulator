@@ -188,7 +188,7 @@ app.get('/api/config', (_req, res) => {
   res.json({ database: SF_DATABASE });
 });
 
-const APP_VERSION = '1.0.51';
+const APP_VERSION = process.env.APP_VERSION || '0.0.0';
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
@@ -223,7 +223,7 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS='COMPLETED' ORDER BY COMPLETED_AT DESC LIMIT 1`);
+    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS='COMPLETED' ORDER BY COMPLETED_AT DESC LIMIT 1`);
     const profileStr = rows?.[0]?.PROFILES;
     if (profileStr && typeof profileStr === 'string') {
       return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);
@@ -310,7 +310,7 @@ app.get('/api/ors-readiness', async (_req, res) => {
   }
 
   try {
-    const cities = JSON.parse(await callProcedure('LIST_CITIES()') || '[]');
+    const cities = JSON.parse(await callProcedure('LIST_REGIONS()') || '[]');
     for (const city of cities) {
       const safeRegion = sanitizeIdentifier(city.region);
       try {
@@ -359,9 +359,203 @@ app.post('/api/scale', async (req, res) => {
   }
 });
 
-app.get('/api/cities', async (_req, res) => {
+app.get('/api/regions/catalog', async (req, res) => {
   try {
-    const result = await callProcedure('LIST_CITIES()');
+    const search = (req.query.search as string || '').trim();
+    const source = (req.query.source as string || '').trim();
+    const level = (req.query.level as string || '').trim();
+    let where = 'WHERE 1=1';
+    if (search) where += ` AND LOWER(REGION_NAME) LIKE '%${escapeString(search.toLowerCase())}%'`;
+    if (source) where += ` AND SOURCE = '${escapeString(source)}'`;
+    if (level) where += ` AND LEVEL = '${escapeString(level)}'`;
+    const rows = await runSql(`SELECT CATALOG_ID, SOURCE, REGION_NAME, REGION_KEY, HIERARCHY, CONTINENT, COUNTRY, PBF_URL, PBF_SIZE_MB, LEVEL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_CATALOG ${where} QUALIFY ROW_NUMBER() OVER (PARTITION BY SOURCE, REGION_KEY, COALESCE(COUNTRY,'') ORDER BY CATALOG_ID) = 1 ORDER BY SOURCE, CONTINENT, COUNTRY, REGION_NAME`);
+    res.json({ catalog: rows || [] });
+  } catch (err: any) {
+    res.json({ catalog: [], error: err.message });
+  }
+});
+
+app.post('/api/regions/catalog/refresh', async (_req, res) => {
+  const GEOFABRIK_BASE = 'https://download.geofabrik.de';
+  const BBBIKE_BASE = 'https://download.bbbike.org/osm/bbbike';
+
+  function parseSize(sizeStr: string): number | null {
+    const m = sizeStr.trim().match(/^([\d.]+)\s*(MB|GB|KB|bytes)$/i);
+    if (!m) return null;
+    const val = parseFloat(m[1]);
+    const unit = m[2].toUpperCase();
+    if (unit === 'GB') return val * 1024;
+    if (unit === 'KB') return val / 1024;
+    if (unit === 'BYTES') return val / (1024 * 1024);
+    return val;
+  }
+
+  function toRegionKey(name: string): string {
+    return name.replace(/[-_]/g, ' ').split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('').replace(/[^A-Za-z0-9]/g, '');
+  }
+
+  async function fetchPage(url: string): Promise<string> {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) return '';
+      return await r.text();
+    } catch { return ''; }
+  }
+
+  interface CatalogRow {
+    catalog_id: string; source: string; region_name: string; region_key: string;
+    hierarchy: string | null; continent: string | null; country: string | null;
+    pbf_url: string; pbf_size_mb: number | null; level: string;
+  }
+
+  function parseGeofabrikIndex(html: string, basePath: string): Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> {
+    const rows: Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> = [];
+    const trBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    for (const block of trBlocks) {
+      const pbfMatch = block.match(/<a\s+href="([^"]+\.osm\.pbf)"/i);
+      if (!pbfMatch) continue;
+      const pbfHref = pbfMatch[1];
+      if (!pbfHref.includes('-latest')) continue;
+
+      let link = '';
+      let name = '';
+      const subregionMatch = block.match(/<td[^>]*class="subregion"[^>]*>\s*<a\s+href="([^"]+)"[^>]*>([^<]+)<\/a>/i);
+      if (subregionMatch) { link = subregionMatch[1]; name = subregionMatch[2].trim(); }
+      else {
+        const dirMatch = block.match(/<td[^>]*>\s*<a\s+href="([^"]+\/)"[^>]*>([^<]+)<\/a>/i);
+        if (dirMatch) { link = dirMatch[1]; name = dirMatch[2].trim(); }
+        else {
+          const nameMatch = block.match(/<td[^>]*>\s*<a\s+href="[^"]*"[^>]*>([^<]+)<\/a>/i);
+          if (nameMatch) { name = nameMatch[1].trim(); }
+          else continue;
+        }
+      }
+
+      const sizeMatch = block.match(/\((\d[\d.]*\s*(?:MB|GB|KB|bytes))\)/i);
+      const sizeMb = sizeMatch ? parseSize(sizeMatch[1]) : null;
+
+      let pbfUrl: string;
+      if (pbfHref.startsWith('http')) pbfUrl = pbfHref;
+      else if (pbfHref.startsWith('/')) pbfUrl = GEOFABRIK_BASE + pbfHref;
+      else {
+        const cleanHref = pbfHref.replace(/^\.\//,  '');
+        pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+      }
+
+      let subPath = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
+      if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
+        subPath = basePath ? basePath.replace(/^\/|\/$/g, '') + '/' + subPath : subPath;
+      }
+
+      rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
+    }
+    return rows;
+  }
+
+  try {
+    const allRows: CatalogRow[] = [];
+
+    const html = await fetchPage(GEOFABRIK_BASE);
+    const continents = parseGeofabrikIndex(html, '');
+
+    for (const continent of continents) {
+      const cname = continent.name;
+      allRows.push({
+        catalog_id: 'geofabrik:' + continent.sub_path, source: 'geofabrik',
+        region_name: cname, region_key: toRegionKey(cname),
+        hierarchy: '', continent: cname, country: null,
+        pbf_url: continent.pbf_url, pbf_size_mb: continent.size_mb, level: 'continent',
+      });
+
+      if (!continent.has_sub || !continent.sub_path) continue;
+      const subHtml = await fetchPage(GEOFABRIK_BASE + '/' + continent.sub_path + '.html');
+      if (!subHtml) continue;
+      const countries = parseGeofabrikIndex(subHtml, continent.sub_path);
+
+      for (const country of countries) {
+        const hierarchy = continent.sub_path + '/' + country.name.toLowerCase().replace(/ /g, '-');
+        allRows.push({
+          catalog_id: 'geofabrik:' + hierarchy, source: 'geofabrik',
+          region_name: country.name, region_key: toRegionKey(country.name),
+          hierarchy: continent.sub_path, continent: cname, country: country.name,
+          pbf_url: country.pbf_url, pbf_size_mb: country.size_mb, level: 'country',
+        });
+
+        if (!country.has_sub || !country.sub_path) continue;
+        const sub2Html = await fetchPage(GEOFABRIK_BASE + '/' + country.sub_path + '.html');
+        if (!sub2Html) continue;
+        const subRegions = parseGeofabrikIndex(sub2Html, country.sub_path);
+
+        for (const subReg of subRegions) {
+          allRows.push({
+            catalog_id: 'geofabrik:' + country.sub_path + '/' + subReg.name.toLowerCase().replace(/ /g, '-'),
+            source: 'geofabrik',
+            region_name: subReg.name, region_key: toRegionKey(subReg.name),
+            hierarchy: country.sub_path, continent: cname, country: country.name,
+            pbf_url: subReg.pbf_url, pbf_size_mb: subReg.size_mb, level: 'sub-region',
+          });
+        }
+      }
+    }
+
+    try {
+      const bbResp = await fetch(BBBIKE_BASE + '/', { signal: AbortSignal.timeout(30000) });
+      if (bbResp.ok) {
+        const bbHtml = await bbResp.text();
+        const cityDirs = bbHtml.match(/<a\s+href="([A-Z][A-Za-z0-9_-]+)\/"/g) || [];
+        const seen = new Set<string>();
+        for (const m of cityDirs) {
+          const city = m.match(/href="([^"]+)\/"/)?.[1];
+          if (!city || seen.has(city) || city.startsWith('.') || ['planet', 'update'].includes(city.toLowerCase())) continue;
+          seen.add(city);
+          const display = city.replace(/([a-z])([A-Z])/g, '$1 $2');
+          allRows.push({
+            catalog_id: 'bbbike:' + city, source: 'bbbike',
+            region_name: display, region_key: city,
+            hierarchy: null, continent: null, country: null,
+            pbf_url: BBBIKE_BASE + '/' + city + '/' + city + '.osm.pbf',
+            pbf_size_mb: null, level: 'city',
+          });
+        }
+      }
+    } catch {}
+
+    const seenKeys = new Map<string, boolean>();
+    for (let i = allRows.length - 1; i >= 0; i--) {
+      const dk = `${allRows[i].source}:${allRows[i].region_key}:${allRows[i].country || ''}`;
+      if (seenKeys.has(dk)) {
+        allRows.splice(i, 1);
+      } else {
+        seenKeys.set(dk, true);
+      }
+    }
+
+    const geofabrikCount = allRows.filter(r => r.source === 'geofabrik').length;
+    const bbbikeCount = allRows.filter(r => r.source === 'bbbike').length;
+
+    if (allRows.length > 0) {
+      await runSql(`DELETE FROM ${SF_DATABASE}.CORE.REGION_CATALOG`);
+      const batchSize = 100;
+      for (let i = 0; i < allRows.length; i += batchSize) {
+        const batch = allRows.slice(i, i + batchSize);
+        const values = batch.map(r => {
+          const esc = (v: string | null) => v === null ? 'NULL' : "'" + v.replace(/'/g, "''") + "'";
+          const num = (v: number | null) => v === null ? 'NULL' : String(v);
+          return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},NULL,NULL,NULL,NULL,CURRENT_TIMESTAMP())`;
+        }).join(',');
+        await runSql(`INSERT INTO ${SF_DATABASE}.CORE.REGION_CATALOG (CATALOG_ID,SOURCE,REGION_NAME,REGION_KEY,HIERARCHY,CONTINENT,COUNTRY,PBF_URL,PBF_SIZE_MB,LEVEL,MIN_LAT,MAX_LAT,MIN_LON,MAX_LON,UPDATED_AT) VALUES ${values}`);
+      }
+    }
+
+    res.json({ status: 'ok', result: { geofabrik_count: geofabrikCount, bbbike_count: bbbikeCount, total: allRows.length } });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', error: err.message });
+  }
+});
+
+app.get('/api/regions/provisioned', async (_req, res) => {
+  try {
+    const result = await callProcedure('LIST_REGIONS()');
     const cities = JSON.parse(result || '[]');
     const enriched = await Promise.all(cities.map(async (c: any) => {
       let serviceStatus = 'UNKNOWN';
@@ -390,13 +584,13 @@ app.get('/api/cities', async (_req, res) => {
       });
     }
 
-    res.json({ cities: enriched });
+    res.json({ regions: enriched });
   } catch (err: any) {
-    res.json({ cities: [], error: err.message });
+    res.json({ regions: [], error: err.message });
   }
 });
 
-app.post('/api/cities/provision', async (req, res) => {
+app.post('/api/regions/provision', async (req, res) => {
   const { city, region, pbf_url, bbox, profiles } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
@@ -429,7 +623,7 @@ app.post('/api/cities/provision', async (req, res) => {
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
   try {
-    await runSql(`INSERT INTO ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE) VALUES ('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', '${safeProfiles}', 'PENDING', 'NOT_STARTED')`);
+    await runSql(`INSERT INTO ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS (JOB_ID, REGION, DISPLAY_NAME, PBF_URL, PROFILES, STATUS, STAGE) VALUES ('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', '${safeProfiles}', 'PENDING', 'NOT_STARTED')`);
   } catch (err: any) {
     return res.status(500).json({ error: `Failed to create job: ${err.message}` });
   }
@@ -437,15 +631,15 @@ app.post('/api/cities/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_CITY_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}')`;
     const handle = await submitSqlAsync(callSql);
-    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
     console.error(`[provision] async launch error: ${e.message}`);
   }
 });
 
-app.get('/api/cities/provision/status', async (_req, res) => {
+app.get('/api/regions/provision/status', async (_req, res) => {
   try {
     const result = await callProcedure('GET_PROVISION_STATUS()');
     const jobs = JSON.parse(result || '[]');
@@ -455,7 +649,7 @@ app.get('/api/cities/provision/status', async (_req, res) => {
   }
 });
 
-app.get('/api/cities/:region/progress', async (req, res) => {
+app.get('/api/regions/:region/progress', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const result = await callProcedure('GET_PROVISION_STATUS()');
@@ -470,23 +664,23 @@ app.get('/api/cities/:region/progress', async (req, res) => {
   } catch { res.json({ status: 'idle', phase: '' }); }
 });
 
-app.post('/api/cities/:region/cancel', async (req, res) => {
+app.post('/api/regions/:region/cancel', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const result = await callProcedure('GET_PROVISION_STATUS()');
     const jobs = JSON.parse(result || '[]');
     const active = jobs.find((j: any) => j.region === safeRegion && (j.status === 'RUNNING' || j.status === 'PENDING'));
     if (active?.statement_handle) await cancelStatement(active.statement_handle);
-    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
     res.json({ status: 'cancelled' });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/cities/:region', async (req, res) => {
+app.delete('/api/regions/:region', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
-    const result = await callProcedure(`DROP_CITY_ORS('${safeRegion}')`);
-    await runSql(`UPDATE ${SF_DATABASE}.CORE.CITY_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
+    const result = await callProcedure(`DROP_REGION_ORS('${safeRegion}')`);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
     res.json({ status: 'ok', result });
   } catch (err: any) {
     res.json({ status: 'error', error: err.message });
@@ -495,7 +689,7 @@ app.delete('/api/cities/:region', async (req, res) => {
 
 app.get('/api/matrix/regions', async (_req, res) => {
   try {
-    const cities = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.CITY_ORS_MAP`);
+    const cities = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
     const regions: any[] = [];
 
     for (const c of cities) {
@@ -544,7 +738,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
         }
       } catch {}
       try {
-        const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.CITY_ORS_MAP WHERE REGION = '${escapeString(defaultRegion)}'`);
+        const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(defaultRegion)}'`);
         if (cityRow?.[0]) {
           defaultLabel = cityRow[0].DISPLAY_NAME || defaultLabel;
           defaultBounds = { minLat: cityRow[0].MIN_LAT, maxLat: cityRow[0].MAX_LAT, minLon: cityRow[0].MIN_LON, maxLon: cityRow[0].MAX_LON };
@@ -610,7 +804,7 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
 
     let bbox = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
     try {
-      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.CITY_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
+      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
       if (cityRow?.[0]) bbox = cityRow[0];
     } catch {}
 
@@ -708,7 +902,7 @@ app.post('/api/matrix/build', async (req, res) => {
   try {
     let bbox = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
     try {
-      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.CITY_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
+      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
       if (cityRow?.[0]) bbox = cityRow[0];
     } catch {}
 

@@ -10,6 +10,11 @@ CONNECTION="fleet_test_evals"
 SERVICE="OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP"
 PKG_STAGE="@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE"
 
+MANIFEST="$SCRIPT_DIR/../../app/manifest.yml"
+BUILD_MD="$SCRIPT_DIR/../../../references/build-images.md"
+SKILL_MD="$SCRIPT_DIR/../../../SKILL.md"
+README_MD="$SCRIPT_DIR/../../../../../../README.md"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -c|--connection) CONNECTION="$2"; shift 2 ;;
@@ -33,18 +38,27 @@ npm run build:server
 
 echo "--- [2/7] Docker build (linux/amd64, runtime-only) ---"
 mv .dockerignore .dockerignore.bak 2>/dev/null || true
-docker build --platform linux/amd64 -f Dockerfile.runtime -t "${FULL_IMAGE}" .
+VERSION_NUM="${NEW_TAG#v}"
+docker build --platform linux/amd64 --build-arg APP_VERSION="${VERSION_NUM}" -f Dockerfile.runtime -t "${FULL_IMAGE}" .
 mv .dockerignore.bak .dockerignore 2>/dev/null || true
 
 echo "--- [3/7] Docker push ---"
 snow spcs image-registry login -c "$CONNECTION"
 docker push "${FULL_IMAGE}"
 
-echo "--- [4/7] Update local YAML ---"
+echo "--- [4/7] Update version in all tracked files ---"
 sed -i.bak "s|${IMAGE_NAME}:v${CURRENT_TAG}|${IMAGE_NAME}:${NEW_TAG}|" "$YAML" && rm -f "${YAML}.bak"
+sed -i.bak "s|APP_VERSION: \"${CURRENT_TAG}\"|APP_VERSION: \"${VERSION_NUM}\"|" "$YAML" && rm -f "${YAML}.bak"
+for f in "$MANIFEST" "$BUILD_MD" "$SKILL_MD" "$README_MD"; do
+  [ -f "$f" ] && sed -i.bak "s|${IMAGE_NAME}:v${CURRENT_TAG}|${IMAGE_NAME}:${NEW_TAG}|g" "$f" && rm -f "${f}.bak"
+done
+for f in "$BUILD_MD" "$SKILL_MD"; do
+  [ -f "$f" ] && sed -i.bak "s|${IMAGE_NAME} (v${CURRENT_TAG})|${IMAGE_NAME} (${NEW_TAG})|g" "$f" && rm -f "${f}.bak"
+done
 
-echo "--- [5/7] Upload YAML to package stage (prevents version_init revert) ---"
+echo "--- [5/7] Upload YAML + manifest to package stage (prevents version_init revert) ---"
 snow sql -c "$CONNECTION" -q "PUT 'file://${YAML}' ${PKG_STAGE}/services/ors_control_app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;"
+snow sql -c "$CONNECTION" -q "PUT 'file://${MANIFEST}' ${PKG_STAGE}/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;"
 
 echo "--- [6/7] Upgrade native app (triggers version_init -> create_control_app) ---"
 snow sql -c "$CONNECTION" -q "ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING ${PKG_STAGE};"

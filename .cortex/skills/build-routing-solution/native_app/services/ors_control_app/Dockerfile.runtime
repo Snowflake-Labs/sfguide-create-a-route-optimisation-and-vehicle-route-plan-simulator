@@ -1,4 +1,6 @@
 FROM node:20-alpine
+ARG APP_VERSION=0.0.0
+ENV APP_VERSION=$APP_VERSION
 WORKDIR /app
 COPY dist ./dist
 COPY dist-server ./dist-server

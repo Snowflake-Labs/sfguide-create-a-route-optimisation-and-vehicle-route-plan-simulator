@@ -187,14 +187,16 @@ export interface ViewerSelection {
   max_travel_time_secs: number;
 }
 
-export const CITY_CATALOG: Record<string, { region: string; pbfUrl: string; bbox: { minLat: number; maxLat: number; minLon: number; maxLon: number } }> = {
-  'San Francisco': { region: 'SanFrancisco', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf', bbox: { minLat: 37.71, maxLat: 37.81, minLon: -122.51, maxLon: -122.37 } },
-  'New York': { region: 'NewYork', pbfUrl: 'https://download.bbbike.org/osm/bbbike/NewYork/NewYork.osm.pbf', bbox: { minLat: 40.49, maxLat: 40.92, minLon: -74.26, maxLon: -73.70 } },
-  'London': { region: 'London', pbfUrl: 'https://download.bbbike.org/osm/bbbike/London/London.osm.pbf', bbox: { minLat: 51.28, maxLat: 51.69, minLon: -0.51, maxLon: 0.33 } },
-  'Paris': { region: 'Paris', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf', bbox: { minLat: 48.81, maxLat: 48.90, minLon: 2.22, maxLon: 2.47 } },
-  'Berlin': { region: 'Berlin', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf', bbox: { minLat: 52.34, maxLat: 52.68, minLon: 13.09, maxLon: 13.76 } },
-  'Chicago': { region: 'Chicago', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf', bbox: { minLat: 41.64, maxLat: 42.02, minLon: -87.94, maxLon: -87.52 } },
-  'Los Angeles': { region: 'LosAngeles', pbfUrl: 'https://download.bbbike.org/osm/bbbike/LosAngeles/LosAngeles.osm.pbf', bbox: { minLat: 33.70, maxLat: 34.34, minLon: -118.67, maxLon: -117.65 } },
-  'San Jose': { region: 'SanJose', pbfUrl: 'https://download.bbbike.org/osm/bbbike/SanJose/SanJose.osm.pbf', bbox: { minLat: 37.12, maxLat: 37.47, minLon: -122.05, maxLon: -121.72 } },
-  'Sacramento': { region: 'Sacramento', pbfUrl: 'https://download.bbbike.org/osm/bbbike/Sacramento/Sacramento.osm.pbf', bbox: { minLat: 38.43, maxLat: 38.70, minLon: -121.56, maxLon: -121.35 } },
-};
+export interface CatalogRegion {
+  catalogId: string;
+  source: 'geofabrik' | 'bbbike';
+  regionName: string;
+  regionKey: string;
+  hierarchy?: string;
+  continent?: string;
+  country?: string;
+  pbfUrl: string;
+  pbfSizeMb?: number;
+  level: 'continent' | 'country' | 'sub-region' | 'city';
+  bbox?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+}

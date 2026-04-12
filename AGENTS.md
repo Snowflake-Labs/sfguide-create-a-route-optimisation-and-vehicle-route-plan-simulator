@@ -121,7 +121,7 @@ Key facts:
   |--------|--------|---------------|
   | `01_core_infra.sql` | compute, stages, services, callbacks | `core` |
   | `02_routing_functions.sql` | service functions, UDFs | `routing` |
-  | `03_city_management.sql` | city provisioning, per-region ORS | `provisioner` / `multi-city` |
+  | `03_region_management.sql` | region catalog, provisioning, per-region ORS | `region-catalog` / `provisioner` / `multi-region` |
   | `04_service_lifecycle.sql` | resume, suspend, scale, status | `lifecycle` |
   | `05_matrix_pipeline.sql` | matrix build pipeline | `matrix` |
   | `06_matrix_ops.sql` | matrix status, inventory, delete | `matrix` |
@@ -140,7 +140,7 @@ Quick reference — component tags per module:
 |--------|---------------|
 | `01_core_infra.sql` | `core` |
 | `02_routing_functions.sql` | `routing` |
-| `03_city_management.sql` | `provisioner` / `multi-city` |
+| `03_region_management.sql` | `region-catalog` / `provisioner` / `multi-region` |
 | `04_service_lifecycle.sql` | `lifecycle` |
 | `05_matrix_pipeline.sql` | `matrix` |
 | `06_matrix_ops.sql` | `matrix` |

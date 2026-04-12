@@ -1,4 +1,46 @@
-CREATE TABLE IF NOT EXISTS core.CITY_PROVISION_JOBS (
+-- =============================================================================
+-- REGION CATALOG: Dynamic catalog of OSM regions from Geofabrik + BBBike
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.REGION_CATALOG (
+    CATALOG_ID    VARCHAR NOT NULL,
+    SOURCE        VARCHAR NOT NULL,
+    REGION_NAME   VARCHAR NOT NULL,
+    REGION_KEY    VARCHAR NOT NULL,
+    HIERARCHY     VARCHAR,
+    CONTINENT     VARCHAR,
+    COUNTRY       VARCHAR,
+    PBF_URL       VARCHAR NOT NULL,
+    PBF_SIZE_MB   FLOAT,
+    LEVEL         VARCHAR NOT NULL,
+    MIN_LAT       FLOAT,
+    MAX_LAT       FLOAT,
+    MIN_LON       FLOAT,
+    MAX_LON       FLOAT,
+    UPDATED_AT    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
+GRANT SELECT ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.REFRESH_REGION_CATALOG()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}'
+EXECUTE AS OWNER
+AS
+BEGIN
+    RETURN '{"message":"Catalog refresh is handled by the Control App server. Use the Region Builder UI or POST /api/regions/catalog/refresh."}';
+END;
+GRANT USAGE ON PROCEDURE core.REFRESH_REGION_CATALOG() TO APPLICATION ROLE app_user;
+
+-- =============================================================================
+-- REGION PROVISIONING: Job tracking for region deployment
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS core.REGION_PROVISION_JOBS (
     JOB_ID VARCHAR NOT NULL,
     REGION VARCHAR NOT NULL,
     DISPLAY_NAME VARCHAR,
@@ -14,12 +56,12 @@ CREATE TABLE IF NOT EXISTS core.CITY_PROVISION_JOBS (
     ERROR_MSG VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
-GRANT SELECT ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT UPDATE ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.CITY_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT SELECT ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.PROVISION_CITY_WRAPPER(
+CREATE OR REPLACE PROCEDURE core.PROVISION_REGION_WRAPPER(
     P_JOB_ID VARCHAR,
     P_REGION VARCHAR,
     P_DISPLAY_NAME VARCHAR,
@@ -42,9 +84,9 @@ DECLARE
     profile_count INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
-    UPDATE core.CITY_PROVISION_JOBS
+    UPDATE core.REGION_PROVISION_JOBS
     SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=CURRENT_TIMESTAMP(),
-        MESSAGE='Inserting city metadata and downloading PBF file...'
+        MESSAGE='Inserting region metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
     BEGIN
@@ -52,7 +94,7 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    MERGE INTO core.CITY_ORS_MAP t USING (
+    MERGE INTO core.REGION_ORS_MAP t USING (
         SELECT :P_REGION AS REGION
     ) s ON t.REGION = s.REGION
     WHEN NOT MATCHED THEN INSERT (REGION, DISPLAY_NAME, PBF_URL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
@@ -67,7 +109,7 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
         SYSTEM$LOG_INFO(dl_err);
-        UPDATE core.CITY_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+        UPDATE core.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
         RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
     END;
 
@@ -76,13 +118,13 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    UPDATE core.CITY_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE core.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
     CALL core.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
 
-    UPDATE core.CITY_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
-    CALL core.SETUP_CITY_ORS(:P_REGION);
+    UPDATE core.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
+    CALL core.SETUP_REGION_ORS(:P_REGION);
 
-    UPDATE core.CITY_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE core.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     FOR i IN 1 TO 60 DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
@@ -92,14 +134,14 @@ BEGIN
             LET c1 CURSOR FOR rs;
             FOR r IN c1 DO svc_status := r.S; END FOR;
             IF (:svc_status = 'RUNNING') THEN
-                UPDATE core.CITY_PROVISION_JOBS SET MESSAGE='ORS service is RUNNING, waiting for graph...' WHERE JOB_ID = :P_JOB_ID;
+                UPDATE core.REGION_PROVISION_JOBS SET MESSAGE='ORS service is RUNNING, waiting for graph...' WHERE JOB_ID = :P_JOB_ID;
                 BREAK;
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
     END FOR;
 
-    UPDATE core.CITY_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE core.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
     FOR i IN 1 TO 40 DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
         BEGIN
@@ -110,14 +152,14 @@ BEGIN
             IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
                 profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
                 IF (:profile_count > 0) THEN
-                    UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+                    UPDATE core.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
                     BEGIN
                         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
-                    UPDATE core.CITY_PROVISION_JOBS
+                    UPDATE core.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
-                        MESSAGE='City provisioned — ' || :profile_count || ' profile(s) ready',
+                        MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready',
                         COMPLETED_AT=CURRENT_TIMESTAMP()
                     WHERE JOB_ID = :P_JOB_ID;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
@@ -131,8 +173,8 @@ BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
-    UPDATE core.CITY_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
-    UPDATE core.CITY_PROVISION_JOBS
+    UPDATE core.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+    UPDATE core.REGION_PROVISION_JOBS
     SET STATUS='COMPLETE', STAGE='READY',
         MESSAGE='Service running but graph may still be loading. Check ORS_STATUS.',
         COMPLETED_AT=CURRENT_TIMESTAMP()
@@ -150,13 +192,13 @@ EXCEPTION
             EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
         EXCEPTION WHEN OTHER THEN NULL;
         END;
-        UPDATE core.CITY_PROVISION_JOBS
+        UPDATE core.REGION_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.PROVISION_CITY_WRAPPER(VARCHAR, VARCHAR, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.PROVISION_REGION_WRAPPER(VARCHAR, VARCHAR, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.GET_PROVISION_STATUS()
 RETURNS VARCHAR
@@ -177,7 +219,7 @@ BEGIN
         'started_at', COALESCE(TO_VARCHAR(STARTED_AT, 'YYYY-MM-DD HH24:MI:SS'), ''),
         'completed_at', COALESCE(TO_VARCHAR(COMPLETED_AT, 'YYYY-MM-DD HH24:MI:SS'), '')
     )), ARRAY_CONSTRUCT())::VARCHAR INTO result
-    FROM core.CITY_PROVISION_JOBS
+    FROM core.REGION_PROVISION_JOBS
     WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
     ORDER BY CREATED_AT DESC;
     RETURN result;
@@ -186,10 +228,10 @@ $$;
 GRANT USAGE ON PROCEDURE core.GET_PROVISION_STATUS() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
--- MULTI-CITY: Per-region ORS instances with city-prefixed functions
+-- MULTI-REGION: Per-region ORS instances with region-parameterized functions
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS core.CITY_ORS_MAP (
+CREATE TABLE IF NOT EXISTS core.REGION_ORS_MAP (
     REGION VARCHAR,
     DISPLAY_NAME VARCHAR,
     PBF_URL VARCHAR,
@@ -201,16 +243,16 @@ CREATE TABLE IF NOT EXISTS core.CITY_ORS_MAP (
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}';
-GRANT SELECT ON TABLE core.CITY_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.CITY_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT UPDATE ON TABLE core.CITY_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.CITY_ORS_MAP TO APPLICATION ROLE app_user;
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+GRANT SELECT ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
+GRANT INSERT ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
+GRANT UPDATE ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
+GRANT DELETE ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.create_city_ors_service(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.create_region_ors_service(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -232,36 +274,36 @@ BEGIN
         AUTO_RESUME = TRUE
         AUTO_SUSPEND_SECS = 14400;
 
-    ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}';
+    ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
     ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
-    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}''';
+    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
     EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';
     EXECUTE IMMEDIATE 'GRANT MONITOR ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';
 
-    UPDATE core.CITY_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
+    UPDATE core.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
 
-    RETURN 'City ORS service created for region ' || :P_REGION || ': ' || svc_name;
+    RETURN 'Region ORS service created for ' || :P_REGION || ': ' || svc_name;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.create_city_ors_service(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.create_region_ors_service(VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.create_city_functions(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.create_region_functions(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
 BEGIN
-    RETURN 'No-op: per-city function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(core.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
+    RETURN 'No-op: per-region function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(core.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.create_city_functions(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.create_region_functions(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
 RETURNS STRING
@@ -269,7 +311,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 PACKAGES = ('snowflake-snowpark-python')
 HANDLER = 'run'
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -338,28 +380,28 @@ def run(session, p_region, p_pbf_file, p_profiles):
 $$;
 GRANT USAGE ON PROCEDURE core.write_ors_config(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.setup_city_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.setup_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
 BEGIN
     CALL core.create_compute_pool();
     CALL core.create_stages();
-    CALL core.create_city_ors_service(:P_REGION);
+    CALL core.create_region_ors_service(:P_REGION);
     CALL core.create_services();
     SELECT SYSTEM$WAIT(30);
-    RETURN 'City ORS deployed for region: ' || :P_REGION;
+    RETURN 'Region ORS deployed for: ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.setup_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.setup_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.resume_city_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.resume_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -373,12 +415,12 @@ BEGIN
     RETURN 'Resumed ORS services for ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.resume_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.resume_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.drop_city_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE core.drop_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -387,17 +429,19 @@ BEGIN
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
 
-    DELETE FROM core.CITY_ORS_MAP WHERE REGION = :P_REGION;
+    DELETE FROM core.REGION_ORS_MAP WHERE REGION = :P_REGION;
 
-    RETURN 'Dropped city ORS for ' || :P_REGION;
+    RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.drop_city_ors(VARCHAR) TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.drop_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
 
-CREATE OR REPLACE PROCEDURE core.list_cities()
+DROP FUNCTION IF EXISTS core.list_regions();
+
+CREATE OR REPLACE PROCEDURE core.list_regions()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-city"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -410,8 +454,8 @@ BEGIN
         'status', STATUS,
         'bbox', OBJECT_CONSTRUCT('min_lat', MIN_LAT, 'max_lat', MAX_LAT, 'min_lon', MIN_LON, 'max_lon', MAX_LON)
     ))::VARCHAR INTO result
-    FROM core.CITY_ORS_MAP;
+    FROM core.REGION_ORS_MAP;
     RETURN COALESCE(result, '[]');
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.list_cities() TO APPLICATION ROLE app_user;
+GRANT USAGE ON PROCEDURE core.list_regions() TO APPLICATION ROLE app_user;

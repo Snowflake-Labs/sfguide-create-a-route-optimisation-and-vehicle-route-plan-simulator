@@ -87,7 +87,7 @@ Five container services run inside the native app:
 | `vroom_service` | `vroom-docker:v1.0.1` | Vehicle Routing Problem (VRP) optimizer |
 | `routing_gateway_service` | `routing_reverse_proxy:v0.9.6` | Nginx reverse proxy routing requests to per-region ORS instances |
 | `downloader` | `downloader:v0.0.3` | Downloads OSM PBF map files from Geofabrik |
-| `ors_control_app` | `ors_control_app:v1.0.86` | React admin panel and demo dashboards (Express.js backend) |
+| `ors_control_app` | `ors_control_app:v1.0.94` | React admin panel and demo dashboards (Express.js backend) |
 
 ### SQL Functions
 
@@ -378,7 +378,7 @@ The native app's `setup_script.sql` is a thin orchestrator that calls six domain
 |--------|--------|-----------------|
 | `01_core_infra.sql` | Compute, stages, services | Compute pool, stages, all 5 SPCS services, lifecycle callbacks |
 | `02_routing_functions.sql` | SQL functions | 8 public functions + 7 internal `_RAW` service functions, `MAP_CONFIG`, `VERSION_INFO` |
-| `03_city_management.sql` | Multi-region | `CITY_ORS_MAP`, `CITY_PROVISION_JOBS`, provisioning procedures |
+| `03_region_management.sql` | Multi-region | `REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, provisioning + catalog refresh procedures |
 | `04_service_lifecycle.sql` | Service ops | Resume, suspend, scale, status procedures |
 | `05_matrix_pipeline.sql` | Matrix build | `MATRIX_BUILD_JOBS`, build/flatten procedures |
 | `06_matrix_ops.sql` | Matrix ops | Status, inventory, delete procedures |

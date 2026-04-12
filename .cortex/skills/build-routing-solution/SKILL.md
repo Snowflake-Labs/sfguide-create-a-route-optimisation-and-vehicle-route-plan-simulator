@@ -167,7 +167,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 1. Authenticate with SPCS image registry (Docker or Podman)
 2. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
-3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v1.0.0), vroom-docker (v1.0.1), ors_control_app (v1.0.87)
+3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v1.0.0), vroom-docker (v1.0.1), ors_control_app (v1.0.94)
 
 **Expected Duration:** 5-10 minutes
 
