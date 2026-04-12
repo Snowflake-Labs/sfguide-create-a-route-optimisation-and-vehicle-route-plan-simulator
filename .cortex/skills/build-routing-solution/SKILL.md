@@ -257,42 +257,84 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```
    Expected: 5 services listed. They may take 1-3 minutes to reach RUNNING status. Check again if status shows PENDING.
 
-   **If 0 services appear:** The grant_callback may not have fired. See Step 7 SQL Fallback.
+   **If 0 services appear:** The grant_callback has not fired yet — this is expected. Step 7 will grant privileges, bind EAI references, and trigger the callback automatically via SQL.
 
 **Output:** Native app deployed and accessible via Snowsight URL
 
-### Step 7: User Confirmation (Required)
+### Step 7: Activate App (Automated via SQL)
 
-**Goal:** Ensure user has completed UI setup before marking skill as complete
+**Goal:** Grant account privileges, create External Access Integrations, bind references, and trigger the full deployment — all via SQL, no Snowsight UI required
 
 **Actions:**
 
-1. **Ask user to complete** the following in Snowsight:
-   - Navigate to **Catalog >> Apps >> OPENROUTESERVICE_NATIVE_APP**
-   - Select warehouse **ROUTING_ANALYTICS**
-   - **External connections:** Click **Review**, see the message "OPENROUTESERVICE_NATIVE_APP would like to connect to the following external endpoints", then click **Connect**. There are TWO references: one for OSM map downloads and one for CARTO basemap tiles. Both must be connected.
-   - **Account Privileges:** Click **Grant**
-   - **Activation:** Wait while "Activating OPENROUTESERVICE_NATIVE_APP" is displayed (this may take 1-2 minutes)
-   - When you see "OPENROUTESERVICE_NATIVE_APP is activated", click **Proceed to App**
-   - (Optional) Go to the **Access Management** tab to grant access to additional roles
-   - Click **Launch App** and wait through the launching steps
-   - When you see **"OPEN ROUTE SERVICE | SERVICE MANAGER"**, the app is fully operational
+1. **Grant account-level privileges** to the app:
+   ```sql
+   GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
 
-2. **Wait for explicit confirmation** from user before proceeding to any subsequent skills
+2. **Create network rules and External Access Integrations** (replicates the Snowsight "Review > Connect" step):
+   ```sql
+   CREATE OR REPLACE NETWORK RULE ORS_OSM_NETWORK_RULE
+     TYPE = HOST_PORT  MODE = EGRESS
+     VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-**IMPORTANT:** Do NOT mark this skill as complete until the user confirms all the above steps are done.
+   CREATE OR REPLACE NETWORK RULE ORS_CARTO_NETWORK_RULE
+     TYPE = HOST_PORT  MODE = EGRESS
+     VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-**SQL Fallback (if Snowsight activation was skipped or services are not running):**
-```sql
-SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
--- If 0 services, the grant_callback may not have fired. Run manually:
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.GRANT_CALLBACK(ARRAY_CONSTRUCT('CREATE COMPUTE POOL'));
--- Wait 2-3 minutes, then verify:
-SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE');
-SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP');
-```
+   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
+     ALLOWED_NETWORK_RULES = (ORS_OSM_NETWORK_RULE)
+     ENABLED = TRUE
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-**Output:** User confirmation received that app is fully operational
+   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_CARTO_EAI
+     ALLOWED_NETWORK_RULES = (ORS_CARTO_NETWORK_RULE)
+     ENABLED = TRUE
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   ```
+
+3. **Grant USAGE on EAIs to the app and bind references:**
+   ```sql
+   GRANT USAGE ON INTEGRATION ORS_OSM_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT USAGE ON INTEGRATION ORS_CARTO_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+     'external_access_integration_ref', 'ADD',
+     SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_OSM_EAI', 'PERSISTENT', 'USAGE'));
+
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+     'external_access_carto_ref', 'ADD',
+     SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_CARTO_EAI', 'PERSISTENT', 'USAGE'));
+   ```
+
+4. **Trigger the grant callback** to deploy compute pool, stages, downloader, services, functions, and control app:
+   ```sql
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.GRANT_CALLBACK(ARRAY_CONSTRUCT('CREATE COMPUTE POOL', 'BIND SERVICE ENDPOINT'));
+   ```
+   This takes 2-3 minutes. It creates the compute pool (5 nodes), downloads OSM data, starts all SPCS services, creates routing functions, and launches the ORS Control App.
+
+5. **Grant Overture Maps access** (for Data Studio POI data):
+   ```sql
+   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+   If OVERTURE_MAPS__PLACES is not available, skip — Data Studio POI features will be unavailable.
+
+6. **Verify** all services are running:
+   ```sql
+   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+   Expected: 5 services (downloader, ors_service, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
+
+   If services show SUSPENDED or PENDING after 5 minutes:
+   ```sql
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE');
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP');
+   ```
+
+**Output:** App fully activated with all services running — no manual Snowsight UI steps required
 
 ### Step 8: Load Seed Datasets
 
@@ -457,7 +499,7 @@ See `references/available-functions.md` for the full list of SQL functions, rout
 
 See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
 
-Access via: Snowsight -> Data Products >> Apps. After selecting OPENROUTESERVICE_NATIVE_APP grant the required privileges via UI and launch it for the first time via button in upper right corner. It may take a minute or two.
+Access via: Snowsight -> Data Products >> Apps >> OPENROUTESERVICE_NATIVE_APP >> Launch App. All privileges and external access integrations are granted automatically during Step 7 — no manual UI approval is needed.
 
 ## Examples
 

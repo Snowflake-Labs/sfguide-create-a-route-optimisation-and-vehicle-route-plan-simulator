@@ -40,6 +40,51 @@ echo "==> Upgrading application..."
 snow sql -c "$CONN" -q \
   "ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING $STAGE"
 
+echo "==> Granting account-level privileges to app..."
+snow sql -c "$CONN" -q "GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
+snow sql -c "$CONN" -q "GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
+
+echo "==> Creating network rules and External Access Integrations..."
+snow sql -c "$CONN" -q "
+CREATE OR REPLACE NETWORK RULE ORS_OSM_NETWORK_RULE
+  TYPE = HOST_PORT  MODE = EGRESS
+  VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
+  COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-build-routing-solution\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
+"
+snow sql -c "$CONN" -q "
+CREATE OR REPLACE NETWORK RULE ORS_CARTO_NETWORK_RULE
+  TYPE = HOST_PORT  MODE = EGRESS
+  VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
+  COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-build-routing-solution\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
+"
+snow sql -c "$CONN" -q "
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
+  ALLOWED_NETWORK_RULES = (ORS_OSM_NETWORK_RULE)  ENABLED = TRUE
+  COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-build-routing-solution\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
+"
+snow sql -c "$CONN" -q "
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_CARTO_EAI
+  ALLOWED_NETWORK_RULES = (ORS_CARTO_NETWORK_RULE)  ENABLED = TRUE
+  COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-build-routing-solution\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';
+"
+
+echo "==> Granting USAGE on EAIs and binding references..."
+snow sql -c "$CONN" -q "GRANT USAGE ON INTEGRATION ORS_OSM_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
+snow sql -c "$CONN" -q "GRANT USAGE ON INTEGRATION ORS_CARTO_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
+snow sql -c "$CONN" -q "
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+  'external_access_integration_ref', 'ADD',
+  SYSTEM\$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_OSM_EAI', 'PERSISTENT', 'USAGE'));
+"
+snow sql -c "$CONN" -q "
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
+  'external_access_carto_ref', 'ADD',
+  SYSTEM\$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_CARTO_EAI', 'PERSISTENT', 'USAGE'));
+"
+
+echo "==> Triggering grant_callback (deploys compute pool, services, functions)..."
+snow sql -c "$CONN" -q "CALL OPENROUTESERVICE_NATIVE_APP.CORE.GRANT_CALLBACK(ARRAY_CONSTRUCT('CREATE COMPUTE POOL', 'BIND SERVICE ENDPOINT'));"
+
 echo "==> Granting access to FLEET_INTELLIGENCE (projection views, presets, jobs)..."
 snow sql -c "$CONN" -q "GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
 snow sql -c "$CONN" -q "GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;"
