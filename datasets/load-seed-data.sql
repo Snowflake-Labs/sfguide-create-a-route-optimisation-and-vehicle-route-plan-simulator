@@ -372,6 +372,26 @@ SELECT
   PARSE_JSON('{"vehicleType":"ebike","orsProfile":"cycling-electric","numVehicles":50,"days":7,"tripsPerDay":{"min":15,"max":35},"region":"SanFrancisco","source":"seed-data"}');
 
 --------------------------------------------------------------------------------
+-- 3c. SET_ACTIVE_REGION procedure
+--     Called by ORS Control App server on region switch.
+--------------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(
+    P_REGION VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+BEGIN
+    UPDATE FLEET_INTELLIGENCE.CORE.REGION_REGISTRY SET IS_DEFAULT = FALSE WHERE IS_DEFAULT = TRUE;
+    UPDATE FLEET_INTELLIGENCE.CORE.REGION_REGISTRY SET IS_DEFAULT = TRUE WHERE REGION_NAME = :P_REGION;
+    RETURN 'Active region set to ' || P_REGION;
+END;
+$$;
+
+--------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated
 --------------------------------------------------------------------------------
 

@@ -27,8 +27,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTE_OPTIMIZATION schema |
-| CREATE STAGE | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Creates NOTEBOOK stage |
-| CREATE NOTEBOOK | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Deploys Carto data and AISQL notebooks |
+| CREATE TABLE | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Creates CONFIG, PLACES, LOOKUP, JOB_TEMPLATE |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS routing functions |
 | EXECUTE MANAGED TASK | Account | Enables ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION (optional) |
@@ -56,31 +55,6 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 2. Replace longer phrases before shorter ones when editing notebook prompts to avoid garbled text.
 3. Replace complete prompt strings, not individual words.
 4. Always validate JSON validity of modified `.ipynb` files before uploading.
-
-## Step 0: Load San Francisco Baseline (Recommended)
-
-The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
-
-### Quick check
-
-```sql
-SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;
-```
-
-If the table exists and has rows, data is already loaded. Skip to the ORS configuration step.
-
-### Load from S3
-
-Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/route-optimization/`.
-
-### Generate data for other regions (optional)
-
-To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
-
-Or use the centralized provisioner:
-```sql
-CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('route-optimization'));
-```
 
 ## Workflow
 
@@ -129,11 +103,24 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (fleet simulatio
 
 ### Step 5: Setup Snowflake Objects
 
-**Goal:** Create database, schema, and warehouse for the demo.
+**Goal:** Create database, schema, warehouse, and CONFIG table for the demo.
 
 > See `references/sql-setup.md` for CREATE DATABASE / SCHEMA / WAREHOUSE SQL.
 
-**Output:** `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION` schema created.
+Also create the CONFIG table:
+```sql
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+MERGE INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG tgt
+USING (SELECT 'driving-car' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
+```
+
+**Output:** `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION` schema created with CONFIG table.
 
 ### Step 6: Deploy Carto Data Notebook
 
@@ -166,9 +153,16 @@ If city references already match `<NOTEBOOK_CITY>`, skip modification and upload
 
 The React Demo Dashboard page queries these exact tables and columns. If the pipeline changes column names, the React page must be updated to match.
 
+### CONFIG
+| Column | Type | Used By |
+|--------|------|---------|
+| VEHICLE_TYPE | VARCHAR | Global vehicle type selector |
+| REGION | VARCHAR | Global region selector (updated by server on region switch) |
+
 ### PLACES
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RouteOptimization (region filter) |
 | NAME | VARCHAR | RouteOptimization (place display) |
 | CATEGORY | VARCHAR | RouteOptimization (filtering) |
 | GEOMETRY | GEOGRAPHY | RouteOptimization (ST_X/ST_Y, ST_DWITHIN radius filter) |
@@ -176,6 +170,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 ### JOB_TEMPLATE
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RouteOptimization (region filter) |
 | ID | NUMBER | RouteOptimization (job assignment) |
 | SLOT_START | NUMBER | RouteOptimization (VRP time windows) |
 | SLOT_END | NUMBER | RouteOptimization (VRP time windows) |
@@ -186,6 +181,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 ### LOOKUP
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RouteOptimization (region filter) |
 | INDUSTRY | VARCHAR | RouteOptimization (industry selector) |
 | PA | VARCHAR | RouteOptimization (POI category filter) |
 | PB | VARCHAR | RouteOptimization |
@@ -250,9 +246,9 @@ Complete Route Optimization demo with:
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: notebooks, tables, stages, schema
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION;

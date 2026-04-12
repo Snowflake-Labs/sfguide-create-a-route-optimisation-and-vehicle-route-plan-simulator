@@ -13,6 +13,15 @@ metadata:
 
 This skill routes customization requests to the correct subskills based on what you want to customize.
 
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ORS_APP_NAME` | `OPENROUTESERVICE_NATIVE_APP` | Name of the installed ORS native app |
+| `COMPUTE_POOL` | `OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL` | Compute pool used by ORS services |
+| `MAP_REGION` | (current) | Target geographic region for the map data |
+| `ROUTING_PROFILES` | (current) | Comma-separated list of profiles to enable |
+
 ## Required Privileges
 
 | Privilege | Scope | Reason |

@@ -49,9 +49,10 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Execution Rules
 
-1. **One statement per `snowflake_sql_execute` call.** Multi-statement blocks can silently fail.
+1. **One statement per `snowflake_sql_execute` tool call.** Multi-statement blocks can silently fail. This rule applies to the `snowflake_sql_execute` tool only; `snow sql -f` and other CLI execution is fine.
 2. **Always use fully qualified object names.** `{TARGET_DB}.{TARGET_SCHEMA}.<table>`.
 3. **Verify row counts after each CTAS.** Catch silent failures early.
+4. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation",...}'`. See `references/sql-pipeline.md` for tagged SQL.
 
 ## Step 0: Create Projection Views and Run ETL (Recommended)
 

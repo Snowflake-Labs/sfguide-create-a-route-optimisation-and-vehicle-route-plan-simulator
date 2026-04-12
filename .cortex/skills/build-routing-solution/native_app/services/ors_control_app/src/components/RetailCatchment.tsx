@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
+import { useRegion } from '../hooks/useRegion';
 
 const RC_DB = 'FLEET_INTELLIGENCE';
 const RC_SCHEMA = 'RETAIL_CATCHMENT';
@@ -24,6 +25,7 @@ function cartoBasemap() {
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 
 export default function RetailCatchment() {
+  const { regionName, center, zoom } = useRegion();
   const [cities, setCities] = useState<any[]>([]);
   const [selectedCity, setSelectedCity] = useState('');
   const [pois, setPois] = useState<any[]>([]);
@@ -38,18 +40,29 @@ export default function RetailCatchment() {
   const [showDensity, setShowDensity] = useState(false);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    sfQuery(`SELECT DISTINCT CITY, STATE FROM CITIES_BY_STATE ORDER BY STATE, CITY`)
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
+
+  useEffect(() => {
+    setSelectedCity('');
+    setPois([]);
+    setSelectedStore(null);
+    setCatchmentZones([]);
+    setCompetitors([]);
+    setDensityHexes([]);
+    setLoading(true);
+    sfQuery(`SELECT DISTINCT CITY, STATE FROM CITIES_BY_STATE WHERE REGION = '${regionName}' ORDER BY STATE, CITY`)
       .then(setCities)
       .finally(() => setLoading(false));
-  }, []);
+  }, [regionName]);
 
   useEffect(() => {
     if (!selectedCity) return;
     setLoading(true);
-    sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE CITY = '${selectedCity}' LIMIT 200`)
+    sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' LIMIT 200`)
       .then(r => { setPois(r); if (r.length > 0) setViewState(prev => ({ ...prev, longitude: Number(r[0].LNG), latitude: Number(r[0].LAT), zoom: 12 })); })
       .finally(() => setLoading(false));
   }, [selectedCity]);
@@ -75,8 +88,8 @@ export default function RetailCatchment() {
     setCatchmentZones(zones.reverse());
 
     const [comp, density] = await Promise.all([
-      sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
-      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
+      sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
+      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
     ]);
     setCompetitors(comp);
     setDensityHexes(density);

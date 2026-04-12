@@ -93,7 +93,7 @@ If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP IN
    SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
    ```
    - `PLACES`: typically 50K-500K rows depending on region
-   - `LOOKUP`: 3 rows (default) or number of custom industries
+   - `LOOKUP`: 3+ rows (default) or number of custom industries
    - `JOB_TEMPLATE`: 29 rows
    - **STOP** if any table has 0 rows
 

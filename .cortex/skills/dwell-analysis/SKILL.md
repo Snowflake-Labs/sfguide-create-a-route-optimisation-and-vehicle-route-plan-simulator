@@ -107,7 +107,7 @@ CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('d
 
 ### Step 1: Run SQL Pipeline
 
-Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each statement sequentially using `snowflake_sql_execute`.
+Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each statement sequentially using `snowflake_sql_execute`. All CREATE statements in the referenced SQL include COMMENT tracking tags per AGENTS.md convention (`"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis"`).
 
 **IMPORTANT:** Step 4 (SLA_THRESHOLDS) requires two separate SQL calls -- one CREATE TABLE and one INSERT.
 

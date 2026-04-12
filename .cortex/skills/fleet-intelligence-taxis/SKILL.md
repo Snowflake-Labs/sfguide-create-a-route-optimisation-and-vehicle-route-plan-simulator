@@ -127,10 +127,11 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 
 ### CRITICAL: Execution Rules
 
-> 1. **One statement per `snowflake_sql_execute` call.** Multi-statement blocks can silently fail.
+> 1. **One statement per `snowflake_sql_execute` tool call.** Multi-statement blocks can silently fail. This rule applies to the `snowflake_sql_execute` tool only; `snow sql -f` and other CLI execution is fine.
 > 2. **Always use fully qualified object names** (`FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.<object>`). Session context from `USE` statements does not persist across calls.
 > 3. **Never use `SET` session variables.** Substitute literal values directly into SQL.
 > 4. **Verify row counts after each CTAS.**
+> 5. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis",...}'`. See `references/sql-pipeline.md` for tagged SQL.
 
 ### Step 1: Set Query Tag
 

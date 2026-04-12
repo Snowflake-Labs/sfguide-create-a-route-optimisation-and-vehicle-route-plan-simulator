@@ -15,10 +15,12 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 ## Configuration
 
-- **Database:** `FLEET_INTELLIGENCE`
-- **Schema:** `ROUTING_AGENT`
-- **Warehouse:** `ROUTING_ANALYTICS`
-- **Agent Name:** `ROUTING_AGENT`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
+| `SCHEMA` | `ROUTING_AGENT` | Schema for agent procedures and agent definition |
+| `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for geocoding and routing queries |
+| `AGENT_NAME` | `ROUTING_AGENT` | Name of the Cortex Agent to create |
 
 ## Prerequisites
 

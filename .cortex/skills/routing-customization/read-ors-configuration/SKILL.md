@@ -1,6 +1,6 @@
 ---
 name: read-ors-configuration
-description: "Read current OpenRouteService configuration (region and routing profiles) and display to the user. Use when: checking current ORS settings, verifying map region, listing enabled vehicle profiles. Do NOT use for: changing configuration (use routing-customization), deploying demos, or building ORS from scratch. Triggers: ors configuration, openrouteservice config, routing simulator configuration, current map, current location, current vehicle types, current routing profiles."
+description: "Subskill of routing-customization. Read current OpenRouteService configuration (region and routing profiles) and display to the user. Use when: checking current ORS settings, verifying map region, listing enabled vehicle profiles. Do NOT use for: changing configuration (use routing-customization), deploying demos, or building ORS from scratch. Triggers: ors configuration, openrouteservice config, routing simulator configuration, current map, current location, current vehicle types, current routing profiles."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0

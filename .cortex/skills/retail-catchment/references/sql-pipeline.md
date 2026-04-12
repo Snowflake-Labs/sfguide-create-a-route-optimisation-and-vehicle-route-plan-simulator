@@ -62,7 +62,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
 SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US' LIMIT 1;
 ```
 
-## Step 4: Create Database, Schema, and Warehouse
+## Step 4: Create Database, Schema, Warehouse, and CONFIG
 
 ```sql
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
@@ -76,10 +76,18 @@ CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+```
 
-CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.STREAMLIT_STAGE
-    DIRECTORY = (ENABLE = TRUE)
+```sql
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+)
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+MERGE INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG tgt
+USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 ```
 
 ## Step 5: Create Optimized Data Tables
@@ -87,6 +95,7 @@ CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.STREAMLIT_STAGE
 **5a. Set bounding box configuration (customize for your region):**
 
 ```sql
+SET REGION_KEY = 'SanFrancisco';
 SET BBOX_MIN_LON = -123.0;
 SET BBOX_MIN_LAT = 36.8;
 SET BBOX_MAX_LON = -121.5;
@@ -101,11 +110,28 @@ Common bounding boxes:
 - Chicago: (-88.5, 41.5, -87.2, 42.2)
 - London: (-0.6, 51.2, 0.4, 51.8)
 
-**5b. Create filtered POI table:**
+**5b. Create and populate filtered POI table:**
 
 ```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS AS
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS (
+    REGION          VARCHAR NOT NULL,
+    POI_ID          VARCHAR,
+    POI_NAME        VARCHAR,
+    BASIC_CATEGORY  VARCHAR,
+    LONGITUDE       FLOAT,
+    LATITUDE        FLOAT,
+    GEOMETRY        GEOGRAPHY,
+    ADDRESS         VARCHAR,
+    CITY            VARCHAR,
+    STATE           VARCHAR,
+    POSTCODE        VARCHAR
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS WHERE REGION = $REGION_KEY;
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
 SELECT 
+    $REGION_KEY AS REGION,
     ID AS POI_ID,
     NAMES:primary::VARCHAR AS POI_NAME,
     BASIC_CATEGORY,
@@ -133,16 +159,26 @@ AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT;
 ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-**5c. Create pre-aggregated cities table:**
+**5c. Create and populate pre-aggregated cities table:**
 
 ```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE AS
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE (
+    REGION    VARCHAR NOT NULL,
+    STATE     VARCHAR,
+    CITY      VARCHAR,
+    POI_COUNT INT
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE WHERE REGION = $REGION_KEY;
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
 SELECT 
+    $REGION_KEY AS REGION,
     STATE,
     CITY,
     COUNT(*) AS POI_COUNT
 FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
-WHERE CITY IS NOT NULL
+WHERE CITY IS NOT NULL AND REGION = $REGION_KEY
 GROUP BY STATE, CITY
 HAVING COUNT(*) > 10
 ORDER BY STATE, POI_COUNT DESC;
@@ -152,11 +188,24 @@ ORDER BY STATE, POI_COUNT DESC;
 ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE SET COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-**5d. Create addresses table within bounding box:**
+**5d. Create and populate addresses table within bounding box:**
 
 ```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES AS
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES (
+    REGION    VARCHAR NOT NULL,
+    ID        VARCHAR,
+    GEOMETRY  GEOGRAPHY,
+    LONGITUDE FLOAT,
+    LATITUDE  FLOAT,
+    CITY      VARCHAR,
+    POSTCODE  VARCHAR
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES WHERE REGION = $REGION_KEY;
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
 SELECT 
+    $REGION_KEY AS REGION,
     ID,
     GEOMETRY,
     ST_X(GEOMETRY) AS LONGITUDE,
@@ -177,8 +226,21 @@ ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES SET COMMENT =
 **5e. Store region configuration:**
 
 ```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG AS
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG (
+    REGION        VARCHAR NOT NULL,
+    REGION_NAME   VARCHAR,
+    BBOX_MIN_LON  FLOAT,
+    BBOX_MIN_LAT  FLOAT,
+    BBOX_MAX_LON  FLOAT,
+    BBOX_MAX_LAT  FLOAT,
+    CREATED_AT    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG WHERE REGION = $REGION_KEY;
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG
 SELECT 
+    $REGION_KEY AS REGION,
     $REGION_NAME AS REGION_NAME,
     $BBOX_MIN_LON AS BBOX_MIN_LON,
     $BBOX_MIN_LAT AS BBOX_MIN_LAT,

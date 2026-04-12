@@ -30,6 +30,16 @@ The San Francisco baseline is loaded by `build-routing-solution` Step 8 into UNI
 
 ---
 
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
+| `SCHEMA` | `FLEET_INTELLIGENCE_FOOD_DELIVERY` | Schema for projection views and CONFIG |
+| `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for queries |
+| `VEHICLE_TYPE` | `ebike` | Vehicle type filter applied to UNIFIED tables |
+| `REGION` | `san_francisco` | Region filter applied to UNIFIED tables |
+
 ## Prerequisites
 
 1. **Snowflake Account** with appropriate privileges
@@ -79,13 +89,15 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 
 > **These rules MUST be followed to avoid silent failures:**
 >
-> 1. **One statement per `snowflake_sql_execute` call.** Never combine multiple SQL statements (CREATE, INSERT, SET, USE) in a single call. Multi-statement blocks can silently fail -- tables may be created with 0 rows and no error is reported.
+> 1. **One statement per `snowflake_sql_execute` tool call.** Never combine multiple SQL statements (CREATE, INSERT, SET, USE) in a single tool call. Multi-statement blocks can silently fail -- tables may be created with 0 rows and no error is reported. This rule applies to the `snowflake_sql_execute` tool only; `snow sql -f` and other CLI execution is fine.
 >
 > 2. **Always use fully qualified object names.** Use `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.<object>` instead of relying on `USE DATABASE` / `USE SCHEMA`. Session context from `USE` statements does not persist across `snowflake_sql_execute` calls.
 >
 > 3. **Never use `SET` session variables.** Variables set with `SET VAR = 'value'` do not persist across calls. Instead, substitute literal values directly into the SQL before execution.
 >
 > 4. **Verify row counts after each CTAS.** Run `SELECT COUNT(*) FROM <table>` after every `CREATE TABLE ... AS SELECT` to catch silent failures early.
+>
+> 5. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery",...}'`. See `references/sql-projection-views.sql` for tagged SQL.
 
 ### Step 1: Set Query Tag for Tracking
 

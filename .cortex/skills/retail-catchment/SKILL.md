@@ -15,9 +15,11 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 ## Configuration
 
-- **Database:** `FLEET_INTELLIGENCE`
-- **Schema:** `RETAIL_CATCHMENT`
-- **Warehouse:** `ROUTING_ANALYTICS`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
+| `SCHEMA` | `RETAIL_CATCHMENT` | Schema for retail analysis tables |
+| `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for queries and data loading |
 
 ## Prerequisites
 
@@ -34,7 +36,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates RETAIL_CATCHMENT schema |
-| CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
+| CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates CONFIG, RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
 | USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS isochrone functions |
@@ -45,34 +47,10 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `retail-catchment_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
-## Step 0: Load San Francisco Baseline (Recommended)
-
-The fastest path to a working demo. Loads pre-computed San Francisco data from S3 in ~2 minutes. No ORS calls needed.
-
-### Quick check
-
-```sql
-SELECT COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
-```
-
-If the table exists and has rows, data is already loaded. Skip to the Register with Demo Dashboard step.
-
-### Load from S3
-
-Execute `references/seed-data.sql`. This creates all tables and loads San Francisco baseline data from `s3://fleet-intelligence/SanFrancisco/retail-catchment/`.
-
-### Generate data for other regions (optional)
-
-To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
-
-Or use the centralized provisioner:
-```sql
-CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('retail-catchment'));
-```
-
 ## Workflow
 
 > Full SQL for all steps: [references/sql-pipeline.md](references/sql-pipeline.md)
+> All CREATE statements in the referenced SQL include COMMENT tracking tags per AGENTS.md convention (`"origin":"sf_sit-is-fleet","name":"oss-retail-catchment"`).
 
 ### Step 1: Set Query Tag for Tracking
 
@@ -108,22 +86,22 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 
 > See `references/sql-pipeline.md` Step 3.
 
-### Step 4: Create Database, Schema, and Warehouse
+### Step 4: Create Database, Schema, Warehouse, and CONFIG
 
-**Goal:** Set up the demo database, schema, warehouse, and stage.
+**Goal:** Set up the demo database, schema, warehouse, and CONFIG table.
 
 > See `references/sql-pipeline.md` Step 4.
 
-**Output:** Database `FLEET_INTELLIGENCE`, schema `RETAIL_CATCHMENT` created with stage.
+**Output:** Database `FLEET_INTELLIGENCE`, schema `RETAIL_CATCHMENT` created with CONFIG table.
 
 ### Step 5: Create Optimized Data Tables
 
 **Goal:** Create pre-filtered, performance-optimized tables from Overture Maps marketplace data.
 
-1. Set bounding box configuration (customize for target region)
-2. Create filtered POI table (`RETAIL_POIS`)
-3. Create pre-aggregated cities table (`CITIES_BY_STATE`)
-4. Create addresses table (`REGIONAL_ADDRESSES`)
+1. Set region key and bounding box configuration (customize for target region)
+2. Create and populate filtered POI table (`RETAIL_POIS`)
+3. Create and populate pre-aggregated cities table (`CITIES_BY_STATE`)
+4. Create and populate addresses table (`REGIONAL_ADDRESSES`)
 5. Store region configuration (`REGION_CONFIG`)
 6. Add search optimization and clustering
 7. Verify tables have data
@@ -143,9 +121,16 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 
 The React Demo Dashboard page queries these exact tables and columns. If the pipeline changes column names, the React page must be updated to match.
 
+### CONFIG
+| Column | Type | Used By |
+|--------|------|---------|
+| VEHICLE_TYPE | VARCHAR | Global vehicle type selector |
+| REGION | VARCHAR | Global region selector (updated by server on region switch) |
+
 ### RETAIL_POIS
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RetailCatchment (region filter) |
 | POI_ID | VARCHAR | RetailCatchment (store selection, competitor filter) |
 | POI_NAME | VARCHAR | RetailCatchment (store dropdown, metrics) |
 | BASIC_CATEGORY | VARCHAR | RetailCatchment (category filter, competitor breakdown) |
@@ -155,11 +140,13 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 ### CITIES_BY_STATE
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RetailCatchment (region filter) |
 | CITY | VARCHAR | RetailCatchment (city dropdown) |
 
 ### REGIONAL_ADDRESSES
 | Column | Type | Used By |
 |--------|------|---------|
+| REGION | VARCHAR | RetailCatchment (region filter) |
 | GEOMETRY | GEOGRAPHY | RetailCatchment (H3 density, ST_WITHIN catchment filter) |
 
 ---
@@ -196,14 +183,14 @@ Deployed resources:
 - Database: `FLEET_INTELLIGENCE`
 - Schema: `FLEET_INTELLIGENCE.RETAIL_CATCHMENT`
 - Warehouse: `ROUTING_ANALYTICS`
-- Tables: `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
+- Tables: `CONFIG`, `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: tables, schema
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE;

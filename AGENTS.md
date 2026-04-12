@@ -50,8 +50,6 @@ No global build/lint step — each skill is independently deployable via its own
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
-| `synthetic-datasets-generator` | fleet-intelligence | Synthetic HGV truck GPS telemetry generator |
-| `travel-time-matrix` | advanced | H3-based travel time matrices via ORS MATRIX_TABULAR |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
@@ -189,14 +187,11 @@ graph TD
     BRS --> FIFD[fleet-intelligence-food-delivery]
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
-    BRS --> TTM[travel-time-matrix]
     BRS --> RA[routing-agent]
     RC --> FIT
     RC --> FIFD
     RC --> RD
-    RC --> SDG[synthetic-datasets-generator]
     RD --> DA[dwell-analysis]
-    SDG --> DA
 
     style BRS fill:#f96,stroke:#333
     style RP fill:#9cf,stroke:#333

@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { useRegion } from '../hooks/useRegion';
 
 const RO_DB = 'FLEET_INTELLIGENCE';
 const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
@@ -27,6 +28,7 @@ const ROUTE_COLORS: [number, number, number][] = [[41, 181, 232], [34, 197, 94],
 interface VehicleConfig { id: number; profile: string; startLng: number; startLat: number; endLng: number; endLat: number; capacity: number; }
 
 export default function RouteOptimization() {
+  const { regionName, center, zoom } = useRegion();
   const [searchText, setSearchText] = useState('');
   const [centerCoords, setCenterCoords] = useState<[number, number] | null>(null);
   const [radius, setRadius] = useState(5);
@@ -34,7 +36,7 @@ export default function RouteOptimization() {
   const [selectedIndustry, setSelectedIndustry] = useState('');
   const [places, setPlaces] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
-  const [vehicles, setVehicles] = useState<VehicleConfig[]>([{ id: 1, profile: 'driving-car', startLng: -122.43, startLat: 37.77, endLng: -122.43, endLat: 37.77, capacity: 10 }]);
+  const [vehicles, setVehicles] = useState<VehicleConfig[]>([{ id: 1, profile: 'driving-car', startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat, capacity: 10 }]);
   const [isoMinutes, setIsoMinutes] = useState(15);
   const [catchmentGeoJson, setCatchmentGeoJson] = useState<any>(null);
   const [vrpResult, setVrpResult] = useState<any>(null);
@@ -43,11 +45,22 @@ export default function RouteOptimization() {
   const [geocoding, setGeocoding] = useState(false);
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP ORDER BY INDUSTRY`).then(r => setIndustries(r));
-  }, []);
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+    setVehicles(prev => prev.map(v => ({ ...v, startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat })));
+    setCenterCoords(null);
+    setPlaces([]);
+    setJobs([]);
+    setRoutePaths([]);
+    setVrpResult(null);
+    setCatchmentGeoJson(null);
+  }, [center.lng, center.lat, zoom]);
+
+  useEffect(() => {
+    sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`).then(r => setIndustries(r));
+  }, [regionName]);
 
   const geocode = useCallback(async () => {
     if (!searchText.trim()) return;
@@ -69,8 +82,8 @@ export default function RouteOptimization() {
     setLoading(true);
     const indFilter = selectedIndustry ? ` AND CATEGORY = '${selectedIndustry}'` : '';
     const [p, j] = await Promise.all([
-      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
-      sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE STATUS = 'active' LIMIT 30`),
+      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
+      sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' LIMIT 30`),
     ]);
     setPlaces(p);
     setJobs(j);
@@ -192,7 +205,7 @@ export default function RouteOptimization() {
         <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <h3 style={{ fontSize: 13, margin: 0 }}>Vehicles</h3>
-            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: 'driving-car', startLng: centerCoords?.[0] || -122.43, startLat: centerCoords?.[1] || 37.77, endLng: centerCoords?.[0] || -122.43, endLat: centerCoords?.[1] || 37.77, capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add</button>
+            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: 'driving-car', startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add</button>
           </div>
           {vehicles.map((v, i) => (
             <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, fontSize: 12 }}>
