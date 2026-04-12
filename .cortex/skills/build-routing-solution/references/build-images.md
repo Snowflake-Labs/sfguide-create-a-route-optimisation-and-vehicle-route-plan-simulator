@@ -92,7 +92,7 @@ Expected: 5 images with tags matching the Image Inventory below.
 | Downloader | downloader | v0.0.3 |
 | Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.87 |
+| Control App | ors_control_app | v1.0.95 |
 
 ## Expected Duration
 

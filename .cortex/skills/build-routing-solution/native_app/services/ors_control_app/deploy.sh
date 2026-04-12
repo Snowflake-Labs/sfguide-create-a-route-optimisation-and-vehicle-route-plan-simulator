@@ -55,6 +55,7 @@ done
 for f in "$BUILD_MD" "$SKILL_MD"; do
   [ -f "$f" ] && sed -i.bak "s|${IMAGE_NAME} (v${CURRENT_TAG})|${IMAGE_NAME} (${NEW_TAG})|g" "$f" && rm -f "${f}.bak"
 done
+[ -f "$BUILD_MD" ] && sed -i.bak "s/${IMAGE_NAME} | v${CURRENT_TAG} /${IMAGE_NAME} | ${NEW_TAG} /g" "$BUILD_MD" && rm -f "${BUILD_MD}.bak"
 
 echo "--- [5/7] Upload YAML + manifest to package stage (prevents version_init revert) ---"
 snow sql -c "$CONNECTION" -q "PUT 'file://${YAML}' ${PKG_STAGE}/services/ors_control_app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;"
