@@ -221,7 +221,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","vers
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET;
 
 COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_fleet
+FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_fleet_
 FILE_FORMAT = (TYPE = PARQUET)
 MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
 PURGE = FALSE
@@ -257,7 +257,7 @@ FROM (
     TRY_TO_GEOGRAPHY($1:POINT_GEOM_WKT::VARCHAR),
     $1:SOURCE::VARCHAR,
     $1:JOB_ID::VARCHAR
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_pois
+  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_pois_
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -387,7 +387,6 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS OWNER
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 BEGIN
@@ -396,6 +395,9 @@ BEGIN
     RETURN 'Active region set to ' || P_REGION;
 END;
 $$;
+
+ALTER PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR)
+SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated

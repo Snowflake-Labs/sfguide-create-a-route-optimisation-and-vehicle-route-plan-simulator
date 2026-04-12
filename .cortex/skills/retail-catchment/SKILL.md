@@ -56,9 +56,9 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 **Pre-check: If data already exists, skip to Step 6.** Run:
 ```sql
-SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.COMPETITOR_ISOCHRONES;
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
 ```
-If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deployment) as needed.
+If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Verify) as needed.
 
 **Goal:** Set session query tag for attribution tracking.
 
@@ -98,6 +98,8 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 
 **Goal:** Create pre-filtered, performance-optimized tables from Overture Maps marketplace data.
 
+> **Important:** Step 5 uses SQL session variables (`SET REGION_KEY`, `SET BBOX_*`). Execute all Step 5 sub-steps in a single session (e.g., via `snow sql -f`) or prepend the SET statements to each sub-step's SQL block when using `snowflake_sql_execute`.
+
 1. Set region key and bounding box configuration (customize for target region)
 2. Create and populate filtered POI table (`RETAIL_POIS`)
 3. Create and populate pre-aggregated cities table (`CITIES_BY_STATE`)
@@ -111,7 +113,7 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Streamlit deplo
 > See `references/sql-pipeline.md` Step 5.
 
 
-### Step 7: Verify
+### Step 6: Verify
 
 **Goal:** Confirm data tables exist and have rows.
 

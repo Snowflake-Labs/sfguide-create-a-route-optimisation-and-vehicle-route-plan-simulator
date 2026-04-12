@@ -2,7 +2,7 @@
 """Skill evals runner.
 
 Usage:
-    python run_evals.py [--skill NAME] [--type trigger|quality|xref] [--verbose] [--save]
+    python run_evals.py [--skill NAME] [--type trigger|quality|xref|sql] [--verbose] [--save]
 """
 import argparse
 import json
@@ -36,6 +36,14 @@ def load_overrides() -> dict:
 
 def load_xref_overrides() -> dict:
     p = EVALS_DIR / "test-cases" / "xref-overrides.yaml"
+    if p.exists():
+        with open(p) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def load_sql_overrides() -> dict:
+    p = EVALS_DIR / "test-cases" / "sql-overrides.yaml"
     if p.exists():
         with open(p) as f:
             return yaml.safe_load(f) or {}
@@ -78,8 +86,9 @@ def run_quality_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int
     threshold = config.get("scoring", {}).get("quality_pass_threshold", 9) if isinstance(config.get("scoring"), dict) else 9
     passed = sum(1 for r in results if r["passed"] >= threshold)
     total = len(results)
+    total_checks = results[0]["total"] if results else 13
     print(f"\n{'='*60}")
-    print(f"QUALITY EVALS: {passed}/{total} skills pass (threshold={threshold}/11)")
+    print(f"QUALITY EVALS: {passed}/{total} skills pass (threshold={threshold}/{total_checks})")
     print(f"{'='*60}")
     for r in results:
         icon = "PASS" if r["passed"] >= threshold else "FAIL"
@@ -111,15 +120,35 @@ def run_xref_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, l
     return passed, total, results
 
 
+def run_sql_evals(skill_filter: str | None, verbose: bool) -> tuple[int, int, list]:
+    from lib import sql_eval
+    overrides = load_sql_overrides()
+    results = sql_eval.run(str(SKILLS_ROOT), overrides)
+    if skill_filter:
+        results = [r for r in results if r["skill"] == skill_filter]
+    passed = sum(1 for r in results if r["status"] == "pass")
+    total = len(results)
+    print(f"\n{'='*60}")
+    print(f"SQL EVALS: {passed}/{total} skills pass")
+    print(f"{'='*60}")
+    for r in results:
+        icon = "PASS" if r["status"] == "pass" else "FAIL"
+        print(f"  [{icon}] {r['skill']:<35} issues={r['issue_count']}")
+        if verbose and r["issues"]:
+            for issue in r["issues"]:
+                print(f"         - {issue}")
+    return passed, total, results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Skill evals runner")
     parser.add_argument("--skill", help="Run evals for a single skill only")
-    parser.add_argument("--type", choices=["trigger", "quality", "xref"], help="Run a single eval type")
+    parser.add_argument("--type", choices=["trigger", "quality", "xref", "sql"], help="Run a single eval type")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed failure info")
     parser.add_argument("--save", action="store_true", help="Save results to reports/")
     args = parser.parse_args()
 
-    eval_types = [args.type] if args.type else ["trigger", "quality", "xref"]
+    eval_types = [args.type] if args.type else ["trigger", "quality", "xref", "sql"]
     all_results = {}
     total_passed = 0
     total_total = 0
@@ -141,6 +170,12 @@ def main():
         total_passed += p
         total_total += t
         all_results["xref"] = r
+
+    if "sql" in eval_types:
+        p, t, r = run_sql_evals(args.skill, args.verbose)
+        total_passed += p
+        total_total += t
+        all_results["sql"] = r
 
     print(f"\n{'='*60}")
     print(f"OVERALL: {total_passed}/{total_total} eval groups pass")

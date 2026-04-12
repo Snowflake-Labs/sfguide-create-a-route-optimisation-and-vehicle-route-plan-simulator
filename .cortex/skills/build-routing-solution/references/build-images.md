@@ -69,6 +69,18 @@ cd ../../..
 
 **Note:** The ors_control_app build requires `cd` because `npm ci` must run in the package directory and `.dockerignore` must be renamed in place. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
 
+> `npm ci` may report vulnerabilities. These are in dev/build dependencies and do not affect the runtime container.
+
+## 4. Verify All Images Pushed
+
+Docker push progress output uses carriage returns that may be invisible in some terminals. Always verify pushes completed:
+
+```bash
+snow spcs image-list openrouteservice_setup.public.image_repository -c <connection>
+```
+
+Expected: 5 images with tags matching the Image Inventory below.
+
 ## Image Inventory
 
 | Service | Image | Tag |

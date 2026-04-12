@@ -38,6 +38,8 @@ def _audit_skill(skill_md: Path, config: dict, overrides: dict) -> dict:
     checks["check_9"] = _check_error_handling(text)
     checks["check_10"] = _check_examples_or_stops(text)
     checks["check_11"] = _check_progressive_disclosure(skill_dir, text)
+    checks["check_12"] = _check_step_numbering(text)
+    checks["check_13"] = _check_precheck_tables(skill_dir, text)
 
     passed = 0
     total = 0
@@ -163,3 +165,42 @@ def _check_progressive_disclosure(skill_dir: Path, text: str) -> tuple[bool, str
         if linked < len(ref_files):
             return False, f"Only {linked}/{len(ref_files)} reference files linked"
     return True, f"Progressive disclosure OK (body={word_count}w, refs={'yes' if has_refs else 'no'})"
+
+
+def _check_step_numbering(text: str) -> tuple[bool, str]:
+    step_pattern = re.compile(r"^#{2,3}\s+Step\s+(\d+)", re.MULTILINE | re.IGNORECASE)
+    steps = [int(m.group(1)) for m in step_pattern.finditer(text)]
+    if len(steps) < 2:
+        return True, "Fewer than 2 numbered steps (skip check)"
+    for i in range(1, len(steps)):
+        expected = steps[i - 1] + 1
+        if steps[i] != expected:
+            return False, f"Step numbering gap: Step {steps[i - 1]} followed by Step {steps[i]} (expected {expected})"
+    return True, f"Step numbering sequential: {steps[0]}-{steps[-1]}"
+
+
+def _check_precheck_tables(skill_dir: Path, text: str) -> tuple[bool, str]:
+    precheck_match = re.search(r"(?i)pre-?check.*?```sql\s*\n(.*?)```", text, re.DOTALL)
+    if not precheck_match:
+        return True, "No pre-check SQL found (skip check)"
+    precheck_sql = precheck_match.group(1)
+    from_pattern = re.compile(r"\bFROM\s+([A-Z_][A-Z0-9_.]+)", re.IGNORECASE)
+    tables = set()
+    for m in from_pattern.finditer(precheck_sql):
+        tables.add(m.group(1).upper().split(".")[-1])
+    if not tables:
+        return True, "No tables in pre-check query"
+    all_text = text
+    refs_dir = skill_dir / "references"
+    if refs_dir.is_dir():
+        for f in refs_dir.iterdir():
+            if f.is_file() and f.suffix in (".md", ".sql"):
+                all_text += "\n" + f.read_text(encoding="utf-8")
+    create_pattern = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|DYNAMIC\s+TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Z_][A-Z0-9_.]+)", re.IGNORECASE)
+    created_tables = set()
+    for m in create_pattern.finditer(all_text):
+        created_tables.add(m.group(1).upper().split(".")[-1])
+    missing = tables - created_tables
+    if missing:
+        return False, f"Pre-check references tables not created by pipeline: {', '.join(sorted(missing))}"
+    return True, f"Pre-check tables verified: {', '.join(sorted(tables))}"

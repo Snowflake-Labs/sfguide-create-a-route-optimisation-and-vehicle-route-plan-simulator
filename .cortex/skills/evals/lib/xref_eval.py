@@ -105,6 +105,15 @@ def _check_skill(skill_md: Path, ignore_prefixes: list[str] | None = None) -> di
             if subskill_name not in text:
                 issues.append(f"Subskill '{subskill_name}' not mentioned in router SKILL.md")
 
+    s3_pattern = re.compile(r"s3://fleet-intelligence/", re.IGNORECASE)
+    all_files = list(skill_dir.rglob("*.sql")) + list(skill_dir.rglob("*.md"))
+    for f in all_files:
+        content = f.read_text(encoding="utf-8")
+        for m in s3_pattern.finditer(content):
+            rel = f.relative_to(skill_dir)
+            line_num = content[:m.start()].count("\n") + 1
+            issues.append(f"Stale S3 reference in {rel}:{line_num} — all seed data should use datasets/ or Snowflake stages")
+
     return {
         "skill": folder_name,
         "path": str(skill_md),

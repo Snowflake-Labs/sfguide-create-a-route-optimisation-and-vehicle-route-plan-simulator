@@ -137,17 +137,6 @@ dwell-analysis:
     - "food delivery fleet"
     - "taxi fleet simulation"
 
-travel-time-matrix:
-  should_trigger:
-    - "travel time matrix"
-    - "H3 matrix"
-    - "matrix tabular"
-    - "ORS matrix"
-    - "compute travel times"
-  should_not_trigger:
-    - "single point-to-point routing"
-    - "fleet simulation data"
-    - "Streamlit deployment"
 
 routing-agent:
   should_trigger:
@@ -172,14 +161,3 @@ skill-optimiser:
     - "non-skill markdown editing"
     - "MCP server development"
 
-synthetic-datasets-generator:
-  should_trigger:
-    - "generate synthetic telemetry"
-    - "create fleet data"
-    - "synthetic truck data"
-    - "generate GPS data"
-    - "populate telemetry tables"
-  should_not_trigger:
-    - "deploy route deviation demo"
-    - "real-time fleet tracking"
-    - "food delivery data"

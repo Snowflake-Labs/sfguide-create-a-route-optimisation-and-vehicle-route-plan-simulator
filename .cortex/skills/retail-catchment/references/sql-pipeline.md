@@ -92,6 +92,11 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, sr
 
 ## Step 5: Create Optimized Data Tables
 
+> **Execution note:** The SET variables in step 5a must persist across all sub-steps 5a-5e.
+> When using the `snowflake_sql_execute` tool (which creates new sessions per call),
+> prepend the SET statements to EACH SQL block that references `$REGION_KEY`, `$BBOX_*`, or `$REGION_NAME`.
+> Alternatively, run the entire Step 5 as a single `snow sql -f` file.
+
 **5a. Set bounding box configuration (customize for your region):**
 
 ```sql
@@ -265,7 +270,7 @@ ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE ADD SEARCH OPTIM
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS CLUSTER BY (STATE, CITY, BASIC_CATEGORY);
-ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES CLUSTER BY (GEOMETRY);
+ALTER TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES CLUSTER BY (LONGITUDE, LATITUDE);
 ```
 
 **5h. Verify tables:**

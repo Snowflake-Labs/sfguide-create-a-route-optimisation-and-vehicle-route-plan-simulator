@@ -3,9 +3,10 @@ eval_types:
   - trigger
   - quality
   - xref
+  - sql
 
 scoring:
-  quality_pass_threshold: 9  # out of 11
+  quality_pass_threshold: 10  # out of 13
   trigger_match_min_pct: 80  # % of should_trigger prompts that match
 
 vague_phrases:
