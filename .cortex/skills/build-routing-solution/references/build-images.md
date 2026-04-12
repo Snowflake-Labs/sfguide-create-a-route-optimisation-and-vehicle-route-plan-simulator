@@ -28,6 +28,9 @@ echo $REPO_URL
 
 Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workflow. All commands run from the skill directory without changing directories.
 
+> **Agent note:** `$CONTAINER_CMD` does not persist across separate bash calls. Prefix each command
+> with `CONTAINER_CMD=podman` (or `docker`) inline, or chain all commands with `&&` in one call.
+
 ```bash
 # openrouteservice image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
@@ -76,7 +79,7 @@ cd ../../..
 Docker push progress output uses carriage returns that may be invisible in some terminals. Always verify pushes completed:
 
 ```bash
-snow spcs image-list openrouteservice_setup.public.image_repository -c <connection>
+snow spcs image-repository list-images openrouteservice_setup.public.image_repository -c <connection>
 ```
 
 Expected: 5 images with tags matching the Image Inventory below.

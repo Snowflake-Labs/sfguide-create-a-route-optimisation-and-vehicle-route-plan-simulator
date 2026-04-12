@@ -49,7 +49,9 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Workflow
 
-> Full SQL for all steps: [references/sql-pipeline.md](references/sql-pipeline.md)
+> **Quick deploy:** Run [references/seed-data.sql](references/seed-data.sql) via `snow sql -f` to execute Steps 4-5 in one shot. Edit the SET variables at the top to customize for your region.
+>
+> Full SQL with step-by-step explanations: [references/sql-pipeline.md](references/sql-pipeline.md)
 > All CREATE statements in the referenced SQL include COMMENT tracking tags per AGENTS.md convention (`"origin":"sf_sit-is-fleet","name":"oss-retail-catchment"`).
 
 ### Step 1: Set Query Tag for Tracking

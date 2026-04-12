@@ -70,6 +70,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Identify available container runtime and verify Node.js is installed
 
+> **Note:** Version warnings from `snow` CLI (e.g., "newer version available") are informational and do not affect the build.
+
 **Actions:**
 
 1. **Check** which container runtimes and Node.js are installed:
@@ -90,8 +92,9 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - For Podman: `podman info` (if fails: `podman machine start`)
    - For Docker: `docker info` (if fails: `open -a Docker` on macOS)
 
-4. **Set** the container command variable for subsequent steps:
-   - `CONTAINER_CMD=podman` or `CONTAINER_CMD=docker`
+4. **Remember** which container runtime to use (`podman` or `docker`).
+   Each bash tool call starts a fresh shell, so shell variables do not persist.
+   In every subsequent command, **prefix inline**: `CONTAINER_CMD=podman` (or `docker`) before `$CONTAINER_CMD`, or chain all build commands in a single bash call with `&&`.
 
 **Output:** Container runtime selected and verified running, Node.js available
 

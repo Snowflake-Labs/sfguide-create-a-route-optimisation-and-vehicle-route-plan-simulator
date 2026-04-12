@@ -253,7 +253,7 @@ Deploy order: top to bottom. Teardown order: bottom to top.
 | Skill | What It Does | Invoke With |
 |-------|-------------|-------------|
 | **skill-optimiser** | Audits, optimizes, and creates Cortex Code skills following Anthropic best practices. Checks SKILL.md structure, triggers, progressive disclosure, and frontmatter. | `audit skill`, `optimize skill` |
-| **cleanup** | Discovers all Snowflake objects created by any skill (via JSON COMMENT tags) and generates DROP statements. Supports dry-run mode, per-skill filtering, and reverse-dependency drop order. | `cleanup`, `teardown` |
+| **routing-solution-cleanup** | Discovers all Snowflake objects created by any skill (via JSON COMMENT tags) and generates DROP statements. Supports dry-run mode, per-skill filtering, and reverse-dependency drop order. | `routing-solution-cleanup`, `cleanup`, `teardown` |
 
 ---
 
@@ -327,7 +327,7 @@ Open this repo in Cortex Code and type any of these phrases:
 | Deploy route optimization | `deploy route optimization demo` |
 | Build travel time matrix | `build travel time matrix` |
 | Create routing agent | `create routing agent` |
-| Clean up everything | `cleanup` |
+| Clean up everything | `routing-solution-cleanup` |
 
 ### Multi-Region Support
 
@@ -417,7 +417,7 @@ Every Snowflake object created by a skill is tracked with two mechanisms:
    {"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0}}
    ```
 
-The `cleanup` skill queries `INFORMATION_SCHEMA` for objects matching the tracking tag and generates DROP statements in reverse-dependency order.
+The `routing-solution-cleanup` skill queries `INFORMATION_SCHEMA` for objects matching the tracking tag and generates DROP statements in reverse-dependency order.
 
 ### Creating a New Skill
 

@@ -52,7 +52,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
-| `cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
+| `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
 
 ## Skill Conventions (Quick Reference)
 

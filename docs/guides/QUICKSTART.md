@@ -80,7 +80,7 @@ When you're done, clean up all created objects:
 
 > "Clean up all skill objects"
 
-This triggers the `cleanup` skill, which discovers all tagged Snowflake objects and generates DROP statements.
+This triggers the `routing-solution-cleanup` skill, which discovers all tagged Snowflake objects and generates DROP statements.
 
 ## Further Reading
 

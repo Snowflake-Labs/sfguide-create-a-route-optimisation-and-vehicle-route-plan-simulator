@@ -144,11 +144,13 @@ Default thresholds in SLA_THRESHOLDS table:
 
 | Location Type | Warning (min) | Critical (min) |
 |---------------|---------------|----------------|
-| WAREHOUSE | 60 | 120 |
-| DESTINATION | 30 | 60 |
-| REST_STOP | 45 | 90 |
-| STORE | 20 | 45 |
-| DETOUR | 15 | 30 |
+| WAREHOUSE | 5 | 15 |
+| DESTINATION | 3 | 10 |
+| REST_STOP | 5 | 12 |
+| STORE | 2 | 8 |
+| DETOUR | 2 | 5 |
+
+> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min).
 
 Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS will refresh automatically.
 
@@ -164,7 +166,7 @@ Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS 
 |-------|----------|
 | DT_STATE_CHANGES empty | Verify VW_VEHICLE_TELEMETRY has data with matching STATUS values |
 | DT_DWELL_SESSIONS zero rows | Check STATUS LIKE 'DWELL%' filter matches your telemetry data |
-| SLA alerts not appearing | Verify SLA_THRESHOLDS has matching LOCATION_TYPE values |
+| SLA alerts not appearing | Thresholds may be too high for your data's dwell durations. Lower WARNING_MINUTES/CRITICAL_MINUTES in SLA_THRESHOLDS |
 | H3 cells NULL | Ensure latitude/longitude values are valid (not NULL or 0) |
 | Task not running | Run `ALTER TASK ... RESUME` and verify ROUTING_ANALYTICS is active |
 | Dynamic Tables stale | Check `SHOW DYNAMIC TABLES` for refresh status and errors |

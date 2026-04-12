@@ -274,9 +274,9 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 | `<DB>.TRAVEL_TIME_MATRIX.TASK_WORKER_<REGION>_RES<N>_<NN>` | Task (dynamic, x N workers) | Schema |
 | `<DB>.TRAVEL_TIME_MATRIX.TASK_FLATTEN_<REGION>_RES<N>` | Task (dynamic) | Schema |
 
-### cleanup
+### routing-solution-cleanup
 
-**Tracking name:** `oss-cleanup`
+**Tracking name:** `oss-routing-solution-cleanup`
 
 Creates no objects. This skill discovers and removes objects created by other skills.
 
@@ -506,7 +506,7 @@ Both modes set the tracking name `oss-build-routing-solution`.
 | dwell-analysis | `oss-dwell-analysis` |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` |
 | travel-time-matrix | `oss-travel-time-matrix` |
-| cleanup | `oss-cleanup` |
+| routing-solution-cleanup | `oss-routing-solution-cleanup` |
 | ORS Control App | `oss-build-routing-solution` |
 
 ## Known Limitations
