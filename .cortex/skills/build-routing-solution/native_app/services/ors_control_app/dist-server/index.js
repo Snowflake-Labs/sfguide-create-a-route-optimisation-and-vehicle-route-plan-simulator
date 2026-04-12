@@ -537,7 +537,8 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
             const dk = `${allRows[i].source}:${allRows[i].region_key}:${allRows[i].country || ''}`;
             if (seenKeys.has(dk)) {
                 allRows.splice(i, 1);
-            } else {
+            }
+            else {
                 seenKeys.set(dk, true);
             }
         }

@@ -13,7 +13,7 @@ artifacts:
       - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
       - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v1.0.0
       - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
-      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.94
+      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.95
   default_web_endpoint:
     service: core.ors_control_app
     endpoint: ors-control-ui

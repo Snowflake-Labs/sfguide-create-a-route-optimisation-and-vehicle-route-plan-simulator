@@ -87,7 +87,7 @@ Five container services run inside the native app:
 | `vroom_service` | `vroom-docker:v1.0.1` | Vehicle Routing Problem (VRP) optimizer |
 | `routing_gateway_service` | `routing_reverse_proxy:v0.9.6` | Nginx reverse proxy routing requests to per-region ORS instances |
 | `downloader` | `downloader:v0.0.3` | Downloads OSM PBF map files from Geofabrik |
-| `ors_control_app` | `ors_control_app:v1.0.94` | React admin panel and demo dashboards (Express.js backend) |
+| `ors_control_app` | `ors_control_app:v1.0.95` | React admin panel and demo dashboards (Express.js backend) |
 
 ### SQL Functions
 
