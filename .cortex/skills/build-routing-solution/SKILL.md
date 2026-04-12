@@ -14,7 +14,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 ## Execution Rules
 
 1. All relative paths (e.g., `native_app/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
-2. Replace `<connection>` with the user's active Snowflake connection name in all commands.
+2. Replace `<connection>` with the user's active Snowflake CLI connection name. To find it, run `snow connection list` and match by account URL (the `account` field should match the account shown in the Snowflake IDE). The `snowflake_sql_execute` tool and `snow` CLI may use DIFFERENT connections — always verify. If no matching connection exists, run `snow connection add` to create one.
 3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
 4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
 
@@ -38,6 +38,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 | USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Runs deployment queries |
 | CREATE STAGE | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE |
 | CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates IMAGE_REPOSITORY for container images |
+| IMPORT SHARE | Account | Installs Overture Maps datasets from Marketplace (Step 8b) |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
@@ -139,16 +140,16 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Upload** files from `native_app/provider_setup/staged_files/` to stage:
+1. **Upload** files to stage (paths are relative to the **repo root**):
    ```bash
-   snow stage copy "native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
+   snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
    
-   snow stage copy "native_app/provider_setup/staged_files/ors-config.yml" \
+   snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
 
-   snow stage copy "scripts/download_map.py" \
-   @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
+   snow stage copy ".cortex/skills/build-routing-solution/scripts/download_map.py" \
+     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
 
 **Output:** Configuration files uploaded to Snowflake stage
@@ -333,7 +334,52 @@ SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_A
 
    Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1, MATRIX=29402
 
+   **If any count shows 0:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent.
+
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs)
+
+### Step 8b: Install Overture Maps Marketplace Datasets
+
+**Goal:** Pre-install Overture Maps datasets from Snowflake Marketplace so downstream demos that need POI/address data (Taxis, Retail Catchment, Route Optimization) are not blocked.
+
+**Actions:**
+
+1. **Check** if the datasets are already installed:
+   ```sql
+   SHOW DATABASES LIKE 'OVERTURE_MAPS%';
+   ```
+
+2. **If `OVERTURE_MAPS__PLACES` is NOT listed**, install it:
+   ```sql
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
+   ```
+   Marketplace link: https://app.snowflake.com/marketplace/listing/GZT0Z4CM1E9KR/carto-overture-maps-places
+
+3. **If `OVERTURE_MAPS__ADDRESSES` is NOT listed**, install it:
+   ```sql
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
+   ```
+   Marketplace link: https://app.snowflake.com/marketplace/listing/GZT0Z4CM1E9NQ/carto-overture-maps-addresses
+
+4. **Verify** both datasets are accessible:
+   ```sql
+   SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
+   SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US' LIMIT 1;
+   ```
+
+5. **Grant** access to the native app (required for Data Studio POI queries):
+   ```sql
+   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   ```
+
+**Requires:** IMPORT SHARE privilege (ACCOUNTADMIN has it by default).
+
+**If SYSTEM$ACCEPT_LEGAL_TERMS fails:** The user may need to accept terms manually via Snowsight Marketplace using the links above.
+
+**Output:** Overture Maps databases available. Demos requiring POI data (Taxis, Retail Catchment, Route Optimization) can now be deployed.
 
 ### Step 9: Select and Deploy Demos (Optional)
 
@@ -348,9 +394,9 @@ SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_A
    | **Fleet Intelligence: Food Delivery** | E-bike courier fleet with projection views from seed data | ~2 min | Seed data (Step 8) |
    | **Route Deviation** | Detour detection ETL comparing actual vs planned routes | ~5 min | Seed data (Step 8) |
    | **Dwell Analysis** | 12-step Dynamic Table pipeline for dwell/congestion/SLA alerts | ~10 min | Seed data (Step 8) |
-   | **Fleet Intelligence: Taxis** | Taxi GPS telemetry with Overture Maps POIs + driver routes | ~5 min | Overture Maps Marketplace share |
-   | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps Marketplace share |
-   | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps + Cortex AI access |
+   | **Fleet Intelligence: Taxis** | Taxi GPS telemetry with Overture Maps POIs + driver routes | ~5 min | Overture Maps (auto-installed in Step 8b) |
+   | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps (auto-installed in Step 8b) |
+   | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps (Step 8b) + Cortex AI access |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
    | **Travel Time Matrix** | H3-based travel time matrices at scale (advanced) | 5 min - 34 hrs | Scaled compute pool |
 
