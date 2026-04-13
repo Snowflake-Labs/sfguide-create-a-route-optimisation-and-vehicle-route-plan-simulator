@@ -1611,7 +1611,10 @@ async function callCortexComplete(messages: Array<{role: string; content: string
   let content = '';
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
+    content = parsed.choices?.[0]?.messages
+      || parsed.choices?.[0]?.message?.content
+      || (typeof parsed === 'string' ? parsed : '')
+      || '';
   } catch {
     content = String(raw);
   }
