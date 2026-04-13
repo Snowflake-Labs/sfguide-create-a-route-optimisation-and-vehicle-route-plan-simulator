@@ -45,9 +45,9 @@ BEGIN
             'matrix_rows', MATRIX_ROWS,
             'pct_complete', PCT_COMPLETE,
             'error_msg', COALESCE(ERROR_MSG, ''),
-            'created_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
-            'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
-            'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'created_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
             'statement_handle', COALESCE(STATEMENT_HANDLE, '')
         )), ARRAY_CONSTRUCT())::VARCHAR AS ARR
         FROM travel_matrix.MATRIX_BUILD_JOBS
@@ -76,7 +76,7 @@ BEGIN
         SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
             'table_name', t.TABLE_NAME,
             'row_count', t.ROW_COUNT,
-            'created', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('America/Los_Angeles', 'UTC', t.CREATED), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+            'created', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', t.CREATED), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
             'bytes', t.BYTES,
             'execution_time_secs', COALESCE(DATEDIFF('SECOND', j.STARTED_AT, j.COMPLETED_AT), 0)
         )), ARRAY_CONSTRUCT())::VARCHAR AS ARR

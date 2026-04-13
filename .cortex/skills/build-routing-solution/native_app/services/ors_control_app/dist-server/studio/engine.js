@@ -394,8 +394,8 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
     log('INFO', 'Studio', `Built fleet of ${fleet.length} ${vt} vehicles`, {
         detail: { driverProfiles: profileBreakdown, shifts: shiftBreakdown, homePoisUsed: new Set(fleet.map(m => m.home_poi.location_id)).size },
     });
-    const startDate = new Date(config.time.start_date + 'T00:00:00');
-    const endDate = new Date(config.time.end_date + 'T23:59:59');
+    const startDate = new Date(config.time.start_date + 'T00:00:00Z');
+    const endDate = new Date(config.time.end_date + 'T23:59:59Z');
     const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000);
     let totalPoints = 0;
     let totalTrips = 0;
@@ -411,7 +411,7 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
         if (abortSignal?.aborted)
             return;
         const currentDay = new Date(startDate.getTime() + dayOffset * 86400000);
-        const isWeekend = currentDay.getDay() === 0 || currentDay.getDay() === 6;
+        const isWeekend = currentDay.getUTCDay() === 0 || currentDay.getUTCDay() === 6;
         const dayBatch = [];
         for (const member of fleet) {
             if (abortSignal?.aborted)
@@ -425,7 +425,7 @@ export async function* generateTelemetry(config, snowSql, onProgress, abortSigna
                 vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
                 lat: member.home_poi.lat,
                 lng: member.home_poi.lng,
-                currentTime: new Date(currentDay.getFullYear(), currentDay.getMonth(), currentDay.getDate(), shiftStart, rngInt(rng, 0, 30)),
+                currentTime: new Date(Date.UTC(currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(), shiftStart, rngInt(rng, 0, 30))),
                 state: 'DWELL_ORIGIN',
                 location_id: member.home_poi.location_id,
                 location_type: member.home_poi.location_type,

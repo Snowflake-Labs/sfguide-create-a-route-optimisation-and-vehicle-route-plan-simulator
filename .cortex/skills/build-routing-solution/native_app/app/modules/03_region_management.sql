@@ -215,9 +215,9 @@ BEGIN
         'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
-        'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD HH24:MI:SS'),
-        'started_at', COALESCE(TO_VARCHAR(STARTED_AT, 'YYYY-MM-DD HH24:MI:SS'), ''),
-        'completed_at', COALESCE(TO_VARCHAR(COMPLETED_AT, 'YYYY-MM-DD HH24:MI:SS'), '')
+        'created_at', TO_VARCHAR(CONVERT_TIMEZONE('UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
+        'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+        'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', '')
     )), ARRAY_CONSTRUCT())::VARCHAR INTO result
     FROM core.REGION_PROVISION_JOBS
     WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
