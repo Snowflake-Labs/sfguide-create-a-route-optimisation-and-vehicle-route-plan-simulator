@@ -64,9 +64,9 @@ npm install --legacy-peer-deps && npm run build && npm run build:server
 mv .dockerignore .dockerignore.bak 2>/dev/null || true
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:v1.0.98 .
+  -t $REPO_URL/ors_control_app:v1.0.102 .
 mv .dockerignore.bak .dockerignore 2>/dev/null || true
-$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.98
+$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.102
 cd ../../..
 ```
 
@@ -96,7 +96,7 @@ Expected: 5 images with tags matching the Image Inventory below.
 | Downloader | downloader | v0.0.3 |
 | Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.98 |
+| Control App | ors_control_app | v1.0.102 |
 
 ## Expected Duration
 

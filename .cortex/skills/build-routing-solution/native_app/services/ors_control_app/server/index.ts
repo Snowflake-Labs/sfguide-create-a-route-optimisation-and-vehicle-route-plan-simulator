@@ -771,33 +771,87 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
     const rows = await runSql(
-      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 500) AS LOGS`
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
     );
     const logs: string = rows?.[0]?.LOGS || '';
 
-    const nodeLines = [...logs.matchAll(/nodes:\s*([\d\s]+\d),\s*shortcuts:\s*([\d\s]+\d)/g)];
-    const profileMatch = [...logs.matchAll(/Building CH.*?for\s+([\w-]+)/g)];
-    const currentProfile = profileMatch.length > 0 ? profileMatch[profileMatch.length - 1][1] : null;
-    const completedProfiles = [...logs.matchAll(/Finished CH preparation/g)];
+    const finishedProfiles = [...logs.matchAll(/\[1\] Profile: '([\w-]+)'/g)].map(m => m[1]);
+    const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
+    const uniqueStarted = [...new Set(startedProfiles)];
+    const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
+    const lastStarted = uniqueStarted.length > 0 ? uniqueStarted[uniqueStarted.length - 1] : null;
+    const currentProfile = lastStarted && !finishedProfiles.includes(lastStarted) ? lastStarted : null;
 
-    if (nodeLines.length === 0) {
-      const starting = logs.includes('Starting Application') || logs.includes('Spring Boot');
-      res.json({ phase: starting ? 'initializing' : 'waiting', progress: 0 });
+    if (finishedProfiles.length === totalProfiles && totalProfiles > 0 && !currentProfile) {
+      const healthOk = logs.includes('Started Application');
+      res.json({
+        phase: healthOk ? 'ready' : 'finalizing',
+        progress: healthOk ? 100 : 99,
+        completedProfiles: finishedProfiles,
+        totalProfiles,
+        currentProfile: null,
+      });
+      return;
+    }
+
+    const nodeLines = [...logs.matchAll(/edge,\s*nodes:\s*([\d\s]+\d),\s*shortcuts:\s*([\d\s]+\d)/g)];
+
+    const profileTagEsc = currentProfile ? `ORS-pl-${currentProfile}`.replace(/[-/]/g, '\\$&') : null;
+    const hasImport = profileTagEsc ? new RegExp(`${profileTagEsc}.*?start creating graph`).test(logs) : false;
+    const hasCH = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating CH preparations`).test(logs) : false;
+    const hasLM = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating LM preparations`).test(logs) : false;
+
+    if (nodeLines.length === 0 || !hasCH) {
+      const started = logs.includes('Starting Application') || logs.includes('Spring Boot');
+      let phase = 'waiting';
+      if (started) {
+        if (hasImport) phase = 'importing';
+        else if (currentProfile) phase = 'initializing';
+        else phase = 'initializing';
+      }
+      res.json({
+        phase,
+        progress: totalProfiles > 0 ? Math.round((finishedProfiles.length / totalProfiles) * 100) : 0,
+        completedProfiles: finishedProfiles,
+        totalProfiles,
+        currentProfile,
+      });
+      return;
+    }
+
+    if (hasLM) {
+      const overallProgress = totalProfiles > 0
+        ? Math.round(((finishedProfiles.length + 0.95) / totalProfiles) * 100)
+        : 95;
+      res.json({
+        phase: 'building',
+        progress: Math.min(overallProgress, 99),
+        profileProgress: 95,
+        currentProfile,
+        completedProfiles: finishedProfiles,
+        totalProfiles,
+        detail: 'Landmark preparation',
+      });
       return;
     }
 
     const parseNum = (s: string) => parseInt(s.replace(/\s/g, ''), 10);
     const firstNodes = parseNum(nodeLines[0][1]);
     const lastNodes = parseNum(nodeLines[nodeLines.length - 1][1]);
-    const progress = firstNodes > 0 ? Math.round((1 - lastNodes / firstNodes) * 100) : 0;
+    const profileProgress = firstNodes > 0 ? (1 - lastNodes / firstNodes) : 0;
+    const overallProgress = totalProfiles > 0
+      ? Math.round(((finishedProfiles.length + profileProgress * 0.9) / totalProfiles) * 100)
+      : Math.round(profileProgress * 90);
 
     res.json({
       phase: 'building',
-      progress: Math.min(progress, 99),
+      progress: Math.min(overallProgress, 99),
+      profileProgress: Math.min(Math.round(profileProgress * 100), 99),
       nodesRemaining: lastNodes,
       nodesTotal: firstNodes,
       currentProfile,
-      completedProfiles: completedProfiles.length,
+      completedProfiles: finishedProfiles,
+      totalProfiles,
     });
   } catch (err: any) {
     res.json({ phase: 'unknown', progress: 0, error: err.message });
