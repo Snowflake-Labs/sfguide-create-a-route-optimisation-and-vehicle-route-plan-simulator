@@ -36,6 +36,57 @@ BEGIN
 END;
 GRANT USAGE ON PROCEDURE core.REFRESH_REGION_CATALOG() TO APPLICATION ROLE app_user;
 
+CREATE OR REPLACE PROCEDURE core.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    cnt INTEGER DEFAULT 0;
+    existing INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    SELECT COUNT(*) INTO existing FROM core.REGION_CATALOG;
+    IF (existing > 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'skipped', 'reason', 'catalog already has ' || existing || ' rows')::VARCHAR;
+    END IF;
+
+    EXECUTE IMMEDIATE '
+        COPY INTO core.REGION_CATALOG
+        FROM (
+            SELECT
+                $1:CATALOG_ID::VARCHAR,
+                $1:SOURCE::VARCHAR,
+                $1:REGION_NAME::VARCHAR,
+                $1:REGION_KEY::VARCHAR,
+                $1:HIERARCHY::VARCHAR,
+                $1:CONTINENT::VARCHAR,
+                $1:COUNTRY::VARCHAR,
+                $1:PBF_URL::VARCHAR,
+                $1:PBF_SIZE_MB::FLOAT,
+                $1:LEVEL::VARCHAR,
+                $1:MIN_LAT::FLOAT,
+                $1:MAX_LAT::FLOAT,
+                $1:MIN_LON::FLOAT,
+                $1:MAX_LON::FLOAT,
+                CURRENT_TIMESTAMP()
+            FROM ' || P_STAGE_PREFIX || '/region_catalog/
+        )
+        FILE_FORMAT = (TYPE = PARQUET)
+        PURGE = FALSE
+        FORCE = TRUE';
+
+    rs := (SELECT COUNT(*) AS CNT FROM core.REGION_CATALOG);
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO cnt := row_val.CNT; END FOR;
+
+    RETURN OBJECT_CONSTRUCT('status', 'loaded', 'rows', cnt)::VARCHAR;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.LOAD_SEED_CATALOG(VARCHAR) TO APPLICATION ROLE app_user;
+
 -- =============================================================================
 -- REGION PROVISIONING: Job tracking for region deployment
 -- =============================================================================

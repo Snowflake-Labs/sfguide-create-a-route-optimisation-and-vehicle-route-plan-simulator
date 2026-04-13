@@ -358,7 +358,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
    snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite && \
    snow stage copy datasets/matrix/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite && \
-   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite
+   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite && \
+   snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/region_catalog/ -c <connection> --overwrite
    ```
 
 3. **Run the loader script:**
@@ -375,10 +376,11 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    UNION ALL SELECT 'POIS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
    UNION ALL SELECT 'JOBS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
    UNION ALL SELECT 'REGIONS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
-   UNION ALL SELECT 'MATRIX', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8;
+   UNION ALL SELECT 'MATRIX', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
+   UNION ALL SELECT 'REGION_CATALOG', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG;
    ```
 
-   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1, MATRIX=29402
+   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG=460
 
    **If any count is 0 or lower than expected:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the full loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent. If a single table still shows a low count after re-run, execute its TRUNCATE + COPY INTO as a standalone `snow sql -q` command (not inside the multi-statement file) to bypass metadata caching.
 
@@ -389,7 +391,13 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
    ```
 
-**Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs)
+   **If REGION_CATALOG = 0:** The catalog is loaded via the native app's `LOAD_SEED_CATALOG` procedure (which runs `EXECUTE AS OWNER`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
+   ```sql
+   GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE');
+   ```
+
+**Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs), Region Builder shows 460 pre-populated catalog entries (no remote API scrape needed)
 
 ### Step 8b: Install Overture Maps Marketplace Datasets
 

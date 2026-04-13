@@ -401,38 +401,19 @@ SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","
 
 --------------------------------------------------------------------------------
 -- 3d. REGION_CATALOG (pre-seeded Geofabrik + BBBike catalog)
---     Pre-populates the Region Builder so it works on first launch without
---     scraping remote APIs. Skips if catalog already has data.
+--     Loaded via native app procedure (EXECUTE AS OWNER) so the catalog
+--     is app-owned. Skips if catalog already has data.
+--     Requires stage/file-format grants (issued here, reused by section 6).
 --------------------------------------------------------------------------------
-SET catalog_count = (SELECT COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG);
+GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
-BEGIN
-  IF ($catalog_count = 0) THEN
-    COPY INTO OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG
-    FROM (
-      SELECT
-        $1:CATALOG_ID::VARCHAR,
-        $1:SOURCE::VARCHAR,
-        $1:REGION_NAME::VARCHAR,
-        $1:REGION_KEY::VARCHAR,
-        $1:HIERARCHY::VARCHAR,
-        $1:CONTINENT::VARCHAR,
-        $1:COUNTRY::VARCHAR,
-        $1:PBF_URL::VARCHAR,
-        $1:PBF_SIZE_MB::FLOAT,
-        $1:LEVEL::VARCHAR,
-        $1:MIN_LAT::FLOAT,
-        $1:MAX_LAT::FLOAT,
-        $1:MIN_LON::FLOAT,
-        $1:MAX_LON::FLOAT,
-        CURRENT_TIMESTAMP()
-      FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/region_catalog/
-    )
-    FILE_FORMAT = (TYPE = PARQUET)
-    PURGE = FALSE
-    FORCE = TRUE;
-  END IF;
-END;
+GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
+  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_CATALOG(
+  '@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE'
+);
 
 --------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated
@@ -468,13 +449,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.
 --    app-owned and visible in GET_MATRIX_INVENTORY() / Matrix Viewer.
 --    External roles cannot CREATE TABLE in the native app's TRAVEL_MATRIX
 --    schema, so we delegate to the app's own procedure.
+--    Stage/file-format GRANTs already issued in section 3d.
 --------------------------------------------------------------------------------
-GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
-  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
-  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
 CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX(
   '@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE',
   'SanFrancisco',
