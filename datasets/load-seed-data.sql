@@ -400,6 +400,41 @@ ALTER PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR)
 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
+-- 3d. REGION_CATALOG (pre-seeded Geofabrik + BBBike catalog)
+--     Pre-populates the Region Builder so it works on first launch without
+--     scraping remote APIs. Skips if catalog already has data.
+--------------------------------------------------------------------------------
+SET catalog_count = (SELECT COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG);
+
+BEGIN
+  IF ($catalog_count = 0) THEN
+    COPY INTO OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG
+    FROM (
+      SELECT
+        $1:CATALOG_ID::VARCHAR,
+        $1:SOURCE::VARCHAR,
+        $1:REGION_NAME::VARCHAR,
+        $1:REGION_KEY::VARCHAR,
+        $1:HIERARCHY::VARCHAR,
+        $1:CONTINENT::VARCHAR,
+        $1:COUNTRY::VARCHAR,
+        $1:PBF_URL::VARCHAR,
+        $1:PBF_SIZE_MB::FLOAT,
+        $1:LEVEL::VARCHAR,
+        $1:MIN_LAT::FLOAT,
+        $1:MAX_LAT::FLOAT,
+        $1:MIN_LON::FLOAT,
+        $1:MAX_LON::FLOAT,
+        CURRENT_TIMESTAMP()
+      FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/region_catalog/
+    )
+    FILE_FORMAT = (TYPE = PARQUET)
+    PURGE = FALSE
+    FORCE = TRUE;
+  END IF;
+END;
+
+--------------------------------------------------------------------------------
 -- 4. Offset timestamps so data looks freshly generated
 --------------------------------------------------------------------------------
 

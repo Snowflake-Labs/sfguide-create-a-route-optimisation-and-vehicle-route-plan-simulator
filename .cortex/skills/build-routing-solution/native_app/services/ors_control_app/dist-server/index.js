@@ -578,7 +578,10 @@ app.get('/api/regions/provisioned', async (_req, res) => {
                 serviceStatus = 'NOT_FOUND';
             }
             let bbox = c.bbox;
-            if (!bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null) {
+            const bboxInvalid = !bbox
+                || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null
+                || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0);
+            if (bboxInvalid) {
                 try {
                     const safeRegion = sanitizeIdentifier(c.region);
                     const statusRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);

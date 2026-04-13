@@ -57,6 +57,9 @@ function bboxCenter(bbox: RegionOption['bbox']): [number, number] {
   if (!bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null) {
     return [0, 0];
   }
+  if (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0) {
+    return [0, 0];
+  }
   return [
     +((bbox.min_lon + bbox.max_lon) / 2).toFixed(4),
     +((bbox.min_lat + bbox.max_lat) / 2).toFixed(4),
