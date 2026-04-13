@@ -310,18 +310,18 @@ app.get('/api/ors-readiness', async (_req, res) => {
   }
 
   try {
-    const cities = JSON.parse(await callProcedure('LIST_REGIONS()') || '[]');
-    for (const city of cities) {
-      const safeRegion = sanitizeIdentifier(city.region);
+    const regions = JSON.parse(await callProcedure('LIST_REGIONS()') || '[]');
+    for (const r of regions) {
+      const safeRegion = sanitizeIdentifier(r.region);
       try {
         const rows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
         const raw = rows?.[0]?.S;
         if (raw) {
           const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          readiness[city.region] = await buildReadiness(city.region, data);
+          readiness[r.region] = await buildReadiness(r.region, data);
         }
       } catch (e: any) {
-        readiness[city.region] = { service_ready: false, health_ready: false, error: e.message };
+        readiness[r.region] = { service_ready: false, health_ready: false, error: e.message };
       }
     }
   } catch {}
@@ -556,15 +556,40 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');
-    const cities = JSON.parse(result || '[]');
-    const enriched = await Promise.all(cities.map(async (c: any) => {
+    const regions = JSON.parse(result || '[]');
+    const enriched = await Promise.all(regions.map(async (c: any) => {
       let serviceStatus = 'UNKNOWN';
       try {
         const safeRegion = sanitizeIdentifier(c.region);
         const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion}' IN SCHEMA ${SF_DATABASE}.CORE`);
         serviceStatus = rows?.[0]?.status || 'NOT_FOUND';
       } catch { serviceStatus = 'NOT_FOUND'; }
-      return { ...c, serviceStatus, functionExists: true };
+
+      let bbox = c.bbox;
+      if (!bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null) {
+        try {
+          const safeRegion = sanitizeIdentifier(c.region);
+          const statusRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
+          const raw = statusRows?.[0]?.S;
+          if (raw) {
+            const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const bounds = status.bounds_info;
+            if (bounds && typeof bounds === 'object') {
+              const profileBounds = Object.values(bounds)[0] as any;
+              if (profileBounds?.bbox) {
+                bbox = {
+                  min_lat: profileBounds.bbox[1],
+                  max_lat: profileBounds.bbox[3],
+                  min_lon: profileBounds.bbox[0],
+                  max_lon: profileBounds.bbox[2],
+                };
+              }
+            }
+          }
+        } catch {}
+      }
+
+      return { ...c, bbox, serviceStatus, functionExists: true };
     }));
 
     let defaultStatus = 'NOT_FOUND';
@@ -689,10 +714,10 @@ app.delete('/api/regions/:region', async (req, res) => {
 
 app.get('/api/matrix/regions', async (_req, res) => {
   try {
-    const cities = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
+    const orsRegions = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
     const regions: any[] = [];
 
-    for (const c of cities) {
+    for (const c of orsRegions) {
       const safeRegion = sanitizeIdentifier(c.REGION || '');
       let serviceStatus = 'NOT_FOUND';
       try {
@@ -708,7 +733,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
         ready: serviceStatus === 'RUNNING' || serviceStatus === 'SUSPENDED',
         provisioned: true,
         matrixFn: `${SF_DATABASE}.CORE.MATRIX_TABULAR`,
-        cities: [c.DISPLAY_NAME || c.REGION],
+        labels: [c.DISPLAY_NAME || c.REGION],
       });
     }
 
@@ -723,13 +748,13 @@ app.get('/api/matrix/regions', async (_req, res) => {
       let defaultBounds = { minLat: 37.71, maxLat: 37.81, minLon: -122.51, maxLon: -122.37 };
       try {
         const stageRows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_SPCS_STAGE PATTERN='.*ors-config.*'`);
-        const cityRegions = new Set(cities.map((c: any) => (c.REGION || '').toUpperCase()));
+        const knownRegions = new Set(orsRegions.map((c: any) => (c.REGION || '').toUpperCase()));
         for (const row of stageRows || []) {
           const path = row.name || row.NAME || '';
           const match = path.match(/ors_spcs_stage\/([^/]+)\/ors-config/i);
           if (match) {
             const stageRegion = match[1];
-            if (!cityRegions.has(stageRegion.toUpperCase())) {
+            if (!knownRegions.has(stageRegion.toUpperCase())) {
               defaultRegion = stageRegion;
               defaultLabel = stageRegion.replace(/([a-z])([A-Z])/g, '$1 $2');
               break;
@@ -738,10 +763,10 @@ app.get('/api/matrix/regions', async (_req, res) => {
         }
       } catch {}
       try {
-        const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(defaultRegion)}'`);
-        if (cityRow?.[0]) {
-          defaultLabel = cityRow[0].DISPLAY_NAME || defaultLabel;
-          defaultBounds = { minLat: cityRow[0].MIN_LAT, maxLat: cityRow[0].MAX_LAT, minLon: cityRow[0].MIN_LON, maxLon: cityRow[0].MAX_LON };
+        const regionRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(defaultRegion)}'`);
+        if (regionRow?.[0]) {
+          defaultLabel = regionRow[0].DISPLAY_NAME || defaultLabel;
+          defaultBounds = { minLat: regionRow[0].MIN_LAT, maxLat: regionRow[0].MAX_LAT, minLon: regionRow[0].MIN_LON, maxLon: regionRow[0].MAX_LON };
         }
       } catch {}
       regions.unshift({
@@ -752,7 +777,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
         ready: mainStatus === 'RUNNING' || mainStatus === 'SUSPENDED',
         provisioned: true,
         matrixFn: `${SF_DATABASE}.CORE.MATRIX_TABULAR`,
-        cities: [defaultLabel],
+        labels: [defaultLabel],
         isDefault: true,
       });
     }

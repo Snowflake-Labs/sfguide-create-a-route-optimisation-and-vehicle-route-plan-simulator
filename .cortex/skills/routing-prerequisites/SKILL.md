@@ -262,6 +262,9 @@ git --version           # Git
 **Issue:** `pip` command not found
 - **Solution:** Install Python first, or use `pip3` instead
 
+**Issue:** `snow` CLI prints version update warnings
+- **Solution:** Set `export SNOWFLAKE_CLI_NO_UPDATE_CHECK=1` in your shell profile to suppress update check noise during builds
+
 **Issue:** Snowflake connection fails
 - **Solution:** Verify account identifier format (e.g., `ACCOUNT.REGION` or `ORG-ACCOUNT`)
 

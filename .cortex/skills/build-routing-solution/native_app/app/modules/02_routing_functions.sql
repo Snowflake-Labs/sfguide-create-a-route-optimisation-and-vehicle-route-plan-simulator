@@ -210,14 +210,6 @@ BEGIN
    GRANT USAGE ON FUNCTION core.CHECK_HEALTH() TO APPLICATION ROLE app_user;
    ALTER FUNCTION core.CHECK_HEALTH() SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
 
-   CREATE OR REPLACE FUNCTION core.LIST_REGIONS()
-      RETURNS TABLE (REGION VARCHAR, DISPLAY_NAME VARCHAR, STATUS VARCHAR, MIN_LAT FLOAT, MAX_LAT FLOAT, MIN_LON FLOAT, MAX_LON FLOAT)
-      LANGUAGE SQL
-      AS
-      'SELECT REGION, DISPLAY_NAME, STATUS, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM core.REGION_ORS_MAP';
-   GRANT USAGE ON FUNCTION core.LIST_REGIONS() TO APPLICATION ROLE app_user;
-   ALTER FUNCTION core.LIST_REGIONS() SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
-
    MERGE INTO core.VERSION_INFO t USING (SELECT 'setup_script' AS COMPONENT) s
      ON t.COMPONENT = s.COMPONENT
      WHEN MATCHED THEN UPDATE SET VERSION = '2.0.0', UPDATED_AT = CURRENT_TIMESTAMP()

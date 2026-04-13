@@ -136,8 +136,6 @@ export interface MatrixEstimate {
   total_pairs: number;
   total_time_minutes: number;
   total_credits: number;
-  snowflake_cost: number;
-  api_comparison: { provider: string; cost_per_call: number; calls_needed: number; total_cost: number }[];
 }
 
 export interface FunctionTestResult {

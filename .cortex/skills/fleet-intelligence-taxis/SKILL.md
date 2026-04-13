@@ -106,6 +106,8 @@ SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 
 If the view exists and has rows, views are already created. Grant native app access (see end of `seed-data.sql`), then skip to Step 10 (Register with Demo Dashboard).
 
+> **Note:** Seed data uses `vehicle_type=ebike` (San Francisco E-Bike Couriers). The CONFIG table is set to `ebike`/`SanFrancisco` accordingly. To see realistic taxi data, generate a new dataset via Data Studio with a taxi/driving-car profile.
+
 ### Create views
 
 Execute `references/seed-data.sql`. This creates CONFIG, VW_DRIVER_LOCATIONS, VW_TRIP_SUMMARY, and 5 wrapper views (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIPS_ASSIGNED_TO_DRIVERS) over UNIFIED data, plus grants SELECT access to the native app.

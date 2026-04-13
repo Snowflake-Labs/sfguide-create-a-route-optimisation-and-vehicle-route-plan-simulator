@@ -8,6 +8,7 @@ MANIFEST="$NATIVE_APP_DIR/app/manifest.yml"
 BUILD_MD="$SKILL_DIR/references/build-images.md"
 SKILL_MD="$SKILL_DIR/SKILL.md"
 README_MD="$SKILL_DIR/../../README.md"
+GUIDELINES_MD="$SKILL_DIR/references/snowflake-scripting-guidelines.md"
 
 if [ ! -f "$MANIFEST" ]; then
   echo "ERROR: manifest.yml not found at $MANIFEST"
@@ -45,6 +46,21 @@ for img in $build_md_versions; do
     errors=$((errors + 1))
   fi
 done
+
+if [ -f "$GUIDELINES_MD" ]; then
+  guidelines_versions=$(awk -F'|' '/Current image tags/,/^$/ { if ($3 ~ /[a-z_-]+/ && $4 ~ /v[0-9.]+/) { gsub(/^ +| +$/, "", $3); gsub(/^ +| +$/, "", $4); print $3":"$4 } }' "$GUIDELINES_MD" 2>/dev/null | sort -u)
+  if [ -n "$guidelines_versions" ]; then
+    echo "snowflake-scripting-guidelines.md:"
+    echo "$guidelines_versions" | sed 's/^/  /'
+    echo ""
+    for img in $guidelines_versions; do
+      if ! echo "$manifest_versions" | grep -qF "$img"; then
+        echo "MISMATCH: $img in snowflake-scripting-guidelines.md but NOT in manifest.yml"
+        errors=$((errors + 1))
+      fi
+    done
+  fi
+fi
 
 for img in $manifest_versions; do
   if ! echo "$service_versions" | grep -qF "$img"; then

@@ -152,12 +152,21 @@ CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 
 > **Full SQL:** [references/agent-definitions.md § CREATE AGENT](references/agent-definitions.md#create-agent-specification)
 
-### Step 8: Register Agent with Snowflake Intelligence
+### Step 8: Register Agent with Snowflake Intelligence (Optional)
 
-```sql
-ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
-ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
-```
+> **Note:** This step requires Snowflake Intelligence to be configured on the account. The agent is fully functional via direct `INVOKE_AGENT` calls without SI registration.
+
+1. **Check** if Snowflake Intelligence is available:
+   ```sql
+   SHOW SNOWFLAKE INTELLIGENCE;
+   ```
+   If this returns an error or no results, skip the rest of this step.
+
+2. **Register** the agent:
+   ```sql
+   ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
+   ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
+   ```
 
 ### Step 9: Test the Agent
 

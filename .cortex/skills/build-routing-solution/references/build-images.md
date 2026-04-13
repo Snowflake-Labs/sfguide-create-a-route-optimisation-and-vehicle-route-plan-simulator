@@ -96,7 +96,7 @@ Expected: 5 images with tags matching the Image Inventory below.
 
 ## Expected Duration
 
-5-10 minutes for all 5 images.
+10-20 minutes for all 5 images on first push. Subsequent pushes with cached layers take ~5 minutes.
 
 ## Common Errors
 

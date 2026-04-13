@@ -1,12 +1,12 @@
 # Notebook Deployment Reference
 
-Detailed instructions for Steps 6, 7, and 8 of the route-optimization workflow.
+Detailed instructions for Steps 7 and 8 of the route-optimization workflow.
 
-## Step 6: Deploy Carto Data Notebook
+> **Note:** Step 6 (Carto data pipeline) was replaced by `seed-data.sql`. The geohash table below is retained for reference when configuring `seed-data.sql` for non-SF regions.
 
-### 6.1: Determine Geohash for Target City
+## Geohash Reference
 
-The notebook filters Overture Maps POI data using a 2-character geohash. Default is `'9q'` (San Francisco).
+The `seed-data.sql` script filters Overture Maps POI data using a 2-character geohash. Default is `'9q'` (San Francisco).
 
 Calculate the correct geohash:
 ```sql
@@ -26,82 +26,6 @@ Common geohashes:
 | Sydney | `r3` | Sydney Metro |
 | Zurich | `u0` | Zurich Region |
 | Amsterdam | `u1` | Netherlands |
-
-If the notebook's geohash already matches `<NOTEBOOK_CITY>`, skip modification.
-
-### 6.2: Update the Carto Notebook
-
-1. Edit the `add_carto_data` cell in `assets/notebooks/add_carto_data.ipynb`:
-
-   Find the current geohash filter (default `'9q'`):
-   ```sql
-   WHERE ST_GEOHASH(GEOMETRY, 2) = '9q';
-   ```
-   Replace with:
-   ```sql
-   WHERE ST_GEOHASH(GEOMETRY, 2) = '<GEOHASH>';
-   ```
-
-2. Update the `prompt_multi_layer_isochrone` cell (if present):
-   - Change city references (e.g., "San Francisco") to `<NOTEBOOK_CITY>`
-
-### 6.3: Customize Industries (if requested)
-
-If the user requested custom industries in Step 3, update Cell 15 (the LOOKUP INSERT) in `add_carto_data.ipynb`. See `references/industry-customization.md` for the full SQL format and examples.
-
-### 6.4: Upload and Execute
-
-1. Create the notebook stage:
-   ```sql
-   CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook 
-   DIRECTORY = (ENABLE = TRUE) 
-   ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
-   ```
-
-2. Upload notebook files:
-   ```bash
-   snow stage copy "assets/notebooks/add_carto_data.ipynb" \
-     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
-   
-   snow stage copy "assets/notebooks/environment.yml" \
-     @FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.notebook --connection <ACTIVE_CONNECTION> --overwrite
-   ```
-
-3. Create the notebook:
-   ```sql
-   CREATE OR REPLACE NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA
-   FROM '@FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK'
-   MAIN_FILE = 'add_carto_data.ipynb'
-   QUERY_WAREHOUSE = 'ROUTING_ANALYTICS'
-   COMMENT = '{"origin":"sf_sit-is-fleet", "name":"Route Optimization with Open Route Service", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"notebook"}}';
-   
-   ALTER NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA ADD LIVE VERSION FROM LAST;
-   ```
-
-4. Execute notebook:
-   ```sql
-   EXECUTE NOTEBOOK FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA();
-   ```
-
-5. Verify tables:
-   ```sql
-   SELECT 'PLACES' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
-   UNION ALL
-   SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
-   UNION ALL
-   SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
-   ```
-   - `PLACES`: varies by region (50K-2M+ rows; 2-char geohash covers a large area)
-   - `LOOKUP`: 3+ rows (default) or number of custom industries
-   - `JOB_TEMPLATE`: 29 rows
-   - **STOP** if any table has 0 rows
-
-6. If custom industries were configured, verify:
-   ```sql
-   SELECT INDUSTRY, PA, PB, PC, CTYPE, STYPE 
-   FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
-   ```
 
 ## Step 7: Check for Latest Claude Model
 

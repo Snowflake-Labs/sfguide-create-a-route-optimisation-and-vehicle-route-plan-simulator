@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { MatrixEstimate, MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
+import type { MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
 import { RES_LABELS, RES_CUTOFFS, RES_HEX_PER_SQDEG, ROUTING_PROFILES } from '../types';
 
 const RATE_PAIRS_PER_SEC = 31500;
@@ -28,11 +28,6 @@ function formatDuration(minutes: number): string {
   const hrs = Math.floor(minutes / 60);
   const mins = Math.round(minutes % 60);
   return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
-}
-
-function formatCost(cost: number): string {
-  if (cost >= 1000) return `$${(cost / 1000).toFixed(1)}K`;
-  return `$${cost.toFixed(2)}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -150,13 +145,8 @@ export default function MatrixBuilder() {
     const totalPairs = resolutions.reduce((s, r) => s + r.sparse_pairs, 0);
     return {
       region: region?.label || '', resolutions, total_pairs: totalPairs, total_time_minutes: totalTime,
-      total_credits: (totalTime / 60) * CREDIT_PER_HOUR_SMALL, snowflake_cost: ((totalTime / 60) * CREDIT_PER_HOUR_SMALL) * 2.5,
-      api_comparison: [
-        { provider: 'Google Distance Matrix', cost_per_call: 0.005, calls_needed: totalPairs, total_cost: totalPairs * 0.005 },
-        { provider: 'HERE Matrix Routing', cost_per_call: 0.0035, calls_needed: totalPairs, total_cost: totalPairs * 0.0035 },
-        { provider: 'Mapbox Matrix API', cost_per_call: 0.0004, calls_needed: totalPairs, total_cost: totalPairs * 0.0004 },
-      ],
-    } as MatrixEstimate;
+      total_credits: (totalTime / 60) * CREDIT_PER_HOUR_SMALL,
+    };
   }, [hexEstimates, selectedRes, region]);
 
   const toggleRes = (res: number) => setSelectedRes((prev) => { const next = new Set(prev); if (next.has(res)) next.delete(res); else next.add(res); return next; });
@@ -343,27 +333,7 @@ export default function MatrixBuilder() {
             <div className="estimate-card primary"><div className="estimate-label">Total Pairs</div><div className="estimate-value">~{formatNumber(estimate.total_pairs)}</div></div>
             <div className="estimate-card"><div className="estimate-label">Est. Time</div><div className="estimate-value">{formatDuration(estimate.total_time_minutes)}</div></div>
             <div className="estimate-card"><div className="estimate-label">Credits</div><div className="estimate-value">{estimate.total_credits.toFixed(1)}</div></div>
-            <div className="estimate-card highlight"><div className="estimate-label">Est. Cost</div><div className="estimate-value">{formatCost(estimate.snowflake_cost)}</div></div>
           </div>
-
-          <h3>Cost Comparison</h3>
-          <table className="services-table">
-            <thead><tr><th>Provider</th><th>Cost/Element</th><th>Total Cost</th><th>vs Snowflake</th></tr></thead>
-            <tbody>
-              {estimate.api_comparison.map((api) => {
-                const saving = api.total_cost > 0 ? ((api.total_cost - estimate.snowflake_cost) / api.total_cost * 100) : 0;
-                return (
-                  <tr key={api.provider}>
-                    <td>{api.provider}</td>
-                    <td>{formatCost(api.cost_per_call)}</td>
-                    <td>{formatCost(api.total_cost)}</td>
-                    <td>{saving > 0 ? <span className="savings">{saving.toFixed(0)}% cheaper</span> : '—'}</td>
-                  </tr>
-                );
-              })}
-              <tr className="highlight-row"><td><strong>Snowflake + ORS</strong></td><td>—</td><td><strong>{formatCost(estimate.snowflake_cost)}</strong></td><td>Baseline</td></tr>
-            </tbody>
-          </table>
         </>
       )}
 

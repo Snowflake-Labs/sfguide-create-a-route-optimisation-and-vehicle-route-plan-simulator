@@ -17,12 +17,15 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 2. Replace `<connection>` with the user's active Snowflake CLI connection name. To find it, run `snow connection list` and match by account URL (the `account` field should match the account shown in the Snowflake IDE). The `snowflake_sql_execute` tool and `snow` CLI may use DIFFERENT connections — always verify. If no matching connection exists, run `snow connection add` to create one.
 3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
 4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
+5. **Batch bash commands:** Combine multiple `snow` CLI calls into a single bash tool invocation using `&&` to avoid repeated user approval prompts. Never split `snow stage copy` or `snow sql` calls across separate bash invocations when they can be chained.
+6. **Prefer snowflake_sql_execute:** Use the `snowflake_sql_execute` tool for individual SQL statements instead of `snow sql -q`. Reserve `snow sql -f` only for multi-statement SQL files.
 
 ## Prerequisites
 
 - Container runtime (Podman or Docker) installed and running
 - Node.js >= 20 and npm (required for building ors_control_app)
 - Snowflake CLI (`snow`) installed
+- `export SNOWFLAKE_CLI_NO_UPDATE_CHECK=true` to suppress version upgrade warnings
 - Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
 - Repository cloned; working directory set to repo root
 
@@ -143,14 +146,12 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Upload** files to stage (paths are relative to the **repo root**):
+1. **Upload** files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
    snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
-   
+     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
-
+     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/scripts/download_map.py" \
      @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
@@ -169,7 +170,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 2. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
 3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v1.0.0), vroom-docker (v1.0.1), ors_control_app (v1.0.95)
 
-**Expected Duration:** 5-10 minutes
+**Expected Duration:** 10-20 minutes (first push; ~5 minutes with cached layers)
 
 **If authentication fails:** Run `snow spcs image-registry login -c <connection>`. For Podman, see `references/troubleshooting.md` > "Podman Registry Auth".
 
@@ -353,10 +354,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    > **Note:** The `datasets/` directory is at the **repository root**, not in this skill's directory. Run these commands from the repo root.
 
    ```bash
-   snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite
-   snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive
-   snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite
-   snow stage copy datasets/matrix/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite
+   snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite && \
+   snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
+   snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite && \
+   snow stage copy datasets/matrix/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite && \
    snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite
    ```
 

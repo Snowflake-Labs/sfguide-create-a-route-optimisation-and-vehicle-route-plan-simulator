@@ -116,6 +116,9 @@ Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each s
 | 1 | Database + Schema | DDL | Create FLEET_INTELLIGENCE.DWELL_ANALYSIS |
 | 1b | CONFIG | Table | Single-row vehicle type and region config |
 | 2 | VW_VEHICLE_TELEMETRY, VW_VEHICLE_FLEET, VW_DESTINATIONS, VW_REST_STOPS, VW_TRIP_SCHEDULE | Views | Projection views from UNIFIED |
+
+> **Note:** VW_REST_STOPS will return 0 rows with seed data because DIM_POIS contains no `LOCATION_TYPE = 'REST_STOP'` records. The dwell pipeline still works using geofence-based analysis from VW_DESTINATIONS. REST_STOP data appears when generating data via Data Studio with POI diversity enabled.
+
 | 3 | GEOFENCE_POLYGONS | Table | Destinations + rest stops with buffer radii |
 | 4 | SLA_THRESHOLDS | Table + INSERT | WARNING/CRITICAL minutes per location type (2 calls) |
 | 5 | DT_STATE_CHANGES | Dynamic Table | LAG-based state change detection |

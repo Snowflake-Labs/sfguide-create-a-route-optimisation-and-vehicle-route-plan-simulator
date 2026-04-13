@@ -62,9 +62,9 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 **Pre-check: If data already exists, skip to Step 7.** Run:
 ```sql
-SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
+SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;
 ```
-If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (fleet simulation notebook) or Step 9 (Streamlit deployment) as needed.
+If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (Claude model check) or Step 8 (AISQL notebook) as needed.
 
 **Goal:** Set session query tag for attribution tracking.
 
@@ -101,36 +101,27 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (fleet simulatio
 
 **Output:** `OVERTURE_MAPS__PLACES` database available.
 
-### Step 5: Setup Snowflake Objects
+### Step 5: Run Seed Data Script
 
-**Goal:** Create database, schema, warehouse, and CONFIG table for the demo.
+**Goal:** Create database, schema, warehouse, CONFIG, PLACES, JOB_TEMPLATE, and LOOKUP tables from Overture Maps.
 
-> See `references/sql-setup.md` for CREATE DATABASE / SCHEMA / WAREHOUSE SQL.
+1. If region is NOT SanFrancisco, update the `SET` variables at the top of `references/seed-data.sql`:
+   - `$REGION_GEOHASH`: see geohash table in `references/notebook-deployment.md`
+   - `$REGION_NAME`: the city/region name (e.g., `'NewYork'`, `'London'`)
+2. If the user requested custom industries in Step 3, update the LOOKUP INSERT section in `references/seed-data.sql` per `references/industry-customization.md`.
+3. Run:
+   ```bash
+   snow sql -f .cortex/skills/route-optimization/references/seed-data.sql -c <connection>
+   ```
+4. Verify:
+   ```sql
+   SELECT 'PLACES' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+   UNION ALL SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+   UNION ALL SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
+   ```
+   Expected: PLACES 50K-500K, LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
 
-Also create the CONFIG table:
-```sql
-CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
-    VEHICLE_TYPE VARCHAR NOT NULL,
-    REGION       VARCHAR NOT NULL
-)
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-route-optimization", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-MERGE INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG tgt
-USING (SELECT 'driving-car' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
-ON TRUE
-WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
-```
-
-**Output:** `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION` schema created with CONFIG table.
-
-### Step 6: Deploy Carto Data Notebook
-
-**Goal:** Customize the Carto data notebook for `<REGION_NAME>`, optionally customize industries, deploy and execute.
-
-> See `references/notebook-deployment.md` (Step 6) for geohash lookup, notebook edits, industry customization, upload/execute commands, and verification queries.
-
-Key verification: PLACES (50K-500K rows), LOOKUP (3+ rows), JOB_TEMPLATE (29 rows). **STOP** if any table has 0 rows.
-
-**Output:** Standing data populated for `<NOTEBOOK_CITY>`.
+**Output:** Standing data populated for `<REGION_NAME>`.
 
 ### Step 7: Check Claude Model
 
@@ -210,7 +201,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 - Step 2: Wait for user to activate app if services not running
 - Step 3: Confirm detected region, city, and industry choices with user
 - Step 4: Verify Marketplace dataset accessible
-- Step 6: Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated
+- Step 5: Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated
 - Step 7: Verify Claude model is available
 - Step 9: Verify Demo Dashboard shows the Route Optimization page
 
@@ -247,7 +238,6 @@ To remove all objects created by this skill:
 
 ```sql
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
-DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;

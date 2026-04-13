@@ -485,4 +485,13 @@ VALUES (src.JOB_ID, src.REGION, src.PROFILE, src.RESOLUTION, src.STATUS, src.STA
   src.HEXAGONS, src.WORK_QUEUE_ROWS, src.RAW_ROWS, src.MATRIX_ROWS, src.PCT_COMPLETE,
   src.MESSAGE, src.ERROR_MSG, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP());
 
+--------------------------------------------------------------------------------
+-- 6b. Transfer matrix table ownership to the native app so GET_MATRIX_INVENTORY()
+--     (which runs EXECUTE AS OWNER) can see it, and future matrix builds for the
+--     same region/profile/resolution don't fail with privilege errors.
+--------------------------------------------------------------------------------
+GRANT OWNERSHIP ON TABLE OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
+  TO APPLICATION OPENROUTESERVICE_NATIVE_APP
+  COPY CURRENT GRANTS;
+
 SELECT 'Seed data loaded successfully' AS STATUS;

@@ -3,7 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { GeoJsonLayer, ScatterplotLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 
-interface CityOption {
+interface RegionOption {
   region: string;
   display_name?: string;
   isDefault?: boolean;
@@ -53,8 +53,10 @@ const FUNCTIONS = [
   { name: 'LIST_REGIONS', sig: '() → TABLE' },
 ];
 
-function bboxCenter(bbox: CityOption['bbox']): [number, number] {
-  if (!bbox) return [-122.4194, 37.7749];
+function bboxCenter(bbox: RegionOption['bbox']): [number, number] {
+  if (!bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null) {
+    return [0, 0];
+  }
   return [
     +((bbox.min_lon + bbox.max_lon) / 2).toFixed(4),
     +((bbox.min_lat + bbox.max_lat) / 2).toFixed(4),
@@ -65,12 +67,12 @@ function offsetPoint(center: [number, number], dlat: number, dlon: number): [num
   return [+(center[0] + dlon).toFixed(4), +(center[1] + dlat).toFixed(4)];
 }
 
-function isRegionCity(city: CityOption | null): boolean {
-  return !!(city && !city.isDefault && city.region !== 'default');
+function isProvisionedRegion(r: RegionOption | null): boolean {
+  return !!(r && !r.isDefault && r.region !== 'default');
 }
 
-function generateSql(fnName: string, city: CityOption | null, profile: string = 'driving-car', db: string = ''): string {
-  const bbox = city?.bbox;
+function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = ''): string {
+  const bbox = region?.bbox;
   const center = bboxCenter(bbox);
   const start = offsetPoint(center, -0.005, -0.005);
   const end = offsetPoint(center, 0.005, 0.005);
@@ -78,7 +80,7 @@ function generateSql(fnName: string, city: CityOption | null, profile: string = 
   const job2 = offsetPoint(center, 0.004, 0.004);
   const depot = offsetPoint(center, -0.008, 0.002);
   const dest2 = offsetPoint(center, 0.008, -0.003);
-  const rg = isRegionCity(city) ? `'${city!.region}'` : 'NULL::VARCHAR';
+  const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
 
   switch (fnName) {
@@ -231,9 +233,9 @@ function extractGeoData(result: any): GeoData {
   return { geojson, points, center, zoom };
 }
 
-function ResultMap({ result, fnName, cityCenter }: { result: any; fnName: string; cityCenter: [number, number] }) {
+function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: string; regionCenter: [number, number] }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
-  const [viewState, setViewState] = useState({ longitude: cityCenter[0], latitude: cityCenter[1], zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     if (geo.center) {
@@ -344,8 +346,10 @@ function ResultMap({ result, fnName, cityCenter }: { result: any; fnName: string
 }
 
 export default function FunctionTester() {
-  const [cities, setCities] = useState<CityOption[]>([]);
-  const [selectedCity, setSelectedCity] = useState<CityOption | null>(null);
+  const [regions, setRegions] = useState<RegionOption[]>([]);
+  const [selectedRegion, setSelectedRegion] = useState<RegionOption | null>(null);
+  const [regionsLoading, setRegionsLoading] = useState(true);
+  const [regionsError, setRegionsError] = useState<string | null>(null);
   const [selectedFn, setSelectedFn] = useState('ORS_STATUS');
   const [selectedProfile, setSelectedProfile] = useState('driving-car');
   const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
@@ -369,22 +373,26 @@ export default function FunctionTester() {
       try {
         const r = await fetch('/api/regions/provisioned');
         const data = await r.json();
-        const cityList: CityOption[] = data.regions || [];
-        setCities(cityList);
-        const def = cityList.find((c) => c.isDefault) || cityList[0];
+        if (data.error) setRegionsError(data.error);
+        const regionList: RegionOption[] = data.regions || [];
+        setRegions(regionList);
+        const def = regionList.find((c) => c.isDefault) || regionList[0];
         if (def) {
-          setSelectedCity(def);
+          setSelectedRegion(def);
           setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
         }
-      } catch {}
+      } catch (err: any) {
+        setRegionsError(err.message || 'Failed to load regions');
+      }
+      setRegionsLoading(false);
     })();
   }, []);
 
-  const fetchProfiles = useCallback(async (city: CityOption | null) => {
+  const fetchProfiles = useCallback(async (region: RegionOption | null) => {
     setProfilesLoading(true);
     try {
       const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const rg = isRegionCity(city) ? `'${city!.region}'` : 'NULL::VARCHAR';
+      const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
       const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
       const resp = await fetch('/api/query', {
         method: 'POST',
@@ -401,7 +409,7 @@ export default function FunctionTester() {
             setAvailableProfiles(names);
             if (!names.includes(selectedProfile)) {
               setSelectedProfile(names[0]);
-              setSqlInput(generateSql(selectedFn, city, names[0], sfDatabase));
+              setSqlInput(generateSql(selectedFn, region, names[0], sfDatabase));
             }
             setProfilesLoading(false);
             return;
@@ -414,24 +422,24 @@ export default function FunctionTester() {
   }, [selectedFn, selectedProfile, sfDatabase]);
 
   useEffect(() => {
-    if (selectedCity) fetchProfiles(selectedCity);
-  }, [selectedCity]);
+    if (selectedRegion) fetchProfiles(selectedRegion);
+  }, [selectedRegion]);
 
-  const onCityChange = useCallback((region: string) => {
-    const city = cities.find((c) => c.region === region) || null;
-    setSelectedCity(city);
-    setSqlInput(generateSql(selectedFn, city, selectedProfile, sfDatabase));
-  }, [cities, selectedFn, selectedProfile, sfDatabase]);
+  const onRegionChange = useCallback((regionKey: string) => {
+    const r = regions.find((c) => c.region === regionKey) || null;
+    setSelectedRegion(r);
+    setSqlInput(generateSql(selectedFn, r, selectedProfile, sfDatabase));
+  }, [regions, selectedFn, selectedProfile, sfDatabase]);
 
   const onFnChange = useCallback((fnName: string) => {
     setSelectedFn(fnName);
-    setSqlInput(generateSql(fnName, selectedCity, selectedProfile, sfDatabase));
-  }, [selectedCity, selectedProfile, sfDatabase]);
+    setSqlInput(generateSql(fnName, selectedRegion, selectedProfile, sfDatabase));
+  }, [selectedRegion, selectedProfile, sfDatabase]);
 
   const onProfileChange = useCallback((profile: string) => {
     setSelectedProfile(profile);
-    setSqlInput(generateSql(selectedFn, selectedCity, profile, sfDatabase));
-  }, [selectedCity, selectedFn, sfDatabase]);
+    setSqlInput(generateSql(selectedFn, selectedRegion, profile, sfDatabase));
+  }, [selectedRegion, selectedFn, sfDatabase]);
 
   const executeQuery = useCallback(async () => {
     setRunning(true);
@@ -458,22 +466,31 @@ export default function FunctionTester() {
   return (
     <div className="panel">
       <h2>Function Tester</h2>
-      <p className="subtitle">Test ORS routing functions against any provisioned city</p>
+      <p className="subtitle">Test ORS routing functions against any provisioned region</p>
 
-      <h3>City</h3>
+      <h3>Region</h3>
       <select
         className="select"
-        value={selectedCity?.region || ''}
-        onChange={(e) => onCityChange(e.target.value)}
+        value={selectedRegion?.region || ''}
+        onChange={(e) => onRegionChange(e.target.value)}
       >
-        {cities.length === 0 && <option value="">Loading cities...</option>}
-        {cities.map((c) => (
+        {regionsLoading && <option value="">Loading regions...</option>}
+        {!regionsLoading && regions.length === 0 && <option value="">No regions provisioned</option>}
+        {regions.map((c) => (
           <option key={c.region} value={c.region}>
             {c.display_name || c.region}
             {c.isDefault ? '' : ` (${c.region})`}
           </option>
         ))}
       </select>
+      {regionsError && (
+        <p style={{ color: 'var(--error)', fontSize: 13, margin: '4px 0 0' }}>{regionsError}</p>
+      )}
+      {selectedRegion && (!selectedRegion.bbox || selectedRegion.bbox.min_lat == null) && (
+        <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 13, margin: '4px 0 0' }}>
+          Bounding box unavailable for this region. Coordinates in generated SQL may be incorrect.
+        </p>
+      )}
 
       <h3>Routing Profile</h3>
       <select
@@ -524,7 +541,7 @@ export default function FunctionTester() {
         </div>
       )}
 
-      {result !== null && <ResultMap result={result} fnName={selectedFn} cityCenter={bboxCenter(selectedCity?.bbox)} />}
+      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} />}
 
       {result !== null && (
         <div className="result-panel">
