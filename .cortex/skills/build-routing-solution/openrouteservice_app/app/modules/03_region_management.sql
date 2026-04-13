@@ -20,10 +20,6 @@ CREATE TABLE IF NOT EXISTS core.REGION_CATALOG (
     UPDATED_AT    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
-GRANT SELECT ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
-GRANT UPDATE ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.REGION_CATALOG TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
@@ -34,7 +30,6 @@ AS
 BEGIN
     RETURN '{"message":"Catalog refresh is handled by the Control App server. Use the Region Builder UI or POST /api/regions/catalog/refresh."}';
 END;
-GRANT USAGE ON PROCEDURE core.REFRESH_REGION_CATALOG() TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
 RETURNS VARCHAR
@@ -85,7 +80,6 @@ BEGIN
     RETURN OBJECT_CONSTRUCT('status', 'loaded', 'rows', cnt)::VARCHAR;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.LOAD_SEED_CATALOG(VARCHAR) TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- REGION PROVISIONING: Job tracking for region deployment
@@ -107,10 +101,6 @@ CREATE TABLE IF NOT EXISTS core.REGION_PROVISION_JOBS (
     ERROR_MSG VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
-GRANT SELECT ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT UPDATE ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.REGION_PROVISION_JOBS TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.PROVISION_REGION_WRAPPER(
     P_JOB_ID VARCHAR,
@@ -249,7 +239,6 @@ EXCEPTION
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.PROVISION_REGION_WRAPPER(VARCHAR, VARCHAR, VARCHAR, VARCHAR, FLOAT, FLOAT, FLOAT, FLOAT, VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.GET_PROVISION_STATUS()
 RETURNS VARCHAR
@@ -276,7 +265,6 @@ BEGIN
     RETURN result;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.GET_PROVISION_STATUS() TO APPLICATION ROLE app_user;
 
 -- =============================================================================
 -- MULTI-REGION: Per-region ORS instances with region-parameterized functions
@@ -295,10 +283,6 @@ CREATE TABLE IF NOT EXISTS core.REGION_ORS_MAP (
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
-GRANT SELECT ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT INSERT ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT UPDATE ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
-GRANT DELETE ON TABLE core.REGION_ORS_MAP TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.create_region_ors_service(P_REGION VARCHAR)
 RETURNS STRING
@@ -323,9 +307,8 @@ BEGIN
         MIN_NODES = 1
         MAX_NODES = 10
         AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400;
-
-    ALTER COMPUTE POOL IDENTIFIER(:pool_name) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+        AUTO_SUSPEND_SECS = 14400
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
     ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
@@ -341,7 +324,6 @@ BEGIN
     RETURN 'Region ORS service created for ' || :P_REGION || ': ' || svc_name;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.create_region_ors_service(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.create_region_functions(P_REGION VARCHAR)
 RETURNS STRING
@@ -354,7 +336,6 @@ BEGIN
     RETURN 'No-op: per-region function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(core.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.create_region_functions(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
 RETURNS STRING
@@ -429,7 +410,6 @@ def run(session, p_region, p_pbf_file, p_profiles):
 
     return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles
 $$;
-GRANT USAGE ON PROCEDURE core.write_ors_config(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.setup_region_ors(P_REGION VARCHAR)
 RETURNS STRING
@@ -447,7 +427,6 @@ BEGIN
     RETURN 'Region ORS deployed for: ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.setup_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.resume_region_ors(P_REGION VARCHAR)
 RETURNS STRING
@@ -466,7 +445,6 @@ BEGIN
     RETURN 'Resumed ORS services for ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.resume_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
 
 CREATE OR REPLACE PROCEDURE core.drop_region_ors(P_REGION VARCHAR)
 RETURNS STRING
@@ -485,9 +463,6 @@ BEGIN
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.drop_region_ors(VARCHAR) TO APPLICATION ROLE app_user;
-
-DROP FUNCTION IF EXISTS core.list_regions();
 
 CREATE OR REPLACE PROCEDURE core.list_regions()
 RETURNS STRING
@@ -509,4 +484,3 @@ BEGIN
     RETURN COALESCE(result, '[]');
 END;
 $$;
-GRANT USAGE ON PROCEDURE core.list_regions() TO APPLICATION ROLE app_user;

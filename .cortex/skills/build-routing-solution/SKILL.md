@@ -1,6 +1,6 @@
 ---
 name: build-routing-solution
-description: "Build routing solution Snowflake Native App with SPCS. Use when: build routing solution, set up OpenRouteService native app, building and pushing SPCS images, deploy ORS native app to Snowflake, redeploy native app, rebuild container images. Do NOT use for: changing maps or routing profiles (use routing-customization), deploying demo apps (use route-optimization or fleet-intelligence-taxis). Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS native app, redeploy app, rebuild images, SPCS image build, OpenRouteService deployment."
+description: "Build routing solution WITH SPCS. Use when: build routing solution, set up OpenRouteService app, building and pushing SPCS images, deploy ORS app to Snowflake, redeploy spcs app, rebuild container images. Do NOT use for: changing maps or routing profiles (use routing-customization), deploying demo apps (use route-optimization or fleet-intelligence-taxis). Triggers: build routing solution, install openrouteservice app, set up OpenRouteService, build and push SPCS images, deploy ORS app, redeploy app, rebuild images, SPCS image build, OpenRouteService deployment."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -9,11 +9,11 @@ metadata:
 
 # Deploy Route Optimizer
 
-Deploys the OpenRouteService route optimization application as a Snowflake Native App using Snowpark Container Services.
+Deploys the OpenRouteService route optimization application using Snowpark Container Services.
 
 ## Execution Rules
 
-1. All relative paths (e.g., `native_app/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
+1. All relative paths (e.g., `OP/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
 2. Replace `<connection>` with the user's active Snowflake CLI connection name. To find it, run `snow connection list` and match by account URL (the `account` field should match the account shown in the Snowflake IDE). The `snowflake_sql_execute` tool and `snow` CLI may use DIFFERENT connections — always verify. If no matching connection exists, run `snow connection add` to create one.
 3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
 4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
@@ -33,14 +33,12 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
-| CREATE DATABASE | Account | Creates OPENROUTESERVICE_SETUP, SYNTHETIC_DATASETS, and FLEET_INTELLIGENCE databases |
+| CREATE DATABASE | Account | Creates OPENROUTESERVICE_APP, SYNTHETIC_DATASETS, and FLEET_INTELLIGENCE databases |
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
-| CREATE APPLICATION | Account | Deploys OPENROUTESERVICE_NATIVE_APP |
-| CREATE APPLICATION PACKAGE | Account | Creates OPENROUTESERVICE_NATIVE_APP_PKG |
 | CREATE COMPUTE POOL | Account | Required for SPCS container services |
 | USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Runs deployment queries |
-| CREATE STAGE | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE |
-| CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_SETUP.PUBLIC) | Creates IMAGE_REPOSITORY for container images |
+| CREATE STAGE | Schema (OPENROUTESERVICE_APP.CORE) | Creates ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE |
+| CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_APP.CORE) | Creates IMAGE_REPOSITORY for container images |
 | IMPORT SHARE | Account | Installs Overture Maps datasets from Marketplace (Step 8b) |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -49,7 +47,7 @@ Deploys the OpenRouteService route optimization application as a Snowflake Nativ
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| DATABASE | `OPENROUTESERVICE_SETUP` | Database for ORS infrastructure objects |
+| DATABASE | `OPENROUTESERVICE_APP` | Database for ORS infrastructure objects |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for ORS operations |
 | WAREHOUSE_SIZE | `MEDIUM` | Size of the routing warehouse |
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
@@ -109,34 +107,44 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Execute** environment setup SQL (all objects include the tracking COMMENT tag):
+1. **Execute** environment setup SQL:
    ```sql
-   -- Tracking tag applied to all objects:
-   -- COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-build-routing-solution-in-snowflake", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}'
+   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+   
+   CREATE DATABASE IF NOT EXISTS OPENROUTSERVICE_APP
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
-   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_SETUP COMMENT = '<tag>';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE
-       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE
-       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE
-       ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY=(ENABLE=TRUE) COMMENT = '<tag>';
-   CREATE IMAGE REPOSITORY IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY COMMENT = '<tag>';
-   CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE = MEDIUM AUTO_SUSPEND = 60 COMMENT = '<tag>';
+   CREATE SCHEMA IF NOT EXISTS OPENROUTSERVICE_APP.CORE
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
+   CREATE SCHEMA IF NOT EXISTS OPENROUTSERVICE_APP.TRAVEL_MATRIX
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
+
+   CREATE IMAGE_REPOSITORY IF NOT EXISTS IMAGE_REPOSITORY
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
+   CREATE OR ALTER STAGE core.ORS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
+   CREATE OR ALTER STAGE core.ORS_GRAPHS_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
+   CREATE OR ALTER STAGE core.ORS_elevation_cache_SPCS_STAGE ENCRYPTION = ( TYPE = 'SNOWFLAKE_SSE' ) DIRECTORY = ( ENABLE = TRUE )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
    ```
-   Replace `<tag>` with the full COMMENT JSON shown above.
 
 2. **Verify** infrastructure was created:
    ```sql
-   SHOW STAGES IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
-   SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_SETUP.PUBLIC;
+   SHOW STAGES IN SCHEMA OPENROUTESERVICE_APP.CORE;
+   SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;
    SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
    ```
    Expected: 3 stages (ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE), 1 image repository (IMAGE_REPOSITORY), 1 warehouse (ROUTING_ANALYTICS).
 
    **If any object is missing:** Check that the role has the required privileges from the Required Privileges section above.
 
-**Output:** Database `OPENROUTESERVICE_SETUP` with stages, warehouse and image repository created and verified
+**Output:** Database `OPENROUTESERVICE_APP` with stages, warehouse and image repository created and verified
 
 **Next:** Proceed to Step 4
 
@@ -148,12 +156,12 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 1. **Upload** files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/SanFrancisco.osm.pbf" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/scripts/download_map.py" \
-     @OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
 
 **Output:** Configuration files uploaded to Snowflake stage
@@ -164,14 +172,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Build 5 container images and push to Snowflake image repository
 
-**Before building:** Read `native_app/image-versions.env` (the single source of truth for all image tags). Use these values for all `-t` flags. The `build-images.md` code blocks show the commands but always cross-check tags against `image-versions.env`.
+**Before building:** Read `app/image-versions.env` (the single source of truth for all image tags). Use these values for all `-t` flags. The `build-images.md` code blocks show the commands but always cross-check tags against `image-versions.env`.
 
 Follow the full build instructions in `references/build-images.md`. Summary:
 
-1. Read image tags: `source native_app/image-versions.env`
+1. Read image tags: `source app/image-versions.env`
 2. Authenticate with SPCS image registry (Docker or Podman)
-3. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
-4. Build and push all 5 images using tags from `image-versions.env`: openrouteservice, downloader, routing_reverse_proxy, vroom-docker, ors_control_app
+3. Get repository URL: `snow spcs image-repository url OPENROUTESERVICE_APP.CORE.image_repository -c <connection>`
+4. Build and push all 4 images using tags from `image-versions.env`: openrouteservice, routing_reverse_proxy, vroom-docker, ors_control_app
 
 **Expected Duration:** 10-20 minutes (first push; ~5 minutes with cached layers)
 
@@ -179,51 +187,15 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **If ARM Mac esbuild crash:** Build React app locally first, use `Dockerfile.runtime`. See `references/build-images.md` > ors_control_app section.
 
-**Next:** Proceed to Step 5b
-
-### Step 5b: Validate Image Version Consistency (MANDATORY)
-
-**Goal:** Ensure all image version tags match across manifest.yml, service YAMLs, and build instructions
-
-**CRITICAL:** This step MUST be run before `snow app run`. Skipping it risks deployment failure with `Image ... not found`.
-
-**Actions:**
-
-1. Run the validation script:
-   ```bash
-   bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
-   ```
-
-2. If the script reports MISMATCH:
-   - Update the stale file(s) to match the tags in `native_app/image-versions.env` (the source of truth)
-   - Re-run the script to confirm all versions are consistent
-
-3. If no script available, manually verify with grep:
-   ```bash
-   grep -ohE '[a-z_-]+:v[0-9.]+' native_app/app/manifest.yml | sort
-   grep -rohE '[a-z_-]+:v[0-9.]+' native_app/services/*/*.yaml | sort -u
-   ```
-   All 5 image:tag pairs must match exactly.
-
 **Next:** Proceed to Step 6
 
-### Step 6: Deploy Native App
+### Step 6: Deploy App
 
-**Goal:** Create and deploy the native application
+**Goal:** Create and deploy the application
 
 **Actions:**
 
-1. **Deploy the application:**
-   ```bash
-   cd native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
-   ```
-
-2. **Grant warehouse access to the app** (required for the React control app SQL API):
-   ```sql
-   GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-
-3. **Set up Data Studio databases** (required for synthetic data generation):
+1. **Set up Data Studio databases** (required for synthetic data generation):
    ```sql
    CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -231,114 +203,31 @@ Follow the full build instructions in `references/build-images.md`. Summary:
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-   CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
+   CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE 
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-   GRANT USAGE ON DATABASE SYNTHETIC_DATASETS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT CREATE TABLE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-   GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT CREATE TABLE ON SCHEMA FLEET_INTELLIGENCE.CORE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT SELECT ON ALL VIEWS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-   This creates the databases/schemas and grants the app full access to write generated fleet telemetry data.
-   The `ors_control_app/deploy.sh` script also runs these grants automatically on each deploy.
-
-   > **Note:** Future grants to APPLICATION objects are not supported in Snowflake. After loading new data or creating new tables/views, re-run `GRANT SELECT ON ALL TABLES IN SCHEMA ... TO APPLICATION OPENROUTESERVICE_NATIVE_APP` to pick up new objects.
-
-4. **Open the application in browser:**
-   ```bash
-   cd native_app && snow app open -c <connection> --warehouse ROUTING_ANALYTICS
+   EXECUTE IMMEDIATE FROM 'modules/01_core_infra.sql';
+   EXECUTE IMMEDIATE FROM 'modules/02_routing_functions.sql';
+   EXECUTE IMMEDIATE FROM 'modules/03_region_management.sql';
+   EXECUTE IMMEDIATE FROM 'modules/04_service_lifecycle.sql';
+   EXECUTE IMMEDIATE FROM 'modules/05_matrix_pipeline.sql';
+   EXECUTE IMMEDIATE FROM 'modules/06_matrix_ops.sql';
    ```
 
-5. **Verify** deployment:
+
+2. **Verify** all services are running:
    ```sql
-   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
-   Expected: 5 services listed. They may take 1-3 minutes to reach RUNNING status. Check again if status shows PENDING.
-
-   **If 0 services appear:** The grant_callback has not fired yet — this is expected. Step 7 will grant privileges, bind EAI references, and trigger the callback automatically via SQL.
-
-**Output:** Native app deployed and accessible via Snowsight URL
-
-### Step 7: Activate App (Automated via SQL)
-
-**Goal:** Grant account privileges, create External Access Integrations, bind references, and trigger the full deployment — all via SQL, no Snowsight UI required
-
-**Actions:**
-
-1. **Grant account-level privileges** to the app:
-   ```sql
-   GRANT CREATE COMPUTE POOL ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT BIND SERVICE ENDPOINT ON ACCOUNT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-
-2. **Create network rules and External Access Integrations** (replicates the Snowsight "Review > Connect" step):
-   ```sql
-   CREATE OR REPLACE NETWORK RULE ORS_OSM_NETWORK_RULE
-     TYPE = HOST_PORT  MODE = EGRESS
-     VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-   CREATE OR REPLACE NETWORK RULE ORS_CARTO_NETWORK_RULE
-     TYPE = HOST_PORT  MODE = EGRESS
-     VALUE_LIST = ('a.basemaps.cartocdn.com:443','b.basemaps.cartocdn.com:443','c.basemaps.cartocdn.com:443','d.basemaps.cartocdn.com:443')
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
-     ALLOWED_NETWORK_RULES = (ORS_OSM_NETWORK_RULE)
-     ENABLED = TRUE
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-   CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_CARTO_EAI
-     ALLOWED_NETWORK_RULES = (ORS_CARTO_NETWORK_RULE)
-     ENABLED = TRUE
-     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-   ```
-
-3. **Grant USAGE on EAIs to the app and bind references:**
-   ```sql
-   GRANT USAGE ON INTEGRATION ORS_OSM_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT USAGE ON INTEGRATION ORS_CARTO_EAI TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
-     'external_access_integration_ref', 'ADD',
-     SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_OSM_EAI', 'PERSISTENT', 'USAGE'));
-
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.REGISTER_SINGLE_CALLBACK(
-     'external_access_carto_ref', 'ADD',
-     SYSTEM$REFERENCE('EXTERNAL ACCESS INTEGRATION', 'ORS_CARTO_EAI', 'PERSISTENT', 'USAGE'));
-   ```
-
-4. **Trigger the grant callback** to deploy compute pool, stages, downloader, services, functions, and control app:
-   ```sql
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.GRANT_CALLBACK(ARRAY_CONSTRUCT('CREATE COMPUTE POOL', 'BIND SERVICE ENDPOINT'));
-   ```
-   This takes 2-3 minutes. It creates the compute pool (5 nodes), downloads OSM data, starts all SPCS services, creates routing functions, and launches the ORS Control App.
-
-5. **Grant Overture Maps access** (for Data Studio POI data):
-   ```sql
-   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-   If OVERTURE_MAPS__PLACES is not available, skip — Data Studio POI features will be unavailable.
-
-6. **Verify** all services are running:
-   ```sql
-   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-   Expected: 5 services (downloader, ors_service, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
+   Expected: 4 services (ors_service, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
 
    If services show SUSPENDED or PENDING after 5 minutes:
    ```sql
-   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE');
-   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_CONTROL_APP');
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE');
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP');
    ```
 
-**Output:** App fully activated with all services running — no manual Snowsight UI steps required
+**Output:** App fully activated with all services running 
 
 ### Step 8: Load Seed Datasets
 
@@ -348,7 +237,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 1. **Create the seed data stage** (not created in Step 3):
    ```sql
-   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
 
@@ -357,12 +246,12 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    > **Note:** The `datasets/` directory is at the **repository root**, not in this skill's directory. Run these commands from the repo root.
 
    ```bash
-   snow stage copy datasets/intro/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/ -c <connection> --overwrite && \
-   snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
-   snow stage copy datasets/metadata/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite && \
-   snow stage copy datasets/matrix/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite && \
-   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite && \
-   snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/region_catalog/ -c <connection> --overwrite
+   snow stage copy datasets/intro/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/intro/ -c <connection> --overwrite && \
+   snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
+   snow stage copy datasets/metadata/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite && \
+   snow stage copy datasets/matrix/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite && \
+   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite && \
+   snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/region_catalog/ -c <connection> --overwrite
    ```
 
 3. **Run the loader script:**
@@ -372,32 +261,29 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 4. **Verify** the data loaded:
    ```sql
-   SELECT 'INTRO_TRIPS' AS TBL, COUNT(*) AS CNT FROM OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS
+   SELECT 'INTRO_TRIPS' AS TBL, COUNT(*) AS CNT FROM OPENROUTESERVICE_APP.CORE.INTRO_TRIPS
    UNION ALL SELECT 'TELEMETRY', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
    UNION ALL SELECT 'TRIPS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
    UNION ALL SELECT 'FLEET', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
    UNION ALL SELECT 'POIS', COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
    UNION ALL SELECT 'JOBS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
    UNION ALL SELECT 'REGIONS', COUNT(*) FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
-   UNION ALL SELECT 'MATRIX', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
-   UNION ALL SELECT 'REGION_CATALOG', COUNT(*) FROM OPENROUTESERVICE_NATIVE_APP.CORE.REGION_CATALOG;
+   UNION ALL SELECT 'MATRIX', COUNT(*) FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
+   UNION ALL SELECT 'REGION_CATALOG', COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
    ```
 
    Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG=460
 
    **If any count is 0 or lower than expected:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the full loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent. If a single table still shows a low count after re-run, execute its TRUNCATE + COPY INTO as a standalone `snow sql -q` command (not inside the multi-statement file) to bypass metadata caching.
 
-   **If MATRIX = 0 or table not found:** The matrix is loaded via the native app's `LOAD_SEED_MATRIX` procedure (which runs `EXECUTE AS OWNER` so the table is app-owned and visible to `GET_MATRIX_INVENTORY()`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
+   **If MATRIX = 0 or table not found:** The matrix is loaded via the app's `LOAD_SEED_MATRIX` procedure (which runs `EXECUTE AS OWNER` so the table is app-owned and visible to `GET_MATRIX_INVENTORY()`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
    ```sql
-   GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
+   CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
    ```
 
-   **If REGION_CATALOG = 0:** The catalog is loaded via the native app's `LOAD_SEED_CATALOG` procedure (which runs `EXECUTE AS OWNER`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
+   **If REGION_CATALOG = 0:** The catalog is loaded via the app's `LOAD_SEED_CATALOG` procedure (which runs `EXECUTE AS OWNER`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
    ```sql
-   GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE');
+   CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
    ```
 
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs), Region Builder shows 460 pre-populated catalog entries (no remote API scrape needed)
@@ -432,14 +318,6 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
    SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US' LIMIT 1;
    ```
-
-5. **Grant** access to the native app (required for Data Studio POI queries):
-   ```sql
-   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-
-**Requires:** IMPORT SHARE privilege (ACCOUNTADMIN has it by default).
 
 **If SYSTEM$ACCEPT_LEGAL_TERMS fails:** The user may need to accept terms manually via Snowsight Marketplace using the links above.
 
@@ -503,10 +381,9 @@ See `references/troubleshooting.md` for detailed solutions to common issues:
 
 ## Output
 
-Fully deployed OpenRouteService route optimizer as Snowflake Native App with:
-- Database: `OPENROUTESERVICE_SETUP`
-- Application: `OPENROUTESERVICE_NATIVE_APP`
-- 5 SPCS services running (downloader, openrouteservice, gateway, vroom, ors_control_app)
+Fully deployed OpenRouteService route optimizer App with:
+- Database: `OPENROUTESERVICE_APP`
+- 4 SPCS services running (openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
 - Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs), pre-computed SanFrancisco cycling-electric RES8 travel time matrix (29K pairs)
 - Optional: User-selected demo skills deployed on top of the base installation
@@ -515,72 +392,18 @@ See `references/available-functions.md` for the full list of SQL functions, rout
 
 See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
 
-Access via: Snowsight -> Data Products >> Apps >> OPENROUTESERVICE_NATIVE_APP >> Launch App. All privileges and external access integrations are granted automatically during Step 7 — no manual UI approval is needed.
-
-## Examples
-
-### Example 1: Fresh deployment with demos
-User says: "Set up the OpenRouteService native app from scratch"
-Actions:
-1. Detect container runtime and Node.js (Step 2)
-2. Create database and stages (Step 3)
-3. Upload config files (Step 4)
-4. Build and push all 5 images (Step 5)
-5. Deploy native app (Step 6)
-6. Guide user through Snowsight activation (Step 7)
-7. Load seed datasets (Step 8)
-8. Ask user which demos to deploy, deploy selected (Step 9)
-Result: Fully operational ORS app with San Francisco routing and user-selected demos
-
-### Example 2: Rebuild control app only
-User says: "Update the control app to latest version"
-Actions: Run `cd native_app/services/ors_control_app && ./deploy.sh -c <connection>`
-Result: Control app image rebuilt and deployed, app upgraded
-
-### Example 3: Update stored procedures only
-User says: "I changed setup_script.sql, deploy it"
-Actions: PUT to stage ROOT and upgrade (see Partial Deploys below)
-Result: Stored procedures updated without container rebuild
-
-## Partial Deploys
-
-### Control App Only (Fast Deploy)
-
-```bash
-cd native_app/services/ors_control_app
-./deploy.sh -c <connection>
-```
-
-This script: builds React + server locally, creates a runtime Docker image, pushes image to the SPCS registry, auto-bumps the version tag in the service YAML, `manifest.yml`, `image-versions.env`, and other tracked files, uploads the YAML and manifest to the app package stage, and runs `ALTER APPLICATION ... UPGRADE` to apply the new image.
-
-**Why UPGRADE instead of ALTER SERVICE:** The ORS control app service uses `reference('external_access_carto_ref')` for its external access integration. This native app reference can only be resolved inside the app's own stored procedures (via `version_init` -> `create_control_app`). Running `ALTER SERVICE FROM SPECIFICATION` or `SUSPEND/RESUME` from outside the app context fails because the reference cannot be resolved. `ALTER APPLICATION UPGRADE` triggers the app lifecycle callback which recreates the service with proper reference bindings.
-
-### Stored Procedures Only
-
-```sql
-PUT file:///path/to/setup_script.sql @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
-ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE;
-```
-
-PUT to stage ROOT, NOT `app/` -- manifest reads from root. See `references/snowflake-scripting-guidelines.md` Section 2.
+Access via: Snowsight -> Data Products >> Apps >> OPENROUTESERVICE_APP >> Launch App. All privileges and external access integrations are granted automatically during Step 7 — no manual UI approval is needed.
 
 ## Cleanup
 
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: application first, then images, stages, warehouse, database
-DROP APPLICATION IF EXISTS OPENROUTESERVICE_NATIVE_APP CASCADE;
-DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_NATIVE_APP_PKG;
-DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
-DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE;
-DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP;
+-- 
+DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
+DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.
