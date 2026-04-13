@@ -804,7 +804,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
 
       regions.push({
         region: c.REGION, label: c.DISPLAY_NAME || c.REGION,
-        bounds: { minLat: c.MIN_LAT, maxLat: c.MAX_LAT, minLon: c.MIN_LON, maxLon: c.MAX_LON },
+        bounds: { minLat: Number(c.MIN_LAT), maxLat: Number(c.MAX_LAT), minLon: Number(c.MIN_LON), maxLon: Number(c.MAX_LON) },
         serviceStatus, serviceExists: serviceStatus !== 'NOT_FOUND',
         matrixFunctionExists: true, directionsFunctionExists: true,
         ready: serviceStatus === 'RUNNING' || serviceStatus === 'SUSPENDED',
@@ -843,7 +843,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
         const regionRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(defaultRegion)}'`);
         if (regionRow?.[0]) {
           defaultLabel = regionRow[0].DISPLAY_NAME || defaultLabel;
-          defaultBounds = { minLat: regionRow[0].MIN_LAT, maxLat: regionRow[0].MAX_LAT, minLon: regionRow[0].MIN_LON, maxLon: regionRow[0].MAX_LON };
+          defaultBounds = { minLat: Number(regionRow[0].MIN_LAT), maxLat: Number(regionRow[0].MAX_LAT), minLon: Number(regionRow[0].MIN_LON), maxLon: Number(regionRow[0].MAX_LON) };
         }
       } catch {}
       regions.unshift({

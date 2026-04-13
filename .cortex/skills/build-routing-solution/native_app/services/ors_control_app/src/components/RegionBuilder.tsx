@@ -86,7 +86,7 @@ function toCatalogRegion(row: any): CatalogRegion {
     pbfUrl: row.PBF_URL,
     pbfSizeMb: row.PBF_SIZE_MB ?? undefined,
     level: row.LEVEL,
-    bbox: row.MIN_LAT != null ? { minLat: row.MIN_LAT, maxLat: row.MAX_LAT, minLon: row.MIN_LON, maxLon: row.MAX_LON } : undefined,
+    bbox: row.MIN_LAT != null ? { minLat: Number(row.MIN_LAT), maxLat: Number(row.MAX_LAT), minLon: Number(row.MIN_LON), maxLon: Number(row.MAX_LON) } : undefined,
   };
 }
 
