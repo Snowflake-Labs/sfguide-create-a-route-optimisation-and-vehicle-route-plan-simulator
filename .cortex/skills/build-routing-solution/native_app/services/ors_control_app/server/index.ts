@@ -1581,14 +1581,14 @@ function escAgentSqlStr(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
 }
 
-const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+const AGENT_MODELS = ['claude-sonnet-4-6'];
 let agentModel = AGENT_MODELS[0];
 
 async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
   const msgArray = messages.map(m => {
     return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
   }).join(',');
-  const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
+  const sql = `SELECT AI_COMPLETE('${agentModel}', [${msgArray}]) as RESPONSE`;
   console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
   const startMs = Date.now();
   let rows: any[];
