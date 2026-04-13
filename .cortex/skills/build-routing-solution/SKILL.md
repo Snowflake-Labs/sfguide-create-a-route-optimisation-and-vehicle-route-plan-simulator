@@ -246,7 +246,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    GRANT SELECT ON ALL VIEWS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
    ```
    This creates the databases/schemas and grants the app full access to write generated fleet telemetry data.
-   The `deploy.sh` scripts also run these grants automatically on each deploy.
+   The `ors_control_app/deploy.sh` script also runs these grants automatically on each deploy.
 
    > **Note:** Future grants to APPLICATION objects are not supported in Snowflake. After loading new data or creating new tables/views, re-run `GRANT SELECT ON ALL TABLES IN SCHEMA ... TO APPLICATION OPENROUTESERVICE_NATIVE_APP` to pick up new objects.
 
@@ -551,9 +551,7 @@ cd native_app/services/ors_control_app
 ./deploy.sh -c <connection>
 ```
 
-This script: builds React + server locally, creates a runtime Docker image, pushes image to the SPCS registry, auto-bumps the version tag in the service YAML, uploads the YAML to the app package stage, and runs `ALTER APPLICATION ... UPGRADE` to apply the new image.
-
-**WARNING:** `deploy.sh` auto-bumps the version in the service YAML only. After running it, you MUST also update the matching version in `manifest.yml` and `references/build-images.md`. Run `check_image_versions.sh` to verify all files are in sync.
+This script: builds React + server locally, creates a runtime Docker image, pushes image to the SPCS registry, auto-bumps the version tag in the service YAML, `manifest.yml`, `image-versions.env`, and other tracked files, uploads the YAML and manifest to the app package stage, and runs `ALTER APPLICATION ... UPGRADE` to apply the new image.
 
 **Why UPGRADE instead of ALTER SERVICE:** The ORS control app service uses `reference('external_access_carto_ref')` for its external access integration. This native app reference can only be resolved inside the app's own stored procedures (via `version_init` -> `create_control_app`). Running `ALTER SERVICE FROM SPECIFICATION` or `SUSPEND/RESUME` from outside the app context fails because the reference cannot be resolved. `ALTER APPLICATION UPGRADE` triggers the app lifecycle callback which recreates the service with proper reference bindings.
 

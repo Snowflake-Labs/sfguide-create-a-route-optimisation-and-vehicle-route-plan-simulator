@@ -220,16 +220,16 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 
 | Local File (relative to `native_app/`) | Stage Destination | Deployed By |
 |----------------------------------------|-------------------|-------------|
-| `app/setup_script.sql` | `@STAGE/` (ROOT) | `deploy.sh`, manual PUT |
-| `app/manifest.yml` | `@STAGE/` (ROOT) | `deploy.sh`, `snow app run` |
+| `app/setup_script.sql` | `@STAGE/` (ROOT) | `ors_control_app/deploy.sh`, manual PUT |
+| `app/manifest.yml` | `@STAGE/` (ROOT) | `ors_control_app/deploy.sh`, `snow app run` |
 | `app/README.md` | `@STAGE/` (ROOT) | `snow app run` |
-| `services/ors_control_app/ors_control_app_service.yaml` | `@STAGE/services/ors_control_app/` | `deploy.sh`, `ors_control_app/deploy.sh` |
-| `services/gateway/routing-gateway-service.yaml` | `@STAGE/services/gateway/` | `deploy.sh` |
+| `services/ors_control_app/ors_control_app_service.yaml` | `@STAGE/services/ors_control_app/` | `ors_control_app/deploy.sh` |
+| `services/gateway/routing-gateway-service.yaml` | `@STAGE/services/gateway/` | manual PUT |
 | `services/openrouteservice/openrouteservice.yaml` | `@STAGE/services/openrouteservice/` | `snow app run` |
 | `services/downloader/downloader_spec.yaml` | `@STAGE/services/downloader/` | `snow app run` |
 | `services/vroom/vroom-service.yaml` | `@STAGE/services/vroom/` | `snow app run` |
 
-If you see `@STAGE/app/setup_script.sql` on the stage, it is a **stale leftover**. `deploy.sh` automatically removes it. If deploying manually, remove it:
+If you see `@STAGE/app/setup_script.sql` on the stage, it is a **stale leftover**. Remove it manually:
 ```sql
 REMOVE @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE/app/setup_script.sql;
 ```
