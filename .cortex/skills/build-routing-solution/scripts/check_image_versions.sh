@@ -22,13 +22,9 @@ fi
 
 source "$VERSION_FILE"
 
-declare -A EXPECTED=(
-  [openrouteservice]="$OPENROUTESERVICE_TAG"
-  [downloader]="$DOWNLOADER_TAG"
-  [routing_reverse_proxy]="$ROUTING_REVERSE_PROXY_TAG"
-  [vroom-docker]="$VROOM_DOCKER_TAG"
-  [ors_control_app]="$ORS_CONTROL_APP_TAG"
-)
+# Build parallel arrays (bash 3.x compatible — no declare -A)
+IMAGE_NAMES="openrouteservice downloader routing_reverse_proxy vroom-docker ors_control_app"
+IMAGE_TAGS="$OPENROUTESERVICE_TAG $DOWNLOADER_TAG $ROUTING_REVERSE_PROXY_TAG $VROOM_DOCKER_TAG $ORS_CONTROL_APP_TAG"
 
 errors=0
 
@@ -40,13 +36,17 @@ error() {
 echo "=== Image Version Consistency Check ==="
 echo ""
 echo "Source of truth (image-versions.env):"
-for image in "${!EXPECTED[@]}"; do
-  echo "  ${image}:${EXPECTED[$image]}"
+i=1
+for image in $IMAGE_NAMES; do
+  tag=$(echo "$IMAGE_TAGS" | cut -d' ' -f$i)
+  echo "  ${image}:${tag}"
+  i=$((i + 1))
 done
 echo ""
 
-for image in "${!EXPECTED[@]}"; do
-  tag="${EXPECTED[$image]}"
+i=1
+for image in $IMAGE_NAMES; do
+  tag=$(echo "$IMAGE_TAGS" | cut -d' ' -f$i)
   pair="${image}:${tag}"
 
   if ! grep -qF "$pair" "$MANIFEST" 2>/dev/null; then
@@ -66,6 +66,8 @@ for image in "${!EXPECTED[@]}"; do
       error "snowflake-scripting-guidelines.md missing $pair"
     fi
   fi
+
+  i=$((i + 1))
 done
 
 for label_file in "SKILL.md:$SKILL_MD" "README.md:$README_MD"; do

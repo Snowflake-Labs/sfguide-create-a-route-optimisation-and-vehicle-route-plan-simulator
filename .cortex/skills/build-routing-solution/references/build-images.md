@@ -60,7 +60,7 @@ $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
 # Build the React app and server locally first, then use the runtime-only Dockerfile:
 cd native_app/services/ors_control_app
-npm ci && npm run build && npm run build:server
+npm install --legacy-peer-deps && npm run build && npm run build:server
 mv .dockerignore .dockerignore.bak 2>/dev/null || true
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -f Dockerfile.runtime \
@@ -70,9 +70,13 @@ $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.98
 cd ../../..
 ```
 
-**Note:** The ors_control_app build requires `cd` because `npm ci` must run in the package directory and `.dockerignore` must be renamed in place. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
+**Note:** The ors_control_app build requires `cd` because `npm install` must run in the package directory and `.dockerignore` must be renamed in place. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
 
-> `npm ci` may report vulnerabilities. These are in dev/build dependencies and do not affect the runtime container.
+> **CRITICAL — shell operator precedence:** Run the npm commands and the `mv`/`docker` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app. The `mv .dockerignore.bak ... || true` must only apply to the `mv` itself.
+
+> **luma.gl version pins:** All four `@luma.gl/*` packages in `package.json` must be pinned to `~9.2.6` (not `^9.1.0` or `^9.2.x`). Using `^` allows npm to resolve `@luma.gl/core` and `@luma.gl/webgl` to `9.3.x`, which removed the `getVertexFormatFromAttribute` export still used by `@luma.gl/engine@9.2.6`, causing the vite build to fail.
+
+> `npm install --legacy-peer-deps` is required due to peer dependency conflicts between `@deck.gl@9.2.x` and `@luma.gl` packages. Vulnerability warnings in dev/build dependencies do not affect the runtime container.
 
 ## 4. Verify All Images Pushed
 

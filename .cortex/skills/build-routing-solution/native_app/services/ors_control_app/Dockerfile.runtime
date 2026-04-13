@@ -5,6 +5,6 @@ WORKDIR /app
 COPY dist ./dist
 COPY dist-server ./dist-server
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm ci --omit=dev --legacy-peer-deps || npm install --omit=dev --legacy-peer-deps
 EXPOSE 3001
 CMD ["node", "dist-server/index.js"]
