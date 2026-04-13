@@ -466,17 +466,76 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
         }
         return rows;
     }
+    async function fetchGeofabrikBboxIndex() {
+        const lookup = new Map();
+        try {
+            const resp = await fetch('https://download.geofabrik.de/index-v1.json', { signal: AbortSignal.timeout(30000) });
+            if (!resp.ok)
+                return lookup;
+            const data = await resp.json();
+            for (const feature of data.features || []) {
+                const id = feature.properties?.id;
+                const geom = feature.geometry;
+                if (!id || !geom?.coordinates)
+                    continue;
+                const allPoints = [];
+                for (const poly of geom.coordinates) {
+                    for (const ring of poly) {
+                        if (Array.isArray(ring[0])) {
+                            for (const pt of ring)
+                                allPoints.push(pt);
+                        }
+                        else {
+                            allPoints.push(ring);
+                        }
+                    }
+                }
+                if (allPoints.length === 0)
+                    continue;
+                const lons = allPoints.map(p => p[0]);
+                const lats = allPoints.map(p => p[1]);
+                lookup.set(id, {
+                    min_lat: Math.min(...lats), max_lat: Math.max(...lats),
+                    min_lon: Math.min(...lons), max_lon: Math.max(...lons),
+                });
+            }
+        }
+        catch { }
+        return lookup;
+    }
+    function parseBBBikePoly(polyText) {
+        const coords = [];
+        for (const line of polyText.split('\n')) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length === 2) {
+                const lon = parseFloat(parts[0]);
+                const lat = parseFloat(parts[1]);
+                if (!isNaN(lon) && !isNaN(lat))
+                    coords.push([lon, lat]);
+            }
+        }
+        if (coords.length === 0)
+            return null;
+        return {
+            min_lat: Math.min(...coords.map(c => c[1])), max_lat: Math.max(...coords.map(c => c[1])),
+            min_lon: Math.min(...coords.map(c => c[0])), max_lon: Math.max(...coords.map(c => c[0])),
+        };
+    }
     try {
         const allRows = [];
+        const gfBbox = await fetchGeofabrikBboxIndex();
         const html = await fetchPage(GEOFABRIK_BASE);
         const continents = parseGeofabrikIndex(html, '');
         for (const continent of continents) {
             const cname = continent.name;
+            const cBbox = gfBbox.get(continent.sub_path);
             allRows.push({
                 catalog_id: 'geofabrik:' + continent.sub_path, source: 'geofabrik',
                 region_name: cname, region_key: toRegionKey(cname),
                 hierarchy: '', continent: cname, country: null,
                 pbf_url: continent.pbf_url, pbf_size_mb: continent.size_mb, level: 'continent',
+                min_lat: cBbox?.min_lat ?? null, max_lat: cBbox?.max_lat ?? null,
+                min_lon: cBbox?.min_lon ?? null, max_lon: cBbox?.max_lon ?? null,
             });
             if (!continent.has_sub || !continent.sub_path)
                 continue;
@@ -486,11 +545,15 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
             const countries = parseGeofabrikIndex(subHtml, continent.sub_path);
             for (const country of countries) {
                 const hierarchy = continent.sub_path + '/' + country.name.toLowerCase().replace(/ /g, '-');
+                const coId = country.sub_path.split('/').pop() || country.name.toLowerCase().replace(/ /g, '-');
+                const coBbox = gfBbox.get(coId) || gfBbox.get(country.sub_path.replace(/^.*\//, ''));
                 allRows.push({
                     catalog_id: 'geofabrik:' + hierarchy, source: 'geofabrik',
                     region_name: country.name, region_key: toRegionKey(country.name),
                     hierarchy: continent.sub_path, continent: cname, country: country.name,
                     pbf_url: country.pbf_url, pbf_size_mb: country.size_mb, level: 'country',
+                    min_lat: coBbox?.min_lat ?? null, max_lat: coBbox?.max_lat ?? null,
+                    min_lon: coBbox?.min_lon ?? null, max_lon: coBbox?.max_lon ?? null,
                 });
                 if (!country.has_sub || !country.sub_path)
                     continue;
@@ -499,12 +562,16 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
                     continue;
                 const subRegions = parseGeofabrikIndex(sub2Html, country.sub_path);
                 for (const subReg of subRegions) {
+                    const srId = subReg.sub_path.split('/').pop() || subReg.name.toLowerCase().replace(/ /g, '-');
+                    const srBbox = gfBbox.get(srId) || gfBbox.get(subReg.name.toLowerCase().replace(/ /g, '-'));
                     allRows.push({
                         catalog_id: 'geofabrik:' + country.sub_path + '/' + subReg.name.toLowerCase().replace(/ /g, '-'),
                         source: 'geofabrik',
                         region_name: subReg.name, region_key: toRegionKey(subReg.name),
                         hierarchy: country.sub_path, continent: cname, country: country.name,
                         pbf_url: subReg.pbf_url, pbf_size_mb: subReg.size_mb, level: 'sub-region',
+                        min_lat: srBbox?.min_lat ?? null, max_lat: srBbox?.max_lat ?? null,
+                        min_lon: srBbox?.min_lon ?? null, max_lon: srBbox?.max_lon ?? null,
                     });
                 }
             }
@@ -515,18 +582,41 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
                 const bbHtml = await bbResp.text();
                 const cityDirs = bbHtml.match(/<a\s+href="([A-Z][A-Za-z0-9_-]+)\/"/g) || [];
                 const seen = new Set();
+                const cities = [];
                 for (const m of cityDirs) {
                     const city = m.match(/href="([^"]+)\/"/)?.[1];
                     if (!city || seen.has(city) || city.startsWith('.') || ['planet', 'update'].includes(city.toLowerCase()))
                         continue;
                     seen.add(city);
+                    cities.push(city);
+                }
+                const polyResults = await Promise.allSettled(cities.map(async (city) => {
+                    try {
+                        const pr = await fetch(`${BBBIKE_BASE}/${city}/${city}.poly`, { signal: AbortSignal.timeout(10000) });
+                        if (!pr.ok)
+                            return { city, bbox: null };
+                        return { city, bbox: parseBBBikePoly(await pr.text()) };
+                    }
+                    catch {
+                        return { city, bbox: null };
+                    }
+                }));
+                const bbBboxMap = new Map();
+                for (const r of polyResults) {
+                    if (r.status === 'fulfilled' && r.value.bbox)
+                        bbBboxMap.set(r.value.city, r.value.bbox);
+                }
+                for (const city of cities) {
                     const display = city.replace(/([a-z])([A-Z])/g, '$1 $2');
+                    const bb = bbBboxMap.get(city);
                     allRows.push({
                         catalog_id: 'bbbike:' + city, source: 'bbbike',
                         region_name: display, region_key: city,
                         hierarchy: null, continent: null, country: null,
                         pbf_url: BBBIKE_BASE + '/' + city + '/' + city + '.osm.pbf',
                         pbf_size_mb: null, level: 'city',
+                        min_lat: bb?.min_lat ?? null, max_lat: bb?.max_lat ?? null,
+                        min_lon: bb?.min_lon ?? null, max_lon: bb?.max_lon ?? null,
                     });
                 }
             }
@@ -552,7 +642,7 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
                 const values = batch.map(r => {
                     const esc = (v) => v === null ? 'NULL' : "'" + v.replace(/'/g, "''") + "'";
                     const num = (v) => v === null ? 'NULL' : String(v);
-                    return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},NULL,NULL,NULL,NULL,CURRENT_TIMESTAMP())`;
+                    return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},${num(r.min_lat)},${num(r.max_lat)},${num(r.min_lon)},${num(r.max_lon)},CURRENT_TIMESTAMP())`;
                 }).join(',');
                 await runSql(`INSERT INTO ${SF_DATABASE}.CORE.REGION_CATALOG (CATALOG_ID,SOURCE,REGION_NAME,REGION_KEY,HIERARCHY,CONTINENT,COUNTRY,PBF_URL,PBF_SIZE_MB,LEVEL,MIN_LAT,MAX_LAT,MIN_LON,MAX_LON,UPDATED_AT) VALUES ${values}`);
             }
@@ -584,22 +674,11 @@ app.get('/api/regions/provisioned', async (_req, res) => {
             if (bboxInvalid) {
                 try {
                     const safeRegion = sanitizeIdentifier(c.region);
-                    const statusRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
-                    const raw = statusRows?.[0]?.S;
-                    if (raw) {
-                        const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                        const bounds = status.bounds_info;
-                        if (bounds && typeof bounds === 'object') {
-                            const profileBounds = Object.values(bounds)[0];
-                            if (profileBounds?.bbox) {
-                                bbox = {
-                                    min_lat: profileBounds.bbox[1],
-                                    max_lat: profileBounds.bbox[3],
-                                    min_lon: profileBounds.bbox[0],
-                                    max_lon: profileBounds.bbox[2],
-                                };
-                            }
-                        }
+                    const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') LIMIT 1`);
+                    const cat = catRows?.[0];
+                    if (cat && cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
+                        && !(cat.MIN_LAT === 0 && cat.MAX_LAT === 0 && cat.MIN_LON === 0 && cat.MAX_LON === 0)) {
+                        bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
                     }
                 }
                 catch { }
