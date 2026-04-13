@@ -44,7 +44,6 @@ graph TB
         S5[Retail Catchment]
         S6[Route Optimization]
         S7[Routing Agent]
-        S8[Travel Time Matrix]
     end
 
     ORS --> GW
@@ -212,7 +211,6 @@ graph TD
     BRS --> FIFD[fleet-intelligence-food-delivery]
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
-    BRS --> TTM[travel-time-matrix]
     BRS --> RA[routing-agent]
     RC --> FIT
     RC --> FIFD
@@ -241,11 +239,10 @@ Deploy order: top to bottom. Teardown order: bottom to top.
 | **route-optimization** | VRP demo using Overture Maps + CARTO Marketplace data. Includes Snowflake notebooks demonstrating the OPTIMIZATION function with time windows and capacity constraints. | Route Optimization (VRP simulator) | `deploy route optimization demo` |
 | **retail-catchment** | Retail location analysis using Overture Maps. Generates isochrone-based catchment zones, competitor proximity analysis, and address density metrics. | Retail Catchment | `deploy retail catchment` |
 
-### Advanced (2 skills)
+### Advanced (1 skill)
 
 | Skill | What It Does | Dashboard Pages | Invoke With |
 |-------|-------------|-----------------|-------------|
-| **travel-time-matrix** | Computes city-to-country scale travel time matrices at configurable H3 resolutions. Uses parallel workers, Task DAG orchestration, and FLATTEN post-processing. | Travel Time Explorer, Matrix Builder, Matrix Viewer | `build travel time matrix` |
 | **routing-agent** | Creates a Snowflake Intelligence (Cortex Agent) that wraps ORS functions as tools. Enables natural-language route planning with AI-powered geocoding. | Routing Agent (chat interface) | `create routing agent` |
 
 ### Developer Tools (2 skills)
@@ -281,7 +278,7 @@ The ORS Control App is a React single-page application with an Express.js backen
 | Page | Purpose |
 |------|---------|
 | **Status** | View SPCS service status, resume/suspend services |
-| **City Builder** | Provision new geographic regions (download OSM data, build routing graphs) |
+| **Region Builder** | Provision new geographic regions (download OSM data, build routing graphs) |
 | **Matrix Builder** | Configure and run H3 travel time matrix computations |
 | **Matrix Viewer** | Browse and explore computed travel time matrices |
 | **Functions** | Interactive testing console for all ORS SQL functions |
@@ -325,7 +322,6 @@ Open this repo in Cortex Code and type any of these phrases:
 | Deploy dwell analysis | `deploy dwell analysis` |
 | Deploy retail catchment | `deploy retail catchment` |
 | Deploy route optimization | `deploy route optimization demo` |
-| Build travel time matrix | `build travel time matrix` |
 | Create routing agent | `create routing agent` |
 | Clean up everything | `routing-solution-cleanup` |
 
@@ -350,22 +346,11 @@ The platform supports multiple geographic regions simultaneously:
   |   +-- SKILL.md                 # Skill definition (YAML frontmatter + instructions)
   |   +-- references/              # Detailed SQL, code, and documentation
   |   +-- assets/                  # Notebooks and other deployable artifacts
+  +-- build-routing-solution/      # Core platform (native app, Docker configs, deploy scripts)
   +-- evals/                       # Eval framework (trigger, quality, cross-ref)
-build-routing-solution/
-  +-- native_app/
-  |   +-- app/
-  |   |   +-- setup_script.sql     # Thin orchestrator calling 6 modules
-  |   |   +-- manifest.yml         # Native app manifest
-  |   |   +-- modules/             # 6 SQL module files
-  |   +-- services/
-  |       +-- ors_control_app/     # React + Express.js dashboard app
-  |       +-- openrouteservice/    # ORS Docker config
-  |       +-- vroom-docker/        # VROOM Docker config
-  |       +-- routing_reverse_proxy/ # Nginx gateway config
-  |       +-- downloader/          # OSM file downloader
-  +-- deploy.sh                    # Full deployment script
-  +-- upgrade_app.sh               # Setup script upgrade only
+datasets/                          # Seed data (parquet files loaded during core deployment)
 docs/                              # Guides and documentation
+logs/                              # Skill execution error logs
 archive/                           # Archived / deprecated materials
 AGENTS.md                          # AI assistant project guidance
 ```
