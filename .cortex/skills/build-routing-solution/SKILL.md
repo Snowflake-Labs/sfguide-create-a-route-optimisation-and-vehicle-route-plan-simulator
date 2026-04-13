@@ -382,6 +382,13 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
    **If any count is 0 or lower than expected:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the full loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent. If a single table still shows a low count after re-run, execute its TRUNCATE + COPY INTO as a standalone `snow sql -q` command (not inside the multi-statement file) to bypass metadata caching.
 
+   **If MATRIX = 0 or table not found:** The matrix is loaded via the native app's `LOAD_SEED_MATRIX` procedure (which runs `EXECUTE AS OWNER` so the table is app-owned and visible to `GET_MATRIX_INVENTORY()`). Ensure the app upgrade (Step 6) completed successfully before running the seed loader. You can also call the procedure manually:
+   ```sql
+   GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+   CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX('@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE', 'SanFrancisco', 'cycling-electric', 'RES8');
+   ```
+
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs)
 
 ### Step 8b: Install Overture Maps Marketplace Datasets

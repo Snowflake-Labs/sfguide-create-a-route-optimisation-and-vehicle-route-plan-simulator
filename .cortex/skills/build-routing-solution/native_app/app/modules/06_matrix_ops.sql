@@ -257,3 +257,83 @@ BEGIN
 END;
 $$;
 GRANT USAGE ON PROCEDURE core.GET_LIVE_TABLE_COUNT(VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+CREATE OR REPLACE PROCEDURE core.LOAD_SEED_MATRIX(
+    P_STAGE_PREFIX VARCHAR,
+    P_REGION VARCHAR,
+    P_PROFILE VARCHAR,
+    P_RES VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    safe_profile VARCHAR;
+    matrix_table VARCHAR;
+    cnt INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    matrix_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_MATRIX_' || P_RES;
+
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table ||
+        ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, ' ||
+        'TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ) ' ||
+        'CLUSTER BY (ORIGIN_H3) ' ||
+        'COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT INSERT ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+    EXECUTE IMMEDIATE 'GRANT DELETE ON TABLE ' || matrix_table || ' TO APPLICATION ROLE app_user';
+
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE IF EXISTS ' || matrix_table;
+
+    EXECUTE IMMEDIATE 'COPY INTO ' || matrix_table ||
+        ' FROM (SELECT $1:ORIGIN_H3::VARCHAR, $1:DEST_H3::VARCHAR, ' ||
+        '$1:TRAVEL_TIME_SECONDS::FLOAT, $1:TRAVEL_DISTANCE_METERS::FLOAT, ' ||
+        '$1:CALCULATED_AT::TIMESTAMP_NTZ::TIMESTAMP_LTZ ' ||
+        'FROM ' || P_STAGE_PREFIX || '/matrix/) ' ||
+        'FILE_FORMAT = (TYPE = PARQUET) PURGE = FALSE FORCE = TRUE';
+
+    EXECUTE IMMEDIATE '
+        MERGE INTO travel_matrix.MATRIX_BUILD_JOBS tgt
+        USING (
+            SELECT
+                $1:JOB_ID::VARCHAR     AS JOB_ID,
+                $1:REGION::VARCHAR      AS REGION,
+                $1:PROFILE::VARCHAR     AS PROFILE,
+                $1:RESOLUTION::VARCHAR  AS RESOLUTION,
+                $1:STATUS::VARCHAR      AS STATUS,
+                $1:STAGE::VARCHAR       AS STAGE,
+                $1:HEXAGONS::NUMBER     AS HEXAGONS,
+                $1:WORK_QUEUE_ROWS::NUMBER AS WORK_QUEUE_ROWS,
+                $1:RAW_ROWS::NUMBER     AS RAW_ROWS,
+                $1:MATRIX_ROWS::NUMBER  AS MATRIX_ROWS,
+                $1:PCT_COMPLETE::FLOAT  AS PCT_COMPLETE,
+                ''Pre-loaded seed matrix'' AS MESSAGE,
+                NULL                    AS ERROR_MSG
+            FROM ' || P_STAGE_PREFIX || '/matrix_jobs/
+            (FILE_FORMAT => ''OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF'')
+        ) src
+        ON tgt.REGION = src.REGION AND tgt.PROFILE = src.PROFILE AND tgt.RESOLUTION = src.RESOLUTION
+        WHEN NOT MATCHED THEN INSERT (JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
+            HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS, PCT_COMPLETE, MESSAGE, ERROR_MSG,
+            CREATED_AT, COMPLETED_AT)
+        VALUES (src.JOB_ID, src.REGION, src.PROFILE, src.RESOLUTION, src.STATUS, src.STAGE,
+            src.HEXAGONS, src.WORK_QUEUE_ROWS, src.RAW_ROWS, src.MATRIX_ROWS, src.PCT_COMPLETE,
+            src.MESSAGE, src.ERROR_MSG, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())';
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || matrix_table);
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO cnt := row_val.CNT; END FOR;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'loaded',
+        'table', matrix_table,
+        'rows', cnt
+    )::VARCHAR;
+END;
+$$;
+GRANT USAGE ON PROCEDURE core.LOAD_SEED_MATRIX(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;

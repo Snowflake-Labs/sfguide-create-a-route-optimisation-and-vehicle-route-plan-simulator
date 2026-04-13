@@ -463,70 +463,23 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.
 
 --------------------------------------------------------------------------------
 -- 6. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)
---    178 H3 hexagons, 29,402 travel-time pairs.  Loaded into the native app's
---    TRAVEL_MATRIX schema so the Matrix Viewer page works on first launch.
+--    178 H3 hexagons, 29,402 travel-time pairs.
+--    Loaded via native app procedure (EXECUTE AS OWNER) so the table is
+--    app-owned and visible in GET_MATRIX_INVENTORY() / Matrix Viewer.
+--    External roles cannot CREATE TABLE in the native app's TRAVEL_MATRIX
+--    schema, so we delegate to the app's own procedure.
 --------------------------------------------------------------------------------
+GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
-CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8 (
-  ORIGIN_H3 VARCHAR,
-  DEST_H3 VARCHAR,
-  TRAVEL_TIME_SECONDS FLOAT,
-  TRAVEL_DISTANCE_METERS FLOAT,
-  CALCULATED_AT TIMESTAMP_LTZ
-)
-CLUSTER BY (ORIGIN_H3)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
+  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
-TRUNCATE TABLE IF EXISTS OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8;
-
-COPY INTO OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
-FROM (
-  SELECT
-    $1:ORIGIN_H3::VARCHAR,
-    $1:DEST_H3::VARCHAR,
-    $1:TRAVEL_TIME_SECONDS::FLOAT,
-    $1:TRAVEL_DISTANCE_METERS::FLOAT,
-    $1:CALCULATED_AT::TIMESTAMP_NTZ::TIMESTAMP_LTZ
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix/
-)
-FILE_FORMAT = (TYPE = PARQUET)
-PURGE = FALSE
-FORCE = TRUE;
-
-MERGE INTO OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS tgt
-USING (
-  SELECT
-    $1:JOB_ID::VARCHAR     AS JOB_ID,
-    $1:REGION::VARCHAR      AS REGION,
-    $1:PROFILE::VARCHAR     AS PROFILE,
-    $1:RESOLUTION::VARCHAR  AS RESOLUTION,
-    $1:STATUS::VARCHAR      AS STATUS,
-    $1:STAGE::VARCHAR       AS STAGE,
-    $1:HEXAGONS::NUMBER     AS HEXAGONS,
-    $1:WORK_QUEUE_ROWS::NUMBER AS WORK_QUEUE_ROWS,
-    $1:RAW_ROWS::NUMBER     AS RAW_ROWS,
-    $1:MATRIX_ROWS::NUMBER  AS MATRIX_ROWS,
-    $1:PCT_COMPLETE::FLOAT  AS PCT_COMPLETE,
-    'Pre-loaded seed matrix' AS MESSAGE,
-    NULL                    AS ERROR_MSG
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/matrix_jobs/
-  (FILE_FORMAT => 'OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF')
-) src
-ON tgt.REGION = src.REGION AND tgt.PROFILE = src.PROFILE AND tgt.RESOLUTION = src.RESOLUTION
-WHEN NOT MATCHED THEN INSERT (JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
-  HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS, PCT_COMPLETE, MESSAGE, ERROR_MSG,
-  CREATED_AT, COMPLETED_AT)
-VALUES (src.JOB_ID, src.REGION, src.PROFILE, src.RESOLUTION, src.STATUS, src.STAGE,
-  src.HEXAGONS, src.WORK_QUEUE_ROWS, src.RAW_ROWS, src.MATRIX_ROWS, src.PCT_COMPLETE,
-  src.MESSAGE, src.ERROR_MSG, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP());
-
---------------------------------------------------------------------------------
--- 6b. Transfer matrix table ownership to the native app so GET_MATRIX_INVENTORY()
---     (which runs EXECUTE AS OWNER) can see it, and future matrix builds for the
---     same region/profile/resolution don't fail with privilege errors.
---------------------------------------------------------------------------------
-GRANT OWNERSHIP ON TABLE OPENROUTESERVICE_NATIVE_APP.TRAVEL_MATRIX.SANFRANCISCO_CYCLING_ELECTRIC_MATRIX_RES8
-  TO APPLICATION OPENROUTESERVICE_NATIVE_APP
-  COPY CURRENT GRANTS;
+CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX(
+  '@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE',
+  'SanFrancisco',
+  'cycling-electric',
+  'RES8'
+);
 
 SELECT 'Seed data loaded successfully' AS STATUS;
