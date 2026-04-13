@@ -415,57 +415,6 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
             return '';
         }
     }
-    function parseGeofabrikIndex(html, basePath) {
-        const rows = [];
-        const trBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
-        for (const block of trBlocks) {
-            const pbfMatch = block.match(/<a\s+href="([^"]+\.osm\.pbf)"/i);
-            if (!pbfMatch)
-                continue;
-            const pbfHref = pbfMatch[1];
-            if (!pbfHref.includes('-latest'))
-                continue;
-            let link = '';
-            let name = '';
-            const subregionMatch = block.match(/<td[^>]*class="subregion"[^>]*>\s*<a\s+href="([^"]+)"[^>]*>([^<]+)<\/a>/i);
-            if (subregionMatch) {
-                link = subregionMatch[1];
-                name = subregionMatch[2].trim();
-            }
-            else {
-                const dirMatch = block.match(/<td[^>]*>\s*<a\s+href="([^"]+\/)"[^>]*>([^<]+)<\/a>/i);
-                if (dirMatch) {
-                    link = dirMatch[1];
-                    name = dirMatch[2].trim();
-                }
-                else {
-                    const nameMatch = block.match(/<td[^>]*>\s*<a\s+href="[^"]*"[^>]*>([^<]+)<\/a>/i);
-                    if (nameMatch) {
-                        name = nameMatch[1].trim();
-                    }
-                    else
-                        continue;
-                }
-            }
-            const sizeMatch = block.match(/\((\d[\d.]*\s*(?:MB|GB|KB|bytes))\)/i);
-            const sizeMb = sizeMatch ? parseSize(sizeMatch[1]) : null;
-            let pbfUrl;
-            if (pbfHref.startsWith('http'))
-                pbfUrl = pbfHref;
-            else if (pbfHref.startsWith('/'))
-                pbfUrl = GEOFABRIK_BASE + pbfHref;
-            else {
-                const cleanHref = pbfHref.replace(/^\.\//, '');
-                pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
-            }
-            let subPath = link.replace(/\.html$/, '').replace(/^\.\//, '').replace(/\/$/, '');
-            if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
-                subPath = basePath ? basePath.replace(/^\/|\/$/g, '') + '/' + subPath : subPath;
-            }
-            rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
-        }
-        return rows;
-    }
     async function fetchGeofabrikBboxIndex() {
         const lookup = new Map();
         try {
@@ -520,6 +469,57 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
             min_lat: Math.min(...coords.map(c => c[1])), max_lat: Math.max(...coords.map(c => c[1])),
             min_lon: Math.min(...coords.map(c => c[0])), max_lon: Math.max(...coords.map(c => c[0])),
         };
+    }
+    function parseGeofabrikIndex(html, basePath) {
+        const rows = [];
+        const trBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+        for (const block of trBlocks) {
+            const pbfMatch = block.match(/<a\s+href="([^"]+\.osm\.pbf)"/i);
+            if (!pbfMatch)
+                continue;
+            const pbfHref = pbfMatch[1];
+            if (!pbfHref.includes('-latest'))
+                continue;
+            let link = '';
+            let name = '';
+            const subregionMatch = block.match(/<td[^>]*class="subregion"[^>]*>\s*<a\s+href="([^"]+)"[^>]*>([^<]+)<\/a>/i);
+            if (subregionMatch) {
+                link = subregionMatch[1];
+                name = subregionMatch[2].trim();
+            }
+            else {
+                const dirMatch = block.match(/<td[^>]*>\s*<a\s+href="([^"]+\/)"[^>]*>([^<]+)<\/a>/i);
+                if (dirMatch) {
+                    link = dirMatch[1];
+                    name = dirMatch[2].trim();
+                }
+                else {
+                    const nameMatch = block.match(/<td[^>]*>\s*<a\s+href="[^"]*"[^>]*>([^<]+)<\/a>/i);
+                    if (nameMatch) {
+                        name = nameMatch[1].trim();
+                    }
+                    else
+                        continue;
+                }
+            }
+            const sizeMatch = block.match(/\((\d[\d.]*\s*(?:MB|GB|KB|bytes))\)/i);
+            const sizeMb = sizeMatch ? parseSize(sizeMatch[1]) : null;
+            let pbfUrl;
+            if (pbfHref.startsWith('http'))
+                pbfUrl = pbfHref;
+            else if (pbfHref.startsWith('/'))
+                pbfUrl = GEOFABRIK_BASE + pbfHref;
+            else {
+                const cleanHref = pbfHref.replace(/^\.\//, '');
+                pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+            }
+            let subPath = link.replace(/\.html$/, '').replace(/^\.\//, '').replace(/\/$/, '');
+            if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
+                subPath = basePath ? basePath.replace(/^\/|\/$/g, '') + '/' + subPath : subPath;
+            }
+            rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
+        }
+        return rows;
     }
     try {
         const allRows = [];
