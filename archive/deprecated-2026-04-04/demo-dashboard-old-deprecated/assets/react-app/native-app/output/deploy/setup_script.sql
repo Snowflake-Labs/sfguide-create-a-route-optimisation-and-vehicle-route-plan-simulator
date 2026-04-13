@@ -1,1 +1,0 @@
-/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/demo-dashboard/assets/react-app/native-app/setup_script.sql

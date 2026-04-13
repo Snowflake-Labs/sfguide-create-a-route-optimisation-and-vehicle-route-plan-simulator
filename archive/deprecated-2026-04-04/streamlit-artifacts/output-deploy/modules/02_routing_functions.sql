@@ -1,1 +1,0 @@
-/Users/obielov/Documents/GitHub/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/.cortex/skills/build-routing-solution/native_app/app/modules/02_routing_functions.sql
