@@ -51,8 +51,8 @@ export default function CatchmentPanel() {
         const minutes = Math.round(maxMinutes * (i / numZones));
         try {
           const rows = await sfQuery(
-            `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}::FLOAT, ${lat}::FLOAT, ${minutes}::INT))`,
-            'OPENROUTESERVICE_NATIVE_APP', 'CORE'
+            `SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}::FLOAT, ${lat}::FLOAT, ${minutes}::INT))`,
+            'OPENROUTESERVICE_APP', 'CORE'
           );
           if (rows[0]?.GEO) {
             zones.push({ zoneIdx: i - 1, minutes, geojson: JSON.parse(rows[0].GEO) });

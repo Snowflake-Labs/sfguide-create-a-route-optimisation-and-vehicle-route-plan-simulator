@@ -94,7 +94,7 @@ export default function RouteOptimization() {
 
   const previewCatchment = useCallback(async () => {
     if (!centerCoords) return;
-    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}, ${centerCoords[1]}, ${isoMinutes}))`, RO_DB, RO_SCHEMA);
+    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}, ${centerCoords[1]}, ${isoMinutes}))`, RO_DB, RO_SCHEMA);
     if (rows[0]?.GEO) {
       try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch {}
     }
@@ -115,7 +115,7 @@ export default function RouteOptimization() {
       capacity: [v.capacity], time_window: [0, 86400],
     }));
 
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpJobs).replace(/'/g, "''")}'), PARSE_JSON('${JSON.stringify(vrpVehicles).replace(/'/g, "''")}')))`);
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpJobs).replace(/'/g, "''")}'), PARSE_JSON('${JSON.stringify(vrpVehicles).replace(/'/g, "''")}')))`);
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
@@ -123,7 +123,7 @@ export default function RouteOptimization() {
         const routeSteps = rows.filter((r: any) => Number(r.VEHICLE_ID || r.VEHICLE) === i + 1);
         if (routeSteps.length < 2) continue;
         const coords = routeSteps.map((s: any) => `${s.LON || s.LONGITUDE},${s.LAT || s.LATITUDE}`).join('|');
-        const dirRows = await sfQuery(`SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS('${vehicles[i].profile}', '${coords}'))`);
+        const dirRows = await sfQuery(`SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${vehicles[i].profile}', '${coords}'))`);
         if (dirRows[0]?.GEOJSON) {
           try { paths.push({ vehicleIdx: i, geojson: JSON.parse(dirRows[0].GEOJSON) }); } catch {}
         }

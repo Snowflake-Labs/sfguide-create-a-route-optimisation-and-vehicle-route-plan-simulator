@@ -5,7 +5,7 @@ import { TileLayer, H3HexagonLayer } from '@deck.gl/geo-layers';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 const SF_VIEW = { longitude: -122.44, latitude: 37.76, zoom: 12, pitch: 0, bearing: 0 };
-const INTRO_DB = 'OPENROUTESERVICE_SETUP';
+const INTRO_DB = 'OPENROUTESERVICE_APP';
 const INTRO_SCHEMA = 'PUBLIC';
 
 const COLORS: [number, number, number][] = [

@@ -38,7 +38,6 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 |----------|---------|-------------|
 | `CHECK_HEALTH()` | BOOLEAN | True if ORS gateway responds |
 | `LIST_REGIONS()` | TABLE (REGION, DISPLAY_NAME, STATUS, ...) | All provisioned regions |
-| `DOWNLOAD(folder, filename, URL)` | VARIANT | Downloads a file to stage |
 
 ## Lifecycle Management Procedures
 

@@ -172,14 +172,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Build 5 container images and push to Snowflake image repository
 
-**Before building:** Read `app/image-versions.env` (the single source of truth for all image tags). Use these values for all `-t` flags. The `build-images.md` code blocks show the commands but always cross-check tags against `image-versions.env`.
+**Before building:** Read `openrouteservice_app/image-versions.env` (the single source of truth for all image tags). Use these values for all `-t` flags. The `build-images.md` code blocks show the commands but always cross-check tags against `openrouteservice_app/image-versions.env`.
 
 Follow the full build instructions in `references/build-images.md`. Summary:
 
-1. Read image tags: `source app/image-versions.env`
+1. Read image tags: `source image-versions.env`
 2. Authenticate with SPCS image registry (Docker or Podman)
 3. Get repository URL: `snow spcs image-repository url OPENROUTESERVICE_APP.CORE.image_repository -c <connection>`
-4. Build and push all 4 images using tags from `image-versions.env`: openrouteservice, routing_reverse_proxy, vroom-docker, ors_control_app
+4. Build and push all 4 images using tags from openrouteservice_app/image-versions.env`: openrouteservice, routing_reverse_proxy, vroom-docker, ors_control_app
 
 **Expected Duration:** 10-20 minutes (first push; ~5 minutes with cached layers)
 
@@ -205,15 +205,16 @@ Follow the full build instructions in `references/build-images.md`. Summary:
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE 
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-   EXECUTE IMMEDIATE FROM 'modules/01_core_infra.sql';
-   EXECUTE IMMEDIATE FROM 'modules/02_routing_functions.sql';
-   EXECUTE IMMEDIATE FROM 'modules/03_region_management.sql';
-   EXECUTE IMMEDIATE FROM 'modules/04_service_lifecycle.sql';
-   EXECUTE IMMEDIATE FROM 'modules/05_matrix_pipeline.sql';
-   EXECUTE IMMEDIATE FROM 'modules/06_matrix_ops.sql';
    ```
 
+   ```bash
+   snow sql -f "app/modules/01_core_infra.sql"       -c <connection> && \
+   snow sql -f "app/modules/02_routing_functions.sql" -c <connection> && \
+   snow sql -f "app/modules/03_region_management.sql" -c <connection> && \
+   snow sql -f "app/modules/04_service_lifecycle.sql" -c <connection> && \
+   snow sql -f "app/modules/05_matrix_pipeline.sql"   -c <connection> && \
+   snow sql -f "app/modules/06_matrix_ops.sql"        -c <connection> 
+   ```
 
 2. **Verify** all services are running:
    ```sql
@@ -227,9 +228,9 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP');
    ```
 
-**Output:** App fully activated with all services running 
+**Output:** App fully activated with all services running
 
-### Step 8: Load Seed Datasets
+### Step 7: Load Seed Datasets
 
 **Goal:** Pre-load Intro page routes, synthetic SF ebike data, and a pre-computed travel time matrix so the app is fully populated on first launch
 
@@ -288,7 +289,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs), Region Builder shows 460 pre-populated catalog entries (no remote API scrape needed)
 
-### Step 8b: Install Overture Maps Marketplace Datasets
+### Step 7b: Install Overture Maps Marketplace Datasets
 
 **Goal:** Pre-install Overture Maps datasets from Snowflake Marketplace so downstream demos that need POI/address data (Taxis, Retail Catchment, Route Optimization) are not blocked.
 
@@ -323,7 +324,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Overture Maps databases available. Demos requiring POI data (Taxis, Retail Catchment, Route Optimization) can now be deployed.
 
-### Step 9: Select and Deploy Demos (Optional)
+### Step 8: Select and Deploy Demos (Optional)
 
 **Goal:** Ask the user which demo skills to deploy on top of the base ORS installation
 
@@ -367,7 +368,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 - Step 2: After detecting container runtime — confirm user's choice if both available
 - Step 5: After starting container build — monitor for authentication errors
 - Step 6: After deployment — verify application created successfully
-- Step 9: After presenting demo list — wait for user selection before deploying
+- Step 8: After presenting demo list — wait for user selection before deploying
 
 ## Troubleshooting
 
@@ -385,14 +386,24 @@ Fully deployed OpenRouteService route optimizer App with:
 - Database: `OPENROUTESERVICE_APP`
 - 4 SPCS services running (openrouteservice, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
+
+*CRITICAL* Retrieve and open the ORS Control App — run `SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP`, then immediately:
+```sql
+SELECT 'https://' || ingress_url AS control_app_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE name = 'ors-control-app';
+```
+Print the URL to the user as: `ORS Control App URL: <url>`, then open it automatically:
+```bash
+open "<url>"
+```
+
 - Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs), pre-computed SanFrancisco cycling-electric RES8 travel time matrix (29K pairs)
 - Optional: User-selected demo skills deployed on top of the base installation
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
 See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
-
-Access via: Snowsight -> Data Products >> Apps >> OPENROUTESERVICE_APP >> Launch App. All privileges and external access integrations are granted automatically during Step 7 — no manual UI approval is needed.
 
 ## Cleanup
 

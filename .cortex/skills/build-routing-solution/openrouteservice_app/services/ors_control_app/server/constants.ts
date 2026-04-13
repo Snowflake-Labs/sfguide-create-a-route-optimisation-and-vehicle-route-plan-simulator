@@ -1,5 +1,5 @@
 const rawDb = process.env.SNOWFLAKE_DATABASE || '';
-export const SF_DATABASE = (rawDb && !rawDb.includes('{{')) ? rawDb : 'OPENROUTESERVICE_NATIVE_APP';
+export const SF_DATABASE = (rawDb && !rawDb.includes('{{')) ? rawDb : 'OPENROUTESERVICE_APP';
 
 export let SF_WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || '';
 export function setWarehouse(name: string): void { SF_WAREHOUSE = name; }

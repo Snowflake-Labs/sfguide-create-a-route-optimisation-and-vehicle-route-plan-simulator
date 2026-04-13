@@ -11,7 +11,7 @@ async function checkOrsReadiness(
 ): Promise<{ ready: boolean; error?: string }> {
   try {
     const rows = await snowSql(
-      `SELECT OPENROUTESERVICE_NATIVE_APP.CORE.ORS_STATUS() AS STATUS`
+      `SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS() AS STATUS`
     );
     const raw = rows[0]?.STATUS;
     const status = typeof raw === 'string' ? JSON.parse(raw) : raw;

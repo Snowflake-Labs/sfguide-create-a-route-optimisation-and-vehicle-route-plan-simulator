@@ -4,7 +4,7 @@ Project-level guidance for AI coding assistants (Cortex Code, Cursor, Copilot, e
 
 ## Repository Overview
 
-Cortex Code skills that deploy routing, fleet intelligence, and geospatial analytics on Snowflake — powered by the OpenRouteService (ORS) Native App on Snowpark Container Services (SPCS).
+Cortex Code skills that deploy routing, fleet intelligence, and geospatial analytics on Snowflake — powered by the OpenRouteService (ORS) App on Snowpark Container Services (SPCS).
 
 Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook an AI agent follows step-by-step.
 
@@ -17,7 +17,7 @@ Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook a
   │   ├── references/        # Detailed SQL, code, docs (loaded on demand)
   │   └── assets/            # Notebooks and other deployable artifacts
   ├── evals/                 # Eval framework (trigger, quality, xref)
-build-routing-solution/      # ORS native app build artifacts (Dockerfiles, configs)
+build-routing-solution/      # ORS app build artifacts (Dockerfiles, configs)
 docs/                        # Documentation (dev/ and guides/)
 archive/                     # Archived materials
 ```
@@ -32,7 +32,7 @@ python3 .cortex/skills/evals/run_evals.py
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
 # Validate ORS services are running
-snow sql -q "SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;"
+snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
 ```
 
 No global build/lint step — each skill is independently deployable via its own SKILL.md workflow.
@@ -41,12 +41,12 @@ No global build/lint step — each skill is independently deployable via its own
 
 | Skill | Category | Purpose |
 |-------|----------|---------|
-| `build-routing-solution` | infrastructure | Builds and deploys the ORS native app on SPCS |
+| `build-routing-solution` | infrastructure | Builds and deploys the ORS app on SPCS |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
 | `fleet-intelligence-taxis` | fleet-intelligence | Taxi GPS telemetry generation + React dashboard |
-| `fleet-intelligence-food-delivery` | fleet-intelligence | Food delivery courier telemetry + React native app |
+| `fleet-intelligence-food-delivery` | fleet-intelligence | Food delivery courier telemetry + React app |
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
@@ -97,88 +97,42 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
   ```
 - **Skip the object COMMENT** — every CREATE statement must include a COMMENT tracking tag (or `ALTER ... SET COMMENT` for CTAS):
   ```sql
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|native-app>"}}';
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|app>"}}';
   ```
-- **Assume ORS is running** — always verify with `SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;` (all 4 services must be RUNNING)
+- **Assume ORS is running** — always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_SETUP;` (all 4 services must be RUNNING)
 - **Hardcode city/region** — skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** — all docs go in SKILL.md or `references/`
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
-- **Run CREATE PROCEDURE/TABLE/FUNCTION directly in OPENROUTESERVICE_NATIVE_APP** — objects created as ACCOUNTADMIN are invisible to the app context and will cause runtime errors
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
-
-## ORS Native App Deployment Rules
-
-ALL changes to the ORS native app schema (procedures, tables, functions) MUST go through the setup_script upgrade flow. Never create objects directly via SQL.
-
-```bash
-# The ONLY way to deploy setup_script.sql changes:
-cd build-routing-solution/native_app/app
-./upgrade_app.sh           # uploads setup_script.sql + modules/*.sql, then ALTER APPLICATION UPGRADE
-```
-
-Key facts:
-- `setup_script.sql` is a thin orchestrator (~15 lines) that calls `EXECUTE IMMEDIATE FROM 'modules/<NN>_<domain>.sql'`
-- The 6 module files live in `native_app/app/modules/`:
-  | Module | Domain | Component tag |
-  |--------|--------|---------------|
-  | `01_core_infra.sql` | compute, stages, services, callbacks | `core` |
-  | `02_routing_functions.sql` | service functions, UDFs | `routing` |
-  | `03_region_management.sql` | region catalog, provisioning, per-region ORS | `region-catalog` / `provisioner` / `multi-region` |
-  | `04_service_lifecycle.sql` | resume, suspend, scale, status | `lifecycle` |
-  | `05_matrix_pipeline.sql` | matrix build pipeline | `matrix` |
-  | `06_matrix_ops.sql` | matrix status, inventory, delete | `matrix` |
-- `upgrade_app.sh` uploads `setup_script.sql` + all `modules/*.sql` to the package stage, then runs `ALTER APPLICATION UPGRADE`
-- If you see ACCOUNTADMIN-owned objects after upgrade, DROP them — they shadow or conflict with app-owned objects
-
-### Native App SQL Scripting Guidelines (MANDATORY)
-
-Every `CREATE` statement in setup_script modules MUST include a JSON tracking COMMENT tag. See full rules, examples, and the `REBUILD_GRAPHS` requirement in:
-
-> `.cortex/skills/build-routing-solution/references/snowflake-scripting-guidelines.md` — Section 11
-
-Quick reference — component tags per module:
-
-| Module | Component tag |
-|--------|---------------|
-| `01_core_infra.sql` | `core` |
-| `02_routing_functions.sql` | `routing` |
-| `03_region_management.sql` | `region-catalog` / `provisioner` / `multi-region` |
-| `04_service_lifecycle.sql` | `lifecycle` |
-| `05_matrix_pipeline.sql` | `matrix` |
-| `06_matrix_ops.sql` | `matrix` |
 
 ## Control App Image Deployment (ors_control_app)
 
 When changing server code (e.g., `server/index.ts`), you must rebuild and push the Docker image:
 
 ```bash
-cd build-routing-solution/Native_app/services/ors_control_app
+cd build-routing-solution/openrouteservice_app/services/ors_control_app
+
+snow spcs image-registry login -c <connection>
+REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection>)
 
 # 1. Edit BOTH source and compiled files:
 #    - server/index.ts (source)
 #    - dist-server/index.js (compiled — this is what runs in SPCS)
 
 # 2. Build (bump version from current):
-docker build --platform linux/amd64 -t pm-fleet-test.registry.snowflakecomputing.com/openrouteservice_setup/public/image_repository/ors_control_app:vX.Y.Z .
+docker build --platform linux/amd64 -t $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z .
 
-# 3. Login if needed:
-snow spcs image-registry login -c fleet_test_evals
+# 3. Push:
+docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
 
-# 4. Push:
-docker push pm-fleet-test.registry.snowflakecomputing.com/openrouteservice_setup/public/image_repository/ors_control_app:vX.Y.Z
+# 4. Restart services:
+alter service openrouteservice_app.core.ors_control_app suspend;
+alter service openrouteservice_app.core.ors_control_app resume;
 
 # 5. Update version in these files:
 #    - services/ors_control_app/ors_control_app_service.yaml (image tag)
-#    - app/manifest.yml (container_services.images list)
-
-# 6. Deploy (uploads all YAMLs + upgrades app):
-cd ../..
-./deploy.sh
-```
-
-The app upgrade (`ALTER APPLICATION ... UPGRADE`) re-creates the ORS_CONTROL_APP service, which picks up the new image tag from the service YAML.
 
 ## Skill Dependency Graph
 

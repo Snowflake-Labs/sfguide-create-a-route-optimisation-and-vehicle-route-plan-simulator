@@ -1,8 +1,10 @@
+ USE SCHEMA OPENROUTESERVICE_APP.CORE;   
+
 -- =============================================================================
 -- SERVICE LIFECYCLE: resume, suspend, scale, status, health check
 -- =============================================================================
 
-CREATE OR REPLACE PROCEDURE core.RESUME_ALL_SERVICES()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -12,7 +14,7 @@ DECLARE
     resumed_count INTEGER DEFAULT 0;
     already_running INTEGER DEFAULT 0;
 BEGIN
-    SHOW SERVICES IN SCHEMA core;
+    SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
         SELECT "name" AS svc_name, "status" AS svc_status
@@ -24,7 +26,7 @@ BEGIN
     FOR rec IN cur DO
         IF (rec.svc_status = 'SUSPENDED') THEN
             BEGIN
-                EXECUTE IMMEDIATE 'ALTER SERVICE core.' || rec.svc_name || ' RESUME';
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' RESUME';
                 resumed_count := resumed_count + 1;
             EXCEPTION
                 WHEN OTHER THEN NULL;
@@ -53,7 +55,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.resume_services()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_services()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -61,11 +63,11 @@ AS
 $$
 BEGIN
     LET result VARCHAR;
-    CALL core.RESUME_ALL_SERVICES() INTO :result;
+    CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES() INTO :result;
     RETURN result;
 END;
 $$;
-CREATE OR REPLACE PROCEDURE core.SUSPEND_ALL_SERVICES()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_ALL_SERVICES()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -74,7 +76,7 @@ $$
 DECLARE
     suspended_count INTEGER DEFAULT 0;
 BEGIN
-    SHOW SERVICES IN SCHEMA core;
+    SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
         SELECT "name" AS svc_name, "status" AS svc_status
@@ -89,7 +91,7 @@ BEGIN
         END IF;
         IF (rec.svc_status IN ('RUNNING', 'READY')) THEN
             BEGIN
-                EXECUTE IMMEDIATE 'ALTER SERVICE core.' || rec.svc_name || ' SUSPEND';
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SUSPEND';
                 suspended_count := suspended_count + 1;
             EXCEPTION
                 WHEN OTHER THEN NULL;
@@ -101,7 +103,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_MIN_INSTANCES INTEGER, P_MAX_INSTANCES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -110,18 +112,18 @@ $$
 DECLARE
     region_scaled INTEGER DEFAULT 0;
 BEGIN
-    ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
-    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
+    ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
+    ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET MIN_INSTANCES = :P_MIN_INSTANCES MAX_INSTANCES = :P_MAX_INSTANCES;
 
     BEGIN
-        SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+        SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA OPENROUTESERVICE_APP.CORE;
         LET rs RESULTSET := (
             SELECT "name" AS svc_name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         );
         LET cur CURSOR FOR rs;
         FOR rec IN cur DO
             BEGIN
-                EXECUTE IMMEDIATE 'ALTER SERVICE core.' || rec.svc_name || ' SET MIN_INSTANCES = 1 MAX_INSTANCES = 1';
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET MIN_INSTANCES = 1 MAX_INSTANCES = 1';
                 region_scaled := region_scaled + 1;
             EXCEPTION WHEN OTHER THEN NULL;
             END;
@@ -137,7 +139,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.SCALE_SERVICES(P_ORS_INSTANCES INTEGER, P_GATEWAY_INSTANCES INTEGER, P_POOL_NODES INTEGER)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SCALE_SERVICES(P_ORS_INSTANCES INTEGER, P_GATEWAY_INSTANCES INTEGER, P_POOL_NODES INTEGER)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -146,10 +148,10 @@ $$
 DECLARE
     region_svc_count INTEGER DEFAULT 0;
 BEGIN
-    ALTER SERVICE IF EXISTS core.ors_service SET MIN_INSTANCES = :P_ORS_INSTANCES MAX_INSTANCES = :P_ORS_INSTANCES;
-    ALTER SERVICE IF EXISTS core.routing_gateway_service SET MIN_INSTANCES = :P_GATEWAY_INSTANCES MAX_INSTANCES = :P_GATEWAY_INSTANCES;
+    ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET MIN_INSTANCES = :P_ORS_INSTANCES MAX_INSTANCES = :P_ORS_INSTANCES;
+    ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET MIN_INSTANCES = :P_GATEWAY_INSTANCES MAX_INSTANCES = :P_GATEWAY_INSTANCES;
 
-    SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA core;
+    SHOW SERVICES LIKE 'ORS_SERVICE_%' IN SCHEMA OPENROUTESERVICE_APP.CORE;
     SELECT COUNT(*) INTO :region_svc_count FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE "status" != 'SUSPENDED';
 
     LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
@@ -162,7 +164,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.GET_STATUS()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_STATUS()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
@@ -178,7 +180,7 @@ BEGIN
         SELECT "state" INTO :pool_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
     EXCEPTION WHEN OTHER THEN pool_status := 'NOT_FOUND'; END;
 
-    SHOW SERVICES IN SCHEMA core;
+    SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
         SELECT "name" AS svc_name, "status" AS svc_status

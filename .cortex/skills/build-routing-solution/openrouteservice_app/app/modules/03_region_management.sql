@@ -1,8 +1,10 @@
+USE SCHEMA OPENROUTESERVICE_APP.CORE;   
+
 -- =============================================================================
 -- REGION CATALOG: Dynamic catalog of OSM regions from Geofabrik + BBBike
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS core.REGION_CATALOG (
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
     CATALOG_ID    VARCHAR NOT NULL,
     SOURCE        VARCHAR NOT NULL,
     REGION_NAME   VARCHAR NOT NULL,
@@ -21,17 +23,19 @@ CREATE TABLE IF NOT EXISTS core.REGION_CATALOG (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
 
-CREATE OR REPLACE PROCEDURE core.REFRESH_REGION_CATALOG()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REFRESH_REGION_CATALOG()
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}'
 EXECUTE AS OWNER
 AS
+$$
 BEGIN
     RETURN '{"message":"Catalog refresh is handled by the Control App server. Use the Region Builder UI or POST /api/regions/catalog/refresh."}';
 END;
+$$;
 
-CREATE OR REPLACE PROCEDURE core.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(P_STAGE_PREFIX VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}'
@@ -43,13 +47,13 @@ DECLARE
     existing INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
-    SELECT COUNT(*) INTO existing FROM core.REGION_CATALOG;
+    SELECT COUNT(*) INTO existing FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
     IF (existing > 0) THEN
         RETURN OBJECT_CONSTRUCT('status', 'skipped', 'reason', 'catalog already has ' || existing || ' rows')::VARCHAR;
     END IF;
 
     EXECUTE IMMEDIATE '
-        COPY INTO core.REGION_CATALOG
+        COPY INTO OPENROUTESERVICE_APP.CORE.REGION_CATALOG
         FROM (
             SELECT
                 $1:CATALOG_ID::VARCHAR,
@@ -73,7 +77,7 @@ BEGIN
         PURGE = FALSE
         FORCE = TRUE';
 
-    rs := (SELECT COUNT(*) AS CNT FROM core.REGION_CATALOG);
+    rs := (SELECT COUNT(*) AS CNT FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG);
     LET c CURSOR FOR rs;
     FOR row_val IN c DO cnt := row_val.CNT; END FOR;
 
@@ -85,7 +89,7 @@ $$;
 -- REGION PROVISIONING: Job tracking for region deployment
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS core.REGION_PROVISION_JOBS (
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     JOB_ID VARCHAR NOT NULL,
     REGION VARCHAR NOT NULL,
     DISPLAY_NAME VARCHAR,
@@ -102,7 +106,7 @@ CREATE TABLE IF NOT EXISTS core.REGION_PROVISION_JOBS (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
 
-CREATE OR REPLACE PROCEDURE core.PROVISION_REGION_WRAPPER(
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
     P_JOB_ID VARCHAR,
     P_REGION VARCHAR,
     P_DISPLAY_NAME VARCHAR,
@@ -125,17 +129,17 @@ DECLARE
     profile_count INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
-    UPDATE core.REGION_PROVISION_JOBS
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=CURRENT_TIMESTAMP(),
         MESSAGE='Inserting region metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
     BEGIN
-        ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 0;
+        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 0;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    MERGE INTO core.REGION_ORS_MAP t USING (
+    MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t USING (
         SELECT :P_REGION AS REGION
     ) s ON t.REGION = s.REGION
     WHEN NOT MATCHED THEN INSERT (REGION, DISPLAY_NAME, PBF_URL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
@@ -146,59 +150,59 @@ BEGIN
         pbf_filename := 'data.osm.pbf';
     END IF;
     BEGIN
-        EXECUTE IMMEDIATE 'SELECT core.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
     EXCEPTION WHEN OTHER THEN
         LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
         SYSTEM$LOG_INFO(dl_err);
-        UPDATE core.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
         RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
     END;
 
     BEGIN
-        ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 14400;
+        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    UPDATE core.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
-    CALL core.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
+    CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
 
-    UPDATE core.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
-    CALL core.SETUP_REGION_ORS(:P_REGION);
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
+    CALL OPENROUTESERVICE_APP.CORE.SETUP_REGION_ORS(:P_REGION);
 
-    UPDATE core.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     FOR i IN 1 TO 60 DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(10)';
         BEGIN
-            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA core';
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
             rs := (EXECUTE IMMEDIATE 'SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))');
             LET c1 CURSOR FOR rs;
             FOR r IN c1 DO svc_status := r.S; END FOR;
             IF (:svc_status = 'RUNNING') THEN
-                UPDATE core.REGION_PROVISION_JOBS SET MESSAGE='ORS service is RUNNING, waiting for graph...' WHERE JOB_ID = :P_JOB_ID;
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET MESSAGE='ORS service is RUNNING, waiting for graph...' WHERE JOB_ID = :P_JOB_ID;
                 BREAK;
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
     END FOR;
 
-    UPDATE core.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
     FOR i IN 1 TO 40 DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
         BEGIN
-            rs := (EXECUTE IMMEDIATE 'SELECT core.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
+            rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
             LET c2 CURSOR FOR rs;
             FOR r IN c2 DO status_raw := r.S; END FOR;
             status_json := TRY_PARSE_JSON(:status_raw);
             IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
                 profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
                 IF (:profile_count > 0) THEN
-                    UPDATE core.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
                     BEGIN
-                        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+                        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
-                    UPDATE core.REGION_PROVISION_JOBS
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
                         MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready',
                         COMPLETED_AT=CURRENT_TIMESTAMP()
@@ -211,11 +215,11 @@ BEGIN
     END FOR;
 
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
-    UPDATE core.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
-    UPDATE core.REGION_PROVISION_JOBS
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='COMPLETE', STAGE='READY',
         MESSAGE='Service running but graph may still be loading. Check ORS_STATUS.',
         COMPLETED_AT=CURRENT_TIMESTAMP()
@@ -226,21 +230,21 @@ EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
         BEGIN
-            ALTER SERVICE IF EXISTS core.downloader SET AUTO_SUSPEND_SECS = 14400;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
-            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS core.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
         EXCEPTION WHEN OTHER THEN NULL;
         END;
-        UPDATE core.REGION_PROVISION_JOBS
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.GET_PROVISION_STATUS()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_PROVISION_STATUS()
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}'
@@ -259,7 +263,7 @@ BEGIN
         'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
         'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', '')
     )), ARRAY_CONSTRUCT())::VARCHAR INTO result
-    FROM core.REGION_PROVISION_JOBS
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
     ORDER BY CREATED_AT DESC;
     RETURN result;
@@ -270,7 +274,7 @@ $$;
 -- MULTI-REGION: Per-region ORS instances with region-parameterized functions
 -- =============================================================================
 
-CREATE TABLE IF NOT EXISTS core.REGION_ORS_MAP (
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     REGION VARCHAR,
     DISPLAY_NAME VARCHAR,
     PBF_URL VARCHAR,
@@ -284,7 +288,7 @@ CREATE TABLE IF NOT EXISTS core.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
-CREATE OR REPLACE PROCEDURE core.create_region_ors_service(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -310,22 +314,19 @@ BEGIN
         AUTO_SUSPEND_SECS = 14400
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
-    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
-    create_sql := 'CREATE SERVICE core.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
+    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
-    EXECUTE IMMEDIATE 'GRANT OPERATE ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';
-    EXECUTE IMMEDIATE 'GRANT MONITOR ON SERVICE core.' || svc_name || ' TO APPLICATION ROLE app_user';
-
-    UPDATE core.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
 
     RETURN 'Region ORS service created for ' || :P_REGION || ': ' || svc_name;
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.create_region_functions(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_functions(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"multi-region"}}'
@@ -333,11 +334,11 @@ EXECUTE AS OWNER
 AS
 $$
 BEGIN
-    RETURN 'No-op: per-region function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(core.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
+    RETURN 'No-op: per-region function aliases removed in v2.0. Use region parameter instead, e.g. SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(method, start, end, ''' || :P_REGION || '''))';
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
@@ -402,7 +403,7 @@ def run(session, p_region, p_pbf_file, p_profiles):
         f.write(yaml_content)
 
     try:
-        stage_path = '@CORE.ORS_SPCS_STAGE/' + p_region + '/'
+        stage_path = '@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' + p_region + '/'
         session.file.put(config_path, stage_path, auto_compress=False, overwrite=True)
     finally:
         os.unlink(config_path)
@@ -411,7 +412,7 @@ def run(session, p_region, p_pbf_file, p_profiles):
     return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles
 $$;
 
-CREATE OR REPLACE PROCEDURE core.setup_region_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.setup_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -419,16 +420,16 @@ EXECUTE AS OWNER
 AS
 $$
 BEGIN
-    CALL core.create_compute_pool();
-    CALL core.create_stages();
-    CALL core.create_region_ors_service(:P_REGION);
-    CALL core.create_services();
+    CALL OPENROUTESERVICE_APP.CORE.create_compute_pool();
+    CALL OPENROUTESERVICE_APP.CORE.create_stages();
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION);
+    CALL OPENROUTESERVICE_APP.CORE.create_services();
     SELECT SYSTEM$WAIT(30);
     RETURN 'Region ORS deployed for: ' || :P_REGION;
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.resume_region_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -437,16 +438,16 @@ AS
 $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    EXECUTE IMMEDIATE 'ALTER SERVICE core.' || svc_name || ' RESUME';
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
     BEGIN
-        ALTER SERVICE IF EXISTS core.routing_gateway_service RESUME;
+        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service RESUME;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     RETURN 'Resumed ORS services for ' || :P_REGION;
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.drop_region_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_ors(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -456,15 +457,15 @@ $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS core.' || svc_name;
+    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
 
-    DELETE FROM core.REGION_ORS_MAP WHERE REGION = :P_REGION;
+    DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
 
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE core.list_regions()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.list_regions()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -480,7 +481,7 @@ BEGIN
         'status', STATUS,
         'bbox', OBJECT_CONSTRUCT('min_lat', MIN_LAT, 'max_lat', MAX_LAT, 'min_lon', MIN_LON, 'max_lon', MAX_LON)
     ))::VARCHAR INTO result
-    FROM core.REGION_ORS_MAP;
+    FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
     RETURN COALESCE(result, '[]');
 END;
 $$;

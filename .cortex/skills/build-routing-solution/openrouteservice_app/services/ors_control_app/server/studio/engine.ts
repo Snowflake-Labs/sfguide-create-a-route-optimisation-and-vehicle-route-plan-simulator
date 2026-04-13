@@ -253,7 +253,7 @@ async function fetchRoute(
 ): Promise<RouteGeometry | null> {
   const sql = `
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
-    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
       ARRAY_CONSTRUCT(${originLng},${originLat}),
       ARRAY_CONSTRUCT(${destLng},${destLat})
@@ -298,7 +298,7 @@ async function fetchDetourRoute(
   }).replace(/'/g, "''");
   const sql = `
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
-    FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
       PARSE_JSON('${coordsJson}')::VARIANT
     ))`;
@@ -673,8 +673,8 @@ export async function* generateTelemetry(
               detail: { region: config.region, profile: config.ors_profile, routeSuccesses },
             });
             try {
-              await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME');
-              await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME');
+              await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME');
+              await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE RESUME');
               await new Promise(resolve => setTimeout(resolve, 30000));
               log('INFO', 'Studio', 'ORS recovery attempt complete, resuming generation');
             } catch (e: any) {
