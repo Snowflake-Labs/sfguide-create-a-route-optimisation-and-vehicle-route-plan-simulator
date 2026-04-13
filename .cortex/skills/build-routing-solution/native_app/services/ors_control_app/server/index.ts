@@ -766,6 +766,44 @@ app.get('/api/regions/:region/progress', async (req, res) => {
   } catch { res.json({ status: 'idle', phase: '' }); }
 });
 
+app.get('/api/regions/:region/build-progress', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+    const rows = await runSql(
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 500) AS LOGS`
+    );
+    const logs: string = rows?.[0]?.LOGS || '';
+
+    const nodeLines = [...logs.matchAll(/nodes:\s*([\d\s]+\d),\s*shortcuts:\s*([\d\s]+\d)/g)];
+    const profileMatch = [...logs.matchAll(/Building CH.*?for\s+([\w-]+)/g)];
+    const currentProfile = profileMatch.length > 0 ? profileMatch[profileMatch.length - 1][1] : null;
+    const completedProfiles = [...logs.matchAll(/Finished CH preparation/g)];
+
+    if (nodeLines.length === 0) {
+      const starting = logs.includes('Starting Application') || logs.includes('Spring Boot');
+      res.json({ phase: starting ? 'initializing' : 'waiting', progress: 0 });
+      return;
+    }
+
+    const parseNum = (s: string) => parseInt(s.replace(/\s/g, ''), 10);
+    const firstNodes = parseNum(nodeLines[0][1]);
+    const lastNodes = parseNum(nodeLines[nodeLines.length - 1][1]);
+    const progress = firstNodes > 0 ? Math.round((1 - lastNodes / firstNodes) * 100) : 0;
+
+    res.json({
+      phase: 'building',
+      progress: Math.min(progress, 99),
+      nodesRemaining: lastNodes,
+      nodesTotal: firstNodes,
+      currentProfile,
+      completedProfiles: completedProfiles.length,
+    });
+  } catch (err: any) {
+    res.json({ phase: 'unknown', progress: 0, error: err.message });
+  }
+});
+
 app.post('/api/regions/:region/cancel', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);

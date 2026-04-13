@@ -103,6 +103,10 @@ export default function RegionBuilder() {
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
+  const [buildProgress, setBuildProgress] = useState<Record<string, {
+    phase: string; progress: number; nodesRemaining?: number; nodesTotal?: number;
+    currentProfile?: string | null; completedProfiles?: number;
+  }>>({});
 
   const fetchRegions = useCallback(async () => {
     try {
@@ -160,6 +164,26 @@ export default function RegionBuilder() {
     }, 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [hasActiveJobs, fetchProvisionJobs, fetchRegions]);
+
+  const activeJobs = provisionJobs.filter((j) => j.status === 'RUNNING' || j.status === 'PENDING');
+
+  useEffect(() => {
+    const buildingJobs = activeJobs.filter(j =>
+      ['building_graph', 'waiting_for_service'].includes(j.stage.toLowerCase())
+    );
+    if (buildingJobs.length === 0) { setBuildProgress({}); return; }
+    const poll = () => {
+      buildingJobs.forEach(job => {
+        fetch(`/api/regions/${job.region}/build-progress`)
+          .then(r => r.json())
+          .then(data => setBuildProgress(prev => ({ ...prev, [job.region]: data })))
+          .catch(() => {});
+      });
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [activeJobs.map(j => `${j.region}:${j.stage}`).join(',')]);
 
   const refreshCatalog = useCallback(async () => {
     setRefreshing(true);
@@ -250,7 +274,6 @@ export default function RegionBuilder() {
     }
   }, [filteredCatalog, selectedRegion]);
 
-  const activeJobs = provisionJobs.filter((j) => j.status === 'RUNNING' || j.status === 'PENDING');
   const recentJobs = provisionJobs.filter((j) => j.status !== 'RUNNING' && j.status !== 'PENDING').slice(0, 10);
   const canProvisionSelected = selectedRegion && !isRegionProvisioning(selectedRegion.regionKey);
 
@@ -297,6 +320,25 @@ export default function RegionBuilder() {
                           <span className="step-icon">{isDone ? '\u2713' : isCurrent ? '\u27F3' : '\u25CB'}</span>
                           <span className="step-label">{phase.label}</span>
                           {isCurrent && job.message && <span className="step-message">{job.message}</span>}
+                          {isCurrent && phase.id === 'building_graph' && buildProgress[job.region]?.phase === 'building' && (
+                            <div className="build-progress">
+                              <div className="progress-bar-track">
+                                <div className="progress-bar-fill" style={{ width: `${buildProgress[job.region].progress}%` }} />
+                              </div>
+                              <div className="progress-stats">
+                                <span>{buildProgress[job.region].progress}%</span>
+                                {buildProgress[job.region].currentProfile && (
+                                  <span>Profile: {buildProgress[job.region].currentProfile}</span>
+                                )}
+                                {(buildProgress[job.region].nodesRemaining ?? 0) > 0 && (
+                                  <span>{((buildProgress[job.region].nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes remaining</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {isCurrent && (phase.id === 'building_graph' || phase.id === 'waiting_for_service') && buildProgress[job.region]?.phase === 'initializing' && (
+                            <span className="step-message">ORS engine starting up...</span>
+                          )}
                         </div>
                       );
                     })}
