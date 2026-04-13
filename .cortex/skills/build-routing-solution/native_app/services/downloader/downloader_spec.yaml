@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: downloader
-      image: /openrouteservice_setup/public/image_repository/downloader:v0.0.3
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/downloader:v0.0.3
       volumeMounts:
         - name: ors-spcs-stage
           mountPath: /downloads/ors_spcs_stage
@@ -15,8 +15,8 @@ spec:
       public: false
   volumes:
     - name: ors-spcs-stage
-      source: "@CORE.ORS_SPCS_STAGE"
+      source: "@ROUTING.ORS_SPCS_STAGE"
     - name: ors-graphs-spcs-stage
-      source: "@CORE.ORS_GRAPHS_SPCS_STAGE"
+      source: "@ROUTING.ORS_GRAPHS_SPCS_STAGE"
     - name: ors-elevation-cache-spcs-stage
-      source: "@CORE.ORS_ELEVATION_CACHE_SPCS_STAGE"
+      source: "@ROUTING.ORS_ELEVATION_CACHE_SPCS_STAGE"

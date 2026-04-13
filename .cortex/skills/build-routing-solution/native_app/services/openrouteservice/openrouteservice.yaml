@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: ors
-      image: /openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0
+      image: /fleet_intelligence_setup/public/fleet_intel_repo/openrouteservice:v9.0.0
       volumeMounts:
         - name: files
           mountPath: /home/ors/files
@@ -10,7 +10,7 @@ spec:
         - name: elevation-cache
           mountPath: /home/ors/elevation_cache
       env:
-        REBUILD_GRAPHS: false
+        REBUILD_GRAPHS: "false"
         ORS_CONFIG_LOCATION: /home/ors/files/ors-config.yml
         XMS: 3G 
         XMX: 20G
