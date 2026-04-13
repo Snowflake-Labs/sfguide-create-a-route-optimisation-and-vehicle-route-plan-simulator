@@ -71,7 +71,8 @@ snow sql -c "<connection>" -q "ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPG
 echo "--- [6.5/7] Ensuring Overture Maps access ---"
 snow sql -c "<connection>" -q "GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || echo "  (Overture Maps share not available -- Data Studio POIs will fail)"
 
-echo "--- [6.6/7] Refreshing grants on FLEET_INTELLIGENCE & SYNTHETIC_DATASETS ---"
+echo "--- [6.6/7] Refreshing grants on FLEET_INTELLIGENCE, SYNTHETIC_DATASETS & Cortex ---"
+snow sql -c "<connection>" -q "GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
 snow sql -c "<connection>" -q "GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
 snow sql -c "<connection>" -q "GRANT USAGE ON ALL SCHEMAS IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
 snow sql -c "<connection>" -q "GRANT SELECT ON ALL TABLES IN DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;" 2>/dev/null || true
