@@ -462,7 +462,6 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps (auto-installed in Step 8b) |
    | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps (Step 8b) + Cortex AI access |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
-   | **Travel Time Matrix** | H3-based travel time matrices at scale (advanced) | 5 min - 34 hrs | Scaled compute pool |
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
@@ -471,7 +470,6 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
    - **Then:** Route Deviation (needs SYNTHETIC_DATASETS data)
    - **Then:** Dwell Analysis (needs SYNTHETIC_DATASETS data)
-   - **Last:** Travel Time Matrix (longest running, can run in background)
 
 3. **For each selected demo**, invoke the corresponding skill:
    - Fleet Intelligence: Food Delivery -> Read and follow `.cortex/skills/fleet-intelligence-food-delivery/SKILL.md`
@@ -481,7 +479,6 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - Retail Catchment -> Read and follow `.cortex/skills/retail-catchment/SKILL.md`
    - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
    - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
-   - Travel Time Matrix -> Read and follow `.cortex/skills/travel-time-matrix/SKILL.md`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 

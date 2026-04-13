@@ -1215,37 +1215,6 @@ app.get('/api/matrix/viewer-inventory', async (_req, res) => {
   }
 });
 
-app.get('/api/matrix/travel-times', async (req, res) => {
-  try {
-    const tableParam = req.query.table as string;
-    if (!tableParam) return res.status(400).json({ error: 'table parameter required' });
-    await getViewerInventory();
-    const table = validateViewerTable(tableParam);
-    if (!table) return res.status(400).json({ error: 'Invalid table name' });
-    const rows = await runSql(`
-      SELECT
-        ORIGIN_H3 AS HEX_ID,
-        ST_Y(H3_CELL_TO_POINT(ORIGIN_H3)) AS LAT,
-        ST_X(H3_CELL_TO_POINT(ORIGIN_H3)) AS LON,
-        COUNT(DISTINCT DEST_H3) AS DEST_COUNT,
-        ROUND(AVG(TRAVEL_TIME_SECONDS), 1) AS AVG_TRAVEL_TIME_SECS,
-        ROUND(MIN(TRAVEL_TIME_SECONDS), 1) AS MIN_TRAVEL_TIME_SECS,
-        ROUND(MAX(TRAVEL_TIME_SECONDS), 1) AS MAX_TRAVEL_TIME_SECS,
-        ROUND(AVG(TRAVEL_DISTANCE_METERS), 1) AS AVG_DISTANCE_METERS,
-        ROUND(MAX(TRAVEL_DISTANCE_METERS), 1) AS MAX_DISTANCE_METERS
-      FROM ${table}
-      GROUP BY ORIGIN_H3
-      ORDER BY DEST_COUNT DESC
-      LIMIT 5000
-    `);
-    const totalRows = await runSql(`SELECT COUNT(*) AS CNT FROM ${table}`);
-    res.json({ hexagons: rows, total_pairs: Number(totalRows[0]?.CNT || 0) });
-  } catch (err: any) {
-    console.error('Travel-times error:', err.message);
-    res.json({ hexagons: [], total_pairs: 0 });
-  }
-});
-
 app.get('/api/matrix/random-origin', async (req, res) => {
   try {
     const tableParam = req.query.table as string;

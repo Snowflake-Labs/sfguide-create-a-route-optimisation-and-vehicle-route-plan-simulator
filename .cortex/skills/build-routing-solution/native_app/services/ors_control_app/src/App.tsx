@@ -15,7 +15,6 @@ import RouteOptimization from './components/RouteOptimization';
 import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
-import TravelTimeExplorer from './components/TravelTimeExplorer';
 import Diagnostics from './components/Diagnostics';
 import Intro from './components/Intro';
 import Home from './components/Home';
@@ -61,7 +60,6 @@ const DEMO_GROUPS: NavGroup[] = [
     { key: 'route-deviation:inspector', label: 'Route Inspector' },
   ]},
   { key: 'agent', label: 'Routing Agent', icon: Bot },
-  { key: 'travel-time', label: 'Travel Time Matrix', icon: Grid3X3 },
   { key: 'studio', label: 'Data Studio', icon: Database },
 ];
 
@@ -207,7 +205,6 @@ export default function App() {
             {activeTab === 'route-opt' && <RouteOptimization />}
             {activeTab === 'retail' && <RetailCatchment />}
             {activeTab === 'agent' && <AgentPlayground />}
-            {activeTab === 'travel-time' && <TravelTimeExplorer />}
             {activeTab === 'studio' && <FleetDataStudio />}
             {activeTab === 'diagnostics' && <Diagnostics />}
           </main>
