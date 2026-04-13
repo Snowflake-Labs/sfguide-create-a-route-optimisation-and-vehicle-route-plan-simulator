@@ -30,7 +30,8 @@ ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"s
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM spec='services/openrouteservice/openrouteservice.yaml'
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice
+   SPECIFICATION_FILE = 'openrouteservice.yaml'
    MIN_INSTANCES = 3
    MAX_INSTANCES = 3
    AUTO_SUSPEND_SECS = 14400
@@ -38,7 +39,8 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.vroom_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM spec='services/vroom/vroom-service.yaml'
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom
+   SPECIFICATION_FILE = 'vroom-service.yaml'
    MIN_INSTANCES = 1
    MAX_INSTANCES = 1
    AUTO_SUSPEND_SECS = 14400
@@ -46,19 +48,23 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.vroom_service
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM spec='services/gateway/routing-gateway-service.yaml'
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway
+   SPECIFICATION_FILE = 'routing-gateway-service.yaml'
    MIN_INSTANCES = 3
    MAX_INSTANCES = 3
    AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
+-- ors_control_app has public endpoints, which are incompatible with AUTO_SUSPEND_SECS.
+-- It also requires QUERY_WAREHOUSE and EXTERNAL_ACCESS_INTEGRATIONS, which must appear
+-- before the FROM SPECIFICATION clause.
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_control_app
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM SPECIFICATION_FILE='services/ors_control_app/ors_control_app_service.yaml'
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app
+   SPECIFICATION_FILE = 'ors_control_app_service.yaml'
    MIN_INSTANCES = 1
    MAX_INSTANCES = 1
-   AUTO_SUSPEND_SECS = 14400
-   QUERY WAREHOUSE = ROUTING_ANALYTICS
+   QUERY_WAREHOUSE = ROUTING_ANALYTICS
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI, ORS_CARTO_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
 

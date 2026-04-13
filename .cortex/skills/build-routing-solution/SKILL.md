@@ -112,13 +112,13 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
    
-   CREATE DATABASE IF NOT EXISTS OPENROUTSERVICE_APP
+   CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
-   CREATE SCHEMA IF NOT EXISTS OPENROUTSERVICE_APP.CORE
+   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.CORE
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
-   CREATE SCHEMA IF NOT EXISTS OPENROUTSERVICE_APP.TRAVEL_MATRIX
+   CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
 
    CREATE IMAGE_REPOSITORY IF NOT EXISTS IMAGE_REPOSITORY
@@ -154,7 +154,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
-1. **Upload** files to stage (paths are relative to the **repo root**). Run as a single chained command:
+1. **Upload** map, config, and script files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
@@ -164,7 +164,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
 
-**Output:** Configuration files uploaded to Snowflake stage
+2. **Upload** SPCS service specification YAML files (required by `01_core_infra.sql` CREATE SERVICE statements):
+   ```bash
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite
+   ```
+
+**Output:** Configuration files and service specs uploaded to Snowflake stage
 
 **Next:** Proceed to Step 5
 
@@ -206,6 +218,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE 
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
+
+   > **Prerequisite:** Step 4 must have uploaded service YAML specs to `@ORS_SPCS_STAGE/services/`. Module `01_core_infra.sql` creates services using `FROM @stage SPECIFICATION_FILE=` which will fail if the spec files are missing.
 
    ```bash
    snow sql -f "app/modules/01_core_infra.sql"       -c <connection> && \
