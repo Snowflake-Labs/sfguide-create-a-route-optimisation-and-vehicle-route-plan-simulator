@@ -1,0 +1,20 @@
+skills_root: ..
+eval_types:
+  - trigger
+  - quality
+  - xref
+  - sql
+
+scoring:
+  quality_pass_threshold: 10  # out of 13
+  trigger_match_min_pct: 80  # % of should_trigger prompts that match
+
+vague_phrases:
+  - "validate things properly"
+  - "ensure everything works"
+  - "check things"
+  - "do as needed"
+  - "handle appropriately"
+
+description_max_chars: 1024
+body_max_words: 5000

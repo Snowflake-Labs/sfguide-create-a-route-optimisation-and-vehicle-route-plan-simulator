@@ -1,1 +1,0 @@
-/Users/ppaczewski/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator/oss-build-routing-solution-in-snowflake/Native_app/app/README.md

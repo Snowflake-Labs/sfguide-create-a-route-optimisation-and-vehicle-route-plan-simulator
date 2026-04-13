@@ -1,0 +1,182 @@
+/*
+ * seed-data.sql — Fleet Intelligence Taxis
+ * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables.
+ * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
+ * No S3 external stages — all data comes from UNIFIED.
+ */
+
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+--------------------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+MERGE INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG tgt
+USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION)
+    VALUES (src.VEHICLE_TYPE, src.REGION);
+
+--------------------------------------------------------------------
+-- VW_DRIVER_LOCATIONS (telemetry projection)
+--------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    t.VEHICLE_ID AS DRIVER_ID,
+    t.TRIP_ID,
+    t.TS AS CURR_TIME,
+    t.TS AS POINT_TIME,
+    t.LONGITUDE AS LON,
+    t.LATITUDE AS LAT,
+    t.SPEED_KMH AS KMH,
+    CASE t.STATUS
+        WHEN 'MOVING' THEN 'driving'
+        WHEN 'DWELL_ORIGIN' THEN 'pickup'
+        WHEN 'DWELL_DESTINATION' THEN 'dropoff'
+        WHEN 'IDLE' THEN 'idle'
+        ELSE LOWER(t.STATUS)
+    END AS DRIVER_STATE,
+    t.POINT_INDEX,
+    t.REGION,
+    t.ODOMETER_KM
+FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
+WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG LIMIT 1)
+  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG LIMIT 1)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
+
+--------------------------------------------------------------------
+-- VW_TRIP_SUMMARY (trip projection)
+--------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH cfg AS (SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG LIMIT 1),
+trip_speeds AS (
+    SELECT TRIP_ID, MAX(SPEED_KMH) AS MAX_KMH
+    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
+    WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM cfg)
+    GROUP BY TRIP_ID
+),
+dedup_pois AS (
+    SELECT LOCATION_ID, NAME, CATEGORY, LAT, LNG,
+           ROW_NUMBER() OVER (PARTITION BY LOCATION_ID ORDER BY NAME) AS RN
+    FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+),
+dedup_fleet AS (
+    SELECT VEHICLE_ID, SHIFT_TYPE,
+           ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+    FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+    WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM cfg)
+)
+SELECT
+    t.VEHICLE_ID AS DRIVER_ID,
+    t.TRIP_ID,
+    t.TRIP_START AS TRIP_START_TIME,
+    t.TRIP_END AS TRIP_END_TIME,
+    COALESCE(po.NAME, 'Unknown') AS ORIGIN_ADDRESS,
+    COALESCE(pd.NAME, 'Unknown') AS DESTINATION_ADDRESS,
+    t.DURATION_MINUTES * 60 AS ROUTE_DURATION_SECS,
+    t.DISTANCE_KM * 1000 AS ROUTE_DISTANCE_METERS,
+    t.ROUTE_GEOG AS GEOMETRY,
+    t.ORIGIN,
+    t.DESTINATION,
+    CASE f.SHIFT_TYPE
+        WHEN '6-14' THEN 'Morning'
+        WHEN '14-22' THEN 'Afternoon'
+        WHEN '22-6' THEN 'Night'
+        ELSE f.SHIFT_TYPE
+    END AS SHIFT_TYPE,
+    t.REGION,
+    CASE WHEN t.DURATION_MINUTES > 0
+         THEN t.DISTANCE_KM / (t.DURATION_MINUTES / 60)
+         ELSE 0 END AS AVERAGE_KMH,
+    ts.MAX_KMH
+FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+LEFT JOIN dedup_pois po ON t.ORIGIN_POI_ID = po.LOCATION_ID AND po.RN = 1
+LEFT JOIN dedup_pois pd ON t.DESTINATION_POI_ID = pd.LOCATION_ID AND pd.RN = 1
+LEFT JOIN dedup_fleet f ON t.VEHICLE_ID = f.VEHICLE_ID AND f.RN = 1
+LEFT JOIN trip_speeds ts ON t.TRIP_ID = ts.TRIP_ID
+WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM cfg)
+  AND t.REGION = (SELECT REGION FROM cfg);
+
+--------------------------------------------------------------------
+-- WRAPPER VIEWS (React UI compatibility)
+--------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT * FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    DRIVER_ID, TRIP_ID,
+    NULL::TIMESTAMP_NTZ AS PICKUP_TIME,
+    NULL::TIMESTAMP_NTZ AS DROPOFF_TIME,
+    NULL::VARIANT AS PICKUP_LOCATION,
+    NULL::VARIANT AS DROPOFF_LOCATION,
+    NULL::VARIANT AS ROUTE,
+    ST_MAKEPOINT(LON, LAT) AS POINT_GEOM,
+    LON, LAT, CURR_TIME, CURR_TIME AS POINT_TIME,
+    POINT_INDEX, DRIVER_STATE, KMH, REGION
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT TRIP_ID, ORIGIN_ADDRESS || ' -> ' || DESTINATION_ADDRESS AS TRIP_NAME
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT DRIVER_ID, TRIP_ID, GEOMETRY, ORIGIN, DESTINATION,
+       ORIGIN_ADDRESS, DESTINATION_ADDRESS,
+       TRIP_START_TIME AS PICKUP_TIME, TRIP_END_TIME AS DROPOFF_TIME
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT TRIP_ID, DRIVER_ID, ORIGIN_ADDRESS, ORIGIN_ADDRESS AS ORIGIN_STREET,
+       DESTINATION_ADDRESS, DESTINATION_ADDRESS AS DESTINATION_STREET,
+       TRIP_START_TIME AS PICKUP_TIME, TRIP_END_TIME AS DROPOFF_TIME,
+       ORIGIN, DESTINATION, GEOMETRY, ROUTE_DISTANCE_METERS AS DISTANCE_METERS,
+       SHIFT_TYPE,
+       OBJECT_CONSTRUCT('features', ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('properties',
+           OBJECT_CONSTRUCT('summary', OBJECT_CONSTRUCT(
+               'distance', ROUTE_DISTANCE_METERS, 'duration', ROUTE_DURATION_SECS
+           ))))) AS ROUTE
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
+
+--------------------------------------------------------------------
+-- VALIDATION
+--------------------------------------------------------------------
+SELECT 'CONFIG' AS TBL, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG
+UNION ALL SELECT 'VW_DRIVER_LOCATIONS', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS
+UNION ALL SELECT 'VW_TRIP_SUMMARY', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
+UNION ALL SELECT 'TRIP_SUMMARY', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY
+UNION ALL SELECT 'DRIVER_LOCATIONS_V', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
+UNION ALL SELECT 'ROUTE_NAMES', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
+UNION ALL SELECT 'TRIP_ROUTE_PLAN', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
+UNION ALL SELECT 'TRIPS_ASSIGNED_TO_DRIVERS', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS;
+
+--------------------------------------------------------------------
+-- GRANT ACCESS TO NATIVE APP
+--------------------------------------------------------------------
+GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;

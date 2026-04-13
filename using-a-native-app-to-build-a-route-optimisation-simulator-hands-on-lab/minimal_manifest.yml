@@ -1,7 +1,0 @@
-manifest_version: 1
-
-artifacts:
-  setup_script: setup.sql
-
-configuration:
-  log_level: INFO

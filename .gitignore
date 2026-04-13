@@ -27,7 +27,19 @@ env/
 *.swo
 .DS_Store
 
+# Node / React
+node_modules/
+package-lock.json
+tsconfig.tsbuildinfo
+
 # Distribution
 dist/
 build/
 *.egg-info/
+
+# Native app build output
+build-routing-solution/Native_app/output/
+**/native_app/output/
+
+# Cortex Code session artifacts
+.snowflake/cortex/plans/

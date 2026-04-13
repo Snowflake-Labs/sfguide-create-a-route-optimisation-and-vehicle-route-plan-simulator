@@ -1,0 +1,50 @@
+# This is a manifest.yml file, a required component of creating a Snowflake Native App.
+# This file defines properties required by the application package, including the location of the setup script and version definitions.
+# Refer to https://docs.snowflake.com/en/developer-guide/native-apps/creating-manifest for a detailed understanding of this file.
+
+manifest_version: 1
+
+artifacts:
+  setup_script: setup_script.sql
+  readme: README.md
+  container_services:
+    images:
+      - /openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0
+      - /openrouteservice_setup/public/image_repository/vroom-docker:v1.0.1
+      - /openrouteservice_setup/public/image_repository/routing_reverse_proxy:v1.0.0
+      - /openrouteservice_setup/public/image_repository/downloader:v0.0.3
+      - /openrouteservice_setup/public/image_repository/ors_control_app:v1.0.98
+  default_web_endpoint:
+    service: core.ors_control_app
+    endpoint: ors-control-ui
+references:
+  - external_access_integration_ref:
+      label: "External access for OSM map downloads"
+      description: "Required to download OpenStreetMap PBF files for routing graph construction"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: true
+  - external_access_carto_ref:
+      label: "External access for map basemap tiles"
+      description: "Required for the control app to load CARTO basemap tiles in the web UI"
+      privileges:
+        - USAGE
+      object_type: EXTERNAL ACCESS INTEGRATION
+      register_callback: core.register_single_callback
+      configuration_callback: core.get_config_for_ref
+      required_at_setup: true
+lifecycle_callbacks:
+  version_initializer: core.version_init
+configuration:
+  log_level: DEBUG
+  trace_level: ALWAYS
+  metric_level: ALL
+  grant_callback: core.grant_callback
+privileges:
+- CREATE COMPUTE POOL:
+    description: "Permission to create compute pools for running services"
+- BIND SERVICE ENDPOINT:
+    description: "Permission to expose public endpoints for SPCS services"
