@@ -162,7 +162,7 @@ export default function ServiceManager() {
       </table>
 
       {orsReadiness && Object.entries(orsReadiness).some(([, r]) => !r.service_ready) && (
-        <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#ffd54f' }}>
+        <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
           <strong>Graphs Building:</strong> ORS is loading routing graphs. Functions will return errors until all profiles are ready. This typically takes 3-10 minutes.
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             {Object.entries(orsReadiness).filter(([, r]) => !r.service_ready).map(([region, r]) => (
@@ -172,7 +172,7 @@ export default function ServiceManager() {
                 {!r.error && r.graphs && r.graphs.length > 0 && (
                   <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none' }}>
                     {r.graphs.map(g => (
-                      <li key={g.profile} style={{ color: g.ready ? '#66bb6a' : '#ffd54f' }}>
+                      <li key={g.profile} style={{ color: g.ready ? '#66bb6a' : '#b38600' }}>
                         {g.ready ? '\u2713' : '\u23F3'} {g.profile}
                       </li>
                     ))}
