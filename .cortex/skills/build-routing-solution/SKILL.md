@@ -164,11 +164,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Goal:** Build 5 container images and push to Snowflake image repository
 
+**Before building:** Read `native_app/image-versions.env` (the single source of truth for all image tags). Use these values for all `-t` flags. The `build-images.md` code blocks show the commands but always cross-check tags against `image-versions.env`.
+
 Follow the full build instructions in `references/build-images.md`. Summary:
 
-1. Authenticate with SPCS image registry (Docker or Podman)
-2. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
-3. Build and push all 5 images: openrouteservice (v9.0.0), downloader (v0.0.3), routing_reverse_proxy (v1.0.0), vroom-docker (v1.0.1), ors_control_app (v1.0.95)
+1. Read image tags: `source native_app/image-versions.env`
+2. Authenticate with SPCS image registry (Docker or Podman)
+3. Get repository URL: `snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>`
+4. Build and push all 5 images using tags from `image-versions.env`: openrouteservice, downloader, routing_reverse_proxy, vroom-docker, ors_control_app
 
 **Expected Duration:** 10-20 minutes (first push; ~5 minutes with cached layers)
 
@@ -192,7 +195,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```
 
 2. If the script reports MISMATCH:
-   - Update the stale file(s) to match the version tags used in the build step
+   - Update the stale file(s) to match the tags in `native_app/image-versions.env` (the source of truth)
    - Re-run the script to confirm all versions are consistent
 
 3. If no script available, manually verify with grep:

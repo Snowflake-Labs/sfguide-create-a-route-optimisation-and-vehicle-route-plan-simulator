@@ -14,6 +14,8 @@ MANIFEST="$SCRIPT_DIR/../../app/manifest.yml"
 BUILD_MD="$SCRIPT_DIR/../../../references/build-images.md"
 SKILL_MD="$SCRIPT_DIR/../../../SKILL.md"
 README_MD="$SCRIPT_DIR/../../../../../../README.md"
+GUIDELINES_MD="$SCRIPT_DIR/../../../references/snowflake-scripting-guidelines.md"
+VERSION_FILE="$SCRIPT_DIR/../../image-versions.env"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,7 +24,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-CURRENT_TAG=$(sed -n 's/.*ors_control_app:v\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' "$YAML")
+source "$VERSION_FILE"
+CURRENT_TAG="${ORS_CONTROL_APP_TAG#v}"
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_TAG"
 PATCH=$((PATCH + 1))
 NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
@@ -47,15 +50,18 @@ snow spcs image-registry login -c "$CONNECTION"
 docker push "${FULL_IMAGE}"
 
 echo "--- [4/7] Update version in all tracked files ---"
+sed -i.bak "s|ORS_CONTROL_APP_TAG=v${CURRENT_TAG}|ORS_CONTROL_APP_TAG=${NEW_TAG}|" "$VERSION_FILE" && rm -f "${VERSION_FILE}.bak"
 sed -i.bak "s|${IMAGE_NAME}:v${CURRENT_TAG}|${IMAGE_NAME}:${NEW_TAG}|" "$YAML" && rm -f "${YAML}.bak"
 sed -i.bak "s|APP_VERSION: \"${CURRENT_TAG}\"|APP_VERSION: \"${VERSION_NUM}\"|" "$YAML" && rm -f "${YAML}.bak"
-for f in "$MANIFEST" "$BUILD_MD" "$SKILL_MD" "$README_MD"; do
+for f in "$MANIFEST" "$BUILD_MD" "$SKILL_MD" "$README_MD" "$GUIDELINES_MD"; do
   [ -f "$f" ] && sed -i.bak "s|${IMAGE_NAME}:v${CURRENT_TAG}|${IMAGE_NAME}:${NEW_TAG}|g" "$f" && rm -f "${f}.bak"
 done
 for f in "$BUILD_MD" "$SKILL_MD"; do
   [ -f "$f" ] && sed -i.bak "s|${IMAGE_NAME} (v${CURRENT_TAG})|${IMAGE_NAME} (${NEW_TAG})|g" "$f" && rm -f "${f}.bak"
 done
-[ -f "$BUILD_MD" ] && sed -i.bak "s/${IMAGE_NAME} | v${CURRENT_TAG} /${IMAGE_NAME} | ${NEW_TAG} /g" "$BUILD_MD" && rm -f "${BUILD_MD}.bak"
+for f in "$BUILD_MD" "$GUIDELINES_MD"; do
+  [ -f "$f" ] && sed -i.bak "s/${IMAGE_NAME} | v${CURRENT_TAG} /${IMAGE_NAME} | ${NEW_TAG} /g" "$f" && rm -f "${f}.bak"
+done
 
 echo "--- [5/7] Upload YAML + manifest to package stage (prevents version_init revert) ---"
 snow sql -c "$CONNECTION" -q "PUT 'file://${YAML}' ${PKG_STAGE}/services/ors_control_app/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;"
