@@ -70,12 +70,12 @@ When auditing an existing skill, check these in order:
 
 Good example:
 ```
-description: "Deploy the Route Deviation Analysis demo: load synthetic truck
-telemetry from S3, populate ORS route cache, run 5-step ETL pipeline, and
-deploy Streamlit dashboards. Use when: setting up route deviation demo, detour
-analytics, fleet deviation analysis. Do NOT use for: general fleet tracking,
-real-time GPS monitoring, or non-deviation routing tasks. Triggers: deploy
-route deviation, deploy detour analytics, setup deviation analysis."
+description: "Deploy the Route Deviation Analysis demo: create projection views
+from SYNTHETIC_DATASETS.UNIFIED, run 3-step ETL pipeline, and register React
+dashboard pages. Use when: setting up route deviation demo, detour analytics,
+fleet deviation analysis. Do NOT use for: general fleet tracking, real-time GPS
+monitoring, or non-deviation routing tasks. Triggers: deploy route deviation,
+deploy detour analytics, setup deviation analysis, route deviation demo."
 ```
 
 Bad examples:

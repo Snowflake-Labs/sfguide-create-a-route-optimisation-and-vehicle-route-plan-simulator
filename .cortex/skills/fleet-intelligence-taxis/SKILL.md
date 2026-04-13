@@ -92,11 +92,11 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-taxis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `fleet-intelligence-taxis`.
 
-## Step 0: Create Projection Views (Recommended)
+## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8). No ORS calls or S3 stages needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8). No ORS calls needed.
 
 ### Quick check
 
@@ -242,6 +242,25 @@ The React Demo Dashboard pages query these exact tables and columns. If the pipe
 | DRIVER_ID | VARCHAR | HeatMap (driver dots) |
 
 ---
+
+## Examples
+
+### Example 1: Quick deploy with seed data
+User says: "Set up the taxi fleet dashboard"
+Actions:
+1. Run `references/seed-data.sql` to create projection views over UNIFIED tables
+2. Verify TRIP_SUMMARY view returns rows
+Result: Fleet dashboard shows San Francisco e-bike courier data via projection views (~2 min)
+
+### Example 2: Full generation for New York
+User says: "Generate taxi data for New York with 80 drivers"
+Actions:
+1. Verify ORS is configured for New York (Step 2)
+2. Create database/schema (Step 3), install Overture Maps (Step 3b)
+3. Create base locations from Overture POIs (Step 4), drivers (Step 5), trips (Step 6)
+4. Generate ORS routes (Step 7), interpolate locations (Step 8)
+5. Create analytics views (Step 9)
+Result: 80 taxi drivers with ~18,000 realistic GPS points across New York (~8 min)
 
 ## Troubleshooting
 

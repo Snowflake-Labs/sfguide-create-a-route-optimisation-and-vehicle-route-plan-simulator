@@ -45,7 +45,7 @@ CRITICAL: Verify these before starting:
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `route-deviation_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `route-deviation`.
 
 ## Execution Rules
 
@@ -54,9 +54,9 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 3. **Verify row counts after each CTAS.** Catch silent failures early.
 4. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation",...}'`. See `references/sql-pipeline.md` for tagged SQL.
 
-## Step 0: Create Projection Views and Run ETL (Recommended)
+## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), then runs ETL to produce analysis tables. No S3 stages or Data Studio generation needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), then runs ETL to produce analysis tables. No Data Studio generation needed.
 
 ### Quick check
 
@@ -164,6 +164,23 @@ The React ORS Control Center pages query these exact tables and columns. If the 
 | STATUS | VARCHAR | RouteInspector |
 
 ---
+
+## Examples
+
+### Example 1: Fresh deployment with seed data
+User says: "Deploy route deviation analysis"
+Actions:
+1. Run `references/seed-data.sql` to create projection views and ETL tables
+2. Verify TRIP_DEVIATION_ANALYSIS has rows
+Result: Route deviation dashboard with deviation analysis, driver summaries, and daily trends (~5 min)
+
+### Example 2: Switch vehicle type after deployment
+User says: "Show deviation analysis for trucks instead of e-bikes"
+Actions:
+1. Update CONFIG table: `UPDATE FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG SET VEHICLE_TYPE='hgv';`
+2. Re-run ETL Steps 4.1-4.3 from `references/sql-pipeline.md`
+3. Verify TRIP_DEVIATION_ANALYSIS reflects HGV data
+Result: Dashboard shows truck fleet deviation metrics
 
 ## Common Scenarios
 

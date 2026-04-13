@@ -75,6 +75,10 @@ Key rules:
 - Deployment skills must include a `## Required Privileges` table (no ACCOUNTADMIN assumptions)
 - Deployment skills must include a `## Cleanup` section with DROP statements
 
+## Error Logging
+
+When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `<skill-name>_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
 ## Creating a New Skill
 
 1. Create folder: `.cortex/skills/my-new-skill/`

@@ -63,9 +63,9 @@ The San Francisco baseline is loaded by `build-routing-solution` Step 8 into UNI
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `fleet-intelligence-food-delivery_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `fleet-intelligence-food-delivery`.
 
-## Step 0: Generate Data via Data Studio (Recommended)
+## Quick Start
 
 The primary data path is **Data Studio** in the ORS Control Panel:
 1. Open the ORS Control Panel > Data Studio page
@@ -109,9 +109,19 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-int
 
 Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_INTELLIGENCE_FOOD_DELIVERY` schema.
 
-### Step 10: Create Projection Views
+### Step 3: Create Projection Views
 
 Run [`references/sql-projection-views.sql`](references/sql-projection-views.sql) to create CONFIG table + projection views from `SYNTHETIC_DATASETS.UNIFIED`. Creates 3 objects: 1 config table + 2 React views (DELIVERIES, RESTAURANTS_ENRICHED).
+
+### Step 4: Verify
+
+```sql
+SELECT 'CONFIG' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG
+UNION ALL SELECT 'DELIVERIES', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES
+UNION ALL SELECT 'RESTAURANTS_ENRICHED', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED;
+```
+
+Expected: CONFIG=1, DELIVERIES and RESTAURANTS_ENRICHED > 0 (row counts depend on Data Studio generation or seed data).
 
 ---
 
@@ -120,7 +130,7 @@ Run [`references/sql-projection-views.sql`](references/sql-projection-views.sql)
 | Issue | Solution |
 |-------|----------|
 | No data in projection views | Run Data Studio generation with `ebike` profile for your region |
-| CONFIG table missing | Run Step 10 to create CONFIG + projection views |
+| CONFIG table missing | Run Step 3 to create CONFIG + projection views |
 
 ## Cleanup
 
@@ -131,7 +141,7 @@ To remove all objects created by this skill:
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG;
--- Legacy objects (from deprecated Steps 3-9 / S3 seed data / Streamlit)
+-- Legacy objects (from deprecated Steps 3-9)
 DROP STREAMLIT IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.SWIFTBITE_DELIVERY_DASHBOARD;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_SUMMARY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_PLAN;

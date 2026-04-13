@@ -74,11 +74,11 @@ DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `dwell-analysis_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `dwell-analysis`.
 
-## Step 0: Create Projection Views and Seed Tables (Recommended)
+## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), computes GEOFENCE_POLYGONS, and inserts SLA_THRESHOLDS. No S3 stages needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8), computes GEOFENCE_POLYGONS, and inserts SLA_THRESHOLDS.
 
 ### Quick check
 
@@ -156,6 +156,24 @@ Default thresholds in SLA_THRESHOLDS table:
 > **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min).
 
 Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS will refresh automatically.
+
+## Examples
+
+### Example 1: Quick deploy with seed data
+User says: "Deploy dwell analysis"
+Actions:
+1. Run `references/seed-data.sql` to create projection views, geofences, and SLA thresholds
+2. Run `references/sql-pipeline.sql` Steps 5-13 to create Dynamic Tables
+3. Verify DT_SLA_ALERTS and DT_DAILY_TRENDS have rows
+Result: 12-step Dynamic Table pipeline with SLA alerts, congestion heatmaps, and facility utilization (~10 min)
+
+### Example 2: Deploy with Data Studio data
+User says: "Set up dwell analysis for London truck fleet"
+Actions:
+1. Generate truck fleet data via Data Studio for London region
+2. Update CONFIG table with `VEHICLE_TYPE='hgv'`, `REGION='London'`
+3. Run full pipeline from Step 1
+Result: Dwell analysis pipeline processing London HGV telemetry with region-specific geofences
 
 ## Stopping Points
 

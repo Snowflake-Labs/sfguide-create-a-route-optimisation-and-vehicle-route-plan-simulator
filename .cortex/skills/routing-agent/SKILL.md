@@ -45,24 +45,19 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-agent_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `routing-agent`.
 
-## Step 0: Load San Francisco Baseline (Recommended)
+## Execution Rules
 
-No seed data needed. The routing agent consists of stored procedures and a Cortex Agent definition — there are no pre-computed data tables to load.
+1. One statement per `snowflake_sql_execute` tool call.
+2. Always use fully qualified object names.
+3. Never use `SET` session variables.
+4. Verify row counts after each CTAS.
+5. All CREATE statements must include a COMMENT tracking tag.
 
-### Load from S3
+## Quick Start
 
-The routing agent has no seed data — it consists of stored procedures and a Cortex Agent definition. Run the DDL from `references/agent-definitions.md` to create all objects.
-
-### Generate data for other regions (optional)
-
-To generate data for a region other than San Francisco, use the full pipeline starting at Step 2.
-
-Or use the centralized provisioner:
-```sql
-CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('routing-agent'));
-```
+No seed data or pre-computed tables required. The routing agent consists of stored procedures and a Cortex Agent definition. Run the SQL from `references/agent-definitions.md` to create all objects, then proceed to Step 1.
 
 ## Workflow
 
@@ -201,6 +196,26 @@ SELECT CURRENT_ORGANIZATION_NAME() AS org_name, CURRENT_ACCOUNT_NAME() AS accoun
 
 Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
 
+
+## Examples
+
+### Example 1: Deploy routing agent for San Francisco
+User says: "Create a routing agent"
+Actions:
+1. Verify ORS functions and services (Step 2)
+2. Create database/schema (Step 3)
+3. Create TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION procedures (Steps 4-6)
+4. Create Cortex Agent (Step 7)
+5. Test with: "Driving directions from Union Square to Fisherman's Wharf"
+Result: Routing agent accessible via Snowflake Intelligence UI
+
+### Example 2: Test agent with different region
+User says: "Test the routing agent with London locations"
+Actions:
+1. Verify ORS is configured for London (`DESCRIBE SERVICE` check)
+2. Test: "Driving directions from Tower Bridge to Buckingham Palace"
+3. Test: "Areas reachable within 15 min by car from King's Cross"
+Result: Agent returns London-specific routing results (no redeployment needed -- agent is region-agnostic)
 
 ## Stopping Points
 

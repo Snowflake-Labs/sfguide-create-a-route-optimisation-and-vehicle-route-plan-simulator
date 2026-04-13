@@ -36,7 +36,7 @@ This skill routes customization requests to the correct subskills based on what 
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `routing-customization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `routing-customization`.
 
 ## Workflow
 
@@ -193,6 +193,35 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
    ```
 
 **Output:** Function Tester redeployed, now showing addresses for the new region
+
+## Examples
+
+### Example 1: Change location from San Francisco to Paris
+User says: "Change the map to Paris"
+Actions:
+1. Read current ORS configuration (Step 1)
+2. Route to location subskill (Step 3)
+3. Download Paris city map from BBBike, upload to stage
+4. Update routing graphs (Step 4), MAP_CONFIG (Step 5), redeploy Function Tester (Step 6)
+Result: ORS serves routes for Paris, Function Tester shows Paris addresses
+
+### Example 2: Enable additional routing profiles
+User says: "Add walking and cycling-regular profiles"
+Actions:
+1. Read current ORS configuration (Step 1)
+2. Route to routing-profiles subskill (Step 3)
+3. Call WRITE_ORS_CONFIG with updated profile list
+4. Rebuild routing graphs (Step 4)
+Result: ORS serves routes for walking, cycling-regular, and previously enabled profiles
+
+### Example 3: Change both location and profiles
+User says: "Switch to London with driving-car and foot-walking only"
+Actions:
+1. Read current ORS configuration (Step 1)
+2. User selects both Location and Routing Profiles (Step 2)
+3. Run location subskill first, then routing-profiles subskill (Step 3)
+4. Rebuild graphs, update MAP_CONFIG, redeploy Function Tester (Steps 4-6)
+Result: ORS serves London routes for driving-car and foot-walking
 
 ## Stopping Points
 

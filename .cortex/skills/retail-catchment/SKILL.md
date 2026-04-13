@@ -45,7 +45,15 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `retail-catchment_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `retail-catchment`.
+
+## Execution Rules
+
+1. One statement per `snowflake_sql_execute` tool call.
+2. Always use fully qualified object names.
+3. Never use `SET` session variables.
+4. Verify row counts after each CTAS.
+5. All CREATE statements must include a COMMENT tracking tag.
 
 ## Workflow
 

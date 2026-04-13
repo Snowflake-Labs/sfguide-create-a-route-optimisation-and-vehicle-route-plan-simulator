@@ -47,7 +47,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 ## Error Logging
 
-When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `route-optimization_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `route-optimization`.
 
 ## Execution Rules
 
@@ -60,11 +60,11 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ### Step 1: Set Query Tag
 
-**Pre-check: If data already exists, skip to Step 7.** Run:
+**Pre-check: If data already exists, skip to Step 6.** Run:
 ```sql
 SELECT COUNT(*) AS cnt FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;
 ```
-If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (Claude model check) or Step 8 (AISQL notebook) as needed.
+If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Claude model check) or Step 7 (AISQL notebook) as needed.
 
 **Goal:** Set session query tag for attribution tracking.
 
@@ -123,13 +123,13 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 7 (Claude model ch
 
 **Output:** Standing data populated for `<REGION_NAME>`.
 
-### Step 7: Check Claude Model
+### Step 6: Check Claude Model
 
 **Goal:** Verify latest Claude Sonnet model is available in Snowflake Cortex.
 
 > See `references/notebook-deployment.md` (Step 7) for the test SQL and update instructions.
 
-### Step 8: Deploy AISQL Notebook
+### Step 7: Deploy AISQL Notebook
 
 **Goal:** Deploy the AISQL exploration notebook, customized for `<NOTEBOOK_CITY>`.
 
@@ -188,7 +188,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 
 ---
 
-### Step 10: Verify
+### Step 8: Verify
 
 **Goal:** Confirm tables exist and Demo Dashboard shows the page.
 
@@ -202,8 +202,8 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 - Step 3: Confirm detected region, city, and industry choices with user
 - Step 4: Verify Marketplace dataset accessible
 - Step 5: Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated
-- Step 7: Verify Claude model is available
-- Step 9: Verify Demo Dashboard shows the Route Optimization page
+- Step 6: Verify Claude model is available
+- Step 8: Verify Demo Dashboard shows the Route Optimization page
 
 ## Troubleshooting
 
@@ -216,8 +216,8 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | Services not starting | SUSPENDED or FAILED status | `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES()`; check compute pool capacity |
 | Dashboard shows no data | Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated |
 | Stage upload fails | Permission error | Verify WRITE privilege on stage and correct `--connection` |
-| Wrong POI region | PLACES has wrong city data | Fix geohash in Step 6, re-run notebook |
-| Custom industries missing | Dropdown shows old industries | Verify LOOKUP table; re-run from Step 6 |
+| Wrong POI region | PLACES has wrong city data | Fix geohash in Step 5, re-run notebook |
+| Custom industries missing | Dropdown shows old industries | Verify LOOKUP table; re-run from Step 5 |
 
 ## Recovery
 
