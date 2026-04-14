@@ -49,6 +49,12 @@ build-images.md but not in manifest.yml (or vice versa).
 **Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`
 **Solution:** Build the React app locally (native ARM) first, then use a runtime-only Dockerfile that copies the pre-built `dist/` and `dist-server/` directories. See Step 5 in SKILL.md for the exact commands. Must temporarily rename `.dockerignore` since it excludes `dist/`.
 
+## Platform Mismatch Warning on ARM Mac
+
+**Symptom:** `WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8)`
+**Cause:** SPCS requires linux/amd64 images. Building on ARM Mac via `--platform linux/amd64` triggers this warning.
+**Resolution:** Ignore. The images work correctly in SPCS.
+
 ## Control App Shows ERROR / Unhealthy / 0 Services
 
 **Symptom:** React UI shows ERROR for compute pool, Unhealthy for ORS health, 0 running services

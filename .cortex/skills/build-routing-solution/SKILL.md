@@ -224,6 +224,10 @@ All 5 images must appear with correct tags. If any are missing, re-run `docker p
    cd native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
    ```
 
+   > **Expected behavior:** After "Creating new application object", the CLI may appear stuck with no output for 2-3 minutes while the CREATE APPLICATION query executes. This is normal — the query is running but output is not flushed. If concerned, verify progress in a separate session: `SELECT QUERY_TEXT, EXECUTION_STATUS FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE QUERY_TEXT ILIKE '%APPLICATION%' ORDER BY START_TIME DESC LIMIT 1;`
+
+   > **Expected warnings:** The CLI may emit warnings about `REGISTER_SINGLE_CALLBACK`, `GET_CONFIG_FOR_REF`, or `GRANT_CALLBACK` procedures not existing. These are expected — the callbacks are registered during Step 7 (Activate App). Ignore these warnings.
+
 2. **Grant warehouse access to the app** (required for the React control app SQL API):
    ```sql
    GRANT USAGE ON WAREHOUSE ROUTING_ANALYTICS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;

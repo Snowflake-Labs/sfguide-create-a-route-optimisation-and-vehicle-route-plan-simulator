@@ -31,6 +31,8 @@ Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workfl
 > **Agent note:** `$CONTAINER_CMD` does not persist across separate bash calls. Prefix each command
 > with `CONTAINER_CMD=podman` (or `docker`) inline, or chain all commands with `&&` in one call.
 
+> **ARM Mac users:** You will see `WARNING: The requested image's platform (linux/amd64) does not match the detected host platform` during builds and when running images locally. This is expected — SPCS requires linux/amd64 images. The warning does not affect the deployed containers.
+
 ```bash
 # openrouteservice image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
@@ -57,6 +59,10 @@ $CONTAINER_CMD build --rm --platform linux/amd64 \
 $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
 
 # ors control app (React management UI)
+# IMPORTANT: Unlike the other 4 images, ors_control_app requires a local npm build
+# BEFORE running docker build. Run npm install/build first, then use Dockerfile.runtime
+# (not the standard Dockerfile). This is because the multi-stage Dockerfile fails on
+# ARM Macs due to esbuild architecture issues.
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
 # Build the React app and server locally first, then use the runtime-only Dockerfile:
 cd native_app/services/ors_control_app
