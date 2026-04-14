@@ -57,7 +57,7 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 ## Quick Start
 
-No seed data or pre-computed tables required. The routing agent consists of stored procedures and a Cortex Agent definition. Run the SQL from `references/agent-definitions.md` to create all objects, then proceed to Step 1.
+No seed data or pre-computed tables required. The routing agent consists of stored procedures and a Cortex Agent definition. Run `snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>` to create all objects.
 
 ## Workflow
 
@@ -103,51 +103,23 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-### Step 4: Create TOOL_DIRECTIONS Procedure
+### Step 4: Deploy All Procedures and Agent
 
-Wraps ORS DIRECTIONS with AI geocoding (claude-sonnet-4-5) so users can describe locations in natural language. Returns distance_km, duration_mins, segments, and geometry on success; structured error on failure.
+**Goal:** Create all 3 tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION) and the Cortex Agent in a single step.
 
-```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(...)
--- Full definition: see references/agent-definitions.md
+```bash
+snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>
 ```
 
-> **Full SQL:** [references/agent-definitions.md § TOOL_DIRECTIONS](references/agent-definitions.md#tool_directions-procedure)
+This creates:
+- **TOOL_DIRECTIONS**: Wraps ORS DIRECTIONS with AI geocoding (claude-sonnet-4-5) for natural language location input
+- **TOOL_ISOCHRONE**: Wraps ORS ISOCHRONES with AI geocoding for reachability analysis
+- **TOOL_OPTIMIZATION**: Python procedure wrapping ORS OPTIMIZATION for multi-stop delivery routing
+- **ROUTING_AGENT**: Cortex Agent with tool bindings to all 3 procedures
 
-### Step 5: Create TOOL_ISOCHRONE Procedure
+> **Reference:** For annotated explanations of each procedure, see [references/agent-definitions.md](references/agent-definitions.md).
 
-Wraps ORS ISOCHRONES with AI geocoding. Accepts a location description and range in minutes; returns area_km2 and geometry polygon on success.
-
-```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(...)
--- Full definition: see references/agent-definitions.md
-```
-
-> **Full SQL:** [references/agent-definitions.md § TOOL_ISOCHRONE](references/agent-definitions.md#tool_isochrone-procedure)
-
-### Step 6: Create TOOL_OPTIMIZATION Procedure
-
-Python procedure wrapping ORS OPTIMIZATION. Geocodes delivery locations and depot, builds VROOM-compatible jobs/vehicles arrays, and returns optimized routes with unassigned-job detection.
-
-```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(...)
--- Full definition: see references/agent-definitions.md
-```
-
-> **Full SQL:** [references/agent-definitions.md § TOOL_OPTIMIZATION](references/agent-definitions.md#tool_optimization-procedure)
-
-### Step 7: Create the Agent
-
-Create a Cortex Agent (`ROUTING_AGENT`) with three tool bindings pointing to the procedures above.
-
-```sql
-CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
--- Full definition: see references/agent-definitions.md
-```
-
-> **Full SQL:** [references/agent-definitions.md § CREATE AGENT](references/agent-definitions.md#create-agent-specification)
-
-### Step 8: Register Agent with Snowflake Intelligence (Optional)
+### Step 5: Register Agent with Snowflake Intelligence (Optional)
 
 > **Note:** This step requires Snowflake Intelligence to be configured on the account. The agent is fully functional via direct `INVOKE_AGENT` calls without SI registration.
 
@@ -163,7 +135,7 @@ CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
    ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
    ```
 
-### Step 9: Test the Agent
+### Step 6: Test the Agent
 
 Test queries must use locations within the ORS-configured region. To determine the region:
 
@@ -186,7 +158,7 @@ Before testing, verify all services are RUNNING (see Step 2b).
 
 Use central city locations as depots.
 
-### Step 10: Open Snowflake Intelligence UI
+### Step 7: Open Snowflake Intelligence UI
 
 Get org/account names, then open the UI:
 
@@ -221,8 +193,8 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 
 - **Step 2**: Verify ORS functions exist before proceeding
 - **Step 3**: Verify database, schema, and warehouse exist
-- **Step 7**: Review agent spec before creation
-- **Step 9**: Confirm all 3 tools work correctly
+- **Step 4**: Verify deploy-agent.sql completes without errors
+- **Step 6**: Confirm all 3 tools work correctly
 
 ## Output
 

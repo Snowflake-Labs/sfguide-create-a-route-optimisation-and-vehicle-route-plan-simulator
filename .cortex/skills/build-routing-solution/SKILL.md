@@ -179,11 +179,17 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **If ARM Mac esbuild crash:** Build React app locally first, use `Dockerfile.runtime`. See `references/build-images.md` > ors_control_app section.
 
+**IMPORTANT — Verify all images after push:** Docker push output uses carriage returns that may be invisible when pushing in parallel. Always confirm all 5 images are present:
+```bash
+snow spcs image-repository list-images openrouteservice_setup.public.image_repository -c <connection>
+```
+All 5 images must appear with correct tags. If any are missing, re-run `docker push` for that image.
+
 **Next:** Proceed to Step 5b
 
 ### Step 5b: Validate Image Version Consistency (MANDATORY)
 
-**Goal:** Ensure all image version tags match across manifest.yml, service YAMLs, and build instructions
+**Goal:** Ensure all image version tags, repository paths, and volume source schemas match across manifest.yml, service YAMLs, and build instructions
 
 **CRITICAL:** This step MUST be run before `snow app run`. Skipping it risks deployment failure with `Image ... not found`.
 
@@ -217,6 +223,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```bash
    cd native_app && snow app run -c <connection> --warehouse ROUTING_ANALYTICS
    ```
+
+   > **Expected behavior:** After "Creating new application object", the CLI may appear stuck with no output for 2-3 minutes while the CREATE APPLICATION query executes. This is normal — the query is running but output is not flushed. If concerned, verify progress in a separate session: `SELECT QUERY_TEXT, EXECUTION_STATUS FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE QUERY_TEXT ILIKE '%APPLICATION%' ORDER BY START_TIME DESC LIMIT 1;`
+
+   > **Expected warnings:** The CLI may emit warnings about `REGISTER_SINGLE_CALLBACK`, `GET_CONFIG_FOR_REF`, or `GRANT_CALLBACK` procedures not existing. These are expected — the callbacks are registered during Step 7 (Activate App). Ignore these warnings.
 
 2. **Grant warehouse access to the app** (required for the React control app SQL API):
    ```sql

@@ -22,13 +22,9 @@ fi
 
 source "$VERSION_FILE"
 
-declare -A EXPECTED=(
-  [openrouteservice]="$OPENROUTESERVICE_TAG"
-  [downloader]="$DOWNLOADER_TAG"
-  [routing_reverse_proxy]="$ROUTING_REVERSE_PROXY_TAG"
-  [vroom-docker]="$VROOM_DOCKER_TAG"
-  [ors_control_app]="$ORS_CONTROL_APP_TAG"
-)
+# Build parallel arrays (bash 3.x compatible — no declare -A)
+IMAGE_NAMES="openrouteservice downloader routing_reverse_proxy vroom-docker ors_control_app"
+IMAGE_TAGS="$OPENROUTESERVICE_TAG $DOWNLOADER_TAG $ROUTING_REVERSE_PROXY_TAG $VROOM_DOCKER_TAG $ORS_CONTROL_APP_TAG"
 
 errors=0
 
@@ -40,13 +36,17 @@ error() {
 echo "=== Image Version Consistency Check ==="
 echo ""
 echo "Source of truth (image-versions.env):"
-for image in "${!EXPECTED[@]}"; do
-  echo "  ${image}:${EXPECTED[$image]}"
+i=1
+for image in $IMAGE_NAMES; do
+  tag=$(echo "$IMAGE_TAGS" | cut -d' ' -f$i)
+  echo "  ${image}:${tag}"
+  i=$((i + 1))
 done
 echo ""
 
-for image in "${!EXPECTED[@]}"; do
-  tag="${EXPECTED[$image]}"
+i=1
+for image in $IMAGE_NAMES; do
+  tag=$(echo "$IMAGE_TAGS" | cut -d' ' -f$i)
   pair="${image}:${tag}"
 
   if ! grep -qF "$pair" "$MANIFEST" 2>/dev/null; then
@@ -65,6 +65,32 @@ for image in "${!EXPECTED[@]}"; do
     if ! grep -qF "$pair" "$GUIDELINES_MD" 2>/dev/null && ! grep -qF "| ${tag} |" "$GUIDELINES_MD" 2>/dev/null; then
       error "snowflake-scripting-guidelines.md missing $pair"
     fi
+  fi
+
+  i=$((i + 1))
+done
+
+EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1)
+if [ -n "$EXPECTED_REPO" ]; then
+  echo "Expected repository path: $EXPECTED_REPO"
+  for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+    [ -f "$yaml_file" ] || continue
+    ACTUAL_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$yaml_file" 2>/dev/null | head -1 || true)
+    if [ -n "$ACTUAL_REPO" ] && [ "$ACTUAL_REPO" != "$EXPECTED_REPO" ]; then
+      error "$(basename "$yaml_file") has repo path $ACTUAL_REPO, expected $EXPECTED_REPO"
+    fi
+  done
+  echo ""
+fi
+
+EXPECTED_SCHEMA="CORE"
+for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+  [ -f "$yaml_file" ] || continue
+  BAD_SCHEMAS=$(grep -oE '@[A-Z_]+\.' "$yaml_file" 2>/dev/null | grep -v "@${EXPECTED_SCHEMA}\." | sort -u || true)
+  if [ -n "$BAD_SCHEMAS" ]; then
+    for bad in $BAD_SCHEMAS; do
+      error "$(basename "$yaml_file") references volume schema ${bad} — expected @${EXPECTED_SCHEMA}."
+    done
   fi
 done
 
