@@ -6,13 +6,6 @@
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-## Grant Access to Native App
-
-```sql
-GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.RETAIL_CATCHMENT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.RETAIL_CATCHMENT TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-```
 ## Step 2: Verify OpenRouteService Installation
 
 **2a. Check ORS application exists:**

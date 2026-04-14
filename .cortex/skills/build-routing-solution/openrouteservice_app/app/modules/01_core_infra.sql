@@ -1,3 +1,14 @@
+-- Data Studio and demo databases required by load-seed-data.sql and all demo skills.
+-- Created here so module execution order is self-contained.
+CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
    USE SCHEMA OPENROUTESERVICE_APP.CORE;   
    
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE
@@ -27,6 +38,19 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    AUTO_RESUME = true
    AUTO_SUSPEND_SECS = 600;
 ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+
+-- Verify compute pool is ACTIVE before creating services.
+-- State must be ACTIVE; if STARTING wait ~2 minutes and re-run this module.
+SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';
+SELECT
+    "name",
+    "state",
+    CASE "state"
+        WHEN 'ACTIVE' THEN 'Ready — proceeding to create services'
+        ELSE 'WARNING: Pool state is ' || "state" || '. Wait for ACTIVE then re-run 01_core_infra.sql'
+    END AS POOL_STATUS_CHECK
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'OPENROUTESERVICE_APP_COMPUTE_POOL';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
