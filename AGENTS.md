@@ -134,6 +134,14 @@ alter service openrouteservice_app.core.ors_control_app resume;
 # 5. Update version in these files:
 #    - services/ors_control_app/ors_control_app_service.yaml (image tag)
 
+# 6. After the service restarts, always retrieve and display the endpoint URL:
+```sql
+SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
+SELECT 'https://' || ingress_url AS control_app_url
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE name = 'ors-control-ui';
+```
+
 ## Skill Dependency Graph
 
 ```mermaid
