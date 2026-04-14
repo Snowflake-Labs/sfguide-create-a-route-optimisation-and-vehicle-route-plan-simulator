@@ -57,7 +57,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 ## Workflow
 
-> **Quick deploy:** Run [references/seed-data.sql](references/seed-data.sql) via `snow sql -f` to execute Steps 4-5 in one shot. Edit the SET variables at the top to customize for your region.
+> **Quick deploy:** Run [references/seed-data.sql](references/seed-data.sql) via `snow sql -f` to execute Steps 4-5 in one shot. Edit the SET variables at the top to customize for your region. **Expected duration: 3-5 minutes** (queries large Overture Maps datasets).
 >
 > Full SQL with step-by-step explanations: [references/sql-pipeline.md](references/sql-pipeline.md)
 > All CREATE statements in the referenced SQL include COMMENT tracking tags per AGENTS.md convention (`"origin":"sf_sit-is-fleet","name":"oss-retail-catchment"`).

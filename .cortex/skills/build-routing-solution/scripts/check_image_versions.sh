@@ -70,6 +70,30 @@ for image in $IMAGE_NAMES; do
   i=$((i + 1))
 done
 
+EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1)
+if [ -n "$EXPECTED_REPO" ]; then
+  echo "Expected repository path: $EXPECTED_REPO"
+  for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+    [ -f "$yaml_file" ] || continue
+    ACTUAL_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$yaml_file" 2>/dev/null | head -1 || true)
+    if [ -n "$ACTUAL_REPO" ] && [ "$ACTUAL_REPO" != "$EXPECTED_REPO" ]; then
+      error "$(basename "$yaml_file") has repo path $ACTUAL_REPO, expected $EXPECTED_REPO"
+    fi
+  done
+  echo ""
+fi
+
+EXPECTED_SCHEMA="CORE"
+for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+  [ -f "$yaml_file" ] || continue
+  BAD_SCHEMAS=$(grep -oE '@[A-Z_]+\.' "$yaml_file" 2>/dev/null | grep -v "@${EXPECTED_SCHEMA}\." | sort -u || true)
+  if [ -n "$BAD_SCHEMAS" ]; then
+    for bad in $BAD_SCHEMAS; do
+      error "$(basename "$yaml_file") references volume schema ${bad} — expected @${EXPECTED_SCHEMA}."
+    done
+  fi
+done
+
 for label_file in "SKILL.md:$SKILL_MD" "README.md:$README_MD"; do
   label="${label_file%%:*}"
   fpath="${label_file#*:}"

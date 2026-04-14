@@ -133,6 +133,8 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Claude model ch
 
 **Goal:** Deploy the AISQL exploration notebook, customized for `<NOTEBOOK_CITY>`.
 
+> **Required for full demo:** The AISQL notebook provides the interactive route optimization experience in Snowsight. Without it, only the seed data tables are deployed and the Route Optimization page in the control app will have its VRP simulator but no notebook-driven workflow. If you skip this step now, you can add it later by following [references/notebook-deployment.md](references/notebook-deployment.md).
+
 > See `references/notebook-deployment.md` (Step 8) for cell-by-cell update tables, text replacement rules, post-replacement validation, and upload/create commands.
 
 If city references already match `<NOTEBOOK_CITY>`, skip modification and upload directly.
