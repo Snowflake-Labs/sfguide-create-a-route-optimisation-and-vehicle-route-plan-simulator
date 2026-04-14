@@ -1,6 +1,6 @@
 # Route Optimisation and Fleet Intelligence on Snowflake
 
-An end-to-end geospatial analytics platform deployed entirely on Snowflake. It packages the [OpenRouteService](https://openrouteservice.org/) routing engine as a Native App on Snowpark Container Services (SPCS), then layers fleet intelligence, route analysis, and retail analytics on top through modular Cortex Code skills.
+An end-to-end geospatial analytics platform deployed entirely on Snowflake. It packages the [OpenRouteService](https://openrouteservice.org/) routing engine on Snowpark Container Services (SPCS), then layers fleet intelligence, route analysis, and retail analytics on top through modular Cortex Code skills.
 
 Everything is deployed and operated through natural-language conversations in [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) -- each skill is a self-contained playbook the AI agent follows step-by-step.
 
