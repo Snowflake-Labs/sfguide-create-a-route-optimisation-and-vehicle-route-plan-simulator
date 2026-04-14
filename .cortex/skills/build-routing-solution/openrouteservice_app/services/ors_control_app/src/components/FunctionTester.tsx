@@ -50,7 +50,7 @@ const FUNCTIONS = [
   { name: 'MATRIX_TABULAR', sig: '(method, origin, destinations [, region])' },
   { name: 'ORS_STATUS', sig: '([region])' },
   { name: 'CHECK_HEALTH', sig: '() → BOOLEAN' },
-  { name: 'LIST_REGIONS', sig: '() → TABLE' },
+  { name: 'LIST_REGIONS', sig: '() → VARCHAR' },
 ];
 
 function bboxCenter(bbox: RegionOption['bbox']): [number, number] {
@@ -88,7 +88,7 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
 
   switch (fnName) {
     case 'LIST_REGIONS':
-      return `SELECT * FROM TABLE(${p}.LIST_REGIONS())`;
+      return `SELECT ${p}.LIST_REGIONS()`;
     case 'ORS_STATUS':
       return `SELECT ${p}.ORS_STATUS(${rg})`;
     case 'CHECK_HEALTH':

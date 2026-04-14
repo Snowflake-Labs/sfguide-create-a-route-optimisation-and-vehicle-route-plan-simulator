@@ -36,6 +36,7 @@ export default function RetailCatchment() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [competitors, setCompetitors] = useState<any[]>([]);
   const [densityHexes, setDensityHexes] = useState<any[]>([]);
+  const [cityBbox, setCityBbox] = useState<{ minLon: number; maxLon: number; minLat: number; maxLat: number } | null>(null);
   const [showCompetitors, setShowCompetitors] = useState(true);
   const [showDensity, setShowDensity] = useState(true);
   const [h3Res, setH3Res] = useState(7);
@@ -55,6 +56,7 @@ export default function RetailCatchment() {
     setCatchmentZones([]);
     setCompetitors([]);
     setDensityHexes([]);
+    setCityBbox(null);
     setLoading(true);
     sfQuery(`SELECT DISTINCT CITY, STATE FROM CITIES_BY_STATE WHERE REGION = '${regionName}' ORDER BY STATE, CITY`)
       .then(setCities)
@@ -68,24 +70,28 @@ export default function RetailCatchment() {
       .then(r => {
         setPois(r);
         if (r.length > 0) {
-          const avgLng = r.reduce((sum: number, p: any) => sum + Number(p.LNG), 0) / r.length;
-          const avgLat = r.reduce((sum: number, p: any) => sum + Number(p.LAT), 0) / r.length;
+          const lngs = r.map((p: any) => Number(p.LNG));
+          const lats = r.map((p: any) => Number(p.LAT));
+          const avgLng = lngs.reduce((s: number, v: number) => s + v, 0) / lngs.length;
+          const avgLat = lats.reduce((s: number, v: number) => s + v, 0) / lats.length;
+          setCityBbox({ minLon: Math.min(...lngs) - 0.1, maxLon: Math.max(...lngs) + 0.1, minLat: Math.min(...lats) - 0.08, maxLat: Math.max(...lats) + 0.08 });
           setViewState(prev => ({ ...prev, longitude: avgLng, latitude: avgLat, zoom: 12 }));
         }
       })
       .finally(() => setLoading(false));
   }, [selectedCity]);
 
-  const fetchDensity = useCallback(async (poi: any, res: number) => {
-    const lng = Number(poi.LNG);
-    const lat = Number(poi.LAT);
-    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
+  const fetchDensity = useCallback(async (poi: any, res: number, bbox: { minLon: number; maxLon: number; minLat: number; maxLat: number } | null) => {
+    const bboxFilter = bbox
+      ? `LONGITUDE BETWEEN ${bbox.minLon} AND ${bbox.maxLon} AND LATITUDE BETWEEN ${bbox.minLat} AND ${bbox.maxLat}`
+      : `REGION = '${regionName}'`;
+    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
     setDensityHexes(density);
-  }, [regionName, selectedCity]);
+  }, [regionName]);
 
   useEffect(() => {
-    if (selectedStore) fetchDensity(selectedStore, h3Res);
-  }, [h3Res]);
+    if (selectedStore && cityBbox) fetchDensity(selectedStore, h3Res, cityBbox);
+  }, [h3Res, fetchDensity, cityBbox]);
 
   const selectStore = useCallback(async (poi: any) => {
     setSelectedStore(poi);
@@ -107,13 +113,16 @@ export default function RetailCatchment() {
     }
     setCatchmentZones(zones.reverse());
 
+    const bboxFilter = cityBbox
+      ? `LONGITUDE BETWEEN ${cityBbox.minLon} AND ${cityBbox.maxLon} AND LATITUDE BETWEEN ${cityBbox.minLat} AND ${cityBbox.maxLat}`
+      : `REGION = '${regionName}'`;
     const [comp, density] = await Promise.all([
       sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
-      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
+      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
     ]);
     setCompetitors(comp);
     setDensityHexes(density);
-  }, [selectedCity, travelMode, numZones, maxMinutes, h3Res]);
+  }, [selectedCity, travelMode, numZones, maxMinutes, h3Res, cityBbox, regionName]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 

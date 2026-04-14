@@ -109,37 +109,41 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Control App Image Deployment (ors_control_app)
 
-When changing server code (e.g., `server/index.ts`), you must rebuild and push the Docker image:
+When changing any source file (`src/`, `server/`, or config), rebuild and push the Docker image.
+The multi-stage `Dockerfile.runtime` compiles both the React frontend and the server automatically —
+no manual `dist/` or `dist-server/` edits are needed.
 
 ```bash
-cd build-routing-solution/openrouteservice_app/services/ors_control_app
+APP_DIR=.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app
 
 snow spcs image-registry login -c <connection>
 REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection>)
 
-# 1. Edit BOTH source and compiled files:
-#    - server/index.ts (source)
-#    - dist-server/index.js (compiled — this is what runs in SPCS)
+# 1. Edit source files only:
+#    - src/components/...  (React frontend)
+#    - server/index.ts     (Express backend)
 
 # 2. Build (bump version from current):
-docker build --platform linux/amd64 -t $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z .
+docker build --platform linux/amd64 \
+  -f $APP_DIR/Dockerfile.runtime \
+  -t $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z \
+  $APP_DIR
 
 # 3. Push:
 docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
 
-# 4. Restart services:
-alter service openrouteservice_app.core.ors_control_app suspend;
-alter service openrouteservice_app.core.ors_control_app resume;
+# 4. Update version:
+#    - $APP_DIR/ors_control_app_service.yaml (image tag)
 
-# 5. Update version in these files:
-#    - services/ors_control_app/ors_control_app_service.yaml (image tag)
+# 5. Apply new spec and restart:
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP FROM SPECIFICATION $$ <yaml contents> $$;
 
 # 6. After the service restarts, always retrieve and display the endpoint URL:
 ```sql
 SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
 SELECT 'https://' || ingress_url AS control_app_url
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-WHERE name = 'ors-control-ui';
+WHERE name = 'ors-control-app';
 ```
 
 ## Skill Dependency Graph
@@ -172,7 +176,7 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
-- **ORS Control App deployment**: Rebuild Docker image → push to registry → update service YAML version → `deploy.sh`.
+- **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `ALTER SERVICE FROM SPECIFICATION`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 
 ## Geospatial Conventions
