@@ -137,7 +137,7 @@ docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app
 
 # 5. Upload updated spec to stage:
 snow stage copy $APP_DIR/ors_control_app_service.yaml \
-  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ \
   -c <connection> --overwrite
 
 # 6. Apply new spec and restart:
