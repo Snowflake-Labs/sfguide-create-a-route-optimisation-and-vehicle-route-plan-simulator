@@ -135,10 +135,19 @@ docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app
 # 4. Update version:
 #    - $APP_DIR/ors_control_app_service.yaml (image tag)
 
-# 5. Apply new spec and restart:
-ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP FROM SPECIFICATION $$ <yaml contents> $$;
+# 5. Upload updated spec to stage:
+snow stage copy $APP_DIR/ors_control_app_service.yaml \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml \
+  -c <connection> --overwrite
 
-# 6. After the service restarts, always retrieve and display the endpoint URL:
+# 6. Apply new spec and restart:
+```sql
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
+  FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
+  SPECIFICATION_FILE = 'ors_control_app_service.yaml';
+```
+
+# 7. After the service restarts, always retrieve and display the endpoint URL:
 ```sql
 SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
 SELECT 'https://' || ingress_url AS control_app_url
@@ -176,7 +185,7 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
-- **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `ALTER SERVICE FROM SPECIFICATION`.
+- **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 
 ## Geospatial Conventions
