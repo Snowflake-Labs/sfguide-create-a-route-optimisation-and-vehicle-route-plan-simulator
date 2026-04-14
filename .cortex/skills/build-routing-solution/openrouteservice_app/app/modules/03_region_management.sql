@@ -167,7 +167,7 @@ BEGIN
     CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
-    CALL OPENROUTESERVICE_APP.CORE.SETUP_REGION_ORS(:P_REGION);
+    CALL OPENROUTESERVICE_APP.CORE.CREATE_REGION_ORS_SERVICE(:P_REGION);
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -297,27 +297,17 @@ AS
 $$
 DECLARE
     db_name VARCHAR;
-    pool_name VARCHAR;
     svc_name VARCHAR;
     ors_spec VARCHAR;
     create_sql VARCHAR;
 BEGIN
     db_name := (SELECT CURRENT_DATABASE());
-    pool_name := db_name || '_compute_pool';
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER(:pool_name)
-        INSTANCE_FAMILY = HIGHMEM_X64_S
-        MIN_NODES = 1
-        MAX_NODES = 10
-        AUTO_RESUME = TRUE
-        AUTO_SUSPEND_SECS = 14400
-        COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
-
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_setup/public/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
@@ -410,23 +400,6 @@ def run(session, p_region, p_pbf_file, p_profiles):
         os.rmdir(tmpdir)
 
     return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles
-$$;
-
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.setup_region_ors(P_REGION VARCHAR)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
-EXECUTE AS OWNER
-AS
-$$
-BEGIN
-    CALL OPENROUTESERVICE_APP.CORE.create_compute_pool();
-    CALL OPENROUTESERVICE_APP.CORE.create_stages();
-    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION);
-    CALL OPENROUTESERVICE_APP.CORE.create_services();
-    SELECT SYSTEM$WAIT(30);
-    RETURN 'Region ORS deployed for: ' || :P_REGION;
-END;
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR)
