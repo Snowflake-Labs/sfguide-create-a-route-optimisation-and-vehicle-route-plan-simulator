@@ -166,16 +166,16 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 2. **Upload** SPCS service specification files (required by `01_core_infra.sql` CREATE SERVICE statements):
    ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/downloader_spec.yaml" \
+      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite  && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite 
    ```
 
 **Output:** Configuration files and service specs uploaded to Snowflake stage
@@ -224,12 +224,12 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    > **Prerequisite:** Step 4 must have uploaded service YAML specs to `@ORS_SPCS_STAGE/services/`. Module `01_core_infra.sql` creates services using `FROM @stage SPECIFICATION_FILE=` which will fail if the spec files are missing.
 
    ```bash
-   snow sql -f "app/modules/01_core_infra.sql"       -c <connection> && \
-   snow sql -f "app/modules/02_routing_functions.sql" -c <connection> && \
-   snow sql -f "app/modules/03_region_management.sql" -c <connection> && \
-   snow sql -f "app/modules/04_service_lifecycle.sql" -c <connection> && \
-   snow sql -f "app/modules/05_matrix_pipeline.sql"   -c <connection> && \
-   snow sql -f "app/modules/06_matrix_ops.sql"        -c <connection> 
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql"       -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql" -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql" -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql"   -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
    ```
 
 2. **Verify** all services are running:
@@ -265,10 +265,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```bash
    snow stage copy datasets/intro/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/intro/ -c <connection> --overwrite && \
    snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
-   snow stage copy datasets/metadata/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite && \
-   snow stage copy datasets/matrix/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite && \
-   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite && \
-   snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/region_catalog/ -c <connection> --overwrite
+   snow stage copy datasets/metadata/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/metadata/ -c <connection> --overwrite --recursive && \
+   snow stage copy datasets/matrix/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix/ -c <connection> --overwrite --recursive && \
+   snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite --recursive && \
+   snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/region_catalog/ -c <connection> --recursive --overwrite
    ```
 
 3. **Run the loader script:**
