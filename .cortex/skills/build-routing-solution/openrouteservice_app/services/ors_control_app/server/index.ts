@@ -1,11 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import { config } from 'dotenv';
-import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
+import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
-import { SF_DATABASE, SF_WAREHOUSE, setWarehouse, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
+import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
 
 config();
 
@@ -16,7 +18,9 @@ app.use(express.json({ limit: '10mb' }));
 async function detectWarehouse(): Promise<void> {
   if (SF_WAREHOUSE) return;
   try {
-    const rows = await snowSqlSpcs('SHOW WAREHOUSES LIMIT 1');
+    const rows = IS_SPCS
+      ? await snowSqlSpcs('SHOW WAREHOUSES LIMIT 1')
+      : snowSqlLocal('SHOW WAREHOUSES LIMIT 1');
     const name = (rows as any[])?.[0]?.name || (rows as any[])?.[0]?.NAME;
     if (name) setWarehouse(name);
     else setWarehouse(DEFAULT_WAREHOUSE);
@@ -90,8 +94,23 @@ function getSpcsToken(): string {
   return readFileSync('/snowflake/session/token', 'utf-8').trim();
 }
 
-async function runSql(sql: string, database?: string, schema?: string): Promise<any[]> {
-  return snowSqlSpcs(sql, database, schema);
+function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
+  const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
+  const db = database || SF_DATABASE;
+  let fullSql = `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+  if (schema) fullSql += `USE SCHEMA ${schema};\n`;
+  fullSql += `${sql};`;
+  writeFileSync(tmpFile, fullSql);
+  try {
+    const result = execSync(`snow sql -c ${CONN} -f "${tmpFile}" --format json 2>/dev/null`, {
+      maxBuffer: 50 * 1024 * 1024, timeout: 120000, encoding: 'utf-8',
+    });
+    const parsed = JSON.parse(result.trim());
+    if (Array.isArray(parsed) && Array.isArray(parsed[0])) return parsed[parsed.length - 1];
+    return parsed;
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+  }
 }
 
 async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600): Promise<any[]> {
@@ -143,6 +162,11 @@ async function snowSqlSpcs(sql: string, database?: string, schema?: string, time
     cols.forEach((c: string, i: number) => { obj[c] = row[i]; });
     return obj;
   });
+}
+
+async function runSql(sql: string, database?: string, schema?: string): Promise<any[]> {
+  if (IS_SPCS) return snowSqlSpcs(sql, database, schema);
+  return snowSqlLocal(sql, database, schema);
 }
 
 async function callProcedure(proc: string): Promise<string> {
@@ -880,6 +904,10 @@ app.get('/api/matrix/regions', async (_req, res) => {
 });
 
 async function submitSqlAsync(sql: string): Promise<string> {
+  if (!IS_SPCS) {
+    runSql(sql).catch((e: any) => console.error(`[Async local] Error: ${e.message}`));
+    return `local_${Date.now()}`;
+  }
   const token = getSpcsToken();
   const body = { statement: sql, timeout: 0, database: SF_DATABASE, warehouse: SF_WAREHOUSE };
   const headers: Record<string, string> = {
@@ -893,7 +921,7 @@ async function submitSqlAsync(sql: string): Promise<string> {
 }
 
 async function cancelStatement(handle: string): Promise<boolean> {
-  if (!handle) return false;
+  if (!IS_SPCS || !handle || handle.startsWith('local_')) return false;
   try {
     const token = getSpcsToken();
     const headers: Record<string, string> = {
@@ -1581,14 +1609,14 @@ function escAgentSqlStr(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
 }
 
-const AGENT_MODELS = ['claude-sonnet-4-6'];
+const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
 let agentModel = AGENT_MODELS[0];
 
 async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
   const msgArray = messages.map(m => {
     return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
   }).join(',');
-  const sql = `SELECT AI_COMPLETE('${agentModel}', [${msgArray}]) as RESPONSE`;
+  const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
   console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
   const startMs = Date.now();
   let rows: any[];
@@ -1611,10 +1639,7 @@ async function callCortexComplete(messages: Array<{role: string; content: string
   let content = '';
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    content = parsed.choices?.[0]?.messages
-      || parsed.choices?.[0]?.message?.content
-      || (typeof parsed === 'string' ? parsed : '')
-      || '';
+    content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
   } catch {
     content = String(raw);
   }
@@ -1658,6 +1683,7 @@ async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
 ): Promise<any> {
+  if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
   const messages: Array<{role: string; content: string}> = [
     { role: 'system', content: ROUTING_SYSTEM_PROMPT },
@@ -1740,7 +1766,7 @@ app.get('/api/diagnostics/env', (_req, res) => {
     version: APP_VERSION,
     uptimeMs: getUptimeMs(),
     uptime: formatUptime(getUptimeMs()),
-    isSpcs: true,
+    isSpcs: IS_SPCS,
     database: SF_DATABASE,
     warehouse: SF_WAREHOUSE,
     nodeVersion: process.version,
@@ -1879,6 +1905,6 @@ app.get('*', (_req, res) => {
 const PORT = parseInt(process.env.PORT || '3001');
 detectWarehouse().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ORS Control App server running on port ${PORT} (WH: ${SF_WAREHOUSE})`);
+    console.log(`ORS Control App server running on port ${PORT} (SPCS: ${IS_SPCS}, WH: ${SF_WAREHOUSE})`);
   });
 });
