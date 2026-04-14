@@ -37,7 +37,7 @@ export default function RetailCatchment() {
   const [competitors, setCompetitors] = useState<any[]>([]);
   const [densityHexes, setDensityHexes] = useState<any[]>([]);
   const [showCompetitors, setShowCompetitors] = useState(true);
-  const [showDensity, setShowDensity] = useState(false);
+  const [showDensity, setShowDensity] = useState(true);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
@@ -75,6 +75,17 @@ export default function RetailCatchment() {
       })
       .finally(() => setLoading(false));
   }, [selectedCity]);
+
+  const fetchDensity = useCallback(async (poi: any, res: number) => {
+    const lng = Number(poi.LNG);
+    const lat = Number(poi.LAT);
+    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
+    setDensityHexes(density);
+  }, [regionName, selectedCity]);
+
+  useEffect(() => {
+    if (selectedStore) fetchDensity(selectedStore, h3Res);
+  }, [h3Res]);
 
   const selectStore = useCallback(async (poi: any) => {
     setSelectedStore(poi);
