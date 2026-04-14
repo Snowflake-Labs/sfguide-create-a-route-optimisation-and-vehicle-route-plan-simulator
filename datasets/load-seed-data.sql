@@ -4,7 +4,7 @@
 -- so the ORS Control App is fully populated on first launch.
 --
 -- Prerequisites:
---   - OPENROUTESERVICE_APP database exists (created by snow app run)
+--   - OPENROUTESERVICE_APP database exists
 --   - SYNTHETIC_DATASETS.UNIFIED schema exists (created in Step 6)
 --   - FLEET_INTELLIGENCE.CORE schema exists (created in Step 6)
 --   - Parquet files uploaded to @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
@@ -426,7 +426,6 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
 SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
     TRIP_END   = DATEADD('SECOND', $TS_OFFSET, TRIP_END);
 
--- (Native app grants removed — no longer needed for direct database deployment)
 
 --------------------------------------------------------------------------------
 -- 6. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)

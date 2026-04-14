@@ -41,7 +41,7 @@ $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
 # downloader image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/downloader:v0.0.3 \
-  native_app/services/downloader
+  openrouteservice_app/services/downloader
 $CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
 
 # gateway image (gunicorn, ThreadPoolExecutor concurrency)

@@ -20,8 +20,6 @@ Every CREATE statement in every skill includes a COMMENT with JSON metadata:
 
 This skill queries `INFORMATION_SCHEMA`, `SHOW` commands, and `ACCOUNT_USAGE` views to discover all tagged objects, then generates DROP statements in dependency-safe order.
 
-> **IMPORTANT:** Some objects (marketplace databases, external access integrations, network rules, compute pools) do not carry the tracking tag because they are created by Snowflake or by the native app grant callback. This skill uses explicit name matching for those.
-
 ## Configuration
 
 | Parameter | Default | Description |
@@ -45,27 +43,25 @@ These are ALL object types created across all skills. The drop order reverses cr
 
 | # | Object Type | How to Discover | Drop Command |
 |---|-------------|-----------------|--------------|
-| 1 | Native Application | `SHOW APPLICATIONS` + comment/name match | `DROP APPLICATION IF EXISTS <name> CASCADE` |
-| 2 | Application Package | `SHOW APPLICATION PACKAGES` + comment/name match | `DROP APPLICATION PACKAGE IF EXISTS <name> CASCADE` |
-| 3 | Compute Pools | `SHOW COMPUTE POOLS` + name contains `OPENROUTESERVICE` | `ALTER COMPUTE POOL <name> STOP ALL; DROP COMPUTE POOL IF EXISTS <name>` |
-| 4 | External Access Integrations | `SHOW INTEGRATIONS` + name contains `OPENROUTESERVICE_NATIVE_APP` | `DROP INTEGRATION IF EXISTS <name>` |
-| 5 | Network Rules | `SHOW NETWORK RULES` + name contains `OPENROUTESERVICE_NATIVE_APP` | `DROP NETWORK RULE IF EXISTS <db>.<schema>.<name>` |
-| 6 | Cortex Agents | `SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT` | `DROP AGENT IF EXISTS <db>.<schema>.<name>` |
-| 7 | Tasks | `SHOW TASKS` in tagged schemas | `ALTER TASK <name> SUSPEND; DROP TASK IF EXISTS <name>` |
-| 8 | Dynamic Tables | `SHOW DYNAMIC TABLES` in tagged schemas | `DROP DYNAMIC TABLE IF EXISTS <name>` |
-| 9 | Notebooks | `SHOW NOTEBOOKS` in tagged schemas | `DROP NOTEBOOK IF EXISTS <name>` |
-| 10 | Streamlit Apps | `SHOW STREAMLITS` + comment match | `DROP STREAMLIT IF EXISTS <name>` |
-| 11 | Procedures | `INFORMATION_SCHEMA.PROCEDURES` + comment match | `DROP PROCEDURE IF EXISTS <name>(<arg_types>)` |
-| 12 | Functions | `INFORMATION_SCHEMA.FUNCTIONS` + comment match | `DROP FUNCTION IF EXISTS <name>(<arg_types>)` |
-| 13 | Views | `INFORMATION_SCHEMA.VIEWS` + comment match | `DROP VIEW IF EXISTS <name>` |
-| 14 | Tables | `INFORMATION_SCHEMA.TABLES` + comment match | `DROP TABLE IF EXISTS <name>` |
-| 15 | Stages | `SHOW STAGES` + comment match | `DROP STAGE IF EXISTS <name>` |
-| 16 | Image Repositories | `SHOW IMAGE REPOSITORIES` + in tagged database | `DROP IMAGE REPOSITORY IF EXISTS <name>` |
-| 17 | File Formats | `SHOW FILE FORMATS` + in tagged database | `DROP FILE FORMAT IF EXISTS <name>` |
-| 18 | Schemas | `SHOW SCHEMAS` + comment match | `DROP SCHEMA IF EXISTS <name> CASCADE` |
-| 19 | Warehouses | `SHOW WAREHOUSES` + comment match | `ALTER WAREHOUSE <name> SUSPEND; DROP WAREHOUSE IF EXISTS <name>` |
-| 20 | Marketplace Databases | `SHOW DATABASES` + name/origin match | `DROP DATABASE IF EXISTS <name>` |
-| 21 | Databases | `SHOW DATABASES` + comment match | `DROP DATABASE IF EXISTS <name> CASCADE` |
+| 1 | DATABASE | `SHOW DATABASE` + comment/name match | `DROP DATABASE IF EXISTS <name> CASCADE` |
+| 2 | Compute Pools | `SHOW COMPUTE POOLS` + name contains `OPENROUTESERVICE` | `ALTER COMPUTE POOL <name> STOP ALL; DROP COMPUTE POOL IF EXISTS <name>` |
+| 3 | External Access Integrations | `SHOW INTEGRATIONS LIKE 'OSM'`;| `DROP INTEGRATION IF EXISTS <name>` |
+| 4 | Network Rules | `SHOW NETWORK RULES` + name contains `OPENROUTESERVICE_APP` | `DROP NETWORK RULE IF EXISTS <db>.<schema>.<name>` |
+| 5 | Cortex Agents | `SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT` | `DROP AGENT IF EXISTS <db>.<schema>.<name>` |
+| 6 | Tasks | `SHOW TASKS` in tagged schemas | `ALTER TASK <name> SUSPEND; DROP TASK IF EXISTS <name>` |
+| 7 | Dynamic Tables | `SHOW DYNAMIC TABLES` in tagged schemas | `DROP DYNAMIC TABLE IF EXISTS <name>` |
+| 8 | Notebooks | `SHOW NOTEBOOKS` in tagged schemas | `DROP NOTEBOOK IF EXISTS <name>` |
+| 9 | Streamlit Apps | `SHOW STREAMLITS` + comment match | `DROP STREAMLIT IF EXISTS <name>` |
+| 10 | Procedures | `INFORMATION_SCHEMA.PROCEDURES` + comment match | `DROP PROCEDURE IF EXISTS <name>(<arg_types>)` |
+| 11 | Functions | `INFORMATION_SCHEMA.FUNCTIONS` + comment match | `DROP FUNCTION IF EXISTS <name>(<arg_types>)` |
+| 12 | Views | `INFORMATION_SCHEMA.VIEWS` + comment match | `DROP VIEW IF EXISTS <name>` |
+| 13 | Tables | `INFORMATION_SCHEMA.TABLES` + comment match | `DROP TABLE IF EXISTS <name>` |
+| 14 | Stages | `SHOW STAGES` + comment match | `DROP STAGE IF EXISTS <name>` |
+| 15 | Image Repositories | `SHOW IMAGE REPOSITORIES` + in tagged database | `DROP IMAGE REPOSITORY IF EXISTS <name>` |
+| 16 | File Formats | `SHOW FILE FORMATS` + in tagged database | `DROP FILE FORMAT IF EXISTS <name>` |
+| 17 | Schemas | `SHOW SCHEMAS` + comment match | `DROP SCHEMA IF EXISTS <name> CASCADE` |
+| 18 | Warehouses | `SHOW WAREHOUSES` + comment match | `ALTER WAREHOUSE <name> SUSPEND; DROP WAREHOUSE IF EXISTS <name>` |
+| 19 | Marketplace Databases | `SHOW DATABASES` + name/origin match | `DROP DATABASE IF EXISTS <name>` |
 
 ## Step 1: Set Session Tag
 
@@ -85,53 +81,41 @@ Execute each query and collect results. Some queries use `SHOW` + `RESULT_SCAN` 
 
 Based on discovery results, generate DROP statements in **strict dependency order** (most-dependent first):
 
-### Phase 1 — Native App (stops SPCS services + compute pool)
+### Phase 1 — App (stops SPCS services)
 
 ```sql
--- 1. Drop native application (CASCADE stops all services and drops app-owned objects)
-DROP APPLICATION IF EXISTS OPENROUTESERVICE_NATIVE_APP CASCADE;
-
--- 2. Drop application package
-DROP APPLICATION PACKAGE IF EXISTS OPENROUTESERVICE_NATIVE_APP_PKG CASCADE;
+DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 ```
-
-> **Why CASCADE:** The native app owns compute pools, SPCS services (downloader, ors_service, vroom_service, routing_gateway_service, ors_control_app), image repository access, and internal schemas. CASCADE handles all of these.
 
 ### Phase 2 — Compute Pools (if not already dropped by CASCADE)
 
 ```sql
 -- 3. Stop and drop any compute pools created by the app
---    Naming pattern: OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL or city-specific pools
-ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL STOP ALL;
-DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL;
+--    Naming pattern: OPENROUTESERVICE_APP_COMPUTE_POOL or city-specific pools
+ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
+DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
 ```
 
 ### Phase 3 — External Access Integrations & Network Rules
 
 ```sql
--- 4. Drop external access integrations (created by native app grant callback)
-DROP INTEGRATION IF EXISTS OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_INTEGRATION_REF_EXTERNAL_ACCESS;
-DROP INTEGRATION IF EXISTS OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_CARTO_REF_EXTERNAL_ACCESS;
+-- 4. Drop external access integrations
+DROP INTEGRATION IF EXISTS ORS_OSM_EAI;
+DROP INTEGRATION IF EXISTS ORS_CARTO_EAI;
 
--- 5. Drop network rules (in the app data database)
-DROP NETWORK RULE IF EXISTS OPENROUTESERVICE_NATIVE_APP_APP_DATA.CONFIGURATION.OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_INTEGRATION_REF_NETWORK_RULE;
-DROP NETWORK RULE IF EXISTS OPENROUTESERVICE_NATIVE_APP_APP_DATA.CONFIGURATION.OPENROUTESERVICE_NATIVE_APP_EXTERNAL_ACCESS_CARTO_REF_NETWORK_RULE;
-
--- 6. Drop the app data database
-DROP DATABASE IF EXISTS OPENROUTESERVICE_NATIVE_APP_APP_DATA;
 ```
 
 ### Phase 4 — Cortex Agents, Tasks, Dynamic Tables, Notebooks, Streamlits
 
 ```sql
--- 7. Drop Cortex agents
+-- 5. Drop Cortex agents
 DROP AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
 
--- 8. Suspend and drop tasks
+-- 6. Suspend and drop tasks
 ALTER TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS SUSPEND;
 DROP TASK IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.LOG_SLA_ALERTS;
 
--- 9. Drop dynamic tables (dwell-analysis pipeline)
+-- 7. Drop dynamic tables (dwell-analysis pipeline)
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION;
@@ -141,7 +125,7 @@ DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES;
 
--- 10. Drop notebooks (route-optimization)
+-- 8. Drop notebooks (route-optimization)
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ADD_CARTO_DATA;
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
 ```
@@ -151,39 +135,39 @@ DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_
 For each tagged object found in discovery, generate the appropriate DROP. Use the full signature for procedures and functions.
 
 ```sql
--- 11. Drop procedures (example — actual list comes from discovery)
+-- 9. Drop procedures (example — actual list comes from discovery)
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION(VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, FLOAT, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, VARCHAR);
 
--- 12. Drop views (from all schemas — discovery-driven)
+-- 11. Drop views (from all schemas — discovery-driven)
 -- Example:
 -- DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY;
 -- DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY;
 
--- 13. Drop tables (from all schemas — discovery-driven)
+-- 12. Drop tables (from all schemas — discovery-driven)
 -- Example:
 -- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
 -- DROP TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;
 
--- 14. Drop stages
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE;
-DROP STAGE IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE;
+-- 13. Drop stages
+DROP STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE;
+DROP STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE;
+DROP STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE;
+DROP STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE;
 
--- 15. Drop image repository
-DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY;
+-- 14. Drop image repository
+DROP IMAGE REPOSITORY IF EXISTS OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
 
--- 16. Drop file formats
-DROP FILE FORMAT IF EXISTS OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF;
+-- 15. Drop file formats
+DROP FILE FORMAT IF EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF;
 ```
 
 ### Phase 6 — Schemas, Warehouses, Databases
 
 ```sql
--- 17. Drop schemas (CASCADE handles any remaining objects)
+-- 16. Drop schemas (CASCADE handles any remaining objects)
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT CASCADE;
@@ -204,7 +188,6 @@ DROP DATABASE IF EXISTS OVERTURE_MAPS__ADDRESSES;
 -- 20. Drop project databases (CASCADE handles all contained objects)
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE CASCADE;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS CASCADE;
-DROP DATABASE IF EXISTS OPENROUTESERVICE_SETUP CASCADE;
 ```
 
 ## Step 4: Review and Execute
@@ -281,7 +264,7 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 
 | Skill | Tracking Name | Key Objects |
 |-------|--------------|-------------|
-| build-routing-solution | `oss-build-routing-solution` | Native app, app package, compute pool, OPENROUTESERVICE_SETUP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs |
+| build-routing-solution | `oss-build-routing-solution` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs |
 | fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` | FLEET_INTELLIGENCE_TAXIS schema, 10+ tables, views, CONFIG |
 | fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |

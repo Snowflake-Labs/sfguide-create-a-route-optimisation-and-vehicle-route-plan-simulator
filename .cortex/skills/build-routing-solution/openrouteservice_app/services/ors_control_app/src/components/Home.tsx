@@ -20,7 +20,7 @@ const ADMIN: { key: string; label: string; desc: string; icon: React.ComponentTy
   { key: 'cities', label: 'City Builder', desc: 'Provision new cities, manage routing profiles and map data', icon: MapPin },
   { key: 'matrix', label: 'Travel Matrix Builder', desc: 'Build H3 travel-time matrices with cost and time estimates', icon: Grid3X3 },
   { key: 'viewer', label: 'Travel Matrix Viewer', desc: 'Visualize travel-time matrices on an interactive map', icon: Eye },
-  { key: 'functions', label: 'Functions', desc: 'Test native app SQL functions with live map preview', icon: Wrench },
+  { key: 'functions', label: 'Functions', desc: 'Test SPCS SQL functions with live map preview', icon: Wrench },
 ];
 
 export default function Home({ onNavigate }: Props) {

@@ -38,7 +38,7 @@ def download_file(url: str, dest: str) -> None:
 
 
 def upload_to_stage(conn, local_file: str, region_name: str) -> None:
-    stage_location = f"@openrouteservice_native_app.core.ors_spcs_stage/{region_name}"
+    stage_location = f"@openrouteservice_app.core.ors_spcs_stage/{region_name}"
     print(f"Uploading to {stage_location} ...")
     cur = conn.cursor()
     cur.execute(

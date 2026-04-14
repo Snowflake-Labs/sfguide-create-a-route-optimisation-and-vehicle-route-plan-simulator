@@ -38,7 +38,7 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_AGENT schema |
 | CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION |
 | CREATE CORTEX AGENT | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates ROUTING_AGENT |
-| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
 | SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -76,7 +76,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-sn
 **2a. Check functions exist:**
 
 ```sql
-SHOW USER FUNCTIONS IN SCHEMA OPENROUTESERVICE_NATIVE_APP.CORE;
+SHOW USER FUNCTIONS IN SCHEMA OPENROUTESERVICE_APP.CORE;
 ```
 
 Verify: `DIRECTIONS(VARCHAR, VARIANT)`, `ISOCHRONES(VARCHAR, FLOAT, FLOAT, NUMBER)`, `OPTIMIZATION(VARIANT, VARIANT)`. If missing, install the OpenRouteService Native App.
@@ -84,10 +84,10 @@ Verify: `DIRECTIONS(VARCHAR, VARIANT)`, `ISOCHRONES(VARCHAR, FLOAT, FLOAT, NUMBE
 **2b. Check services are running (CRITICAL):**
 
 ```sql
-SHOW SERVICES IN SCHEMA OPENROUTESERVICE_NATIVE_APP.CORE;
+SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 ```
 
-Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTING_GATEWAY_SERVICE`. If any is SUSPENDED, resume with `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();` and verify with `SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();`.
+Required services (all must be RUNNING): `ORS_SERVICE`, `VROOM_SERVICE`, `ROUTING_GATEWAY_SERVICE`, `DOWNLOADER`. If any is SUSPENDED, resume with `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();` and verify with `SELECT OPENROUTESERVICE_APP.CORE.CHECK_HEALTH();`.
 
 ### Step 3: Create Database, Schema, and Warehouse
 
@@ -168,7 +168,7 @@ CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 Test queries must use locations within the ORS-configured region. To determine the region:
 
 ```sql
-DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
+DESCRIBE SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE;
 ```
 
 Parse the spec to find the configured region name from `/home/ors/files/<REGION_NAME>.osm.pbf`.
@@ -240,7 +240,7 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 | Agent not visible in UI | Run `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` |
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
-| Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_NATIVE_APP.CORE;` and resume suspended services |
+| Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;` and resume suspended services |
 
 ## Cleanup
 

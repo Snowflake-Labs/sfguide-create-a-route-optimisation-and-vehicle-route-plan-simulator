@@ -132,7 +132,7 @@ FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES
 WHERE COMMENT LIKE '%sf_sit-is-fleet%';
 
 -- ============================================================================
--- Step 2o: Functions (per database — native app functions are app-internal)
+-- Step 2o: Functions
 -- ============================================================================
 SELECT
     FUNCTION_CATALOG AS DATABASE_NAME,

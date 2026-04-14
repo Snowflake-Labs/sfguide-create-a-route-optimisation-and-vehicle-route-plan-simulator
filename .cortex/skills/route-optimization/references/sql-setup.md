@@ -13,7 +13,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-opt
 
 Check services status:
 ```sql
-SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
 ```
 
 All 4 services must be running:
@@ -24,9 +24,9 @@ All 4 services must be running:
 
 Resume if not running:
 ```sql
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
+CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
 -- Verify:
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+SELECT OPENROUTESERVICE_APP.CORE.CHECK_HEALTH();
 ```
 
 ## Step 4: Get Carto Overture Dataset

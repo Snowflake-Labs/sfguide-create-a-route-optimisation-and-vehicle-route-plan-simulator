@@ -82,7 +82,7 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 | CREATE TABLE | Schema | Creates location, driver, trip, and route tables |
 | CREATE VIEW | Schema | Creates 5 analytics views |
 
-| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Calls DIRECTIONS function for routing |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | DATABASE | Calls DIRECTIONS function for routing |
 | IMPORTED PRIVILEGES ON OVERTURE_MAPS__PLACES | Database | Reads POI locations |
 | IMPORTED PRIVILEGES ON OVERTURE_MAPS__ADDRESSES | Database | Reads address data |
 
@@ -104,13 +104,11 @@ The fastest path to a working demo. Creates projection views over `SYNTHETIC_DAT
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY;
 ```
 
-If the view exists and has rows, views are already created. Grant native app access (see end of `seed-data.sql`), then skip to Step 10 (Register with Demo Dashboard).
-
 > **Note:** Seed data uses `vehicle_type=ebike` (San Francisco E-Bike Couriers). The CONFIG table is set to `ebike`/`SanFrancisco` accordingly. To see realistic taxi data, generate a new dataset via Data Studio with a taxi/driving-car profile.
 
 ### Create views
 
-Execute `references/seed-data.sql`. This creates CONFIG, VW_DRIVER_LOCATIONS, VW_TRIP_SUMMARY, and 5 wrapper views (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIPS_ASSIGNED_TO_DRIVERS) over UNIFIED data, plus grants SELECT access to the native app.
+Execute `references/seed-data.sql`. This creates CONFIG, VW_DRIVER_LOCATIONS, VW_TRIP_SUMMARY, and 5 wrapper views (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, TRIP_ROUTE_PLAN, TRIPS_ASSIGNED_TO_DRIVERS) over UNIFIED data.
 
 ### Generate data for other regions (optional)
 
@@ -145,7 +143,7 @@ Set session query tag for attribution tracking.
 2. **Download** ORS config and parse enabled routing profiles. Follow `.cortex/skills/routing-customization/read-ors-configuration/SKILL.md`.
 3. **Ask user** which location to use — recommend the currently configured region first.
 4. **Check region match** — if mismatch, user must reconfigure ORS via `.cortex/skills/routing-customization/SKILL.md`.
-5. **Check/resume services** — run `SHOW SERVICES IN OPENROUTESERVICE_NATIVE_APP.CORE` and resume any suspended services.
+5. **Check/resume services** — run `SHOW SERVICES IN OPENROUTESERVICE_APP.CORE` and resume any suspended services.
 6. **Test ORS routing** with a DIRECTIONS call using center coordinates of the target city.
 
 ### Step 3: Configure Database, Warehouse, and Schema
@@ -188,7 +186,7 @@ CTAS with 5 shift patterns (Graveyard, Early, Morning, Day, Evening). Default 80
 
 **WARNING:** This step makes many ORS API calls. ~1,000 trips: 3-5 min, ~5,000: 15-20 min.
 
-1. **Create** `DRIVER_ROUTES` — call `OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS` for each trip.
+1. **Create** `DRIVER_ROUTES` — call `OPENROUTESERVICE_APP.CORE.DIRECTIONS` for each trip.
 2. **Create** `DRIVER_ROUTES_PARSED` — extract geometry, distance, duration from JSON response.
 3. **Create** `DRIVER_ROUTE_GEOMETRIES` — add cumulative timing with `{START_DATE}`.
 4. **Verify** route statistics.

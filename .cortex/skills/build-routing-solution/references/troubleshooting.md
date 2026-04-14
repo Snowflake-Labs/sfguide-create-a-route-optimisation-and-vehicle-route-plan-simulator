@@ -16,14 +16,14 @@ Common issues and their solutions when deploying the ORS App.
 - Docker: Run `snow spcs image-registry login -c <connection>`
 - Podman: Use session token with password-stdin:
   ```bash
-  REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+  REGISTRY_URL=$(snow spcs image-repository url openrouteservice_app.core.image_repository -c <connection> | cut -d'/' -f1)
   snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
   ```
 
 ## Wrong Directory Error
 
 **Symptom:** "cd: services/openrouteservice: No such file or directory"
-**Solution:** Ensure script runs from `openrouteservice_app/` directory, not `provider_setup/`
+**Solution:** Ensure script runs from `openrouteservice_app/` directory
 
 
 ## ARM Mac esbuild Crash (ors_control_app)
@@ -36,7 +36,7 @@ Common issues and their solutions when deploying the ORS App.
 **Symptom:** `podman push` fails with "unable to retrieve auth token: invalid username/password: unauthorized" even after `snow spcs image-registry login`
 **Solution:** `snow spcs image-registry login` may store credentials for the wrong registry hostname. Use the manual token approach with `--creds` flag:
 ```bash
-REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+REGISTRY_URL=$(snow spcs image-repository url openrouteservice_app.core.image_repository -c <connection> | cut -d'/' -f1)
 TOKEN=$(snow spcs image-registry token --format=JSON -c <connection>)
 podman push --creds "0sessiontoken:$TOKEN" $REGISTRY_URL/ors_control_app:v1.0.28
 ```

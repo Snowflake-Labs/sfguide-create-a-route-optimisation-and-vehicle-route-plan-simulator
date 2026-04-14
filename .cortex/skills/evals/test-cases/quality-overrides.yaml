@@ -8,4 +8,4 @@ fleet-intelligence-taxis:
 
 fleet-intelligence-food-delivery:
   skip:
-    - "check_11"  # progressive disclosure — native app deployment uses references/ already
+    - "check_11"  # progressive disclosure — app deployment uses references/ already

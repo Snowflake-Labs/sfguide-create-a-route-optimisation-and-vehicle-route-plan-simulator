@@ -99,7 +99,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
   ```sql
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|app>"}}';
   ```
-- **Assume ORS is running** — always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_SETUP;` (all 4 services must be RUNNING)
+- **Assume ORS is running** — always verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;` (all 5 services must be RUNNING)
 - **Hardcode city/region** — skills must be configurable via parameters, not baked-in coordinates
 - **Add README.md inside skill folders** — all docs go in SKILL.md or `references/`
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules

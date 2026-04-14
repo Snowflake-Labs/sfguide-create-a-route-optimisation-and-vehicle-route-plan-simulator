@@ -37,8 +37,8 @@ if CITY["name"] != "San Francisco":
 
 st.divider()
 
-MATRIX_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX'
-HEXAGONS_TABLE = 'OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS'
+MATRIX_TABLE = 'OPENROUTESERVICE_APP.ROUTING.SF_TRAVEL_TIME_MATRIX'
+HEXAGONS_TABLE = 'OPENROUTESERVICE_APP.ROUTING.SF_HEXAGONS'
 
 @st.cache_data(ttl=600)
 def get_matrix_stats():
@@ -103,8 +103,8 @@ else:
     st.info("""
     To build the travel time matrix, run:
     ```sql
-    -- See OPENROUTESERVICE_SETUP.ROUTING schema for matrix tables
-    SELECT * FROM OPENROUTESERVICE_SETUP.ROUTING.SF_HEXAGONS LIMIT 10;
+    -- See OPENROUTESERVICE_APP.ROUTING schema for matrix tables
+    SELECT * FROM OPENROUTESERVICE_APP.ROUTING.SF_HEXAGONS LIMIT 10;
     ```
     """)
     st.stop()
@@ -302,7 +302,7 @@ with st.expander("How This Matrix Was Built"):
     This matrix was pre-computed using the **OpenRouteService MATRIX function** running in Snowflake via SPCS:
     
     1. **H3 Hexagons** (Resolution 9): Generated from Overture Maps address data for {CITY['name']}
-    2. **Matrix Calculation**: Used `OPENROUTESERVICE_NATIVE_APP.CORE.MATRIX_TABULAR()` to compute driving times
+    2. **Matrix Calculation**: Used `OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR()` to compute driving times
     3. **Result**: {stats['total_pairs']:,.0f} origin-destination pairs covering {stats['unique_origins']:,.0f} hexagons
     
     ### Performance Benefits
@@ -317,13 +317,13 @@ with st.expander("How This Matrix Was Built"):
     ```sql
     -- Find travel time between two hexagons
     SELECT travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM OPENROUTESERVICE_APP.ROUTING.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND destination_hex_id = '89283082bd7ffff';
     
     -- Find all destinations within 15 minutes
     SELECT destination_hex_id, travel_time_seconds / 60.0 AS minutes
-    FROM OPENROUTESERVICE_SETUP.ROUTING.SF_TRAVEL_TIME_MATRIX
+    FROM OPENROUTESERVICE_APP.ROUTING.SF_TRAVEL_TIME_MATRIX
     WHERE origin_hex_id = '8928308286fffff'
       AND travel_time_seconds <= 900
     ORDER BY travel_time_seconds;

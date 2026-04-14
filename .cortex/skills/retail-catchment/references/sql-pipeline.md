@@ -7,29 +7,22 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-ca
 ```
 
 ## Step 2: Verify OpenRouteService Installation
-
-**2a. Check ORS application exists:**
+**2a. Resume suspended services:**
 
 ```sql
-SHOW APPLICATIONS LIKE '%OPENROUTESERVICE%';
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
 ```
 
-**2b. Verify services are running:**
+**2b. Resume suspended services:**
 
 ```sql
-SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
 ```
 
-**2c. Resume suspended services:**
+**2c. Verify ORS is healthy:**
 
 ```sql
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
-```
-
-**2d. Verify ORS is healthy:**
-
-```sql
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+SELECT OPENROUTESERVICE_APP.CORE.CHECK_HEALTH();
 ```
 
 ## Step 3: Get Carto Overture Datasets

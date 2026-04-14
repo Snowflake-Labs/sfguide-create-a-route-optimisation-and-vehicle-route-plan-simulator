@@ -1,10 +1,10 @@
 build-routing-solution:
   should_trigger:
     - "build routing solution"
-    - "set up OpenRouteService native app"
+    - "set up OpenRouteService app"
     - "build and push SPCS images"
     - "install openrouteservice app"
-    - "deploy the ORS native app to Snowflake"
+    - "deploy the ORS app to Snowflake"
   should_not_trigger:
     - "change the map region"
     - "deploy route optimization demo"
@@ -118,7 +118,7 @@ fleet-intelligence-food-delivery:
     - "generate courier locations"
     - "create delivery data"
     - "setup food delivery fleet"
-    - "deploy native app"
+    - "deploy app"
     - "swiftbite dashboard"
   should_not_trigger:
     - "taxi fleet simulation"

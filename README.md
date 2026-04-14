@@ -31,7 +31,7 @@ graph TB
     end
 
     subgraph data [Data Layer]
-        SETUP["OPENROUTESERVICE_SETUP (infra)"]
+        SETUP["OPENROUTESERVICE_APP (infra)"]
         SYNTH["SYNTHETIC_DATASETS.UNIFIED (source)"]
         FI["FLEET_INTELLIGENCE.* (analytics)"]
     end
@@ -65,20 +65,13 @@ The `build-routing-solution` skill deploys the foundational platform. Everything
 
 | Database | Purpose |
 |----------|---------|
-| `OPENROUTESERVICE_SETUP` | Provider infrastructure: container image repository, OSM map stages, graph caches, elevation data, seed datasets |
+| `OPENROUTESERVICE_APP` | App infrastructure: container image repository, OSM map stages, graph caches, elevation data, seed datasets |
 | `SYNTHETIC_DATASETS` | Source telemetry data in a unified star schema, written by Data Studio |
 | `FLEET_INTELLIGENCE` | Analytics output -- one schema per skill for demo tables, views, and pipelines |
 
-### Native App
-
-The application `OPENROUTESERVICE_NATIVE_APP` is installed from the package `OPENROUTESERVICE_NATIVE_APP_PKG` and contains:
-
-- **Compute Pool**: `OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL` (HIGHMEM_X64_S, 1-5 nodes, auto-suspend)
-- **Warehouse**: `ROUTING_ANALYTICS` (MEDIUM, auto-suspend 60s)
-
 ### SPCS Services
 
-Five container services run inside the native app:
+Five container services run inside the app:
 
 | Service | Image | Purpose |
 |---------|-------|---------|
@@ -90,7 +83,7 @@ Five container services run inside the native app:
 
 ### SQL Functions
 
-Eight public SQL functions are exposed by the native app for use in any Snowflake worksheet, notebook, or stored procedure:
+Eight public SQL functions are exposed by the app for use in any Snowflake worksheet, notebook, or stored procedure:
 
 | Function | Description |
 |----------|-------------|
@@ -122,7 +115,7 @@ The core deployment pre-loads sample data so dashboards work immediately:
 
 ```mermaid
 graph LR
-    subgraph setup ["OPENROUTESERVICE_SETUP"]
+    subgraph setup ["OPENROUTESERVICE_APP"]
         IMG[Image Repository]
         OSM[OSM Map Stages]
         SEED[Seed Data Stage]
@@ -224,7 +217,7 @@ Deploy order: top to bottom. Teardown order: bottom to top.
 
 | Skill | What It Does | Invoke With |
 |-------|-------------|-------------|
-| **build-routing-solution** | Builds 5 container images, creates databases/stages, deploys the native app, starts SPCS services, loads seed data. This is the foundation -- all other skills depend on it. | `build routing solution` |
+| **build-routing-solution** | Builds 5 container images, creates databases/stages, deploys the ORS app, starts SPCS services, loads seed data. This is the foundation -- all other skills depend on it. | `build routing solution` |
 | **routing-prerequisites** | Checks local environment: Docker/Podman, Snow CLI, Git, network access to Snowflake registry. Run first if unsure about your setup. | `check build prerequisites` |
 | **routing-customization** | Routes to 3 subskills for changing the ORS deployment: swap geographic region (download new OSM data), switch routing profiles (driving-car, cycling-electric, foot-walking, etc.), or read current config. | `change location`, `change routing profile` |
 
@@ -256,7 +249,7 @@ Deploy order: top to bottom. Teardown order: bottom to top.
 
 ## ORS Control App
 
-The ORS Control App is a React single-page application with an Express.js backend, running as a Snowpark Container Service inside the native app. It serves as the unified dashboard for the entire platform -- no separate apps needed.
+The ORS Control App is a React single-page application with an Express.js backend, running as a Snowpark Container Service service. It serves as the unified dashboard for the entire platform -- no separate apps needed.
 
 ### Demo Pages
 
@@ -346,7 +339,7 @@ The platform supports multiple geographic regions simultaneously:
   |   +-- SKILL.md                 # Skill definition (YAML frontmatter + instructions)
   |   +-- references/              # Detailed SQL, code, and documentation
   |   +-- assets/                  # Notebooks and other deployable artifacts
-  +-- build-routing-solution/      # Core platform (native app, Docker configs, deploy scripts)
+  +-- build-routing-solution/      # Core platform (ORS app, Docker configs, deploy scripts)
   +-- evals/                       # Eval framework (trigger, quality, cross-ref)
 datasets/                          # Seed data (parquet files loaded during core deployment)
 docs/                              # Guides and documentation
@@ -354,21 +347,6 @@ logs/                              # Skill execution error logs
 archive/                           # Archived / deprecated materials
 AGENTS.md                          # AI assistant project guidance
 ```
-
-### Native App Module System
-
-The native app's `setup_script.sql` is a thin orchestrator that calls six domain-specific SQL modules:
-
-| Module | Domain | What It Creates |
-|--------|--------|-----------------|
-| `01_core_infra.sql` | Compute, stages, services | Compute pool, stages, all 5 SPCS services, lifecycle callbacks |
-| `02_routing_functions.sql` | SQL functions | 8 public functions + 7 internal `_RAW` service functions, `MAP_CONFIG`, `VERSION_INFO` |
-| `03_region_management.sql` | Multi-region | `REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, provisioning + catalog refresh procedures |
-| `04_service_lifecycle.sql` | Service ops | Resume, suspend, scale, status procedures |
-| `05_matrix_pipeline.sql` | Matrix build | `MATRIX_BUILD_JOBS`, build/flatten procedures |
-| `06_matrix_ops.sql` | Matrix ops | Status, inventory, delete procedures |
-
-Changes to any module must go through `upgrade_app.sh` -- never create objects directly via SQL.
 
 ### ORS Control App Development
 
