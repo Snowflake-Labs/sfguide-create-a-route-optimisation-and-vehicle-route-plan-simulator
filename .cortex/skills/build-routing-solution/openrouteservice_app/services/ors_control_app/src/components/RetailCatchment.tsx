@@ -64,7 +64,7 @@ export default function RetailCatchment() {
   useEffect(() => {
     if (!selectedCity) return;
     setLoading(true);
-    sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' LIMIT 200`)
+    sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' LIMIT 200`)
       .then(r => {
         setPois(r);
         if (r.length > 0) {
@@ -97,7 +97,7 @@ export default function RetailCatchment() {
     setCatchmentZones(zones.reverse());
 
     const [comp, density] = await Promise.all([
-      sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
+      sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
       sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
     ]);
     setCompetitors(comp);
