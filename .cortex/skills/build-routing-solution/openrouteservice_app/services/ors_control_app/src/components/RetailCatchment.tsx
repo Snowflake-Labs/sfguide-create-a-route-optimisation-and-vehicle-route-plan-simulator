@@ -40,10 +40,12 @@ export default function RetailCatchment() {
   const [showDensity, setShowDensity] = useState(false);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+    if (center.lng !== 0 && center.lat !== 0) {
+      setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+    }
   }, [center.lng, center.lat, zoom]);
 
   useEffect(() => {
@@ -63,7 +65,14 @@ export default function RetailCatchment() {
     if (!selectedCity) return;
     setLoading(true);
     sfQuery(`SELECT POI_ID, NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' LIMIT 200`)
-      .then(r => { setPois(r); if (r.length > 0) setViewState(prev => ({ ...prev, longitude: Number(r[0].LNG), latitude: Number(r[0].LAT), zoom: 12 })); })
+      .then(r => {
+        setPois(r);
+        if (r.length > 0) {
+          const avgLng = r.reduce((sum: number, p: any) => sum + Number(p.LNG), 0) / r.length;
+          const avgLat = r.reduce((sum: number, p: any) => sum + Number(p.LAT), 0) / r.length;
+          setViewState(prev => ({ ...prev, longitude: avgLng, latitude: avgLat, zoom: 12 }));
+        }
+      })
       .finally(() => setLoading(false));
   }, [selectedCity]);
 
