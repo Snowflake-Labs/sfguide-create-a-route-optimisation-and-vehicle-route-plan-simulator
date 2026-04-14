@@ -77,9 +77,9 @@ Five container services run inside the app:
 |---------|-------|---------|
 | `ors_service` | `openrouteservice:v9.0.0` | Core routing engine (directions, isochrones, matrix) |
 | `vroom_service` | `vroom-docker:v1.0.1` | Vehicle Routing Problem (VRP) optimizer |
-| `routing_gateway_service` | `routing_reverse_proxy:v0.9.6` | Nginx reverse proxy routing requests to per-region ORS instances |
+| `routing_gateway_service` | `routing_reverse_proxy:v1.0.0` | Nginx reverse proxy routing requests to per-region ORS instances |
 | `downloader` | `downloader:v0.0.3` | Downloads OSM PBF map files from Geofabrik |
-| `ors_control_app` | `ors_control_app:v1.0.98` | React admin panel and demo dashboards (Express.js backend) |
+| `ors_control_app` | `ors_control_app:v1.0.117` | React admin panel and demo dashboards (Express.js backend) |
 
 ### SQL Functions
 
@@ -262,7 +262,7 @@ The ORS Control App is a React single-page application with an Express.js backen
 | **Route Deviation** | Deviation Dashboard, Route Comparison, Route Inspector (3 pages) | `ROUTE_DEVIATION` ETL tables |
 | **Route Optimization** | VRP simulator with interactive map | `ROUTE_OPTIMIZATION` + live ORS calls |
 | **Retail Catchment** | Isochrone analysis with competitor mapping | `RETAIL_CATCHMENT` + live ORS calls |
-| **Routing Agent** | Natural-language chat interface for route planning | Live Cortex Agent calls |
+| **Routing Agent** | Natural-language chat interface for route planning with interactive map visualization of routing results | Live Cortex Agent calls |
 | **Travel Time Explorer** | H3 hexagon travel time visualization | `TRAVEL_MATRIX` tables |
 | **Data Studio** | Synthetic telemetry data generation UI | Writes to `SYNTHETIC_DATASETS.UNIFIED` |
 
@@ -361,10 +361,9 @@ ors_control_app/
   server/                 # Express.js backend
     index.ts              # Core API routes (44 endpoints)
     studio/               # Data Studio sub-router
-  deploy.sh               # Build + Docker push + upgrade
 ```
 
-Deploy flow: `npm run build` -> Docker build (linux/amd64) -> push to SPCS registry -> `ALTER APPLICATION UPGRADE`.
+Deploy flow: `npm run build` -> Docker build (linux/amd64) -> push to SPCS registry -> upload spec to stage -> `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 
 ### Object Tracking and Cleanup
 

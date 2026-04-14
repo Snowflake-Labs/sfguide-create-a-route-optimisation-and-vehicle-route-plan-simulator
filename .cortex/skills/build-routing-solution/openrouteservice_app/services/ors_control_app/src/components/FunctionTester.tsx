@@ -88,7 +88,7 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
 
   switch (fnName) {
     case 'LIST_REGIONS':
-      return `SELECT ${p}.LIST_REGIONS()`;
+      return `CALL ${p}.LIST_REGIONS()`;
     case 'ORS_STATUS':
       return `SELECT ${p}.ORS_STATUS(${rg})`;
     case 'CHECK_HEALTH':

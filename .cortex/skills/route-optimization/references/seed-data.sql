@@ -42,6 +42,9 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     AUTO_RESUME = TRUE
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 --------------------------------------------------------------------
 -- CONFIG
 --------------------------------------------------------------------

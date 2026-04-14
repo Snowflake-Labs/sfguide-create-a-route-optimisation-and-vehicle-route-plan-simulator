@@ -438,7 +438,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.list_regions()
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.LIST_REGIONS()
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
