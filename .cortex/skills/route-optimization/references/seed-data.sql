@@ -42,6 +42,9 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     AUTO_RESUME = TRUE
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 --------------------------------------------------------------------
 -- CONFIG
 --------------------------------------------------------------------
@@ -180,9 +183,4 @@ SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'S
 --------------------------------------------------------------------
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA;
 
---------------------------------------------------------------------
--- GRANTS TO NATIVE APP
---------------------------------------------------------------------
-GRANT USAGE ON DATABASE FLEET_INTELLIGENCE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-GRANT USAGE ON SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
+

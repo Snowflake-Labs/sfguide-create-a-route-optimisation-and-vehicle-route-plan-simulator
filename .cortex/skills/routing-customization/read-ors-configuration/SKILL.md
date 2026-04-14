@@ -14,7 +14,7 @@ Detects the map region/location and routing profiles from the ORS configuration 
 ## Prerequisites
 
 - Active Snowflake connection
-- OpenRouteService Native App deployed
+- OpenRouteService App deployed
 
 ## Output Parameters
 
@@ -35,7 +35,7 @@ Detects the map region/location and routing profiles from the ORS configuration 
 
 1. **Describe** the ORS service to get the service spec:
    ```sql
-   DESCRIBE SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE;
+   DESCRIBE SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE;
    ```
    - Parse the service spec from the output to find the configured `<REGION_NAME>` for the service: `/home/ors/files/<REGION_NAME>.osm.pbf`
    - Extract `<REGION_NAME>` (e.g., "SanFrancisco", "great-britain-latest", "paris")
@@ -50,10 +50,10 @@ Detects the map region/location and routing profiles from the ORS configuration 
 
 1. **Download** the ORS config file from stage:
    ```bash
-   snow stage copy @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
-2. **Read** `.cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml`
+2. **Read** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`
 
 3. **Parse** the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-electric`, `cycling-regular`, `foot-walking`
@@ -81,6 +81,6 @@ Detects the map region/location and routing profiles from the ORS configuration 
 
 | Issue | Solution |
 |-------|----------|
-| DESCRIBE SERVICE fails | ORS Native App not installed or service not created. Install via `build-routing-solution` skill |
+| DESCRIBE SERVICE fails | ORS App not installed or service not created. Install via `build-routing-solution` skill |
 | Config file download fails | Service may be running with default config. Check stage path matches `<REGION_NAME>` from Step 1 |
 | No profiles found in config | Config file may be malformed. Check `ors.engine.profiles` section exists in the YAML |

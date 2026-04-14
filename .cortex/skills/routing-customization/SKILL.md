@@ -17,8 +17,8 @@ This skill routes customization requests to the correct subskills based on what 
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `ORS_APP_NAME` | `OPENROUTESERVICE_NATIVE_APP` | Name of the installed ORS native app |
-| `COMPUTE_POOL` | `OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL` | Compute pool used by ORS services |
+| `ORS_APP_NAME` | `OPENROUTESERVICE_APP` | Name of the installed ORS app |
+| `COMPUTE_POOL` | `OPENROUTESERVICE_APP_COMPUTE_POOL` | Compute pool used by ORS services |
 | `MAP_REGION` | (current) | Target geographic region for the map data |
 | `ROUTING_PROFILES` | (current) | Comma-separated list of profiles to enable |
 
@@ -26,13 +26,10 @@ This skill routes customization requests to the correct subskills based on what 
 
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
-| USAGE ON APPLICATION OPENROUTESERVICE_NATIVE_APP | Application | Reads and modifies ORS configuration |
-| WRITE ON STAGE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE | Stage | Uploads updated config files |
-| WRITE ON STAGE @OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE | Stage | Uploads service specs and Function Tester |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | DATABASE | Reads and modifies ORS configuration |
 | ALTER COMPUTE POOL | Compute Pool | Suspends/resumes compute pool for config changes |
 | ALTER SERVICE | Application | Suspends/resumes ORS services and updates specs |
-| INSERT/DELETE ON OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG | Table | Updates map configuration for Function Tester |
-| ALTER APPLICATION | Application | Upgrades native app to apply changes |
+| INSERT/DELETE ON OPENROUTESERVICE_APP.CORE.MAP_CONFIG | Table | Updates map configuration for Function Tester |
 
 ## Error Logging
 
@@ -40,7 +37,7 @@ This skill routes customization requests to the correct subskills based on what 
 
 ## Workflow
 
-> All file paths in subskills (e.g., `.cortex/skills/build-routing-solution/native_app/...`) are relative to the repository root directory.
+> All file paths in subskills (e.g., `.cortex/skills/build-routing-solution/openrouteservice_app/...`) are relative to the repository root directory.
 
 ### Query Tag
 
@@ -98,30 +95,30 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 2. **If existing region and user confirms YES**, clear existing graphs and elevation cache:
    ```sql
-   REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/;
-   REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/;
+   REMOVE @OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE/<REGION_NAME>/;
+   REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/<REGION_NAME>/;
    ```
    
    > **_NOTE:_** This ensures graphs are rebuilt from scratch with the new map data rather than using potentially stale cached data.
 
 3. **Resume** the compute pool (required if it was suspended during location change):
    ```sql
-   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL RESUME;
+   ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL RESUME;
    ```
 
 4. **Resume** all services:
    ```sql
-   CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES();
+   CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
    ```
 
 5. **Verify** ORS is healthy:
    ```sql
-   SELECT OPENROUTESERVICE_NATIVE_APP.CORE.CHECK_HEALTH();
+   SELECT OPENROUTESERVICE_APP.CORE.CHECK_HEALTH();
    ```
 
 6. **Monitor** ORS_SERVICE logs for graph building progress:
    ```sql
-   CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 100);
+   CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE', 0, 'ors', 100);
    ```
    - Look for: `"Graph built in X seconds"` messages for each enabled profile
 
@@ -137,12 +134,12 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 1. **Clear** any existing configuration:
    ```sql
-   DELETE FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG;
+   DELETE FROM OPENROUTESERVICE_APP.CORE.MAP_CONFIG;
    ```
 
 2. **Insert** the new map configuration:
    ```sql
-   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   INSERT INTO OPENROUTESERVICE_APP.CORE.MAP_CONFIG 
    (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
    VALUES ('<CITY_NAME>', <CENTER_LAT>, <CENTER_LON>, <MIN_LAT>, <MAX_LAT>, <MIN_LON>, <MAX_LON>, '<MAP_NAME>', CURRENT_TIMESTAMP());
    ```
@@ -151,28 +148,28 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
    
    **Example for Paris:**
    ```sql
-   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   INSERT INTO OPENROUTESERVICE_APP.CORE.MAP_CONFIG 
    (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
    VALUES ('Paris', 48.8566, 2.3522, 48.80, 48.92, 2.22, 2.42, 'Paris.osm.pbf', CURRENT_TIMESTAMP());
    ```
    
    **Example for Berlin:**
    ```sql
-   INSERT INTO OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG 
+   INSERT INTO OPENROUTESERVICE_APP.CORE.MAP_CONFIG 
    (city_name, center_lat, center_lon, min_lat, max_lat, min_lon, max_lon, osm_file_name, updated_at)
    VALUES ('Berlin', 52.5200, 13.4050, 52.35, 52.70, 13.08, 13.77, 'Berlin.osm.pbf', CURRENT_TIMESTAMP());
    ```
 
 3. **Verify** the configuration was saved:
    ```sql
-   SELECT * FROM OPENROUTESERVICE_NATIVE_APP.CORE.MAP_CONFIG;
+   SELECT * FROM OPENROUTESERVICE_APP.CORE.MAP_CONFIG;
    ```
 
 **Note:** The Function Tester will automatically generate test addresses within these bounds when it loads. If no MAP_CONFIG entry exists, it defaults to San Francisco.
 
 **Output:** MAP_CONFIG table updated with new region bounds
 
-### Step 6: Redeploy Function Tester
+### Step 6: Redeploy SPCS APP
 
 **Goal:** Upload and redeploy the Function Tester so it picks up the new MAP_CONFIG
 
@@ -182,15 +179,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-c
 
 **Actions:**
 
-1. **Redeploy** the ORS Control App to pick up changes:
-   ```bash
-   bash .cortex/skills/build-routing-solution/native_app/services/ors_control_app/deploy.sh <connection>
-   ```
-
-2. **Upgrade** the Native App to apply changes:
-   ```sql
-   ALTER APPLICATION OPENROUTESERVICE_NATIVE_APP UPGRADE USING '@OPENROUTESERVICE_NATIVE_APP_PKG.APP_SRC.STAGE';
-   ```
+1. Follow instructions from AGENT.MD to deploy new ors control app
 
 **Output:** Function Tester redeployed, now showing addresses for the new region
 

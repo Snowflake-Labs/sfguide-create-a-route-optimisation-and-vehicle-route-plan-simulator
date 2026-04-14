@@ -13,14 +13,14 @@ snow spcs image-registry login -c <connection>
 
 **Podman:**
 ```bash
-REGISTRY_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection> | cut -d'/' -f1)
+REGISTRY_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection> | cut -d'/' -f1)
 snow spcs image-registry token --format=JSON -c <connection> | podman login $REGISTRY_URL -u 0sessiontoken --password-stdin
 ```
 
 ## 2. Get Repository URL
 
 ```bash
-REPO_URL=$(snow spcs image-repository url openrouteservice_setup.public.image_repository -c <connection>)
+REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection>)
 echo $REPO_URL
 ```
 
@@ -31,48 +31,42 @@ Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workfl
 > **Agent note:** `$CONTAINER_CMD` does not persist across separate bash calls. Prefix each command
 > with `CONTAINER_CMD=podman` (or `docker`) inline, or chain all commands with `&&` in one call.
 
-> **ARM Mac users:** You will see `WARNING: The requested image's platform (linux/amd64) does not match the detected host platform` during builds and when running images locally. This is expected — SPCS requires linux/amd64 images. The warning does not affect the deployed containers.
-
 ```bash
 # openrouteservice image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/openrouteservice:v9.0.0 \
-  native_app/services/openrouteservice
+  openrouteservice_app/services/openrouteservice
 $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
 
 # downloader image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/downloader:v0.0.3 \
-  native_app/services/downloader
+  openrouteservice_app/services/downloader
 $CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
 
 # gateway image (gunicorn, ThreadPoolExecutor concurrency)
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/routing_reverse_proxy:v1.0.0 \
-  native_app/services/gateway
+  openrouteservice_app/services/gateway
 $CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v1.0.0
 
 # vroom image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/vroom-docker:v1.0.1 \
-  native_app/services/vroom
+  openrouteservice_app/services/vroom
 $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
 
 # ors control app (React management UI)
-# IMPORTANT: Unlike the other 4 images, ors_control_app requires a local npm build
-# BEFORE running docker build. Run npm install/build first, then use Dockerfile.runtime
-# (not the standard Dockerfile). This is because the multi-stage Dockerfile fails on
-# ARM Macs due to esbuild architecture issues.
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
 # Build the React app and server locally first, then use the runtime-only Dockerfile:
-cd native_app/services/ors_control_app
+cd openrouteservice_app/services/ors_control_app
 npm install --legacy-peer-deps && npm run build && npm run build:server
 mv .dockerignore .dockerignore.bak 2>/dev/null || true
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:v1.0.102 .
+  -t $REPO_URL/ors_control_app:v1.0.117 .
 mv .dockerignore.bak .dockerignore 2>/dev/null || true
-$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.102
+$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.117
 cd ../../..
 ```
 
@@ -89,7 +83,7 @@ cd ../../..
 Docker push progress output uses carriage returns that may be invisible in some terminals. Always verify pushes completed:
 
 ```bash
-snow spcs image-repository list-images openrouteservice_setup.public.image_repository -c <connection>
+snow spcs image-repository list-images OPENROUTESERVICE_APP.core.image_repository -c <connection>
 ```
 
 Expected: 5 images with tags matching the Image Inventory below.
@@ -102,7 +96,7 @@ Expected: 5 images with tags matching the Image Inventory below.
 | Downloader | downloader | v0.0.3 |
 | Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.102 |
+| Control App | ors_control_app | v1.0.117 |
 
 ## Expected Duration
 
@@ -115,22 +109,3 @@ Expected: 5 images with tags matching the Image Inventory below.
 - **Docker daemon not running**: Start Docker Desktop
 - **ARM Mac esbuild crash**: Build React app locally first, use `Dockerfile.runtime` (see ors_control_app section above)
 - **Podman pushes to wrong registry**: Use manual `--creds` flag, see `references/troubleshooting.md`
-
-## CRITICAL: Pre-Deploy Version Check
-
-Before running `snow app run`, you MUST verify that all image version tags in
-`manifest.yml` match the tags you just built and pushed. A version mismatch
-causes deployment to fail with `Image ... not found`.
-
-Run the validation script:
-```bash
-bash scripts/check_image_versions.sh
-```
-
-Or manually compare:
-```bash
-grep -ohE '[a-z_-]+:v[0-9.]+' native_app/app/manifest.yml | sort
-grep -rohE '[a-z_-]+:v[0-9.]+' native_app/services/*/*.yaml | sort -u
-```
-
-All 5 pairs must match: openrouteservice, downloader, routing_reverse_proxy, vroom-docker, ors_control_app.

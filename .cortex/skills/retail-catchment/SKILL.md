@@ -23,7 +23,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 ## Prerequisites
 
-- OpenRouteService Native App installed (e.g., `OPENROUTESERVICE_NATIVE_APP`)
+- OpenRouteService App installed (e.g., `OPENROUTESERVICE_APP`)
 - A role with privileges listed in the Required Privileges section below
 - snow CLI installed and configured
 
@@ -39,7 +39,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates CONFIG, RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
-| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS isochrone functions |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS isochrone functions |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 

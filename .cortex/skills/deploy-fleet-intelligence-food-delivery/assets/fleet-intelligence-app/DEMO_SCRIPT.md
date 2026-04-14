@@ -2,7 +2,7 @@
 
 ## Overview
 
-SwiftBite Fleet Intelligence is a Snowflake Native App that simulates a real-time food delivery operations platform. It combines Overture Maps data, OpenRouteService routing, Snowflake Cortex AI, and a real-time operational dashboard — all running inside Snowflake on Snowpark Container Services.
+SwiftBite Fleet Intelligence simulates a real-time food delivery operations platform. It combines Overture Maps data, OpenRouteService routing, Snowflake Cortex AI, and a real-time operational dashboard — all running inside Snowflake on Snowpark Container Services.
 
 **Duration:** 20–25 minutes
 **Audience:** Data leaders, operations teams, executives, Snowflake prospects

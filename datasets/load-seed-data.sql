@@ -4,13 +4,13 @@
 -- so the ORS Control App is fully populated on first launch.
 --
 -- Prerequisites:
---   - OPENROUTESERVICE_SETUP database exists (created by snow app run)
+--   - OPENROUTESERVICE_APP database exists
 --   - SYNTHETIC_DATASETS.UNIFIED schema exists (created in Step 6)
 --   - FLEET_INTELLIGENCE.CORE schema exists (created in Step 6)
---   - Parquet files uploaded to @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+--   - Parquet files uploaded to @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
 --
 -- Usage:
---   snow stage copy datasets/ @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/ --overwrite
+--   snow stage copy datasets/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/ --overwrite
 --   snow sql -f datasets/load-seed-data.sql
 --------------------------------------------------------------------------------
 
@@ -21,17 +21,17 @@ USE WAREHOUSE ROUTING_ANALYTICS;
 --------------------------------------------------------------------------------
 -- Stage & File Format
 --------------------------------------------------------------------------------
-CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
+CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF
   TYPE = PARQUET
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------------------
 -- 1. INTRO_TRIPS (Intro page)
 --------------------------------------------------------------------------------
-CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS (
+CREATE OR REPLACE TABLE OPENROUTESERVICE_APP.CORE.INTRO_TRIPS (
   TRIP_ID NUMBER(18,0),
   O_LNG FLOAT,
   O_LAT FLOAT,
@@ -46,7 +46,7 @@ CREATE OR REPLACE TABLE OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-COPY INTO OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS
+COPY INTO OPENROUTESERVICE_APP.CORE.INTRO_TRIPS
 FROM (
   SELECT
     $1:TRIP_ID::NUMBER(18,0),
@@ -60,7 +60,7 @@ FROM (
     $1:DURATION_S::FLOAT,
     TRY_PARSE_JSON($1:ROUTE_GEOJSON::VARCHAR)::OBJECT,
     TRY_TO_GEOGRAPHY($1:ROUTE_GEOG_WKT::VARCHAR)
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/intro/
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/intro/
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -128,7 +128,7 @@ FROM (
     $1:ODOMETER_KM::FLOAT,
     $1:POINT_INDEX::INT,
     $1:JOB_ID::VARCHAR
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/fact_vehicle_telemetry/
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_vehicle_telemetry/
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -194,7 +194,7 @@ FROM (
     $1:STATUS::VARCHAR,
     $1:ORS_PROFILE::VARCHAR,
     $1:JOB_ID::VARCHAR
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/fact_trips/
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_trips/
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -221,7 +221,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","vers
 TRUNCATE TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET;
 
 COPY INTO SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_fleet_
+FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_fleet_
 FILE_FORMAT = (TYPE = PARQUET)
 MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
 PURGE = FALSE
@@ -257,7 +257,7 @@ FROM (
     TRY_TO_GEOGRAPHY($1:POINT_GEOM_WKT::VARCHAR),
     $1:SOURCE::VARCHAR,
     $1:JOB_ID::VARCHAR
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/synthetic_ebikes/dim_pois_
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_pois_
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -330,7 +330,7 @@ FROM (
     $1:DATA_SOURCE::VARCHAR,
     $1:IS_DEFAULT::BOOLEAN,
     $1:PROVISIONED_AT::TIMESTAMP_NTZ
-  FROM @OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE/metadata/region_registry
+  FROM @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/metadata/region_registry
 )
 FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
@@ -401,18 +401,10 @@ SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","
 
 --------------------------------------------------------------------------------
 -- 3d. REGION_CATALOG (pre-seeded Geofabrik + BBBike catalog)
---     Loaded via native app procedure (EXECUTE AS OWNER) so the catalog
---     is app-owned. Skips if catalog already has data.
---     Requires stage/file-format grants (issued here, reused by section 6).
+--     Skips if catalog already has data.
 --------------------------------------------------------------------------------
-GRANT READ ON STAGE OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE
-  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-GRANT USAGE ON FILE FORMAT OPENROUTESERVICE_SETUP.PUBLIC.PARQUET_FF
-  TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_CATALOG(
-  '@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE'
+CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG(
+  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE'
 );
 
 --------------------------------------------------------------------------------
@@ -434,25 +426,13 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
 SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
     TRIP_END   = DATEADD('SECOND', $TS_OFFSET, TRIP_END);
 
---------------------------------------------------------------------------------
--- 5. Grant SELECT to native app on all loaded tables
---------------------------------------------------------------------------------
-GRANT SELECT ON TABLE OPENROUTESERVICE_SETUP.PUBLIC.INTRO_TRIPS TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA FLEET_INTELLIGENCE.CORE TO APPLICATION OPENROUTESERVICE_NATIVE_APP;
 
 --------------------------------------------------------------------------------
 -- 6. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)
 --    178 H3 hexagons, 29,402 travel-time pairs.
---    Loaded via native app procedure (EXECUTE AS OWNER) so the table is
---    app-owned and visible in GET_MATRIX_INVENTORY() / Matrix Viewer.
---    External roles cannot CREATE TABLE in the native app's TRAVEL_MATRIX
---    schema, so we delegate to the app's own procedure.
---    Stage/file-format GRANTs already issued in section 3d.
 --------------------------------------------------------------------------------
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.LOAD_SEED_MATRIX(
-  '@OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE',
+CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
+  '@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE',
   'SanFrancisco',
   'cycling-electric',
   'RES8'

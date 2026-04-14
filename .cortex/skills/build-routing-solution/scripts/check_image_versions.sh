@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-NATIVE_APP_DIR="${1:-$SKILL_DIR/native_app}"
+OPENROUTESERVICE_APP_DIR="${1:-$SKILL_DIR/openrouteservice_app}"
 
-VERSION_FILE="$SKILL_DIR/native_app/image-versions.env"
-MANIFEST="$NATIVE_APP_DIR/app/manifest.yml"
+VERSION_FILE="$SKILL_DIR/openrouteservice_app/image-versions.env"
+MANIFEST="$OPENROUTESERVICE_APP_DIR/app/manifest.yml"
 BUILD_MD="$SKILL_DIR/references/build-images.md"
 SKILL_MD="$SKILL_DIR/SKILL.md"
 README_MD="$SKILL_DIR/../../README.md"
@@ -53,7 +53,7 @@ for image in $IMAGE_NAMES; do
     error "manifest.yml missing $pair"
   fi
 
-  if ! grep -rqF "$pair" "$NATIVE_APP_DIR/services/" 2>/dev/null; then
+  if ! grep -rqF "$pair" "$OPENROUTESERVICE_APP_DIR/services/" 2>/dev/null; then
     error "service YAMLs missing $pair"
   fi
 
@@ -109,7 +109,7 @@ for label_file in "SKILL.md:$SKILL_MD" "README.md:$README_MD"; do
 done
 
 expected_app_ver="${ORS_CONTROL_APP_TAG#v}"
-svc_yaml="$NATIVE_APP_DIR/services/ors_control_app/ors_control_app_service.yaml"
+svc_yaml="$OPENROUTESERVICE_APP_DIR/services/ors_control_app/ors_control_app_service.yaml"
 if [ -f "$svc_yaml" ]; then
   yaml_env_ver=$(grep 'APP_VERSION' "$svc_yaml" 2>/dev/null | sed 's/.*"\([0-9.]*\)".*/\1/' || true)
   if [ -n "$yaml_env_ver" ] && [ "$yaml_env_ver" != "$expected_app_ver" ]; then

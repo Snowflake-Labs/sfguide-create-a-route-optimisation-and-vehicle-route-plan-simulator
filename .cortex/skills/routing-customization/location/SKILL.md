@@ -21,7 +21,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 ## Prerequisites
 
 - Active Snowflake connection
-- OpenRouteService Native App deployed
+- OpenRouteService App deployed
 - Compute resources for map download and graph building
 
 ## Input Parameters
@@ -44,7 +44,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 1. **Suspend** the compute pool (required before altering INSTANCE_FAMILY or other properties):
    ```sql
-   ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SUSPEND;
+   ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SUSPEND;
    ```
 
 **Output:** Compute pool suspended
@@ -63,8 +63,8 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 1. **Check** if map already exists:
    ```sql
-   ALTER STAGE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE REFRESH; 
-   LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE;
+   ALTER STAGE OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE REFRESH; 
+   LS @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE;
    ```
    - If map exists, ask user if they want to re-download
 
@@ -87,19 +87,19 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 3. **Check downloaded map size** and suggest resource scaling:
    ```sql
-   LS @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/;
+   LS @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/;
    ```
    
    - **1GB - 5GB maps:** Suggest scaling up compute:
      ```sql
-     ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
-     ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 28800;
+     ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+     ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 28800;
      ```
    
    - **5GB+ maps:** Suggest larger scaling:
      ```sql
-     ALTER COMPUTE POOL OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
-     ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 86400;
+     ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET INSTANCE_FAMILY = HIGHMEM_X64_M;
+     ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 86400;
      ```
 
 **Output:** Map data downloaded to stage
@@ -112,7 +112,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
 
 **Option A — Using WRITE_ORS_CONFIG (recommended):**
 ```sql
-CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
+CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
     '<REGION_NAME>',
     '<MAP_NAME>',
     'driving-car,driving-hgv,cycling-electric'  -- comma-separated profiles to enable
@@ -121,13 +121,13 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 **Option B — Manual editing (fallback):**
 
-1. **Edit** `.cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml`:
+1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`:
    - Change `source_file: /home/ors/files/{old-map}`
    - To: `source_file: /home/ors/files/<MAP_NAME>`
 
 2. **Upload** to stage:
    ```bash
-   snow stage copy .cortex/skills/build-routing-solution/native_app/provider_setup/staged_files/ors-config.yml @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 **Output:** Configuration updated
@@ -138,7 +138,7 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 **Actions:**
 
-1. **Edit** `.cortex/skills/build-routing-solution/native_app/services/openrouteservice/openrouteservice.yaml`:
+1. **Edit** `.cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml`:
    
    - **Update all volume source paths** to new region:
      ```yaml
@@ -153,14 +153,14 @@ CALL OPENROUTESERVICE_NATIVE_APP.CORE.WRITE_ORS_CONFIG(
 
 2. **Upload** specification:
    ```bash
-   snow stage copy .cortex/skills/build-routing-solution/native_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_native_app_pkg.app_src.stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
+   snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml @openrouteservice_app.core.ors_spcs_stage/services/openrouteservice/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
 3. **Update** service with new specification:
    ```sql
-   ALTER SERVICE IF EXISTS OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE
-   FROM @openrouteservice_native_app_pkg.app_src.stage 
-   SPECIFICATION_FILE='/services/openrouteservice/openrouteservice.yaml';
+   ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
+   SPECIFICATION_FILE = 'openrouteservice.yaml';
    ```
 
 > **_IMPORTANT: DO NOT modify the `REBUILD_GRAPHS` parameter in openrouteservice.yaml**

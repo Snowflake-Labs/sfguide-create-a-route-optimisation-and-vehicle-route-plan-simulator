@@ -1,115 +1,15 @@
 # Route Optimisation and Fleet Intelligence on Snowflake
 
-An end-to-end geospatial analytics platform deployed entirely on Snowflake. It packages the [OpenRouteService](https://openrouteservice.org/) routing engine as a Native App on Snowpark Container Services (SPCS), then layers fleet intelligence, route analysis, and retail analytics on top through modular Cortex Code skills.
+An end-to-end geospatial analytics platform deployed entirely on Snowflake. It packages the [OpenRouteService](https://openrouteservice.org/) routing engine on Snowpark Container Services (SPCS), then layers fleet intelligence, route analysis, and retail analytics on top through modular Cortex Code skills.
 
 Everything is deployed and operated through natural-language conversations in [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) -- each skill is a self-contained playbook the AI agent follows step-by-step.
 
-## Prerequisites
-
-- [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) with an active Snowflake connection
-- Snowflake account with privileges to create databases, warehouses, compute pools, and application packages
-- Docker or Podman (required only for building container images)
-
-## Getting Started
+## Quick Start
 
 1. Open this repository in Cortex Code
 2. Say **"check build prerequisites"** to verify your environment
-3. Say **"build routing solution"** to deploy the core platform (~15-30 minutes)
-4. Verify all services are running:
-   ```sql
-   SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
-   ```
-5. (Optional) Say **"change location to London"** to provision a different region
-6. Deploy any demo skill -- see [Usage](#usage) below
-7. When done, say **"routing-solution-cleanup"** to tear down all created objects
-
-## Usage
-
-### Invoking Skills
-
-Open this repo in Cortex Code and type any of these phrases:
-
-| What You Want | What to Say |
-|---------------|-------------|
-| Deploy the platform | `build routing solution` |
-| Check environment | `check build prerequisites` |
-| Change to London | `change location to London` |
-| Enable cycling profile | `change routing profile` |
-| Deploy taxi fleet demo | `generate driver locations` |
-| Deploy food delivery demo | `setup food delivery fleet` |
-| Deploy route deviation | `deploy route deviation` |
-| Deploy dwell analysis | `deploy dwell analysis` |
-| Deploy retail catchment | `deploy retail catchment` |
-| Deploy route optimization | `deploy route optimization demo` |
-| Create routing agent | `create routing agent` |
-| Clean up everything | `routing-solution-cleanup` |
-
-### Multi-Region Support
-
-The platform supports multiple geographic regions simultaneously:
-
-1. Deploy the core solution (defaults to San Francisco)
-2. Use **"change location to [city]"** to provision additional regions
-3. The Region Switcher in the Control App lets you switch between regions
-4. Each skill's CONFIG table can be pointed to any provisioned region
-
----
-
-## Skills Reference
-
-### Dependency Graph
-
-```mermaid
-graph TD
-    RP[routing-prerequisites] --> BRS[build-routing-solution]
-    BRS --> RC[routing-customization]
-    BRS --> RO[route-optimization]
-    BRS --> FIT[fleet-intelligence-taxis]
-    BRS --> FIFD[fleet-intelligence-food-delivery]
-    BRS --> RET[retail-catchment]
-    BRS --> RD[route-deviation]
-    BRS --> RA[routing-agent]
-    RC --> FIT
-    RC --> FIFD
-    RC --> RD
-    RD --> DA[dwell-analysis]
-```
-
-Deploy order: top to bottom. Teardown order: bottom to top.
-
-### Infrastructure (3 skills)
-
-| Skill | What It Does | Invoke With |
-|-------|-------------|-------------|
-| **build-routing-solution** | Builds 5 container images, creates databases/stages, deploys the native app, starts SPCS services, loads seed data. This is the foundation -- all other skills depend on it. | `build routing solution` |
-| **routing-prerequisites** | Checks local environment: Docker/Podman, Snow CLI, Git, network access to Snowflake registry. Run first if unsure about your setup. | `check build prerequisites` |
-| **routing-customization** | Routes to 3 subskills for changing the ORS deployment: swap geographic region (download new OSM data), switch routing profiles (driving-car, cycling-electric, foot-walking, etc.), or read current config. | `change location`, `change routing profile` |
-
-### Demo Solutions (6 skills)
-
-| Skill | What It Does | Dashboard Pages | Invoke With |
-|-------|-------------|-----------------|-------------|
-| **fleet-intelligence-taxis** | Generates realistic taxi GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable city, fleet size, and shift patterns. | Fleet Overview, Driver Routes, Heat Map | `generate driver locations` |
-| **fleet-intelligence-food-delivery** | Food delivery courier telemetry. Reads from unified schema via projection views. Configurable restaurant density and courier counts. | Delivery Dashboard, Fleet Map, Catchment Panel, Courier Heatmap | `setup food delivery fleet` |
-| **route-deviation** | 3-step ETL pipeline comparing actual GPS paths vs planned routes to detect detours and analyze deviation patterns. Vehicle-type agnostic. | Deviation Dashboard, Route Comparison, Route Inspector | `deploy route deviation` |
-| **dwell-analysis** | 12-step Dynamic Table pipeline: state detection, dwell sessionization, H3 congestion heatmaps, SLA breach alerts, facility utilization, daily trends. Most sophisticated pipeline in the platform. | Overview, Congestion Map, Facility Utilization, SLA Alerts, Trip Inspector, Driver Performance, Live Operations | `deploy dwell analysis` |
-| **route-optimization** | VRP demo using Overture Maps + CARTO Marketplace data. Includes Snowflake notebooks demonstrating the OPTIMIZATION function with time windows and capacity constraints. | Route Optimization (VRP simulator) | `deploy route optimization demo` |
-| **retail-catchment** | Retail location analysis using Overture Maps. Generates isochrone-based catchment zones, competitor proximity analysis, and address density metrics. | Retail Catchment | `deploy retail catchment` |
-
-### Advanced (1 skill)
-
-| Skill | What It Does | Dashboard Pages | Invoke With |
-|-------|-------------|-----------------|-------------|
-| **routing-agent** | Creates a Snowflake Intelligence (Cortex Agent) that wraps ORS functions as tools. Enables natural-language route planning with AI-powered geocoding. | Routing Agent (chat interface) | `create routing agent` |
-
-### Developer Tools (2 skills)
-
-| Skill | What It Does | Invoke With |
-|-------|-------------|-------------|
-| **skill-optimiser** | Audits, optimizes, and creates Cortex Code skills following Anthropic best practices. Checks SKILL.md structure, triggers, progressive disclosure, and frontmatter. | `audit skill`, `optimize skill` |
-| **routing-solution-cleanup** | Discovers all Snowflake objects created by any skill (via JSON COMMENT tags) and generates DROP statements. Supports dry-run mode, per-skill filtering, and reverse-dependency drop order. | `routing-solution-cleanup`, `cleanup`, `teardown` |
-
----
+3. Say **"build routing solution"** to deploy the core platform
+4. Say **"deploy route optimization demo"** (or any other skill) to extend
 
 ## Architecture Overview
 
@@ -131,7 +31,7 @@ graph TB
     end
 
     subgraph data [Data Layer]
-        SETUP["OPENROUTESERVICE_SETUP (infra)"]
+        SETUP["OPENROUTESERVICE_APP (infra)"]
         SYNTH["SYNTHETIC_DATASETS.UNIFIED (source)"]
         FI["FLEET_INTELLIGENCE.* (analytics)"]
     end
@@ -165,32 +65,25 @@ The `build-routing-solution` skill deploys the foundational platform. Everything
 
 | Database | Purpose |
 |----------|---------|
-| `OPENROUTESERVICE_SETUP` | Provider infrastructure: container image repository, OSM map stages, graph caches, elevation data, seed datasets |
+| `OPENROUTESERVICE_APP` | App infrastructure: container image repository, OSM map stages, graph caches, elevation data, seed datasets |
 | `SYNTHETIC_DATASETS` | Source telemetry data in a unified star schema, written by Data Studio |
 | `FLEET_INTELLIGENCE` | Analytics output -- one schema per skill for demo tables, views, and pipelines |
 
-### Native App
-
-The application `OPENROUTESERVICE_NATIVE_APP` is installed from the package `OPENROUTESERVICE_NATIVE_APP_PKG` and contains:
-
-- **Compute Pool**: `OPENROUTESERVICE_NATIVE_APP_COMPUTE_POOL` (HIGHMEM_X64_S, 1-5 nodes, auto-suspend)
-- **Warehouse**: `ROUTING_ANALYTICS` (MEDIUM, auto-suspend 60s)
-
 ### SPCS Services
 
-Five container services run inside the native app:
+Five container services run inside the app:
 
 | Service | Image | Purpose |
 |---------|-------|---------|
 | `ors_service` | `openrouteservice:v9.0.0` | Core routing engine (directions, isochrones, matrix) |
 | `vroom_service` | `vroom-docker:v1.0.1` | Vehicle Routing Problem (VRP) optimizer |
-| `routing_gateway_service` | `routing_reverse_proxy:v0.9.6` | Nginx reverse proxy routing requests to per-region ORS instances |
+| `routing_gateway_service` | `routing_reverse_proxy:v1.0.0` | Nginx reverse proxy routing requests to per-region ORS instances |
 | `downloader` | `downloader:v0.0.3` | Downloads OSM PBF map files from Geofabrik |
-| `ors_control_app` | `ors_control_app:v1.0.102` | React admin panel and demo dashboards (Express.js backend) |
+| `ors_control_app` | `ors_control_app:v1.0.117` | React admin panel and demo dashboards (Express.js backend) |
 
 ### SQL Functions
 
-Eight public SQL functions are exposed by the native app for use in any Snowflake worksheet, notebook, or stored procedure:
+Eight public SQL functions are exposed by the app for use in any Snowflake worksheet, notebook, or stored procedure:
 
 | Function | Description |
 |----------|-------------|
@@ -222,7 +115,7 @@ The core deployment pre-loads sample data so dashboards work immediately:
 
 ```mermaid
 graph LR
-    subgraph setup ["OPENROUTESERVICE_SETUP"]
+    subgraph setup ["OPENROUTESERVICE_APP"]
         IMG[Image Repository]
         OSM[OSM Map Stages]
         SEED[Seed Data Stage]
@@ -298,9 +191,65 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 
 ---
 
+## Skills Reference
+
+### Dependency Graph
+
+```mermaid
+graph TD
+    RP[routing-prerequisites] --> BRS[build-routing-solution]
+    BRS --> RC[routing-customization]
+    BRS --> RO[route-optimization]
+    BRS --> FIT[fleet-intelligence-taxis]
+    BRS --> FIFD[fleet-intelligence-food-delivery]
+    BRS --> RET[retail-catchment]
+    BRS --> RD[route-deviation]
+    BRS --> RA[routing-agent]
+    RC --> FIT
+    RC --> FIFD
+    RC --> RD
+    RD --> DA[dwell-analysis]
+```
+
+Deploy order: top to bottom. Teardown order: bottom to top.
+
+### Infrastructure (3 skills)
+
+| Skill | What It Does | Invoke With |
+|-------|-------------|-------------|
+| **build-routing-solution** | Builds 5 container images, creates databases/stages, deploys the ORS app, starts SPCS services, loads seed data. This is the foundation -- all other skills depend on it. | `build routing solution` |
+| **routing-prerequisites** | Checks local environment: Docker/Podman, Snow CLI, Git, network access to Snowflake registry. Run first if unsure about your setup. | `check build prerequisites` |
+| **routing-customization** | Routes to 3 subskills for changing the ORS deployment: swap geographic region (download new OSM data), switch routing profiles (driving-car, cycling-electric, foot-walking, etc.), or read current config. | `change location`, `change routing profile` |
+
+### Demo Solutions (6 skills)
+
+| Skill | What It Does | Dashboard Pages | Invoke With |
+|-------|-------------|-----------------|-------------|
+| **fleet-intelligence-taxis** | Generates realistic taxi GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable city, fleet size, and shift patterns. | Fleet Overview, Driver Routes, Heat Map | `generate driver locations` |
+| **fleet-intelligence-food-delivery** | Food delivery courier telemetry. Reads from unified schema via projection views. Configurable restaurant density and courier counts. | Delivery Dashboard, Fleet Map, Catchment Panel, Courier Heatmap | `setup food delivery fleet` |
+| **route-deviation** | 3-step ETL pipeline comparing actual GPS paths vs planned routes to detect detours and analyze deviation patterns. Vehicle-type agnostic. | Deviation Dashboard, Route Comparison, Route Inspector | `deploy route deviation` |
+| **dwell-analysis** | 12-step Dynamic Table pipeline: state detection, dwell sessionization, H3 congestion heatmaps, SLA breach alerts, facility utilization, daily trends. Most sophisticated pipeline in the platform. | Overview, Congestion Map, Facility Utilization, SLA Alerts, Trip Inspector, Driver Performance, Live Operations | `deploy dwell analysis` |
+| **route-optimization** | VRP demo using Overture Maps + CARTO Marketplace data. Includes Snowflake notebooks demonstrating the OPTIMIZATION function with time windows and capacity constraints. | Route Optimization (VRP simulator) | `deploy route optimization demo` |
+| **retail-catchment** | Retail location analysis using Overture Maps. Generates isochrone-based catchment zones, competitor proximity analysis, and address density metrics. | Retail Catchment | `deploy retail catchment` |
+
+### Advanced (1 skill)
+
+| Skill | What It Does | Dashboard Pages | Invoke With |
+|-------|-------------|-----------------|-------------|
+| **routing-agent** | Creates a Snowflake Intelligence (Cortex Agent) that wraps ORS functions as tools. Enables natural-language route planning with AI-powered geocoding. | Routing Agent (chat interface) | `create routing agent` |
+
+### Developer Tools (2 skills)
+
+| Skill | What It Does | Invoke With |
+|-------|-------------|-------------|
+| **skill-optimiser** | Audits, optimizes, and creates Cortex Code skills following Anthropic best practices. Checks SKILL.md structure, triggers, progressive disclosure, and frontmatter. | `audit skill`, `optimize skill` |
+| **routing-solution-cleanup** | Discovers all Snowflake objects created by any skill (via JSON COMMENT tags) and generates DROP statements. Supports dry-run mode, per-skill filtering, and reverse-dependency drop order. | `routing-solution-cleanup`, `cleanup`, `teardown` |
+
+---
+
 ## ORS Control App
 
-The ORS Control App is a React single-page application with an Express.js backend, running as a Snowpark Container Service inside the native app. It serves as the unified dashboard for the entire platform -- no separate apps needed.
+The ORS Control App is a React single-page application with an Express.js backend, running as a Snowpark Container Service service. It serves as the unified dashboard for the entire platform -- no separate apps needed.
 
 ### Demo Pages
 
@@ -313,7 +262,7 @@ The ORS Control App is a React single-page application with an Express.js backen
 | **Route Deviation** | Deviation Dashboard, Route Comparison, Route Inspector (3 pages) | `ROUTE_DEVIATION` ETL tables |
 | **Route Optimization** | VRP simulator with interactive map | `ROUTE_OPTIMIZATION` + live ORS calls |
 | **Retail Catchment** | Isochrone analysis with competitor mapping | `RETAIL_CATCHMENT` + live ORS calls |
-| **Routing Agent** | Natural-language chat interface for route planning | Live Cortex Agent calls |
+| **Routing Agent** | Natural-language chat interface for route planning with interactive map visualization of routing results | Live Cortex Agent calls |
 | **Travel Time Explorer** | H3 hexagon travel time visualization | `TRAVEL_MATRIX` tables |
 | **Data Studio** | Synthetic telemetry data generation UI | Writes to `SYNTHETIC_DATASETS.UNIFIED` |
 
@@ -338,6 +287,48 @@ The ORS Control App is a React single-page application with an Express.js backen
 
 ---
 
+## For Users
+
+### Deployment Flow
+
+```
+1. Check prerequisites     -->  "check build prerequisites"
+2. Deploy core platform    -->  "build routing solution"
+3. (Optional) Change city  -->  "change location to London"
+4. Deploy any skill        -->  "deploy dwell analysis" / "setup food delivery fleet" / etc.
+5. Open ORS Control App    -->  Dashboard URL printed after deployment
+```
+
+### Invoking Skills
+
+Open this repo in Cortex Code and type any of these phrases:
+
+| What You Want | What to Say |
+|---------------|-------------|
+| Deploy the platform | `build routing solution` |
+| Check environment | `check build prerequisites` |
+| Change to London | `change location to London` |
+| Enable cycling profile | `change routing profile` |
+| Deploy taxi fleet demo | `generate driver locations` |
+| Deploy food delivery demo | `setup food delivery fleet` |
+| Deploy route deviation | `deploy route deviation` |
+| Deploy dwell analysis | `deploy dwell analysis` |
+| Deploy retail catchment | `deploy retail catchment` |
+| Deploy route optimization | `deploy route optimization demo` |
+| Create routing agent | `create routing agent` |
+| Clean up everything | `routing-solution-cleanup` |
+
+### Multi-Region Support
+
+The platform supports multiple geographic regions simultaneously:
+
+1. Deploy the core solution (defaults to San Francisco)
+2. Use **"change location to [city]"** to provision additional regions
+3. The Region Switcher in the Control App lets you switch between regions
+4. Each skill's CONFIG table can be pointed to any provisioned region
+
+---
+
 ## For Developers
 
 ### Repository Structure
@@ -348,7 +339,7 @@ The ORS Control App is a React single-page application with an Express.js backen
   |   +-- SKILL.md                 # Skill definition (YAML frontmatter + instructions)
   |   +-- references/              # Detailed SQL, code, and documentation
   |   +-- assets/                  # Notebooks and other deployable artifacts
-  +-- build-routing-solution/      # Core platform (native app, Docker configs, deploy scripts)
+  +-- build-routing-solution/      # Core platform (ORS app, Docker configs, deploy scripts)
   +-- evals/                       # Eval framework (trigger, quality, cross-ref)
 datasets/                          # Seed data (parquet files loaded during core deployment)
 docs/                              # Guides and documentation
@@ -356,21 +347,6 @@ logs/                              # Skill execution error logs
 archive/                           # Archived / deprecated materials
 AGENTS.md                          # AI assistant project guidance
 ```
-
-### Native App Module System
-
-The native app's `setup_script.sql` is a thin orchestrator that calls six domain-specific SQL modules:
-
-| Module | Domain | What It Creates |
-|--------|--------|-----------------|
-| `01_core_infra.sql` | Compute, stages, services | Compute pool, stages, all 5 SPCS services, lifecycle callbacks |
-| `02_routing_functions.sql` | SQL functions | 8 public functions + 7 internal `_RAW` service functions, `MAP_CONFIG`, `VERSION_INFO` |
-| `03_region_management.sql` | Multi-region | `REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, provisioning + catalog refresh procedures |
-| `04_service_lifecycle.sql` | Service ops | Resume, suspend, scale, status procedures |
-| `05_matrix_pipeline.sql` | Matrix build | `MATRIX_BUILD_JOBS`, build/flatten procedures |
-| `06_matrix_ops.sql` | Matrix ops | Status, inventory, delete procedures |
-
-Changes to any module must go through `upgrade_app.sh` -- never create objects directly via SQL.
 
 ### ORS Control App Development
 
@@ -385,10 +361,9 @@ ors_control_app/
   server/                 # Express.js backend
     index.ts              # Core API routes (44 endpoints)
     studio/               # Data Studio sub-router
-  deploy.sh               # Build + Docker push + upgrade
 ```
 
-Deploy flow: `npm run build` -> Docker build (linux/amd64) -> push to SPCS registry -> `ALTER APPLICATION UPGRADE`.
+Deploy flow: `npm run build` -> Docker build (linux/amd64) -> push to SPCS registry -> upload spec to stage -> `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 
 ### Object Tracking and Cleanup
 
@@ -416,6 +391,12 @@ The `routing-solution-cleanup` skill queries `INFORMATION_SCHEMA` for objects ma
 6. See `AGENTS.md` for full conventions and rules
 
 ---
+
+## Prerequisites
+
+- [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) with an active Snowflake connection
+- Snowflake account with privileges to create databases, warehouses, compute pools, and application packages
+- Docker or Podman (required only for building container images)
 
 ## License
 

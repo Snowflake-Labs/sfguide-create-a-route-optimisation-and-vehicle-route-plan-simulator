@@ -24,7 +24,7 @@ Together they provide full observability: which skill created which objects, and
 
 ### Skill-Level Tags
 
-Used by all deployment/demo skills (everything except native app internal modules).
+Used by all deployment/demo skills.
 
 #### query_tag Format
 
@@ -35,7 +35,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-na
 #### Object COMMENT Format
 
 ```sql
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|native-app>"}}';
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"<sql|notebook|app>"}}';
 ```
 
 For CTAS (CREATE TABLE AS SELECT) or objects that don't support inline COMMENT:
@@ -57,7 +57,7 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
   },
   "attributes": {
     "is_quickstart": 1,
-    "source": "<sql|notebook|native-app>"
+    "source": "<sql|notebook|app>"
   }
 }
 ```
@@ -69,48 +69,8 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 | `version.major` | integer | Major version of the skill. |
 | `version.minor` | integer | Minor version of the skill. |
 | `attributes.is_quickstart` | integer | Always `1`. Indicates this is a quickstart/demo asset. |
-| `attributes.source` | string | How the object was created: `sql`, `notebook`, or `native-app`. |
+| `attributes.source` | string | How the object was created: `sql`, `notebook` or `app`. |
 
-### Native App Module Tags
-
-Used by objects created inside the ORS native app (`OPENROUTESERVICE_NATIVE_APP`).
-
-```sql
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"<1.0|2.0>","attributes":{"component":"<component>"}}';
-```
-
-#### JSON Schema (Native App)
-
-```json
-{
-  "origin": "sf_sit-is-fleet",
-  "name": "build-routing-solution",
-  "version": "<1.0|2.0>",
-  "attributes": {
-    "component": "<core|routing|provisioner|multi-city|lifecycle|matrix|ui>"
-  }
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `origin` | string | Always `sf_sit-is-fleet`. |
-| `name` | string | Always `build-routing-solution` for native app objects. |
-| `version` | string | Version string (note: string, not object -- differs from skill-level format). |
-| `attributes.component` | string | Which module created the object. See component mapping below. |
-
-#### Native App Component Mapping
-
-| Module File | Component Tag | Objects |
-|-------------|---------------|---------|
-| `01_core_infra.sql` | `core` | Compute pool, stages, services (downloader, ORS, VROOM, gateway), VERSION_INFO table |
-| `02_routing_functions.sql` | `routing` | All routing functions (DIRECTIONS, ISOCHRONES, OPTIMIZATION, MATRIX, etc.), MAP_CONFIG table |
-| `03_city_management.sql` | `provisioner` | CITY_PROVISION_JOBS table, provisioning procedures |
-| `03_city_management.sql` | `multi-city` | CITY_ORS_MAP table, per-region ORS services, city management procedures |
-| `04_service_lifecycle.sql` | `lifecycle` | Resume, suspend, scale, status procedures |
-| `05_matrix_pipeline.sql` | `matrix` | Matrix build procedures, hexagon/queue/raw tables |
-| `06_matrix_ops.sql` | `matrix` | Matrix status, inventory, delete, restore procedures |
-| `01_core_infra.sql` | `ui` | ORS Control App service, Streamlit control_app |
 
 ## Per-Skill Object Inventory
 
@@ -120,13 +80,13 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 
 | Object | Type | Location |
 |--------|------|----------|
-| `OPENROUTESERVICE_SETUP` | Database | Account |
-| `OPENROUTESERVICE_SETUP.PUBLIC.ORS_SPCS_STAGE` | Stage | Database |
-| `OPENROUTESERVICE_SETUP.PUBLIC.ORS_GRAPHS_SPCS_STAGE` | Stage | Database |
-| `OPENROUTESERVICE_SETUP.PUBLIC.ORS_ELEVATION_CACHE_SPCS_STAGE` | Stage | Database |
-| `OPENROUTESERVICE_SETUP.PUBLIC.IMAGE_REPOSITORY` | Image Repository | Database |
+| `OPENROUTESERVICE_APP` | Database | Account |
+| `OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE` | Stage | Database |
+| `OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE` | Stage | Database |
+| `OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE` | Stage | Database |
+| `OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY` | Image Repository | Database |
 | `ROUTING_ANALYTICS` | Warehouse | Account |
-| `OPENROUTESERVICE_SETUP.PUBLIC.SEED_DATA_STAGE` | Stage | Database |
+| `OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE` | Stage | Database |
 | `SYNTHETIC_DATASETS` | Database | Account |
 | `SYNTHETIC_DATASETS.UNIFIED` | Schema | Database |
 | `FLEET_INTELLIGENCE` | Database | Account |
@@ -447,7 +407,7 @@ SELECT
     TABLE_NAME AS OBJECT_NAME,
     PARSE_JSON(COMMENT):version::STRING AS VERSION
 FROM INFORMATION_SCHEMA.TABLES
-WHERE TABLE_CATALOG = 'OPENROUTESERVICE_NATIVE_APP'
+WHERE TABLE_CATALOG = 'OPENROUTESERVICE_APP'
   AND COMMENT LIKE '%sf_sit-is-fleet%'
 ORDER BY COMPONENT, OBJECT_TYPE, OBJECT_NAME;
 ```
@@ -511,7 +471,7 @@ Both modes set the tracking name `oss-build-routing-solution`.
 
 ## Known Limitations
 
-1. **Service functions** (`CREATE FUNCTION ... SERVICE=...`) in the native app do not support `ALTER FUNCTION SET COMMENT`. These functions (8 internal `_*_RAW` functions) are tracked via their parent procedure's COMMENT tag and the session `query_tag`.
+1. **Service functions** (`CREATE FUNCTION ... SERVICE=...`) in the ORS app do not support `ALTER FUNCTION SET COMMENT`. These functions (8 internal `_*_RAW` functions) are tracked via their parent procedure's COMMENT tag and the session `query_tag`.
 
 2. **Dynamically named objects** (travel-time-matrix Tasks and tables) use parameterized names like `<REGION>_TRAVEL_TIME_RES<N>`. Discovery queries must use `LIKE '%sf_sit-is-fleet%'` pattern matching rather than exact name matching.
 

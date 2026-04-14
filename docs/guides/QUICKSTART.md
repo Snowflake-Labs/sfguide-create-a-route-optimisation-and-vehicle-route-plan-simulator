@@ -26,16 +26,16 @@ This triggers the `routing-prerequisites` skill, which verifies:
 > "Build the routing solution"
 
 This triggers the `build-routing-solution` skill. It will:
-1. Build Docker images for ORS, VROOM, Gateway, and Downloader
+1. Build Docker images for ORS, VROOM, Gateway, and Downloader and ORS Control App
 2. Push images to Snowflake Image Repository
-3. Deploy the ORS Native App on SPCS
+3. Deploy the ORS App on SPCS
 4. Download and configure OpenStreetMap data for your region
 
 **Time:** ~15–30 minutes depending on region size and compute pool provisioning.
 
-**Verify:** All 4 services should show RUNNING:
+**Verify:** All 5 services should show RUNNING:
 ```sql
-SHOW SERVICES IN APPLICATION OPENROUTESERVICE_NATIVE_APP;
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
 ```
 
 ## Step 3: Configure Your Region
@@ -52,7 +52,7 @@ Pick one (or more) of these demo skills:
 |----------|-------------|
 | "Deploy route optimization demo" | VRP simulator with CARTO data + Streamlit |
 | "Generate taxi driver locations" | Realistic taxi fleet telemetry + Streamlit dashboard |
-| "Generate food delivery courier data" | Food delivery simulation + React native app |
+| "Generate food delivery courier data" | Food delivery simulation + React app |
 | "Deploy retail catchment demo" | Retail location analysis with isochrone zones |
 | "Deploy route deviation demo" | Detour detection ETL + Streamlit dashboards |
 | "Deploy dwell analysis" | 12-step Dynamic Table pipeline for dwell/congestion |
@@ -85,5 +85,4 @@ This triggers the `routing-solution-cleanup` skill, which discovers all tagged S
 ## Further Reading
 
 - [AGENTS.md](../../AGENTS.md) — Skill conventions and dependency graph
-- [Shared Infrastructure Map](../dev/SHARED-INFRASTRUCTURE.md) — Database/warehouse ownership across skills
 - [Skill Audit Report](../dev/AUDIT-REPORT.md) — Full skill quality audit

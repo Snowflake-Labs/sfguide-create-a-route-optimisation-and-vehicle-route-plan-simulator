@@ -20,11 +20,11 @@ This skill deploys **two independent demos** that share the same ORS routing eng
 | **Docker required** | Yes | No |
 | **Can deploy independently** | Yes | Yes (but needs ORS from Step 2 for route generation) |
 
-> **You can deploy one or both.** The React native app is self-contained. The Streamlit demo needs ORS routing functions from the native app to generate routes in Steps 8-9.
+> **You can deploy one or both.** The React app is self-contained. The Streamlit demo needs ORS routing functions from the ORS app to generate routes in Steps 8-9.
 
 ## When to Use
 
-- User wants to deploy the React Fleet Intelligence native app (Demo 1)
+- User wants to deploy the React Fleet Intelligence app (Demo 1)
 - User wants to deploy the Streamlit SwiftBite dashboard (Demo 2)
 - User wants both demos
 - User wants to generate delivery simulation data (couriers, orders, routes)
@@ -61,8 +61,8 @@ Step 1: Query Tag + Overture Maps             (SHARED — both demos)
   |                                          |
   v                                          v
 Step 2: Deploy Native App + ORS Routing      Step 3: Create Database/Warehouse/Schema
-  |     <-- references/native-app-deploy.md  |
-  |         references/maps-and-locations.md v
+  |                                          |
+  |                                          v
   |                                          Steps 4-9: Generate Simulation Data
   v                                            <-- references/data-generation.md
   DONE (React app is self-contained)         |
@@ -78,7 +78,7 @@ Step 2: Deploy Native App + ORS Routing      Step 3: Create Database/Warehouse/S
                                              DONE
 ```
 
-> **If deploying both:** Run Step 1 → Step 2 (React app) → Steps 3-11 (Streamlit). Step 2 must come first because Steps 8-9 need ORS routing functions from the native app.
+> **If deploying both:** Run Step 1 → Step 2 (React app) → Steps 3-11 (Streamlit). Step 2 must come first because Steps 8-9 need ORS routing functions from the ORS app.
 
 ### Execution Rules
 
@@ -125,7 +125,7 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US'
 
 ### Step 2: Deploy Native App, EAIs, and ORS Routing (Demo 1: React)
 
-This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP native app with ORS routing.
+This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP ORS app with ORS routing.
 
 **Load** `references/maps-and-locations.md` for city tables and Overture filters.
 **Load** `references/native-app-deploy.md` and follow sub-steps 2a through 2m.
@@ -141,7 +141,7 @@ This is the largest step. It builds and deploys the FLEET_INTELLIGENCE_APP nativ
 | 2c | Create image repository in Snowflake |
 | 2d | Tag and push all 5 Docker images |
 | 2e | Create application package + stage |
-| 2f | Upload native app files (manifest, setup_script, service YAMLs) |
+| 2f | Upload ORS app files (service YAMLs) |
 | 2g | Register version + install/upgrade application |
 | 2h | Grant privileges (compute pool, warehouse, endpoint, data access) |
 | 2i | Create **both** EAIs (map tiles + download) and bind via `REGISTER_SINGLE_CALLBACK` |
@@ -224,7 +224,7 @@ Builds an H3 hexagon-level travel time matrix using ORS MATRIX functions. Requir
 ## Stopping Points
 
 - Before Step 2b: City selection (user must choose location)
-- After Step 2k: Verify native app deployment before proceeding
+- After Step 2k: Verify ORS app deployment before proceeding
 - After Step 8: Verify routes before generating courier locations
 
 **Resume rule:** Upon user approval, proceed directly to next step.

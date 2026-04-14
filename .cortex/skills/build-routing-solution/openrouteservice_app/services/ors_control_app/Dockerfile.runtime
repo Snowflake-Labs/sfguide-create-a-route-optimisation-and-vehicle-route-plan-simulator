@@ -1,0 +1,18 @@
+# ── Stage 1: build ──────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --legacy-peer-deps
+COPY . .
+RUN npm run build
+RUN npx tsc -p tsconfig.server.json
+
+# ── Stage 2: runtime ────────────────────────────────────────────
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/dist-server ./dist-server
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --legacy-peer-deps
+EXPOSE 3001
+CMD ["node", "dist-server/index.js"]

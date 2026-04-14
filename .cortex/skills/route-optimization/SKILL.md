@@ -1,6 +1,6 @@
 ---
 name: route-optimization
-description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after native app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
+description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after ORS app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
 depends_on:
   - build-routing-solution
 metadata:
@@ -29,7 +29,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTE_OPTIMIZATION schema |
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION) | Creates CONFIG, PLACES, LOOKUP, JOB_TEMPLATE |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
-| USAGE ON DATABASE OPENROUTESERVICE_NATIVE_APP | Database | Calls ORS routing functions |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS routing functions |
 | EXECUTE MANAGED TASK | Account | Enables ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION (optional) |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -183,9 +183,9 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 ### ORS Functions (cross-app)
 | Function | Used By |
 |----------|---------|
-| OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES | Catchment preview (TABLE function) |
-| OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION | VRP solver |
-| OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS | Per-vehicle route geometry (TABLE function) |
+| OPENROUTESERVICE_APP.CORE.ISOCHRONES | Catchment preview (TABLE function) |
+| OPENROUTESERVICE_APP.CORE.OPTIMIZATION | VRP solver |
+| OPENROUTESERVICE_APP.CORE.DIRECTIONS | Per-vehicle route geometry (TABLE function) |
 | SNOWFLAKE.CORTEX.COMPLETE | AI geocoding |
 
 ---
@@ -215,7 +215,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | Marketplace access denied | `CALL SYSTEM$ACCEPT_LEGAL_TERMS` fails | Requires IMPORT SHARE privilege (see Required Privileges section) |
 | Notebook execution fails | `EXECUTE NOTEBOOK` errors | Check logs in Snowsight; verify `OVERTURE_MAPS__PLACES` accessible and warehouse active |
 | Cortex model unavailable | "model not found" error | Try fallback model or set `CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION'` |
-| Services not starting | SUSPENDED or FAILED status | `CALL OPENROUTESERVICE_NATIVE_APP.CORE.RESUME_ALL_SERVICES()`; check compute pool capacity |
+| Services not starting | SUSPENDED or FAILED status | `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()`; check compute pool capacity |
 | Dashboard shows no data | Verify PLACES, LOOKUP, JOB_TEMPLATE tables are populated |
 | Stage upload fails | Permission error | Verify WRITE privilege on stage and correct `--connection` |
 | Wrong POI region | PLACES has wrong city data | Fix geohash in Step 5, re-run notebook |

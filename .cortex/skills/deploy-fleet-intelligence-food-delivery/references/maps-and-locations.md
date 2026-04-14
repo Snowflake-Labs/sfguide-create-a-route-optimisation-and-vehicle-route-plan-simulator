@@ -20,7 +20,7 @@ These 11 cities are pre-configured. Selecting a new city in the app auto-provisi
 
 ## City-Specific vs Generic ORS Functions
 
-> **CRITICAL:** The native app creates both generic and city-specific functions. Generic functions route to the DEFAULT ORS service which only has the Karlsruhe (Germany) test graph. Always use city-specific functions for actual data.
+> **CRITICAL:** The ORS app creates both generic and city-specific functions. Generic functions route to the DEFAULT ORS service which only has the Karlsruhe (Germany) test graph. Always use city-specific functions for actual data.
 
 | Function Pattern | Routes To | Use When |
 |-----------------|-----------|----------|
@@ -73,7 +73,7 @@ Also add the city to the Overture Maps filter table below.
 
 **3. If NOT found**, check Geofabrik at `https://download.geofabrik.de/` for region-level PBF files.
 
-**4. Do NOT download the map.** It is downloaded automatically by the app's downloader service when `ROUTING.CREATE_CITY_ORS_SERVICE('{CityName}')` is called. The downloader service requires the `EXTERNAL_ACCESS_DOWNLOAD_REF` to be bound (see native-app-deploy.md Step 12i).
+**4. Do NOT download the map.** It is downloaded automatically by the app's downloader service when `ROUTING.CREATE_CITY_ORS_SERVICE('{CityName}')` is called. 
 
 ## Overture Maps Filters by City
 

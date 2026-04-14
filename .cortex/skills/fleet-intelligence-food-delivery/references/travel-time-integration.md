@@ -66,19 +66,19 @@ cp /tmp/California/California.osm.pbf /tmp/SanFrancisco.osm.pbf
 
 #### Step 4: Upload to ORS App Stage
 
-**CRITICAL:** Upload to `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`).
+**CRITICAL:** Upload to `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`).
 
 ```sql
 -- Remove existing SF data
-REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/SanFrancisco.osm.pbf;
+REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/SanFrancisco.osm.pbf;
 
 -- Upload California data as SanFrancisco.osm.pbf
-PUT 'file:///tmp/SanFrancisco.osm.pbf' @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+PUT 'file:///tmp/SanFrancisco.osm.pbf' @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 ```
 
 Verify upload (should show ~1.3 GB):
 ```sql
-LIST @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE;
+LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE;
 ```
 
 #### Step 5: Clear Cached Graphs
@@ -86,22 +86,22 @@ LIST @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE;
 Remove existing routing graphs so they rebuild from California data:
 
 ```sql
-REMOVE @OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE PATTERN='.*';
+REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE PATTERN='.*';
 ```
 
 #### Step 6: Restart ORS Service
 
 ```sql
-ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE SUSPEND;
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE SUSPEND;
 -- Wait 5 seconds
-ALTER SERVICE OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE RESUME;
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE RESUME;
 ```
 
 #### Step 7: Monitor Graph Build (~20-30 min)
 
 Check build progress:
 ```sql
-SELECT SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0, 'ors', 50);
+SELECT SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE', 0, 'ors', 50);
 ```
 
 **Look for these milestones:**
@@ -116,7 +116,7 @@ SELECT SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SERVICE', 0
 Test a route spanning California:
 ```sql
 -- LA to SF route test
-SELECT OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(
+SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
     'driving-car',
     [-118.25, 34.05],  -- Los Angeles
     [-122.42, 37.77]   -- San Francisco
@@ -134,7 +134,7 @@ When configuring ORS for California statewide routing (required for DoorDash-sty
 | Phase | Duration | Notes |
 |-------|----------|-------|
 | **OSM Data Download** | 5-10 min | California.osm.pbf from Geofabrik (~1.3 GB) |
-| **Upload to Stage** | 3-5 min | To `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/` |
+| **Upload to Stage** | 3-5 min | To `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/` |
 | **Graph Build - Parsing** | 2-3 min | 4.1M nodes, 5.2M edges |
 | **Graph Build - CH Preparation** | 15-25 min | Contraction Hierarchies for fast routing |
 | **Graph Build - Core/LM Preparation** | 10-15 min | Additional optimization structures |
@@ -142,9 +142,9 @@ When configuring ORS for California statewide routing (required for DoorDash-sty
 | **TOTAL** | **45-75 minutes** | End-to-end from start to routing ready |
 
 ### Key Stage Paths
-- **Data Stage**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`)
-- **Graphs Stage**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_GRAPHS_SPCS_STAGE`
-- **Config Location**: `@OPENROUTESERVICE_NATIVE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml`
+- **Data Stage**: `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE` (NOT `@FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.ORS_SPCS_STAGE`)
+- **Graphs Stage**: `@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE`
+- **Config Location**: `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml`
 
 ### California Graph Statistics
 - **Nodes**: ~4,150,000
