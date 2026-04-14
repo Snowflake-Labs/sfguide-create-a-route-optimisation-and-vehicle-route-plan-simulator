@@ -141,10 +141,17 @@ snow stage copy $APP_DIR/ors_control_app_service.yaml \
   -c <connection> --overwrite
 
 # 6. Apply new spec and restart:
+# IMPORTANT: ALTER SERVICE while RUNNING does not reliably cycle the container.
+# Always use the suspend → update spec → resume pattern to guarantee the new image loads.
 ```sql
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP SUSPEND;
+
 ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
   SPECIFICATION_FILE = 'ors_control_app_service.yaml';
+
+-- The service does NOT auto-resume after a spec update. Always resume manually:
+ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP RESUME;
 ```
 
 # 7. After the service restarts, always retrieve and display the endpoint URL:
