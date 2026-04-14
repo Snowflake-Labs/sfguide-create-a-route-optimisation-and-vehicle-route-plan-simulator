@@ -38,6 +38,12 @@ $CONTAINER_CMD build --rm --platform linux/amd64 \
   openrouteservice_app/services/openrouteservice
 $CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
 
+# downloader image
+$CONTAINER_CMD build --rm --platform linux/amd64 \
+  -t $REPO_URL/downloader:v0.0.3 \
+  native_app/services/downloader
+$CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
+
 # gateway image (gunicorn, ThreadPoolExecutor concurrency)
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/routing_reverse_proxy:v1.0.0 \
@@ -80,13 +86,14 @@ Docker push progress output uses carriage returns that may be invisible in some 
 snow spcs image-repository list-images OPENROUTESERVICE_APP.core.image_repository -c <connection>
 ```
 
-Expected: 4 images with tags matching the Image Inventory below.
+Expected: 5 images with tags matching the Image Inventory below.
 
 ## Image Inventory
 
 | Service | Image | Tag |
 |---------|-------|-----|
 | OpenRouteService | openrouteservice | v9.0.0 |
+| Downloader | downloader | v0.3.3 |
 | Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
 | Control App | ors_control_app | v1.0.98 |

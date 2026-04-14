@@ -164,15 +164,17 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
    ```
 
-2. **Upload** SPCS service specification YAML files (required by `01_core_infra.sql` CREATE SERVICE statements):
+2. **Upload** SPCS service specification files (required by `01_core_infra.sql` CREATE SERVICE statements):
    ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/" \
+     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
+   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite
    ```
 
@@ -191,7 +193,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 1. Read image tags: `source image-versions.env`
 2. Authenticate with SPCS image registry (Docker or Podman)
 3. Get repository URL: `snow spcs image-repository url OPENROUTESERVICE_APP.CORE.image_repository -c <connection>`
-4. Build and push all 4 images using tags from openrouteservice_app/image-versions.env`: openrouteservice, routing_reverse_proxy, vroom-docker, ors_control_app
+4. Build and push all 5 images using tags from openrouteservice_app/image-versions.env`: openrouteservice, downloader routing_reverse_proxy, vroom-docker, ors_control_app
 
 **Expected Duration:** 10-20 minutes (first push; ~5 minutes with cached layers)
 
@@ -234,7 +236,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```sql
    SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
-   Expected: 4 services (ors_service, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
+   Expected: 5 services (ors_service, downloader, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
 
    If services show SUSPENDED or PENDING after 5 minutes:
    ```sql
@@ -338,9 +340,9 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Overture Maps databases available. Demos requiring POI data (Taxis, Retail Catchment, Route Optimization) can now be deployed.
 
-### Step 8: Select and Deploy Demos (Optional)
+### Step 8: Select and Deploy Demos
 
-**Goal:** Ask the user which demo skills to deploy on top of the base ORS installation
+**Goal:** Ask the user which demo skills to deploy on top of the base ORS installation. They can choose not to deploy any demos.
 
 **Actions:**
 
@@ -398,7 +400,7 @@ See `references/troubleshooting.md` for detailed solutions to common issues:
 
 Fully deployed OpenRouteService route optimizer App with:
 - Database: `OPENROUTESERVICE_APP`
-- 4 SPCS services running (openrouteservice, gateway, vroom, ors_control_app)
+- 5 SPCS services running (openrouteservice, downloader, gateway, vroom, ors_control_app)
 - React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
 
 *CRITICAL* Retrieve and open the ORS Control App — run `SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP`, then immediately:
