@@ -67,7 +67,8 @@ export default function RouteOptimization() {
     setGeocoding(true);
     const rows = await sfQuery(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', 'Give me the latitude and longitude for "${searchText.replace(/'/g, "''")}". Reply ONLY with JSON: {"lat":number,"lng":number}') AS RESULT`);
     try {
-      const parsed = JSON.parse(rows[0]?.RESULT || '{}');
+      const raw = (rows[0]?.RESULT || '{}').replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(raw);
       if (parsed.lat && parsed.lng) {
         setCenterCoords([parsed.lng, parsed.lat]);
         setViewState(prev => ({ ...prev, longitude: parsed.lng, latitude: parsed.lat, zoom: 13 }));
