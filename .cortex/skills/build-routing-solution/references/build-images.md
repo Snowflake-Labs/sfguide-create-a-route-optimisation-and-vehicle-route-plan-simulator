@@ -58,21 +58,20 @@ $CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
 
 # ors control app (React management UI)
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
-# Build the React app and server locally first, then use the runtime-only Dockerfile:
+# Build the React app and server locally first, then use --ignorefile to allow dist/ into context:
 cd openrouteservice_app/services/ors_control_app
 npm install --legacy-peer-deps && npm run build && npm run build:server
-mv .dockerignore .dockerignore.bak 2>/dev/null || true
 $CONTAINER_CMD build --rm --platform linux/amd64 \
+  --ignorefile .dockerignore.prebuilt \
   -f Dockerfile.runtime \
   -t $REPO_URL/ors_control_app:v1.0.117 .
-mv .dockerignore.bak .dockerignore 2>/dev/null || true
 $CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.117
 cd ../../..
 ```
 
-**Note:** The ors_control_app build requires `cd` because `npm install` must run in the package directory and `.dockerignore` must be renamed in place. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
+**Note:** The ors_control_app build requires `cd` because `npm install` must run in the package directory. The `--ignorefile .dockerignore.prebuilt` flag uses an alternative ignore file that allows `dist/` and `dist-server/` into the build context. Do NOT rename or edit `.dockerignore`. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
 
-> **CRITICAL — shell operator precedence:** Run the npm commands and the `mv`/`docker` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app. The `mv .dockerignore.bak ... || true` must only apply to the `mv` itself.
+> **CRITICAL — shell operator precedence:** Run the npm commands and the `docker`/`podman` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app.
 
 > **luma.gl version pins:** All four `@luma.gl/*` packages in `package.json` must be pinned to `~9.2.6` (not `^9.1.0` or `^9.2.x`). Using `^` allows npm to resolve `@luma.gl/core` and `@luma.gl/webgl` to `9.3.x`, which removed the `getVertexFormatFromAttribute` export still used by `@luma.gl/engine@9.2.6`, causing the vite build to fail.
 
@@ -107,5 +106,5 @@ Expected: 5 images with tags matching the Image Inventory below.
 - **Authentication failure**: Run `snow spcs image-registry login` (Docker) or use session token (Podman) before pushing
 - **Podman machine not running**: `podman machine start`
 - **Docker daemon not running**: Start Docker Desktop
-- **ARM Mac esbuild crash**: Build React app locally first, use `Dockerfile.runtime` (see ors_control_app section above)
+- **ARM Mac esbuild crash**: Build React app locally first, use `--ignorefile .dockerignore.prebuilt` (see ors_control_app section above)
 - **Podman pushes to wrong registry**: Use manual `--creds` flag, see `references/troubleshooting.md`

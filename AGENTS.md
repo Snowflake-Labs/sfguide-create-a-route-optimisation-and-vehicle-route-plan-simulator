@@ -79,6 +79,21 @@ Key rules:
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `<skill-name>_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Friction Logging
+
+**MANDATORY:** After every `build-routing-solution` execution (regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
+
+File name: `friction-log_{YYYY-MM-DD}_{HH-MM}.md`
+
+Follow the friction log template in `logs/README.md`. The log must capture:
+- Exact wall-clock duration of each step
+- Any friction points (confusing instructions, slow operations, unexpected behavior)
+- **For each friction point:** what was done to resolve it during this run, and a recommendation for how to prevent it in future runs (e.g., skill wording change, new validation step, default change)
+- A step-by-step status table showing OK/FAILED/SKIPPED for each workflow step
+- Final summary with total execution time and overall outcome
+
+If no friction was encountered, the log should still be created with "No friction points" and the step timing table.
+
 ## Creating a New Skill
 
 1. Create folder: `.cortex/skills/my-new-skill/`
@@ -112,6 +127,10 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 When changing any source file (`src/`, `server/`, or config), rebuild and push the Docker image.
 The multi-stage `Dockerfile.runtime` compiles both the React frontend and the server automatically —
 no manual `dist/` or `dist-server/` edits are needed.
+
+**IMPORTANT:** Always use `Dockerfile.runtime` (multi-stage build). Never create a "prebuilt" Dockerfile that copies `dist/` from the host — this conflicts with `.dockerignore` and creates fragile host-build dependencies. The `.dockerignore` intentionally excludes `dist` and `dist-server` because the multi-stage build generates them inside the container. Do not remove those exclusions.
+
+**ARM Mac + Podman:** If `esbuild` crashes with a QEMU segfault during the build stage, build locally first (`npm run build && npx tsc -p tsconfig.server.json`), then use `--ignorefile .dockerignore.prebuilt` when building the image. See `references/troubleshooting.md` for full instructions. Do NOT rename or edit `.dockerignore`.
 
 ```bash
 APP_DIR=.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app

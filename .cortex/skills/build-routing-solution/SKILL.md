@@ -199,7 +199,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **If authentication fails:** Run `snow spcs image-registry login -c <connection>`. For Podman, see `references/troubleshooting.md` > "Podman Registry Auth".
 
-**If ARM Mac esbuild crash:** Build React app locally first, use `Dockerfile.runtime`. See `references/build-images.md` > ors_control_app section.
+**If ARM Mac esbuild crash:** Build React app locally first, use `--ignorefile .dockerignore.prebuilt`. See `references/troubleshooting.md` > "ARM Mac esbuild Crash".
 
 **Next:** Proceed to Step 6
 
@@ -379,6 +379,24 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Selected demos deployed and verified in the ORS Control App
 
+### Step 9: Generate Friction Log
+
+**Goal:** Create a friction log capturing the full installation experience.
+
+**This step is MANDATORY — do not skip, even if everything succeeded.**
+
+**Actions:**
+
+1. **Create** a friction log file in `logs/friction-log_{YYYY-MM-DD}_{HH-MM}.md` using the template from `logs/README.md`.
+2. **Record** wall-clock duration for each step completed.
+3. **Document** any friction points encountered (slow operations, confusing instructions, unexpected behavior, workarounds applied).
+4. **For each friction point**, record:
+   - What was done to resolve it during this run
+   - A recommendation for how to prevent it in future runs (e.g., reword a step, add a validation query, change a default, add a retry)
+5. **If no friction points:** Still create the log with "No friction points encountered" and the step timing table.
+
+**Output:** Friction log saved to `logs/`
+
 ## Stopping Points
 
 - Step 2: After detecting container runtime — confirm user's choice if both available
@@ -401,21 +419,32 @@ See `references/troubleshooting.md` for detailed solutions to common issues:
 Fully deployed OpenRouteService route optimizer App with:
 - Database: `OPENROUTESERVICE_APP`
 - 5 SPCS services running (openrouteservice, downloader, gateway, vroom, ors_control_app)
-- React-based ORS Control App accessible via SPCS endpoint (city provisioning, service management, matrix builder, function tester)
+- React-based ORS Control App accessible via SPCS endpoint
+- Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs), pre-computed SanFrancisco cycling-electric RES8 travel time matrix (29K pairs)
+- Optional: User-selected demo skills deployed on top of the base installation
+- Friction log saved to `logs/`
 
-*CRITICAL* Retrieve and open the ORS Control App — run `SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP`, then immediately:
+### Final Step: Open the Routing Control Center
+
+Retrieve the ORS Control App endpoint URL:
+
 ```sql
+SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
 SELECT 'https://' || ingress_url AS control_app_url
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE name = 'ors-control-app';
 ```
-Print the URL to the user as: `ORS Control App URL: <url>`, then open it automatically:
+
+Print this exact message to the user (substituting the actual URL):
+
+> **Open this URL and log in with your Snowflake credentials to see the Routing Control Center:**
+>
+> `<url>`
+
+Then open it automatically:
 ```bash
 open "<url>"
 ```
-
-- Pre-loaded seed data: 500 Intro page routes, synthetic SF ebike fleet (472K telemetry points, 6K trips, 50 vehicles, 5K POIs), pre-computed SanFrancisco cycling-electric RES8 travel time matrix (29K pairs)
-- Optional: User-selected demo skills deployed on top of the base installation
 
 See `references/available-functions.md` for the full list of SQL functions, routing profiles, service limits, and matrix builder details.
 
