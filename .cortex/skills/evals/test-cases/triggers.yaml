@@ -119,7 +119,6 @@ fleet-intelligence-food-delivery:
     - "create delivery data"
     - "setup food delivery fleet"
     - "deploy app"
-    - "swiftbite dashboard"
   should_not_trigger:
     - "taxi fleet simulation"
     - "route deviation analysis"
