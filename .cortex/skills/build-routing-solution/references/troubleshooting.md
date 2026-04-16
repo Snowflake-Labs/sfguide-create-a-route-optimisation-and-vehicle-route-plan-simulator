@@ -29,7 +29,28 @@ Common issues and their solutions when deploying the ORS App.
 ## ARM Mac esbuild Crash (ors_control_app)
 
 **Symptom:** `esbuild` crashes with QEMU segfault during `npm run build` inside `podman build --platform linux/amd64`
-**Solution:** Build the React app locally (native ARM) first, then use a runtime-only Dockerfile that copies the pre-built `dist/` and `dist-server/` directories. See Step 5 in SKILL.md for the exact commands. Must temporarily rename `.dockerignore` since it excludes `dist/`.
+
+**Solution:** Build the React app and server natively on the host (ARM), then run a container build that only copies the pre-built artifacts. Use `--ignorefile` to allow `dist/` into the build context without modifying the default `.dockerignore`:
+
+```bash
+cd openrouteservice_app/services/ors_control_app
+
+# 1. Build locally (native ARM — no QEMU)
+npm ci --legacy-peer-deps
+npm run build
+npx tsc -p tsconfig.server.json
+
+# 2. Build container image using prebuilt ignore file
+podman build --platform linux/amd64 \
+  --ignorefile .dockerignore.prebuilt \
+  -f Dockerfile.runtime \
+  -t $REPO_URL/ors_control_app:vX.Y.Z \
+  .
+
+cd ../../..
+```
+
+The `--ignorefile .dockerignore.prebuilt` flag tells Podman to use an alternative ignore file that does not exclude `dist/` and `dist-server/`. The `Dockerfile.runtime` builder stage uses a conditional guard (`[ -d dist ] || npm run build`) that skips the esbuild/tsc steps when `dist/` already exists in the build context. This means the prebuilt artifacts are copied straight to the runtime stage without triggering the QEMU-incompatible build. Do NOT rename or edit `.dockerignore`.
 
 ## Podman Registry Auth for Wrong Host
 

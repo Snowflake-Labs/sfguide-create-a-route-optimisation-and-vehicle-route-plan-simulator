@@ -1,0 +1,8 @@
+# For prebuilt ARM Mac flow: allows dist/ and dist-server/ into build context.
+# Usage: podman build --ignorefile .dockerignore.prebuilt ...
+node_modules
+.git
+.env
+*.md
+.dockerignore
+.dockerignore.prebuilt

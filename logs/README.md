@@ -84,3 +84,63 @@ Example: `fleet-intelligence-taxis_2026-03-19_14-30.md`
 | PERMISSION_ERROR | Insufficient privileges, role doesn't have access |
 | DOCS_GAP | SKILL.md instructions unclear, missing, or wrong |
 | WORKAROUND | Had to deviate from documented steps |
+
+---
+
+## Friction Logs (Mandatory for build-routing-solution)
+
+A friction log is generated after EVERY `build-routing-solution` execution, regardless of outcome. Unlike error logs (created only on failure), friction logs are ALWAYS created.
+
+**File name:** `friction-log_{YYYY-MM-DD}_{HH-MM}.md`
+
+### Template
+
+```markdown
+# Friction Log — Build Routing Solution
+
+- **Date:** {YYYY-MM-DD HH:MM}
+- **Connection:** {snowflake connection name}
+- **Role:** {current role}
+- **Warehouse:** {current warehouse}
+- **Container Runtime:** {Docker/Podman version}
+- **Node.js:** {node version}
+- **Outcome:** {SUCCESS | COMPLETED_WITH_ISSUES | FAILED}
+
+## Step Timing
+
+| Step | Status | Duration | Notes |
+|------|--------|----------|-------|
+| 1: Query tag | {OK/FAILED/SKIPPED} | {duration} | |
+| 2: Detect runtime | {OK/FAILED/SKIPPED} | {duration} | |
+| 3: Setup DB/stages | {OK/FAILED/SKIPPED} | {duration} | |
+| 4: Upload configs | {OK/FAILED/SKIPPED} | {duration} | |
+| 5: Build images | {OK/FAILED/SKIPPED} | {duration} | |
+| 6: Deploy app | {OK/FAILED/SKIPPED} | {duration} | |
+| 7: Load seed data | {OK/FAILED/SKIPPED} | {duration} | |
+| 7b: Overture Maps | {OK/FAILED/SKIPPED} | {duration} | |
+| 8: Deploy demos | {OK/FAILED/SKIPPED} | {duration} | List which demos |
+| 9: Friction log | {OK/FAILED/SKIPPED} | {duration} | |
+
+## Friction Points
+
+### F1: {Short title}
+
+- **Step:** {Step number/name}
+- **Severity:** {High | Medium | Low}
+- **What happened:** {Description of the friction}
+- **Resolution:** {What was done during this run to work around or fix the problem}
+- **Recommendation:** {What should change in the skill, reference docs, or tooling to prevent this in future runs — e.g., reword step X, add a validation query, change a default value, add a retry mechanism}
+
+---
+
+### F2: ...
+
+{If no friction points: "No friction points encountered."}
+
+## Summary
+
+- **Total execution time:** {X minutes}
+- **Demos deployed:** {list or "none"}
+- **Issues encountered:** {count or "none"}
+- **Recommendations count:** {number of actionable recommendations for skill improvements}
+```

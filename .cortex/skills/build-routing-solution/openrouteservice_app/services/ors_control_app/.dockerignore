@@ -1,3 +1,5 @@
+# Build artifacts — compiled inside multi-stage Dockerfile.runtime, never needed in build context.
+# Do NOT remove these entries. For ARM Mac/Podman prebuilt flow, use --ignorefile .dockerignore.prebuilt instead.
 node_modules
 dist
 dist-server
