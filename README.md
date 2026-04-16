@@ -17,50 +17,6 @@ Deploy and extend the solution using [Cortex Code](https://docs.snowflake.com/en
 3. Say **"build routing solution"** to deploy the routing engine
 4. Say **"deploy route optimization demo"** (or any other demo) to add use cases
 
-## Architecture Overview
-
-```mermaid
-graph TB
-    subgraph spcs [Snowpark Container Services]
-        ORS[ORS Routing Engine]
-        VROOM[VROOM VRP Solver]
-        GW[Nginx Gateway]
-        DL[OSM Downloader]
-        UI[ORS Control App]
-    end
-
-    subgraph functions [SQL Functions]
-        DIR[DIRECTIONS]
-        ISO[ISOCHRONES]
-        OPT[OPTIMIZATION]
-        MTX[MATRIX / MATRIX_TABULAR]
-    end
-
-    subgraph data [Data Layer]
-        SETUP["OPENROUTESERVICE_APP (infra)"]
-        SYNTH["SYNTHETIC_DATASETS.UNIFIED (source)"]
-        FI["FLEET_INTELLIGENCE.* (analytics)"]
-    end
-
-    subgraph skills [Demo Use Cases]
-        S1[Fleet Taxis]
-        S2[Food Delivery]
-        S3[Route Deviation]
-        S4[Dwell Analysis]
-        S5[Retail Catchment]
-        S6[Route Optimization]
-        S7[Routing Agent]
-    end
-
-    ORS --> GW
-    VROOM --> GW
-    GW --> functions
-    functions --> skills
-    SYNTH --> skills
-    skills --> FI
-    FI --> UI
-```
-
 ## What You Get
 
 ### SPCS Services
@@ -198,6 +154,50 @@ Say **"routing-solution-cleanup"** in Cortex Code to discover and remove all Sno
 ---
 
 ## For Developers
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    subgraph spcs [Snowpark Container Services]
+        ORS[ORS Routing Engine]
+        VROOM[VROOM VRP Solver]
+        GW[Nginx Gateway]
+        DL[OSM Downloader]
+        UI[ORS Control App]
+    end
+
+    subgraph functions [SQL Functions]
+        DIR[DIRECTIONS]
+        ISO[ISOCHRONES]
+        OPT[OPTIMIZATION]
+        MTX[MATRIX / MATRIX_TABULAR]
+    end
+
+    subgraph data [Data Layer]
+        SETUP["OPENROUTESERVICE_APP (infra)"]
+        SYNTH["SYNTHETIC_DATASETS.UNIFIED (source)"]
+        FI["FLEET_INTELLIGENCE.* (analytics)"]
+    end
+
+    subgraph skills [Demo Use Cases]
+        S1[Fleet Taxis]
+        S2[Food Delivery]
+        S3[Route Deviation]
+        S4[Dwell Analysis]
+        S5[Retail Catchment]
+        S6[Route Optimization]
+        S7[Routing Agent]
+    end
+
+    ORS --> GW
+    VROOM --> GW
+    GW --> functions
+    functions --> skills
+    SYNTH --> skills
+    skills --> FI
+    FI --> UI
+```
 
 ### Repository Structure
 
