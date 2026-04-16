@@ -10,6 +10,8 @@ The [OpenRouteService](https://openrouteservice.org/) routing engine running ins
 
 Deploy and extend the solution using [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) skills. Each skill is a self-contained playbook the AI agent follows step by step.
 
+> **Platform note:** Today, this solution is primarily developed and tested on macOS. Windows users may encounter friction during installation and build steps around container image builds but Cortex Code should be able to resolve it.
+
 ## Prerequisites
 
 - [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code) with an active Snowflake connection
