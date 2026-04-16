@@ -50,7 +50,7 @@ podman build --platform linux/amd64 \
 cd ../../..
 ```
 
-The `--ignorefile .dockerignore.prebuilt` flag tells Podman to use an alternative ignore file that does not exclude `dist/` and `dist-server/`. The multi-stage `Dockerfile.runtime` will detect the pre-existing `dist/` in the builder stage (`npm run build` becomes a no-op since output already exists) and copy it to the runtime stage as normal. Do NOT rename or edit `.dockerignore`.
+The `--ignorefile .dockerignore.prebuilt` flag tells Podman to use an alternative ignore file that does not exclude `dist/` and `dist-server/`. The `Dockerfile.runtime` builder stage uses a conditional guard (`[ -d dist ] || npm run build`) that skips the esbuild/tsc steps when `dist/` already exists in the build context. This means the prebuilt artifacts are copied straight to the runtime stage without triggering the QEMU-incompatible build. Do NOT rename or edit `.dockerignore`.
 
 ## Podman Registry Auth for Wrong Host
 

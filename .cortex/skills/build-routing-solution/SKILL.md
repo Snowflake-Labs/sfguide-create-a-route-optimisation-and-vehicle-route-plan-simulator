@@ -90,7 +90,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - If **Node.js missing**: Stop and ask user to install Node.js >= 20 (required for ors_control_app build)
 
 3. **Verify** the selected runtime is running:
-   - For Podman: `podman info` (if fails: `podman machine start`)
+   - For Podman (macOS): Run `podman machine start` first (idempotent — returns instantly if already running). Then verify with `podman ps` to confirm the VM is functional. Do NOT rely on `podman info` alone — it returns client metadata even when the VM is stopped.
+   - For Podman (Linux): `podman info` is sufficient (no VM layer).
    - For Docker: `docker info` (if fails: `open -a Docker` on macOS)
 
 4. **Remember** which container runtime to use (`podman` or `docker`).
@@ -190,7 +191,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 Follow the full build instructions in `references/build-images.md`. Summary:
 
-1. Read image tags: `source image-versions.env`
+1. **Change** to the skill directory: `cd .cortex/skills/build-routing-solution`
+2. Read image tags: `source image-versions.env`
 2. Authenticate with SPCS image registry (Docker or Podman)
 3. Get repository URL: `snow spcs image-repository url OPENROUTESERVICE_APP.CORE.image_repository -c <connection>`
 4. Build and push all 5 images using tags from openrouteservice_app/image-versions.env`: openrouteservice, downloader routing_reverse_proxy, vroom-docker, ors_control_app

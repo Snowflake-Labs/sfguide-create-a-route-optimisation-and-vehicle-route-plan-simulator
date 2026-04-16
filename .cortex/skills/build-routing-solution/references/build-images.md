@@ -2,6 +2,8 @@
 
 Authenticate, build, and push all 5 container images to the Snowflake SPCS image repository.
 
+> **Working directory:** All commands below must be run from `.cortex/skills/build-routing-solution/`. Run `cd .cortex/skills/build-routing-solution` before starting.
+
 All paths below are relative to the skill directory (`.cortex/skills/build-routing-solution/`). Each build command uses `-f` and a build context path so no `cd` commands are needed.
 
 ## 1. Authenticate with SPCS Image Registry
@@ -79,11 +81,13 @@ cd ../../..
 
 ## 4. Verify All Images Pushed
 
-Docker push progress output uses carriage returns that may be invisible in some terminals. Always verify pushes completed:
+Push progress output uses carriage returns (`\r`) for in-place updates. When piped through `tail` or captured in logs, progress lines overwrite each other and appear invisible. Do not assume a push is stuck — verify completion separately:
 
 ```bash
 snow spcs image-repository list-images OPENROUTESERVICE_APP.core.image_repository -c <connection>
 ```
+
+To see real-time progress, redirect stderr to a file: `podman push $URL 2>push.log && tail -5 push.log`
 
 Expected: 5 images with tags matching the Image Inventory below.
 
@@ -99,7 +103,15 @@ Expected: 5 images with tags matching the Image Inventory below.
 
 ## Expected Duration
 
-10-20 minutes for all 5 images on first push. Subsequent pushes with cached layers take ~5 minutes.
+| Image | Approx Size | Build | First Push |
+|-------|-------------|-------|------------|
+| openrouteservice | ~500 MB | 3-5 min | 10-15 min |
+| downloader | <100 MB | <1 min | 1-2 min |
+| routing_reverse_proxy | <100 MB | <1 min | 1-2 min |
+| vroom-docker | ~200 MB | 2-3 min | 3-5 min |
+| ors_control_app | ~150 MB | 2-3 min | 2-4 min |
+
+Total first push: 20-30 minutes. Subsequent pushes with cached layers: ~5 minutes.
 
 ## Common Errors
 

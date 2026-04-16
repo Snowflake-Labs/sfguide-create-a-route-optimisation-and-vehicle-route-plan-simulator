@@ -4,8 +4,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --legacy-peer-deps
 COPY . .
-RUN npm run build
-RUN npx tsc -p tsconfig.server.json
+RUN [ -d dist ] && echo "Skipping build: dist/ already exists" || npm run build
+RUN [ -d dist-server ] && echo "Skipping server build: dist-server/ already exists" || npx tsc -p tsconfig.server.json
 
 # ── Stage 2: runtime ────────────────────────────────────────────
 FROM node:20-alpine
