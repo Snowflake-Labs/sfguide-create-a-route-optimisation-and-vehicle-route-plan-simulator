@@ -175,7 +175,7 @@ For skill conventions and developer rules, see [AGENTS.md](AGENTS.md).
 
 ## Questions and feedback
 
-If you have questions or suggestions about this solution, contact [fleet-intelligence@snowglake.com](mailto:fleet-intelligence@snowglake.com).
+If you have questions or suggestions about this solution, contact [fleet-intelligence@snowflake.com](mailto:fleet-intelligence@snowflake.com).
 
 ## License
 
