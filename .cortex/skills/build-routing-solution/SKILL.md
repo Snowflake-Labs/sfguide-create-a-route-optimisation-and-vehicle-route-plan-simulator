@@ -14,7 +14,7 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 ## Execution Rules
 
 1. All relative paths (e.g., `OP/`, `scripts/`) are relative to this skill's directory (`.cortex/skills/build-routing-solution/`).
-2. Replace `<connection>` with the user's active Snowflake CLI connection name. To find it, run `snow connection list` and match by account URL (the `account` field should match the account shown in the Snowflake IDE). The `snowflake_sql_execute` tool and `snow` CLI may use DIFFERENT connections — always verify. If no matching connection exists, run `snow connection add` to create one.
+2. Replace `<connection>` with the user's active Snowflake CLI connection name. To find it, run `snow connection list` and match by account URL (the `account` field should match the account shown in the Snowflake IDE). If `snow connection list` fails (known issue on some Snow CLI versions), read `~/.snowflake/connections.toml` directly and match by account name. Verify the connection works with `snow sql -q "SELECT CURRENT_ACCOUNT()" -c <connection>`. The `snowflake_sql_execute` tool and `snow` CLI may use DIFFERENT connections — always verify. If no matching connection exists, run `snow connection add` to create one.
 3. Before modifying `setup_script.sql` or any service YAML, read `references/snowflake-scripting-guidelines.md`.
 4. After every deployment, run verification queries from `references/snowflake-scripting-guidelines.md` Section 9.
 5. **Batch bash commands:** Combine multiple `snow` CLI calls into a single bash tool invocation using `&&` to avoid repeated user approval prompts. Never split `snow stage copy` or `snow sql` calls across separate bash invocations when they can be chained.
@@ -39,6 +39,8 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 | USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Runs deployment queries |
 | CREATE STAGE | Schema (OPENROUTESERVICE_APP.CORE) | Creates ORS_SPCS_STAGE, ORS_GRAPHS_SPCS_STAGE, ORS_ELEVATION_CACHE_SPCS_STAGE |
 | CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_APP.CORE) | Creates IMAGE_REPOSITORY for container images |
+| CREATE INTEGRATION | Account | Creates external access integrations for ORS network rules (ORS_OSM_EAI, ORS_CARTO_EAI) |
+| BIND SERVICE ENDPOINT | Account | Required for services with public endpoints (ors_control_app) |
 | IMPORT SHARE | Account | Installs Overture Maps datasets from Marketplace (Step 8b) |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -92,7 +94,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 3. **Verify** the selected runtime is running:
    - For Podman (macOS): Run `podman machine start` first (idempotent — returns instantly if already running). Then verify with `podman ps` to confirm the VM is functional. Do NOT rely on `podman info` alone — it returns client metadata even when the VM is stopped.
    - For Podman (Linux): `podman info` is sufficient (no VM layer).
-   - For Docker: `docker info` (if fails: `open -a Docker` on macOS)
+   - For Docker: `docker info` (if fails: `open -a Docker` on macOS, then wait 5-15 seconds for Docker to initialize before retrying)
 
 4. **Remember** which container runtime to use (`podman` or `docker`).
    Each bash tool call starts a fresh shell, so shell variables do not persist.
@@ -201,7 +203,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **If authentication fails:** Run `snow spcs image-registry login -c <connection>`. For Podman, see `references/troubleshooting.md` > "Podman Registry Auth".
 
-**If ARM Mac esbuild crash:** Build React app locally first, use `--ignorefile .dockerignore.prebuilt`. See `references/troubleshooting.md` > "ARM Mac esbuild Crash".
+**If ARM Mac esbuild crash:** Build React app locally first. For Podman, use `--ignorefile .dockerignore.prebuilt`. For Docker (which does not support `--ignorefile`), temporarily swap `.dockerignore` with `.dockerignore.prebuilt` before building. See `references/build-images.md` for exact commands.
 
 **Next:** Proceed to Step 6
 
@@ -212,6 +214,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 **Actions:**
 
 1. **Set up Data Studio databases** (required for synthetic data generation):
+
+   > **Pre-deployment check:** Read `openrouteservice_app/image-versions.env` and verify each tag matches the corresponding service YAML file (e.g., `ORS_CONTROL_APP_TAG` must match the image tag in `openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml`). If any tag differs, update the YAML to match the env file. This prevents "Image not found" errors at CREATE SERVICE time.
    ```sql
    CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -234,11 +238,15 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
    ```
 
+   > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
+
 2. **Verify** all services are running:
    ```sql
    SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
-   Expected: 5 services (ors_service, downloader, vroom_service, routing_gateway_service, ors_control_app). They may take 1-3 minutes to reach RUNNING status.
+   Expected: 5 services (ors_service, downloader, vroom_service, routing_gateway_service, ors_control_app). Most services reach RUNNING within 1-3 minutes.
+
+   > **Note:** `ORS_SERVICE` typically takes 5-15 minutes to reach RUNNING status on first deploy because it builds its routing graph from the uploaded `.osm.pbf` map file. This is expected. All other deployment steps (seed data loading, demo deployment) can proceed while ORS_SERVICE starts. Routing function calls will fail until ORS_SERVICE reaches RUNNING.
 
    If services show SUSPENDED or PENDING after 5 minutes:
    ```sql

@@ -173,6 +173,10 @@ For the full architecture reference (database layout, star schema, object tracki
 
 For skill conventions and developer rules, see [AGENTS.md](AGENTS.md).
 
+## Questions and feedback
+
+If you have questions or suggestions about this solution, contact [fleet-intelligence@snowglake.com](mailto:fleet-intelligence@snowglake.com).
+
 ## License
 
 Apache License 2.0
