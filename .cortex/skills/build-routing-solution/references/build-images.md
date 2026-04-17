@@ -73,6 +73,16 @@ cd ../../..
 
 **Note:** The ors_control_app build requires `cd` because `npm install` must run in the package directory. The `--ignorefile .dockerignore.prebuilt` flag uses an alternative ignore file that allows `dist/` and `dist-server/` into the build context. Do NOT rename or edit `.dockerignore`. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
 
+> **Docker on ARM Mac:** Docker does not support the `--ignorefile` flag (it is Podman-only). Instead, temporarily swap the ignore file before building:
+> ```bash
+> cp .dockerignore .dockerignore.bak && cp .dockerignore.prebuilt .dockerignore
+> docker build --rm --platform linux/amd64 \
+>   -f Dockerfile.runtime \
+>   -t $REPO_URL/ors_control_app:v1.0.117 .
+> mv .dockerignore.bak .dockerignore
+> docker push $REPO_URL/ors_control_app:v1.0.117
+> ```
+
 > **CRITICAL — shell operator precedence:** Run the npm commands and the `docker`/`podman` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app.
 
 > **luma.gl version pins:** All four `@luma.gl/*` packages in `package.json` must be pinned to `~9.2.6` (not `^9.1.0` or `^9.2.x`). Using `^` allows npm to resolve `@luma.gl/core` and `@luma.gl/webgl` to `9.3.x`, which removed the `getVertexFormatFromAttribute` export still used by `@luma.gl/engine@9.2.6`, causing the vite build to fail.
