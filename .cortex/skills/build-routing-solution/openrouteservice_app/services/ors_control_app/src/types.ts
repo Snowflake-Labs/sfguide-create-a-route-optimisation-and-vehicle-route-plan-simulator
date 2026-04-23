@@ -159,11 +159,8 @@ export interface ViewerHexagonData {
 
 export interface ReachabilityData {
   hex_id: string;
-  lat: number;
-  lon: number;
   travel_time_secs: number;
   distance_meters: number;
-  ring: number;
 }
 
 export interface RingData {

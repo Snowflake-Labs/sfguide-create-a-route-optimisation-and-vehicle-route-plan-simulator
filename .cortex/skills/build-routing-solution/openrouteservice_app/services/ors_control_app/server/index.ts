@@ -693,7 +693,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 });
 
 app.post('/api/regions/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox, profiles } = req.body;
+  const { city, region, pbf_url, bbox, profiles, compute_size } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -721,6 +721,7 @@ app.post('/api/regions/provision', async (req, res) => {
     ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
     : defaultProfiles;
   const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
+  const safeComputeSize = ['S', 'M', 'L'].includes(compute_size) ? compute_size : 'M';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
@@ -733,7 +734,7 @@ app.post('/api/regions/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}')`;
     const handle = await submitSqlAsync(callSql);
     await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
@@ -1364,11 +1365,8 @@ app.get('/api/matrix/reachability', async (req, res) => {
     const rows = await runSql(`
       SELECT
         DEST_H3 AS HEX_ID,
-        ST_Y(H3_CELL_TO_POINT(DEST_H3)) AS LAT,
-        ST_X(H3_CELL_TO_POINT(DEST_H3)) AS LON,
         TRAVEL_TIME_SECONDS,
-        TRAVEL_DISTANCE_METERS,
-        0 AS RING
+        TRAVEL_DISTANCE_METERS
       FROM ${table}
       WHERE ORIGIN_H3 = '${safeOrigin}'
         AND TRAVEL_TIME_SECONDS IS NOT NULL

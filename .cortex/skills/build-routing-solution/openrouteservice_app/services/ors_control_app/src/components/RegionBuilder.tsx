@@ -50,6 +50,24 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 
+type ComputeSize = 'S' | 'M' | 'L';
+
+const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
+  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '8 GB', desc: 'Cities and small regions' },
+  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '54 GB', heap: '20 GB', desc: 'Countries and sub-regions' },
+  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '28 GB', desc: 'Large countries and continents' },
+];
+
+function recommendComputeSize(level: string | undefined): ComputeSize {
+  switch (level) {
+    case 'city': return 'S';
+    case 'sub-region': return 'M';
+    case 'country': return 'M';
+    case 'continent': return 'L';
+    default: return 'M';
+  }
+}
+
 type SourceTab = 'bbbike' | 'geofabrik';
 
 function sizeLabel(mb: number | undefined | null): string {
@@ -100,6 +118,7 @@ export default function RegionBuilder() {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
+  const [computeSize, setComputeSize] = useState<ComputeSize>('S');
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -227,6 +246,7 @@ export default function RegionBuilder() {
           pbf_url: selectedRegion.pbfUrl,
           bbox: selectedRegion.bbox || { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 },
           profiles: selectedProfiles,
+          compute_size: computeSize,
         }),
       });
       const data = await resp.json();
@@ -487,7 +507,7 @@ export default function RegionBuilder() {
                   return (
                   <tr
                     key={r.catalogId}
-                    onClick={() => { setSelectedRegion(r); setSelectedProfiles(DEFAULT_PROFILES); }}
+                    onClick={() => { setSelectedRegion(r); setSelectedProfiles(DEFAULT_PROFILES); setComputeSize(recommendComputeSize(r.level)); }}
                     style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.25)' : undefined, outline: isSelected ? '2px solid rgba(59,130,246,0.6)' : undefined }}
                   >
                     <td><strong>{r.regionName}</strong></td>
@@ -555,6 +575,27 @@ export default function RegionBuilder() {
               ))}
               <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
                 {selectedProfiles.length} profile{selectedProfiles.length !== 1 ? 's' : ''} selected
+              </div>
+            </div>
+
+            <div className="profile-selector" style={{ marginTop: '0.5rem' }}>
+              <label className="info-label">Compute Size:</label>
+              <p className="subtitle" style={{ margin: '4px 0 8px' }}>
+                Auto-selected based on region level. Larger regions need more memory for graph building.
+              </p>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {COMPUTE_SIZES.map((s) => (
+                  <button
+                    key={s.id}
+                    className={`btn small${computeSize === s.id ? ' primary' : ''}`}
+                    onClick={() => setComputeSize(s.id)}
+                    style={{ flex: 1, textAlign: 'center' }}
+                  >
+                    <div><strong>{s.label}</strong></div>
+                    <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
+                    <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
+                  </button>
+                ))}
               </div>
             </div>
 

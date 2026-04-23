@@ -112,7 +112,8 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
     P_DISPLAY_NAME VARCHAR,
     P_PBF_URL VARCHAR,
     P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT,
-    P_PROFILES VARCHAR
+    P_PROFILES VARCHAR,
+    P_COMPUTE_SIZE VARCHAR
 )
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -164,10 +165,10 @@ BEGIN
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
-    CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES);
+    CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES, :P_COMPUTE_SIZE);
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
-    CALL OPENROUTESERVICE_APP.CORE.CREATE_REGION_ORS_SERVICE(:P_REGION);
+    CALL OPENROUTESERVICE_APP.CORE.CREATE_REGION_ORS_SERVICE(:P_REGION, :P_COMPUTE_SIZE);
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -288,7 +289,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -298,21 +299,45 @@ $$
 DECLARE
     db_name VARCHAR;
     svc_name VARCHAR;
+    pool_name VARCHAR;
+    instance_family VARCHAR;
+    xms VARCHAR;
+    xmx VARCHAR;
     ors_spec VARCHAR;
     create_sql VARCHAR;
 BEGIN
     db_name := (SELECT CURRENT_DATABASE());
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
+    pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"3G","XMX":"20G"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    IF (:P_COMPUTE_SIZE = 'L') THEN
+        instance_family := 'CPU_X64_L';
+        xms := '4G';
+        xmx := '28G';
+    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
+        instance_family := 'CPU_X64_M';
+        xms := '1G';
+        xmx := '8G';
+    ELSE
+        instance_family := 'CPU_X64_SL';
+        xms := '3G';
+        xmx := '20G';
+    END IF;
+
+    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
+        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
+        ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
+
+    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' || :xms || '","XMX":"' || :xmx || '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
 
-    RETURN 'Region ORS service created for ' || :P_REGION || ': ' || svc_name;
+    RETURN 'Region ORS service created for ' || :P_REGION || ' on pool ' || :pool_name || ' (' || :instance_family || ', XMX=' || :xmx || ')';
 END;
 $$;
 
@@ -328,7 +353,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
@@ -338,8 +363,15 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 EXECUTE AS OWNER
 AS
 $$
-def run(session, p_region, p_pbf_file, p_profiles):
+def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     import tempfile, os
+
+    thread_config = {
+        'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
+        'M':  {'init_threads': 1, 'ch_threads': 10, 'lm_threads': 8},
+        'L':  {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
+    }
+    tc = thread_config.get(p_compute_size, thread_config['M'])
 
     profiles_list = [p.strip() for p in p_profiles.split(',') if p.strip()]
     all_profiles = [
@@ -350,12 +382,24 @@ def run(session, p_region, p_pbf_file, p_profiles):
     profile_lines = []
     for p in all_profiles:
         enabled = 'true' if p in profiles_list else 'false'
-        profile_lines.append('      ' + p + ':\n        enabled: ' + enabled)
+        profile_lines.append('      ' + p + ':')
+        profile_lines.append('        enabled: ' + enabled)
+        if enabled == 'true':
+            profile_lines.append('        build:')
+            profile_lines.append('          preparation:')
+            profile_lines.append('            methods:')
+            profile_lines.append('              ch:')
+            profile_lines.append('                enabled: true')
+            profile_lines.append('                threads: ' + str(tc['ch_threads']))
+            profile_lines.append('              lm:')
+            profile_lines.append('                enabled: true')
+            profile_lines.append('                threads: ' + str(tc['lm_threads']))
 
     all_profiles_str = ', '.join(all_profiles)
     lines = [
         'ors:',
         '  engine:',
+        '    init_threads: ' + str(tc['init_threads']),
         '    profile_default:',
         '      build:',
         '        source_file: /home/ors/files/' + p_pbf_file,
@@ -399,7 +443,7 @@ def run(session, p_region, p_pbf_file, p_profiles):
         os.unlink(config_path)
         os.rmdir(tmpdir)
 
-    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', threads: init=' + str(tc['init_threads']) + ' ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads'])
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR)
