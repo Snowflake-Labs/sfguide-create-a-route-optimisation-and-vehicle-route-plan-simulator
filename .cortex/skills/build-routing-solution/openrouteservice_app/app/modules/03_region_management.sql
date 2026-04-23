@@ -310,18 +310,22 @@ BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
-    IF (:P_COMPUTE_SIZE = 'L') THEN
+    IF (:P_COMPUTE_SIZE = 'XL') THEN
+        instance_family := 'HIGHMEM_X64_M';
+        xms := '16G';
+        xmx := '200G';
+    ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
         instance_family := 'CPU_X64_L';
-        xms := '4G';
-        xmx := '28G';
+        xms := '8G';
+        xmx := '96G';
     ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
         instance_family := 'CPU_X64_M';
-        xms := '1G';
-        xmx := '8G';
+        xms := '2G';
+        xmx := '20G';
     ELSE
         instance_family := 'CPU_X64_SL';
-        xms := '3G';
-        xmx := '20G';
+        xms := '4G';
+        xmx := '44G';
     END IF;
 
     EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
@@ -370,6 +374,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
         'M':  {'init_threads': 1, 'ch_threads': 10, 'lm_threads': 8},
         'L':  {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
+        'XL': {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
     }
     tc = thread_config.get(p_compute_size, thread_config['M'])
 

@@ -50,20 +50,21 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 
-type ComputeSize = 'S' | 'M' | 'L';
+type ComputeSize = 'S' | 'M' | 'L' | 'XL';
 
 const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
-  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '8 GB', desc: 'Cities and small regions' },
-  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '54 GB', heap: '20 GB', desc: 'Countries and sub-regions' },
-  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '28 GB', desc: 'Large countries and continents' },
+  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities and small regions' },
+  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Sub-regions and small countries' },
+  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Countries and continents' },
+  { id: 'XL', label: 'Extra Large', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Large countries (US, Russia, etc.)' },
 ];
 
 function recommendComputeSize(level: string | undefined): ComputeSize {
   switch (level) {
     case 'city': return 'S';
     case 'sub-region': return 'M';
-    case 'country': return 'M';
-    case 'continent': return 'L';
+    case 'country': return 'L';
+    case 'continent': return 'XL';
     default: return 'M';
   }
 }
