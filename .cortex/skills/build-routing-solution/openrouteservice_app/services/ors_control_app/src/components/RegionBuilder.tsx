@@ -1,6 +1,20 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { CatalogRegion } from '../types';
 
+interface GraphInfo {
+  profile: string;
+  ready: boolean;
+  build_date?: string | null;
+}
+
+interface GraphReadiness {
+  service_ready: boolean;
+  profiles_loaded: string[];
+  expected_profiles: string[];
+  graphs: GraphInfo[];
+  error?: string;
+}
+
 interface RegionStatus {
   region: string;
   display_name?: string;
@@ -9,6 +23,7 @@ interface RegionStatus {
   pbfDownloaded: boolean;
   functionExists: boolean;
   isDefault?: boolean;
+  graphReadiness?: GraphReadiness | null;
 }
 
 interface ProvisionJob {
@@ -269,6 +284,16 @@ export default function RegionBuilder() {
     setProvisionJobs((prev) => prev.filter((j) => j.job_id !== jobId));
   }, []);
 
+  const retryJob = useCallback((job: ProvisionJob) => {
+    const match = catalog.find((r) => r.regionKey.toUpperCase() === job.region.toUpperCase());
+    if (match) {
+      setSelectedRegion(match);
+      const profiles = job.profiles ? job.profiles.split(',').map(p => p.trim()).filter(Boolean) : DEFAULT_PROFILES;
+      setSelectedProfiles(profiles);
+      setComputeSize(recommendComputeSize(match.level));
+    }
+  }, [catalog]);
+
   const dropRegion = useCallback(async (region: string) => {
     try {
       await fetch(`/api/regions/${encodeURIComponent(region)}`, { method: 'DELETE' });
@@ -305,7 +330,9 @@ export default function RegionBuilder() {
     }
   }, [filteredCatalog, selectedRegion]);
 
-  const recentJobs = provisionJobs.filter((j) => j.status !== 'RUNNING' && j.status !== 'PENDING').slice(0, 10);
+  const finishedJobs = provisionJobs.filter((j) => j.status !== 'RUNNING' && j.status !== 'PENDING');
+  const failedJobs = finishedJobs.filter((j) => j.status === 'ERROR' || j.status === 'CANCELLED').slice(0, 10);
+  const completedJobs = finishedJobs.filter((j) => j.status !== 'ERROR' && j.status !== 'CANCELLED').slice(0, 10);
   const canProvisionSelected = selectedRegion && !isRegionProvisioning(selectedRegion.regionKey);
 
   const getPhaseProgress = (stage: string) => {
@@ -394,12 +421,15 @@ export default function RegionBuilder() {
       ) : (
         <table className="services-table">
           <thead>
-            <tr><th>Region</th><th>ORS Status</th><th>Functions</th><th>Actions</th></tr>
+            <tr><th>Region</th><th>Service</th><th>Graphs</th><th>Functions</th><th>Actions</th></tr>
           </thead>
           <tbody>
             {regions.map((c) => {
               const bp = buildProgress[c.region];
               const isBuilding = bp && bp.phase !== 'ready' && bp.phase !== 'unknown' && !c.isDefault;
+              const gr = c.graphReadiness;
+              const readyCount = gr?.graphs?.filter(g => g.ready).length ?? 0;
+              const totalCount = gr?.graphs?.length ?? 0;
               return (
               <tr key={c.region}>
                 <td>{c.display_name || c.region}</td>
@@ -426,6 +456,44 @@ export default function RegionBuilder() {
                   )}
                   {isBuilding && bp.phase === 'finalizing' && (
                     <div className="build-progress inline"><span className="step-message">Finalizing...</span></div>
+                  )}
+                </td>
+                <td>
+                  {c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY' ? (
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Service not running</span>
+                  ) : !gr ? (
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Checking...</span>
+                  ) : gr.error ? (
+                    <>
+                      <span className="badge error">Failed</span>
+                      <div style={{ fontSize: 11, color: '#e53935', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={gr.error}>
+                        {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
+                      </div>
+                    </>
+                  ) : gr.service_ready && readyCount === totalCount && totalCount > 0 ? (
+                    <>
+                      <span className="badge ok">{readyCount}/{totalCount} ready</span>
+                      <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
+                        {gr.graphs.map(g => (
+                          <li key={g.profile} style={{ color: 'var(--color-ok)' }}>
+                            {'\u2713'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <>
+                      <span className="badge warn">Building {readyCount}/{totalCount}</span>
+                      {totalCount > 0 && (
+                        <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
+                          {gr.graphs.map(g => (
+                            <li key={g.profile} style={{ color: g.ready ? 'var(--color-ok)' : 'var(--text-secondary)' }}>
+                              {g.ready ? '\u2713' : '\u25CB'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
                   )}
                 </td>
                 <td>{c.functionExists ? '\u2713' : '\u2014'}</td>
@@ -615,7 +683,32 @@ export default function RegionBuilder() {
         </button>
       </div>
 
-      {recentJobs.length > 0 && (
+      {failedJobs.length > 0 && (
+        <>
+          <h3>Failed Jobs</h3>
+          {failedJobs.map((job) => (
+            <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div>
+                  <strong>{job.display_name || job.region}</strong>
+                  <span className="badge error" style={{ marginLeft: 8 }}>{job.status}</span>
+                  {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{getTimeSince(job.completed_at)}</span>}
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn small primary" onClick={() => retryJob(job)}>Retry</button>
+                  <button className="btn small" onClick={() => dismissJob(job.job_id)}>Dismiss</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: '#e53935', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {job.error_msg || job.message || 'Unknown error'}
+              </div>
+              {job.profiles && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Profiles: {job.profiles}</div>}
+            </div>
+          ))}
+        </>
+      )}
+
+      {completedJobs.length > 0 && (
         <>
           <h3>Recent Jobs</h3>
           <table className="services-table">
@@ -623,16 +716,14 @@ export default function RegionBuilder() {
               <tr><th>Region</th><th>Status</th><th>Message</th><th>Time</th><th></th></tr>
             </thead>
             <tbody>
-              {recentJobs.map((job) => (
+              {completedJobs.map((job) => (
                 <tr key={job.job_id}>
                   <td>{job.display_name || job.region}</td>
                   <td>
-                    <span className={`badge ${job.status === 'COMPLETE' ? 'ok' : job.status === 'ERROR' ? 'error' : 'warn'}`}>
-                      {job.status}
-                    </span>
+                    <span className="badge ok">{job.status}</span>
                   </td>
                   <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {job.status === 'ERROR' ? job.error_msg : job.message}
+                    {job.message}
                   </td>
                   <td>{job.completed_at ? getTimeSince(job.completed_at) : job.created_at ? getTimeSince(job.created_at) : ''}</td>
                   <td><button className="btn small" onClick={() => dismissJob(job.job_id)}>Dismiss</button></td>

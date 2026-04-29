@@ -82,6 +82,9 @@ export default function ServiceManager() {
   const anyBuilding = orsReadiness
     ? Object.values(orsReadiness).some(r => !r.service_ready && !r.error && (r.health_ready !== undefined || r.expected_profiles))
     : false;
+  const anyErrors = orsReadiness
+    ? Object.values(orsReadiness).some(r => !!r.error)
+    : false;
 
   return (
     <div className="panel">
@@ -100,10 +103,10 @@ export default function ServiceManager() {
           <div className="status-label">Services</div>
           <div className="status-value">{runningCount} / {services.length} running</div>
         </div>
-        <div className={`status-card ${allGraphsReady === null ? '' : allGraphsReady ? 'ok' : 'warn'}`}>
+        <div className={`status-card ${allGraphsReady === null ? '' : allGraphsReady ? 'ok' : anyErrors ? 'error' : 'warn'}`}>
           <div className="status-label">Graphs</div>
           <div className="status-value">
-            {readinessLoading && !orsReadiness ? 'Loading...' : allGraphsReady === null ? 'Unknown' : allGraphsReady ? `All Ready (${totalBuilt})` : `Building (${totalBuilt}/${totalExpected})`}
+            {readinessLoading && !orsReadiness ? 'Loading...' : allGraphsReady === null ? 'Unknown' : allGraphsReady ? `All Ready (${totalBuilt})` : anyErrors ? `Error (${totalBuilt}/${totalExpected})` : `Building (${totalBuilt}/${totalExpected})`}
           </div>
         </div>
       </div>
@@ -128,14 +131,19 @@ export default function ServiceManager() {
                     <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>N/A</span>
                   ) : readiness ? (
                     <>
-                      <span className={`badge ${readiness.service_ready ? 'ok' : 'warn'}`}>
+                      <span className={`badge ${readiness.service_ready ? 'ok' : readiness.error ? 'error' : 'warn'}`}>
                         {readiness.service_ready
                           ? `Ready (${readiness.profiles.length}/${readiness.expected_profiles?.length || readiness.profiles.length})`
                           : readiness.error
-                            ? 'Error'
+                            ? 'Failed'
                             : `Building (${readiness.graphs?.filter(g => g.ready).length || 0}/${readiness.expected_profiles?.length || readiness.graphs?.length || '?'})`
                         }
                       </span>
+                      {readiness.error && (
+                        <div style={{ fontSize: 11, color: '#e53935', marginTop: 2, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis' }} title={readiness.error}>
+                          {readiness.error.length > 80 ? readiness.error.slice(0, 80) + '...' : readiness.error}
+                        </div>
+                      )}
                       {!readiness.service_ready && !readiness.error && readiness.graphs && readiness.graphs.length > 0 && (
                         <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
                           {readiness.graphs.map(g => (
@@ -161,15 +169,28 @@ export default function ServiceManager() {
         </tbody>
       </table>
 
-      {orsReadiness && Object.entries(orsReadiness).some(([, r]) => !r.service_ready) && (
+      {orsReadiness && Object.entries(orsReadiness).some(([, r]) => !!r.error) && (
+        <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)', fontSize: 13, color: '#e53935' }}>
+          <strong>Graph Loading Failed:</strong> One or more regions failed to load routing graphs. The service is running but routing functions will return errors for affected regions.
+          <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+            {Object.entries(orsReadiness).filter(([, r]) => !!r.error).map(([region, r]) => (
+              <li key={region}>
+                <strong>{region === 'default' ? 'Default (San Francisco)' : region}</strong>: {r.error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {orsReadiness && Object.entries(orsReadiness).some(([, r]) => !r.service_ready && !r.error) && (
         <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
           <strong>Graphs Building:</strong> ORS is loading routing graphs. Functions will return errors until all profiles are ready. This typically takes 3-10 minutes.
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-            {Object.entries(orsReadiness).filter(([, r]) => !r.service_ready).map(([region, r]) => (
+            {Object.entries(orsReadiness).filter(([, r]) => !r.service_ready && !r.error).map(([region, r]) => (
               <li key={region}>
                 <strong>{region === 'default' ? 'Default (San Francisco)' : region}</strong>
-                {r.error ? `: ${r.error}` : ` \u2014 ${r.graphs?.filter(g => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
-                {!r.error && r.graphs && r.graphs.length > 0 && (
+                {` \u2014 ${r.graphs?.filter(g => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
+                {r.graphs && r.graphs.length > 0 && (
                   <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none' }}>
                     {r.graphs.map(g => (
                       <li key={g.profile} style={{ color: g.ready ? '#66bb6a' : '#b38600' }}>

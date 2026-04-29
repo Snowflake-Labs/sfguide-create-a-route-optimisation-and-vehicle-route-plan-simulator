@@ -666,7 +666,34 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         } catch {}
       }
 
-      return { ...c, bbox, serviceStatus, functionExists: true };
+      let graphReadiness: any = null;
+      if (serviceStatus === 'RUNNING' || serviceStatus === 'READY') {
+        try {
+          const safeRegion = sanitizeIdentifier(c.region);
+          const orsRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
+          const raw = orsRows?.[0]?.S;
+          if (raw) {
+            const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const builtProfiles = Object.keys(data.profiles || {});
+            const expectedProfiles = await getExpectedProfiles(c.region);
+            const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
+            graphReadiness = {
+              service_ready: data.service_ready ?? false,
+              profiles_loaded: builtProfiles,
+              expected_profiles: expectedProfiles,
+              graphs: allProfiles.map((p: string) => ({
+                profile: p,
+                ready: builtProfiles.includes(p),
+                build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
+              })),
+            };
+          }
+        } catch (e: any) {
+          graphReadiness = { service_ready: false, error: e.message, profiles_loaded: [], expected_profiles: [], graphs: [] };
+        }
+      }
+
+      return { ...c, bbox, serviceStatus, functionExists: true, graphReadiness };
     }));
 
     let defaultStatus = 'NOT_FOUND';
@@ -674,6 +701,31 @@ app.get('/api/regions/provisioned', async (_req, res) => {
       const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA ${SF_DATABASE}.CORE`);
       defaultStatus = rows?.[0]?.status || 'NOT_FOUND';
     } catch {}
+    let defaultGraphReadiness: any = null;
+    if (defaultStatus === 'RUNNING' || defaultStatus === 'READY') {
+      try {
+        const orsRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
+        const raw = orsRows?.[0]?.S;
+        if (raw) {
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          const builtProfiles = Object.keys(data.profiles || {});
+          const expectedProfiles = await getExpectedProfiles('default');
+          const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
+          defaultGraphReadiness = {
+            service_ready: data.service_ready ?? false,
+            profiles_loaded: builtProfiles,
+            expected_profiles: expectedProfiles,
+            graphs: allProfiles.map((p: string) => ({
+              profile: p,
+              ready: builtProfiles.includes(p),
+              build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
+            })),
+          };
+        }
+      } catch (e: any) {
+        defaultGraphReadiness = { service_ready: false, error: e.message, profiles_loaded: [], expected_profiles: [], graphs: [] };
+      }
+    }
     if (defaultStatus !== 'NOT_FOUND') {
       enriched.unshift({
         region: 'default',
@@ -683,6 +735,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         functionExists: true,
         isDefault: true,
         bbox: { min_lat: 37.71, max_lat: 37.81, min_lon: -122.51, max_lon: -122.37 },
+        graphReadiness: defaultGraphReadiness,
       });
     }
 
@@ -771,12 +824,43 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+
+    // Fast path: ORS_STATUS is the source of truth. If the service reports ready
+    // with profiles loaded, return 'ready' immediately. Avoids unreliable log
+    // tail scraping for long-running builds where start/finish markers have
+    // rolled out of the 1000-line window (Issue: UI stuck on "ORS starting up...").
+    try {
+      const statusRows = await runSql(
+        `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')::VARCHAR AS S`
+      );
+      const statusRaw = statusRows?.[0]?.S;
+      if (statusRaw) {
+        const parsed = JSON.parse(statusRaw);
+        if (parsed?.service_ready === true && parsed?.profiles) {
+          const loaded = Object.keys(parsed.profiles);
+          if (loaded.length > 0) {
+            res.json({
+              phase: 'ready',
+              progress: 100,
+              completedProfiles: loaded,
+              totalProfiles: loaded.length,
+              currentProfile: null,
+            });
+            return;
+          }
+        }
+      }
+    } catch {
+      // fall through to log-based scraping
+    }
+
     const rows = await runSql(
       `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
     );
     const logs: string = rows?.[0]?.LOGS || '';
 
-    const finishedProfiles = [...logs.matchAll(/\[1\] Profile: '([\w-]+)'/g)].map(m => m[1]);
+    // ORS v9 logs profile completion as "[N] Profiles: 'name', location: ..." (plural).
+    const finishedProfiles = [...logs.matchAll(/\[\d+\] Profiles?: '([\w-]+)'/g)].map(m => m[1]);
     const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
     const uniqueStarted = [...new Set(startedProfiles)];
     const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);

@@ -72,6 +72,7 @@ export default function MatrixBuilder() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchRegions = useCallback(async () => {
@@ -189,7 +190,19 @@ export default function MatrixBuilder() {
 
   const readyRegions = regions.filter((r) => r.ready);
   const activeJobs = jobs.filter((j) => j.status === 'RUNNING' || j.status === 'PENDING');
-  const recentJobs = jobs.filter((j) => j.status === 'ERROR').slice(0, 5);
+  const failedJobs = jobs.filter((j) => j.status === 'ERROR' && !dismissedErrors.has(j.job_id)).slice(0, 10);
+
+  const retryMatrixBuild = useCallback(async (job: MatrixJob) => {
+    const resNum = parseInt(job.resolution.replace('RES', ''));
+    setSelectedRegion(job.region);
+    setSelectedProfile(job.profile);
+    setSelectedRes(new Set([resNum]));
+    setDismissedErrors(prev => new Set(prev).add(job.job_id));
+  }, []);
+
+  const dismissError = useCallback((jobId: string) => {
+    setDismissedErrors(prev => new Set(prev).add(jobId));
+  }, []);
 
   return (
     <div className="panel">
@@ -238,46 +251,72 @@ export default function MatrixBuilder() {
           {activeJobs.map((job) => {
             const stageIdx = getStageIndex(job.stage);
             const resNum = parseInt(job.resolution.replace('RES', ''));
-            const pct = job.stage === 'BUILDING' && job.work_queue_rows > 0
+            const isQueued = stageIdx < 0;
+            const pct = isQueued ? 0
+              : job.stage === 'BUILDING' && job.work_queue_rows > 0
               ? Math.round(job.raw_rows * 1000 / job.work_queue_rows) / 10
               : job.pct_complete;
             return (
               <div key={job.job_id} className="progress-card">
                 <div className="progress-header">
                   <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</span>
-                  <span className="badge warn">{job.stage}</span>
+                  <span className={`badge ${isQueued ? '' : 'warn'}`}>{isQueued ? 'Queued' : job.stage}</span>
                 </div>
-                <div className="stage-pipeline">
-                  {STAGE_STEPS.map((step, i) => (
-                    <div key={step.key} className={`stage-step ${i === stageIdx ? 'active' : ''} ${i < stageIdx ? 'done' : ''}`}>
-                      <span>{i < stageIdx ? '✓' : step.icon}</span>
-                      <span>{step.label}</span>
+                {isQueued ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '8px 0' }}>Waiting to start...</div>
+                ) : (
+                  <>
+                    <div className="stage-pipeline">
+                      {STAGE_STEPS.map((step, i) => (
+                        <div key={step.key} className={`stage-step ${i === stageIdx ? 'active' : ''} ${i < stageIdx ? 'done' : ''}`}>
+                          <span>{i < stageIdx ? '✓' : step.icon}</span>
+                          <span>{step.label}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%` }} /></div>
-                <div className="progress-stats">
-                  {job.stage === 'BUILDING' && <span>{formatNumber(job.raw_rows)} / {formatNumber(job.work_queue_rows)} chunks ({formatNumber(job.hexagons)} origins)</span>}
-                  {job.stage === 'HEXAGONS' && <span>{formatNumber(job.hexagons)} hexagons</span>}
-                  <span>{pct.toFixed(1)}%</span>
-                  <span>Started {timeAgo(job.started_at || job.created_at)}</span>
-                  <button className="btn small danger" onClick={() => cancelJob(job.job_id)}>Cancel</button>
-                </div>
+                    <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%` }} /></div>
+                    <div className="progress-stats">
+                      {job.stage === 'BUILDING' && <span>{formatNumber(job.raw_rows)} / {formatNumber(job.work_queue_rows)} chunks ({formatNumber(job.hexagons)} origins)</span>}
+                      {job.stage === 'HEXAGONS' && <span>{formatNumber(job.hexagons)} hexagons</span>}
+                      {job.stage === 'WORK_QUEUE' && <span>Creating work queue...</span>}
+                      {job.stage === 'FLATTENING' && <span>Flattening raw results...</span>}
+                      <span>{pct.toFixed(1)}%</span>
+                      <span>Started {timeAgo(job.started_at || job.created_at)}</span>
+                      <button className="btn small danger" onClick={() => cancelJob(job.job_id)}>Cancel</button>
+                    </div>
+                  </>
+                )}
               </div>
             );
           })}
         </>
       )}
 
-      {recentJobs.length > 0 && (
+      {failedJobs.length > 0 && (
         <>
-          <h3>Recent Errors</h3>
-          {recentJobs.map((job) => (
-            <div key={job.job_id} className="error-banner">
-              <strong>{job.region}/{job.profile}/{job.resolution}</strong>: {job.error_msg}
-              <span style={{ opacity: 0.6, marginLeft: 8 }}>{timeAgo(job.completed_at)}</span>
-            </div>
-          ))}
+          <h3>Failed Builds</h3>
+          {failedJobs.map((job) => {
+            const resNum = parseInt(job.resolution.replace('RES', ''));
+            return (
+              <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div>
+                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</strong>
+                    <span className="badge error" style={{ marginLeft: 8 }}>FAILED</span>
+                    {job.stage && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>at stage: {job.stage}</span>}
+                    {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{timeAgo(job.completed_at)}</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="btn small primary" onClick={() => retryMatrixBuild(job)}>Retry</button>
+                    <button className="btn small" onClick={() => dismissError(job.job_id)}>Dismiss</button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: '#e53935', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {job.error_msg || 'Unknown error'}
+                </div>
+              </div>
+            );
+          })}
         </>
       )}
 

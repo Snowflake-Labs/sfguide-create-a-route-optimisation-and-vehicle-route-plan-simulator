@@ -203,9 +203,15 @@ BEGIN
                         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
+                    -- Issue #59: graphs are now persisted on stage. Flip REBUILD_GRAPHS to false
+                    -- so subsequent suspend/resume cycles reuse the built graphs instead of rebuilding.
+                    BEGIN
+                        CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
-                        MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready',
+                        MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
                         COMPLETED_AT=CURRENT_TIMESTAMP()
                     WHERE JOB_ID = :P_JOB_ID;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
@@ -284,12 +290,106 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     MIN_LON FLOAT,
     MAX_LON FLOAT,
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
+    COMPUTE_SIZE VARCHAR DEFAULT 'M',
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
+-- Idempotent migration for existing installs
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR DEFAULT 'M';
+
+-- =============================================================================
+-- Spec builder + REBUILD_GRAPHS management
+-- See Issue #59: graphs are persisted on @ORS_GRAPHS_SPCS_STAGE/<region> and
+-- must be reused across suspend/resume cycles. REBUILD_GRAPHS=true is only
+-- appropriate when the graphs stage is empty (first build) or when the caller
+-- explicitly wants to force a rebuild (PBF update / corruption recovery).
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
+    P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+AS
+$$
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
+    '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
+    '","XMX":"' ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
+    '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
+    '"}]}}'
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"multi-region"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    svc_name VARCHAR;
+    pool_name VARCHAR;
+    instance_family VARCHAR;
+    ors_spec VARCHAR;
+    create_sql VARCHAR;
+    graph_file_count INTEGER DEFAULT 0;
+    rebuild_flag VARCHAR DEFAULT 'true';
+    rs RESULTSET;
+BEGIN
+    svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
+    pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+
+    IF (:P_COMPUTE_SIZE = 'XL') THEN
+        instance_family := 'HIGHMEM_X64_M';
+    ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
+        instance_family := 'CPU_X64_L';
+    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
+        instance_family := 'CPU_X64_M';
+    ELSE
+        instance_family := 'CPU_X64_SL';
+    END IF;
+
+    -- Probe graphs stage: if a prior successful build left artifacts, reuse them
+    -- (REBUILD_GRAPHS=false). Only set true when the stage is empty.
+    BEGIN
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        LET c CURSOR FOR rs;
+        FOR r IN c DO graph_file_count := r.C; END FOR;
+    EXCEPTION WHEN OTHER THEN graph_file_count := 0;
+    END;
+    IF (:graph_file_count > 0) THEN rebuild_flag := 'false'; ELSE rebuild_flag := 'true'; END IF;
+
+    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
+        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
+        ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
+
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag);
+
+    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
+    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
+    EXECUTE IMMEDIATE :create_sql;
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+    SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, UPDATED_AT = CURRENT_TIMESTAMP()
+    WHERE REGION = :P_REGION;
+
+    RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ')';
+END;
+$$;
+
+-- Flip REBUILD_GRAPHS for an existing region service via ALTER SERVICE FROM SPECIFICATION.
+-- The new env var only takes effect on the next container start (suspend/resume or explicit cycle),
+-- which is the desired behavior: no mid-build disruption.
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(P_REGION VARCHAR, P_REBUILD VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
@@ -297,51 +397,69 @@ EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    db_name VARCHAR;
     svc_name VARCHAR;
-    pool_name VARCHAR;
-    instance_family VARCHAR;
-    xms VARCHAR;
-    xmx VARCHAR;
+    compute_size VARCHAR DEFAULT 'M';
     ors_spec VARCHAR;
-    create_sql VARCHAR;
+    rs RESULTSET;
 BEGIN
-    db_name := (SELECT CURRENT_DATABASE());
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
-    pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
-    IF (:P_COMPUTE_SIZE = 'XL') THEN
-        instance_family := 'HIGHMEM_X64_M';
-        xms := '16G';
-        xmx := '200G';
-    ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
-        instance_family := 'CPU_X64_L';
-        xms := '8G';
-        xmx := '96G';
-    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
-        instance_family := 'CPU_X64_M';
-        xms := '2G';
-        xmx := '20G';
-    ELSE
-        instance_family := 'CPU_X64_SL';
-        xms := '4G';
-        xmx := '44G';
-    END IF;
+    rs := (SELECT COALESCE(COMPUTE_SIZE, 'M') AS CS FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
+    LET c CURSOR FOR rs;
+    FOR r IN c DO compute_size := r.CS; END FOR;
 
-    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
-        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
-        ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
-        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :compute_size, :P_REBUILD);
 
-    ors_spec := '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"true","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' || :xms || '","XMX":"' || :xmx || '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || :P_REGION || '"}]}}';
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name ||
+        ' FROM SPECIFICATION ''' || ors_spec || '''';
 
-    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-    create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
-    EXECUTE IMMEDIATE :create_sql;
+    RETURN 'REBUILD_GRAPHS set to ' || LOWER(:P_REBUILD) || ' for ' || :P_REGION ||
+           ' (takes effect on next container start)';
+END;
+$$;
 
-    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS = 'DEPLOYED', UPDATED_AT = CURRENT_TIMESTAMP() WHERE REGION = :P_REGION;
+-- Force a full graph rebuild for a region (PBF update / corruption recovery).
+-- Flips REBUILD_GRAPHS=true, cycles the service, waits for service_ready, then flips back to false.
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    svc_name VARCHAR;
+    status_raw VARCHAR;
+    status_json VARIANT;
+    profile_count INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    RETURN 'Region ORS service created for ' || :P_REGION || ' on pool ' || :pool_name || ' (' || :instance_family || ', XMX=' || :xmx || ')';
+    CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'true');
+
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
+
+    FOR i IN 1 TO 60 DO
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
+            LET c CURSOR FOR rs;
+            FOR r IN c DO status_raw := r.S; END FOR;
+            status_json := TRY_PARSE_JSON(:status_raw);
+            IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
+                profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
+                IF (:profile_count > 0) THEN BREAK; END IF;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+
+    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); REBUILD_GRAPHS flipped back to false';
 END;
 $$;
 

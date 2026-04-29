@@ -163,7 +163,18 @@ CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(
    SPECIFICATION_FILE = 'openrouteservice.yaml';
    ```
 
-> **_IMPORTANT: DO NOT modify the `REBUILD_GRAPHS` parameter in openrouteservice.yaml**
+> **_IMPORTANT: `REBUILD_GRAPHS` is managed automatically (Issue #59).**
+> Do not manually toggle it in `openrouteservice.yaml`. The default region service
+> uses `REBUILD_GRAPHS: "false"` and reuses graphs persisted on
+> `@ORS_GRAPHS_SPCS_STAGE`. For Region Builder regions, the provisioner probes
+> the stage on first create (true if empty, false otherwise) and auto-flips to
+> `false` after the first successful build.
+>
+> **To force a rebuild** (e.g. after a PBF update or corruption), use:
+> ```sql
+> CALL OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS('<region>');
+> ```
+> This flips the flag, cycles the service, waits for readiness, and flips back.
 
 **Output:** Service configured for new region
 
