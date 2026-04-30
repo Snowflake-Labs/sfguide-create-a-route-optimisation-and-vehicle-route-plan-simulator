@@ -83,8 +83,9 @@ export default function MatrixBuilder() {
       const fetched: RegionInfo[] = data.regions || [];
       setRegions(fetched);
       if (fetched.length > 0 && !selectedRegion) {
+        const sf = fetched.find((r) => r.region.toUpperCase() === 'SANFRANCISCO');
         const running = fetched.find((r) => r.serviceStatus === 'RUNNING');
-        setSelectedRegion((running || fetched[0]).region);
+        setSelectedRegion((sf || running || fetched[0]).region);
       }
     } catch {}
     setLoadingRegions(false);

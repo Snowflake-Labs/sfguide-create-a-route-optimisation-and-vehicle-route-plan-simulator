@@ -79,7 +79,10 @@ export default function MatrixViewer() {
   const [selRes, setSelRes] = useState('');
 
   useEffect(() => {
-    if (regions.length > 0 && !selRegion) setSelRegion(regions[0]);
+    if (regions.length > 0 && !selRegion) {
+      const sf = regions.find(r => r.toUpperCase() === 'SANFRANCISCO');
+      setSelRegion(sf || regions[0]);
+    }
   }, [regions]);
 
   const prevRegionRef = useRef(selRegion);
