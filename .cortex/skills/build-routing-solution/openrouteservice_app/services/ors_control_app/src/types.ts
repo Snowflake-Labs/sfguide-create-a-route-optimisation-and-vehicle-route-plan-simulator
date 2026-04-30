@@ -1,6 +1,21 @@
 export interface ServiceInfo {
   name: string;
   status: string;
+  compute_pool?: string;
+  min_instances?: number;
+  max_instances?: number;
+  current_instances?: number;
+  target_instances?: number;
+}
+
+export interface ComputePoolInfo {
+  state: string;
+  instance_family?: string;
+  min_nodes?: number;
+  max_nodes?: number;
+  active_nodes?: number;
+  idle_nodes?: number;
+  num_services?: number;
 }
 
 export interface OrsGraphInfo {
@@ -20,6 +35,8 @@ export interface OrsRegionReadiness {
 
 export interface StatusResponse {
   compute_pool: string;
+  compute_pool_info?: ComputePoolInfo;
+  compute_pools?: Record<string, ComputePoolInfo>;
   services: ServiceInfo[];
 }
 

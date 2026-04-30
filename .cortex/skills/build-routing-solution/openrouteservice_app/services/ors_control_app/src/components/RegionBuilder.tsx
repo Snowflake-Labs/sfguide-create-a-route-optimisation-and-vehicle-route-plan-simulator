@@ -282,6 +282,9 @@ export default function RegionBuilder() {
 
   const dismissJob = useCallback(async (jobId: string) => {
     setProvisionJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+    try {
+      await fetch(`/api/regions/provision/${encodeURIComponent(jobId)}/dismiss`, { method: 'POST' });
+    } catch {}
   }, []);
 
   const retryJob = useCallback((job: ProvisionJob) => {

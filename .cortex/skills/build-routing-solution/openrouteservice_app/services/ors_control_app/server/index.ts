@@ -347,6 +347,35 @@ app.post('/api/suspend', async (_req, res) => {
   }
 });
 
+app.post('/api/services/:name/resume', async (req, res) => {
+  try {
+    const name = sanitizeIdentifier(req.params.name);
+    const rows = await runSql(`CALL ${SF_DATABASE}.CORE.RESUME_SERVICE('${escapeString(name)}')`);
+    const raw = rows?.[0]?.[Object.keys(rows[0] || {})[0]] || '{}';
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed.status === 'error') return res.status(400).json(parsed);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(400).json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/services/:name/suspend', async (req, res) => {
+  try {
+    const name = sanitizeIdentifier(req.params.name);
+    if (name.toUpperCase() === 'ORS_CONTROL_APP') {
+      return res.status(400).json({ status: 'error', error: 'ORS_CONTROL_APP cannot be suspended from itself' });
+    }
+    const rows = await runSql(`CALL ${SF_DATABASE}.CORE.SUSPEND_SERVICE('${escapeString(name)}')`);
+    const raw = rows?.[0]?.[Object.keys(rows[0] || {})[0]] || '{}';
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed.status === 'error') return res.status(400).json(parsed);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(400).json({ status: 'error', error: err.message });
+  }
+});
+
 app.post('/api/scale', async (req, res) => {
   try {
     const min = sanitizeInt(req.body.min);
@@ -802,6 +831,16 @@ app.get('/api/regions/provision/status', async (_req, res) => {
     res.json({ jobs });
   } catch (err: any) {
     res.json({ jobs: [], error: err.message });
+  }
+});
+
+app.post('/api/regions/provision/:jobId/dismiss', async (req, res) => {
+  try {
+    const jobId = sanitizeIdentifier(req.params.jobId);
+    await callProcedure(`DISMISS_PROVISION_JOB('${jobId}')`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
