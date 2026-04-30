@@ -124,10 +124,9 @@ export default function MatrixViewer() {
 
   const parseDestinations = (data: any): ReachabilityData[] =>
     (data.destinations || []).map((r: any) => ({
-      hex_id: r.HEX_ID, lat: Number(r.LAT), lon: Number(r.LON),
+      hex_id: r.HEX_ID,
       travel_time_secs: Number(r.TRAVEL_TIME_SECONDS || 0),
       distance_meters: Number(r.TRAVEL_DISTANCE_METERS || 0),
-      ring: Number(r.RING || 0),
     }));
 
   const loadRandomOrigin = useCallback(async (table: MatrixInventoryItem) => {

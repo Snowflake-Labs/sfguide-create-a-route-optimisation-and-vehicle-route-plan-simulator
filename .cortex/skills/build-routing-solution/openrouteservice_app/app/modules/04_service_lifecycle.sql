@@ -171,31 +171,184 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 AS
 $$
 DECLARE
-    pool_status VARCHAR DEFAULT 'UNKNOWN';
+    pool_state VARCHAR DEFAULT 'UNKNOWN';
+    pool_info VARIANT DEFAULT OBJECT_CONSTRUCT();
+    compute_pools VARIANT DEFAULT OBJECT_CONSTRUCT();
     services VARIANT DEFAULT ARRAY_CONSTRUCT();
 BEGIN
     LET pool_name VARCHAR := (SELECT CURRENT_DATABASE()) || '_compute_pool';
     BEGIN
         SHOW COMPUTE POOLS LIKE :pool_name;
-        SELECT "state" INTO :pool_status FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
-    EXCEPTION WHEN OTHER THEN pool_status := 'NOT_FOUND'; END;
+        SELECT OBJECT_CONSTRUCT(
+            'state', "state",
+            'instance_family', "instance_family",
+            'min_nodes', "min_nodes",
+            'max_nodes', "max_nodes",
+            'active_nodes', "active_nodes",
+            'idle_nodes', "idle_nodes",
+            'num_services', "num_services"
+        ), "state"
+        INTO :pool_info, :pool_state
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN
+        pool_state := 'NOT_FOUND';
+        pool_info := OBJECT_CONSTRUCT('state', 'NOT_FOUND');
+    END;
+
+    BEGIN
+        SHOW COMPUTE POOLS;
+        LET prs RESULTSET := (
+            SELECT "name" AS pn, "state" AS ps, "instance_family" AS pif,
+                   "min_nodes" AS pmin, "max_nodes" AS pmax,
+                   "active_nodes" AS pact, "idle_nodes" AS pidle,
+                   "num_services" AS pnum
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        );
+        LET pcur CURSOR FOR prs;
+        FOR prec IN pcur DO
+            compute_pools := OBJECT_INSERT(compute_pools, prec.pn, OBJECT_CONSTRUCT(
+                'state', prec.ps,
+                'instance_family', prec.pif,
+                'min_nodes', prec.pmin,
+                'max_nodes', prec.pmax,
+                'active_nodes', prec.pact,
+                'idle_nodes', prec.pidle,
+                'num_services', prec.pnum
+            ), TRUE);
+        END FOR;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
-        SELECT "name" AS svc_name, "status" AS svc_status
+        SELECT
+            "name" AS svc_name,
+            "status" AS svc_status,
+            "compute_pool" AS svc_pool,
+            "min_instances" AS svc_min,
+            "max_instances" AS svc_max,
+            "current_instances" AS svc_cur,
+            "target_instances" AS svc_target
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         WHERE "is_job" = 'false'
     );
     LET cur CURSOR FOR rs;
 
     FOR rec IN cur DO
-        services := ARRAY_APPEND(services, OBJECT_CONSTRUCT('name', rec.svc_name, 'status', rec.svc_status));
+        services := ARRAY_APPEND(services, OBJECT_CONSTRUCT(
+            'name', rec.svc_name,
+            'status', rec.svc_status,
+            'compute_pool', rec.svc_pool,
+            'min_instances', rec.svc_min,
+            'max_instances', rec.svc_max,
+            'current_instances', rec.svc_cur,
+            'target_instances', rec.svc_target
+        ));
     END FOR;
 
     RETURN OBJECT_CONSTRUCT(
-        'compute_pool', pool_status,
+        'compute_pool', pool_state,
+        'compute_pool_info', pool_info,
+        'compute_pools', compute_pools,
         'services', services
     )::STRING;
+END;
+$$;
+
+-- =============================================================================
+-- Per-service lifecycle procedures
+-- Used by the ORS Control App for granular Resume/Suspend operations.
+-- ORS_CONTROL_APP is intentionally protected from self-suspension since
+-- suspending it would terminate the UI that initiated the request.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(P_NAME VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+AS
+$$
+DECLARE
+    svc_status VARCHAR DEFAULT NULL;
+    svc_match  VARCHAR DEFAULT NULL;
+BEGIN
+    IF (P_NAME IS NULL OR LENGTH(TRIM(P_NAME)) = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'service name required')::STRING;
+    END IF;
+
+    LET safe_name VARCHAR := REGEXP_REPLACE(UPPER(P_NAME), '[^A-Z0-9_]', '');
+    IF (LENGTH(safe_name) = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'invalid service name')::STRING;
+    END IF;
+
+    SHOW SERVICES LIKE :safe_name IN SCHEMA OPENROUTESERVICE_APP.CORE;
+    BEGIN
+        SELECT "name", "status"
+        INTO :svc_match, :svc_status
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "is_job" = 'false'
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN
+        svc_match := NULL;
+    END;
+
+    IF (svc_match IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'service not found: ' || safe_name)::STRING;
+    END IF;
+
+    IF (svc_status IN ('RUNNING', 'READY')) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'ok', 'service', svc_match, 'already', svc_status)::STRING;
+    END IF;
+
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_match || ' RESUME';
+    RETURN OBJECT_CONSTRUCT('status', 'ok', 'service', svc_match, 'action', 'resumed')::STRING;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(P_NAME VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+AS
+$$
+DECLARE
+    svc_status VARCHAR DEFAULT NULL;
+    svc_match  VARCHAR DEFAULT NULL;
+BEGIN
+    IF (P_NAME IS NULL OR LENGTH(TRIM(P_NAME)) = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'service name required')::STRING;
+    END IF;
+
+    LET safe_name VARCHAR := REGEXP_REPLACE(UPPER(P_NAME), '[^A-Z0-9_]', '');
+    IF (LENGTH(safe_name) = 0) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'invalid service name')::STRING;
+    END IF;
+
+    IF (safe_name = 'ORS_CONTROL_APP') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'ORS_CONTROL_APP cannot be suspended from itself')::STRING;
+    END IF;
+
+    SHOW SERVICES LIKE :safe_name IN SCHEMA OPENROUTESERVICE_APP.CORE;
+    BEGIN
+        SELECT "name", "status"
+        INTO :svc_match, :svc_status
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "is_job" = 'false'
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN
+        svc_match := NULL;
+    END;
+
+    IF (svc_match IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'service not found: ' || safe_name)::STRING;
+    END IF;
+
+    IF (svc_status = 'SUSPENDED') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'ok', 'service', svc_match, 'already', svc_status)::STRING;
+    END IF;
+
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_match || ' SUSPEND';
+    RETURN OBJECT_CONSTRUCT('status', 'ok', 'service', svc_match, 'action', 'suspended')::STRING;
 END;
 $$;

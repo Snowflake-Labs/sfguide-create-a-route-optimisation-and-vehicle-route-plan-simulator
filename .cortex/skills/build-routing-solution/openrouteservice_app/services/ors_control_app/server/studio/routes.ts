@@ -231,7 +231,7 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
                   ERROR_MESSAGE,
                   DATEDIFF('second', STARTED_AT, COALESCE(COMPLETED_AT, CURRENT_TIMESTAMP())) AS DURATION_SEC,
                   START_DATE, END_DATE
-           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ORDER BY STARTED_AT DESC LIMIT 50`,
+           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE STATUS != 'DELETED' ORDER BY STARTED_AT DESC LIMIT 50`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
       } catch (e: any) {
