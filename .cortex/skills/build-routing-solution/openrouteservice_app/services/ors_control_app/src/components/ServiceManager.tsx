@@ -315,11 +315,9 @@ export default function ServiceManager() {
         </button>
       </div>
 
-      <h3>Scale ORS + Gateway</h3>
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, maxWidth: 640 }}>
-        Sets min/max replicas of <code>ORS_SERVICE</code> and <code>ROUTING_GATEWAY_SERVICE</code>.
-        Regional services (<code>ORS_SERVICE_&lt;REGION&gt;</code>) are reset to 1 instance.
-        Main compute pool is resized to fit.
+      <h3>Scale</h3>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+        Sets replica count for the main routing service and gateway.
       </div>
       <div className="scale-row">
         <label>
@@ -337,9 +335,6 @@ export default function ServiceManager() {
         >
           {actionInProgress === 'scale' ? 'Applying...' : 'Apply'}
         </button>
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}>
-        Replicas scale between min and max based on load; set both equal for fixed size.
       </div>
     </div>
   );
