@@ -130,7 +130,8 @@ export default function RouteOptimization() {
     }));
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`);
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`,'OPENROUTESERVICE_APP', 'CORE');
+    console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
