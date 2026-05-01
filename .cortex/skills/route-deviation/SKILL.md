@@ -76,11 +76,27 @@ Before executing SQL, consult `references/sql-pipeline.md` for the exact SQL sta
 
 ### Step 1: Set Query Tag
 
-Set the session query tag for tracking. See `references/sql-pipeline.md` > Query Tag.
+Execute:
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 2: Create Infrastructure
 
-Create target database, schema, and warehouse. See `references/sql-pipeline.md` > Infrastructure Setup.
+Execute:
+```sql
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 3: Verify UNIFIED Data
 

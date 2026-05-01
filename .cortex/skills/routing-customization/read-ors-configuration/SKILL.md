@@ -49,11 +49,21 @@ Detects the map region/location and routing profiles from the ORS configuration 
 **Actions:**
 
 1. **Download** the ORS config file from stage:
+
+   **If using Snow CLI (local environment):**
    ```bash
    snow stage copy @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml .cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ --connection <ACTIVE_CONNECTION> --overwrite
    ```
 
-2. **Read** `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`
+   **If using Snowflake Workspace:** Use SQL to read from stage:
+   ```sql
+   SELECT $1 AS config_content 
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/<REGION_NAME>/ors-config.yml
+   (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.TEXT_FILE_FORMAT');
+   ```
+   (Create text file format if needed: `CREATE FILE FORMAT IF NOT EXISTS TEXT_FILE_FORMAT TYPE = 'CSV' FIELD_DELIMITER = NONE RECORD_DELIMITER = NONE;`)
+
+2. **Read** the config content (file or query result)
 
 3. **Parse** the downloaded file for `profiles:` entries with `enabled: true`
    - Common profiles: `driving-car`, `driving-hgv`, `cycling-electric`, `cycling-regular`, `foot-walking`
