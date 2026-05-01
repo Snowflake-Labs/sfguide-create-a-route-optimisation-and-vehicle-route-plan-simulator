@@ -88,8 +88,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - If **both** container runtimes are installed: Ask user which they prefer (Podman or Docker)
    - If **only Podman**: Use Podman
    - If **only Docker**: Use Docker
-   - If **neither**: Stop and ask user to install one (see check-prerequisites skill)
-   - If **Node.js missing**: Stop and ask user to install Node.js >= 20 (required for ors_control_app build)
+   - If **neither**: Do NOT stop yet — proceed to Step 3. The image existence check in Step 3b may allow skipping the build entirely.
+   - If **Node.js missing**: Note it — only required if images need to be built (determined in Step 3b)
 
 3. **Verify** the selected runtime is running:
    - For Podman (macOS): Run `podman machine start` first (idempotent — returns instantly if already running). Then verify with `podman ps` to confirm the VM is functional. Do NOT rely on `podman info` alone — it returns client metadata even when the VM is stopped.
@@ -149,6 +149,36 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Output:** Database `OPENROUTESERVICE_APP` with stages, warehouse and image repository created and verified
 
+**Next:** Proceed to Step 3b
+
+### Step 3b: Check if Images Already Exist
+
+**Goal:** Determine whether all 5 required images are already present in the Snowflake image repository. If they are, skip Step 5 entirely.
+
+**Actions:**
+
+1. **Check** the image repository for existing images:
+   ```sql
+   USE DATABASE OPENROUTESERVICE_APP;
+   SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
+   ```
+
+2. **Compare** results against the required image inventory (from `openrouteservice_app/image-versions.env`):
+
+   | Image | Required Tag |
+   |-------|-------------|
+   | openrouteservice | v9.0.0 |
+   | downloader | v0.0.3 |
+   | routing_reverse_proxy | v1.0.0 |
+   | vroom-docker | v1.0.1 |
+   | ors_control_app | v1.0.117 |
+
+3. **Decision:**
+   - If **all 5 images exist with correct tags** → Report to user that images are already present, **skip Step 5**, proceed directly to Step 4
+   - If **any image is missing or has a wrong tag** → Container runtime is required. If neither Docker nor Podman was found in Step 2, stop now and ask user to install one. If Node.js is also missing, stop and ask user to install it. Otherwise proceed to Step 4 then Step 5.
+
+**Output:** Image check complete — either "all images present, skipping build" or "N images missing, build required"
+
 **Next:** Proceed to Step 4
 
 ### Step 4: Upload Configuration Files
@@ -186,6 +216,8 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 **Next:** Proceed to Step 5
 
 ### Step 5: Build and Push Container Images
+
+> **Skip this step** if Step 3b confirmed all 5 images already exist in `OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY`. Proceed directly to Step 6.
 
 **Goal:** Build 5 container images and push to Snowflake image repository
 
