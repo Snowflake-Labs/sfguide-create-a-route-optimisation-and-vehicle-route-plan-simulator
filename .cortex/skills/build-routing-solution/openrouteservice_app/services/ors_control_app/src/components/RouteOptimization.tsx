@@ -111,7 +111,7 @@ export default function RouteOptimization() {
 
   const previewCatchment = useCallback(async () => {
     if (!centerCoords) return;
-    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}, ${centerCoords[1]}, ${isoMinutes}))`, RO_DB, RO_SCHEMA);
+    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}, ${centerCoords[1]}, ${isoMinutes}))`, 'OPENROUTESERVICE_APP', 'CORE');
     if (rows[0]?.GEO) {
       try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch {}
     }
