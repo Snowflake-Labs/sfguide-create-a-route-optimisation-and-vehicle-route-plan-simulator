@@ -1,0 +1,101 @@
+# Control App Fixes - Apply Locally Before Building v1.0.122
+
+## File 1: RouteOptimization.tsx
+
+**Path:** `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/src/components/RouteOptimization.tsx`
+
+**Line 81-106 - Replace the `loadPlaces` function:**
+
+```typescript
+  const loadPlaces = useCallback(async () => {
+    if (!centerCoords) return;
+    setLoading(true);
+    const placesQuery = selectedIndustry 
+      ? `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT 
+         FROM PLACES p, LOOKUP l 
+         WHERE p.REGION = '${regionName}' 
+           AND l.REGION = '${regionName}'
+           AND l.INDUSTRY = '${selectedIndustry}'
+           AND ARRAY_CONTAINS(p.CATEGORY::VARIANT, l.CTYPE)
+           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})
+         LIMIT 200`
+      : `SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT 
+         FROM PLACES 
+         WHERE REGION = '${regionName}' 
+           AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) 
+         LIMIT 200`;
+    const [p, j] = await Promise.all([
+      sfQuery(placesQuery),
+      sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' LIMIT 30`),
+    ]);
+    setPlaces(p);
+    setJobs(j);
+    setLoading(false);
+  }, [centerCoords, radius, selectedIndustry, regionName]);
+```
+
+**Line 132-133 - Fix OPTIMIZATION call (find line with `const vrpChallenge`, replace ONLY line 133):**
+
+FIND:
+```typescript
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`);
+```
+
+REPLACE WITH:
+```typescript
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`, 'OPENROUTESERVICE_APP', 'CORE');
+```
+
+---
+
+## File 2: server/index.ts
+
+**Path:** `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/server/index.ts`
+
+**Line 1666 - Fix agent model name:**
+
+FIND:
+```typescript
+const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+```
+
+REPLACE WITH:
+```typescript
+const AGENT_MODELS = ['claude-sonnet-4', 'mistral-large2'];
+```
+
+---
+
+## Summary of Changes
+
+**Bug 1: Industry Filter** ✅ FIXED
+- Added LOOKUP table join with ARRAY_CONTAINS to match POI categories to industries
+
+**Bug 2: VRP Solver** ✅ FIXED  
+- Added database/schema context ('OPENROUTESERVICE_APP', 'CORE') to sfQuery call
+- Without this, function lookup fails in FLEET_INTELLIGENCE database
+
+**Bug 3: Agent Playground** ✅ FIXED
+- Changed model from 'claude-3-5-sonnet' (invalid) to 'claude-sonnet-4' (valid Cortex name)
+
+---
+
+## Build Instructions
+
+After applying these changes:
+
+```bash
+cd .cortex/skills/build-routing-solution/openrouteservice_app
+npm install --legacy-peer-deps
+npm run build
+npm run build:server
+
+docker build --platform linux/amd64 \
+  -f services/ors_control_app/Dockerfile.runtime \
+  -t $REPO_URL/ors_control_app:v1.0.122 \
+  services/ors_control_app
+
+docker push $REPO_URL/ors_control_app:v1.0.122
+```
+
+Then deploy via SQL (already prepared in workspace).
