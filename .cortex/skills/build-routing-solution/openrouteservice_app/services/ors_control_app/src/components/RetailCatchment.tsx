@@ -106,7 +106,9 @@ export default function RetailCatchment() {
     const zones: any[] = [];
     for (let z = 1; z <= numZones; z++) {
       const minutes = Math.round((maxMinutes / numZones) * z);
-      const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}, ${lat}, ${minutes}))`, RC_DB, RC_SCHEMA);
+      console.log('[RetailCatchment] calling ISOCHRONES', travelMode, lng, lat, minutes);
+      const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}::FLOAT, ${lat}::FLOAT, ${minutes}::INT))`, 'OPENROUTESERVICE_APP', 'CORE');
+      console.log('[RetailCatchment] ISOCHRONES rows:', rows.length, rows[0]);
       if (rows[0]?.GEO) {
         try { zones.push({ zoneIdx: z - 1, minutes, geojson: JSON.parse(rows[0].GEO) }); } catch {}
       }
