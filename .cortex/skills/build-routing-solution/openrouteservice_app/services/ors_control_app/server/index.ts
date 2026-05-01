@@ -1784,7 +1784,7 @@ function escAgentSqlStr(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
 }
 
-const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+const AGENT_MODELS = ['claude-sonnet-4', 'mistral-large2'];
 let agentModel = AGENT_MODELS[0];
 
 async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
