@@ -123,13 +123,24 @@ export default function RouteOptimization() {
     setRoutePaths([]);
     setVrpResult(null);
 
-    const vrpJobs = places.slice(0, 30).map((p: any, i: number) => ({
-      id: i + 1, location: [Number(p.LNG), Number(p.LAT)], service: 300,
-      ...(jobs[i % jobs.length] ? { time_windows: [[0, 86400]] } : {}),
-    }));
+    const vrpJobs = places.slice(0, 30).map((p: any, i: number) => {
+      const jobTemplate = jobs[i % jobs.length];
+      return {
+        id: i + 1, 
+        location: [Number(p.LNG), Number(p.LAT)], 
+        service: 300,
+        skills: jobTemplate?.SKILLS ? [jobTemplate.SKILLS] : [],
+        time_windows: [[jobTemplate?.SLOT_START * 3600 || 0, jobTemplate?.SLOT_END * 3600 || 86400]],
+      };
+    });
     const vrpVehicles = vehicles.map((v, i) => ({
-      id: i + 1, profile: v.profile || 'driving-car', start: [v.startLng, v.startLat], end: [v.endLng, v.endLat],
-      capacity: [v.capacity], time_window: [0, 86400],
+      id: i + 1, 
+      profile: v.profile || 'driving-car', 
+      start: [v.startLng, v.startLat], 
+      end: [v.endLng, v.endLat],
+      capacity: [v.capacity], 
+      skills: [1, 2, 3],
+      time_window: [0, 86400],
     }));
     console.log('[VRP] vehicles state:', vehicles);
     console.log('[VRP] vrpVehicles:', JSON.stringify(vrpVehicles));
