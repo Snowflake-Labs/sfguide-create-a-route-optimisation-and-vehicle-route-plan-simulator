@@ -130,7 +130,6 @@ export default function RouteOptimization() {
         location: [Number(p.LNG), Number(p.LAT)], 
         service: 300,
         skills: jobTemplate?.SKILLS ? [jobTemplate.SKILLS] : [],
-        time_windows: [[jobTemplate?.SLOT_START * 3600 || 0, jobTemplate?.SLOT_END * 3600 || 86400]],
       };
     });
     const vrpVehicles = vehicles.map((v, i) => ({
@@ -138,9 +137,8 @@ export default function RouteOptimization() {
       profile: v.profile || 'driving-car', 
       start: [v.startLng, v.startLat], 
       end: [v.endLng, v.endLat],
-      capacity: [v.capacity], 
-      skills: [1, 2, 3],
-      time_window: [0, 86400],
+      capacity: [v.capacity],
+      skills: [((i % 3) + 1)],
     }));
     console.log('[VRP] vehicles state:', vehicles);
     console.log('[VRP] vrpVehicles:', JSON.stringify(vrpVehicles));
