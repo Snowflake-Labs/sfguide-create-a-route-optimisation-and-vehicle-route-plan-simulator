@@ -135,7 +135,10 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 
 ### Step 1: Set Query Tag
 
-Set session query tag for attribution tracking.
+Execute:
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 2: Detect ORS Configuration, Choose Location, Verify Services
 
@@ -159,11 +162,19 @@ Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_
 ### Step 3b: Check & Install Overture Maps Datasets
 
 Check if Overture Maps datasets are accessible:
+```sql
+SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
+SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1;
+```
 
-1. Run `SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1`
-2. Run `SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1`
+If either fails, install from Marketplace:
+```sql
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
 
-If either fails, install from Marketplace. See `references/sql-pipeline.md` Step 3b.
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
+```
 
 **STOP** if install fails -- requires IMPORT SHARE privilege.
 

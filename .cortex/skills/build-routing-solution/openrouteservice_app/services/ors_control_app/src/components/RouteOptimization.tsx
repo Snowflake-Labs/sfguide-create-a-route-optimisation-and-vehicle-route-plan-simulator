@@ -81,15 +81,28 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords) return;
     setLoading(true);
-    const indFilter = selectedIndustry ? ` AND CATEGORY = '${selectedIndustry}'` : '';
+    const placesQuery = selectedIndustry 
+      ? `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT 
+         FROM PLACES p, LOOKUP l 
+         WHERE p.REGION = '${regionName}' 
+           AND l.REGION = '${regionName}'
+           AND l.INDUSTRY = '${selectedIndustry}'
+           AND ARRAY_CONTAINS(p.CATEGORY::VARIANT, l.CTYPE)
+           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})
+         LIMIT 200`
+      : `SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT 
+         FROM PLACES 
+         WHERE REGION = '${regionName}' 
+           AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) 
+         LIMIT 200`;
     const [p, j] = await Promise.all([
-      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
+      sfQuery(placesQuery),
       sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' LIMIT 30`),
     ]);
     setPlaces(p);
     setJobs(j);
     setLoading(false);
-  }, [centerCoords, radius, selectedIndustry]);
+  }, [centerCoords, radius, selectedIndustry, regionName]);
 
   useEffect(() => { if (centerCoords) loadPlaces(); }, [centerCoords, radius, selectedIndustry]);
 
