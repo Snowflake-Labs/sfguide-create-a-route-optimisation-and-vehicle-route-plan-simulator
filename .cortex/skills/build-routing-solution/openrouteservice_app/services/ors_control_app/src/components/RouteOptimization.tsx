@@ -129,7 +129,7 @@ export default function RouteOptimization() {
       capacity: [v.capacity], time_window: [0, 86400],
     }));
 
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpJobs).replace(/'/g, "''")}'), PARSE_JSON('${JSON.stringify(vrpVehicles).replace(/'/g, "''")}')))`);
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpJobs).replace(/'/g, "''")}'), '${vehicles[0].profile}'))`);
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
