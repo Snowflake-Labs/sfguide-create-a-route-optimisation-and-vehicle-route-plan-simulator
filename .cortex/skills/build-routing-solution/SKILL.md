@@ -290,6 +290,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 ### Step 7: Load Seed Datasets
 
+> **IMPORTANT:** This step is **required** for fleet intelligence demos. Without seed data, the Control App will have empty dashboards and Fleet Data Studio will be the only way to generate telemetry data.
+
 **Goal:** Pre-load Intro page routes, synthetic SF ebike data, and a pre-computed travel time matrix so the app is fully populated on first launch
 
 **Actions:**
@@ -302,8 +304,9 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 2. **Upload Parquet files to stage:**
 
-   > **Note:** The `datasets/` directory is at the **repository root**, not in this skill's directory. Run these commands from the repo root.
+   > **Note:** The `datasets/` directory is at the **repository root**, not in this skill's directory.
 
+   **If using Snow CLI (local environment):** Run from repo root:
    ```bash
    snow stage copy datasets/intro/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/intro/ -c <connection> --overwrite && \
    snow stage copy datasets/synthetic_ebikes/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/ -c <connection> --overwrite --recursive && \
@@ -312,6 +315,15 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow stage copy datasets/matrix_jobs/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix_jobs/ -c <connection> --overwrite --recursive && \
    snow stage copy datasets/region_catalog/ @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/region_catalog/ -c <connection> --recursive --overwrite
    ```
+
+   **If using Snowflake Workspace:** Use COPY FILES with workspace URI:
+   ```sql
+   COPY FILES
+   INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
+   FROM 'snow://workspace/USER$.PUBLIC."<workspace-name>"/versions/live/datasets/'
+   PATTERN='.*\\.parquet';
+   ```
+   Replace `<workspace-name>` with your actual workspace fully qualified name.
 
 3. **Run the loader script:**
    ```bash
