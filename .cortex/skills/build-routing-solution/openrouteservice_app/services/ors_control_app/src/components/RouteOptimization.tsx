@@ -141,15 +141,17 @@ export default function RouteOptimization() {
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
-      for (let i = 0; i < vehicles.length; i++) {
-        const routeSteps = rows.filter((r: any) => Number(r.VEHICLE_ID || r.VEHICLE) === i + 1);
-        if (routeSteps.length < 2) continue;
-        const coords = routeSteps.map((s: any) => `${s.LON || s.LONGITUDE},${s.LAT || s.LATITUDE}`).join('|');
-        const dirRows = await sfQuery(`SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${vehicles[i].profile}', '${coords}'))`);
-        if (dirRows[0]?.GEOJSON) {
-          try { paths.push({ vehicleIdx: i, geojson: JSON.parse(dirRows[0].GEOJSON) }); } catch {}
+      for (const row of rows) {
+        if (row.GEOJSON) {
+          try {
+            const geojson = typeof row.GEOJSON === 'string' ? JSON.parse(row.GEOJSON) : row.GEOJSON;
+            paths.push({ vehicleIdx: (row.VEHICLE || 1) - 1, geojson });
+          } catch (e) {
+            console.error('[VRP] Failed to parse GEOJSON:', e);
+          }
         }
       }
+      console.log('[VRP] Parsed', paths.length, 'route geometries');
       setRoutePaths(paths);
     }
     setSolving(false);
