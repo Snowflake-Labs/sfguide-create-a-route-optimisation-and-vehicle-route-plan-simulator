@@ -2011,9 +2011,12 @@ app.post('/api/query', async (req, res) => {
     if (!ALLOWED.includes(firstWord)) {
       return res.status(403).json({ error: `Only read-only queries allowed. Got: ${firstWord}` });
     }
+    log('INFO', 'Query', `DB:${database} Schema:${schema} SQL:${trimmed.slice(0, 300)}`);
     const rows = await runSql(trimmed, database, schema);
+    log('INFO', 'Query', `Returned ${rows?.length ?? 0} rows`);
     res.json({ result: rows });
   } catch (err: any) {
+    log('ERROR', 'Query', `/api/query error: ${err.message?.slice(0, 300)}`);
     res.json({ error: err.message });
   }
 });

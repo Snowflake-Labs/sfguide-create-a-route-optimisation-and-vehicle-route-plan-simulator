@@ -16,7 +16,10 @@ async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promi
     const body = await res.json();
     const rows = Array.isArray(body) ? body : (body.result ?? []);
     return Array.isArray(rows) ? rows : [];
-  } catch { return []; }
+  } catch (err) {
+    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
+    return [];
+  }
 }
 
 function cartoBasemap() {
@@ -125,9 +128,12 @@ export default function RouteOptimization() {
       ...(jobs[i % jobs.length] ? { time_windows: [[0, 86400]] } : {}),
     }));
     const vrpVehicles = vehicles.map((v, i) => ({
-      id: i + 1, profile: v.profile, start: [v.startLng, v.startLat], end: [v.endLng, v.endLat],
+      id: i + 1, profile: v.profile || 'driving-car', start: [v.startLng, v.startLat], end: [v.endLng, v.endLat],
       capacity: [v.capacity], time_window: [0, 86400],
     }));
+    console.log('[VRP] vehicles state:', vehicles);
+    console.log('[VRP] vrpVehicles:', JSON.stringify(vrpVehicles));
+    console.log('[VRP] vrpJobs count:', vrpJobs.length);
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
     const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`, 'OPENROUTESERVICE_APP', 'CORE');
