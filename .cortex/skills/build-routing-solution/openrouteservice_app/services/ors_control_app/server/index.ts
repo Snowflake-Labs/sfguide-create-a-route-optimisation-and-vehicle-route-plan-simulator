@@ -1141,22 +1141,30 @@ app.post('/api/matrix/build', async (req, res) => {
 
 app.get('/api/matrix/status', async (req, res) => {
   try {
-    const result = await callProcedure('GET_BUILD_STATUS()');
-    let jobs = JSON.parse(result || '[]');
-
-    for (const job of jobs) {
-      if (job.status === 'RUNNING' && job.stage === 'BUILDING' && job.work_queue_rows > 0) {
-        try {
-          const liveResult = await callProcedure(`GET_LIVE_TABLE_COUNT('${escapeString(job.region)}', '${escapeString(job.profile)}', '${escapeString(job.resolution)}')`);
-          const live = JSON.parse(liveResult || '{}');
-          if (live.raw_ingested > 0) {
-            job.raw_rows = live.raw_ingested;
-            job.pct_complete = Math.round(live.raw_ingested * 1000 / job.work_queue_rows) / 10;
-          }
-        } catch {}
-      }
-    }
-
+    let jobs: any[] = [];
+    try {
+      const rows = await runSql(
+        `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
+                WORK_QUEUE_ROWS, RAW_ROWS, PCT_COMPLETE, ERROR_MSG,
+                CREATED_AT, UPDATED_AT
+         FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+         ORDER BY CREATED_AT DESC LIMIT 50`
+      );
+      jobs = (rows || []).map((r: any) => ({
+        job_id: r.JOB_ID,
+        region: r.REGION,
+        profile: r.PROFILE,
+        resolution: r.RESOLUTION,
+        status: r.STATUS,
+        stage: r.STAGE,
+        work_queue_rows: r.WORK_QUEUE_ROWS || 0,
+        raw_rows: r.RAW_ROWS || 0,
+        pct_complete: r.PCT_COMPLETE || 0,
+        error_msg: r.ERROR_MSG,
+        created_at: r.CREATED_AT,
+        updated_at: r.UPDATED_AT,
+      }));
+    } catch {}
     res.json({ jobs });
   } catch (err: any) {
     res.json({ jobs: [], error: err.message });
@@ -1165,36 +1173,29 @@ app.get('/api/matrix/status', async (req, res) => {
 
 app.get('/api/matrix/inventory', async (_req, res) => {
   try {
-    const result = await callProcedure('GET_MATRIX_INVENTORY()');
-    const tables = JSON.parse(result || '[]');
-    const inventory = tables.map((t: any) => {
-      const name = t.table_name || '';
-      const parts = name.match(/^(.+)_MATRIX_(RES\d+)$/);
-      if (!parts) return null;
-      const regionProfile = parts[1];
-      const resolution = parts[2];
-      const profileIdx = regionProfile.lastIndexOf('_DRIVING_') >= 0
-        ? regionProfile.lastIndexOf('_DRIVING_')
-        : regionProfile.lastIndexOf('_CYCLING_') >= 0
-        ? regionProfile.lastIndexOf('_CYCLING_')
-        : regionProfile.lastIndexOf('_FOOT_') >= 0
-        ? regionProfile.lastIndexOf('_FOOT_')
-        : regionProfile.lastIndexOf('_WHEELCHAIR');
-      let region = regionProfile;
-      let profileName = 'driving-car';
-      if (profileIdx > 0) {
-        region = regionProfile.substring(0, profileIdx);
-        profileName = regionProfile.substring(profileIdx + 1).toLowerCase().replace(/_/g, '-');
-      }
-      return {
-        region, profile: profileName, resolution,
-        row_count: parseInt(t.row_count || '0'),
-        bytes: parseInt(t.bytes || '0'),
-        created: t.created || '',
-        table_name: name,
-        execution_time_secs: parseInt(t.execution_time_secs || '0'),
-      };
-    }).filter(Boolean);
+    let inventory: any[] = [];
+    try {
+      const rows = await runSql(
+        `SELECT TABLE_NAME, ROW_COUNT, BYTES, CREATED
+         FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
+           AND TABLE_NAME LIKE '%_MATRIX_RES%'
+         ORDER BY CREATED DESC`
+      );
+      inventory = (rows || []).map((t: any) => {
+        const name = (t.TABLE_NAME || '').toUpperCase();
+        const parts = name.match(/^(.+)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_(RES\d+)$/);
+        let region = name, profileName = 'driving-car', resolution = 'RES7';
+        if (parts) {
+          region = parts[1].replace(/_/g, '').toLowerCase();
+          // Capitalise first letter to match region name format
+          region = region.charAt(0).toUpperCase() + region.slice(1);
+          profileName = parts[2].toLowerCase().replace(/_/g, '-');
+          resolution = parts[3];
+        }
+        return { region, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0 };
+      }).filter(Boolean);
+    } catch {}
     res.json({ inventory });
   } catch (err: any) {
     res.json({ inventory: [], error: err.message });
