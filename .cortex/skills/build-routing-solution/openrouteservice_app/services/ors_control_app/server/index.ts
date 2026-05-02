@@ -1515,10 +1515,14 @@ app.post('/api/regions/active', async (req, res) => {
   try {
     const { region } = req.body;
     if (!region) return res.status(400).json({ error: 'region required' });
-    await runSql(
-      `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`,
-      'FLEET_INTELLIGENCE', 'CORE'
-    );
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+    } catch (e: any) {
+      log('WARN', 'Region', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
+    }
     const safeRegion = escapeString(region);
     const CONFIG_SCHEMAS = [
       'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
