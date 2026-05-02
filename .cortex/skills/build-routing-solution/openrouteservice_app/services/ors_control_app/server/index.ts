@@ -1218,8 +1218,13 @@ app.delete('/api/matrix/:region/:profile/:resolution', async (req, res) => {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const safeProfile = escapeString(req.params.profile);
     const safeRes = sanitizeIdentifier(req.params.resolution);
-    const result = await callProcedure(`DELETE_MATRIX_CONFIG('${safeRegion}', '${safeProfile}', '${safeRes}')`);
-    res.json({ status: 'ok', result });
+    const tablePrefix = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile.toUpperCase().replace(/-/g,'_')}_`;
+    const tables = [`${tablePrefix}MATRIX_${safeRes}`, `${tablePrefix}MATRIX_RAW_${safeRes}`, `${tablePrefix}WORK_QUEUE_${safeRes}`, `${tablePrefix}LIST_${safeRes}`];
+    for (const t of tables) {
+      try { await runSql(`DROP TABLE IF EXISTS ${t}`); } catch {}
+    }
+    await runSql(`DELETE FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE REGION = '${escapeString(req.params.region)}' AND PROFILE = '${safeProfile}' AND RESOLUTION = '${escapeString(safeRes)}'`);
+    res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
