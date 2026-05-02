@@ -1102,6 +1102,12 @@ app.post('/api/matrix/build', async (req, res) => {
     } catch {}
 
     let matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR`;
+    // For non-default regions, the procedure passes (region, profile, origin, dest)
+    // but MATRIX_TABULAR expects (profile, origin, dest, region).
+    // Use the MATRIX_TABULAR_W wrapper which corrects the argument order.
+    if (safeRegion && safeRegion.toUpperCase() !== 'DEFAULT' && safeRegion.toUpperCase() !== 'SANFRANCISCO') {
+      matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR_W`;
+    }
 
     const jobs: { job_id: string; resolution: number }[] = [];
     const regionDb = safeRegion;
