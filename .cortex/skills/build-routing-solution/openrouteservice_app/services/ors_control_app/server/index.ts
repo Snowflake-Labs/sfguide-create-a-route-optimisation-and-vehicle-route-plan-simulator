@@ -1151,8 +1151,9 @@ app.get('/api/matrix/status', async (req, res) => {
     try {
       const rows = await runSql(
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
-                WORK_QUEUE_ROWS, RAW_ROWS, PCT_COMPLETE, ERROR_MSG,
-                CREATED_AT, UPDATED_AT
+                HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
+                PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
+                CREATED_AT, STARTED_AT, COMPLETED_AT
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
@@ -1163,12 +1164,16 @@ app.get('/api/matrix/status', async (req, res) => {
         resolution: r.RESOLUTION,
         status: r.STATUS,
         stage: r.STAGE,
+        hexagons: r.HEXAGONS || 0,
         work_queue_rows: r.WORK_QUEUE_ROWS || 0,
         raw_rows: r.RAW_ROWS || 0,
+        matrix_rows: r.MATRIX_ROWS || 0,
         pct_complete: r.PCT_COMPLETE || 0,
         error_msg: r.ERROR_MSG,
+        statement_handle: r.STATEMENT_HANDLE,
         created_at: r.CREATED_AT,
-        updated_at: r.UPDATED_AT,
+        started_at: r.STARTED_AT,
+        completed_at: r.COMPLETED_AT,
       }));
     } catch {}
     res.json({ jobs });
