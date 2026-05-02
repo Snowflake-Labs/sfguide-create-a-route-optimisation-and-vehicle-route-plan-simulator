@@ -2006,11 +2006,16 @@ app.get('/api/tiles/:z/:x/:y', async (req, res) => {
 
 const distDir = join(import.meta.dirname || '.', '../dist');
 
-app.get('/logout', (_req, res) => {
-  res.clearCookie('session');
-  res.clearCookie('token');
-  res.clearCookie('sf-session');
-  res.redirect(302, '/');
+app.get('/logout', (req, res) => {
+  // Redirect to Snowflake account logout which clears the session and shows login screen
+  const appUrl = encodeURIComponent(`https://${req.headers.host || ''}/`);
+  const accountHost = SNOWFLAKE_HOST || '';
+  if (accountHost) {
+    res.redirect(302, `https://${accountHost}/session/v1/logout-from-application?redirect_url=${appUrl}`);
+  } else {
+    res.clearCookie('session');
+    res.redirect(302, '/');
+  }
 });
 
 app.use('/assets', express.static(join(distDir, 'assets'), {
