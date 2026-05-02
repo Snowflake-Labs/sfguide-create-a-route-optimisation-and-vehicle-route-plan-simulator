@@ -1433,6 +1433,25 @@ app.get('/api/regions', async (_req, res) => {
     } catch {}
     const knownNames = new Set(regions.map((r: any) => r.REGION_NAME));
     try {
+      const orsMapRows = await runSql(`SELECT REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
+      for (const row of orsMapRows || []) {
+        if (row.REGION && !knownNames.has(row.REGION)) {
+          const centerLat = ((row.MIN_LAT || 0) + (row.MAX_LAT || 0)) / 2;
+          const centerLon = ((row.MIN_LON || 0) + (row.MAX_LON || 0)) / 2;
+          regions.push({
+            REGION_NAME: row.REGION,
+            DISPLAY_NAME: row.DISPLAY_NAME || row.REGION,
+            CENTER_LAT: centerLat, CENTER_LON: centerLon,
+            BBOX_MIN_LAT: row.MIN_LAT, BBOX_MAX_LAT: row.MAX_LAT,
+            BBOX_MIN_LON: row.MIN_LON, BBOX_MAX_LON: row.MAX_LON,
+            ZOOM_LEVEL: 11, ORS_REGION_KEY: row.REGION,
+            DATA_SOURCE: 'ORS_REGION', IS_DEFAULT: false,
+          });
+          knownNames.add(row.REGION);
+        }
+      }
+    } catch {}
+    try {
       const synthRows = await runSql('SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY');
       for (const row of synthRows) {
         if (row.REGION && !knownNames.has(row.REGION)) {
