@@ -546,6 +546,83 @@ export default function FunctionTester() {
 
       {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} />}
 
+      {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {
+        const raw = result?.[0] ? Object.values(result[0])[0] : null;
+        const parsed = raw ? (typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw) : null;
+        if (!parsed?.durations && !parsed?.distances) return null;
+        const srcs: any[] = parsed.sources || [{ name: 'Origin' }];
+        const dsts: any[] = parsed.destinations || [];
+        const durations: number[][] = parsed.durations || [];
+        const distances: number[][] = parsed.distances || [];
+        return (
+          <div className="result-panel" style={{ overflowX: 'auto' }}>
+            <h3>Matrix Result</h3>
+            {durations.length > 0 && (
+              <>
+                <h4 style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>Travel Time (minutes)</h4>
+                <table style={{ borderCollapse: 'collapse', fontSize: 12, marginBottom: 16 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)' }}>From \ To</th>
+                      {dsts.map((d: any, i: number) => (
+                        <th key={i} style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                          {d.name || `Dest ${i + 1}`}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {durations.map((row: number[], i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '4px 8px', fontWeight: 600, background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                          {srcs[i]?.name || `Origin ${i + 1}`}
+                        </td>
+                        {row.map((val: number, j: number) => (
+                          <td key={j} style={{ padding: '4px 8px', border: '1px solid var(--border)', textAlign: 'right' }}>
+                            {(val / 60).toFixed(1)} min
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+            {distances.length > 0 && (
+              <>
+                <h4 style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>Distance (km)</h4>
+                <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)' }}>From \ To</th>
+                      {dsts.map((d: any, i: number) => (
+                        <th key={i} style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                          {d.name || `Dest ${i + 1}`}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {distances.map((row: number[], i: number) => (
+                      <tr key={i}>
+                        <td style={{ padding: '4px 8px', fontWeight: 600, background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                          {srcs[i]?.name || `Origin ${i + 1}`}
+                        </td>
+                        {row.map((val: number, j: number) => (
+                          <td key={j} style={{ padding: '4px 8px', border: '1px solid var(--border)', textAlign: 'right' }}>
+                            {(val / 1000).toFixed(2)} km
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       {result !== null && (
         <div className="result-panel">
           <h3>Result</h3>
