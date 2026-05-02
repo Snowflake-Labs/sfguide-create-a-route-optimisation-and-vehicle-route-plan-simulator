@@ -236,15 +236,39 @@ function extractGeoData(result: any): GeoData {
   return { geojson, points, center, zoom };
 }
 
+function parseMatrixResult(result: any): { sources: any[]; destinations: any[]; durations: number[][]; distances: number[][] } | null {
+  const raw = result?.[0] ? Object.values(result[0])[0] : null;
+  if (!raw) return null;
+  const parsed = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+  if (!parsed?.durations && !parsed?.distances) return null;
+  return { sources: parsed.sources || [], destinations: parsed.destinations || [], durations: parsed.durations || [], distances: parsed.distances || [] };
+}
+
+function travelTimeColor(t: number, maxT: number): [number, number, number, number] {
+  const ratio = Math.min(t / maxT, 1);
+  const r = Math.round(34 + (239 - 34) * ratio);
+  const g = Math.round(197 - (197 - 68) * ratio);
+  const b = Math.round(94 - (94 - 68) * ratio);
+  return [r, g, b, 230];
+}
+
 function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: string; regionCenter: [number, number] }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
+  const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
   const [viewState, setViewState] = useState({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    if (geo.center) {
+    if (matrix && matrix.sources.length > 0) {
+      const allPts = [...matrix.sources, ...matrix.destinations].filter(p => p.location);
+      if (allPts.length > 0) {
+        const lons = allPts.map((p: any) => p.location[0]);
+        const lats = allPts.map((p: any) => p.location[1]);
+        setViewState(prev => ({ ...prev, longitude: (Math.min(...lons) + Math.max(...lons)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 12 }));
+      }
+    } else if (geo.center) {
       setViewState((prev) => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
     }
-  }, [geo]);
+  }, [geo, matrix]);
 
   const geojsonLayer = useMemo(() => {
     if (!geo.geojson) return null;
@@ -308,13 +332,63 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     });
   }, [geo.points]);
 
-  const basemap = useMemo(() => cartoBasemap(), []);
-  const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer]);
+  const matrixLayers = useMemo(() => {
+    if (!matrix) return [];
+    const layers: any[] = [];
+    const allDurations = matrix.durations.flat();
+    const maxT = Math.max(...allDurations, 1);
+    const destData = matrix.destinations
+      .map((d: any, i: number) => ({
+        position: d.location as [number, number],
+        name: d.name || `Dest ${i + 1}`,
+        duration: matrix.durations[0]?.[i] ?? 0,
+        distance: matrix.distances[0]?.[i] ?? 0,
+      }))
+      .filter((d: any) => d.position);
+    layers.push(new ScatterplotLayer({
+      id: 'matrix-destinations',
+      data: destData,
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: (d: any) => travelTimeColor(d.duration, maxT),
+      getLineColor: [255, 255, 255, 200],
+      getRadius: 120,
+      radiusMinPixels: 10,
+      radiusMaxPixels: 18,
+      stroked: true,
+      lineWidthMinPixels: 2,
+    }));
+    const srcData = matrix.sources.filter((s: any) => s.location).map((s: any) => ({ position: s.location as [number, number], name: s.name || 'Origin' }));
+    layers.push(new ScatterplotLayer({
+      id: 'matrix-origins',
+      data: srcData,
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: [245, 158, 11, 255],
+      getLineColor: [255, 255, 255, 255],
+      getRadius: 140,
+      radiusMinPixels: 12,
+      radiusMaxPixels: 20,
+      stroked: true,
+      lineWidthMinPixels: 3,
+    }));
+    return layers;
+  }, [matrix]);
 
-  const hasGeo = !!(geo.geojson || geo.points.length > 0);
+  const basemap = useMemo(() => cartoBasemap(), []);
+  const layers = useMemo(() => matrix
+    ? [basemap, ...matrixLayers]
+    : [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean),
+    [basemap, matrix, matrixLayers, geojsonLayer, startEndLayer, pointsLayer]);
+
+  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix);
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
+    if (layer?.id === 'matrix-origins') return { text: object.name, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    if (layer?.id === 'matrix-destinations') {
+      return { text: `${object.name}\n${(object.duration / 60).toFixed(1)} min · ${(object.distance / 1000).toFixed(2)} km`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '6px 10px', borderRadius: '4px', whiteSpace: 'pre-line' } };
+    }
     if (layer?.id === 'start-end-markers') {
       return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     }
@@ -334,6 +408,13 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     <div style={{ marginTop: 16 }}>
       <h3>Map</h3>
       {!hasGeo && <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '0 0 8px' }}>No spatial data to display. Run a geo function to see results on the map.</p>}
+      {matrix && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(245,158,11)', display: 'inline-block' }} /> Origin</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(34,197,94)', display: 'inline-block' }} /> Fast</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Slow</span>
+        </div>
+      )}
       <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         <DeckGL
           viewState={viewState}
@@ -554,80 +635,62 @@ export default function FunctionTester() {
         const dsts: any[] = parsed.destinations || [];
         const durations: number[][] = parsed.durations || [];
         const distances: number[][] = parsed.distances || [];
+        const srcLabel = (s: any, i: number) => s.name || `[${s.location?.[0]?.toFixed(3)}, ${s.location?.[1]?.toFixed(3)}]` || `Origin ${i + 1}`;
+        const dstLabel = (d: any, i: number) => d.name || `[${d.location?.[0]?.toFixed(3)}, ${d.location?.[1]?.toFixed(3)}]` || `Dest ${i + 1}`;
+        const cellStyle = { padding: '6px 12px', border: '1px solid var(--border)', textAlign: 'right' as const };
+        const headStyle = { padding: '6px 12px', background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' as const, fontWeight: 600 };
         return (
           <div className="result-panel" style={{ overflowX: 'auto' }}>
             <h3>Matrix Result</h3>
             {durations.length > 0 && (
-              <>
+              <div style={{ marginBottom: 20 }}>
                 <h4 style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>Travel Time (minutes)</h4>
-                <table style={{ borderCollapse: 'collapse', fontSize: 12, marginBottom: 16 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)' }}>From \ To</th>
-                      {dsts.map((d: any, i: number) => (
-                        <th key={i} style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
-                          {d.name || `Dest ${i + 1}`}
-                        </th>
-                      ))}
+                <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead><tr>
+                    <th style={headStyle}>From \ To</th>
+                    {dsts.map((d: any, i: number) => <th key={i} style={headStyle}>{dstLabel(d, i)}</th>)}
+                  </tr></thead>
+                  <tbody>{durations.map((row: number[], i: number) => (
+                    <tr key={i}>
+                      <td style={{ ...cellStyle, fontWeight: 600, textAlign: 'left' }}>{srcLabel(srcs[i], i)}</td>
+                      {row.map((v: number, j: number) => <td key={j} style={cellStyle}>{(v / 60).toFixed(1)} min</td>)}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {durations.map((row: number[], i: number) => (
-                      <tr key={i}>
-                        <td style={{ padding: '4px 8px', fontWeight: 600, background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
-                          {srcs[i]?.name || `Origin ${i + 1}`}
-                        </td>
-                        {row.map((val: number, j: number) => (
-                          <td key={j} style={{ padding: '4px 8px', border: '1px solid var(--border)', textAlign: 'right' }}>
-                            {(val / 60).toFixed(1)} min
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
+                  ))}</tbody>
                 </table>
-              </>
+              </div>
             )}
             {distances.length > 0 && (
-              <>
+              <div>
                 <h4 style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 6 }}>Distance (km)</h4>
                 <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)' }}>From \ To</th>
-                      {dsts.map((d: any, i: number) => (
-                        <th key={i} style={{ padding: '4px 8px', background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
-                          {d.name || `Dest ${i + 1}`}
-                        </th>
-                      ))}
+                  <thead><tr>
+                    <th style={headStyle}>From \ To</th>
+                    {dsts.map((d: any, i: number) => <th key={i} style={headStyle}>{dstLabel(d, i)}</th>)}
+                  </tr></thead>
+                  <tbody>{distances.map((row: number[], i: number) => (
+                    <tr key={i}>
+                      <td style={{ ...cellStyle, fontWeight: 600, textAlign: 'left' }}>{srcLabel(srcs[i], i)}</td>
+                      {row.map((v: number, j: number) => <td key={j} style={cellStyle}>{(v / 1000).toFixed(2)} km</td>)}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {distances.map((row: number[], i: number) => (
-                      <tr key={i}>
-                        <td style={{ padding: '4px 8px', fontWeight: 600, background: 'var(--surface-alt)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
-                          {srcs[i]?.name || `Origin ${i + 1}`}
-                        </td>
-                        {row.map((val: number, j: number) => (
-                          <td key={j} style={{ padding: '4px 8px', border: '1px solid var(--border)', textAlign: 'right' }}>
-                            {(val / 1000).toFixed(2)} km
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
+                  ))}</tbody>
                 </table>
-              </>
+              </div>
             )}
           </div>
         );
       })()}
 
-      {result !== null && (
+      {result !== null && selectedFn !== 'MATRIX' && selectedFn !== 'MATRIX_TABULAR' && (
         <div className="result-panel">
           <h3>Result</h3>
           <pre className="result-json">{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
         </div>
+      )}
+      {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>Raw JSON</summary>
+          <pre className="result-json" style={{ fontSize: 11 }}>{JSON.stringify(result, null, 2)}</pre>
+        </details>
       )}
     </div>
   );
