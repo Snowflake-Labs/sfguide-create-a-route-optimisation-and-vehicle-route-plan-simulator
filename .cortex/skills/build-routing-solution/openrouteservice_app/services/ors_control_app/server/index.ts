@@ -1571,6 +1571,31 @@ app.get('/api/regions', async (_req, res) => {
           knownNames.add(row.REGION);
         }
       }
+      // Also include the default ORS stage region (e.g. SanFrancisco) if not already listed
+      try {
+        const stageRows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_SPCS_STAGE PATTERN='.*ors-config.*'`);
+        for (const row of stageRows || []) {
+          const path = row.name || row.NAME || '';
+          const match = path.match(/ors_spcs_stage\/([^/]+)\/ors-config/i);
+          if (match) {
+            const stageRegion = match[1];
+            if (!knownNames.has(stageRegion)) {
+              const mapRow = (await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(stageRegion)}'`).catch(() => []))?.[0];
+              regions.unshift({
+                REGION_NAME: stageRegion,
+                DISPLAY_NAME: mapRow?.DISPLAY_NAME || stageRegion,
+                CENTER_LAT: mapRow ? ((mapRow.MIN_LAT || 0) + (mapRow.MAX_LAT || 0)) / 2 : 37.7749,
+                CENTER_LON: mapRow ? ((mapRow.MIN_LON || 0) + (mapRow.MAX_LON || 0)) / 2 : -122.4194,
+                BBOX_MIN_LAT: mapRow?.MIN_LAT ?? 37.700, BBOX_MAX_LAT: mapRow?.MAX_LAT ?? 37.820,
+                BBOX_MIN_LON: mapRow?.MIN_LON ?? -122.520, BBOX_MAX_LON: mapRow?.MAX_LON ?? -122.350,
+                ZOOM_LEVEL: 11, ORS_REGION_KEY: stageRegion,
+                DATA_SOURCE: 'ORS_DEFAULT', IS_DEFAULT: true,
+              });
+              knownNames.add(stageRegion);
+            }
+          }
+        }
+      } catch {}
     } catch {}
     try {
       const synthRows = await runSql('SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY');
