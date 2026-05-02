@@ -188,6 +188,11 @@ export default function App() {
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <VehicleTypeSwitcher />
               <RegionSwitcher />
+              <button
+                onClick={() => { window.location.href = '/logout'; }}
+                style={{ fontSize: 11, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                title="Log out and refresh session"
+              >⏻ Logout</button>
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>

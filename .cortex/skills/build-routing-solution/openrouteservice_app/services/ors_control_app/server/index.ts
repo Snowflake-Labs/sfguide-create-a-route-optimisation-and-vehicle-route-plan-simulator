@@ -2005,6 +2005,14 @@ app.get('/api/tiles/:z/:x/:y', async (req, res) => {
 });
 
 const distDir = join(import.meta.dirname || '.', '../dist');
+
+app.get('/logout', (_req, res) => {
+  res.clearCookie('session');
+  res.clearCookie('token');
+  res.clearCookie('sf-session');
+  res.redirect(302, '/');
+});
+
 app.use('/assets', express.static(join(distDir, 'assets'), {
   maxAge: '1y',
   immutable: true,
