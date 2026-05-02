@@ -192,6 +192,7 @@ const APP_VERSION = process.env.APP_VERSION || '0.0.0';
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
+let activeRegionOverride: string | null = null;
 
 async function getExpectedProfiles(region: string): Promise<string[]> {
   if (region === 'default') {
@@ -1622,7 +1623,8 @@ app.get('/api/regions', async (_req, res) => {
         DATA_SOURCE: 'S3_BASELINE', IS_DEFAULT: true,
       }];
     }
-    const active = regions.find((r: any) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
+    const defaultActive = regions.find((r: any) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
+    const active = activeRegionOverride && regions.find((r: any) => r.REGION_NAME === activeRegionOverride) ? activeRegionOverride : defaultActive;
     res.json({ regions, active });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1669,6 +1671,7 @@ app.post('/api/regions/active', async (req, res) => {
     } catch (e: any) {
       log('WARN', 'Region', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
     }
+    activeRegionOverride = region;
     const safeRegion = escapeString(region);
     const CONFIG_SCHEMAS = [
       'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
