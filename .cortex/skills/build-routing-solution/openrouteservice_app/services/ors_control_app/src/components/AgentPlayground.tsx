@@ -1,4 +1,6 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
@@ -310,7 +312,23 @@ export default function AgentPlayground() {
             {messages.length === 0 && <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: 16, textAlign: 'center' }}>Ask anything about routing, isochrones, or directions...</div>}
             {messages.map((m, i) => (
               <div key={i} style={{ marginBottom: 8, textAlign: m.role === 'user' ? 'right' : 'left' }}>
-                <div style={{ display: 'inline-block', maxWidth: '90%', padding: '8px 12px', borderRadius: 8, background: m.role === 'user' ? 'var(--accent)' : 'rgba(0,0,0,0.04)', color: m.role === 'user' ? '#fff' : 'var(--text)', fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.content || (streaming && m.role === 'assistant' ? '...' : '')}</div>
+                <div style={{ display: 'inline-block', maxWidth: '90%', padding: '8px 12px', borderRadius: 8, background: m.role === 'user' ? 'var(--accent)' : 'rgba(0,0,0,0.04)', color: m.role === 'user' ? '#fff' : 'var(--text)', fontSize: 13 }}>
+                    {m.role === 'assistant'
+                      ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                          p: ({children}) => <p style={{margin: '0 0 6px'}}>{children}</p>,
+                          ul: ({children}) => <ul style={{margin: '4px 0', paddingLeft: 18}}>{children}</ul>,
+                          ol: ({children}) => <ol style={{margin: '4px 0', paddingLeft: 18}}>{children}</ol>,
+                          li: ({children}) => <li style={{marginBottom: 2}}>{children}</li>,
+                          code: ({children}) => <code style={{background: 'rgba(0,0,0,0.1)', borderRadius: 3, padding: '1px 4px', fontFamily: 'monospace', fontSize: 12}}>{children}</code>,
+                          pre: ({children}) => <pre style={{background: 'rgba(0,0,0,0.1)', borderRadius: 6, padding: '8px', overflowX: 'auto', fontSize: 12, margin: '4px 0'}}>{children}</pre>,
+                          strong: ({children}) => <strong style={{fontWeight: 600}}>{children}</strong>,
+                          a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: 'var(--accent)'}}>{children}</a>,
+                          table: ({children}) => <table style={{borderCollapse: 'collapse', width: '100%', fontSize: 12, margin: '4px 0'}}>{children}</table>,
+                          th: ({children}) => <th style={{border: '1px solid var(--border)', padding: '4px 8px', textAlign: 'left', background: 'rgba(0,0,0,0.05)'}}>{children}</th>,
+                          td: ({children}) => <td style={{border: '1px solid var(--border)', padding: '4px 8px'}}>{children}</td>,
+                        }}>{m.content || (streaming ? '...' : '')}</ReactMarkdown>
+                      : m.content}
+                  </div>
               </div>
             ))}
             <div ref={chatEndRef} />
