@@ -5,6 +5,32 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 
+const CURSOR_BLINK_CSS = `
+@keyframes agent-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.agent-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: currentColor;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: agent-cursor-blink 0.8s step-end infinite;
+}
+`;
+
+if (typeof document !== 'undefined') {
+  const existing = document.getElementById('agent-cursor-style');
+  if (!existing) {
+    const style = document.createElement('style');
+    style.id = 'agent-cursor-style';
+    style.textContent = CURSOR_BLINK_CSS;
+    document.head.appendChild(style);
+  }
+}
+
 function cartoBasemap() {
   return new TileLayer({ id: 'carto-basemap', data: '/api/tiles/{z}/{x}/{y}', minZoom: 0, maxZoom: 19, tileSize: 256, renderSubLayers: (props: any) => { const { boundingBox } = props.tile; return new BitmapLayer(props, { data: undefined, image: props.data, bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]] }); } });
 }
@@ -28,11 +54,68 @@ function decodePolyline(encoded: string): [number, number][] {
 }
 
 interface MarkerPoint { position: [number, number]; color: [number, number, number, number]; label: string; }
-interface GeoData { geojson: any | null; points: MarkerPoint[]; center: [number, number] | null; zoom: number; }
+interface PoiPoint { position: [number, number]; name: string; category: string; color: [number, number, number, number]; }
+interface GeoData { geojson: any | null; points: MarkerPoint[]; poiPoints: PoiPoint[]; center: [number, number] | null; zoom: number; }
+
+const POI_CATEGORY_COLORS: Record<string, [number, number, number, number]> = {
+  restaurant: [255, 99, 71, 230],
+  fast_food_restaurant: [255, 99, 71, 230],
+  casual_eatery: [255, 99, 71, 230],
+  fine_dining_restaurant: [255, 99, 71, 230],
+  pizzaria: [255, 99, 71, 230],
+  chicken_restaurant: [255, 99, 71, 230],
+  sandwich_shop: [255, 99, 71, 230],
+  sushi_restaurant: [255, 99, 71, 230],
+  seafood_restaurant: [255, 99, 71, 230],
+  steak_house: [255, 99, 71, 230],
+  burger_restaurant: [255, 99, 71, 230],
+  cafe: [138, 43, 226, 230],
+  coffee_shop: [138, 43, 226, 230],
+  bakery: [138, 43, 226, 230],
+  tea_house: [138, 43, 226, 230],
+  bar: [255, 165, 0, 230],
+  pub: [255, 165, 0, 230],
+  nightclub: [255, 165, 0, 230],
+  lounge: [255, 165, 0, 230],
+  hotel: [0, 191, 255, 230],
+  motel: [0, 191, 255, 230],
+  hostel: [0, 191, 255, 230],
+  bed_and_breakfast: [0, 191, 255, 230],
+  shop: [50, 205, 50, 230],
+  shopping_mall: [50, 205, 50, 230],
+  supermarket: [50, 205, 50, 230],
+  hospital: [255, 20, 147, 230],
+  medical_clinic: [255, 20, 147, 230],
+  pharmacy: [255, 20, 147, 230],
+  park: [34, 139, 34, 230],
+  playground: [34, 139, 34, 230],
+  gas_station: [255, 215, 0, 230],
+  parking: [169, 169, 169, 230],
+};
+
+function poiColor(category: string): [number, number, number, number] {
+  return POI_CATEGORY_COLORS[category] || [100, 149, 237, 230];
+}
+
+const POI_DISPLAY_NAMES: Record<string, string> = {
+  restaurant: 'Restaurants', fast_food_restaurant: 'Restaurants', casual_eatery: 'Restaurants',
+  fine_dining_restaurant: 'Restaurants', pizzaria: 'Restaurants', chicken_restaurant: 'Restaurants',
+  sandwich_shop: 'Restaurants', sushi_restaurant: 'Restaurants', seafood_restaurant: 'Restaurants',
+  steak_house: 'Restaurants', burger_restaurant: 'Restaurants',
+  cafe: 'Cafes', coffee_shop: 'Cafes', bakery: 'Cafes', tea_house: 'Cafes',
+  bar: 'Bars', pub: 'Bars', nightclub: 'Bars', lounge: 'Bars',
+  hotel: 'Hotels', motel: 'Hotels', hostel: 'Hotels', bed_and_breakfast: 'Hotels',
+  shop: 'Shops', shopping_mall: 'Shops', supermarket: 'Shops',
+  hospital: 'Healthcare', medical_clinic: 'Healthcare', pharmacy: 'Healthcare',
+  park: 'Parks', playground: 'Parks',
+  gas_station: 'Gas Stations',
+  parking: 'Parking',
+};
 
 function extractAgentGeoData(toolResults: any[]): GeoData {
   const features: any[] = [];
   const markerPoints: MarkerPoint[] = [];
+  const poiPoints: PoiPoint[] = [];
 
   for (const tr of toolResults) {
     if (!tr || typeof tr !== 'object' || tr.status === 'FAILED') continue;
@@ -70,7 +153,25 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
     } catch {}
   }
 
-  const allCoords: [number, number][] = [...markerPoints.map(p => p.position)];
+  for (const tr of toolResults) {
+    if (!tr || typeof tr !== 'object') continue;
+    if (Array.isArray(tr.poi_list)) {
+      for (const poi of tr.poi_list) {
+        if (poi.lng != null && poi.lat != null) {
+          poiPoints.push({
+            position: [Number(poi.lng), Number(poi.lat)],
+            name: poi.name || 'Unknown',
+            category: poi.category || '',
+            color: poiColor(poi.category || ''),
+          });
+        }
+      }
+    }
+  }
+
+  if (features.length === 0 && markerPoints.length === 0 && poiPoints.length === 0) return { geojson: null, points: markerPoints, poiPoints, center: null, zoom: 12 };
+
+  const allCoords: [number, number][] = [...markerPoints.map(p => p.position), ...poiPoints.map(p => p.position)];
   for (const f of features) {
     const geom = f.geometry;
     if (!geom) continue;
@@ -80,8 +181,6 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
     else if (geom.type === 'Polygon') allCoords.push(...geom.coordinates[0]);
     else if (geom.type === 'MultiPolygon') geom.coordinates.forEach((p: any) => allCoords.push(...p[0]));
   }
-
-  if (features.length === 0 && markerPoints.length === 0) return { geojson: null, points: markerPoints, center: null, zoom: 12 };
 
   let center: [number, number] | null = null;
   let zoom = 12;
@@ -96,12 +195,49 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
     if (span > 1) zoom = 8; else if (span > 0.5) zoom = 9; else if (span > 0.1) zoom = 11; else if (span > 0.02) zoom = 13; else zoom = 14;
   }
 
-  return { geojson: features.length > 0 ? { type: 'FeatureCollection', features } : null, points: markerPoints, center, zoom };
+  return { geojson: features.length > 0 ? { type: 'FeatureCollection', features } : null, points: markerPoints, poiPoints, center, zoom };
 }
 
-interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; }
+function stripToolCallJson(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, '').replace(/\{[\s\S]*?"tool_call"[\s\S]*?\}/g, '').trim();
+}
 
-const EMPTY_GEO: GeoData = { geojson: null, points: [], center: null, zoom: 12 };
+interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
+
+const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
+  {
+    label: 'Restaurants nearby',
+    icon: '🍽️',
+    prompt: 'Show me restaurants within a 10 minute drive from Union Square, San Francisco',
+  },
+  {
+    label: 'Cycling directions',
+    icon: '🚲',
+    prompt: 'Get cycling directions from the Ferry Building to Golden Gate Park, San Francisco',
+  },
+  {
+    label: 'Cafes by bike',
+    icon: '☕',
+    prompt: 'What cafes can I reach within a 15 minute cycle from Civic Center, San Francisco',
+  },
+  {
+    label: 'Hotels near airport',
+    icon: '🏨',
+    prompt: 'Show me hotels within a 20 minute drive from San Francisco International Airport',
+  },
+  {
+    label: 'Pharmacy delivery routes',
+    icon: '🚚',
+    prompt: 'I have 3 vehicles starting from a warehouse at 1 Market Street, San Francisco. Optimise routes to deliver to these pharmacies: Walgreens at 498 Castro Street, CVS at 2676 Geary Blvd, Walgreens at 3201 Divisadero Street, CVS at 3700 Sacramento Street, Rite Aid at 801 Clement Street, and Walgreens at 2690 Mission Street.',
+  },
+  {
+    label: 'Multi-stop drive',
+    icon: '📍',
+    prompt: 'Get driving directions from Fisherman\'s Wharf to Alcatraz Ferry, then to Pier 39, then to the Embarcadero, San Francisco',
+  },
+];
+
+const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
 
 export default function AgentPlayground() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -110,6 +246,15 @@ export default function AgentPlayground() {
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const streamingTextRef = useRef('');
+
+  const clearConversation = useCallback(() => {
+    setMessages([]);
+    setInput('');
+    setGeoData(EMPTY_GEO);
+    streamingTextRef.current = '';
+    setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -135,6 +280,7 @@ export default function AgentPlayground() {
       const toolResults: any[] = [];
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
+      streamingTextRef.current = '';
 
       if (reader) {
         let done = false;
@@ -156,25 +302,36 @@ export default function AgentPlayground() {
               if (!dataStr) continue;
               try {
                 const parsed = JSON.parse(dataStr);
-                if (eventType === 'result') {
-                  assistantContent = parsed.message || '';
+                if (eventType === 'token') {
+                  streamingTextRef.current += parsed.text || '';
+                  const accumulated = streamingTextRef.current;
+                  setMessages(prev => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last?.role === 'assistant') { last.content = accumulated; last.streaming = true; }
+                    else updated.push({ role: 'assistant', content: accumulated, streaming: true });
+                    return updated;
+                  });
+                } else if (eventType === 'result') {
+                  assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
-                    if (last?.role === 'assistant') { last.content = assistantContent; last.toolResults = toolResults; }
-                    else updated.push({ role: 'assistant', content: assistantContent, toolResults });
+                    if (last?.role === 'assistant') { last.content = assistantContent; last.toolResults = toolResults; last.streaming = false; }
+                    else updated.push({ role: 'assistant', content: assistantContent, toolResults, streaming: false });
                     return updated;
                   });
                 } else if (eventType === 'progress') {
-                  const stepLabels: Record<string, string> = { calling_llm: 'Thinking...', executing_tool: 'Running tool', formatting: 'Processing' };
+                  const stepLabels: Record<string, string> = { calling_llm: 'Thinking...', executing_tool: 'Running tool', formatting: 'Generating response...' };
                   const label = stepLabels[parsed.step] || parsed.step || '';
                   const progressText = parsed.detail && !parsed.detail.startsWith('Iteration') ? `${label} ${parsed.detail}`.trim() : label || 'Thinking...';
+                  if (streamingTextRef.current) break;
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
-                    if (last?.role === 'assistant') last.content = progressText;
-                    else updated.push({ role: 'assistant', content: progressText });
+                    if (last?.role === 'assistant' && !last.streaming) last.content = progressText;
+                    else if (!last || last.role !== 'assistant') updated.push({ role: 'assistant', content: progressText });
                     return updated;
                   });
                 } else if (eventType === 'error') {
@@ -182,7 +339,7 @@ export default function AgentPlayground() {
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
-                    if (last?.role === 'assistant') last.content = assistantContent;
+                    if (last?.role === 'assistant') { last.content = assistantContent; last.streaming = false; }
                     else updated.push({ role: 'assistant', content: assistantContent });
                     return updated;
                   });
@@ -202,7 +359,7 @@ export default function AgentPlayground() {
       setMessages(prev => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
-        if (last?.role === 'assistant') last.toolResults = toolResults;
+        if (last?.role === 'assistant') { last.toolResults = toolResults; last.streaming = false; }
         return updated;
       });
     } catch (err: any) {
@@ -281,10 +438,41 @@ export default function AgentPlayground() {
     });
   }, [geoData.points]);
 
-  const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer]);
+  const poiLayer = useMemo(() => {
+    if (geoData.poiPoints.length === 0) return null;
+    return new ScatterplotLayer({
+      id: 'agent-poi',
+      data: geoData.poiPoints,
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: (d: any) => d.color,
+      getLineColor: [255, 255, 255, 200] as [number, number, number, number],
+      getRadius: 50,
+      radiusMinPixels: 5,
+      radiusMaxPixels: 9,
+      stroked: true,
+      lineWidthMinPixels: 1,
+    });
+  }, [geoData.poiPoints]);
+
+  const poiLegend = useMemo(() => {
+    if (geoData.poiPoints.length === 0) return null;
+    const counts: Record<string, { label: string; color: [number,number,number,number]; count: number }> = {};
+    for (const p of geoData.poiPoints) {
+      const label = POI_DISPLAY_NAMES[p.category] || p.category;
+      if (!counts[label]) counts[label] = { label, color: p.color, count: 0 };
+      counts[label].count++;
+    }
+    return Object.values(counts);
+  }, [geoData.poiPoints]);
+
+  const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
+    if (layer?.id === 'agent-poi') {
+      return { text: `${object.name}\n${POI_DISPLAY_NAMES[object.category] || object.category}`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px', whiteSpace: 'pre-line' } };
+    }
     if (layer?.id === 'agent-start-end' || layer?.id === 'agent-points') {
       return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     }
@@ -303,30 +491,65 @@ export default function AgentPlayground() {
 
   return (
     <div className="panel">
-      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Agent Playground</h2>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>Chat with the routing agent</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <h2 style={{ fontSize: 20, margin: 0 }}>Agent Playground</h2>
+        {messages.length > 0 && (
+          <button onClick={clearConversation} disabled={streaming} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            New conversation
+          </button>
+        )}
+      </div>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
+
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Try an example</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {SAMPLE_PROMPTS.map((sp, i) => (
+            <button
+              key={i}
+              onClick={() => setInput(sp.prompt)}
+              disabled={streaming}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px',
+                background: 'var(--surface, rgba(0,0,0,0.03))', border: '1px solid var(--border)',
+                borderRadius: 20, cursor: 'pointer', fontSize: 12, color: 'var(--text)',
+                transition: 'background 0.15s, border-color 0.15s', whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(41,181,232,0.1)'; e.currentTarget.style.borderColor = 'rgba(41,181,232,0.5)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface, rgba(0,0,0,0.03))'; e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              <span>{sp.icon}</span><span>{sp.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: '0 0 380px', display: 'flex', flexDirection: 'column', maxHeight: 600 }}>
+        <div style={{ flex: '0 0 380px', display: 'flex', flexDirection: 'column', maxHeight: 540 }}>
           <div style={{ flex: 1, overflowY: 'auto', marginBottom: 8, padding: 8, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.02)', minHeight: 200 }}>
-            {messages.length === 0 && <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: 16, textAlign: 'center' }}>Ask anything about routing, isochrones, or directions...</div>}
+            {messages.length === 0 && (
+              <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: 16, textAlign: 'center' }}>Select an example above or type your own question</div>
+            )}
             {messages.map((m, i) => (
               <div key={i} style={{ marginBottom: 8, textAlign: m.role === 'user' ? 'right' : 'left' }}>
                 <div style={{ display: 'inline-block', maxWidth: '90%', padding: '8px 12px', borderRadius: 8, background: m.role === 'user' ? 'var(--accent)' : 'rgba(0,0,0,0.04)', color: m.role === 'user' ? '#fff' : 'var(--text)', fontSize: 13 }}>
                     {m.role === 'assistant'
-                      ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                          p: ({children}) => <p style={{margin: '0 0 6px'}}>{children}</p>,
-                          ul: ({children}) => <ul style={{margin: '4px 0', paddingLeft: 18}}>{children}</ul>,
-                          ol: ({children}) => <ol style={{margin: '4px 0', paddingLeft: 18}}>{children}</ol>,
-                          li: ({children}) => <li style={{marginBottom: 2}}>{children}</li>,
-                          code: ({children}) => <code style={{background: 'rgba(0,0,0,0.1)', borderRadius: 3, padding: '1px 4px', fontFamily: 'monospace', fontSize: 12}}>{children}</code>,
-                          pre: ({children}) => <pre style={{background: 'rgba(0,0,0,0.1)', borderRadius: 6, padding: '8px', overflowX: 'auto', fontSize: 12, margin: '4px 0'}}>{children}</pre>,
-                          strong: ({children}) => <strong style={{fontWeight: 600}}>{children}</strong>,
-                          a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: 'var(--accent)'}}>{children}</a>,
-                          table: ({children}) => <table style={{borderCollapse: 'collapse', width: '100%', fontSize: 12, margin: '4px 0'}}>{children}</table>,
-                          th: ({children}) => <th style={{border: '1px solid var(--border)', padding: '4px 8px', textAlign: 'left', background: 'rgba(0,0,0,0.05)'}}>{children}</th>,
-                          td: ({children}) => <td style={{border: '1px solid var(--border)', padding: '4px 8px'}}>{children}</td>,
-                        }}>{m.content || (streaming ? '...' : '')}</ReactMarkdown>
+                      ? <>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                            p: ({children}) => <p style={{margin: '0 0 6px'}}>{children}</p>,
+                            ul: ({children}) => <ul style={{margin: '4px 0', paddingLeft: 18}}>{children}</ul>,
+                            ol: ({children}) => <ol style={{margin: '4px 0', paddingLeft: 18}}>{children}</ol>,
+                            li: ({children}) => <li style={{marginBottom: 2}}>{children}</li>,
+                            code: ({children}) => <code style={{background: 'rgba(0,0,0,0.1)', borderRadius: 3, padding: '1px 4px', fontFamily: 'monospace', fontSize: 12}}>{children}</code>,
+                            pre: ({children}) => <pre style={{background: 'rgba(0,0,0,0.1)', borderRadius: 6, padding: '8px', overflowX: 'auto', fontSize: 12, margin: '4px 0'}}>{children}</pre>,
+                            strong: ({children}) => <strong style={{fontWeight: 600}}>{children}</strong>,
+                            a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: 'var(--accent)'}}>{children}</a>,
+                            table: ({children}) => <table style={{borderCollapse: 'collapse', width: '100%', fontSize: 12, margin: '4px 0'}}>{children}</table>,
+                            th: ({children}) => <th style={{border: '1px solid var(--border)', padding: '4px 8px', textAlign: 'left', background: 'rgba(0,0,0,0.05)'}}>{children}</th>,
+                            td: ({children}) => <td style={{border: '1px solid var(--border)', padding: '4px 8px'}}>{children}</td>,
+                          }}>{stripToolCallJson(m.content) || (streaming && !m.streaming ? '...' : '')}</ReactMarkdown>
+                          {m.streaming && <span className="agent-cursor" />}
+                        </>
                       : m.content}
                   </div>
               </div>
@@ -343,6 +566,16 @@ export default function AgentPlayground() {
           <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
             <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
           </div>
+          {poiLegend && poiLegend.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {poiLegend.map(entry => (
+                <div key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})`, flexShrink: 0 }} />
+                  <span>{entry.label} ({entry.count})</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
