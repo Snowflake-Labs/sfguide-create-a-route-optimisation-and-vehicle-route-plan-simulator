@@ -72,29 +72,45 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Verify) as need
 
 **Goal:** Set session query tag for attribution tracking.
 
-> See `references/sql-pipeline.md` Step 1.
+Execute:
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
 
 ### Step 2: Verify OpenRouteService Installation
 
 **Goal:** Confirm OpenRouteService Native App is installed and services are running.
 
-1. Check ORS application exists
-2. Verify ORS_SERVICE and ROUTING_GATEWAY_SERVICE are RUNNING
-3. Resume suspended services if needed
+Execute:
+```sql
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
+```
+
+If any services are SUSPENDED, resume them:
+```sql
+CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
+```
 
 **STOP** if ORS is not installed. Direct user to `build-routing-solution` skill.
-
-> See `references/sql-pipeline.md` Step 2.
 
 ### Step 3: Get Carto Overture Datasets from Marketplace
 
 **Goal:** Acquire Overture Maps Places and Addresses datasets for POI and density data.
 
-1. Get Overture Maps Places (POI data)
-2. Get Overture Maps Addresses (for H3 density)
-3. Verify both datasets are accessible
+Execute:
+```sql
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
 
-> See `references/sql-pipeline.md` Step 3.
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
+```
+
+Verify:
+```sql
+SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
+SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1;
+```
 
 ### Step 4: Create Database, Schema, Warehouse, and CONFIG
 

@@ -1,6 +1,20 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { CatalogRegion } from '../types';
 
+interface GraphInfo {
+  profile: string;
+  ready: boolean;
+  build_date?: string | null;
+}
+
+interface GraphReadiness {
+  service_ready: boolean;
+  profiles_loaded: string[];
+  expected_profiles: string[];
+  graphs: GraphInfo[];
+  error?: string;
+}
+
 interface RegionStatus {
   region: string;
   display_name?: string;
@@ -9,6 +23,7 @@ interface RegionStatus {
   pbfDownloaded: boolean;
   functionExists: boolean;
   isDefault?: boolean;
+  graphReadiness?: GraphReadiness | null;
 }
 
 interface ProvisionJob {
@@ -49,6 +64,25 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 ];
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
+
+type ComputeSize = 'S' | 'M' | 'L' | 'XL';
+
+const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
+  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities and small regions' },
+  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Sub-regions and small countries' },
+  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Countries and continents' },
+  { id: 'XL', label: 'Extra Large', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Large countries (US, Russia, etc.)' },
+];
+
+function recommendComputeSize(level: string | undefined): ComputeSize {
+  switch (level) {
+    case 'city': return 'S';
+    case 'sub-region': return 'M';
+    case 'country': return 'L';
+    case 'continent': return 'XL';
+    default: return 'M';
+  }
+}
 
 type SourceTab = 'bbbike' | 'geofabrik';
 
@@ -100,6 +134,7 @@ export default function RegionBuilder() {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
+  const [computeSize, setComputeSize] = useState<ComputeSize>('S');
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -227,6 +262,7 @@ export default function RegionBuilder() {
           pbf_url: selectedRegion.pbfUrl,
           bbox: selectedRegion.bbox || { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 },
           profiles: selectedProfiles,
+          compute_size: computeSize,
         }),
       });
       const data = await resp.json();
@@ -246,7 +282,20 @@ export default function RegionBuilder() {
 
   const dismissJob = useCallback(async (jobId: string) => {
     setProvisionJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+    try {
+      await fetch(`/api/regions/provision/${encodeURIComponent(jobId)}/dismiss`, { method: 'POST' });
+    } catch {}
   }, []);
+
+  const retryJob = useCallback((job: ProvisionJob) => {
+    const match = catalog.find((r) => r.regionKey.toUpperCase() === job.region.toUpperCase());
+    if (match) {
+      setSelectedRegion(match);
+      const profiles = job.profiles ? job.profiles.split(',').map(p => p.trim()).filter(Boolean) : DEFAULT_PROFILES;
+      setSelectedProfiles(profiles);
+      setComputeSize(recommendComputeSize(match.level));
+    }
+  }, [catalog]);
 
   const dropRegion = useCallback(async (region: string) => {
     try {
@@ -284,7 +333,9 @@ export default function RegionBuilder() {
     }
   }, [filteredCatalog, selectedRegion]);
 
-  const recentJobs = provisionJobs.filter((j) => j.status !== 'RUNNING' && j.status !== 'PENDING').slice(0, 10);
+  const finishedJobs = provisionJobs.filter((j) => j.status !== 'RUNNING' && j.status !== 'PENDING');
+  const failedJobs = finishedJobs.filter((j) => j.status === 'ERROR' || j.status === 'CANCELLED').slice(0, 10);
+  const completedJobs = finishedJobs.filter((j) => j.status !== 'ERROR' && j.status !== 'CANCELLED').slice(0, 10);
   const canProvisionSelected = selectedRegion && !isRegionProvisioning(selectedRegion.regionKey);
 
   const getPhaseProgress = (stage: string) => {
@@ -373,12 +424,15 @@ export default function RegionBuilder() {
       ) : (
         <table className="services-table">
           <thead>
-            <tr><th>Region</th><th>ORS Status</th><th>Functions</th><th>Actions</th></tr>
+            <tr><th>Region</th><th>Service</th><th>Graphs</th><th>Functions</th><th>Actions</th></tr>
           </thead>
           <tbody>
             {regions.map((c) => {
               const bp = buildProgress[c.region];
               const isBuilding = bp && bp.phase !== 'ready' && bp.phase !== 'unknown' && !c.isDefault;
+              const gr = c.graphReadiness;
+              const readyCount = gr?.graphs?.filter(g => g.ready).length ?? 0;
+              const totalCount = gr?.graphs?.length ?? 0;
               return (
               <tr key={c.region}>
                 <td>{c.display_name || c.region}</td>
@@ -405,6 +459,44 @@ export default function RegionBuilder() {
                   )}
                   {isBuilding && bp.phase === 'finalizing' && (
                     <div className="build-progress inline"><span className="step-message">Finalizing...</span></div>
+                  )}
+                </td>
+                <td>
+                  {c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY' ? (
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Service not running</span>
+                  ) : !gr ? (
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Checking...</span>
+                  ) : gr.error ? (
+                    <>
+                      <span className="badge error">Failed</span>
+                      <div style={{ fontSize: 11, color: '#e53935', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={gr.error}>
+                        {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
+                      </div>
+                    </>
+                  ) : gr.service_ready && readyCount === totalCount && totalCount > 0 ? (
+                    <>
+                      <span className="badge ok">{readyCount}/{totalCount} ready</span>
+                      <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
+                        {gr.graphs.map(g => (
+                          <li key={g.profile} style={{ color: 'var(--color-ok)' }}>
+                            {'\u2713'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <>
+                      <span className="badge warn">Building {readyCount}/{totalCount}</span>
+                      {totalCount > 0 && (
+                        <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
+                          {gr.graphs.map(g => (
+                            <li key={g.profile} style={{ color: g.ready ? 'var(--color-ok)' : 'var(--text-secondary)' }}>
+                              {g.ready ? '\u2713' : '\u25CB'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
                   )}
                 </td>
                 <td>{c.functionExists ? '\u2713' : '\u2014'}</td>
@@ -487,7 +579,7 @@ export default function RegionBuilder() {
                   return (
                   <tr
                     key={r.catalogId}
-                    onClick={() => { setSelectedRegion(r); setSelectedProfiles(DEFAULT_PROFILES); }}
+                    onClick={() => { setSelectedRegion(r); setSelectedProfiles(DEFAULT_PROFILES); setComputeSize(recommendComputeSize(r.level)); }}
                     style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.25)' : undefined, outline: isSelected ? '2px solid rgba(59,130,246,0.6)' : undefined }}
                   >
                     <td><strong>{r.regionName}</strong></td>
@@ -558,6 +650,27 @@ export default function RegionBuilder() {
               </div>
             </div>
 
+            <div className="profile-selector" style={{ marginTop: '0.5rem' }}>
+              <label className="info-label">Compute Size:</label>
+              <p className="subtitle" style={{ margin: '4px 0 8px' }}>
+                Auto-selected based on region level. Larger regions need more memory for graph building.
+              </p>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {COMPUTE_SIZES.map((s) => (
+                  <button
+                    key={s.id}
+                    className={`btn small${computeSize === s.id ? ' primary' : ''}`}
+                    onClick={() => setComputeSize(s.id)}
+                    style={{ flex: 1, textAlign: 'center' }}
+                  >
+                    <div><strong>{s.label}</strong></div>
+                    <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
+                    <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {isRegionProvisioning(selectedRegion.regionKey) && (
               <div className="warning-banner">This region is already being provisioned.</div>
             )}
@@ -573,7 +686,32 @@ export default function RegionBuilder() {
         </button>
       </div>
 
-      {recentJobs.length > 0 && (
+      {failedJobs.length > 0 && (
+        <>
+          <h3>Failed Jobs</h3>
+          {failedJobs.map((job) => (
+            <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div>
+                  <strong>{job.display_name || job.region}</strong>
+                  <span className="badge error" style={{ marginLeft: 8 }}>{job.status}</span>
+                  {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{getTimeSince(job.completed_at)}</span>}
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn small primary" onClick={() => retryJob(job)}>Retry</button>
+                  <button className="btn small" onClick={() => dismissJob(job.job_id)}>Dismiss</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: '#e53935', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {job.error_msg || job.message || 'Unknown error'}
+              </div>
+              {job.profiles && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Profiles: {job.profiles}</div>}
+            </div>
+          ))}
+        </>
+      )}
+
+      {completedJobs.length > 0 && (
         <>
           <h3>Recent Jobs</h3>
           <table className="services-table">
@@ -581,16 +719,14 @@ export default function RegionBuilder() {
               <tr><th>Region</th><th>Status</th><th>Message</th><th>Time</th><th></th></tr>
             </thead>
             <tbody>
-              {recentJobs.map((job) => (
+              {completedJobs.map((job) => (
                 <tr key={job.job_id}>
                   <td>{job.display_name || job.region}</td>
                   <td>
-                    <span className={`badge ${job.status === 'COMPLETE' ? 'ok' : job.status === 'ERROR' ? 'error' : 'warn'}`}>
-                      {job.status}
-                    </span>
+                    <span className="badge ok">{job.status}</span>
                   </td>
                   <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {job.status === 'ERROR' ? job.error_msg : job.message}
+                    {job.message}
                   </td>
                   <td>{job.completed_at ? getTimeSince(job.completed_at) : job.created_at ? getTimeSince(job.created_at) : ''}</td>
                   <td><button className="btn small" onClick={() => dismissJob(job.job_id)}>Dismiss</button></td>

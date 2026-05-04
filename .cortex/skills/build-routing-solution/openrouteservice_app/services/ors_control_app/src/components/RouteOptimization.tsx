@@ -16,7 +16,10 @@ async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promi
     const body = await res.json();
     const rows = Array.isArray(body) ? body : (body.result ?? []);
     return Array.isArray(rows) ? rows : [];
-  } catch { return []; }
+  } catch (err) {
+    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
+    return [];
+  }
 }
 
 function cartoBasemap() {
@@ -45,11 +48,16 @@ export default function RouteOptimization() {
   const [geocoding, setGeocoding] = useState(false);
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-    setVehicles(prev => prev.map(v => ({ ...v, startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat })));
+    const lng = Number(center.lng);
+    const lat = Number(center.lat);
+    const z = Number(zoom);
+    if (Number.isFinite(lng) && Number.isFinite(lat) && Number.isFinite(z) && (lng !== 0 || lat !== 0)) {
+      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: z }));
+      setVehicles(prev => prev.map(v => ({ ...v, startLng: lng, startLat: lat, endLng: lng, endLat: lat })));
+    }
     setCenterCoords(null);
     setPlaces([]);
     setJobs([]);
@@ -81,23 +89,38 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords) return;
     setLoading(true);
-    const indFilter = selectedIndustry ? ` AND CATEGORY = '${selectedIndustry}'` : '';
+    const placesQuery = selectedIndustry 
+      ? `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT 
+         FROM PLACES p, LOOKUP l 
+         WHERE p.REGION = '${regionName}' 
+           AND l.REGION = '${regionName}'
+           AND l.INDUSTRY = '${selectedIndustry}'
+           AND ARRAY_CONTAINS(p.CATEGORY::VARIANT, l.CTYPE)
+           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})
+         LIMIT 200`
+      : `SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT 
+         FROM PLACES 
+         WHERE REGION = '${regionName}' 
+           AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) 
+         LIMIT 200`;
     const [p, j] = await Promise.all([
-      sfQuery(`SELECT NAME, CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})${indFilter} LIMIT 200`),
+      sfQuery(placesQuery),
       sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' LIMIT 30`),
     ]);
     setPlaces(p);
     setJobs(j);
     setLoading(false);
-  }, [centerCoords, radius, selectedIndustry]);
+  }, [centerCoords, radius, selectedIndustry, regionName]);
 
   useEffect(() => { if (centerCoords) loadPlaces(); }, [centerCoords, radius, selectedIndustry]);
 
   const previewCatchment = useCallback(async () => {
-    if (!centerCoords) return;
-    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}, ${centerCoords[1]}, ${isoMinutes}))`, RO_DB, RO_SCHEMA);
+    console.log('[Catchment] centerCoords:', centerCoords, 'profile:', vehicles[0]?.profile, 'isoMinutes:', isoMinutes);
+    if (!centerCoords) { console.warn('[Catchment] No centerCoords — search for a location first'); return; }
+    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}::FLOAT, ${centerCoords[1]}::FLOAT, ${isoMinutes}::INT, NULL::VARCHAR))`, 'OPENROUTESERVICE_APP', 'CORE');
+    console.log('[Catchment] rows returned:', rows.length, rows[0]);
     if (rows[0]?.GEO) {
-      try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch {}
+      try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch (e) { console.error('[Catchment] JSON parse error:', e); }
     }
   }, [centerCoords, vehicles, isoMinutes]);
 
@@ -107,28 +130,44 @@ export default function RouteOptimization() {
     setRoutePaths([]);
     setVrpResult(null);
 
-    const vrpJobs = places.slice(0, 30).map((p: any, i: number) => ({
-      id: i + 1, location: [Number(p.LNG), Number(p.LAT)], service: 300,
-      ...(jobs[i % jobs.length] ? { time_windows: [[0, 86400]] } : {}),
-    }));
+    const vrpJobs = places.slice(0, 30).map((p: any, i: number) => {
+      const jobTemplate = jobs[i % jobs.length];
+      return {
+        id: i + 1, 
+        location: [Number(p.LNG), Number(p.LAT)], 
+        service: 300,
+        skills: [Number(jobTemplate?.SKILLS) || 1],
+      };
+    });
     const vrpVehicles = vehicles.map((v, i) => ({
-      id: i + 1, profile: v.profile, start: [v.startLng, v.startLat], end: [v.endLng, v.endLat],
-      capacity: [v.capacity], time_window: [0, 86400],
+      id: i + 1, 
+      profile: v.profile || 'driving-car', 
+      start: [v.startLng, v.startLat], 
+      end: [v.endLng, v.endLat],
+      capacity: [Number(v.capacity)],
+      skills: [(i % 3) + 1],
     }));
+    console.log('[VRP] vehicles state:', vehicles);
+    console.log('[VRP] vrpVehicles:', JSON.stringify(vrpVehicles));
+    console.log('[VRP] vrpJobs count:', vrpJobs.length);
 
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpJobs).replace(/'/g, "''")}'), PARSE_JSON('${JSON.stringify(vrpVehicles).replace(/'/g, "''")}')))`);
+    const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
+    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`, 'OPENROUTESERVICE_APP', 'CORE');
+    console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
-      for (let i = 0; i < vehicles.length; i++) {
-        const routeSteps = rows.filter((r: any) => Number(r.VEHICLE_ID || r.VEHICLE) === i + 1);
-        if (routeSteps.length < 2) continue;
-        const coords = routeSteps.map((s: any) => `${s.LON || s.LONGITUDE},${s.LAT || s.LATITUDE}`).join('|');
-        const dirRows = await sfQuery(`SELECT GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${vehicles[i].profile}', '${coords}'))`);
-        if (dirRows[0]?.GEOJSON) {
-          try { paths.push({ vehicleIdx: i, geojson: JSON.parse(dirRows[0].GEOJSON) }); } catch {}
+      for (const row of rows) {
+        if (row.GEOJSON) {
+          try {
+            const geojson = typeof row.GEOJSON === 'string' ? JSON.parse(row.GEOJSON) : row.GEOJSON;
+            paths.push({ vehicleIdx: (row.VEHICLE || 1) - 1, geojson });
+          } catch (e) {
+            console.error('[VRP] Failed to parse GEOJSON:', e);
+          }
         }
       }
+      console.log('[VRP] Parsed', paths.length, 'route geometries');
       setRoutePaths(paths);
     }
     setSolving(false);

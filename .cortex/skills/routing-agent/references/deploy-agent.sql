@@ -26,35 +26,9 @@ LANGUAGE SQL
 AS
 $$
 DECLARE
-    result_cursor CURSOR FOR
-        WITH geocoded AS (
-            SELECT AI_COMPLETE(
-                'claude-sonnet-4-5',
-                CONCAT('Extract all locations from this description and return their coordinates. Be precise with worldwide lat/lon coordinates. Description: ', ?),
-                {'temperature': 0, 'max_tokens': 2000},
-                {'type': 'json', 'schema': {'type': 'object', 'properties': {'locations': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'longitude': {'type': 'number'}, 'latitude': {'type': 'number'}}, 'required': ['name', 'longitude', 'latitude']}}}}}
-            ) AS geocoded_result
-        ),
-        coordinates AS (
-            SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT)) AS coords,
-                   geocoded_result AS geo
-            FROM geocoded, TABLE(FLATTEN(geocoded.geocoded_result, 'locations'))
-            GROUP BY geocoded_result
-        ),
-        directions AS (
-            SELECT geo, coords, d.RESPONSE AS dir_result
-            FROM coordinates,
-                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(?, OBJECT_CONSTRUCT('coordinates', coords)::VARIANT)) d
-        )
-        SELECT
-            geo:locations AS locations,
-            ? AS profile,
-            dir_result:features[0]:properties:summary:distance::FLOAT AS distance_raw,
-            dir_result:features[0]:properties:summary:duration::FLOAT AS duration_raw,
-            dir_result:features[0]:properties:segments AS segments,
-            dir_result:features[0]:geometry AS geometry,
-            dir_result:error AS ors_error
-        FROM directions;
+    v_safe_profile VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
     v_locations VARIANT;
     v_profile VARCHAR;
     v_distance_raw FLOAT;
@@ -63,9 +37,55 @@ DECLARE
     v_geometry VARIANT;
     v_ors_error VARIANT;
 BEGIN
-    OPEN result_cursor USING (LOCATIONS_DESCRIPTION, PROFILE, PROFILE);
-    FETCH result_cursor INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
-    CLOSE result_cursor;
+    -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
+    -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract all locations from this description and return their coordinates. Be precise with worldwide lat/lon coordinates. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 2000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
+            ) AS geocoded_result
+        ),
+        coordinates AS (
+            SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT)) AS coords,
+                   geocoded_result AS geo
+            FROM geocoded, TABLE(FLATTEN(geocoded.geocoded_result, ''locations''))
+            GROUP BY geocoded_result
+        ),
+        directions AS (
+            SELECT geo, coords, d.RESPONSE AS dir_result
+            FROM coordinates,
+                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(''' || v_safe_profile || ''', OBJECT_CONSTRUCT(''coordinates'', coords)::VARIANT)) d
+        )
+        SELECT
+            geo:locations AS locations,
+            ''' || v_safe_profile || ''' AS profile,
+            dir_result:features[0]:properties:summary:distance::FLOAT AS distance_raw,
+            dir_result:features[0]:properties:summary:duration::FLOAT AS duration_raw,
+            dir_result:features[0]:properties:segments AS segments,
+            dir_result:features[0]:geometry AS geometry,
+            dir_result:error AS ors_error
+        FROM directions';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
+    CLOSE c;
 
     IF (v_locations IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
@@ -111,28 +131,9 @@ LANGUAGE SQL
 AS
 $$
 DECLARE
-    result_cursor CURSOR FOR
-        WITH geocoded AS (
-            SELECT AI_COMPLETE(
-                'claude-sonnet-4-5',
-                CONCAT('Extract the location from this description and return its coordinates. Be precise with worldwide lat/lon. Description: ', ?),
-                {'temperature': 0, 'max_tokens': 1000},
-                {'type': 'json', 'schema': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'longitude': {'type': 'number'}, 'latitude': {'type': 'number'}}, 'required': ['name', 'longitude', 'latitude']}}
-            ) AS geocoded_result
-        ),
-        isochrone AS (
-            SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
-            FROM geocoded,
-                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(?, geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
-        )
-        SELECT
-            geo AS center,
-            ?::NUMBER AS range_minutes,
-            ? AS profile,
-            iso_result:features[0]:properties:area::FLOAT AS area_raw,
-            iso_result:features[0]:geometry AS geometry,
-            iso_result:error AS ors_error
-        FROM isochrone;
+    v_safe_profile VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
     v_center VARIANT;
     v_range_minutes NUMBER;
     v_profile VARCHAR;
@@ -140,9 +141,46 @@ DECLARE
     v_geometry VARIANT;
     v_ors_error VARIANT;
 BEGIN
-    OPEN result_cursor USING (LOCATION_DESCRIPTION, PROFILE, RANGE_MINUTES, RANGE_MINUTES, PROFILE);
-    FETCH result_cursor INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error;
-    CLOSE result_cursor;
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract the location from this description and return its coordinates. Be precise with worldwide lat/lon. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 1000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
+            ) AS geocoded_result
+        ),
+        isochrone AS (
+            SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
+            FROM geocoded,
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(''' || v_safe_profile || ''', geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
+        )
+        SELECT
+            geo AS center,
+            ?::NUMBER AS range_minutes,
+            ''' || v_safe_profile || ''' AS profile,
+            iso_result:features[0]:properties:area::FLOAT AS area_raw,
+            iso_result:features[0]:geometry AS geometry,
+            iso_result:error AS ors_error
+        FROM isochrone';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error;
+    CLOSE c;
 
     IF (v_center IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
@@ -176,8 +214,8 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- TOOL_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(
+-- TOOL_ROUTE_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -250,7 +288,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         vehicles_json = json.dumps(vehicles).replace("'", "''")
 
         opt_query = f"""
-        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
+        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
             PARSE_JSON('{jobs_json}')::ARRAY,
             PARSE_JSON('{vehicles_json}')::ARRAY
         ))
@@ -302,11 +340,11 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- CREATE AGENT with tool bindings
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
@@ -428,7 +466,7 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;
@@ -436,4 +474,4 @@ $$;
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
-UNION ALL SELECT 'TOOL_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_OPTIMIZATION';
+UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION';

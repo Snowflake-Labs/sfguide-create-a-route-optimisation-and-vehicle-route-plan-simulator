@@ -81,10 +81,10 @@ export function useRegionProvider() {
     regionName: active?.REGION_NAME ?? defaults.regionName,
     displayName: active?.DISPLAY_NAME ?? defaults.displayName,
     center: {
-      lat: active?.CENTER_LAT ?? defaults.center.lat,
-      lng: active?.CENTER_LON ?? defaults.center.lng,
+      lat: Number(active?.CENTER_LAT ?? defaults.center.lat),
+      lng: Number(active?.CENTER_LON ?? defaults.center.lng),
     },
-    zoom: active?.ZOOM_LEVEL ?? defaults.zoom,
+    zoom: Number(active?.ZOOM_LEVEL ?? defaults.zoom),
     bbox: active?.BBOX_MIN_LAT != null
       ? {
           minLat: active.BBOX_MIN_LAT!,
