@@ -97,6 +97,10 @@ export interface MatrixJob {
   started_at: string;
   completed_at: string;
   statement_handle: string;
+  road_filter?: boolean;
+  hexagons_before_filter?: number;
+  hexagons_after_filter?: number;
+  filter_duration_seconds?: number;
 }
 
 export interface MatrixInventoryItem {
@@ -108,6 +112,7 @@ export interface MatrixInventoryItem {
   created: string;
   table_name: string;
   execution_time_secs: number;
+  road_filter?: boolean;
 }
 
 export const ROUTING_PROFILES = [
