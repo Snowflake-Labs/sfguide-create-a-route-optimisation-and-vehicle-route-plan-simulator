@@ -317,13 +317,6 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
-BEGIN
-    ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-        ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR DEFAULT 'M';
-EXCEPTION
-    WHEN OTHER THEN NULL;
-END;
-
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
 -- See Issue #59: graphs are persisted on @ORS_GRAPHS_SPCS_STAGE/<region> and

@@ -21,9 +21,12 @@ snow spcs image-registry token --format=JSON -c <connection> | podman login $REG
 
 ## 2. Get Repository URL
 
+Use `--format JSON` to avoid line-wrapping confusion in captured stdout:
+
 ```bash
-REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection>)
-echo $REPO_URL
+REPO_URL=$(snow spcs image-repository url OPENROUTESERVICE_APP.core.image_repository -c <connection> --format JSON \
+  | python3 -c "import sys, json; print(json.load(sys.stdin)['message'])")
+echo "$REPO_URL"
 ```
 
 ## 3. Build and Push Images
@@ -34,29 +37,32 @@ Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workfl
 > with `CONTAINER_CMD=podman` (or `docker`) inline, or chain all commands with `&&` in one call.
 
 ```bash
+# Load image tags from the single source of truth
+source openrouteservice_app/image-versions.env
+
 # openrouteservice image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
-  -t $REPO_URL/openrouteservice:v9.0.0 \
+  -t $REPO_URL/openrouteservice:$OPENROUTESERVICE_TAG \
   openrouteservice_app/services/openrouteservice
-$CONTAINER_CMD push $REPO_URL/openrouteservice:v9.0.0
+$CONTAINER_CMD push $REPO_URL/openrouteservice:$OPENROUTESERVICE_TAG
 
 # downloader image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
-  -t $REPO_URL/downloader:v0.0.3 \
+  -t $REPO_URL/downloader:$DOWNLOADER_TAG \
   openrouteservice_app/services/downloader
-$CONTAINER_CMD push $REPO_URL/downloader:v0.0.3
+$CONTAINER_CMD push $REPO_URL/downloader:$DOWNLOADER_TAG
 
 # gateway image (gunicorn, ThreadPoolExecutor concurrency)
 $CONTAINER_CMD build --rm --platform linux/amd64 \
-  -t $REPO_URL/routing_reverse_proxy:v1.0.0 \
+  -t $REPO_URL/routing_reverse_proxy:$ROUTING_REVERSE_PROXY_TAG \
   openrouteservice_app/services/gateway
-$CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:v1.0.0
+$CONTAINER_CMD push $REPO_URL/routing_reverse_proxy:$ROUTING_REVERSE_PROXY_TAG
 
 # vroom image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
-  -t $REPO_URL/vroom-docker:v1.0.1 \
+  -t $REPO_URL/vroom-docker:$VROOM_DOCKER_TAG \
   openrouteservice_app/services/vroom
-$CONTAINER_CMD push $REPO_URL/vroom-docker:v1.0.1
+$CONTAINER_CMD push $REPO_URL/vroom-docker:$VROOM_DOCKER_TAG
 
 # ors control app (React management UI)
 # On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
@@ -66,8 +72,8 @@ npm install --legacy-peer-deps && npm run build && npm run build:server
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   --ignorefile .dockerignore.prebuilt \
   -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:v1.0.119 .
-$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.119
+  -t $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG .
+$CONTAINER_CMD push $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG
 cd ../../..
 ```
 
@@ -75,12 +81,13 @@ cd ../../..
 
 > **Docker on ARM Mac:** Docker does not support the `--ignorefile` flag (it is Podman-only). Instead, temporarily swap the ignore file before building:
 > ```bash
+> source ../../../openrouteservice_app/image-versions.env
 > cp .dockerignore .dockerignore.bak && cp .dockerignore.prebuilt .dockerignore
 > docker build --rm --platform linux/amd64 \
 >   -f Dockerfile.runtime \
->   -t $REPO_URL/ors_control_app:v1.0.118 .
+>   -t $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG .
 > mv .dockerignore.bak .dockerignore
-> docker push $REPO_URL/ors_control_app:v1.0.118
+> docker push $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG
 > ```
 
 > **CRITICAL — shell operator precedence:** Run the npm commands and the `docker`/`podman` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app.
@@ -103,13 +110,15 @@ Expected: 5 images with tags matching the Image Inventory below.
 
 ## Image Inventory
 
-| Service | Image | Tag |
-|---------|-------|-----|
-| OpenRouteService | openrouteservice | v9.0.0 |
-| Downloader | downloader | v0.0.3 |
-| Gateway | routing_reverse_proxy | v1.0.0 |
-| VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.117 |
+Tag values are the single source of truth in [`openrouteservice_app/image-versions.env`](../openrouteservice_app/image-versions.env). The `source` command in the build/push block above loads them as shell variables.
+
+| Service | Image | Tag variable |
+|---------|-------|--------------|
+| OpenRouteService | openrouteservice | `$OPENROUTESERVICE_TAG` |
+| Downloader | downloader | `$DOWNLOADER_TAG` |
+| Gateway | routing_reverse_proxy | `$ROUTING_REVERSE_PROXY_TAG` |
+| VROOM | vroom-docker | `$VROOM_DOCKER_TAG` |
+| Control App | ors_control_app | `$ORS_CONTROL_APP_TAG` |
 
 ## Expected Duration
 
