@@ -1613,6 +1613,10 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
     params: ['jobs_description', 'num_vehicles', 'profile'],
   },
+  tool_pharma_demo: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
+    params: ['profile'],
+  },
   tool_poi: {
     identifier: '__local__',
     params: ['location_description', 'category', 'range_minutes', 'profile'],
@@ -1731,7 +1735,10 @@ Available tools:
    Input: {"location_description": "string describing the center location (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 3. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
    Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
-4. tool_poi - Find points of interest within a reachable area from a location. Use when user asks to show/find specific place types within a travel time (e.g. "restaurants within 10 min drive").
+4. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
+   Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
+5. tool_pharma_demo - Run a pre-built SF pharmaceutical delivery demo with 30 stops across 3 specialist vehicles (cold chain, controlled substances, standard medicines). Use when user asks for the pharma demo, SF drug delivery demo, or pharmaceutical fleet example.
+   Input: {"profile": "string (default: driving-car)"}
    Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 
 Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)

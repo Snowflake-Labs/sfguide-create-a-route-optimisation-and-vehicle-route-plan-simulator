@@ -112,6 +112,30 @@ const POI_DISPLAY_NAMES: Record<string, string> = {
   parking: 'Parking',
 };
 
+const VEHICLE_ROUTE_COLORS: [number,number,number,number][] = [
+  [66, 133, 244, 220],
+  [255, 152, 0, 220],
+  [76, 175, 80, 220],
+  [156, 39, 176, 220],
+  [233, 30, 99, 220],
+];
+
+const SKILL_COLORS: Record<number, [number,number,number,number]> = {
+  1: [66, 133, 244, 240],
+  2: [255, 152, 0, 240],
+  3: [76, 175, 80, 240],
+};
+
+const SKILL_LABELS: Record<number, string> = {
+  1: 'Cold Chain / Vaccines',
+  2: 'Controlled Substances',
+  3: 'Standard Medicines',
+};
+
+function skillColor(skill: number): [number,number,number,number] {
+  return SKILL_COLORS[skill] || [100, 149, 237, 240];
+}
+
 function extractAgentGeoData(toolResults: any[]): GeoData {
   const features: any[] = [];
   const markerPoints: MarkerPoint[] = [];
@@ -133,12 +157,30 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
           features.push(...(tr.geometry.features || []));
         }
       }
-      // TOOL_OPTIMIZATION: routes array with encoded polyline geometry
+      // TOOL_OPTIMIZATION / TOOL_PHARMA_DEMO: routes array
       if (tr.routes && Array.isArray(tr.routes)) {
         for (const route of tr.routes) {
+          const vehicleIdx = ((route.vehicle ?? 1) - 1);
+          const routeColor = VEHICLE_ROUTE_COLORS[vehicleIdx % VEHICLE_ROUTE_COLORS.length];
           if (route.geometry && typeof route.geometry === 'string') {
             const coords = decodePolyline(route.geometry);
-            if (coords.length > 0) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+            if (coords.length > 0) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: { vehicle: route.vehicle ?? 1, routeColor } });
+          } else if (route.geometry && Array.isArray(route.geometry)) {
+            features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: route.geometry }, properties: { vehicle: route.vehicle ?? 1, routeColor } });
+          }
+        }
+      }
+      // Job stop markers from pharma demo or optimization
+      if (tr.jobs && Array.isArray(tr.jobs)) {
+        for (const job of tr.jobs) {
+          if (job.longitude != null && job.latitude != null) {
+            const skill = job.skill ?? job.skills?.[0] ?? 0;
+            poiPoints.push({
+              position: [Number(job.longitude), Number(job.latitude)],
+              name: job.name || job.address || 'Stop',
+              category: SKILL_LABELS[skill] || job.skill_label || 'Delivery Stop',
+              color: skill ? skillColor(skill) : [100, 149, 237, 240],
+            });
           }
         }
       }
@@ -226,9 +268,9 @@ const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
     prompt: 'Show me hotels within a 20 minute drive from San Francisco International Airport',
   },
   {
-    label: 'Pharmacy delivery routes',
-    icon: '🚚',
-    prompt: 'I have 3 vehicles starting from a warehouse at 1 Market Street, San Francisco. Optimise routes to deliver to these pharmacies: Walgreens at 498 Castro Street, CVS at 2676 Geary Blvd, Walgreens at 3201 Divisadero Street, CVS at 3700 Sacramento Street, Rite Aid at 801 Clement Street, and Walgreens at 2690 Mission Street.',
+    label: 'Pharma fleet demo',
+    icon: '💊',
+    prompt: 'Run the SF pharmaceutical fleet delivery demo',
   },
   {
     label: 'Multi-stop drive',
@@ -386,8 +428,14 @@ export default function AgentPlayground() {
       stroked: true,
       filled: true,
       lineWidthMinPixels: 3,
-      getLineColor: [41, 181, 232, 220] as [number, number, number, number],
-      getFillColor: [41, 181, 232, 50] as [number, number, number, number],
+      getLineColor: (f: any) => {
+        const rc = f.properties?.routeColor;
+        return rc ? rc : [41, 181, 232, 220];
+      },
+      getFillColor: (f: any) => {
+        const rc = f.properties?.routeColor;
+        return rc ? [rc[0], rc[1], rc[2], 50] : [41, 181, 232, 50];
+      },
       getLineWidth: 3,
       pointRadiusMinPixels: 6,
       getPointRadius: 80,
@@ -459,12 +507,23 @@ export default function AgentPlayground() {
     if (geoData.poiPoints.length === 0) return null;
     const counts: Record<string, { label: string; color: [number,number,number,number]; count: number }> = {};
     for (const p of geoData.poiPoints) {
-      const label = POI_DISPLAY_NAMES[p.category] || p.category;
+      const label = p.category || POI_DISPLAY_NAMES[p.category] || p.category;
       if (!counts[label]) counts[label] = { label, color: p.color, count: 0 };
       counts[label].count++;
     }
     return Object.values(counts);
   }, [geoData.poiPoints]);
+
+  const routeLegend = useMemo(() => {
+    if (!geoData.geojson) return null;
+    const vehicles: Record<number, [number,number,number,number]> = {};
+    for (const f of geoData.geojson.features) {
+      const v = f.properties?.vehicle;
+      if (v != null) vehicles[v] = f.properties.routeColor || VEHICLE_ROUTE_COLORS[(v-1) % VEHICLE_ROUTE_COLORS.length];
+    }
+    if (Object.keys(vehicles).length < 2) return null;
+    return Object.entries(vehicles).map(([v, color]) => ({ vehicle: Number(v), color }));
+  }, [geoData.geojson]);
 
   const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer]);
 
@@ -572,6 +631,16 @@ export default function AgentPlayground() {
                 <div key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <div style={{ width: 10, height: 10, borderRadius: '50%', background: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})`, flexShrink: 0 }} />
                   <span>{entry.label} ({entry.count})</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {routeLegend && routeLegend.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {routeLegend.map(entry => (
+                <div key={entry.vehicle} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <div style={{ width: 18, height: 4, borderRadius: 2, background: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})`, flexShrink: 0 }} />
+                  <span>Vehicle {entry.vehicle}</span>
                 </div>
               ))}
             </div>
