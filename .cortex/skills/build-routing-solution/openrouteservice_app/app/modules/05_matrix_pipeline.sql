@@ -897,6 +897,15 @@ BEGIN
             ERROR_MSG='ORS returned errors for all ' || :raw_count || ' origins. Sample: ' || :sample_error,
             RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
+        BEGIN
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN
+            BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
+        END;
         RETURN 'Job ' || :P_JOB_ID || ' failed: all ' || raw_count || ' ORS responses were errors';
     END IF;
 
@@ -921,6 +930,15 @@ BEGIN
             ERROR_MSG='Flatten produced 0 pairs from ' || :raw_count || ' RAW rows (valid=' || :valid_count || ', errors=' || :error_count || ')',
             RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
+        BEGIN
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN
+            BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
+        END;
         RETURN 'Job ' || :P_JOB_ID || ' failed: 0 pairs after flatten';
     END IF;
 

@@ -460,6 +460,16 @@ See `references/available-functions.md` for the full list of SQL functions, rout
 
 See `references/snowflake-scripting-guidelines.md` for SQL Scripting coding rules (variable binding, EXECUTE IMMEDIATE patterns, sandbox testing, deployment paths).
 
+## AUTO_SUSPEND_SECS Invariant
+
+ORS services in `OPENROUTESERVICE_APP.CORE` MUST never auto-suspend while a region graph is being built or an H3 travel-time matrix is being calculated. The invariant is:
+
+- While any provisioning job is active (`REGION_PROVISION_JOBS.STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')`): the target `ORS_SERVICE_<REGION>` and `downloader` have `AUTO_SUSPEND_SECS=0`.
+- While any matrix job is active (`MATRIX_BUILD_JOBS.STATUS IN ('PENDING','RUNNING')` with `STAGE NOT IN ('COMPLETE','ERROR')`): `routing_gateway_service` and the target `ORS_SERVICE_<REGION>` have `AUTO_SUSPEND_SECS=0`.
+- All other times: services have `AUTO_SUSPEND_SECS=14400` (4 hours).
+
+Every procedure that flips these values to 0 must restore 14400 on ALL exit paths (success, timeout, early return, exception). A safety-net procedure `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is idempotent and self-heals drift (e.g. from a killed session); it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
+
 ## Cleanup
 
 To remove all objects created by this skill:
