@@ -1617,6 +1617,10 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
     params: ['profile'],
   },
+  tool_pharma_catchment: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
+    params: ['pharmacy_description', 'range_minutes', 'profile'],
+  },
   tool_poi: {
     identifier: '__local__',
     params: ['location_description', 'category', 'range_minutes', 'profile'],
@@ -1749,7 +1753,8 @@ CRITICAL RULES:
 3. After receiving tool results, format them clearly: distances in km, durations in minutes.
 4. If a tool returns an error, report it clearly. Do NOT retry with a different profile.
 5. NEVER fabricate routing data.
-6. Use tool_poi (NOT tool_isochrone) when the user asks to find/show specific place types within a travel time.
+6. tool_pharma_catchment - Analyse the health demographics of the population within a pharmacy catchment area. Shows isochrone + population morbidity profile (diabetes, hypertension, cardiovascular, respiratory, mobility issues, accessibility). Use when asked about pharmacy catchment, patient population, health demographics, morbidity analysis, or population accessibility.
+   Input: {"pharmacy_description": "string describing pharmacy name/address (required)", "range_minutes": number (default: 10), "profile": "string (default: driving-car)"}
 7. ONLY use these exact profile strings: driving-car, cycling-electric, driving-hgv. Never use cycling-regular, cycling-road, foot-walking or any other variant.`;
 
 const AGENT_PROFILE_ALIASES: Record<string, string> = {

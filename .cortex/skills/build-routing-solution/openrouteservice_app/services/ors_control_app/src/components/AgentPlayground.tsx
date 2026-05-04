@@ -184,6 +184,21 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
           }
         }
       }
+      // Population health points from pharma catchment tool
+      if (tr.population_points && Array.isArray(tr.population_points)) {
+        for (const pt of tr.population_points) {
+          if (pt.longitude != null && pt.latitude != null) {
+            const risk = pt.risk_score ?? 0;
+            const color: [number,number,number,number] = risk >= 55 ? [231, 76, 60, 220] : risk >= 35 ? [230, 126, 34, 200] : [46, 204, 113, 180];
+            poiPoints.push({
+              position: [Number(pt.longitude), Number(pt.latitude)],
+              name: `${pt.neighborhood} (pop. ${pt.population?.toLocaleString()})\nDiabetes: ${pt.diabetes_pct}%  Hypertension: ${pt.hypertension_pct}%\nElderly: ${pt.pct_elderly}%  No car: ${Math.round(100 - (pt.car_ownership_pct ?? 50))}%\nRisk score: ${risk}/100`,
+              category: risk >= 55 ? 'High Health Risk' : risk >= 35 ? 'Medium Health Risk' : 'Lower Health Risk',
+              color,
+            });
+          }
+        }
+      }
       // Isochrone center point
       if (tr.center && tr.center.longitude != null && tr.center.latitude != null) {
         markerPoints.push({ position: [tr.center.longitude, tr.center.latitude], color: [245, 158, 11, 255], label: tr.center.name || 'Center' });
@@ -271,6 +286,11 @@ const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
     label: 'Pharma fleet demo',
     icon: '💊',
     prompt: 'Run the SF pharmaceutical fleet delivery demo',
+  },
+  {
+    label: 'Pharmacy catchment',
+    icon: '🏥',
+    prompt: 'Show me the population health profile within a 10 minute drive of Walgreens on Castro Street, San Francisco',
   },
   {
     label: 'Multi-stop drive',
