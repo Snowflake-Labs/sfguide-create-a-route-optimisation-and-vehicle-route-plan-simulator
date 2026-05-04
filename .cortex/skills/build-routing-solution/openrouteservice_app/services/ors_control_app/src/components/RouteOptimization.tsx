@@ -48,11 +48,16 @@ export default function RouteOptimization() {
   const [geocoding, setGeocoding] = useState(false);
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
   useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-    setVehicles(prev => prev.map(v => ({ ...v, startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat })));
+    const lng = Number(center.lng);
+    const lat = Number(center.lat);
+    const z = Number(zoom);
+    if (Number.isFinite(lng) && Number.isFinite(lat) && Number.isFinite(z) && (lng !== 0 || lat !== 0)) {
+      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: z }));
+      setVehicles(prev => prev.map(v => ({ ...v, startLng: lng, startLat: lat, endLng: lng, endLat: lat })));
+    }
     setCenterCoords(null);
     setPlaces([]);
     setJobs([]);
