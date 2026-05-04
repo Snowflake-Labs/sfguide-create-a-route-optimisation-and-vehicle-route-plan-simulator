@@ -36,7 +36,7 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_AGENT schema |
-| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION |
+| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION |
 | CREATE CORTEX AGENT | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates ROUTING_AGENT |
 | USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
 | SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
@@ -105,7 +105,7 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 
 ### Step 4: Deploy All Procedures and Agent
 
-**Goal:** Create all 3 tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION) and the Cortex Agent in a single step.
+**Goal:** Create all 3 tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION) and the Cortex Agent in a single step.
 
 ```bash
 snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>
@@ -114,7 +114,7 @@ snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connect
 This creates:
 - **TOOL_DIRECTIONS**: Wraps ORS DIRECTIONS with AI geocoding (claude-sonnet-4-5) for natural language location input
 - **TOOL_ISOCHRONE**: Wraps ORS ISOCHRONES with AI geocoding for reachability analysis
-- **TOOL_OPTIMIZATION**: Python procedure wrapping ORS OPTIMIZATION for multi-stop delivery routing
+- **TOOL_ROUTE_OPTIMIZATION**: Python procedure wrapping ORS OPTIMIZATION for multi-stop delivery routing
 - **ROUTING_AGENT**: Cortex Agent with tool bindings to all 3 procedures
 
 > **Reference:** For annotated explanations of each procedure, see [references/agent-definitions.md](references/agent-definitions.md).
@@ -176,7 +176,7 @@ User says: "Create a routing agent"
 Actions:
 1. Verify ORS functions and services (Step 2)
 2. Create database/schema (Step 3)
-3. Create TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION procedures (Steps 4-6)
+3. Create TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION procedures (Steps 4-6)
 4. Create Cortex Agent (Step 7)
 5. Test with: "Driving directions from Union Square to Fisherman's Wharf"
 Result: Routing agent accessible via Snowflake Intelligence UI
@@ -221,7 +221,7 @@ To remove all objects created by this skill:
 ```sql
 -- Reverse dependency order: agent first, then procedures, schema, warehouse, database
 DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT;
