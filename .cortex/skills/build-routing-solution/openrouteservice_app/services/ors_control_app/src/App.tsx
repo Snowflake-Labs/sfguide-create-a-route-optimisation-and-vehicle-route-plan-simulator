@@ -123,7 +123,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'route-deviation', 'route-opt', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -199,6 +199,16 @@ export default function App() {
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <VehicleTypeSwitcher />
               <RegionSwitcher />
+              <button
+                onClick={() => {
+                  document.cookie.split(';').forEach(c => {
+                    document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/');
+                  });
+                  window.location.href = '/logout';
+                }}
+                style={{ fontSize: 11, padding: '4px 10px', border: '1px solid #E5484D', borderRadius: 6, background: 'rgba(229,72,77,0.1)', cursor: 'pointer', color: '#E5484D', fontWeight: 600 }}
+                title="Log out and refresh session"
+              >⏻ Logout</button>
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>

@@ -156,6 +156,10 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
         SYSTEM$LOG_INFO(dl_err);
+        BEGIN
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
         RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
     END;
@@ -313,9 +317,6 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
--- Idempotent migration for existing installs
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR DEFAULT 'M';
-
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
 -- See Issue #59: graphs are persisted on @ORS_GRAPHS_SPCS_STAGE/<region> and
@@ -455,6 +456,13 @@ BEGIN
 
     CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'true');
 
+    -- Disable auto time-based suspension for the duration of the rebuild so the
+    -- service cannot auto-suspend while graphs are being computed.
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SET AUTO_SUSPEND_SECS = 0';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
@@ -476,7 +484,21 @@ BEGIN
 
     CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
 
+    -- Restore normal auto-suspend now that the rebuild is complete (success or timeout).
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); REBUILD_GRAPHS flipped back to false';
+EXCEPTION
+    WHEN OTHER THEN
+        LET err_msg VARCHAR := SQLERRM;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN 'Rebuild failed for ' || :P_REGION || ': ' || :err_msg;
 END;
 $$;
 
