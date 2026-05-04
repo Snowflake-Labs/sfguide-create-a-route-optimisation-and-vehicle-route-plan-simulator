@@ -344,7 +344,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR
 
 -- CREATE AGENT with tool bindings
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
