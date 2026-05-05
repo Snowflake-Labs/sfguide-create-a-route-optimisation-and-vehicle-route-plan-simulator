@@ -1930,15 +1930,45 @@ function findMatchingBrace(s: string): number {
 
 function parseToolCall(text: string): { name: string; input: Record<string, any> } | null {
   try {
-    const match = text.match(/\{\s*"tool_call"\s*:/s);
+    let cleanText = text.replace(/```[\w]*\s*/g, '').replace(/```/g, '');
+    const match = cleanText.match(/\{\s*"tool_call"\s*:/s);
     if (!match) return null;
-    const jsonStr = text.slice(text.indexOf('{'));
+    const jsonStr = cleanText.slice(cleanText.indexOf('{'));
     const braceEnd = findMatchingBrace(jsonStr);
     if (braceEnd < 0) return null;
     const parsed = JSON.parse(jsonStr.slice(0, braceEnd + 1));
-    if (parsed.tool_call?.name && TOOL_PROCEDURE_MAP[parsed.tool_call.name]) {
-      return { name: parsed.tool_call.name, input: parsed.tool_call.input || {} };
+    let toolName = parsed.tool_call?.name;
+    if (!toolName) return null;
+    if (TOOL_PROCEDURE_MAP[toolName]) {
+      return { name: toolName, input: parsed.tool_call.input || {} };
     }
+    const TOOL_ALIASES: Record<string, string> = {
+      'tool_pois_in_isochrone': 'tool_poi',
+      'tool_pois': 'tool_poi',
+      'tool_find_pois': 'tool_poi',
+      'tool_nearby': 'tool_poi',
+      'tool_places': 'tool_poi',
+      'tool_route_optimization': 'tool_optimization',
+      'tool_optimise': 'tool_optimization',
+      'tool_optimize': 'tool_optimization',
+      'tool_isochrones': 'tool_isochrone',
+      'tool_reachability': 'tool_isochrone',
+      'tool_direction': 'tool_directions',
+      'tool_route': 'tool_directions',
+      'tool_pharma_delivery': 'tool_pharma_demo',
+      'tool_pharma_fleet': 'tool_pharma_demo',
+      'tool_pharmaceutical_delivery': 'tool_supply_chain',
+      'tool_pharma_supply': 'tool_supply_chain',
+      'tool_catchment': 'tool_pharma_catchment',
+      'tool_pharmacy_catchment': 'tool_pharma_catchment',
+    };
+    const mapped = TOOL_ALIASES[toolName];
+    if (mapped && TOOL_PROCEDURE_MAP[mapped]) {
+      console.log(`[Agent] Remapped hallucinated tool ${toolName} -> ${mapped}`);
+      return { name: mapped, input: parsed.tool_call.input || {} };
+    }
+    console.warn(`[Agent] Unknown tool: ${toolName}, no alias found`);
+    return null;
   } catch {}
   return null;
 }

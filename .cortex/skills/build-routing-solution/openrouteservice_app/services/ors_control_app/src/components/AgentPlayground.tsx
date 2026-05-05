@@ -256,7 +256,10 @@ function extractAgentGeoData(toolResults: any[]): GeoData {
 }
 
 function stripToolCallJson(text: string): string {
-  return text.replace(/```[\s\S]*?```/g, '').replace(/\{[\s\S]*?"tool_call"[\s\S]*?\}/g, '').trim();
+  let cleaned = text.replace(/```[\w]*\s*[\s\S]*?```/g, '');
+  cleaned = cleaned.replace(/\{[\s\S]*?"tool_call"[\s\S]*?\}[\s\}]*/g, '');
+  cleaned = cleaned.replace(/^\s*[\{\}]+\s*$/gm, '');
+  return cleaned.trim() || '';
 }
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
