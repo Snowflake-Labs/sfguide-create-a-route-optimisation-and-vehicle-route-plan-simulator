@@ -1287,10 +1287,38 @@ app.get('/api/matrix/status', async (req, res) => {
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
                 HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
                 PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
-                CREATED_AT, STARTED_AT, COMPLETED_AT
+                TO_VARCHAR(CREATED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED_AT,
+                TO_VARCHAR(STARTED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS STARTED_AT,
+                TO_VARCHAR(COMPLETED_AT::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS COMPLETED_AT
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
+      const toIso = (v: any): any => {
+        if (v == null) return v;
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
+          try { return (v as any).toISOString(); } catch { return null; }
+        }
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return new Date(v > 1e12 ? v : v * 1000).toISOString();
+        }
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (/^-?\d+(\.\d+)?$/.test(s)) {
+            const n = Number(s);
+            if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
+          }
+          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
+          if (m) {
+            const tz = m[3] || 'Z';
+            const d = new Date(`${m[1]}T${m[2]}${tz}`);
+            return isNaN(d.getTime()) ? s : d.toISOString();
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? s : d.toISOString();
+        }
+        return v;
+      };
       jobs = (rows || []).map((r: any) => ({
         job_id: r.JOB_ID,
         region: r.REGION,
@@ -1305,10 +1333,31 @@ app.get('/api/matrix/status', async (req, res) => {
         pct_complete: Number(r.PCT_COMPLETE) || 0,
         error_msg: r.ERROR_MSG,
         statement_handle: r.STATEMENT_HANDLE,
-        created_at: r.CREATED_AT,
-        started_at: r.STARTED_AT,
-        completed_at: r.COMPLETED_AT,
+        created_at: toIso(r.CREATED_AT),
+        started_at: toIso(r.STARTED_AT),
+        completed_at: toIso(r.COMPLETED_AT),
       }));
+
+      // Live progress: BUILD_MATRIX_JOB_WRAPPER only updates RAW_ROWS / PCT_COMPLETE
+      // at the very end of the procedure, leaving the UI at 0% for the entire
+      // BUILDING stage. Compute live counts from the MATRIX_RAW table directly.
+      await Promise.all(
+        jobs
+          .filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0)
+          .map(async (j) => {
+            const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');
+            const safeRegion = String(j.region || '').toUpperCase();
+            const rawTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile}_MATRIX_RAW_${j.resolution}`;
+            try {
+              const liveRows = await runSql(`SELECT COUNT(*) AS C FROM ${rawTable}`);
+              const c = Number(liveRows?.[0]?.C) || 0;
+              j.raw_rows = c;
+              j.pct_complete = Math.min(100, Math.round((c * 100) / j.work_queue_rows));
+            } catch {
+              // raw table may not exist yet; leave fallback values
+            }
+          })
+      );
     } catch {}
     res.json({ jobs });
   } catch (err: any) {
