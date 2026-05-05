@@ -272,41 +272,53 @@ function persistSavedPrompts(prompts: SavedPrompt[]) {
   try { localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(prompts)); } catch {}
 }
 
-const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
+interface DemoScenario {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  prompts: { label: string; icon: string; prompt: string }[];
+}
+
+const DEMO_SCENARIOS: DemoScenario[] = [
   {
-    label: '1. Catchment analysis',
-    icon: '🏥',
-    prompt: 'Show me the population health profile within a 10 minute drive of Walgreens on Castro Street, San Francisco',
-  },
-  {
-    label: '2. Drug demand',
+    id: 'pharma',
+    label: 'Pharma Supply Chain',
     icon: '💊',
-    prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.',
+    description: 'Pharmaceutical delivery planning — catchment analysis, drug demand, route optimisation',
+    prompts: [
+      { label: '1. Catchment analysis', icon: '🏥', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens on Castro Street, San Francisco' },
+      { label: '2. Drug demand', icon: '💊', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
+      { label: '3. Patient directions', icon: '🗺️', prompt: 'Give me driving directions from 742 Valencia Street, San Francisco to Walgreens on Castro Street' },
+      { label: '4. Cycling access', icon: '🚲', prompt: 'Show me a 5 minute cycling isochrone from Walgreens Castro for patients without cars' },
+      { label: '5. Supply chain plan', icon: '🚚', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
+    ],
   },
   {
-    label: '3. Patient directions',
-    icon: '🗺️',
-    prompt: 'Give me driving directions from 742 Valencia Street, San Francisco to Walgreens on Castro Street',
+    id: 'retail',
+    label: 'Retail & Catchment',
+    icon: '🏪',
+    description: 'Retail site analysis — competitor proximity, drive-time catchments, POI discovery',
+    prompts: [
+      { label: '1. Store catchment', icon: '📍', prompt: 'Show me the area reachable within a 10 minute drive from Union Square, San Francisco' },
+      { label: '2. Nearby competitors', icon: '🏪', prompt: 'Show me all shops and shopping malls within a 10 minute drive from Union Square, San Francisco' },
+      { label: '3. Restaurants', icon: '🍽️', prompt: 'Show me restaurants within a 15 minute drive from the Ferry Building, San Francisco' },
+      { label: '4. Drive to store', icon: '🗺️', prompt: 'Get driving directions from 3100 Scott Street, San Francisco to Union Square' },
+      { label: '5. Multi-store route', icon: '🚚', prompt: 'Get driving directions from a warehouse at 1 Market Street to Pier 39, then to Fisherman\'s Wharf, then to Ghirardelli Square, San Francisco' },
+    ],
   },
   {
-    label: '4. Cycling access',
-    icon: '🚲',
-    prompt: 'Show me a 5 minute cycling isochrone from Walgreens Castro for patients without cars',
-  },
-  {
-    label: '5. Supply chain plan',
-    icon: '🚚',
-    prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles',
-  },
-  {
-    label: '6. Nearby cafes',
-    icon: '☕',
-    prompt: 'Show me cafes within a 10 minute drive from Union Square, San Francisco',
-  },
-  {
-    label: '7. Multi-stop route',
-    icon: '📍',
-    prompt: 'Get driving directions from Fisherman\'s Wharf to Pier 39, then to the Embarcadero, then to AT&T Park, San Francisco',
+    id: 'logistics',
+    label: 'Fleet Logistics',
+    icon: '🚛',
+    description: 'Fleet delivery optimisation — multi-vehicle routing with capacity and skills',
+    prompts: [
+      { label: '1. Pharma fleet demo', icon: '🚚', prompt: 'Run the SF pharmaceutical fleet delivery demo' },
+      { label: '2. HGV directions', icon: '🚛', prompt: 'Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street' },
+      { label: '3. Bike courier', icon: '🚲', prompt: 'Get cycling directions from 1 Market Street to 498 Castro Street, San Francisco' },
+      { label: '4. Reachability', icon: '⏱️', prompt: 'Show me the area reachable within 20 minutes by HGV from the Port of San Francisco' },
+      { label: '5. Custom route', icon: '📍', prompt: 'I have 2 vehicles starting from 1 Market Street, San Francisco. Optimise routes to deliver to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, and Walgreens 2690 Mission St' },
+    ],
   },
 ];
 
@@ -317,6 +329,7 @@ export default function AgentPlayground() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  const [activeScenario, setActiveScenario] = useState<string>('pharma');
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
@@ -640,9 +653,26 @@ export default function AgentPlayground() {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
 
       <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Try an example</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+          {DEMO_SCENARIOS.map(sc => (
+            <button
+              key={sc.id}
+              onClick={() => setActiveScenario(sc.id)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px',
+                background: activeScenario === sc.id ? 'var(--accent)' : 'var(--surface, rgba(0,0,0,0.03))',
+                color: activeScenario === sc.id ? '#fff' : 'var(--text)',
+                border: activeScenario === sc.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                borderRadius: 20, cursor: 'pointer', fontSize: 12, fontWeight: activeScenario === sc.id ? 600 : 400,
+                transition: 'all 0.15s',
+              }}
+            >
+              <span>{sc.icon}</span><span>{sc.label}</span>
+            </button>
+          ))}
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {SAMPLE_PROMPTS.map((sp, i) => (
+          {(DEMO_SCENARIOS.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (
             <button
               key={i}
               onClick={() => setInput(sp.prompt)}

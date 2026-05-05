@@ -1954,12 +1954,12 @@ function estimateMessagesTokens(messages: Array<{role: string; content: string}>
 const CONTEXT_TOKEN_LIMIT = 8000;
 const SUMMARY_MAX_TOKENS = 500;
 
-async function summariseOlderMessages(messages: Array<{role: string; content: string}>): Promise<Array<{role: string; content: string}>> {
-  if (messages.length <= 3) return messages;
+async function summariseOlderMessages(messages: Array<{role: string; content: string}>, maxTokens: number): Promise<{messages: Array<{role: string; content: string}>; summaryText: string; messagesSummarised: number}> {
+  if (messages.length <= 3) return { messages, summaryText: '', messagesSummarised: 0 };
   const systemMsg = messages[0];
   const recentMessages = messages.slice(-3);
   const olderMessages = messages.slice(1, -3);
-  if (olderMessages.length === 0) return messages;
+  if (olderMessages.length === 0) return { messages, summaryText: '', messagesSummarised: 0 };
   const olderText = olderMessages.map(m => `${m.role}: ${m.content.slice(0, 500)}`).join('\n');
   const summaryPrompt = `Summarise this conversation history in under 200 words. Focus on key facts, tool results, and decisions made. Do not include greetings or filler.\n\n${olderText}`;
   try {
@@ -1968,14 +1968,18 @@ async function summariseOlderMessages(messages: Array<{role: string; content: st
       { role: 'user', content: summaryPrompt },
     ]);
     console.log(`[Agent] Context summarised: ${olderMessages.length} messages -> ${estimateTokens(summaryContent)} tokens`);
-    return [
-      systemMsg,
-      { role: 'user', content: `[Previous conversation summary]: ${summaryContent}` },
-      ...recentMessages,
-    ];
+    return {
+      messages: [
+        systemMsg,
+        { role: 'user', content: `[Previous conversation summary]: ${summaryContent}` },
+        ...recentMessages,
+      ],
+      summaryText: summaryContent,
+      messagesSummarised: olderMessages.length,
+    };
   } catch (e: any) {
     console.warn(`[Agent] Summarisation failed: ${e.message}`);
-    return messages;
+    return { messages, summaryText: '', messagesSummarised: 0 };
   }
 }
 
@@ -1984,6 +1988,8 @@ async function callCortexAgentWithToolLoop(
   onProgress?: (data: { step: string; detail?: string }) => void,
   onToken?: (text: string) => void,
   history?: Array<{role: string; content: string}>,
+  maxTokenLimit?: number,
+  onWorkflow?: (data: any) => void,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}" (history: ${history?.length || 0} msgs)`);
@@ -2007,50 +2013,70 @@ async function callCortexAgentWithToolLoop(
   let summaryText = '';
   let messagesSummarisedCount = 0;
   let messagesRawCount = 0;
+  const tokenLimit = maxTokenLimit || CONTEXT_TOKEN_LIMIT;
+  let workflowSteps: any[] = [];
 
   for (let iter = 0; iter < maxIterations; iter++) {
     const contextTokens = estimateMessagesTokens(messages);
-    if (contextTokens > CONTEXT_TOKEN_LIMIT && messages.length > 3) {
+    if (contextTokens > tokenLimit && messages.length > 3) {
       onProgress?.({ step: 'formatting', detail: 'Summarising context...' });
-      messagesSummarisedCount = messages.length - 4;
-      messages = await summariseOlderMessages(messages);
-      wasSummarised = true;
-      const summaryMsg = messages.find(m => m.content.startsWith('[Previous conversation summary]'));
-      if (summaryMsg) summaryText = summaryMsg.content.replace('[Previous conversation summary]: ', '');
+      const result = await summariseOlderMessages(messages, tokenLimit);
+      messages = result.messages;
+      if (result.summaryText) {
+        wasSummarised = true;
+        summaryText = result.summaryText;
+        messagesSummarisedCount += result.messagesSummarised;
+        const afterTokens = estimateMessagesTokens(messages);
+        const stepData = { type: 'summarise', tokens_before: contextTokens, tokens_after: afterTokens, messages_compressed: result.messagesSummarised };
+        workflowSteps.push(stepData);
+        onWorkflow?.(stepData);
+      }
     }
     messagesRawCount = messages.length - 1;
-    totalPromptTokens += estimateMessagesTokens(messages);
+    const promptTokens = estimateMessagesTokens(messages);
+    totalPromptTokens += promptTokens;
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
     if (toolsExecuted && onToken) {
       onProgress?.({ step: 'formatting', detail: 'Generating response...' });
       try {
         const streamedText = await callCortexCompleteStreaming(messages, onToken);
-        totalCompletionTokens += estimateTokens(streamedText);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
+        const compTokens = estimateTokens(streamedText);
+        totalCompletionTokens += compTokens;
+        const stepData = { type: 'llm_stream', prompt_tokens: promptTokens, completion_tokens: compTokens };
+        workflowSteps.push(stepData);
+        onWorkflow?.(stepData);
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
         totalCompletionTokens += estimateTokens(fallback);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
       }
     }
 
     const response = await callCortexComplete(messages);
-    totalCompletionTokens += estimateTokens(response);
+    const respTokens = estimateTokens(response);
+    totalCompletionTokens += respTokens;
     console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
     const toolCall = parseToolCall(response);
 
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
       if (onToken) onToken(response);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
+      const stepData = { type: 'llm_response', prompt_tokens: promptTokens, completion_tokens: respTokens };
+      workflowSteps.push(stepData);
+      onWorkflow?.(stepData);
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
     onProgress?.({ step: 'executing_tool', detail: toolLabel });
     console.log(`[Agent] Executing tool: ${toolCall.name}`);
+    const toolStepData = { type: 'tool_call', tool: toolCall.name, prompt_tokens: promptTokens, completion_tokens: respTokens };
+    workflowSteps.push(toolStepData);
+    onWorkflow?.(toolStepData);
     messages.push({ role: 'assistant', content: response });
     const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
     allToolResults.push(toolResult);
