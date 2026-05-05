@@ -2064,7 +2064,7 @@ async function callCortexAgentWithToolLoop(
     }
     messagesRawCount = messages.length - 1;
     const promptTokens = estimateMessagesTokens(messages);
-    totalPromptTokens = promptTokens;
+    totalPromptTokens += promptTokens;
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
     if (toolsExecuted && onToken) {
@@ -2076,13 +2076,13 @@ async function callCortexAgentWithToolLoop(
         const stepData = { type: 'llm_stream', prompt_tokens: promptTokens, completion_tokens: compTokens };
         workflowSteps.push(stepData);
         onWorkflow?.(stepData);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
         totalCompletionTokens += estimateTokens(fallback);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
       }
     }
 
@@ -2098,7 +2098,7 @@ async function callCortexAgentWithToolLoop(
       const stepData = { type: 'llm_response', prompt_tokens: promptTokens, completion_tokens: respTokens };
       workflowSteps.push(stepData);
       onWorkflow?.(stepData);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
@@ -2114,7 +2114,7 @@ async function callCortexAgentWithToolLoop(
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
+  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: estimateMessagesTokens(messages), total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
 }
 
 function sendSseEvent(res: any, event: string, data: any) {

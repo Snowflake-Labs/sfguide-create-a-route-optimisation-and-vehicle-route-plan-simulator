@@ -264,7 +264,7 @@ function stripToolCallJson(text: string): string {
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
 interface SavedPrompt { id: string; label: string; icon: string; prompt: string; }
-interface TokenUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; summarised?: boolean; summary_text?: string; messages_summarised?: number; messages_raw?: number; }
+interface TokenUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; context_tokens?: number; summarised?: boolean; summary_text?: string; messages_summarised?: number; messages_raw?: number; }
 
 const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
 
@@ -841,21 +841,21 @@ export default function AgentPlayground() {
           {tokenUsage && (
             <div style={{ marginBottom: 10, padding: '8px', background: 'rgba(0,0,0,0.03)', borderRadius: 6, border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Used</span>
-                <span style={{ fontWeight: 600 }}>{tokenUsage.total_tokens.toLocaleString()} / {maxTokenLimit.toLocaleString()}</span>
+                <span style={{ color: 'var(--text-secondary)' }}>Context window</span>
+                <span style={{ fontWeight: 600 }}>{(tokenUsage.context_tokens ?? tokenUsage.prompt_tokens).toLocaleString()} / {maxTokenLimit.toLocaleString()}</span>
               </div>
               <div style={{ width: '100%', height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', marginBottom: 6 }}>
-                <div style={{ width: `${Math.min(100, (tokenUsage.total_tokens / maxTokenLimit) * 100)}%`, height: '100%', borderRadius: 3, background: tokenUsage.total_tokens > maxTokenLimit * 0.8 ? '#e74c3c' : tokenUsage.total_tokens > maxTokenLimit * 0.5 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
+                <div style={{ width: `${Math.min(100, ((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) / maxTokenLimit) * 100)}%`, height: '100%', borderRadius: 3, background: (tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) > maxTokenLimit * 0.8 ? '#e74c3c' : (tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) > maxTokenLimit * 0.5 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 10, color: 'var(--text-secondary)' }}>
-                <div>Prompt: <strong>{tokenUsage.prompt_tokens.toLocaleString()}</strong></div>
-                <div>Output: <strong>{tokenUsage.completion_tokens.toLocaleString()}</strong></div>
+                <div>Read (prompt): <strong>{tokenUsage.prompt_tokens.toLocaleString()}</strong></div>
+                <div>Write (output): <strong>{tokenUsage.completion_tokens.toLocaleString()}</strong></div>
+                <div>Total cost: <strong>{tokenUsage.total_tokens.toLocaleString()}</strong></div>
                 <div>Raw msgs: <strong>{tokenUsage.messages_raw ?? '-'}</strong></div>
-                <div>Compressed: <strong>{tokenUsage.messages_summarised ?? 0}</strong></div>
               </div>
               {tokenUsage.summarised && (
                 <div style={{ marginTop: 6, padding: '4px 6px', background: 'rgba(41,181,232,0.1)', borderRadius: 4, fontSize: 10, color: 'var(--accent)' }}>
-                  Context was summarised to fit limit
+                  {tokenUsage.messages_summarised} messages compressed to fit limit
                 </div>
               )}
             </div>
