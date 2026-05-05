@@ -190,12 +190,12 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER,
 
 ---
 
-## TOOL_OPTIMIZATION Procedure
+## TOOL_ROUTE_OPTIMIZATION Procedure
 
 Wraps ORS OPTIMIZATION with AI geocoding for multi-stop delivery routing (Python).
 
 ```sql
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -330,7 +330,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -341,7 +341,7 @@ Creates the Cortex Agent with tool bindings to the three stored procedures.
 
 ```sql
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
@@ -463,7 +463,7 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;

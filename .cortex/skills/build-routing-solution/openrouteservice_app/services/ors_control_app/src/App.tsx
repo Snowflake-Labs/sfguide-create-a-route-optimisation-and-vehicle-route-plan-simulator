@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -17,6 +17,7 @@ import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
 import About from './components/About';
+import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
 import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
@@ -32,6 +33,7 @@ interface NavGroup {
 
 const GETTING_STARTED: NavGroup[] = [
   { key: 'about', label: 'About', icon: Info },
+  { key: 'intro', label: 'Intro', icon: Map },
   { key: 'services', label: 'Status & Health', icon: Activity },
 ];
 
@@ -123,7 +125,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['dwell', 'fleet-delivery', 'route-deviation', 'route-opt', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -199,11 +201,22 @@ export default function App() {
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <VehicleTypeSwitcher />
               <RegionSwitcher />
+              <button
+                onClick={() => {
+                  document.cookie.split(';').forEach(c => {
+                    document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/');
+                  });
+                  window.location.href = '/logout';
+                }}
+                style={{ fontSize: 11, padding: '4px 10px', border: '1px solid #E5484D', borderRadius: 6, background: 'rgba(229,72,77,0.1)', cursor: 'pointer', color: '#E5484D', fontWeight: 600 }}
+                title="Log out and refresh session"
+              >⏻ Logout</button>
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
+            {activeTab === 'intro' && <Intro />}
             {activeTab === 'services' && <ServiceManager />}
             {activeTab === 'regions' && <RegionBuilder />}
             {activeTab === 'functions' && <FunctionTester />}

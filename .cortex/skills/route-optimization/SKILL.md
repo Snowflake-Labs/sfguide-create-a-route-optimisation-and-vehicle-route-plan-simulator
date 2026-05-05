@@ -68,13 +68,25 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Claude model ch
 
 **Goal:** Set session query tag for attribution tracking.
 
-> See `references/sql-setup.md` for the SQL command.
+Execute:
+```sql
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+```
 
 ### Step 2: Verify ORS Services
 
 **Goal:** Confirm all 4 ORS services are active (OPENROUTESERVICE, ROUTING_REVERSE_PROXY, VROOM, DOWNLOADER).
 
-> See `references/sql-setup.md` for SHOW SERVICES, RESUME_ALL_SERVICES, and CHECK_HEALTH SQL.
+Execute:
+```sql
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
+```
+
+If any services are SUSPENDED, resume them:
+```sql
+CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
+SELECT OPENROUTESERVICE_APP.CORE.CHECK_HEALTH();
+```
 
 **STOP** if ORS Native App is not installed.
 
@@ -97,7 +109,13 @@ If `cnt > 0`, the data pipeline has already run. Skip to Step 6 (Claude model ch
 
 **Goal:** Acquire Overture Maps Places dataset for POI data.
 
-> See `references/sql-setup.md` for the Marketplace SQL.
+Execute:
+```sql
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
+```
+
+> Requires IMPORT SHARE privilege. If profile error occurs, update user profile with first/last name and email. Full details in `references/sql-setup.md` Step 4.
 
 **Output:** `OVERTURE_MAPS__PLACES` database available.
 

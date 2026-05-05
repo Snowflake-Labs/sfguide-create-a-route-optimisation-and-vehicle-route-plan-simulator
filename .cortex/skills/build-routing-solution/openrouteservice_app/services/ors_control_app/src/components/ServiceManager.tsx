@@ -269,15 +269,20 @@ export default function ServiceManager() {
 
       {orsReadiness && Object.entries(orsReadiness).some(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)) && (
         <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
-          <strong>Graphs Building:</strong> ORS is loading routing graphs. Functions will return errors until all profiles are ready. This typically takes 3-10 minutes.
+          {Object.values(orsReadiness).every((r: any) => r.graphs_persisted)
+            ? <><strong>Graphs Loading:</strong> Pre-built graphs are being loaded into memory. Functions will be ready shortly — this typically takes 1–3 minutes.</>
+            : <><strong>Graphs Building:</strong> ORS is building routing graphs from map data. Functions will return errors until all profiles are ready. This typically takes 5–15 minutes.</>
+          }
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
-            {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)).map(([region, r]) => (
+            {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)).map(([region, r]: [string, any]) => (
               <li key={region}>
                 <strong>{region === 'default' ? 'Default (San Francisco)' : region}</strong>
-                {` \u2014 ${r.graphs?.filter(g => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
+                {' '}
+                <span style={{ fontSize: 11, opacity: 0.8 }}>{r.graphs_persisted ? '(loading from stage)' : '(building from OSM)'}</span>
+                {` \u2014 ${r.graphs?.filter((g: any) => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
                 {r.graphs && r.graphs.length > 0 && (
                   <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none' }}>
-                    {r.graphs.map(g => (
+                    {r.graphs.map((g: any) => (
                       <li key={g.profile} style={{ color: g.ready ? '#66bb6a' : '#b38600' }}>
                         {g.ready ? '\u2713' : '\u23F3'} {g.profile}
                       </li>

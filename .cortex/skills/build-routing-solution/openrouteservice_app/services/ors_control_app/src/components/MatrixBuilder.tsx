@@ -96,6 +96,7 @@ export default function MatrixBuilder() {
   const [jobs, setJobs] = useState<MatrixJob[]>([]);
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
+  const [buildError, setBuildError] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
   const [roadFilterEnabled, setRoadFilterEnabled] = useState(true);
@@ -230,8 +231,9 @@ export default function MatrixBuilder() {
   const startBuild = useCallback(async () => {
     if (!selectedRegion) return;
     setIsLaunching(true);
+    setBuildError(null);
     try {
-      await fetch('/api/matrix/build', {
+      const resp = await fetch('/api/matrix/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -241,8 +243,12 @@ export default function MatrixBuilder() {
           road_filter: roadFilterEnabled && roadFilterAvailable === true,
         }),
       });
+      const data = await resp.json();
+      if (data.error) setBuildError(data.error);
       await fetchJobs();
-    } catch {}
+    } catch (e: any) {
+      setBuildError(e.message || 'Failed to launch build');
+    }
     setIsLaunching(false);
   }, [selectedRegion, selectedRes, selectedProfile, roadFilterEnabled, roadFilterAvailable, fetchJobs]);
 
@@ -497,6 +503,11 @@ export default function MatrixBuilder() {
           {isLaunching ? 'Launching...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
+      {buildError && (
+        <div className="error-banner" style={{ marginTop: 8 }}>
+          <strong>Build failed:</strong> {buildError}
+        </div>
+      )}
     </div>
   );
 }

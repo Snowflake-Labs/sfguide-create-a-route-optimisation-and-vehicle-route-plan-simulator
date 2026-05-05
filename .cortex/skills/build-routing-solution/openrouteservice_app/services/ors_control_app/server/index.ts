@@ -192,6 +192,7 @@ const APP_VERSION = process.env.APP_VERSION || '0.0.0';
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
+let activeRegionOverride: string | null = null;
 
 async function getExpectedProfiles(region: string): Promise<string[]> {
   if (region === 'default') {
@@ -280,6 +281,14 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/ors-readiness', async (_req, res) => {
   const readiness: Record<string, any> = {};
 
+  async function checkGraphsPersisted(regionKey: string): Promise<boolean> {
+    try {
+      const stageRegion = regionKey === 'default' ? 'SanFrancisco' : regionKey;
+      const rows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_GRAPHS_SPCS_STAGE/${stageRegion} PATTERN='.*stamp.txt.*'`);
+      return (rows?.length ?? 0) > 0;
+    } catch { return false; }
+  }
+
   async function buildReadiness(regionKey: string, data: any): Promise<any> {
     const builtProfiles = Object.keys(data.profiles || {});
     const expectedProfiles = await getExpectedProfiles(regionKey);
@@ -289,12 +298,14 @@ app.get('/api/ors-readiness', async (_req, res) => {
       ready: builtProfiles.includes(p),
       build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
     }));
+    const graphs_persisted = await checkGraphsPersisted(regionKey);
     return {
       service_ready: data.service_ready ?? false,
       health_ready: data.health_ready ?? false,
       profiles: builtProfiles,
       expected_profiles: expectedProfiles,
       graphs,
+      graphs_persisted,
     };
   }
 
@@ -1276,6 +1287,12 @@ app.post('/api/matrix/build', async (req, res) => {
     } catch {}
 
     let matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR`;
+    // For non-default regions, the procedure passes (region, profile, origin, dest)
+    // but MATRIX_TABULAR expects (profile, origin, dest, region).
+    // Use the MATRIX_TABULAR_W wrapper which corrects the argument order.
+    if (safeRegion && safeRegion.toUpperCase() !== 'DEFAULT' && safeRegion.toUpperCase() !== 'SANFRANCISCO') {
+      matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR_W`;
+    }
 
     const jobs: { job_id: string; resolution: number }[] = [];
     const regionDb = safeRegion;
@@ -1315,22 +1332,84 @@ app.post('/api/matrix/build', async (req, res) => {
 
 app.get('/api/matrix/status', async (req, res) => {
   try {
-    const result = await callProcedure('GET_BUILD_STATUS()');
-    let jobs = JSON.parse(result || '[]');
-
-    for (const job of jobs) {
-      if (job.status === 'RUNNING' && job.stage === 'BUILDING' && job.work_queue_rows > 0) {
-        try {
-          const liveResult = await callProcedure(`GET_LIVE_TABLE_COUNT('${escapeString(job.region)}', '${escapeString(job.profile)}', '${escapeString(job.resolution)}')`);
-          const live = JSON.parse(liveResult || '{}');
-          if (live.raw_ingested > 0) {
-            job.raw_rows = live.raw_ingested;
-            job.pct_complete = Math.round(live.raw_ingested * 1000 / job.work_queue_rows) / 10;
+    let jobs: any[] = [];
+    try {
+      const rows = await runSql(
+        `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
+                HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
+                PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
+                TO_VARCHAR(CREATED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED_AT,
+                TO_VARCHAR(STARTED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS STARTED_AT,
+                TO_VARCHAR(COMPLETED_AT::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS COMPLETED_AT
+         FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+         ORDER BY CREATED_AT DESC LIMIT 50`
+      );
+      const toIso = (v: any): any => {
+        if (v == null) return v;
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
+          try { return (v as any).toISOString(); } catch { return null; }
+        }
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return new Date(v > 1e12 ? v : v * 1000).toISOString();
+        }
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (/^-?\d+(\.\d+)?$/.test(s)) {
+            const n = Number(s);
+            if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
           }
-        } catch {}
-      }
-    }
+          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
+          if (m) {
+            const tz = m[3] || 'Z';
+            const d = new Date(`${m[1]}T${m[2]}${tz}`);
+            return isNaN(d.getTime()) ? s : d.toISOString();
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? s : d.toISOString();
+        }
+        return v;
+      };
+      jobs = (rows || []).map((r: any) => ({
+        job_id: r.JOB_ID,
+        region: r.REGION,
+        profile: r.PROFILE,
+        resolution: r.RESOLUTION,
+        status: r.STATUS,
+        stage: r.STAGE,
+        hexagons: Number(r.HEXAGONS) || 0,
+        work_queue_rows: Number(r.WORK_QUEUE_ROWS) || 0,
+        raw_rows: Number(r.RAW_ROWS) || 0,
+        matrix_rows: Number(r.MATRIX_ROWS) || 0,
+        pct_complete: Number(r.PCT_COMPLETE) || 0,
+        error_msg: r.ERROR_MSG,
+        statement_handle: r.STATEMENT_HANDLE,
+        created_at: toIso(r.CREATED_AT),
+        started_at: toIso(r.STARTED_AT),
+        completed_at: toIso(r.COMPLETED_AT),
+      }));
 
+      // Live progress: BUILD_MATRIX_JOB_WRAPPER only updates RAW_ROWS / PCT_COMPLETE
+      // at the very end of the procedure, leaving the UI at 0% for the entire
+      // BUILDING stage. Compute live counts from the MATRIX_RAW table directly.
+      await Promise.all(
+        jobs
+          .filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0)
+          .map(async (j) => {
+            const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');
+            const safeRegion = String(j.region || '').toUpperCase();
+            const rawTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile}_MATRIX_RAW_${j.resolution}`;
+            try {
+              const liveRows = await runSql(`SELECT COUNT(*) AS C FROM ${rawTable}`);
+              const c = Number(liveRows?.[0]?.C) || 0;
+              j.raw_rows = c;
+              j.pct_complete = Math.min(100, Math.round((c * 100) / j.work_queue_rows));
+            } catch {
+              // raw table may not exist yet; leave fallback values
+            }
+          })
+      );
+    } catch {}
     res.json({ jobs });
   } catch (err: any) {
     res.json({ jobs: [], error: err.message });
@@ -1339,11 +1418,9 @@ app.get('/api/matrix/status', async (req, res) => {
 
 app.get('/api/matrix/inventory', async (_req, res) => {
   try {
-    const result = await callProcedure('GET_MATRIX_INVENTORY()');
-    const tables = JSON.parse(result || '[]');
     let roadFilterMap: Record<string, boolean> = {};
     try {
-      const rows = await runSql(
+      const rfRows = await runSql(
         `SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER AS RF
          FROM (
            SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER,
@@ -1352,41 +1429,34 @@ app.get('/api/matrix/inventory', async (_req, res) => {
            WHERE STATUS = 'COMPLETE'
          ) WHERE RN = 1`
       );
-      for (const r of rows || []) {
+      for (const r of rfRows || []) {
         const key = `${(r.REGION || '').toUpperCase()}_${(r.PROFILE || '').replace(/-/g, '_').toUpperCase()}_${r.RESOLUTION}`;
         roadFilterMap[key] = r.RF === true || r.RF === 'true';
       }
     } catch {}
-    const inventory = tables.map((t: any) => {
-      const name = t.table_name || '';
-      const parts = name.match(/^(.+)_MATRIX_(RES\d+)$/);
-      if (!parts) return null;
-      const regionProfile = parts[1];
-      const resolution = parts[2];
-      const profileIdx = regionProfile.lastIndexOf('_DRIVING_') >= 0
-        ? regionProfile.lastIndexOf('_DRIVING_')
-        : regionProfile.lastIndexOf('_CYCLING_') >= 0
-        ? regionProfile.lastIndexOf('_CYCLING_')
-        : regionProfile.lastIndexOf('_FOOT_') >= 0
-        ? regionProfile.lastIndexOf('_FOOT_')
-        : regionProfile.lastIndexOf('_WHEELCHAIR');
-      let region = regionProfile;
-      let profileName = 'driving-car';
-      if (profileIdx > 0) {
-        region = regionProfile.substring(0, profileIdx);
-        profileName = regionProfile.substring(profileIdx + 1).toLowerCase().replace(/_/g, '-');
-      }
-      const lookupKey = `${region.toUpperCase()}_${profileName.replace(/-/g, '_').toUpperCase()}_${resolution}`;
-      return {
-        region, profile: profileName, resolution,
-        row_count: parseInt(t.row_count || '0'),
-        bytes: parseInt(t.bytes || '0'),
-        created: t.created || '',
-        table_name: name,
-        execution_time_secs: parseInt(t.execution_time_secs || '0'),
-        road_filter: roadFilterMap[lookupKey] === true,
-      };
-    }).filter(Boolean);
+    let inventory: any[] = [];
+    try {
+      const rows = await runSql(
+        `SELECT TABLE_NAME, ROW_COUNT, BYTES, CREATED
+         FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
+           AND TABLE_NAME LIKE '%_MATRIX_RES%'
+         ORDER BY CREATED DESC`
+      );
+      inventory = (rows || []).map((t: any) => {
+        const name = (t.TABLE_NAME || '').toUpperCase();
+        const parts = name.match(/^(.+)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_(RES\d+)$/);
+        let region = name, profileName = 'driving-car', resolution = 'RES7';
+        if (parts) {
+          region = parts[1].replace(/_/g, '').toLowerCase();
+          region = region.charAt(0).toUpperCase() + region.slice(1);
+          profileName = parts[2].toLowerCase().replace(/_/g, '-');
+          resolution = parts[3];
+        }
+        const lookupKey = `${region.toUpperCase()}_${profileName.replace(/-/g, '_').toUpperCase()}_${resolution}`;
+        return { region, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0, road_filter: roadFilterMap[lookupKey] === true };
+      }).filter(Boolean);
+    } catch {}
     res.json({ inventory });
   } catch (err: any) {
     res.json({ inventory: [], error: err.message });
@@ -1398,8 +1468,13 @@ app.delete('/api/matrix/:region/:profile/:resolution', async (req, res) => {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const safeProfile = escapeString(req.params.profile);
     const safeRes = sanitizeIdentifier(req.params.resolution);
-    const result = await callProcedure(`DELETE_MATRIX_CONFIG('${safeRegion}', '${safeProfile}', '${safeRes}')`);
-    res.json({ status: 'ok', result });
+    const tablePrefix = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile.toUpperCase().replace(/-/g,'_')}_`;
+    const tables = [`${tablePrefix}MATRIX_${safeRes}`, `${tablePrefix}MATRIX_RAW_${safeRes}`, `${tablePrefix}WORK_QUEUE_${safeRes}`, `${tablePrefix}LIST_${safeRes}`];
+    for (const t of tables) {
+      try { await runSql(`DROP TABLE IF EXISTS ${t}`); } catch {}
+    }
+    await runSql(`DELETE FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE REGION = '${escapeString(req.params.region)}' AND PROFILE = '${safeProfile}' AND RESOLUTION = '${escapeString(safeRes)}'`);
+    res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1641,6 +1716,50 @@ app.get('/api/regions', async (_req, res) => {
     } catch {}
     const knownNames = new Set(regions.map((r: any) => r.REGION_NAME));
     try {
+      const orsMapRows = await runSql(`SELECT REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
+      for (const row of orsMapRows || []) {
+        if (row.REGION && !knownNames.has(row.REGION)) {
+          const centerLat = ((row.MIN_LAT || 0) + (row.MAX_LAT || 0)) / 2;
+          const centerLon = ((row.MIN_LON || 0) + (row.MAX_LON || 0)) / 2;
+          regions.push({
+            REGION_NAME: row.REGION,
+            DISPLAY_NAME: row.DISPLAY_NAME || row.REGION,
+            CENTER_LAT: centerLat, CENTER_LON: centerLon,
+            BBOX_MIN_LAT: row.MIN_LAT, BBOX_MAX_LAT: row.MAX_LAT,
+            BBOX_MIN_LON: row.MIN_LON, BBOX_MAX_LON: row.MAX_LON,
+            ZOOM_LEVEL: 11, ORS_REGION_KEY: row.REGION,
+            DATA_SOURCE: 'ORS_REGION', IS_DEFAULT: false,
+          });
+          knownNames.add(row.REGION);
+        }
+      }
+      // Also include the default ORS stage region (e.g. SanFrancisco) if not already listed
+      try {
+        const stageRows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_SPCS_STAGE PATTERN='.*ors-config.*'`);
+        for (const row of stageRows || []) {
+          const path = row.name || row.NAME || '';
+          const match = path.match(/ors_spcs_stage\/([^/]+)\/ors-config/i);
+          if (match) {
+            const stageRegion = match[1];
+            if (!knownNames.has(stageRegion)) {
+              const mapRow = (await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(stageRegion)}'`).catch(() => []))?.[0];
+              regions.unshift({
+                REGION_NAME: stageRegion,
+                DISPLAY_NAME: mapRow?.DISPLAY_NAME || stageRegion,
+                CENTER_LAT: mapRow ? ((mapRow.MIN_LAT || 0) + (mapRow.MAX_LAT || 0)) / 2 : 37.7749,
+                CENTER_LON: mapRow ? ((mapRow.MIN_LON || 0) + (mapRow.MAX_LON || 0)) / 2 : -122.4194,
+                BBOX_MIN_LAT: mapRow?.MIN_LAT ?? 37.700, BBOX_MAX_LAT: mapRow?.MAX_LAT ?? 37.820,
+                BBOX_MIN_LON: mapRow?.MIN_LON ?? -122.520, BBOX_MAX_LON: mapRow?.MAX_LON ?? -122.350,
+                ZOOM_LEVEL: 11, ORS_REGION_KEY: stageRegion,
+                DATA_SOURCE: 'ORS_DEFAULT', IS_DEFAULT: true,
+              });
+              knownNames.add(stageRegion);
+            }
+          }
+        }
+      } catch {}
+    } catch {}
+    try {
       const synthRows = await runSql('SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY');
       for (const row of synthRows) {
         if (row.REGION && !knownNames.has(row.REGION)) {
@@ -1665,7 +1784,8 @@ app.get('/api/regions', async (_req, res) => {
         DATA_SOURCE: 'S3_BASELINE', IS_DEFAULT: true,
       }];
     }
-    const active = regions.find((r: any) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
+    const defaultActive = regions.find((r: any) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
+    const active = activeRegionOverride && regions.find((r: any) => r.REGION_NAME === activeRegionOverride) ? activeRegionOverride : defaultActive;
     res.json({ regions, active });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1704,10 +1824,15 @@ app.post('/api/regions/active', async (req, res) => {
   try {
     const { region } = req.body;
     if (!region) return res.status(400).json({ error: 'region required' });
-    await runSql(
-      `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`,
-      'FLEET_INTELLIGENCE', 'CORE'
-    );
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${region.replace(/'/g, "''")}')`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+    } catch (e: any) {
+      log('WARN', 'Region', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
+    }
+    activeRegionOverride = region;
     const safeRegion = escapeString(region);
     const CONFIG_SCHEMAS = [
       'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
@@ -1740,10 +1865,59 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     params: ['location_description', 'range_minutes', 'profile'],
   },
   tool_optimization: {
-    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION',
-    params: ['jobs_description', 'vehicles_description', 'num_vehicles', 'profile'],
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
+    params: ['jobs_description', 'num_vehicles', 'profile'],
+  },
+  tool_poi: {
+    identifier: '__local__',
+    params: ['location_description', 'category', 'range_minutes', 'profile'],
   },
 };
+
+const POI_CATEGORY_MAP: Record<string, string[]> = {
+  restaurant: ['restaurant', 'fast_food_restaurant', 'casual_eatery', 'fine_dining_restaurant', 'pizzaria', 'chicken_restaurant', 'sandwich_shop', 'sushi_restaurant', 'seafood_restaurant', 'steak_house', 'burger_restaurant'],
+  cafe: ['cafe', 'coffee_shop', 'bakery', 'tea_house'],
+  bar: ['bar', 'pub', 'nightclub', 'lounge'],
+  hotel: ['hotel', 'motel', 'hostel', 'bed_and_breakfast'],
+  shop: ['shopping_mall', 'convenience_store', 'supermarket', 'department_store', 'clothing_store'],
+  hospital: ['hospital', 'medical_clinic', 'pharmacy', 'dentist'],
+  school: ['school', 'university', 'college', 'kindergarten'],
+  park: ['park', 'playground', 'sports_complex', 'golf_course'],
+  gas_station: ['gas_station', 'charging_station'],
+  parking: ['parking', 'parking_garage'],
+};
+
+async function executeToolPoi(input: Record<string, any>): Promise<any> {
+  const { location_description, category, range_minutes, profile } = input;
+  const cats = POI_CATEGORY_MAP[String(category || 'restaurant').toLowerCase()] || POI_CATEGORY_MAP['restaurant'];
+  const isoResult = await executeToolLocally('tool_isochrone', { location_description, range_minutes: range_minutes ?? 10, profile });
+  if (isoResult?.status === 'FAILED' || isoResult?.error) return isoResult;
+  const geometry = isoResult?.geometry;
+  if (!geometry) return { error: 'Isochrone returned no geometry', status: 'FAILED' };
+  const catFilter = cats.map((c: string) => `'${c}'`).join(',');
+  const geojsonStr = JSON.stringify(geometry).replace(/'/g, "''");
+  const sql = `
+    SELECT NAMES::VARIANT:primary::STRING AS NAME,
+           BASIC_CATEGORY AS CATEGORY,
+           ST_Y(GEOMETRY) AS LAT,
+           ST_X(GEOMETRY) AS LNG
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+    WHERE ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('${geojsonStr}'))
+      AND BASIC_CATEGORY IN (${catFilter})
+    LIMIT 200`;
+  try {
+    const rows = await runSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
+    const poi_list = (rows || []).map((r: any) => ({
+      name: r.NAME || 'Unknown',
+      category: r.CATEGORY || category,
+      lat: Number(r.LAT),
+      lng: Number(r.LNG),
+    }));
+    return { ...isoResult, poi_list, poi_count: poi_list.length };
+  } catch (e: any) {
+    return { ...isoResult, poi_list: [], poi_count: 0, poi_error: e.message?.slice(0, 200) };
+  }
+}
 
 const FLEET_CONFIG_SCHEMAS = [
   'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
@@ -1800,8 +1974,9 @@ const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteServi
 1. Driving/cycling/walking directions between locations
 2. Reachability analysis (isochrones) - areas reachable within X minutes
 3. Multi-stop delivery route optimization
+4. Finding points of interest (restaurants, cafes, bars, hotels, shops, etc.) within a reachable area
 
-You have access to three tools. To call a tool, respond with EXACTLY this JSON format and NOTHING else:
+You have access to four tools. To call a tool, respond with EXACTLY this JSON format and NOTHING else:
 {"tool_call": {"name": "TOOL_NAME", "input": {PARAMS}}}
 
 Available tools:
@@ -1810,23 +1985,29 @@ Available tools:
 2. tool_isochrone - Get area reachable within specified minutes from a location
    Input: {"location_description": "string describing the center location (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 3. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
-   Input: {"jobs_description": "string describing all delivery/pickup locations (required)", "vehicles_description": "string describing vehicle start/end locations (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
+   Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
+4. tool_poi - Find points of interest within a reachable area from a location. Use when user asks to show/find specific place types within a travel time (e.g. "restaurants within 10 min drive").
+   Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 
-Transport profiles: driving-car, cycling-electric (for any bike/cycling request), driving-hgv (trucks)
+Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)
 
 CRITICAL RULES:
 1. ALWAYS call the appropriate tool for ANY routing question. NEVER answer from general knowledge.
 2. When you need to call a tool, respond ONLY with the JSON tool_call object. No other text.
 3. After receiving tool results, format them clearly: distances in km, durations in minutes.
-4. If a tool returns an error, report it clearly. Do NOT provide alternative estimates.
-5. NEVER fabricate routing data.`;
+4. If a tool returns an error, report it clearly. Do NOT retry with a different profile.
+5. NEVER fabricate routing data.
+6. Use tool_poi (NOT tool_isochrone) when the user asks to find/show specific place types within a travel time.
+7. ONLY use these exact profile strings: driving-car, cycling-electric, driving-hgv. Never use cycling-regular, cycling-road, foot-walking or any other variant.`;
 
 const AGENT_PROFILE_ALIASES: Record<string, string> = {
   'bike': 'cycling-electric', 'bicycle': 'cycling-electric', 'cycling': 'cycling-electric',
-  'walk': 'foot-walking', 'walking': 'foot-walking', 'car': 'driving-car',
+  'cycle': 'cycling-electric', 'cycling-regular': 'cycling-electric', 'cycling-road': 'cycling-electric',
+  'cycling-mountain': 'cycling-electric', 'foot-walking': 'driving-car', 'walk': 'driving-car',
+  'walking': 'driving-car', 'foot': 'driving-car', 'car': 'driving-car',
   'drive': 'driving-car', 'driving': 'driving-car', 'truck': 'driving-hgv', 'hgv': 'driving-hgv',
 };
-const AGENT_VALID_PROFILES = new Set(['driving-car', 'driving-hgv', 'cycling-regular', 'cycling-mountain', 'cycling-road', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair']);
+const AGENT_VALID_PROFILES = new Set(['driving-car', 'driving-hgv', 'cycling-electric']);
 
 function normalizeAgentProfile(profile: string | undefined): string {
   if (!profile) return 'driving-car';
@@ -1841,8 +2022,9 @@ function escAgentSql(val: any): string {
 }
 
 async function executeToolLocally(toolName: string, input: Record<string, any>): Promise<any> {
+  if (toolName === 'tool_poi') return executeToolPoi(input);
   const mapping = TOOL_PROCEDURE_MAP[toolName];
-  if (!mapping) return { error: `Unknown tool: ${toolName}`, status: 'FAILED' };
+  if (!mapping || mapping.identifier === '__local__') return { error: `Unknown tool: ${toolName}`, status: 'FAILED' };
   const args = mapping.params.map(p => {
     let val = input[p];
     if (p === 'profile') val = normalizeAgentProfile(val as string);
@@ -1871,8 +2053,61 @@ function escAgentSqlStr(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
 }
 
-const AGENT_MODELS = ['claude-3-5-sonnet', 'mistral-large2'];
+const AGENT_MODELS = ['claude-sonnet-4-5', 'mistral-large2'];
 let agentModel = AGENT_MODELS[0];
+
+async function callCortexCompleteStreaming(
+  messages: Array<{role: string; content: string}>,
+  onToken: (text: string) => void,
+): Promise<string> {
+  const token = getSpcsToken();
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+    'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+  };
+  const body = JSON.stringify({
+    model: agentModel,
+    messages,
+    stream: true,
+    max_tokens: 4096,
+    temperature: 0,
+  });
+  const url = `https://${SNOWFLAKE_HOST}/api/v2/cortex/inference:complete`;
+  console.log(`[Agent] Streaming CORTEX.COMPLETE model=${agentModel}, msgCount=${messages.length}`);
+  const startMs = Date.now();
+  const res = await fetch(url, { method: 'POST', headers, body });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Cortex streaming API ${res.status}: ${errText.slice(0, 300)}`);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('No readable body from Cortex streaming response');
+  const decoder = new TextDecoder();
+  let fullText = '';
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(data);
+        const text = parsed.choices?.[0]?.delta?.content || '';
+        if (text) { fullText += text; onToken(text); }
+      } catch {}
+    }
+  }
+  console.log(`[Agent] Streaming completed in ${Date.now() - startMs}ms, length=${fullText.length}`);
+  if (!fullText) throw new Error('Cortex streaming returned empty response');
+  return fullText;
+}
 
 async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
   const msgArray = messages.map(m => {
@@ -1944,6 +2179,7 @@ function parseToolCall(text: string): { name: string; input: Record<string, any>
 async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
+  onToken?: (text: string) => void,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
@@ -1953,22 +2189,41 @@ async function callCortexAgentWithToolLoop(
   ];
   const maxIterations = 5;
   const allToolResults: any[] = [];
+  let toolsExecuted = false;
+
   for (let iter = 0; iter < maxIterations; iter++) {
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
+
+    if (toolsExecuted && onToken) {
+      onProgress?.({ step: 'formatting', detail: 'Generating response...' });
+      try {
+        const streamedText = await callCortexCompleteStreaming(messages, onToken);
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults };
+      } catch (streamErr: any) {
+        console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
+        const fallback = await callCortexComplete(messages);
+        onToken(fallback);
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults };
+      }
+    }
+
     const response = await callCortexComplete(messages);
     console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
     const toolCall = parseToolCall(response);
+
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
+      if (onToken) onToken(response);
       return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
     }
+
     const toolLabel = toolCall.name.replace('tool_', '');
     onProgress?.({ step: 'executing_tool', detail: toolLabel });
     console.log(`[Agent] Executing tool: ${toolCall.name}`);
     messages.push({ role: 'assistant', content: response });
     const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
     allToolResults.push(toolResult);
-    onProgress?.({ step: 'formatting', detail: 'Processing tool results' });
+    toolsExecuted = true;
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
@@ -1989,7 +2244,8 @@ app.post('/api/agent/chat', async (req, res) => {
   res.flushHeaders();
   try {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress);
+    const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
@@ -2106,9 +2362,12 @@ app.post('/api/query', async (req, res) => {
     if (!ALLOWED.includes(firstWord)) {
       return res.status(403).json({ error: `Only read-only queries allowed. Got: ${firstWord}` });
     }
+    log('INFO', 'Query', `DB:${database} Schema:${schema} SQL:${trimmed.slice(0, 300)}`);
     const rows = await runSql(trimmed, database, schema);
+    log('INFO', 'Query', `Returned ${rows?.length ?? 0} rows`);
     res.json({ result: rows });
   } catch (err: any) {
+    log('ERROR', 'Query', `/api/query error: ${err.message?.slice(0, 300)}`);
     res.json({ error: err.message });
   }
 });
@@ -2150,6 +2409,19 @@ app.get('/api/tiles/:z/:x/:y', async (req, res) => {
 });
 
 const distDir = join(import.meta.dirname || '.', '../dist');
+
+app.get('/logout', (req, res) => {
+  // Redirect to Snowflake account logout which clears the session and shows login screen
+  const appUrl = encodeURIComponent(`https://${req.headers.host || ''}/`);
+  const accountHost = SNOWFLAKE_HOST || '';
+  if (accountHost) {
+    res.redirect(302, `https://${accountHost}/session/v1/logout-from-application?redirect_url=${appUrl}`);
+  } else {
+    res.clearCookie('session');
+    res.redirect(302, '/');
+  }
+});
+
 app.use('/assets', express.static(join(distDir, 'assets'), {
   maxAge: '1y',
   immutable: true,

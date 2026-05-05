@@ -81,6 +81,7 @@ export default function FleetDataStudio() {
   const [editName, setEditName] = useState('');
   const [editRegion, setEditRegion] = useState('SanFrancisco');
   const [editProfile, setEditProfile] = useState('driving-car');
+  const [availableRegions, setAvailableRegions] = useState<{key: string; label: string}[]>([{ key: 'SanFrancisco', label: 'San Francisco' }]);
   const [activeJobs, setActiveJobs] = useState<JobInfo[]>([]);
   const [jobHistory, setJobHistory] = useState<any[]>([]);
   const [generating, setGenerating] = useState(false);
@@ -102,6 +103,20 @@ export default function FleetDataStudio() {
     } catch (e: any) {
       console.error('Failed to fetch templates:', e);
     }
+  }, []);
+
+  const fetchAvailableRegions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/ors-readiness');
+      const data = await res.json();
+      const regions: {key: string; label: string}[] = [];
+      for (const [key, val] of Object.entries(data as Record<string, any>)) {
+        const label = key === 'default' ? 'San Francisco' : key;
+        const regionKey = key === 'default' ? 'SanFrancisco' : key;
+        regions.push({ key: regionKey, label });
+      }
+      if (regions.length > 0) setAvailableRegions(regions);
+    } catch {}
   }, []);
 
   const fetchPresets = useCallback(async () => {
@@ -153,6 +168,7 @@ export default function FleetDataStudio() {
     fetchPresets();
     fetchStats();
     fetchCoverage();
+    fetchAvailableRegions();
   }, []);
 
   useEffect(() => {
@@ -548,10 +564,9 @@ export default function FleetDataStudio() {
                 <div>
                   <label style={{ fontSize: 11, color: '#6E7681' }}>Region</label>
                   <select value={editRegion} onChange={e => setEditRegion(e.target.value)} style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #E1E4E8', fontSize: 13 }}>
-                    <option value="SanFrancisco">San Francisco</option>
-                    <option value="Berlin">Berlin</option>
-                    <option value="Germany">Germany</option>
-                    <option value="London">London</option>
+                    {availableRegions.map(r => (
+                      <option key={r.key} value={r.key}>{r.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
