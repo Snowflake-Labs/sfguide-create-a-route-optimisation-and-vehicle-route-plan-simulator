@@ -2117,6 +2117,33 @@ async function callCortexAgentWithToolLoop(
   return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: estimateMessagesTokens(messages), total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
 }
 
+let cachedAgentConfig: any = null;
+let agentConfigLastFetch = 0;
+const AGENT_CONFIG_CACHE_MS = 60000;
+
+const DEFAULT_AGENT_CONFIG = {"version":"1.0","default_scenario":"pharma","max_token_limit":8000,"scenarios":[{"id":"pharma","label":"Pharma Supply Chain","icon":"💊","description":"Pharmaceutical delivery planning","prompts":[{"label":"1. Catchment analysis","icon":"🏥","prompt":"Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco"},{"label":"2. Drug demand","icon":"💊","prompt":"Based on that catchment population, what drugs would this pharmacy need most?"},{"label":"3. Patient directions","icon":"🗺️","prompt":"Give me driving directions from 742 Valencia Street, San Francisco to Walgreens at 498 Castro Street"},{"label":"4. Cycling access","icon":"🚲","prompt":"Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco"},{"label":"5. Supply chain plan","icon":"🚚","prompt":"Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles"}]},{"id":"retail","label":"Retail & Catchment","icon":"🏪","description":"Retail site analysis","prompts":[{"label":"1. Store catchment","icon":"📍","prompt":"Show me the area reachable within a 10 minute drive from Union Square, San Francisco"},{"label":"2. Nearby competitors","icon":"🏪","prompt":"Show me all shops within a 10 minute drive from Union Square"},{"label":"3. Restaurants","icon":"🍽️","prompt":"Show me restaurants within a 15 minute drive from the Ferry Building"},{"label":"4. Drive to store","icon":"🗺️","prompt":"Get driving directions from 3100 Scott Street to Union Square, San Francisco"},{"label":"5. Multi-store route","icon":"🚚","prompt":"Get driving directions from 1 Market Street to Pier 39, then Fisherman's Wharf, then Ghirardelli Square"}]},{"id":"logistics","label":"Fleet Logistics","icon":"🚛","description":"Fleet delivery optimisation","prompts":[{"label":"1. Pharma fleet demo","icon":"🚚","prompt":"Run the SF pharmaceutical fleet delivery demo"},{"label":"2. HGV directions","icon":"🚛","prompt":"Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street"},{"label":"3. Bike courier","icon":"🚲","prompt":"Get cycling directions from 1 Market Street to 498 Castro Street"},{"label":"4. Reachability","icon":"⏱️","prompt":"Show me the area reachable within 20 minutes by HGV from the Port of San Francisco"},{"label":"5. Custom route","icon":"📍","prompt":"I have 2 vehicles from 1 Market Street. Optimise routes to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, Walgreens 2690 Mission St"}]}]};
+
+app.get('/api/agent/config', async (_req, res) => {
+  const now = Date.now();
+  if (cachedAgentConfig && (now - agentConfigLastFetch) < AGENT_CONFIG_CACHE_MS) {
+    return res.json(cachedAgentConfig);
+  }
+  try {
+    const rows = await runSql(`SELECT $1 AS CONFIG FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => (TYPE = 'JSON', STRIP_OUTER_ARRAY = FALSE))`);
+    if (rows && rows.length > 0) {
+      const raw = rows[0].CONFIG || rows[0];
+      cachedAgentConfig = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      agentConfigLastFetch = now;
+      return res.json(cachedAgentConfig);
+    }
+  } catch (e: any) {
+    console.log(`[AgentConfig] Stage read failed (using default): ${e.message?.slice(0, 100)}`);
+  }
+  cachedAgentConfig = DEFAULT_AGENT_CONFIG;
+  agentConfigLastFetch = now;
+  res.json(cachedAgentConfig);
+});
+
 function sendSseEvent(res: any, event: string, data: any) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }

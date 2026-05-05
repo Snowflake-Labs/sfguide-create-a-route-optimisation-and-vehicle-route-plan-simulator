@@ -283,46 +283,8 @@ interface DemoScenario {
   prompts: { label: string; icon: string; prompt: string }[];
 }
 
-const DEMO_SCENARIOS: DemoScenario[] = [
-  {
-    id: 'pharma',
-    label: 'Pharma Supply Chain',
-    icon: '💊',
-    description: 'Pharmaceutical delivery planning — catchment analysis, drug demand, route optimisation',
-    prompts: [
-      { label: '1. Catchment analysis', icon: '🏥', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco' },
-      { label: '2. Drug demand', icon: '💊', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
-      { label: '3. Patient directions', icon: '🗺️', prompt: 'Give me driving directions from 742 Valencia Street, San Francisco to Walgreens on Castro Street' },
-      { label: '4. Cycling access', icon: '🚲', prompt: 'Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco for patients without cars' },
-      { label: '5. Supply chain plan', icon: '🚚', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
-    ],
-  },
-  {
-    id: 'retail',
-    label: 'Retail & Catchment',
-    icon: '🏪',
-    description: 'Retail site analysis — competitor proximity, drive-time catchments, POI discovery',
-    prompts: [
-      { label: '1. Store catchment', icon: '📍', prompt: 'Show me the area reachable within a 10 minute drive from Union Square, San Francisco' },
-      { label: '2. Nearby competitors', icon: '🏪', prompt: 'Show me all shops and shopping malls within a 10 minute drive from Union Square, San Francisco' },
-      { label: '3. Restaurants', icon: '🍽️', prompt: 'Show me restaurants within a 15 minute drive from the Ferry Building, San Francisco' },
-      { label: '4. Drive to store', icon: '🗺️', prompt: 'Get driving directions from 3100 Scott Street, San Francisco to Union Square' },
-      { label: '5. Multi-store route', icon: '🚚', prompt: 'Get driving directions from a warehouse at 1 Market Street to Pier 39, then to Fisherman\'s Wharf, then to Ghirardelli Square, San Francisco' },
-    ],
-  },
-  {
-    id: 'logistics',
-    label: 'Fleet Logistics',
-    icon: '🚛',
-    description: 'Fleet delivery optimisation — multi-vehicle routing with capacity and skills',
-    prompts: [
-      { label: '1. Pharma fleet demo', icon: '🚚', prompt: 'Run the SF pharmaceutical fleet delivery demo' },
-      { label: '2. HGV directions', icon: '🚛', prompt: 'Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street' },
-      { label: '3. Bike courier', icon: '🚲', prompt: 'Get cycling directions from 1 Market Street to 498 Castro Street, San Francisco' },
-      { label: '4. Reachability', icon: '⏱️', prompt: 'Show me the area reachable within 20 minutes by HGV from the Port of San Francisco' },
-      { label: '5. Custom route', icon: '📍', prompt: 'I have 2 vehicles starting from 1 Market Street, San Francisco. Optimise routes to deliver to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, and Walgreens 2690 Mission St' },
-    ],
-  },
+const FALLBACK_SCENARIOS: DemoScenario[] = [
+  { id: 'pharma', label: 'Pharma Supply Chain', icon: '💊', description: 'Pharmaceutical delivery planning', prompts: [{ label: '1. Catchment', icon: '🏥', prompt: 'Show me the health profile within 10 min drive of 498 Castro St, SF' }] },
 ];
 
 const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
@@ -335,6 +297,17 @@ export default function AgentPlayground() {
   const [activeScenario, setActiveScenario] = useState<string>('pharma');
   const [maxTokenLimit, setMaxTokenLimit] = useState(8000);
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
+  const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
+
+  useEffect(() => {
+    fetch('/api/agent/config').then(r => r.json()).then(data => {
+      if (data?.scenarios?.length) {
+        setScenarios(data.scenarios);
+        if (data.default_scenario) setActiveScenario(data.default_scenario);
+        if (data.max_token_limit) setMaxTokenLimit(data.max_token_limit);
+      }
+    }).catch(() => {});
+  }, []);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
@@ -661,7 +634,7 @@ export default function AgentPlayground() {
 
       <div style={{ marginBottom: 10 }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          {DEMO_SCENARIOS.map(sc => (
+          {scenarios.map(sc => (
             <button
               key={sc.id}
               onClick={() => setActiveScenario(sc.id)}
@@ -679,7 +652,7 @@ export default function AgentPlayground() {
           ))}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {(DEMO_SCENARIOS.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (
+          {(scenarios.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (
             <button
               key={i}
               onClick={() => setInput(sp.prompt)}
