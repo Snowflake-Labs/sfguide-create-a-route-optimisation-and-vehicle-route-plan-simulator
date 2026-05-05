@@ -333,6 +333,8 @@ export default function AgentPlayground() {
   const [streaming, setStreaming] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [activeScenario, setActiveScenario] = useState<string>('pharma');
+  const [maxTokenLimit, setMaxTokenLimit] = useState(8000);
+  const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
@@ -365,6 +367,7 @@ export default function AgentPlayground() {
     setInput('');
     setGeoData(EMPTY_GEO);
     setTokenUsage(null);
+    setWorkflowSteps([]);
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
@@ -384,7 +387,7 @@ export default function AgentPlayground() {
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg.content, history: messages }),
+        body: JSON.stringify({ message: userMsg.content, history: messages, max_tokens: maxTokenLimit }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -428,11 +431,14 @@ export default function AgentPlayground() {
                 } else if (eventType === 'result') {
                   assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
-                  if (parsed.token_usage) setTokenUsage(prev => {
-                    const incoming = parsed.token_usage;
-                    if (!prev) return incoming;
-                    return { prompt_tokens: prev.prompt_tokens + incoming.prompt_tokens, completion_tokens: prev.completion_tokens + incoming.completion_tokens, total_tokens: prev.total_tokens + incoming.total_tokens, summarised: incoming.summarised || prev.summarised };
-                  });
+                  if (parsed.token_usage) {
+                    setTokenUsage(prev => {
+                      const incoming = parsed.token_usage;
+                      if (!prev) return incoming;
+                      return { prompt_tokens: prev.prompt_tokens + incoming.prompt_tokens, completion_tokens: prev.completion_tokens + incoming.completion_tokens, total_tokens: prev.total_tokens + incoming.total_tokens, summarised: incoming.summarised || prev.summarised, summary_text: incoming.summary_text || prev.summary_text, messages_summarised: incoming.messages_summarised, messages_raw: incoming.messages_raw };
+                    });
+                    if (parsed.token_usage.workflow_steps) setWorkflowSteps(prev => [...prev, ...parsed.token_usage.workflow_steps]);
+                  }
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
@@ -461,6 +467,8 @@ export default function AgentPlayground() {
                     else updated.push({ role: 'assistant', content: assistantContent });
                     return updated;
                   });
+                } else if (eventType === 'workflow') {
+                  setWorkflowSteps(prev => [...prev, parsed]);
                 }
               } catch {}
             }
@@ -813,6 +821,66 @@ export default function AgentPlayground() {
               ))}
             </div>
           )}
+        </div>
+
+        <div style={{ flex: '0 0 220px', display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, color: 'var(--text)' }}>Token Workflow</div>
+
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 10, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Max token limit: {maxTokenLimit.toLocaleString()}</label>
+            <input
+              type="range"
+              min={2000}
+              max={32000}
+              step={1000}
+              value={maxTokenLimit}
+              onChange={e => setMaxTokenLimit(Number(e.target.value))}
+              style={{ width: '100%', height: 4, cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-secondary)' }}>
+              <span>2K</span><span>8K</span><span>16K</span><span>32K</span>
+            </div>
+          </div>
+
+          {tokenUsage && (
+            <div style={{ marginBottom: 10, padding: '8px', background: 'rgba(0,0,0,0.03)', borderRadius: 6, border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Used</span>
+                <span style={{ fontWeight: 600 }}>{tokenUsage.total_tokens.toLocaleString()} / {maxTokenLimit.toLocaleString()}</span>
+              </div>
+              <div style={{ width: '100%', height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', marginBottom: 6 }}>
+                <div style={{ width: `${Math.min(100, (tokenUsage.total_tokens / maxTokenLimit) * 100)}%`, height: '100%', borderRadius: 3, background: tokenUsage.total_tokens > maxTokenLimit * 0.8 ? '#e74c3c' : tokenUsage.total_tokens > maxTokenLimit * 0.5 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 10, color: 'var(--text-secondary)' }}>
+                <div>Prompt: <strong>{tokenUsage.prompt_tokens.toLocaleString()}</strong></div>
+                <div>Output: <strong>{tokenUsage.completion_tokens.toLocaleString()}</strong></div>
+                <div>Raw msgs: <strong>{tokenUsage.messages_raw ?? '-'}</strong></div>
+                <div>Compressed: <strong>{tokenUsage.messages_summarised ?? 0}</strong></div>
+              </div>
+              {tokenUsage.summarised && (
+                <div style={{ marginTop: 6, padding: '4px 6px', background: 'rgba(41,181,232,0.1)', borderRadius: 4, fontSize: 10, color: 'var(--accent)' }}>
+                  Context was summarised to fit limit
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
+            <div style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 4, textTransform: 'uppercase' }}>Steps</div>
+            {workflowSteps.length === 0 && <div style={{ color: 'var(--text-secondary)', fontSize: 10, textAlign: 'center', padding: 8 }}>No steps yet</div>}
+            {workflowSteps.map((step, i) => (
+              <div key={i} style={{ marginBottom: 6, padding: '4px 6px', background: step.type === 'summarise' ? 'rgba(41,181,232,0.08)' : step.type === 'tool_call' ? 'rgba(76,175,80,0.08)' : 'rgba(0,0,0,0.03)', borderRadius: 4, borderLeft: `3px solid ${step.type === 'summarise' ? 'var(--accent)' : step.type === 'tool_call' ? '#4caf50' : '#9e9e9e'}` }}>
+                <div style={{ fontWeight: 600, fontSize: 10, color: 'var(--text)' }}>
+                  {step.type === 'llm_response' ? 'LLM Response' : step.type === 'llm_stream' ? 'LLM Stream' : step.type === 'tool_call' ? `Tool: ${(step.tool || '').replace('tool_', '')}` : step.type === 'summarise' ? 'Summarised' : step.type}
+                </div>
+                <div style={{ fontSize: 9, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  {step.prompt_tokens != null && <span>Read: {step.prompt_tokens} </span>}
+                  {step.completion_tokens != null && <span>Write: {step.completion_tokens} </span>}
+                  {step.type === 'summarise' && <span>{step.tokens_before} → {step.tokens_after} tokens ({step.messages_compressed} msgs)</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

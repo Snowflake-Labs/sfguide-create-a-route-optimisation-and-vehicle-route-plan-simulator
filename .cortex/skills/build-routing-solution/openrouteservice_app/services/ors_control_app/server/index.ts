@@ -2122,7 +2122,7 @@ function sendSseEvent(res: any, event: string, data: any) {
 }
 
 app.post('/api/agent/chat', async (req, res) => {
-  const { message, history, thread_id, parent_message_id } = req.body;
+  const { message, history, max_tokens, thread_id, parent_message_id } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2132,7 +2132,8 @@ app.post('/api/agent/chat', async (req, res) => {
   try {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
     const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, history);
+    const onWorkflow = (data: any) => { res.write(`event: workflow\ndata: ${JSON.stringify(data)}\n\n`); };
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, history, max_tokens ? Number(max_tokens) : undefined, onWorkflow);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
