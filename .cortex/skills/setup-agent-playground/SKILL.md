@@ -25,6 +25,8 @@ Deploys all demo data, stored procedures, and configuration needed for the Agent
 
 | Object | Type | Purpose |
 |--------|------|---------|
+| All CONFIG tables | Update | Sets VEHICLE_TYPE='ebike', REGION='SanFrancisco' across all 6 demo schemas |
+| `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES` | View | Maps FACT_TRIPS to Fleet Delivery dashboard schema |
 | `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS` | Table | 30 pre-geocoded SF delivery stops with VROOM skills |
 | `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS` | Table | 55 SF neighbourhood health data points |
 | `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY` | Table | 25 drugs mapped to conditions with delivery skills |
@@ -37,7 +39,17 @@ Deploys all demo data, stored procedures, and configuration needed for the Agent
 
 ## Execution Steps
 
-### Step 1: Deploy Demo Data Tables and Stored Procedures
+### Step 1: Configure Demo Defaults
+
+Sets all CONFIG tables to match deployed data and creates the DELIVERIES view:
+
+```bash
+snow sql -f .cortex/skills/build-routing-solution/openrouteservice_app/sql/stored_procedures/configure_demo_defaults.sql -c <connection>
+```
+
+**Expected Output:** "Demo defaults configured successfully"
+
+### Step 2: Deploy Demo Data Tables and Stored Procedures
 
 Run all SQL files in sequence:
 
@@ -51,7 +63,7 @@ snow sql -f .cortex/skills/build-routing-solution/openrouteservice_app/sql/store
 
 **Expected Output:** Each file should print a success message.
 
-### Step 2: Upload Agent Config to Stage
+### Step 3: Upload Agent Config to Stage
 
 ```bash
 snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/config/agent-demos.json \
@@ -61,7 +73,7 @@ snow stage copy .cortex/skills/build-routing-solution/openrouteservice_app/confi
 
 **Expected Output:** File uploaded successfully.
 
-### Step 3: Verify Deployment
+### Step 4: Verify Deployment
 
 Run these verification queries:
 
@@ -84,7 +96,7 @@ CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT('498 Castro Street S
 -- Expected: status = SUCCESS, catchment_population > 0
 ```
 
-### Step 4: Test in the App
+### Step 5: Test in the App
 
 Open the Agent Playground in the ORS Control App and try:
 1. Click the "Pharma Supply Chain" scenario tab
