@@ -156,6 +156,14 @@
       AS
       'SELECT OPENROUTESERVICE_APP.CORE._MATRIX_TABULAR_RAW(method, origin, destinations, region)';
 
+   -- MATRIX_TABULAR_W (region-first arg order wrapper for BUILD_TRAVEL_TIME_RANGE_REGION non-default path) - returns VARIANT
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR_W(region VARCHAR, method VARCHAR, origin ARRAY, destinations ARRAY)
+      RETURNS VARIANT
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}'
+      AS
+      'SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(method, origin, destinations, region)';
+
    -- ORS_STATUS - returns VARIANT
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_STATUS(region VARCHAR DEFAULT NULL)
       RETURNS VARIANT
