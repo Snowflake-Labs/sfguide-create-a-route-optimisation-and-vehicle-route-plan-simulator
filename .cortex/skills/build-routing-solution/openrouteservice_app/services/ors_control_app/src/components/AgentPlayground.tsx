@@ -260,6 +260,16 @@ function stripToolCallJson(text: string): string {
 }
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
+interface SavedPrompt { id: string; label: string; icon: string; prompt: string; }
+
+const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
+
+function loadSavedPrompts(): SavedPrompt[] {
+  try { return JSON.parse(localStorage.getItem(SAVED_PROMPTS_KEY) || '[]'); } catch { return []; }
+}
+function persistSavedPrompts(prompts: SavedPrompt[]) {
+  try { localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(prompts)); } catch {}
+}
 
 const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
   {
@@ -309,6 +319,28 @@ export default function AgentPlayground() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   const streamingTextRef = useRef('');
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(loadSavedPrompts);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [saveIcon, setSaveIcon] = useState('📌');
+
+  const openSaveDialog = useCallback(() => {
+    if (!input.trim()) return;
+    setSaveLabel('');
+    setSaveIcon('📌');
+    setSaveDialogOpen(true);
+  }, [input]);
+
+  const confirmSave = useCallback(() => {
+    if (!saveLabel.trim() || !input.trim()) return;
+    const newPrompt: SavedPrompt = { id: Date.now().toString(), label: saveLabel.trim(), icon: saveIcon, prompt: input.trim() };
+    setSavedPrompts(prev => { const updated = [...prev, newPrompt]; persistSavedPrompts(updated); return updated; });
+    setSaveDialogOpen(false);
+  }, [saveLabel, saveIcon, input]);
+
+  const deletePrompt = useCallback((id: string) => {
+    setSavedPrompts(prev => { const updated = prev.filter(p => p.id !== id); persistSavedPrompts(updated); return updated; });
+  }, []);
 
   const clearConversation = useCallback(() => {
     setMessages([]);
@@ -603,6 +635,30 @@ export default function AgentPlayground() {
         </div>
       </div>
 
+      {savedPrompts.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>My saved prompts</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {savedPrompts.map(sp => (
+              <div key={sp.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 0, background: 'rgba(41,181,232,0.08)', border: '1px solid rgba(41,181,232,0.3)', borderRadius: 20, overflow: 'hidden' }}>
+                <button
+                  onClick={() => setInput(sp.prompt)}
+                  disabled={streaming}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px 5px 10px', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--text)', whiteSpace: 'nowrap' }}
+                >
+                  <span>{sp.icon}</span><span>{sp.label}</span>
+                </button>
+                <button
+                  onClick={() => deletePrompt(sp.id)}
+                  style={{ padding: '5px 8px 5px 4px', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1 }}
+                  title="Delete"
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ flex: '0 0 380px', display: 'flex', flexDirection: 'column', maxHeight: 540 }}>
           <div style={{ flex: 1, overflowY: 'auto', marginBottom: 8, padding: 8, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.02)', minHeight: 200 }}>
@@ -637,8 +693,40 @@ export default function AgentPlayground() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="select" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} placeholder="Type a message..." style={{ flex: 1 }} />
+            <button
+              onClick={openSaveDialog}
+              disabled={!input.trim() || streaming}
+              title="Save as example"
+              style={{ padding: '0 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: input.trim() ? 'pointer' : 'default', opacity: input.trim() ? 1 : 0.4, fontSize: 15 }}
+            >💾</button>
             <button className="btn-primary" onClick={sendMessage} disabled={streaming || !input.trim()}>{streaming ? '...' : 'Send'}</button>
           </div>
+
+          {saveDialogOpen && (
+            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.3)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>Save this prompt</div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                <input
+                  value={saveIcon}
+                  onChange={e => setSaveIcon(e.target.value)}
+                  style={{ width: 36, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 14, textAlign: 'center' }}
+                  maxLength={2}
+                />
+                <input
+                  value={saveLabel}
+                  onChange={e => setSaveLabel(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') confirmSave(); if (e.key === 'Escape') setSaveDialogOpen(false); }}
+                  placeholder="Short label e.g. Castro pharmacy check"
+                  autoFocus
+                  style={{ flex: 1, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn-primary" onClick={confirmSave} disabled={!saveLabel.trim()} style={{ fontSize: 12, padding: '4px 12px' }}>Save</button>
+                <button onClick={() => setSaveDialogOpen(false)} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 300 }}>
