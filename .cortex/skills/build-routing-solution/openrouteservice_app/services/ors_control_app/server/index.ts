@@ -1976,13 +1976,21 @@ async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
   onToken?: (text: string) => void,
+  history?: Array<{role: string; content: string}>,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
-  console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
+  console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}" (history: ${history?.length || 0} msgs)`);
   let messages: Array<{role: string; content: string}> = [
     { role: 'system', content: ROUTING_SYSTEM_PROMPT },
-    { role: 'user', content: message },
   ];
+  if (history && history.length > 0) {
+    for (const h of history) {
+      if (h.role === 'user' || h.role === 'assistant') {
+        messages.push({ role: h.role, content: (h.content || '').slice(0, 2000) });
+      }
+    }
+  }
+  messages.push({ role: 'user', content: message });
   const maxIterations = 5;
   const allToolResults: any[] = [];
   let toolsExecuted = false;
@@ -2044,7 +2052,7 @@ function sendSseEvent(res: any, event: string, data: any) {
 }
 
 app.post('/api/agent/chat', async (req, res) => {
-  const { message, thread_id, parent_message_id } = req.body;
+  const { message, history, thread_id, parent_message_id } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2054,7 +2062,7 @@ app.post('/api/agent/chat', async (req, res) => {
   try {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
     const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken);
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, history);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
