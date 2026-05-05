@@ -1889,9 +1889,16 @@ async function callCortexComplete(messages: Array<{role: string; content: string
   let content = '';
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
+    if (typeof parsed === 'string') {
+      content = parsed;
+    } else {
+      content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.message || '';
+    }
   } catch {
     content = String(raw);
+  }
+  if (!content && typeof raw === 'string') {
+    content = raw;
   }
   if (!content) {
     console.error(`[Agent] Empty content from AI_COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
