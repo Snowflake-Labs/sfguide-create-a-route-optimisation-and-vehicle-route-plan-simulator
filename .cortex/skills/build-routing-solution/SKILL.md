@@ -41,7 +41,7 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 | CREATE IMAGE REPOSITORY | Schema (OPENROUTESERVICE_APP.CORE) | Creates IMAGE_REPOSITORY for container images |
 | CREATE INTEGRATION | Account | Creates external access integrations for ORS network rules (ORS_OSM_EAI, ORS_CARTO_EAI) |
 | BIND SERVICE ENDPOINT | Account | Required for services with public endpoints (ors_control_app) |
-| IMPORT SHARE | Account | Installs Overture Maps datasets from Marketplace (Step 8b) |
+| IMPORT SHARE | Account | Installs Overture Maps datasets from Marketplace (Step 7b): Places, Addresses, Transportation |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
@@ -317,7 +317,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 ### Step 7b: Install Overture Maps Marketplace Datasets
 
-**Goal:** Pre-install Overture Maps datasets from Snowflake Marketplace so downstream demos that need POI/address data (Taxis, Retail Catchment, Route Optimization) are not blocked.
+**Goal:** Pre-install Overture Maps datasets from Snowflake Marketplace so downstream demos that need POI/address/transportation data (Taxis, Retail Catchment, Route Optimization, Road-Aware Matrix) are not blocked.
 
 **Actions:**
 
@@ -340,15 +340,23 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```
    Marketplace link: https://app.snowflake.com/marketplace/listing/GZT0Z4CM1E9NQ/carto-overture-maps-addresses
 
-4. **Verify** both datasets are accessible:
+4. **If `OVERTURE_MAPS__TRANSPORTATION` is NOT listed**, install it:
+   ```sql
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KJ');
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__TRANSPORTATION FROM LISTING GZT0Z4CM1E9KJ;
+   ```
+   Marketplace link: https://app.snowflake.com/marketplace/listing/GZT0Z4CM1E9KJ/carto-overture-maps-transportation
+
+5. **Verify** all datasets are accessible:
    ```sql
    SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE LIMIT 1;
    SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS WHERE COUNTRY = 'US' LIMIT 1;
+   SELECT COUNT(*) FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT WHERE SUBTYPE = 'road' LIMIT 1;
    ```
 
 **If SYSTEM$ACCEPT_LEGAL_TERMS fails:** The user may need to accept terms manually via Snowsight Marketplace using the links above.
 
-**Output:** Overture Maps databases available. Demos requiring POI data (Taxis, Retail Catchment, Route Optimization) can now be deployed.
+**Output:** Overture Maps databases available. Demos requiring POI data (Taxis, Retail Catchment, Route Optimization) and road-aware matrix filtering can now be deployed.
 
 ### Step 8: Select and Deploy Demos
 
