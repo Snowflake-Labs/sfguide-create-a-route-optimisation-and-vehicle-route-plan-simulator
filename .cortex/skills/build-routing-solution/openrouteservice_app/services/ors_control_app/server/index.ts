@@ -1291,10 +1291,30 @@ app.get('/api/matrix/status', async (req, res) => {
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
-      const toIso = (v: any) => {
+      const toIso = (v: any): any => {
         if (v == null) return v;
-        if (v instanceof Date) return v.toISOString();
-        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') return (v as any).toISOString();
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
+          try { return (v as any).toISOString(); } catch { return null; }
+        }
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return new Date(v > 1e12 ? v : v * 1000).toISOString();
+        }
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (/^-?\d+(\.\d+)?$/.test(s)) {
+            const n = Number(s);
+            if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
+          }
+          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
+          if (m) {
+            const tz = m[3] || 'Z';
+            const d = new Date(`${m[1]}T${m[2]}${tz}`);
+            return isNaN(d.getTime()) ? s : d.toISOString();
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? s : d.toISOString();
+        }
         return v;
       };
       jobs = (rows || []).map((r: any) => ({
