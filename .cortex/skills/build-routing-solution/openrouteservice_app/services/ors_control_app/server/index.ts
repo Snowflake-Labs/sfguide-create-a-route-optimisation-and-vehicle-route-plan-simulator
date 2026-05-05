@@ -1832,7 +1832,7 @@ async function callCortexCompleteStreaming(
     temperature: 0,
   });
   const url = `https://${SNOWFLAKE_HOST}/api/v2/cortex/inference:complete`;
-  console.log(`[Agent] Streaming CORTEX.COMPLETE model=${agentModel}, msgCount=${messages.length}`);
+  console.log(`[Agent] Streaming AI_COMPLETE model=${agentModel}, msgCount=${messages.length}`);
   const startMs = Date.now();
   const res = await fetch(url, { method: 'POST', headers, body });
   if (!res.ok) {
@@ -1870,14 +1870,14 @@ async function callCortexComplete(messages: Array<{role: string; content: string
   const msgArray = messages.map(m => {
     return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
   }).join(',');
-  const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
-  console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
+  const sql = `SELECT AI_COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
+  console.log(`[Agent] Calling AI_COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
   const startMs = Date.now();
   let rows: any[];
   try {
     rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
   } catch (err: any) {
-    console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
+    console.error(`[Agent] AI_COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
     if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
       console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
       agentModel = AGENT_MODELS[1];
@@ -1887,8 +1887,8 @@ async function callCortexComplete(messages: Array<{role: string; content: string
       throw err;
     }
   }
-  console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
-  if (!rows || rows.length === 0) throw new Error('No response from CORTEX.COMPLETE');
+  console.log(`[Agent] AI_COMPLETE returned in ${Date.now() - startMs}ms`);
+  if (!rows || rows.length === 0) throw new Error('No response from AI_COMPLETE');
   const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
   let content = '';
   try {
@@ -1898,7 +1898,7 @@ async function callCortexComplete(messages: Array<{role: string; content: string
     content = String(raw);
   }
   if (!content) {
-    console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
+    console.error(`[Agent] Empty content from AI_COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
     throw new Error('Empty response from LLM');
   }
   return content.trim();
@@ -1933,6 +1933,42 @@ function parseToolCall(text: string): { name: string; input: Record<string, any>
   return null;
 }
 
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.8);
+}
+
+function estimateMessagesTokens(messages: Array<{role: string; content: string}>): number {
+  return messages.reduce((acc, m) => acc + estimateTokens(m.content) + 4, 0);
+}
+
+const CONTEXT_TOKEN_LIMIT = 8000;
+const SUMMARY_MAX_TOKENS = 500;
+
+async function summariseOlderMessages(messages: Array<{role: string; content: string}>): Promise<Array<{role: string; content: string}>> {
+  if (messages.length <= 3) return messages;
+  const systemMsg = messages[0];
+  const recentMessages = messages.slice(-3);
+  const olderMessages = messages.slice(1, -3);
+  if (olderMessages.length === 0) return messages;
+  const olderText = olderMessages.map(m => `${m.role}: ${m.content.slice(0, 500)}`).join('\n');
+  const summaryPrompt = `Summarise this conversation history in under 200 words. Focus on key facts, tool results, and decisions made. Do not include greetings or filler.\n\n${olderText}`;
+  try {
+    const summaryContent = await callCortexComplete([
+      { role: 'system', content: 'You summarise conversations concisely.' },
+      { role: 'user', content: summaryPrompt },
+    ]);
+    console.log(`[Agent] Context summarised: ${olderMessages.length} messages -> ${estimateTokens(summaryContent)} tokens`);
+    return [
+      systemMsg,
+      { role: 'user', content: `[Previous conversation summary]: ${summaryContent}` },
+      ...recentMessages,
+    ];
+  } catch (e: any) {
+    console.warn(`[Agent] Summarisation failed: ${e.message}`);
+    return messages;
+  }
+}
+
 async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
@@ -1940,38 +1976,51 @@ async function callCortexAgentWithToolLoop(
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
-  const messages: Array<{role: string; content: string}> = [
+  let messages: Array<{role: string; content: string}> = [
     { role: 'system', content: ROUTING_SYSTEM_PROMPT },
     { role: 'user', content: message },
   ];
   const maxIterations = 5;
   const allToolResults: any[] = [];
   let toolsExecuted = false;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let wasSummarised = false;
 
   for (let iter = 0; iter < maxIterations; iter++) {
+    const contextTokens = estimateMessagesTokens(messages);
+    if (contextTokens > CONTEXT_TOKEN_LIMIT && messages.length > 3) {
+      onProgress?.({ step: 'formatting', detail: 'Summarising context...' });
+      messages = await summariseOlderMessages(messages);
+      wasSummarised = true;
+    }
+    totalPromptTokens += estimateMessagesTokens(messages);
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
     if (toolsExecuted && onToken) {
       onProgress?.({ step: 'formatting', detail: 'Generating response...' });
       try {
         const streamedText = await callCortexCompleteStreaming(messages, onToken);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults };
+        totalCompletionTokens += estimateTokens(streamedText);
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
+        totalCompletionTokens += estimateTokens(fallback);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults };
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
       }
     }
 
     const response = await callCortexComplete(messages);
+    totalCompletionTokens += estimateTokens(response);
     console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
     const toolCall = parseToolCall(response);
 
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
       if (onToken) onToken(response);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
@@ -1984,7 +2033,7 @@ async function callCortexAgentWithToolLoop(
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults };
+  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
 }
 
 function sendSseEvent(res: any, event: string, data: any) {
@@ -2014,6 +2063,7 @@ app.post('/api/agent/chat', async (req, res) => {
     if (geometry) response.geometry = geometry;
     if (agentResult?.metadata?.thread_id) response.thread_id = agentResult.metadata.thread_id;
     if (agentResult?.metadata?.message_id) response.message_id = agentResult.metadata.message_id;
+    if (agentResult?._tokenUsage) response.token_usage = agentResult._tokenUsage;
     sendSseEvent(res, 'result', response);
     res.end();
   } catch (err: any) {

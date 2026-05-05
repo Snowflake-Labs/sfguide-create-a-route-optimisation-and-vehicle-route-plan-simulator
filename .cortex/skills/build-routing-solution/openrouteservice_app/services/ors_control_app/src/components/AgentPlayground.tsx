@@ -261,6 +261,7 @@ function stripToolCallJson(text: string): string {
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
 interface SavedPrompt { id: string; label: string; icon: string; prompt: string; }
+interface TokenUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; summarised?: boolean; }
 
 const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
 
@@ -315,6 +316,7 @@ export default function AgentPlayground() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
@@ -346,6 +348,7 @@ export default function AgentPlayground() {
     setMessages([]);
     setInput('');
     setGeoData(EMPTY_GEO);
+    setTokenUsage(null);
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
@@ -409,6 +412,11 @@ export default function AgentPlayground() {
                 } else if (eventType === 'result') {
                   assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
+                  if (parsed.token_usage) setTokenUsage(prev => {
+                    const incoming = parsed.token_usage;
+                    if (!prev) return incoming;
+                    return { prompt_tokens: prev.prompt_tokens + incoming.prompt_tokens, completion_tokens: prev.completion_tokens + incoming.completion_tokens, total_tokens: prev.total_tokens + incoming.total_tokens, summarised: incoming.summarised || prev.summarised };
+                  });
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
@@ -604,11 +612,25 @@ export default function AgentPlayground() {
     <div className="panel">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <h2 style={{ fontSize: 20, margin: 0 }}>Agent Playground</h2>
-        {messages.length > 0 && (
-          <button onClick={clearConversation} disabled={streaming} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-            New conversation
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {tokenUsage && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontWeight: 500 }}>{tokenUsage.total_tokens.toLocaleString()}</span>
+                <span>tokens</span>
+              </div>
+              <div style={{ width: 60, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <div style={{ width: `${Math.min(100, (tokenUsage.total_tokens / 8000) * 100)}%`, height: '100%', borderRadius: 2, background: tokenUsage.total_tokens > 6000 ? '#e74c3c' : tokenUsage.total_tokens > 4000 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
+              </div>
+              {tokenUsage.summarised && <span style={{ fontSize: 10, background: 'rgba(41,181,232,0.15)', color: 'var(--accent)', padding: '1px 5px', borderRadius: 4 }}>summarised</span>}
+            </div>
+          )}
+          {messages.length > 0 && (
+            <button onClick={clearConversation} disabled={streaming} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              New conversation
+            </button>
+          )}
+        </div>
       </div>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
 
