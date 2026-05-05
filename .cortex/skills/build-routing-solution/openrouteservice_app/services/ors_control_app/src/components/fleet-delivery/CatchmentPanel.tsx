@@ -126,8 +126,8 @@ export default function CatchmentPanel() {
           <label>Travel Mode</label>
           <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
             <option value="cycling-electric">E-Bike</option>
-            <option value="cycling-regular">Bicycle</option>
-            <option value="foot-walking">Walking</option>
+            <option value="driving-car">Car</option>
+            <option value="driving-hgv">HGV / Truck</option>
           </select>
         </div>
         <div style={{ minWidth: 100 }}>
