@@ -261,7 +261,7 @@ function stripToolCallJson(text: string): string {
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; toolResults?: any[]; streaming?: boolean; }
 interface SavedPrompt { id: string; label: string; icon: string; prompt: string; }
-interface TokenUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; summarised?: boolean; }
+interface TokenUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; summarised?: boolean; summary_text?: string; messages_summarised?: number; messages_raw?: number; }
 
 const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
 
@@ -274,39 +274,39 @@ function persistSavedPrompts(prompts: SavedPrompt[]) {
 
 const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] = [
   {
-    label: 'Restaurants nearby',
-    icon: '🍽️',
-    prompt: 'Show me restaurants within a 10 minute drive from Union Square, San Francisco',
-  },
-  {
-    label: 'Cycling directions',
-    icon: '🚲',
-    prompt: 'Get cycling directions from the Ferry Building to Golden Gate Park, San Francisco',
-  },
-  {
-    label: 'Cafes by bike',
-    icon: '☕',
-    prompt: 'What cafes can I reach within a 15 minute cycle from Civic Center, San Francisco',
-  },
-  {
-    label: 'Hotels near airport',
-    icon: '🏨',
-    prompt: 'Show me hotels within a 20 minute drive from San Francisco International Airport',
-  },
-  {
-    label: 'Pharma fleet demo',
-    icon: '💊',
-    prompt: 'Run the SF pharmaceutical fleet delivery demo',
-  },
-  {
-    label: 'Pharmacy catchment',
+    label: '1. Catchment analysis',
     icon: '🏥',
     prompt: 'Show me the population health profile within a 10 minute drive of Walgreens on Castro Street, San Francisco',
   },
   {
-    label: 'Multi-stop drive',
+    label: '2. Drug demand',
+    icon: '💊',
+    prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.',
+  },
+  {
+    label: '3. Patient directions',
+    icon: '🗺️',
+    prompt: 'Give me driving directions from 742 Valencia Street, San Francisco to Walgreens on Castro Street',
+  },
+  {
+    label: '4. Cycling access',
+    icon: '🚲',
+    prompt: 'Show me a 5 minute cycling isochrone from Walgreens Castro for patients without cars',
+  },
+  {
+    label: '5. Supply chain plan',
+    icon: '🚚',
+    prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles',
+  },
+  {
+    label: '6. Nearby cafes',
+    icon: '☕',
+    prompt: 'Show me cafes within a 10 minute drive from Union Square, San Francisco',
+  },
+  {
+    label: '7. Multi-stop route',
     icon: '📍',
-    prompt: 'Get driving directions from Fisherman\'s Wharf to Alcatraz Ferry, then to Pier 39, then to the Embarcadero, San Francisco',
+    prompt: 'Get driving directions from Fisherman\'s Wharf to Pier 39, then to the Embarcadero, then to AT&T Park, San Francisco',
   },
 ];
 
@@ -615,14 +615,19 @@ export default function AgentPlayground() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {tokenUsage && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`Prompt: ${tokenUsage.prompt_tokens} | Completion: ${tokenUsage.completion_tokens}${tokenUsage.summarised ? ` | ${tokenUsage.messages_summarised} msgs summarised, ${tokenUsage.messages_raw} raw` : ''}`}>
                 <span style={{ fontWeight: 500 }}>{tokenUsage.total_tokens.toLocaleString()}</span>
                 <span>tokens</span>
               </div>
               <div style={{ width: 60, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
                 <div style={{ width: `${Math.min(100, (tokenUsage.total_tokens / 8000) * 100)}%`, height: '100%', borderRadius: 2, background: tokenUsage.total_tokens > 6000 ? '#e74c3c' : tokenUsage.total_tokens > 4000 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
               </div>
-              {tokenUsage.summarised && <span style={{ fontSize: 10, background: 'rgba(41,181,232,0.15)', color: 'var(--accent)', padding: '1px 5px', borderRadius: 4 }}>summarised</span>}
+              {tokenUsage.summarised && (
+                <span
+                  style={{ fontSize: 10, background: 'rgba(41,181,232,0.15)', color: 'var(--accent)', padding: '1px 5px', borderRadius: 4, cursor: 'help' }}
+                  title={tokenUsage.summary_text ? `Summary: ${tokenUsage.summary_text}` : 'Context was summarised to fit token limit'}
+                >{tokenUsage.messages_summarised} msgs compressed</span>
+              )}
             </div>
           )}
           {messages.length > 0 && (

@@ -1617,6 +1617,10 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
     params: ['pharmacy_description', 'range_minutes', 'profile'],
   },
+  tool_supply_chain: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
+    params: ['profile'],
+  },
   tool_poi: {
     identifier: '__local__',
     params: ['location_description', 'category', 'range_minutes', 'profile'],
@@ -1742,6 +1746,9 @@ Available tools:
    Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 
 Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)
+
+7. tool_supply_chain - Run a full pharmaceutical supply chain optimisation. Loads 6 SF pharmacies, computes drug demand from population health data (diabetes, hypertension, cardiovascular, respiratory, mobility), generates delivery jobs with VROOM skills, and optimises routes for 3 specialist vehicles (cold chain, controlled, standard). Use when asked to plan supply chain, generate delivery plan, or optimise pharmaceutical logistics.
+   Input: {"profile": "string (default: driving-car)"}
 
 CRITICAL RULES:
 1. ALWAYS call the appropriate tool for ANY routing question. NEVER answer from general knowledge.
@@ -1997,14 +2004,21 @@ async function callCortexAgentWithToolLoop(
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let wasSummarised = false;
+  let summaryText = '';
+  let messagesSummarisedCount = 0;
+  let messagesRawCount = 0;
 
   for (let iter = 0; iter < maxIterations; iter++) {
     const contextTokens = estimateMessagesTokens(messages);
     if (contextTokens > CONTEXT_TOKEN_LIMIT && messages.length > 3) {
       onProgress?.({ step: 'formatting', detail: 'Summarising context...' });
+      messagesSummarisedCount = messages.length - 4;
       messages = await summariseOlderMessages(messages);
       wasSummarised = true;
+      const summaryMsg = messages.find(m => m.content.startsWith('[Previous conversation summary]'));
+      if (summaryMsg) summaryText = summaryMsg.content.replace('[Previous conversation summary]: ', '');
     }
+    messagesRawCount = messages.length - 1;
     totalPromptTokens += estimateMessagesTokens(messages);
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
@@ -2013,13 +2027,13 @@ async function callCortexAgentWithToolLoop(
       try {
         const streamedText = await callCortexCompleteStreaming(messages, onToken);
         totalCompletionTokens += estimateTokens(streamedText);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
         totalCompletionTokens += estimateTokens(fallback);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
       }
     }
 
@@ -2031,7 +2045,7 @@ async function callCortexAgentWithToolLoop(
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
       if (onToken) onToken(response);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
@@ -2044,7 +2058,7 @@ async function callCortexAgentWithToolLoop(
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised } };
+  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
 }
 
 function sendSseEvent(res: any, event: string, data: any) {
