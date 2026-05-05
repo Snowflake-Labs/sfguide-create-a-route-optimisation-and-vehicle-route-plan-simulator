@@ -1287,14 +1287,36 @@ app.get('/api/matrix/status', async (req, res) => {
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
                 HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
                 PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
-                CREATED_AT, STARTED_AT, COMPLETED_AT
+                TO_VARCHAR(CREATED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED_AT,
+                TO_VARCHAR(STARTED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS STARTED_AT,
+                TO_VARCHAR(COMPLETED_AT::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS COMPLETED_AT
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
-      const toIso = (v: any) => {
+      const toIso = (v: any): any => {
         if (v == null) return v;
-        if (v instanceof Date) return v.toISOString();
-        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') return (v as any).toISOString();
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
+          try { return (v as any).toISOString(); } catch { return null; }
+        }
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return new Date(v > 1e12 ? v : v * 1000).toISOString();
+        }
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (/^-?\d+(\.\d+)?$/.test(s)) {
+            const n = Number(s);
+            if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
+          }
+          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
+          if (m) {
+            const tz = m[3] || 'Z';
+            const d = new Date(`${m[1]}T${m[2]}${tz}`);
+            return isNaN(d.getTime()) ? s : d.toISOString();
+          }
+          const d = new Date(s);
+          return isNaN(d.getTime()) ? s : d.toISOString();
+        }
         return v;
       };
       jobs = (rows || []).map((r: any) => ({
