@@ -1291,6 +1291,12 @@ app.get('/api/matrix/status', async (req, res) => {
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
+      const toIso = (v: any) => {
+        if (v == null) return v;
+        if (v instanceof Date) return v.toISOString();
+        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') return (v as any).toISOString();
+        return v;
+      };
       jobs = (rows || []).map((r: any) => ({
         job_id: r.JOB_ID,
         region: r.REGION,
@@ -1305,10 +1311,31 @@ app.get('/api/matrix/status', async (req, res) => {
         pct_complete: Number(r.PCT_COMPLETE) || 0,
         error_msg: r.ERROR_MSG,
         statement_handle: r.STATEMENT_HANDLE,
-        created_at: r.CREATED_AT,
-        started_at: r.STARTED_AT,
-        completed_at: r.COMPLETED_AT,
+        created_at: toIso(r.CREATED_AT),
+        started_at: toIso(r.STARTED_AT),
+        completed_at: toIso(r.COMPLETED_AT),
       }));
+
+      // Live progress: BUILD_MATRIX_JOB_WRAPPER only updates RAW_ROWS / PCT_COMPLETE
+      // at the very end of the procedure, leaving the UI at 0% for the entire
+      // BUILDING stage. Compute live counts from the MATRIX_RAW table directly.
+      await Promise.all(
+        jobs
+          .filter((j) => j.stage === 'BUILDING' && j.work_queue_rows > 0)
+          .map(async (j) => {
+            const safeProfile = String(j.profile || '').toUpperCase().replace(/-/g, '_');
+            const safeRegion = String(j.region || '').toUpperCase();
+            const rawTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile}_MATRIX_RAW_${j.resolution}`;
+            try {
+              const liveRows = await runSql(`SELECT COUNT(*) AS C FROM ${rawTable}`);
+              const c = Number(liveRows?.[0]?.C) || 0;
+              j.raw_rows = c;
+              j.pct_complete = Math.min(100, Math.round((c * 100) / j.work_queue_rows));
+            } catch {
+              // raw table may not exist yet; leave fallback values
+            }
+          })
+      );
     } catch {}
     res.json({ jobs });
   } catch (err: any) {
