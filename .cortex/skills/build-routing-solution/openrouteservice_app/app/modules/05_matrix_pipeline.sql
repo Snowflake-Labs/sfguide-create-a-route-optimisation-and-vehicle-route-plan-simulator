@@ -186,7 +186,9 @@ BEGIN
         FROM road_segments r, TABLE(FLATTEN(H3_COVERAGE_STRINGS(r.geometry, ' || resolution || '))) c
     )
     SELECT h3_index, H3_CELL_TO_POINT(h3_index) AS center_point
-    FROM road_hexes';
+    FROM road_hexes
+    WHERE ST_Y(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LAT || ' AND ' || P_MAX_LAT || '
+      AND ST_X(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LON || ' AND ' || P_MAX_LON || '';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;

@@ -1173,7 +1173,9 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
                 AND ST_INTERSECTS(geometry, TO_GEOGRAPHY('${polygon}'))
             )
             SELECT COUNT(DISTINCT c.value) AS CNT
-            FROM rs, TABLE(FLATTEN(H3_COVERAGE_STRINGS(rs.geometry, ${resolution}))) c`;
+            FROM rs, TABLE(FLATTEN(H3_COVERAGE_STRINGS(rs.geometry, ${resolution}))) c
+            WHERE ST_Y(H3_CELL_TO_POINT(c.value::VARCHAR)) BETWEEN ${sanitizeFloat(bbox.MIN_LAT)} AND ${sanitizeFloat(bbox.MAX_LAT)}
+              AND ST_X(H3_CELL_TO_POINT(c.value::VARCHAR)) BETWEEN ${sanitizeFloat(bbox.MIN_LON)} AND ${sanitizeFloat(bbox.MAX_LON)}`;
           const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
           const raw = parseInt(rows?.[0]?.CNT || '0');
           if (raw > 0) {
