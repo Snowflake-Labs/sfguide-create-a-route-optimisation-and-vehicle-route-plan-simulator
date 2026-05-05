@@ -2029,7 +2029,7 @@ async function callCortexAgentWithToolLoop(
   if (history && history.length > 0) {
     for (const h of history) {
       if (h.role === 'user' || h.role === 'assistant') {
-        messages.push({ role: h.role, content: (h.content || '').slice(0, 2000) });
+        messages.push({ role: h.role, content: (h.content || '') });
       }
     }
   }
@@ -2064,7 +2064,7 @@ async function callCortexAgentWithToolLoop(
     }
     messagesRawCount = messages.length - 1;
     const promptTokens = estimateMessagesTokens(messages);
-    totalPromptTokens += promptTokens;
+    totalPromptTokens = promptTokens;
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
     if (toolsExecuted && onToken) {

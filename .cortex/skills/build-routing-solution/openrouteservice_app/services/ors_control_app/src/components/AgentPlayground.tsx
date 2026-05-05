@@ -290,10 +290,10 @@ const DEMO_SCENARIOS: DemoScenario[] = [
     icon: '💊',
     description: 'Pharmaceutical delivery planning — catchment analysis, drug demand, route optimisation',
     prompts: [
-      { label: '1. Catchment analysis', icon: '🏥', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens on Castro Street, San Francisco' },
+      { label: '1. Catchment analysis', icon: '🏥', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco' },
       { label: '2. Drug demand', icon: '💊', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
       { label: '3. Patient directions', icon: '🗺️', prompt: 'Give me driving directions from 742 Valencia Street, San Francisco to Walgreens on Castro Street' },
-      { label: '4. Cycling access', icon: '🚲', prompt: 'Show me a 5 minute cycling isochrone from Walgreens Castro for patients without cars' },
+      { label: '4. Cycling access', icon: '🚲', prompt: 'Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco for patients without cars' },
       { label: '5. Supply chain plan', icon: '🚚', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
     ],
   },
@@ -432,11 +432,7 @@ export default function AgentPlayground() {
                   assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
                   if (parsed.token_usage) {
-                    setTokenUsage(prev => {
-                      const incoming = parsed.token_usage;
-                      if (!prev) return incoming;
-                      return { prompt_tokens: prev.prompt_tokens + incoming.prompt_tokens, completion_tokens: prev.completion_tokens + incoming.completion_tokens, total_tokens: prev.total_tokens + incoming.total_tokens, summarised: incoming.summarised || prev.summarised, summary_text: incoming.summary_text || prev.summary_text, messages_summarised: incoming.messages_summarised, messages_raw: incoming.messages_raw };
-                    });
+                    setTokenUsage(parsed.token_usage);
                     if (parsed.token_usage.workflow_steps) setWorkflowSteps(prev => [...prev, ...parsed.token_usage.workflow_steps]);
                   }
                   setMessages(prev => {
