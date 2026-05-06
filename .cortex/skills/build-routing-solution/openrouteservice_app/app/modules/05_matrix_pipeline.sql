@@ -21,6 +21,15 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
 
+ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    ADD COLUMN IF NOT EXISTS ROAD_FILTER BOOLEAN DEFAULT FALSE;
+ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    ADD COLUMN IF NOT EXISTS HEXAGONS_BEFORE_FILTER NUMBER DEFAULT 0;
+ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    ADD COLUMN IF NOT EXISTS HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0;
+ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+    ADD COLUMN IF NOT EXISTS FILTER_DURATION_SECONDS FLOAT DEFAULT 0;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ENSURE_MATRIX_TABLES(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -114,6 +123,80 @@ BEGIN
     END FOR;
 
     RETURN P_RES || ' hexagons built: ' || row_count || ' hexagons';
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS_ROAD_AWARE(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix","feature":"road-aware"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    resolution INTEGER;
+    hex_table VARCHAR;
+    safe_profile VARCHAR;
+    row_count INTEGER;
+    rs RESULTSET;
+BEGIN
+    safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
+    hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
+
+    IF (P_RES = 'RES5') THEN
+        resolution := 5;
+    ELSEIF (P_RES = 'RES6') THEN
+        resolution := 6;
+    ELSEIF (P_RES = 'RES7') THEN
+        resolution := 7;
+    ELSEIF (P_RES = 'RES8') THEN
+        resolution := 8;
+    ELSEIF (P_RES = 'RES9') THEN
+        resolution := 9;
+    ELSE
+        resolution := 10;
+    END IF;
+
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
+
+    -- H3_COVERAGE_STRINGS is a table function; invoke via TABLE(...) with lateral join.
+    -- Returns every hexagon intersecting the geometry (complete coverage with no edge gaps).
+    EXECUTE IMMEDIATE '
+    INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
+    WITH bbox_poly AS (
+        SELECT TO_GEOGRAPHY(''POLYGON((' ||
+            P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
+            P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
+            P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
+            P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
+            P_MIN_LON || ' ' || P_MIN_LAT || '))'') AS poly
+    ),
+    road_segments AS (
+        SELECT s.geometry
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s, bbox_poly b
+        WHERE s.subtype = ''road''
+          AND s.bbox:xmin::FLOAT <= ' || P_MAX_LON || '
+          AND s.bbox:xmax::FLOAT >= ' || P_MIN_LON || '
+          AND s.bbox:ymin::FLOAT <= ' || P_MAX_LAT || '
+          AND s.bbox:ymax::FLOAT >= ' || P_MIN_LAT || '
+          AND ST_INTERSECTS(s.geometry, b.poly)
+    ),
+    road_hexes AS (
+        SELECT DISTINCT c.value::VARCHAR AS h3_index
+        FROM road_segments r, TABLE(FLATTEN(H3_COVERAGE_STRINGS(r.geometry, ' || resolution || '))) c
+    )
+    SELECT h3_index, H3_CELL_TO_POINT(h3_index) AS center_point
+    FROM road_hexes
+    WHERE ST_Y(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LAT || ' AND ' || P_MAX_LAT || '
+      AND ST_X(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LON || ' AND ' || P_MAX_LON || '';
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
+    LET c CURSOR FOR rs;
+    FOR row_val IN c DO
+        row_count := row_val.CNT;
+    END FOR;
+
+    RETURN P_RES || ' road-aware hexagons built: ' || row_count || ' hexagons';
 END;
 $$;
 
@@ -654,7 +737,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_JOB_WRAPPER(P_JOB_ID VARCHAR, P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_MATRIX_JOB_WRAPPER(P_JOB_ID VARCHAR, P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_MATRIX_FN VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR, P_ROAD_FILTER BOOLEAN DEFAULT FALSE)
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}'
@@ -676,6 +759,10 @@ DECLARE
     max_wait_attempts INTEGER DEFAULT 20;
     profile_ready BOOLEAN DEFAULT FALSE;
     status_json VARIANT;
+    filter_start TIMESTAMP_NTZ;
+    used_road_filter BOOLEAN DEFAULT FALSE;
+    hex_before INTEGER DEFAULT 0;
+    resolution_int INTEGER;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
@@ -748,12 +835,51 @@ BEGIN
 
     EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET MESSAGE=''ORS profile ' || P_PROFILE || ' ready after ' || wait_secs || 's'' WHERE JOB_ID=''' || P_JOB_ID || '''';
 
-    CALL OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
+    filter_start := CURRENT_TIMESTAMP();
+    used_road_filter := FALSE;
+    hex_before := 0;
+    resolution_int := CASE P_RES
+        WHEN 'RES5' THEN 5 WHEN 'RES6' THEN 6 WHEN 'RES7' THEN 7
+        WHEN 'RES8' THEN 8 WHEN 'RES9' THEN 9 ELSE 10 END;
+
+    IF (P_ROAD_FILTER) THEN
+        BEGIN
+            LET est_rs RESULTSET := (EXECUTE IMMEDIATE
+                'SELECT ARRAY_SIZE(H3_POLYGON_TO_CELLS_STRINGS(
+                    TO_GEOGRAPHY(''POLYGON((' ||
+                        P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
+                        P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
+                        P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
+                        P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
+                        P_MIN_LON || ' ' || P_MIN_LAT || '))''),
+                    ' || resolution_int || ')) AS CNT');
+            LET ec CURSOR FOR est_rs;
+            FOR r IN ec DO hex_before := r.CNT; END FOR;
+        EXCEPTION WHEN OTHER THEN hex_before := 0;
+        END;
+
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS_ROAD_AWARE(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
+            used_road_filter := TRUE;
+        EXCEPTION WHEN OTHER THEN
+            LET err_detail VARCHAR := SQLERRM;
+            UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            SET MESSAGE = 'Road-aware filter unavailable: ' || :err_detail || ' -- falling back to full bbox'
+            WHERE JOB_ID = :P_JOB_ID;
+            CALL OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
+        END;
+    ELSE
+        CALL OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(:P_RES, :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON, :P_REGION, :P_PROFILE);
+    END IF;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_LIST_' || P_RES);
     LET c1 CURSOR FOR rs; FOR r IN c1 DO hex_count := r.CNT; END FOR;
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    SET STAGE='WORK_QUEUE', HEXAGONS=:hex_count
+    SET STAGE='WORK_QUEUE', HEXAGONS=:hex_count,
+        ROAD_FILTER = :used_road_filter,
+        HEXAGONS_BEFORE_FILTER = :hex_before,
+        HEXAGONS_AFTER_FILTER = :hex_count,
+        FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, CURRENT_TIMESTAMP())
     WHERE JOB_ID = :P_JOB_ID;
 
     CALL OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE);
@@ -871,6 +997,14 @@ BEGIN
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
     LET c3 CURSOR FOR rs; FOR r IN c3 DO raw_count := r.CNT; END FOR;
+
+    -- Surface partial completion: if far fewer raw rows than queue rows, log warning
+    IF (raw_count < queue_count * 0.95 AND raw_count > 0) THEN
+        LET missing_pct FLOAT := ROUND((1.0 - raw_count::FLOAT / queue_count) * 100, 1);
+        UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        SET MESSAGE = 'WARNING: only ' || :raw_count || ' of ' || :queue_count || ' chunks completed (' || :missing_pct || '% missing). ORS may have returned null durations for some origin/dest combos. Consider scaling ORS_SERVICE or reducing chunk size.'
+        WHERE JOB_ID = :P_JOB_ID;
+    END IF;
 
     rs := (EXECUTE IMMEDIATE '
         SELECT

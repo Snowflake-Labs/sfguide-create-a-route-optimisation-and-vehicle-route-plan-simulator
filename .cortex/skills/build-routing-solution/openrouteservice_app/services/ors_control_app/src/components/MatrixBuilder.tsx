@@ -62,6 +62,31 @@ function getStageIndex(stage: string): number {
   return idx >= 0 ? idx : -1;
 }
 
+function RoadFilterBadge({ on }: { on: boolean | undefined }) {
+  if (!on) return null;
+  return (
+    <span
+      title="Built with Road-Aware Filtering: only hexagons intersecting road segments were tessellated"
+      style={{
+        display: 'inline-block',
+        marginLeft: 6,
+        padding: '1px 6px',
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 0.3,
+        textTransform: 'uppercase',
+        color: '#3fb950',
+        background: 'rgba(63, 185, 80, 0.12)',
+        border: '1px solid rgba(63, 185, 80, 0.4)',
+        borderRadius: 4,
+        verticalAlign: 'middle',
+      }}
+    >
+      road-aware
+    </span>
+  );
+}
+
 export default function MatrixBuilder() {
   const [regions, setRegions] = useState<RegionInfo[]>([]);
   const [loadingRegions, setLoadingRegions] = useState(true);
@@ -74,6 +99,11 @@ export default function MatrixBuilder() {
   const [buildError, setBuildError] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
+  const [roadFilterEnabled, setRoadFilterEnabled] = useState(true);
+  const [roadFilterAvailable, setRoadFilterAvailable] = useState<boolean | null>(null);
+  const [roadFilterReason, setRoadFilterReason] = useState<string>('');
+  const [serverHexEstimate, setServerHexEstimate] = useState<Record<number, number>>({});
+  const [estimateLoading, setEstimateLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchRegions = useCallback(async () => {
@@ -112,8 +142,51 @@ export default function MatrixBuilder() {
     fetchRegions();
     fetchJobs();
     fetchInventory();
+    fetch('/api/matrix/road-filter-available')
+      .then((r) => r.json())
+      .then((data) => {
+        setRoadFilterAvailable(!!data.available);
+        if (!data.available) {
+          setRoadFilterReason(data.reason || 'Overture Transportation not accessible');
+          setRoadFilterEnabled(false);
+        }
+      })
+      .catch(() => { setRoadFilterAvailable(false); setRoadFilterEnabled(false); });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchRegions, fetchJobs, fetchInventory]);
+
+  useEffect(() => {
+    if (!roadFilterEnabled || !roadFilterAvailable || !selectedRegion || selectedRes.size === 0) {
+      setServerHexEstimate({});
+      return;
+    }
+    let cancelled = false;
+    setEstimateLoading(true);
+    fetch('/api/matrix/cost-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        region: selectedRegion,
+        profile: selectedProfile,
+        resolutions: Array.from(selectedRes).sort(),
+        road_filter: true,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const map: Record<number, number> = {};
+        (data.resolutions || []).forEach((e: any) => {
+          if (e.road_filter_applied) {
+            map[parseInt(e.resolution.replace('RES', ''))] = e.hex_count;
+          }
+        });
+        setServerHexEstimate(map);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setEstimateLoading(false); });
+    return () => { cancelled = true; };
+  }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedProfile, selectedRes]);
 
   useEffect(() => {
     const hasActive = jobs.some((j) => j.status === 'RUNNING' || j.status === 'PENDING');
@@ -134,10 +207,11 @@ export default function MatrixBuilder() {
   const hexEstimates = React.useMemo(() => {
     if (!region) return [];
     return ALL_RESOLUTIONS.map((res) => {
-      const hexagons = estimateHexCount(region.bounds, res);
-      return { res, hexagons, pairs: estimatePairs(hexagons) };
+      const bboxHexagons = estimateHexCount(region.bounds, res);
+      const hexagons = serverHexEstimate[res] ?? bboxHexagons;
+      return { res, hexagons, bboxHexagons, pairs: estimatePairs(hexagons), filtered: serverHexEstimate[res] !== undefined };
     });
-  }, [region]);
+  }, [region, serverHexEstimate]);
 
   const estimate = React.useMemo(() => {
     const resolutions = hexEstimates.filter((h) => selectedRes.has(h.res)).map((h) => {
@@ -162,7 +236,12 @@ export default function MatrixBuilder() {
       const resp = await fetch('/api/matrix/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: selectedRegion, resolutions: Array.from(selectedRes).sort(), profile: selectedProfile }),
+        body: JSON.stringify({
+          region: selectedRegion,
+          resolutions: Array.from(selectedRes).sort(),
+          profile: selectedProfile,
+          road_filter: roadFilterEnabled && roadFilterAvailable === true,
+        }),
       });
       const data = await resp.json();
       if (data.error) setBuildError(data.error);
@@ -171,7 +250,7 @@ export default function MatrixBuilder() {
       setBuildError(e.message || 'Failed to launch build');
     }
     setIsLaunching(false);
-  }, [selectedRegion, selectedRes, selectedProfile, fetchJobs]);
+  }, [selectedRegion, selectedRes, selectedProfile, roadFilterEnabled, roadFilterAvailable, fetchJobs]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     try {
@@ -230,7 +309,7 @@ export default function MatrixBuilder() {
                   <tr key={key}>
                     <td>{item.region}</td>
                     <td>{item.profile}</td>
-                    <td>{item.resolution} — {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}</td>
+                    <td>{item.resolution} — {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}<RoadFilterBadge on={item.road_filter} /></td>
                     <td>{formatNumber(item.row_count)}</td>
                     <td>{formatBytes(item.bytes)}</td>
                     <td>{item.execution_time_secs > 0 ? formatDuration(item.execution_time_secs / 60) : '—'}</td>
@@ -266,7 +345,7 @@ export default function MatrixBuilder() {
             return (
               <div key={job.job_id} className="progress-card">
                 <div className="progress-header">
-                  <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</span>
+                  <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></span>
                   <span className={`badge ${isQueued ? '' : 'warn'}`}>{isQueued ? 'Queued' : job.stage}</span>
                 </div>
                 {isQueued ? (
@@ -308,7 +387,7 @@ export default function MatrixBuilder() {
               <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div>
-                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</strong>
+                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></strong>
                     <span className="badge error" style={{ marginLeft: 8 }}>FAILED</span>
                     {job.stage && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>at stage: {job.stage}</span>}
                     {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{timeAgo(job.completed_at)}</span>}
@@ -361,14 +440,47 @@ export default function MatrixBuilder() {
             ))}
           </div>
 
+          <h3>Road-Aware Filtering</h3>
+          <label
+            className={`res-card ${roadFilterEnabled && roadFilterAvailable ? 'active' : ''}`}
+            style={{ cursor: roadFilterAvailable === false ? 'not-allowed' : 'pointer', opacity: roadFilterAvailable === false ? 0.6 : 1 }}
+            title={roadFilterAvailable === false ? roadFilterReason : 'Skips hexagons with no road coverage. Reduces credits and build time.'}
+          >
+            <input
+              type="checkbox"
+              checked={roadFilterEnabled && roadFilterAvailable === true}
+              disabled={roadFilterAvailable !== true}
+              onChange={(e) => setRoadFilterEnabled(e.target.checked)}
+            />
+            <div>
+              <div className="res-label">
+                Road-Aware Filtering {estimateLoading ? ' (recalculating...)' : ''}
+              </div>
+              <div className="res-detail">
+                {roadFilterAvailable === null && 'Checking Overture Maps Transportation availability...'}
+                {roadFilterAvailable === false && `Unavailable: ${roadFilterReason}`}
+                {roadFilterAvailable === true && roadFilterEnabled && 'Only hexagons intersecting roads will be tessellated (default ON)'}
+                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled — full bbox tessellation (legacy behaviour)'}
+              </div>
+            </div>
+          </label>
+
           <h3>Select Resolutions</h3>
           <div className="res-grid">
             {hexEstimates.map((h) => (
               <label key={h.res} className={`res-card ${selectedRes.has(h.res) ? 'active' : ''}`}>
                 <input type="checkbox" checked={selectedRes.has(h.res)} onChange={() => toggleRes(h.res)} />
                 <div>
-                  <div className="res-label">Res {h.res} — {RES_LABELS[h.res]}</div>
-                  <div className="res-detail">~{formatNumber(h.hexagons)} hexagons · {RES_CUTOFFS[h.res]}mi cutoff · ~{formatNumber(h.pairs)} pairs</div>
+                  <div className="res-label">Res {h.res} — {RES_LABELS[h.res]}<RoadFilterBadge on={roadFilterEnabled && roadFilterAvailable === true} /></div>
+                  <div className="res-detail">
+                    ~{formatNumber(h.hexagons)} hexagons
+                    {h.filtered && h.bboxHexagons > 0 && (
+                      <span style={{ color: 'var(--accent, #3fb950)', marginLeft: 6 }}>
+                        (-{Math.round((1 - h.hexagons / h.bboxHexagons) * 100)}% vs bbox)
+                      </span>
+                    )}
+                    {' '}· {RES_CUTOFFS[h.res]}mi cutoff · ~{formatNumber(h.pairs)} pairs
+                  </div>
                 </div>
               </label>
             ))}

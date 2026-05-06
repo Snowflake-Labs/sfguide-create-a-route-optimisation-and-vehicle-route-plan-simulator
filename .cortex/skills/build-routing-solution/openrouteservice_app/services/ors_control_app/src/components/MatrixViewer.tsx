@@ -7,6 +7,31 @@ import { RES_LABELS } from '../types';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
+function RoadFilterBadge({ on }: { on: boolean | undefined }) {
+  if (!on) return null;
+  return (
+    <span
+      title="Built with Road-Aware Filtering: only hexagons intersecting road segments were tessellated"
+      style={{
+        display: 'inline-block',
+        marginLeft: 6,
+        padding: '1px 6px',
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: 0.3,
+        textTransform: 'uppercase',
+        color: '#3fb950',
+        background: 'rgba(63, 185, 80, 0.12)',
+        border: '1px solid rgba(63, 185, 80, 0.4)',
+        borderRadius: 4,
+        verticalAlign: 'middle',
+      }}
+    >
+      road-aware
+    </span>
+  );
+}
+
 function cartoBasemap() {
   return new TileLayer({
     id: 'carto-basemap',
@@ -345,7 +370,10 @@ export default function MatrixViewer() {
             <div style={{ flex: 1, minWidth: 140 }}>
               <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Resolution</label>
               <select className="select" value={selRes} onChange={e => setSelRes(e.target.value)}>
-                {resolutions.map(r => <option key={r} value={r}>{r} — {RES_LABELS[parseInt(r.replace('RES', ''))] || ''}</option>)}
+                {resolutions.map(r => {
+                  const match = inventory.find(t => t.region === selRegion && t.profile === selProfile && t.resolution === r);
+                  return <option key={r} value={r}>{r} — {RES_LABELS[parseInt(r.replace('RES', ''))] || ''}{match?.road_filter ? ' · road-aware' : ''}</option>;
+                })}
               </select>
             </div>
           </div>
@@ -353,6 +381,7 @@ export default function MatrixViewer() {
             <span style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, display: 'block' }}>
               {formatNumber(matchedTable.row_count)} pairs · {formatBytes(matchedTable.bytes)}
               {allHexes.length > 0 && ` · ${allHexes.length.toLocaleString()} hexagons`}
+              <RoadFilterBadge on={matchedTable.road_filter} />
             </span>
           )}
         </>

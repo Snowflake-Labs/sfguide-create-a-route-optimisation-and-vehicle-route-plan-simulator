@@ -1122,9 +1122,23 @@ async function cancelStatement(handle: string): Promise<boolean> {
   } catch { return false; }
 }
 
+app.get('/api/matrix/road-filter-available', async (_req, res) => {
+  try {
+    await runSql('SELECT 1 FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT LIMIT 1',
+                 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
+    res.json({ available: true });
+  } catch (e: any) {
+    res.json({
+      available: false,
+      reason: 'OVERTURE_MAPS__TRANSPORTATION not accessible. Install from Snowflake Marketplace (CARTO provider) and grant IMPORTED PRIVILEGES.',
+      detail: e.message?.slice(0, 200),
+    });
+  }
+});
+
 app.post('/api/matrix/cost-estimate', async (req, res) => {
   try {
-    const { region, resolutions, profile } = req.body;
+    const { region, resolutions, profile, road_filter } = req.body;
     if (!region || !resolutions) return res.status(400).json({ error: 'region and resolutions required' });
 
     let safeRegion: string;
@@ -1148,9 +1162,40 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
     const warehouseCreditPerHr = 10;
     const flattenCredits = 2;
     const creditPriceDollars = 3;
+    const useRoadFilter = road_filter === true;
 
-    const estimates = (resolutions as number[]).filter((r) => r >= 5 && r <= 10).map((resolution) => {
-      const hexCount = Math.ceil(areaSqKm / (hexAreaKm2[resolution] || 1));
+    const polygon = `POLYGON((${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)}))`;
+
+    const estimates = await Promise.all((resolutions as number[]).filter((r) => r >= 5 && r <= 10).map(async (resolution) => {
+      let hexCount = Math.ceil(areaSqKm / (hexAreaKm2[resolution] || 1));
+      const hexCountBbox = hexCount;
+      let filteredApplied = false;
+
+      if (useRoadFilter) {
+        try {
+          const sampleClause = resolution >= 9 ? 'SAMPLE (20)' : '';
+          const scaleFactor = resolution >= 9 ? 5 : 1;
+          const sql = `
+            WITH rs AS (
+              SELECT geometry FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT ${sampleClause}
+              WHERE subtype = 'road'
+                AND bbox:xmin::FLOAT <= ${sanitizeFloat(bbox.MAX_LON)} AND bbox:xmax::FLOAT >= ${sanitizeFloat(bbox.MIN_LON)}
+                AND bbox:ymin::FLOAT <= ${sanitizeFloat(bbox.MAX_LAT)} AND bbox:ymax::FLOAT >= ${sanitizeFloat(bbox.MIN_LAT)}
+                AND ST_INTERSECTS(geometry, TO_GEOGRAPHY('${polygon}'))
+            )
+            SELECT COUNT(DISTINCT c.value) AS CNT
+            FROM rs, TABLE(FLATTEN(H3_COVERAGE_STRINGS(rs.geometry, ${resolution}))) c
+            WHERE ST_Y(H3_CELL_TO_POINT(c.value::VARCHAR)) BETWEEN ${sanitizeFloat(bbox.MIN_LAT)} AND ${sanitizeFloat(bbox.MAX_LAT)}
+              AND ST_X(H3_CELL_TO_POINT(c.value::VARCHAR)) BETWEEN ${sanitizeFloat(bbox.MIN_LON)} AND ${sanitizeFloat(bbox.MAX_LON)}`;
+          const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
+          const raw = parseInt(rows?.[0]?.CNT || '0');
+          if (raw > 0) {
+            hexCount = raw * scaleFactor;
+            filteredApplied = true;
+          }
+        } catch {}
+      }
+
       const totalPairs = hexCount * (hexCount - 1);
       const buildTimeSecs = totalPairs / pairsPerSecond;
       const buildTimeHrs = buildTimeSecs / 3600;
@@ -1163,6 +1208,8 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
       return {
         resolution: `RES${resolution}`,
         hex_count: hexCount,
+        hex_count_bbox: hexCountBbox,
+        road_filter_applied: filteredApplied,
         total_pairs: totalPairs,
         estimated_build_time_minutes: Math.round(buildTimeSecs / 60 * 10) / 10,
         cost_breakdown: {
@@ -1173,19 +1220,22 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
           estimated_cost_usd: Math.round(estimatedCostDollars * 100) / 100,
         },
       };
-    });
+    }));
 
     const totalCredits = estimates.reduce((sum, e) => sum + e.cost_breakdown.total_credits, 0);
     res.json({
       region: safeRegion,
       profile: profile || 'driving-car',
+      road_filter: useRoadFilter,
       area_sq_km: Math.round(areaSqKm),
       bbox: { min_lat: bbox.MIN_LAT, max_lat: bbox.MAX_LAT, min_lon: bbox.MIN_LON, max_lon: bbox.MAX_LON },
       resolutions: estimates,
       total_estimated_credits: Math.round(totalCredits * 10) / 10,
       total_estimated_cost_usd: Math.round(totalCredits * creditPriceDollars * 100) / 100,
       credit_price_usd: creditPriceDollars,
-      note: 'Estimates based on 30K pairs/sec throughput with 10-node compute pool. Actual costs depend on ORS graph complexity, network conditions, and retry rates.',
+      note: useRoadFilter
+        ? 'Road-aware estimate uses actual Overture road segments. Res 9-10 use 20% sampling scaled 5x.'
+        : 'Estimates based on 30K pairs/sec throughput with 10-node compute pool. Actual costs depend on ORS graph complexity, network conditions, and retry rates.',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1214,9 +1264,10 @@ app.get('/api/matrix/existing', async (req, res) => {
 });
 
 app.post('/api/matrix/build', async (req, res) => {
-  const { region, resolutions, profile: reqProfile } = req.body;
+  const { region, resolutions, profile: reqProfile, road_filter } = req.body;
   if (!region || !resolutions) return res.status(400).json({ error: 'region and resolutions required' });
   const profile = reqProfile || 'driving-car';
+  const roadFilter = road_filter === true;
 
   let safeRegion: string;
   try {
@@ -1258,7 +1309,7 @@ app.post('/api/matrix/build', async (req, res) => {
     (async () => {
       for (const { job_id: jobId, resolution } of jobs) {
         try {
-          const callSql = `CALL ${SF_DATABASE}.CORE.BUILD_MATRIX_JOB_WRAPPER('${escapeString(jobId)}', 'RES${resolution}', ${sanitizeFloat(bbox.MIN_LAT)}, ${sanitizeFloat(bbox.MAX_LAT)}, ${sanitizeFloat(bbox.MIN_LON)}, ${sanitizeFloat(bbox.MAX_LON)}, '${escapeString(matrixFn)}', '${escapeString(regionDb)}', '${safeProfile}')`;
+          const callSql = `CALL ${SF_DATABASE}.CORE.BUILD_MATRIX_JOB_WRAPPER('${escapeString(jobId)}', 'RES${resolution}', ${sanitizeFloat(bbox.MIN_LAT)}, ${sanitizeFloat(bbox.MAX_LAT)}, ${sanitizeFloat(bbox.MIN_LON)}, ${sanitizeFloat(bbox.MAX_LON)}, '${escapeString(matrixFn)}', '${escapeString(regionDb)}', '${safeProfile}', ${roadFilter ? 'TRUE' : 'FALSE'})`;
           const handle = await submitSqlAsync(callSql);
           await runSql(`UPDATE ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET STATEMENT_HANDLE = '${escapeString(handle)}' WHERE JOB_ID = '${escapeString(jobId)}'`);
           let jobStatus = 'RUNNING';
@@ -1367,6 +1418,22 @@ app.get('/api/matrix/status', async (req, res) => {
 
 app.get('/api/matrix/inventory', async (_req, res) => {
   try {
+    let roadFilterMap: Record<string, boolean> = {};
+    try {
+      const rfRows = await runSql(
+        `SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER AS RF
+         FROM (
+           SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER,
+                  ROW_NUMBER() OVER (PARTITION BY REGION, PROFILE, RESOLUTION ORDER BY COMPLETED_AT DESC NULLS LAST) AS RN
+           FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+           WHERE STATUS = 'COMPLETE'
+         ) WHERE RN = 1`
+      );
+      for (const r of rfRows || []) {
+        const key = `${(r.REGION || '').toUpperCase()}_${(r.PROFILE || '').replace(/-/g, '_').toUpperCase()}_${r.RESOLUTION}`;
+        roadFilterMap[key] = r.RF === true || r.RF === 'true';
+      }
+    } catch {}
     let inventory: any[] = [];
     try {
       const rows = await runSql(
@@ -1382,12 +1449,12 @@ app.get('/api/matrix/inventory', async (_req, res) => {
         let region = name, profileName = 'driving-car', resolution = 'RES7';
         if (parts) {
           region = parts[1].replace(/_/g, '').toLowerCase();
-          // Capitalise first letter to match region name format
           region = region.charAt(0).toUpperCase() + region.slice(1);
           profileName = parts[2].toLowerCase().replace(/_/g, '-');
           resolution = parts[3];
         }
-        return { region, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0 };
+        const lookupKey = `${region.toUpperCase()}_${profileName.replace(/-/g, '_').toUpperCase()}_${resolution}`;
+        return { region, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0, road_filter: roadFilterMap[lookupKey] === true };
       }).filter(Boolean);
     } catch {}
     res.json({ inventory });
@@ -1473,15 +1540,33 @@ async function getViewerInventory(): Promise<any[]> {
       AND TABLE_NAME != 'MATRIX_BUILD_JOBS'
     ORDER BY TABLE_NAME
   `);
+  let roadFilterMap: Record<string, boolean> = {};
+  try {
+    const jobRows = await runSql(
+      `SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER AS RF
+       FROM (
+         SELECT REGION, PROFILE, RESOLUTION, ROAD_FILTER,
+                ROW_NUMBER() OVER (PARTITION BY REGION, PROFILE, RESOLUTION ORDER BY COMPLETED_AT DESC NULLS LAST) AS RN
+         FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+         WHERE STATUS = 'COMPLETE'
+       ) WHERE RN = 1`
+    );
+    for (const r of jobRows || []) {
+      const key = `${(r.REGION || '').toUpperCase()}_${(r.PROFILE || '').replace(/-/g, '_').toUpperCase()}_${r.RESOLUTION}`;
+      roadFilterMap[key] = r.RF === true || r.RF === 'true';
+    }
+  } catch {}
   const tables = rows.map((r: any) => {
     const parsed = parseViewerTableName(r.TABLE_NAME);
     if (!parsed) return null;
+    const lookupKey = `${(parsed.region || '').toUpperCase()}_${(parsed.profile || '').replace(/-/g, '_').toUpperCase()}_${parsed.resolution}`;
     return {
       ...parsed,
       row_count: parseInt(r.ROW_COUNT || '0'),
       bytes: parseInt(r.BYTES || '0'),
       table_name: r.TABLE_NAME,
       full_table: `${SF_DATABASE}.TRAVEL_MATRIX.${r.TABLE_NAME}`,
+      road_filter: roadFilterMap[lookupKey] === true,
     };
   }).filter(Boolean);
   viewerInventoryCache = { tables, ts: Date.now() };
@@ -2239,6 +2324,14 @@ app.get('/api/diagnostics/probe', async (_req, res) => {
     results.overtureMaps = { ok: true, ms: Date.now() - t };
   } catch (e: any) {
     results.overtureMaps = { ok: false, ms: Date.now() - t, detail: e.message?.slice(0, 200) };
+  }
+
+  t = Date.now();
+  try {
+    await runSql('SELECT 1 FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT LIMIT 1', 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
+    results.overtureTransportation = { ok: true, ms: Date.now() - t };
+  } catch (e: any) {
+    results.overtureTransportation = { ok: false, ms: Date.now() - t, detail: e.message?.slice(0, 200) };
   }
 
   log('INFO', 'Diagnostics', 'Connectivity probe completed', { detail: results });
