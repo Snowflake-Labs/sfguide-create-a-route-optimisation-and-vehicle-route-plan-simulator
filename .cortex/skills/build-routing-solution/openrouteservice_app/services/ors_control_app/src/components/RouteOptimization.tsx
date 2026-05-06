@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer } from '@deck.gl/layers';
@@ -49,6 +49,20 @@ export default function RouteOptimization() {
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
+  const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) setMapDims({ width: Math.round(width), height: Math.round(height) });
+    });
+    ro.observe(el);
+    if (el.clientWidth > 0 && el.clientHeight > 0) setMapDims({ width: el.clientWidth, height: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     const lng = Number(center.lng);
@@ -269,9 +283,9 @@ export default function RouteOptimization() {
         </div>
       )}
 
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={mapContainerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving VRP...' : 'Loading...'}</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
       </div>
     </div>
   );
