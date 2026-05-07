@@ -140,7 +140,7 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 - Benchmark: Berlin RES8 (2,611 hexagons, ~6.8M pairs, 1-instance city ORS, 2 workers) = **6 minutes**.
 
 ### City ORS AUTO_SUSPEND
-- City services use `AUTO_SUSPEND_SECS=14400` (4 hours). Previous value of 3600s caused frequent mid-build suspensions because SPCS auto-suspend only counts direct API calls to the service, not traffic routed through the gateway.
+- City services use `AUTO_SUSPEND_SECS=600` (10 minutes). Services are set to 0 during active builds (graph building, matrix pipeline) then restored to 600 after completion. Graphs reload from stage in ~9 seconds on resume so 10 min is safe.
 
 ### ALTER SESSION not allowed
 `ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` is **not supported** in EXECUTE AS OWNER procedures. Use retry+backoff logic and service resume instead.
