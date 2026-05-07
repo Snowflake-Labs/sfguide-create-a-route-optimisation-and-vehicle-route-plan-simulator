@@ -63,10 +63,12 @@ function isBBoxValid(bbox: BBox): boolean {
   return true;
 }
 
+const MIN_EDGE_MARGIN = 0.05;
+
 function randomPointInBBox(bbox: BBox, rand: () => number, shrink = 0): [number, number] {
   const latRange = bbox.max_lat - bbox.min_lat;
   const lonRange = bbox.max_lon - bbox.min_lon;
-  const margin = shrink;
+  const margin = Math.max(shrink, MIN_EDGE_MARGIN);
   const lat = bbox.min_lat + latRange * margin + rand() * latRange * (1 - 2 * margin);
   const lon = bbox.min_lon + lonRange * margin + rand() * lonRange * (1 - 2 * margin);
   return [+lon.toFixed(5), +lat.toFixed(5)];
@@ -113,8 +115,10 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
   const dLon = (targetKm * Math.sin(angle)) / degToKmLon(midLat);
   let lat = anchor[1] + dLat;
   let lon = anchor[0] + dLon;
-  lat = Math.max(bbox.min_lat, Math.min(bbox.max_lat, lat));
-  lon = Math.max(bbox.min_lon, Math.min(bbox.max_lon, lon));
+  const latRange = bbox.max_lat - bbox.min_lat;
+  const lonRange = bbox.max_lon - bbox.min_lon;
+  lat = Math.max(bbox.min_lat + latRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lat - latRange * MIN_EDGE_MARGIN, lat));
+  lon = Math.max(bbox.min_lon + lonRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lon - lonRange * MIN_EDGE_MARGIN, lon));
   return [+lon.toFixed(5), +lat.toFixed(5)];
 }
 

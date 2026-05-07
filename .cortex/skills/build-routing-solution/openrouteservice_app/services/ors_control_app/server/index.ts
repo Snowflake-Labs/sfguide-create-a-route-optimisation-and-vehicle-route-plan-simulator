@@ -1437,7 +1437,8 @@ app.get('/api/matrix/inventory', async (_req, res) => {
     let inventory: any[] = [];
     try {
       const rows = await runSql(
-        `SELECT TABLE_NAME, ROW_COUNT, BYTES, CREATED
+        `SELECT TABLE_NAME, ROW_COUNT, BYTES,
+                TO_VARCHAR(CREATED::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED
          FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
          WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
            AND TABLE_NAME LIKE '%_MATRIX_RES%'
@@ -1445,7 +1446,7 @@ app.get('/api/matrix/inventory', async (_req, res) => {
       );
       inventory = (rows || []).map((t: any) => {
         const name = (t.TABLE_NAME || '').toUpperCase();
-        const parts = name.match(/^(.+)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_(RES\d+)$/);
+        const parts = name.match(/^(.+?)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_MATRIX_(RES\d+)$/);
         let region = name, profileName = 'driving-car', resolution = 'RES7';
         if (parts) {
           region = parts[1].replace(/_/g, '').toLowerCase();
