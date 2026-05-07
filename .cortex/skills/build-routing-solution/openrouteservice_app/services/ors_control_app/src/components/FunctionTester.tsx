@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
 import { GeoJsonLayer, ScatterplotLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './function-tester/samplePoints';
 
 interface RegionOption {
   region: string;
@@ -74,17 +75,50 @@ function isProvisionedRegion(r: RegionOption | null): boolean {
   return !!(r && !r.isDefault && r.region !== 'default');
 }
 
-function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = ''): string {
+function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): string {
   const bbox = region?.bbox;
-  const center = bboxCenter(bbox);
-  const start = offsetPoint(center, -0.005, -0.005);
-  const end = offsetPoint(center, 0.005, 0.005);
-  const job1 = offsetPoint(center, -0.003, -0.003);
-  const job2 = offsetPoint(center, 0.004, 0.004);
-  const depot = offsetPoint(center, -0.008, 0.002);
-  const dest2 = offsetPoint(center, 0.008, -0.003);
   const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
+
+  let start: [number, number], end: [number, number], job1: [number, number], job2: [number, number], depot: [number, number], dest2: [number, number];
+  let isoPoint: [number, number];
+
+  if (sampledPoints && sampledPoints.points.length > 0) {
+    const pts = sampledPoints.points;
+    switch (fnName) {
+      case 'DIRECTIONS':
+        start = pts[0];
+        end = pts[1] || pts[0];
+        break;
+      case 'ISOCHRONES':
+        isoPoint = pts[0];
+        break;
+      case 'MATRIX':
+        start = pts[0];
+        end = pts[1] || pts[0];
+        dest2 = pts[2] || pts[0];
+        break;
+      case 'MATRIX_TABULAR':
+        start = pts[0];
+        end = pts[1] || pts[0];
+        dest2 = pts[2] || pts[0];
+        break;
+      case 'OPTIMIZATION':
+        depot = pts[0];
+        job1 = pts[1] || pts[0];
+        job2 = pts[2] || pts[0];
+        break;
+    }
+  } else {
+    const center = bboxCenter(bbox);
+    start = offsetPoint(center, -0.005, -0.005);
+    end = offsetPoint(center, 0.005, 0.005);
+    job1 = offsetPoint(center, -0.003, -0.003);
+    job2 = offsetPoint(center, 0.004, 0.004);
+    depot = offsetPoint(center, -0.008, 0.002);
+    dest2 = offsetPoint(center, 0.008, -0.003);
+    isoPoint = center;
+  }
 
   switch (fnName) {
     case 'LIST_REGIONS':
@@ -94,16 +128,22 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
     case 'CHECK_HEALTH':
       return `SELECT ${p}.CHECK_HEALTH()`;
     case 'DIRECTIONS':
-      return `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ${rg}))`;
+      return `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ${rg}))`;
     case 'ISOCHRONES':
-      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${center[0]}::FLOAT, ${center[1]}::FLOAT, 10, ${rg}))`;
+      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${isoPoint![0]}::FLOAT, ${isoPoint![1]}::FLOAT, 10, ${rg}))`;
     case 'MATRIX':
-      return `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start[0]},${start[1]}],[${end[0]},${end[1]}]]'), ${rg})`;
+      return `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start![0]},${start![1]}],[${end![0]},${end![1]}],[${dest2![0]},${dest2![1]}]]'), ${rg})`;
     case 'MATRIX_TABULAR':
-      return `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start[0]}, ${start[1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end[0]}, ${end[1]}), ARRAY_CONSTRUCT(${dest2[0]}, ${dest2[1]})), ${rg})`;
-    case 'OPTIMIZATION':
-      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'location', ARRAY_CONSTRUCT(${job1[0]}, ${job1[1]})),\n    OBJECT_CONSTRUCT('id', 2, 'location', ARRAY_CONSTRUCT(${job2[0]}, ${job2[1]}))\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}), 'end', ARRAY_CONSTRUCT(${depot[0]}, ${depot[1]}))\n  ),\n  [], ${rg}\n))`;
-
+      return `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ARRAY_CONSTRUCT(${dest2![0]}, ${dest2![1]})), ${rg})`;
+    case 'OPTIMIZATION': {
+      const jobs = sampledPoints && sampledPoints.points.length >= 5
+        ? sampledPoints.points.slice(1)
+        : [job1!, job2!];
+      const jobEntries = jobs.map((j, i) =>
+        `    OBJECT_CONSTRUCT('id', ${i + 1}, 'location', ARRAY_CONSTRUCT(${j[0]}, ${j[1]}))`
+      ).join(',\n');
+      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}))\n  ),\n  [], ${rg}\n))`;
+    }
     default:
       return '';
   }
@@ -429,6 +469,24 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
   );
 }
 
+async function fetchRoadPoints(bbox: BBox): Promise<[number, number][] | null> {
+  try {
+    const params = new URLSearchParams({
+      min_lat: bbox.min_lat.toString(),
+      max_lat: bbox.max_lat.toString(),
+      min_lon: bbox.min_lon.toString(),
+      max_lon: bbox.max_lon.toString(),
+      limit: '50',
+    });
+    const resp = await fetch(`/api/sample-road-points?${params}`);
+    const data = await resp.json();
+    if (data.ok && data.points?.length > 0) return data.points;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export default function FunctionTester() {
   const [regions, setRegions] = useState<RegionOption[]>([]);
   const [selectedRegion, setSelectedRegion] = useState<RegionOption | null>(null);
@@ -444,6 +502,28 @@ export default function FunctionTester() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
+  const [roadPoints, setRoadPoints] = useState<[number, number][] | null>(null);
+  const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
+  const [sampleHint, setSampleHint] = useState<string | null>(null);
+  const userEditedRef = useRef(false);
+
+  const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
+    if (!COORD_FUNCTIONS.includes(fnName)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+    const bbox = region?.bbox;
+    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+    const sampled = samplePoints({ fnName, bbox, profile, roadPoints: roads || undefined });
+    setSampleHint(sampled?.hint || null);
+    setSqlInput(generateSql(fnName, region, profile, db, sampled));
+    userEditedRef.current = false;
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -454,6 +534,17 @@ export default function FunctionTester() {
         db = cfg.database || '';
         setSfDatabase(db);
       } catch {}
+
+      let probeOvertureOk = false;
+      try {
+        const probeResp = await fetch('/api/diagnostics/probe');
+        const probeData = await probeResp.json();
+        probeOvertureOk = probeData.overtureTransportation?.ok === true;
+        setOvertureAvailable(probeOvertureOk);
+      } catch {
+        setOvertureAvailable(false);
+      }
+
       try {
         const r = await fetch('/api/regions/provisioned');
         const data = await r.json();
@@ -463,6 +554,11 @@ export default function FunctionTester() {
         const def = regionList.find((c) => c.isDefault) || regionList[0];
         if (def) {
           setSelectedRegion(def);
+          let roads: [number, number][] | null = null;
+          if (probeOvertureOk && def.bbox) {
+            roads = await fetchRoadPoints(def.bbox);
+            setRoadPoints(roads);
+          }
           setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
         }
       } catch (err: any) {
@@ -493,7 +589,7 @@ export default function FunctionTester() {
             setAvailableProfiles(names);
             if (!names.includes(selectedProfile)) {
               setSelectedProfile(names[0]);
-              setSqlInput(generateSql(selectedFn, region, names[0], sfDatabase));
+              regeneratePoints(selectedFn, region, names[0], sfDatabase, roadPoints);
             }
             setProfilesLoading(false);
             return;
@@ -503,27 +599,45 @@ export default function FunctionTester() {
     } catch {}
     setAvailableProfiles([]);
     setProfilesLoading(false);
-  }, [selectedFn, selectedProfile, sfDatabase]);
+  }, [selectedFn, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
 
   useEffect(() => {
     if (selectedRegion) fetchProfiles(selectedRegion);
   }, [selectedRegion]);
 
-  const onRegionChange = useCallback((regionKey: string) => {
+  const onRegionChange = useCallback(async (regionKey: string) => {
     const r = regions.find((c) => c.region === regionKey) || null;
     setSelectedRegion(r);
-    setSqlInput(generateSql(selectedFn, r, selectedProfile, sfDatabase));
-  }, [regions, selectedFn, selectedProfile, sfDatabase]);
+    userEditedRef.current = false;
+    let roads: [number, number][] | null = null;
+    if (overtureAvailable && r?.bbox) {
+      roads = await fetchRoadPoints(r.bbox);
+      setRoadPoints(roads);
+    }
+    regeneratePoints(selectedFn, r, selectedProfile, sfDatabase, roads);
+  }, [regions, selectedFn, selectedProfile, sfDatabase, overtureAvailable, regeneratePoints]);
 
   const onFnChange = useCallback((fnName: string) => {
     setSelectedFn(fnName);
-    setSqlInput(generateSql(fnName, selectedRegion, selectedProfile, sfDatabase));
-  }, [selectedRegion, selectedProfile, sfDatabase]);
+    userEditedRef.current = false;
+    regeneratePoints(fnName, selectedRegion, selectedProfile, sfDatabase, roadPoints);
+  }, [selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
 
   const onProfileChange = useCallback((profile: string) => {
     setSelectedProfile(profile);
-    setSqlInput(generateSql(selectedFn, selectedRegion, profile, sfDatabase));
-  }, [selectedRegion, selectedFn, sfDatabase]);
+    userEditedRef.current = false;
+    regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roadPoints);
+  }, [selectedRegion, selectedFn, sfDatabase, roadPoints, regeneratePoints]);
+
+  const handleReshuffle = useCallback(() => {
+    userEditedRef.current = false;
+    regeneratePoints(selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints);
+  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+
+  const handleSqlChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    userEditedRef.current = true;
+    setSqlInput(e.target.value);
+  }, []);
 
   const executeQuery = useCallback(async () => {
     setRunning(true);
@@ -608,13 +722,29 @@ export default function FunctionTester() {
       <textarea
         className="sql-editor"
         value={sqlInput}
-        onChange={(e) => setSqlInput(e.target.value)}
+        onChange={handleSqlChange}
         rows={Math.max(3, sqlInput.split('\n').length)}
         spellCheck={false}
       />
+      {sampleHint && (
+        <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>{sampleHint}</p>
+      )}
+      {overtureAvailable === false && COORD_FUNCTIONS.includes(selectedFn) && (
+        <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
+          Install Overture Maps Transportation for road-snapped sample points.
+        </p>
+      )}
       <div className="action-row">
         <button className="btn primary" onClick={executeQuery} disabled={running || !sqlInput.trim()}>
           {running ? 'Running...' : 'Execute'}
+        </button>
+        <button
+          className="btn secondary"
+          onClick={handleReshuffle}
+          disabled={!COORD_FUNCTIONS.includes(selectedFn)}
+          title="Generate new random sample points for this region and profile."
+        >
+          Reshuffle points
         </button>
         {duration !== null && <span className="duration">{duration}ms</span>}
       </div>

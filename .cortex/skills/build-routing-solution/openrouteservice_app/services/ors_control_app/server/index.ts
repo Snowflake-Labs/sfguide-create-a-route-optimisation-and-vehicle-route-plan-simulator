@@ -2343,6 +2343,39 @@ app.post('/api/diagnostics/logs/clear', (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/sample-road-points', async (req, res) => {
+  const minLat = parseFloat(req.query.min_lat as string);
+  const maxLat = parseFloat(req.query.max_lat as string);
+  const minLon = parseFloat(req.query.min_lon as string);
+  const maxLon = parseFloat(req.query.max_lon as string);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+
+  if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
+    return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
+  }
+
+  try {
+    const sql = `
+      SELECT lon, lat FROM (
+        SELECT ST_X(ST_STARTPOINT(geometry)) AS lon,
+               ST_Y(ST_STARTPOINT(geometry)) AS lat
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
+        WHERE subtype = 'road'
+          AND ST_X(ST_STARTPOINT(geometry)) BETWEEN ${minLon} AND ${maxLon}
+          AND ST_Y(ST_STARTPOINT(geometry)) BETWEEN ${minLat} AND ${maxLat}
+      )
+      ORDER BY RANDOM()
+      LIMIT ${limit}`;
+    const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
+    const points = (rows || [])
+      .filter((r: any) => r.LON != null && r.LAT != null)
+      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)]);
+    res.json({ ok: true, points });
+  } catch (e: any) {
+    res.json({ ok: false, reason: e.message?.slice(0, 200) || 'Overture Transportation unavailable' });
+  }
+});
+
 function formatUptime(ms: number): string {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
