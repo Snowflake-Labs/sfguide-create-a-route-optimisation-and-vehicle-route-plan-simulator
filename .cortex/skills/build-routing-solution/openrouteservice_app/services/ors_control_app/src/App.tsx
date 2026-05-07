@@ -186,7 +186,6 @@ export default function App() {
           <header className="app-header">
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <VehicleTypeSwitcher />
               <RegionSwitcher />
               <button
                 onClick={() => {
