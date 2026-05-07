@@ -132,6 +132,27 @@ Tag values are the single source of truth in [`openrouteservice_app/image-versio
 
 Total first push: 20-30 minutes. Subsequent pushes with cached layers: ~5 minutes.
 
+## Pinned Upstream Base Images
+
+All upstream base images are pinned to explicit versions — never use `:latest`. Pinned versions are documented in `openrouteservice_app/image-versions.env` (variables `OPENROUTESERVICE_BASE_TAG`, `VROOM_BASE_TAG`).
+
+| Service | Base image | Pinned version | Source |
+|---------|-----------|----------------|--------|
+| OpenRouteService | `openrouteservice/openrouteservice` | `v9.0.0` | [Docker Hub](https://hub.docker.com/r/openrouteservice/openrouteservice/tags) |
+| VROOM | `ghcr.io/vroom-project/vroom-docker` | `v1.14.0` | [GHCR](https://github.com/VROOM-Project/vroom-docker/pkgs/container/vroom-docker) |
+| Downloader | `python:3.10-slim-buster` | `3.10-slim-buster` | [Docker Hub](https://hub.docker.com/_/python/tags) |
+| Gateway | `python:3.10-slim-buster` | `3.10-slim-buster` | [Docker Hub](https://hub.docker.com/_/python/tags) |
+
+### Bumping an upstream version
+
+1. Check the upstream release notes for breaking changes.
+2. Test locally: `docker run --rm <image>:<new_tag>` — verify it starts cleanly.
+3. Update the `ARG BASE_IMAGE=` line in the corresponding Dockerfile.
+4. Update `image-versions.env` (`OPENROUTESERVICE_BASE_TAG` or `VROOM_BASE_TAG`).
+5. Rebuild and push the SPCS image (bump `*_TAG` in `image-versions.env`).
+6. Redeploy: update service YAML, upload to stage, `ALTER SERVICE … SUSPEND` / update spec / `RESUME`.
+7. Verify: `SHOW SERVICES` — confirm status is `RUNNING`.
+
 ## Common Errors
 
 - **Authentication failure**: Run `snow spcs image-registry login` (Docker) or use session token (Podman) before pushing
