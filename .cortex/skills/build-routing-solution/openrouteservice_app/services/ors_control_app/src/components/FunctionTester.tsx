@@ -469,7 +469,7 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
   );
 }
 
-async function fetchRoadPoints(bbox: BBox): Promise<[number, number][] | null> {
+async function fetchRoadPoints(bbox: BBox, profile: string): Promise<[number, number][] | null> {
   try {
     const params = new URLSearchParams({
       min_lat: bbox.min_lat.toString(),
@@ -477,6 +477,7 @@ async function fetchRoadPoints(bbox: BBox): Promise<[number, number][] | null> {
       min_lon: bbox.min_lon.toString(),
       max_lon: bbox.max_lon.toString(),
       limit: '50',
+      profile,
     });
     const resp = await fetch(`/api/sample-road-points?${params}`);
     const data = await resp.json();
@@ -556,7 +557,7 @@ export default function FunctionTester() {
           setSelectedRegion(def);
           let roads: [number, number][] | null = null;
           if (probeOvertureOk && def.bbox) {
-            roads = await fetchRoadPoints(def.bbox);
+            roads = await fetchRoadPoints(def.bbox, 'driving-car');
             setRoadPoints(roads);
           }
           setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
@@ -611,7 +612,7 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads: [number, number][] | null = null;
     if (overtureAvailable && r?.bbox) {
-      roads = await fetchRoadPoints(r.bbox);
+      roads = await fetchRoadPoints(r.bbox, selectedProfile);
       setRoadPoints(roads);
     }
     regeneratePoints(selectedFn, r, selectedProfile, sfDatabase, roads);
@@ -623,11 +624,16 @@ export default function FunctionTester() {
     regeneratePoints(fnName, selectedRegion, selectedProfile, sfDatabase, roadPoints);
   }, [selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
 
-  const onProfileChange = useCallback((profile: string) => {
+  const onProfileChange = useCallback(async (profile: string) => {
     setSelectedProfile(profile);
     userEditedRef.current = false;
-    regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roadPoints);
-  }, [selectedRegion, selectedFn, sfDatabase, roadPoints, regeneratePoints]);
+    let roads: [number, number][] | null = roadPoints;
+    if (overtureAvailable && selectedRegion?.bbox) {
+      roads = await fetchRoadPoints(selectedRegion.bbox, profile);
+      setRoadPoints(roads);
+    }
+    regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roads);
+  }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
 
   const handleReshuffle = useCallback(() => {
     userEditedRef.current = false;

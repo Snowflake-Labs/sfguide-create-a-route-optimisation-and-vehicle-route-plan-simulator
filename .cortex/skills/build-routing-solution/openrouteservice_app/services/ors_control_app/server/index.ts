@@ -2350,9 +2350,19 @@ app.get('/api/sample-road-points', async (req, res) => {
   const minLon = parseFloat(req.query.min_lon as string);
   const maxLon = parseFloat(req.query.max_lon as string);
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const profile = (req.query.profile as string) || 'driving-car';
 
   if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
     return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
+  }
+
+  let classFilter: string;
+  if (profile.startsWith('driving')) {
+    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
+  } else if (profile.startsWith('cycling')) {
+    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
+  } else {
+    classFilter = `class IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
   }
 
   try {
@@ -2362,6 +2372,7 @@ app.get('/api/sample-road-points', async (req, res) => {
                ST_Y(ST_STARTPOINT(geometry)) AS lat
         FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
         WHERE subtype = 'road'
+          AND ${classFilter}
           AND ST_X(ST_STARTPOINT(geometry)) BETWEEN ${minLon} AND ${maxLon}
           AND ST_Y(ST_STARTPOINT(geometry)) BETWEEN ${minLat} AND ${maxLat}
       )
