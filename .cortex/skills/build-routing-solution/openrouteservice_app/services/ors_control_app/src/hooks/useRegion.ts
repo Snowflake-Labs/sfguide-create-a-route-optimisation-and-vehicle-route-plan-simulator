@@ -67,6 +67,9 @@ export function useRegionProvider() {
   useEffect(() => { fetchRegions(); }, [fetchRegions]);
 
   const switchRegion = useCallback(async (regionName: string) => {
+    const target = regions.find(r => r.REGION_NAME === regionName);
+    if (target) setActive(target);
+
     try {
       await fetch('/api/regions/active', {
         method: 'POST',
@@ -74,8 +77,10 @@ export function useRegionProvider() {
         body: JSON.stringify({ region: regionName }),
       });
       await fetchRegions();
-    } catch {}
-  }, [fetchRegions]);
+    } catch {
+      await fetchRegions();
+    }
+  }, [fetchRegions, regions]);
 
   const value: RegionContextValue = {
     regionName: active?.REGION_NAME ?? defaults.regionName,

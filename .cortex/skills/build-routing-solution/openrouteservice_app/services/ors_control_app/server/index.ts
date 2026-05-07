@@ -1437,7 +1437,8 @@ app.get('/api/matrix/inventory', async (_req, res) => {
     let inventory: any[] = [];
     try {
       const rows = await runSql(
-        `SELECT TABLE_NAME, ROW_COUNT, BYTES, CREATED
+        `SELECT TABLE_NAME, ROW_COUNT, BYTES,
+                TO_VARCHAR(CREATED::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED
          FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
          WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
            AND TABLE_NAME LIKE '%_MATRIX_RES%'
@@ -1445,7 +1446,7 @@ app.get('/api/matrix/inventory', async (_req, res) => {
       );
       inventory = (rows || []).map((t: any) => {
         const name = (t.TABLE_NAME || '').toUpperCase();
-        const parts = name.match(/^(.+)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_(RES\d+)$/);
+        const parts = name.match(/^(.+?)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_MATRIX_(RES\d+)$/);
         let region = name, profileName = 'driving-car', resolution = 'RES7';
         if (parts) {
           region = parts[1].replace(/_/g, '').toLowerCase();
@@ -2341,6 +2342,50 @@ app.get('/api/diagnostics/probe', async (_req, res) => {
 app.post('/api/diagnostics/logs/clear', (_req, res) => {
   clearEntries();
   res.json({ ok: true });
+});
+
+app.get('/api/sample-road-points', async (req, res) => {
+  const minLat = parseFloat(req.query.min_lat as string);
+  const maxLat = parseFloat(req.query.max_lat as string);
+  const minLon = parseFloat(req.query.min_lon as string);
+  const maxLon = parseFloat(req.query.max_lon as string);
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const profile = (req.query.profile as string) || 'driving-car';
+
+  if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
+    return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
+  }
+
+  let classFilter: string;
+  if (profile.startsWith('driving')) {
+    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
+  } else if (profile.startsWith('cycling')) {
+    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
+  } else {
+    classFilter = `class IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
+  }
+
+  try {
+    const sql = `
+      SELECT lon, lat FROM (
+        SELECT ST_X(ST_STARTPOINT(geometry)) AS lon,
+               ST_Y(ST_STARTPOINT(geometry)) AS lat
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
+        WHERE subtype = 'road'
+          AND ${classFilter}
+          AND ST_X(ST_STARTPOINT(geometry)) BETWEEN ${minLon} AND ${maxLon}
+          AND ST_Y(ST_STARTPOINT(geometry)) BETWEEN ${minLat} AND ${maxLat}
+      )
+      ORDER BY RANDOM()
+      LIMIT ${limit}`;
+    const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
+    const points = (rows || [])
+      .filter((r: any) => r.LON != null && r.LAT != null)
+      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)]);
+    res.json({ ok: true, points });
+  } catch (e: any) {
+    res.json({ ok: false, reason: e.message?.slice(0, 200) || 'Overture Transportation unavailable' });
+  }
 });
 
 function formatUptime(ms: number): string {
