@@ -48,7 +48,18 @@ Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into 
 | Database | `FLEET_INTELLIGENCE` | Target database |
 | Schema | `DWELL_ANALYSIS` | Target schema |
 | Warehouse | `ROUTING_ANALYTICS` | Used by all Dynamic Tables |
-| Target Lag | 5-10 min | DT refresh interval |
+| Target Lag | DOWNSTREAM | DTs refresh only when queried (saves credits with static seed data) |
+
+## Credit Management
+
+Dynamic Tables use `TARGET_LAG = DOWNSTREAM` — they only refresh when a query reads them, not on a schedule. This prevents continuous credit consumption with static seed data.
+
+Additionally, an `AUTO_SUSPEND_DTS` task runs once after 2 hours to suspend all DTs. To re-enable after suspension:
+
+```sql
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES RESUME;
+-- Repeat for other DTs as needed
+```
 
 ## Pipeline Architecture
 
