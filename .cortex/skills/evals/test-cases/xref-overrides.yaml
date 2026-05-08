@@ -1,9 +1,0 @@
-fleet-intelligence-food-delivery:
-  ignore_prefixes:
-    - "assets/react-app/"
-    - "assets/streamlit/pages/"
-
-route-optimization:
-  ignore_prefixes:
-    - "assets/streamlit/"
-    - "assets/notebooks/"

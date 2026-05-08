@@ -1,5 +1,0 @@
-# Per-skill overrides for SQL anti-pattern checks.
-# Format:
-#   skill-name:
-#     skip:
-#       - "sql_1"  # reason for skipping
