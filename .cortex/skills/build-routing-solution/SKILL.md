@@ -171,7 +171,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    | downloader | v0.0.3 |
    | routing_reverse_proxy | v1.0.0 |
    | vroom-docker | v1.0.1 |
-   | ors_control_app | v1.0.119 |
+   | ors_control_app | v1.0.130 |
 
 3. **Decision:**
    - If **all 5 images exist with correct tags** → Report to user that images are already present, **skip Step 5**, proceed directly to Step 4
@@ -181,11 +181,40 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Next:** Proceed to Step 4
 
+### Step 3c: Validate Image Versions in Service YAMLs
+
+**Goal:** Verify that service YAML files reference images that exist in the repository
+
+**Actions:**
+
+1. **Query** the image repository to get actual versions:
+   ```sql
+   SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
+   SELECT "image_name", "tags" 
+   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+   ORDER BY "image_name";
+   ```
+
+2. **Read** each service YAML and verify the image tag matches what's in the repository:
+   - Check `openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml`
+   - Look for the `image:` line (e.g., `image: /openrouteservice_app/core/image_repository/ors_control_app:v1.0.XXX`)
+   - Verify the version (`:vX.X.XXX`) matches the repository
+
+3. **Fix** any version mismatches before proceeding:
+   - If YAML specifies `v1.0.153` but repository has `v1.0.130`, edit the YAML to use `v1.0.130`
+   - This prevents "Image not found" errors during service creation
+
+**Output:** All service YAMLs validated against repository contents
+
+**Next:** Proceed to Step 4
+
 ### Step 4: Upload Configuration Files
 
 **Goal:** Stage required configuration and map files
 
-**Actions:**
+> **Environment Detection:** If running in a Snowflake Workspace (Snowsight web IDE), the `snow stage copy` and `PUT` commands are not available. Use the **Workspace Alternative** instructions below instead of the standard CLI commands.
+
+**Actions (Standard CLI Environment):**
 
 1. **Upload** map, config, and script files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
@@ -210,6 +239,39 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite 
    ```
+
+**Actions (Workspace Alternative):**
+
+If running in a Snowflake Workspace where `snow stage copy` is not available, use this SQL-based approach:
+
+1. **Read** each service YAML file from the workspace
+2. **Write** each YAML to workspace root (flat structure, no subdirectories)
+3. **Upload** using COPY FILES with workspace stage URI:
+
+   ```sql
+   -- Upload service specifications
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('openrouteservice.yaml');
+
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('downloader_spec.yaml');
+
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('routing-gateway-service.yaml');
+
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('vroom-service.yaml');
+
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('ors_control_app_service.yaml');
+   ```
+
+   > **Tip:** The workspace stage URI format is shown in the system context. Files must be at workspace root (not in subdirectories) for COPY FILES to work correctly.
 
 **Output:** Configuration files and service specs uploaded to Snowflake stage
 
@@ -259,16 +321,31 @@ Follow the full build instructions in `references/build-images.md`. Summary:
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
 
-   > **Prerequisite:** Step 4 must have uploaded service YAML specs to `@ORS_SPCS_STAGE/services/`. Module `01_core_infra.sql` creates services using `FROM @stage SPECIFICATION_FILE=` which will fail if the spec files are missing.
+   > **Prerequisite:** Step 3c must have validated image versions, and Step 4 must have uploaded service YAML specs to `@ORS_SPCS_STAGE/services/`. Module `01_core_infra.sql` creates services using `FROM @stage SPECIFICATION_FILE=` which will fail if the spec files are missing.
 
+   **Core Modules (Required):**
    ```bash
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql"       -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql" -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql" -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection>
+   ```
+
+   **Advanced Matrix Modules (Optional):**
+   
+   Modules 05 and 06 implement precomputed travel-time matrix functionality for performance optimization. These are **optional** — core routing functions (DIRECTIONS, ISOCHRONES, OPTIMIZATION) work without them.
+   
+   ```bash
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql"   -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
    ```
+   
+   Skip these modules if:
+   - You don't need precomputed travel-time matrices
+   - You want faster initial deployment
+   - You'll deploy them later when needed
+
+   > **Note on Module 03:** Module 03 is large (461 lines) but required. In workspace environments, executing complex procedures via `snowflake_sql_execute` is acceptable. Core tables and procedures (`REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, `REFRESH_REGION_CATALOG`, `LOAD_SEED_CATALOG`) are essential; advanced provisioning procedures can be created later if needed.
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
 
