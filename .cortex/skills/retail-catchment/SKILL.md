@@ -36,7 +36,7 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES and OVERTURE_MAPS__ADDRESSES from Marketplace |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates RETAIL_CATCHMENT schema |
-| CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates CONFIG, RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES, REGION_CONFIG |
+| CREATE TABLE | Schema (FLEET_INTELLIGENCE.RETAIL_CATCHMENT) | Creates CONFIG, RETAIL_POIS, CITIES_BY_STATE, REGIONAL_ADDRESSES |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Marketplace POI data |
 | USAGE ON DATABASE OVERTURE_MAPS__ADDRESSES | Database | Reads Marketplace address data |
 | USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS isochrone functions |
@@ -49,11 +49,14 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 ## Execution Rules
 
+**⚠️ CRITICAL: All data tables MUST include a `REGION` column as the first column. The ORS Control App dashboard queries by REGION and will not work without it.**
+
 1. One statement per `snowflake_sql_execute` tool call.
 2. Always use fully qualified object names.
-3. Never use `SET` session variables.
-4. Verify row counts after each CTAS.
+3. Never use `SET` session variables - use literal values in each query.
+4. Verify row counts after each INSERT.
 5. All CREATE statements must include a COMMENT tracking tag.
+6. Follow the exact schema in Step 5 - do not deviate from column names or types.
 
 ## Workflow
 
@@ -116,27 +119,157 @@ SELECT COUNT(*) FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS LIMIT 1;
 
 **Goal:** Set up the demo database, schema, warehouse, and CONFIG table.
 
-> See `references/sql-pipeline.md` Step 4.
+**CRITICAL:** The CONFIG table MUST have columns `VEHICLE_TYPE` and `REGION` (NOT `KEY` and `VALUE`). The dashboard requires these exact columns.
 
-**Output:** Database `FLEET_INTELLIGENCE`, schema `RETAIL_CATCHMENT` created with CONFIG table.
+Execute:
+```sql
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG (
+    VEHICLE_TYPE VARCHAR NOT NULL,
+    REGION       VARCHAR NOT NULL
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-retail-catchment", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+
+MERGE INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG tgt
+USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+ON TRUE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
+```
+
+**Output:** Database `FLEET_INTELLIGENCE`, schema `RETAIL_CATCHMENT` created with CONFIG table (1 row).
 
 ### Step 5: Create Optimized Data Tables
 
 **Goal:** Create pre-filtered, performance-optimized tables from Overture Maps marketplace data.
 
-> **Important:** Step 5 uses SQL session variables (`SET REGION_KEY`, `SET BBOX_*`). Execute all Step 5 sub-steps in a single session (e.g., via `snow sql -f`) or prepend the SET statements to each sub-step's SQL block when using `snowflake_sql_execute`.
+**CRITICAL SCHEMA REQUIREMENTS:**
+- All tables MUST include a `REGION` column (VARCHAR NOT NULL)
+- `RETAIL_POIS` must have: REGION, POI_ID, POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE, GEOMETRY, ADDRESS, CITY, STATE, POSTCODE
+- `CITIES_BY_STATE` must have: REGION, STATE, CITY, POI_COUNT
+- `REGIONAL_ADDRESSES` must have: REGION, ID, GEOMETRY, LONGITUDE, LATITUDE, CITY, POSTCODE
 
-1. Set region key and bounding box configuration (customize for target region)
-2. Create and populate filtered POI table (`RETAIL_POIS`)
-3. Create and populate pre-aggregated cities table (`CITIES_BY_STATE`)
-4. Create and populate addresses table (`REGIONAL_ADDRESSES`)
-5. Store region configuration (`REGION_CONFIG`)
-6. Add search optimization and clustering
-7. Verify tables have data
+**5a. Define region and bounding box** (San Francisco Bay Area default):
+- REGION_KEY: `'SanFrancisco'`
+- BBOX: -123.0, 36.8, -121.5, 38.5 (min_lon, min_lat, max_lon, max_lat)
 
-**STOP** if any table has 0 rows. Check bounding box config and Marketplace access.
+**5b. Create and populate RETAIL_POIS table:**
 
-> See `references/sql-pipeline.md` Step 5.
+Execute:
+```sql
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS (
+    REGION          VARCHAR NOT NULL,
+    POI_ID          VARCHAR,
+    POI_NAME        VARCHAR,
+    BASIC_CATEGORY  VARCHAR,
+    LONGITUDE       FLOAT,
+    LATITUDE        FLOAT,
+    GEOMETRY        GEOGRAPHY,
+    ADDRESS         VARCHAR,
+    CITY            VARCHAR,
+    STATE           VARCHAR,
+    POSTCODE        VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+SELECT 
+    'SanFrancisco' AS REGION,
+    ID AS POI_ID,
+    NAMES:primary::VARCHAR AS POI_NAME,
+    BASIC_CATEGORY,
+    ST_X(GEOMETRY) AS LONGITUDE,
+    ST_Y(GEOMETRY) AS LATITUDE,
+    GEOMETRY,
+    COALESCE(ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
+    ADDRESSES[0]:locality::VARCHAR AS CITY,
+    ADDRESSES[0]:region::VARCHAR AS STATE,
+    ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+WHERE BASIC_CATEGORY IN (
+    'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+    'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+    'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+    'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
+)
+AND GEOMETRY IS NOT NULL
+AND ADDRESSES[0]:region IS NOT NULL
+AND ST_X(GEOMETRY) BETWEEN -123.0 AND -121.5
+AND ST_Y(GEOMETRY) BETWEEN 36.8 AND 38.5;
+```
+
+Verify: `SELECT COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;` (expect 40K-50K rows)
+
+**5c. Create and populate CITIES_BY_STATE table:**
+
+Execute:
+```sql
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE (
+    REGION    VARCHAR NOT NULL,
+    STATE     VARCHAR,
+    CITY      VARCHAR,
+    POI_COUNT INT
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
+SELECT 
+    'SanFrancisco' AS REGION,
+    STATE,
+    CITY,
+    COUNT(*) AS POI_COUNT
+FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+WHERE CITY IS NOT NULL AND REGION = 'SanFrancisco'
+GROUP BY STATE, CITY
+HAVING COUNT(*) > 10
+ORDER BY STATE, POI_COUNT DESC;
+```
+
+Verify: `SELECT COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE;` (expect 100-150 cities)
+
+**5d. Create and populate REGIONAL_ADDRESSES table:**
+
+Execute:
+```sql
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES (
+    REGION    VARCHAR NOT NULL,
+    ID        VARCHAR,
+    GEOMETRY  GEOGRAPHY,
+    LONGITUDE FLOAT,
+    LATITUDE  FLOAT,
+    CITY      VARCHAR,
+    POSTCODE  VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
+SELECT 
+    'SanFrancisco' AS REGION,
+    ID,
+    GEOMETRY,
+    ST_X(GEOMETRY) AS LONGITUDE,
+    ST_Y(GEOMETRY) AS LATITUDE,
+    POSTAL_CITY AS CITY,
+    POSTCODE
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
+WHERE COUNTRY = 'US'
+AND ST_X(GEOMETRY) BETWEEN -123.0 AND -121.5
+AND ST_Y(GEOMETRY) BETWEEN 36.8 AND 38.5;
+```
+
+Verify: `SELECT COUNT(*) FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES;` (expect 2M-3M addresses)
+
+**STOP** if any table has 0 rows. Check bounding box and Marketplace access.
 
 
 ### Step 6: Verify
@@ -198,12 +331,14 @@ The deployed app provides:
 
 | Issue | Solution |
 |-------|----------|
+| City dropdown is empty | Verify CITIES_BY_STATE has REGION column and rows with matching REGION value |
 | "No stores found" | Verify Overture Maps Places dataset is accessible |
 | Isochrone fails | Check ORS services are RUNNING |
 | Dashboard shows no data | Verify RETAIL_POIS table has rows; check column BASIC_CATEGORY, CITY exist |
 | RETAIL_POIS table empty | Check bounding box config and Overture Maps Places access |
 | REGIONAL_ADDRESSES table empty | Check bounding box config and Overture Maps Addresses access |
 | "Object does not exist" on table | Ensure Step 5 completed successfully before Step 6 |
+| Tables have data but dashboard shows nothing | Verify all tables have REGION column and it matches CONFIG.REGION value |
 
 ## Output
 
@@ -211,7 +346,7 @@ Deployed resources:
 - Database: `FLEET_INTELLIGENCE`
 - Schema: `FLEET_INTELLIGENCE.RETAIL_CATCHMENT`
 - Warehouse: `ROUTING_ANALYTICS`
-- Tables: `CONFIG`, `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`, `REGION_CONFIG`
+- Tables: `CONFIG`, `RETAIL_POIS`, `CITIES_BY_STATE`, `REGIONAL_ADDRESSES`
 
 ## Cleanup
 
@@ -219,7 +354,6 @@ To remove all objects created by this skill:
 
 ```sql
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGION_CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;

@@ -208,74 +208,234 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Next:** Proceed to Step 4
 
-### Step 4: Upload Configuration Files
+### Step 4: Upload Configuration and Map Files
 
-**Goal:** Stage required configuration and map files
+**Goal:** Stage required configuration, map files, and service specifications
 
-> **Environment Detection:** If running in a Snowflake Workspace (Snowsight web IDE), the `snow stage copy` and `PUT` commands are not available. Use the **Workspace Alternative** instructions below instead of the standard CLI commands.
+> **CRITICAL:** This step invokes a dedicated subskill that handles environment-specific upload workflows, validates file integrity, and configures ORS to use the uploaded map data. The San Francisco OSM map file and routing configuration are **mandatory** for ORS to function.
+
+**Actions:**
+
+> Read and follow `.cortex/skills/build-routing-solution/upload-map-files/SKILL.md`
+
+This subskill will:
+1. Detect execution environment (CLI vs Workspace)
+2. Upload service specification YAML files
+3. Upload `SanFrancisco.osm.pbf` (~25 MB) and `ors-config.yml`
+4. Handle workspace nested path workarounds automatically
+5. Validate all uploads with size checks
+6. Update ORS configuration for correct file paths
+7. Restart ORS service to build routing graphs
+8. Test routing functionality to verify success
+
+**Expected Duration:** 5-10 minutes (upload) + 5-15 minutes (graph building) = **10-25 minutes total**
+
+**Output:** 
+- All required files uploaded to `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE`
+- ORS service restarted and building routing graphs
+- Routing functionality verified (isochrones and directions working)
+
+**If Step 4 fails:** See `upload-map-files/SKILL.md` Troubleshooting section for detailed diagnostics
+
+**Next:** Proceed to Step 5 (Build Container Images) ONLY after upload subskill completes successfully
+
+---
+
+### Step 5: Build and Push Container Images
 
 **Actions (Standard CLI Environment):**
 
-1. **Upload** map, config, and script files to stage (paths are relative to the **repo root**). Run as a single chained command:
-   ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/scripts/download_map.py" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/scripts/ --connection <connection> --overwrite
-   ```
-
-2. **Upload** SPCS service specification files (required by `01_core_infra.sql` CREATE SERVICE statements):
-   ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/downloader_spec.yaml" \
-      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite  && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite 
-   ```
+```bash
+# Upload SPCS service specification files
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/downloader_spec.yaml" \
+   @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite  && \
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite
+```
 
 **Actions (Workspace Alternative):**
 
-If running in a Snowflake Workspace where `snow stage copy` is not available, use this SQL-based approach:
+If running in Snowflake Workspace, service YAML files should already exist at workspace root from Step 3. Upload them:
 
-1. **Read** each service YAML file from the workspace
-2. **Write** each YAML to workspace root (flat structure, no subdirectories)
-3. **Upload** using COPY FILES with workspace stage URI:
+```sql
+-- Upload service specifications
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
+FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+FILES=('openrouteservice.yaml');
 
-   ```sql
-   -- Upload service specifications
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
-   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
-   FILES=('openrouteservice.yaml');
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/
+FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+FILES=('downloader_spec.yaml');
 
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/
-   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
-   FILES=('downloader_spec.yaml');
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/
+FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+FILES=('routing-gateway-service.yaml');
 
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/
-   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
-   FILES=('routing-gateway-service.yaml');
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/
+FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+FILES=('vroom-service.yaml');
 
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/
-   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
-   FILES=('vroom-service.yaml');
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
+FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+FILES=('ors_control_app_service.yaml');
+```
 
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
-   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
-   FILES=('ors_control_app_service.yaml');
+---
+
+#### Step 4b: Upload ORS Configuration and Map Files
+
+**CRITICAL:** The `SanFrancisco.osm.pbf` map file (~25MB) and `ors-config.yml` are **mandatory**. Without them, ORS service will start but all routing requests will fail with "profile unknown" errors.
+
+**Subskill Routing:**
+
+> This step is complex and environment-specific. Route to the dedicated subskill:
+> 
+> **Read and follow:** `.cortex/skills/build-routing-solution/upload-map-files/SKILL.md`
+
+The subskill handles:
+- ✅ Environment detection (CLI vs Workspace)
+- ✅ Workspace nested path workaround (updates config to match actual paths)
+- ✅ Temp stage intermediary for large files
+- ✅ Config-path synchronization
+- ✅ Service restart and graph building
+
+**Manual Execution (if subskill not available):**
+
+**Actions (Standard CLI Environment):**
+
+```bash
+# Upload ORS config and map files
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite && \
+snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
+  @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ --connection <connection> --overwrite
+```
+
+**Actions (Workspace Alternative - MANDATORY STEPS):**
+
+Workspace `COPY FILES` command **does not support nested source paths**. You must first copy files to workspace root, then upload.
+
+1. **Read and write ors-config.yml to workspace root:**
+   
+   Use the `read` tool to read `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml`, then use the `write` tool to write it to `ors-config.yml` at workspace root (no subdirectory).
+
+   **IMPORTANT:** Before writing, modify the config to enable both `cycling-regular` AND `cycling-electric`:
+   ```yaml
+   profiles:
+     driving-car: 
+       enabled: true
+     driving-hgv: 
+       enabled: true
+     cycling-regular:
+       enabled: true    # MUST be true
+     cycling-electric:
+       enabled: true    # MUST be true
+     foot-walking:
+       enabled: false
    ```
 
-   > **Tip:** The workspace stage URI format is shown in the system context. Files must be at workspace root (not in subdirectories) for COPY FILES to work correctly.
+2. **Upload ors-config.yml from workspace root:**
+   
+   ```sql
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('ors-config.yml');
+   ```
 
-**Output:** Configuration files and service specs uploaded to Snowflake stage
+3. **Copy SanFrancisco.osm.pbf to workspace root:**
 
-**Next:** Proceed to Step 5
+   **CRITICAL:** The 25MB OSM file exists at `.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf` but cannot be read/written with workspace tools due to size.
+   
+   Use a two-step SQL approach:
+   
+   ```sql
+   -- Step 1: Copy file within workspace stage (from nested to root)
+   COPY FILES INTO 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf')
+   PATTERN='.*SanFrancisco.osm.pbf$';
+   
+   -- Step 2: Upload from workspace root to ORS stage
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
+   FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
+   FILES=('SanFrancisco.osm.pbf');
+   ```
+   
+   **If Step 1 creates nested paths:** Remove nested files and use `GET` + `PUT` workaround:
+   
+   ```sql
+   -- Clean up any nested uploads
+   REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/.cortex/;
+   
+   -- Alternative: Direct internal stage copy (advanced)
+   COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/SanFrancisco.osm.pbf
+   FROM @<WORKSPACE_STAGE>/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf;
+   ```
+
+---
+
+#### Step 4c: Verify Uploads (MANDATORY)
+
+**CRITICAL:** Do NOT proceed to Step 5 until all files are verified. Missing files cause silent failures.
+
+**Actions:**
+
+1. **List all uploaded files and check sizes:**
+   
+   ```sql
+   LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE;
+   ```
+
+2. **Verify critical files exist with correct sizes:**
+   
+   | File Path | Expected Size | Purpose |
+   |-----------|---------------|---------|
+   | `ors_spcs_stage/SanFrancisco/SanFrancisco.osm.pbf` | ~25 MB (25,103,536 bytes) | Map data for routing graphs |
+   | `ors_spcs_stage/SanFrancisco/ors-config.yml` | ~10 KB | Routing profiles config |
+   | `ors_spcs_stage/services/openrouteservice/openrouteservice.yaml` | ~800 bytes | ORS service spec |
+   | `ors_spcs_stage/services/downloader/downloader_spec.yaml` | ~750 bytes | Downloader service spec |
+   | `ors_spcs_stage/services/gateway/routing-gateway-service.yaml` | ~400 bytes | Gateway service spec |
+   | `ors_spcs_stage/services/vroom/vroom-service.yaml` | ~220 bytes | VROOM service spec |
+   | `ors_spcs_stage/services/ors_control_app/ors_control_app_service.yaml` | ~500 bytes | Control app service spec |
+
+3. **Verify files are NOT nested under `.cortex/` subdirectories:**
+   
+   ❌ **Bad:** `ors_spcs_stage/SanFrancisco/.cortex/skills/.../SanFrancisco.osm.pbf` (nested path)
+   
+   ✅ **Good:** `ors_spcs_stage/SanFrancisco/SanFrancisco.osm.pbf` (flat path)
+   
+   If files are nested, remove them and re-upload:
+   ```sql
+   REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/.cortex/;
+   ```
+
+4. **Verify ors-config.yml contains enabled profiles:**
+   
+   ```sql
+   SELECT $1 AS config_content 
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml
+   (FILE_FORMAT => (TYPE = 'CSV' FIELD_DELIMITER = NONE RECORD_DELIMITER = NONE SKIP_HEADER = 0));
+   ```
+   
+   Confirm the config contains `cycling-regular: enabled: true` and `cycling-electric: enabled: true`.
+
+**If verification fails:**
+
+- **Missing SanFrancisco.osm.pbf:** Re-upload using the workspace alternative steps. Ensure file is copied to workspace root first.
+- **Nested paths:** Remove nested files with `REMOVE @stage/.cortex/` and re-upload from workspace root.
+- **Wrong file sizes:** File may be corrupted. Re-download from source or re-upload.
+
+**Output:** All required files verified in stage at correct paths with correct sizes
+
+**Next:** Proceed to Step 5 only after all verifications pass
+
+---
 
 ### Step 5: Build and Push Container Images
 
@@ -510,6 +670,176 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Output:** Selected demos deployed and verified in the ORS Control App
 
+### Step 8c: Configure Demo Defaults
+
+**Goal:** Set all demo CONFIG tables to San Francisco ebike defaults to match the deployed seed data.
+
+**This step is required only if demos were deployed in Step 8.** Skip if no demos were selected.
+
+**Actions:**
+
+1. **Run the demo defaults configuration script:**
+   ```bash
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/sql/stored_procedures/configure_demo_defaults.sql" -c <connection>
+   ```
+
+   This script:
+   - Updates all demo CONFIG tables to `VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco'`
+   - Creates the DELIVERIES view for the Fleet Delivery dashboard
+
+2. **Verify configuration was applied:**
+   ```sql
+   SELECT 'FLEET_INTELLIGENCE_FOOD_DELIVERY' AS SCHEMA_NAME, VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG
+   UNION ALL
+   SELECT 'FLEET_INTELLIGENCE_TAXIS', VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG
+   UNION ALL
+   SELECT 'DWELL_ANALYSIS', VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
+   UNION ALL
+   SELECT 'ROUTE_DEVIATION', VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
+   UNION ALL
+   SELECT 'ROUTE_OPTIMIZATION', VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+   UNION ALL
+   SELECT 'RETAIL_CATCHMENT', VEHICLE_TYPE, REGION 
+   FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG;
+   ```
+
+   Expected: All schemas show `VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco'`
+
+   **Note:** Only deployed demos will have CONFIG tables. Ignore "Schema does not exist" errors for demos that weren't deployed.
+
+**Output:** All demo CONFIG tables set to San Francisco ebike defaults, matching the seed data loaded in Step 7
+
+### Step 8d: Next Steps - Exploring Your Demos
+
+**Goal:** Guide users on how to interact with and explore their deployed demos.
+
+**This section provides actionable next steps for each demo deployed in Step 8.**
+
+#### Accessing the ORS Control App
+
+All deployed demos are accessible through the ORS Control App web interface:
+
+1. **Get the Control App URL:**
+   ```sql
+   SHOW ENDPOINTS IN SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
+   SELECT 'https://' || ingress_url AS control_app_url
+   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+   WHERE name = 'ors-control-app';
+   ```
+
+2. **Open the URL** in your browser - you'll see navigation links for each deployed demo
+
+#### Demo-Specific Next Steps
+
+**Fleet Intelligence: Food Delivery**
+- **Control App Page:** "Fleet Delivery" in the main navigation
+- **What to Explore:**
+  - Live courier map showing e-bike delivery routes across San Francisco
+  - Real-time delivery status (in-progress, completed, failed)
+  - Restaurant pickup locations and customer drop-off points
+  - Fleet metrics (active couriers, average delivery time, total distance)
+- **Data Source:** Reads from `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES` view
+- **Customization:** Generate new datasets with different parameters in the "Data Studio" page
+
+**Fleet Intelligence: Taxis**
+- **Control App Page:** "Fleet Taxis" in the main navigation
+- **What to Explore:**
+  - Taxi GPS telemetry visualization
+  - Driver routes with pickup/dropoff at real POIs from Overture Maps
+  - Trip patterns and hotspots
+- **Data Source:** `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS` schema
+- **Customization:** Adjust CONFIG table to explore different vehicle types or regions
+
+**Route Deviation**
+- **Control App Page:** "Route Deviation" in the main navigation
+- **What to Explore:**
+  - Detour detection comparing planned routes vs actual GPS paths
+  - Deviation alerts with distance and time impact
+  - Heatmap of deviation hotspots
+- **Data Source:** `FLEET_INTELLIGENCE.ROUTE_DEVIATION` ETL pipeline
+- **Technical Deep Dive:** Review the SQL pipeline in `.cortex/skills/route-deviation/references/`
+
+**Dwell Analysis**
+- **Control App Page:** "Dwell Analysis" in the main navigation (if UI implemented)
+- **What to Explore:**
+  - 12-step Dynamic Table pipeline for dwell/congestion detection
+  - H3 hexagon aggregation showing traffic patterns
+  - SLA violation alerts
+- **Data Source:** `FLEET_INTELLIGENCE.DWELL_ANALYSIS` schema with cascading Dynamic Tables
+- **Query Examples:**
+   ```sql
+   -- View dwell hotspots
+   SELECT * FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DWELL_HOTSPOTS 
+   ORDER BY AVG_DWELL_MINUTES DESC LIMIT 20;
+   
+   -- Check SLA violations
+   SELECT * FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_VIOLATIONS
+   WHERE VIOLATION_TIME > CURRENT_TIMESTAMP - INTERVAL '1 HOUR';
+   ```
+
+**Retail Catchment**
+- **Control App Page:** "Retail Catchment" in the main navigation
+- **What to Explore:**
+  - Isochrone zones showing 5/10/15 minute drive-time catchment areas
+  - Competitor store mapping with overlap analysis
+  - Location optimization recommendations
+- **Data Source:** Uses ORS isochrone API with Overture Maps retail POIs
+- **Use Case:** Retail site selection and market analysis
+
+**Route Optimization**
+- **Notebook:** Open `notebooks/route-optimization-demo.ipynb` (if created by the skill)
+- **What to Explore:**
+  - Vehicle Routing Problem (VRP) solver using ORS VROOM service
+  - Multi-stop route optimization with time windows
+  - Fleet size minimization and load balancing
+  - AISQL integration for natural language route queries
+- **Run the Notebook:** Execute cells to see optimization results and visualizations
+
+**Routing Agent**
+- **Access:** Use Snowflake Cortex AI interface or chat
+- **What to Explore:**
+  - Natural language routing queries: "Find the fastest route from Union Square to Fisherman's Wharf"
+  - Multi-stop planning: "Optimize delivery route for these 10 addresses"
+  - Distance matrix queries: "Calculate travel times between these 5 locations"
+- **Agent Name:** `ROUTING_AGENT` in `FLEET_INTELLIGENCE.CORE` schema
+- **Functions:** Wraps ORS DIRECTIONS, MATRIX, and ISOCHRONE APIs
+
+#### General Exploration Tips
+
+1. **Start with Data Studio (Control App):**
+   - Generate fresh datasets with custom parameters (vehicle type, region, fleet size)
+   - Experiment with different cities/regions in the REGION_REGISTRY
+
+2. **Query the data directly:**
+   ```sql
+   -- Explore unified telemetry data
+   SELECT * FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY LIMIT 100;
+   
+   -- View trip summaries
+   SELECT * FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS LIMIT 100;
+   ```
+
+3. **Customize demo configurations:**
+   - Update CONFIG tables to point to different vehicle types or regions
+   - Refresh views to see updated data in Control App dashboards
+
+4. **Review the code:**
+   - Each demo has detailed SQL in `.cortex/skills/<demo-name>/references/`
+   - Study the patterns for your own fleet intelligence use cases
+
+#### Need Help?
+
+- **Documentation:** See `docs/guides/QUICKSTART.md` for end-to-end examples
+- **Troubleshooting:** Check service status with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`
+- **Cleanup:** Run the `routing-solution-cleanup` skill to remove all deployed objects
+
+**Output:** Users know how to access and explore their deployed demos
+
 ### Step 9: Generate Friction Log
 
 **Goal:** Create a friction log capturing the full installation experience.
@@ -531,19 +861,34 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 ## Stopping Points
 
 - Step 2: After detecting container runtime — confirm user's choice if both available
+- Step 4c: **MANDATORY STOP** — Verify all files uploaded correctly before proceeding. Missing SanFrancisco.osm.pbf causes all routing to fail
 - Step 5: After starting container build — monitor for authentication errors
 - Step 6: After deployment — verify application created successfully
 - Step 8: After presenting demo list — wait for user selection before deploying
+- Step 8c: After deploying demos — run configure_demo_defaults.sql to set San Francisco ebike defaults
+- Step 8d: Present next steps — show users how to access and explore their deployed demos
 
 ## Troubleshooting
 
 See `references/troubleshooting.md` for detailed solutions to common issues:
+
+### Build and Deployment Issues
 - Container runtime not running
 - Authentication / registry push failures
 - ARM Mac esbuild crash (ors_control_app)
-- Control app showing ERROR / Unhealthy / 0 Services
 - Podman registry auth for wrong host
+
+### File Upload Issues (Step 4)
+- **SanFrancisco.osm.pbf missing from stage:** Re-upload using Step 4b workspace alternative. Ensure file is copied to workspace root first (not nested path)
+- **Files uploaded with nested `.cortex/` paths:** Run `REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/.cortex/;` then re-upload from workspace root
+- **Workspace COPY FILES creates nested structures:** Files must be at workspace root (not subdirectories) for flat uploads. Use `read` + `write` tools to copy files to root first
+- **ors-config.yml missing required profiles:** Re-upload config with `cycling-regular: enabled: true` and `cycling-electric: enabled: true`
+
+### Runtime Issues
+- Control app showing ERROR / Unhealthy / 0 Services
 - Basemap tiles not loading (ENOTFOUND / 502)
+- **All isochrones return empty / "profile unknown" error:** Missing SanFrancisco.osm.pbf or ors-config.yml. Verify with `LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/` and check Step 4c verification
+- **ORS service logs show "No config file found":** ors-config.yml not uploaded. Run Step 4b workspace alternative to upload config
 
 ## Output
 

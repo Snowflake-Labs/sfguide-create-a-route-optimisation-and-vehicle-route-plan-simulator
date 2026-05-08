@@ -15,7 +15,7 @@ export default function CatchmentPanel() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
-  const [travelMode, setTravelMode] = useState('cycling-electric');
+  const [travelMode, setTravelMode] = useState('cycling-regular');
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });

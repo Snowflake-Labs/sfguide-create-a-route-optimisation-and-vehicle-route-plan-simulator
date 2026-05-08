@@ -42,6 +42,7 @@ No global build/lint step — each skill is independently deployable via its own
 | Skill | Category | Purpose |
 |-------|----------|---------|
 | `build-routing-solution` | infrastructure | Builds and deploys the ORS app on SPCS |
+| `build-routing-solution/upload-map-files` | infrastructure | Subskill: Uploads OSM map files with workspace nested path handling |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
