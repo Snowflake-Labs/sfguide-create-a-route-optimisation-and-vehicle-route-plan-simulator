@@ -105,6 +105,7 @@ export interface MatrixJob {
 
 export interface MatrixInventoryItem {
   region: string;
+  table_region: string;
   profile: string;
   resolution: string;
   row_count: number;
