@@ -79,6 +79,38 @@ Key rules:
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `<skill-name>_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
 
+## Commit Discipline
+
+**MANDATORY:** After each logical change is completed and verified, create a new git commit on the current feature branch. Do not batch unrelated changes into a single commit.
+
+### Branching Rules (NON-NEGOTIABLE)
+- **NEVER commit directly to `main`.** `main` is protected — changes only land via merged PRs from `dev`.
+- **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from feature branches.
+- **All work happens on feature branches** named `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`, etc.
+- **All PRs target `dev`** (not `main`). Only release/promotion PRs go from `dev` → `main`, and those are opened by humans, not assistants.
+- Before starting work, verify the current branch with `git branch --show-current`. If it is `main` or `dev`, create a feature branch first:
+  ```bash
+  git checkout -b feat/my-change
+  ```
+- After committing, push the feature branch and open a PR into `dev`:
+  ```bash
+  git push -u origin feat/my-change
+  gh pr create --base dev --title "..." --body "..."
+  ```
+
+### Commit Rules
+- One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
+- Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
+- Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
+- Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
+  - Examples:
+    - `feat(fleet-intelligence-taxis): add H3 resolution config parameter`
+    - `fix(build-routing-solution): handle ARM Mac esbuild segfault`
+    - `docs(AGENTS.md): add commit discipline rule`
+- If a change spans multiple skills, prefer multiple smaller commits over one large one
+- Never amend or force-push commits the user has not explicitly authorized
+- Never push directly to `main` or `dev` — push only to feature branches
+
 ## Friction Logging
 
 **MANDATORY:** After every `build-routing-solution` execution (regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
@@ -120,6 +152,8 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
+- **Skip committing after a completed change** — every verified change must result in a commit on the feature branch (see `## Commit Discipline`)
+- **Commit directly to `main` or `dev`** — both are protected. All work goes on feature branches with PRs targeting `dev`. Only humans promote `dev` → `main`.
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
 ## Control App Image Deployment (ors_control_app)
