@@ -463,9 +463,13 @@ BEGIN
     LET max_error_retries INTEGER DEFAULT 3;
 
     WHILE (retry_pass < max_error_retries) DO
+        -- Only retry rows that lack BOTH a durations array AND a structured ORS error.
+        -- Rows with MATRIX_RESULT:error.code set (e.g. 6010 out-of-bounds) are deterministic
+        -- failures — retrying them is futile and creates an infinite delete/re-insert loop.
         error_retry_sql := 'SELECT COUNT(*) AS CNT FROM ' || raw_table ||
             ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
-            ' AND MATRIX_RESULT:durations IS NULL';
+            ' AND MATRIX_RESULT:durations IS NULL' ||
+            ' AND MATRIX_RESULT:error IS NULL';
         rs := (EXECUTE IMMEDIATE :error_retry_sql);
         LET ec CURSOR FOR rs;
         FOR r IN ec DO error_origin_count := r.CNT; END FOR;
@@ -476,9 +480,12 @@ BEGIN
             retry_pass := retry_pass + 1;
             EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
 
+            -- Only delete rows that have no response at all; preserve rows with
+            -- deterministic ORS error responses so they are not retried indefinitely.
             EXECUTE IMMEDIATE 'DELETE FROM ' || raw_table ||
             ' WHERE SEQ_ID BETWEEN ' || P_START_SEQ || ' AND ' || P_END_SEQ ||
-            ' AND MATRIX_RESULT:durations IS NULL';
+            ' AND MATRIX_RESULT:durations IS NULL' ||
+            ' AND MATRIX_RESULT:error IS NULL';
 
             LET retry_min INTEGER;
             LET retry_max INTEGER;
@@ -794,6 +801,11 @@ BEGIN
         END;
     END IF;
 
+    -- INVARIANT: this RESUME + SET AUTO_SUSPEND_SECS=0 block must run BEFORE
+    -- BUILD_WORK_QUEUE and any other long-running step. Moving it later
+    -- re-introduces the WORK_QUEUE drift bug (see AGENTS.md
+    -- "AUTO_SUSPEND_SECS Invariant"). All long phases (filtering, work-queue
+    -- build, MATRIX_API, sweep) must be protected from auto-suspension.
     BEGIN
         ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service RESUME;
     EXCEPTION WHEN OTHER THEN NULL;
@@ -802,6 +814,15 @@ BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
     EXCEPTION WHEN OTHER THEN
         BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
+    BEGIN
+        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 0;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 0';
+    EXCEPTION WHEN OTHER THEN
+        BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 0; EXCEPTION WHEN OTHER THEN NULL; END;
     END;
 
     EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET MESSAGE=''Waiting for ORS profile ' || P_PROFILE || ' to become ready...'' WHERE JOB_ID=''' || P_JOB_ID || '''';
@@ -890,25 +911,9 @@ BEGIN
     SET STAGE='BUILDING', WORK_QUEUE_ROWS=:queue_count
     WHERE JOB_ID = :P_JOB_ID;
 
-    BEGIN
-        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service RESUME;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' RESUME';
-    EXCEPTION WHEN OTHER THEN
-        BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service RESUME; EXCEPTION WHEN OTHER THEN NULL; END;
-    END;
-
-    BEGIN
-        ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 0;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 0';
-    EXCEPTION WHEN OTHER THEN
-        BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 0; EXCEPTION WHEN OTHER THEN NULL; END;
-    END;
+    -- AUTO_SUSPEND_SECS=0 was already pinned at the top of this procedure
+    -- (before BUILD_WORK_QUEUE) per AGENTS.md AUTO_SUSPEND_SECS invariant.
+    -- Do not re-pin here; that pattern caused WORK_QUEUE-stage drift.
 
     LET svc_instances INTEGER := 3;
     IF (NOT is_default) THEN
@@ -945,8 +950,12 @@ BEGIN
     LET sweep_raw VARCHAR := prefix || '_MATRIX_RAW_' || P_RES;
 
     WHILE (sweep_pass < max_sweep) DO
+        -- Sweep retry: only delete rows with no response. Rows with a deterministic
+        -- ORS error (e.g. 6010 out-of-bounds) are permanent failures and must be kept
+        -- to prevent an infinite delete/re-insert loop.
         EXECUTE IMMEDIATE 'DELETE FROM ' || sweep_raw ||
-            ' WHERE MATRIX_RESULT:durations IS NULL';
+            ' WHERE MATRIX_RESULT:durations IS NULL' ||
+            ' AND MATRIX_RESULT:error IS NULL';
 
         rs := (EXECUTE IMMEDIATE '
             SELECT COUNT(*) AS CNT FROM ' || sweep_queue || ' q
@@ -1048,6 +1057,17 @@ BEGIN
         SET ERROR_MSG='Warning: ' || :error_count || ' of ' || :raw_count || ' origins returned ORS errors'
         WHERE JOB_ID = :P_JOB_ID;
     END IF;
+
+    -- Purge rows with deterministic ORS error responses (e.g. 6010 out-of-bounds).
+    -- These hexagon centroids fall outside the routable graph and will never produce
+    -- a valid result. Removing them keeps the raw table lean and avoids carrying
+    -- error payloads into downstream tables. Retry-eligible rows (durations IS NULL
+    -- AND error IS NULL) are NOT touched here.
+    EXECUTE IMMEDIATE 'DELETE FROM ' || prefix || '_MATRIX_RAW_' || P_RES ||
+        ' WHERE MATRIX_RESULT:error IS NOT NULL';
+
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_MATRIX_RAW_' || P_RES);
+    LET c3c CURSOR FOR rs; FOR r IN c3c DO raw_count := r.CNT; END FOR;
 
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
     SET STAGE='FLATTENING', RAW_ROWS=:raw_count, PCT_COMPLETE=100

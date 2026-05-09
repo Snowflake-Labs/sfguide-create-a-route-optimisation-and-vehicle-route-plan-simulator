@@ -536,7 +536,12 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
 
       let subPath = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
       if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
-        subPath = basePath ? basePath.replace(/^\/|\/$/g, '') + '/' + subPath : subPath;
+        const bp = basePath ? basePath.replace(/^\/|\/$/g, '') : '';
+        // Geofabrik uses continent-relative hrefs (e.g. "north-america/us.html" on north-america.html).
+        // Only prepend basePath when subPath does not already start with it, otherwise we get
+        // "north-america/north-america/us" which 404s. Russia uses an absolute "/russia.html" href
+        // and is handled by the !startsWith('/') guard above.
+        subPath = bp && !subPath.startsWith(bp + '/') ? bp + '/' + subPath : subPath;
       }
 
       rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
