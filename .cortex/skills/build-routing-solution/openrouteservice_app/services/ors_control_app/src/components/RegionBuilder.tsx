@@ -153,6 +153,20 @@ export default function RegionBuilder() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+  // Healthcheck for new build-routing-solution procs/tables. If the SQL
+  // modules were not deployed alongside this image, the UI would silently
+  // fall back to hardcoded defaults; surfacing a banner makes partial
+  // deploys obvious instead of degrading quietly.
+  type HealthStatus = { overall: string; status: Record<string, string>; errors?: Record<string, string> };
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/regions/healthcheck')
+      .then((r) => r.json())
+      .then((d: HealthStatus) => { if (!cancelled) setHealth(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   // Aggregated build history across all provisioned regions, fed by
   // /api/regions/:region/build-history. Refreshed whenever the regions list
   // changes so a freshly-completed build shows up in the recent-builds card.
@@ -423,6 +437,37 @@ export default function RegionBuilder() {
     <div className="panel">
       <h2>Region Builder</h2>
       <p className="subtitle">Deploy per-region ORS instances from OSM map data (Geofabrik + BBBike)</p>
+
+      {health && health.overall !== 'ok' && (
+        <div
+          role="alert"
+          style={{
+            background: 'rgba(234,179,8,0.15)',
+            border: '1px solid rgba(234,179,8,0.5)',
+            color: '#854d0e',
+            padding: '0.5rem 0.75rem',
+            borderRadius: 6,
+            marginBottom: '0.75rem',
+            fontSize: 12,
+          }}
+        >
+          <strong>Partial deploy detected.</strong>{' '}
+          The following back-end pieces are missing or returned an error; the UI may be falling back to hardcoded defaults:
+          <ul style={{ margin: '4px 0 0 16px', padding: 0, listStyle: 'disc' }}>
+            {Object.entries(health.status)
+              .filter(([, v]) => v !== 'ok')
+              .map(([k, v]) => (
+                <li key={k}>
+                  <code>{k}</code>: {v}
+                  {health.errors?.[k] ? ` - ${health.errors[k]}` : ''}
+                </li>
+              ))}
+          </ul>
+          <span style={{ fontSize: 11, opacity: 0.85 }}>
+            Run <code>scripts/deploy.sh</code> to redeploy the SQL modules and image together.
+          </span>
+        </div>
+      )}
 
       {activeJobs.length > 0 && (
         <>

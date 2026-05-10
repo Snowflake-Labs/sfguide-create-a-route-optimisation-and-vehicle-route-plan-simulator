@@ -695,6 +695,45 @@ app.get('/api/regions/largest-family', async (_req, res) => {
   }
 });
 
+// Healthcheck for the new build-routing-solution procedures and tables.
+// Surfaces partial deploys (e.g. image updated but SQL modules skipped) so
+// the UI can warn instead of silently degrading to hardcoded fallbacks.
+app.get('/api/regions/healthcheck', async (_req, res) => {
+  const status: Record<string, 'ok' | 'missing' | 'error'> = {};
+  const errors: Record<string, string> = {};
+
+  const probes: { key: string; sql: string }[] = [
+    { key: 'resolver',          sql: `CALL ${SF_DATABASE}.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()` },
+    { key: 'retry_strategy',    sql: `CALL ${SF_DATABASE}.CORE.RECOMMEND_RETRY_STRATEGY('__HEALTHCHECK__')` },
+    { key: 'build_history',     sql: `SELECT 1 FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY LIMIT 1` },
+    { key: 'build_spec',        sql: `SELECT ${SF_DATABASE}.CORE.BUILD_ORS_SERVICE_SPEC('X','XXL','false')` },
+    { key: 'downsize_proc',     sql: `SHOW PROCEDURES LIKE 'DOWNSIZE_REGION_AFTER_BUILD' IN SCHEMA ${SF_DATABASE}.CORE` },
+    { key: 'backfill_proc',     sql: `SHOW PROCEDURES LIKE 'BACKFILL_ORS_BUILD_HISTORY' IN SCHEMA ${SF_DATABASE}.CORE` },
+  ];
+
+  await Promise.all(probes.map(async ({ key, sql }) => {
+    try {
+      const rows = await runSql(sql);
+      if (key === 'downsize_proc' || key === 'backfill_proc') {
+        status[key] = (rows && rows.length > 0) ? 'ok' : 'missing';
+      } else {
+        status[key] = 'ok';
+      }
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (/does not exist|not authorized|unknown function/i.test(msg)) {
+        status[key] = 'missing';
+      } else {
+        status[key] = 'error';
+        errors[key] = msg.slice(0, 200);
+      }
+    }
+  }));
+
+  const overall = Object.values(status).every((v) => v === 'ok') ? 'ok' : 'degraded';
+  res.json({ overall, status, errors });
+});
+
 // Returns the recommended retry strategy for a region whose previous build
 // failed: REUSE / REBUILD_SAME / SPLIT_PROFILES / NO_HISTORY.
 app.get('/api/regions/:region/retry-strategy', async (req, res) => {
