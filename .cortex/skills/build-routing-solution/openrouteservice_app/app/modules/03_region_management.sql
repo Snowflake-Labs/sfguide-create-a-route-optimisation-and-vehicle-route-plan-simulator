@@ -249,6 +249,34 @@ EXCEPTION
             EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Cost guard: if the service either does not exist yet OR is not in
+        -- READY status, suspend it. A service in READY status is mid-build
+        -- and protected by the same contract as the fall-through path
+        -- (lines 229-239) — leave it alone for the operator to inspect via
+        -- DIAGNOSE_REGION. See cost-guard-v3-head-aligned.plan.md.
+        LET svc_state VARCHAR DEFAULT '';
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''ORS_SERVICE_'
+                || UPPER(:P_REGION) || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            LET rs2 RESULTSET := (SELECT "status" AS S
+                                  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+            LET csc CURSOR FOR rs2;
+            FOR r IN csc DO svc_state := COALESCE(r.S, ''); END FOR;
+        EXCEPTION WHEN OTHER THEN svc_state := '';
+        END;
+        IF (:svc_state IN ('FAILED', 'PENDING', 'SUSPENDED', '')) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
+                    || UPPER(:P_REGION) || ' SUSPEND';
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+            BEGIN
+                INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
+                VALUES (:P_REGION, 'wrapper_exception_suspend', CURRENT_TIMESTAMP(),
+                        'svc_state=' || :svc_state || '; err=' || :err_msg);
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
@@ -316,6 +344,22 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- =============================================================================
+-- COST_GUARD_LOG
+-- Audit trail for cost-guard actions taken by the wrapper EXCEPTION block.
+-- Fires only when the wrapper raises an exception AND the service is not in
+-- READY status (i.e. no useful build is in progress). Strictly additive: never
+-- contradicts the fall-through path which marks STATUS=COMPLETE while the
+-- container keeps building.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (
+    REGION VARCHAR,
+    ACTION VARCHAR,
+    FIRED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    REASON VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"cost-guard","action":"audit"}}';
 
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
