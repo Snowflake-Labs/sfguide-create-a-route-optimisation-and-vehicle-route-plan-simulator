@@ -683,6 +683,30 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   }
 });
 
+// Returns the largest high-memory SPCS instance family available in the
+// current cloud + region. Used by the UI to show users which family will
+// back any non-city XXL build before they click Deploy.
+app.get('/api/regions/largest-family', async (_req, res) => {
+  try {
+    const family = (await callProcedure('RESOLVE_LARGEST_HIGHMEM_FAMILY()')) || 'HIGHMEM_X64_M';
+    res.json({ family: family.trim() });
+  } catch (err: any) {
+    res.status(500).json({ family: 'HIGHMEM_X64_M', error: err.message });
+  }
+});
+
+// Returns the recommended retry strategy for a region whose previous build
+// failed: REUSE / REBUILD_SAME / SPLIT_PROFILES / NO_HISTORY.
+app.get('/api/regions/:region/retry-strategy', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const strategy = await callProcedure(`RECOMMEND_RETRY_STRATEGY('${safeRegion}')`);
+    res.json({ region: safeRegion, strategy: (strategy || 'NO_HISTORY').trim() });
+  } catch (err: any) {
+    res.status(500).json({ strategy: 'NO_HISTORY', error: err.message });
+  }
+});
+
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');

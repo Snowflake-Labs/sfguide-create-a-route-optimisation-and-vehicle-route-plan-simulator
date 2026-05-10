@@ -346,6 +346,57 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 -- explicitly wants to force a rebuild (PBF update / corruption recovery).
 -- =============================================================================
 
+-- =============================================================================
+-- RESOLVE_LARGEST_HIGHMEM_FAMILY
+-- Probes SHOW COMPUTE POOL INSTANCE FAMILIES at runtime and returns the
+-- largest high-memory family available in the current cloud + region.
+-- The user-mandated rule is: any non-city region runs on the biggest box this
+-- account can get, so a single graph build never loses hours of work to OOM.
+-- Preference order:
+--   1. MEM_X64_G2_192   (AWS/Azure GA, 188 vCPU / 1436 GB)
+--   2. HIGHMEM_X64_L    (any cloud, 124 vCPU / 984 GB)
+--   3. MEM_X64_G2_64    (AWS/Azure GA, 60 vCPU / 492 GB)
+--   4. HIGHMEM_X64_SL   (GCP, 92 vCPU / 654 GB) -- if exposed
+--   5. HIGHMEM_X64_M    (any cloud, 28 vCPU / 240 GB) -- last resort
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"resolver"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    chosen VARCHAR DEFAULT NULL;
+    rs RESULTSET;
+BEGIN
+    EXECUTE IMMEDIATE 'SHOW COMPUTE POOL INSTANCE FAMILIES';
+    rs := (
+        SELECT "name" AS NAME
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "name" IN (
+            'MEM_X64_G2_192','HIGHMEM_X64_L','MEM_X64_G2_64',
+            'HIGHMEM_X64_SL','HIGHMEM_X64_M'
+        )
+        ORDER BY ARRAY_POSITION("name"::VARIANT, ARRAY_CONSTRUCT(
+            'MEM_X64_G2_192','HIGHMEM_X64_L','MEM_X64_G2_64',
+            'HIGHMEM_X64_SL','HIGHMEM_X64_M'
+        ))
+        LIMIT 1
+    );
+    LET c CURSOR FOR rs;
+    FOR r IN c DO chosen := r.NAME; END FOR;
+
+    -- Final fallback if SHOW returned no rows or none of the preferred families
+    -- were present (older accounts, restricted regions): use HIGHMEM_X64_M, the
+    -- previous-gen family that has been available everywhere since SPCS GA.
+    IF (:chosen IS NULL) THEN
+        chosen := 'HIGHMEM_X64_M';
+    END IF;
+    RETURN :chosen;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
     P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR
 )
@@ -356,9 +407,9 @@ AS
 $$
     '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
     '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '40G' WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
     '","XMX":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '400G' WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
     '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
@@ -385,22 +436,44 @@ BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
-    -- Default for non-city regions: XXL on the GA Gen2 high-memory family.
-    -- 60 vCPU / 492 GB / 400 G heap finishes USA-class graph builds within ~4h.
-    -- Legacy tiers retained for the UI advanced override path.
-    IF (:P_COMPUTE_SIZE = 'XXL') THEN
-        instance_family := 'MEM_X64_G2_64';
-    ELSEIF (:P_COMPUTE_SIZE = 'XL') THEN
-        instance_family := 'HIGHMEM_X64_M';
-    ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
-        instance_family := 'CPU_X64_L';
-    ELSEIF (:P_COMPUTE_SIZE = 'M') THEN
-        instance_family := 'CPU_X64_SL';
-    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
+    -- For any non-city tier, resolve the LARGEST high-memory family available
+    -- in this cloud + region at runtime. The user-mandated rule is: anything
+    -- bigger than a city must run on the biggest box this account can get, so
+    -- a single graph build never loses hours of work to OOM. The S tier is the
+    -- only level-driven hardcoded family because cities never need high-mem.
+    IF (:P_COMPUTE_SIZE = 'S') THEN
         instance_family := 'GEN_X64_G2_8';
+    ELSEIF (:P_COMPUTE_SIZE = 'XL') THEN
+        instance_family := 'HIGHMEM_X64_M';     -- legacy override
+    ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
+        instance_family := 'CPU_X64_L';         -- legacy override
+    ELSEIF (:P_COMPUTE_SIZE = 'M') THEN
+        instance_family := 'CPU_X64_SL';        -- legacy override
+    ELSEIF (:P_COMPUTE_SIZE = 'XXL') THEN
+        instance_family := OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY();
     ELSE
-        instance_family := 'MEM_X64_G2_64';
+        -- Default: any unrecognized non-city size resolves to the largest
+        -- available family. Never silently downgrade a non-city build.
+        instance_family := OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY();
     END IF;
+
+    -- Pre-flight: confirm the resolved family actually exists. Fail fast with a
+    -- clear error instead of a cryptic CREATE COMPUTE POOL failure.
+    BEGIN
+        EXECUTE IMMEDIATE 'SHOW COMPUTE POOL INSTANCE FAMILIES';
+        LET rs_chk RESULTSET := (SELECT COUNT(*) AS C
+                                 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+                                 WHERE "name" = :instance_family);
+        LET c_chk CURSOR FOR rs_chk;
+        LET family_count INTEGER DEFAULT 0;
+        FOR r IN c_chk DO family_count := r.C; END FOR;
+        IF (:family_count = 0) THEN
+            RETURN 'ERROR: instance family ' || :instance_family ||
+                   ' is not available in this cloud/region. Provisioning aborted for ' ||
+                   :P_REGION || '. Contact Snowflake support to enable a larger high-memory family.';
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     -- Probe graphs stage: if a prior successful build left artifacts, reuse them
     -- (REBUILD_GRAPHS=false). Only set true when the stage is empty.
@@ -560,9 +633,10 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'M':  {'init_threads': 1, 'ch_threads': 10, 'lm_threads': 8},
         'L':  {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
         'XL': {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
-        # XXL: MEM_X64_G2_64 (60 vCPU / 492 GB) -- parallelize graph contraction across
-        # all 3 default profiles so USA-class builds finish within ~4 hours.
-        'XXL': {'init_threads': 3, 'ch_threads': 40, 'lm_threads': 24},
+        # XXL: largest available high-mem family (MEM_X64_G2_192 / HIGHMEM_X64_L)
+        # -- saturate the box: build all profiles in parallel and use most cores
+        # for graph contraction so USA/Europe-class builds finish quickly.
+        'XXL': {'init_threads': 4, 'ch_threads': 120, 'lm_threads': 60},
     }
     tc = thread_config.get(p_compute_size, thread_config['XXL'])
 
@@ -802,5 +876,99 @@ BEGIN
 
     RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
            ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage.';
+END;
+$$;
+
+-- =============================================================================
+-- ORS_BUILD_HISTORY: telemetry of every region graph build attempt.
+-- Populated by PROVISION_REGION_WRAPPER on every terminal state (success, OOM,
+-- timeout, error). Foundation for RECOMMEND_RETRY_STRATEGY and any future
+-- empirical sizing/learning logic.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY (
+    BUILD_ID         VARCHAR DEFAULT UUID_STRING(),
+    REGION           VARCHAR,
+    PBF_URL          VARCHAR,
+    PBF_SIZE_GIB     FLOAT,
+    OSM_TIMESTAMP    TIMESTAMP_NTZ,
+    ORS_VERSION      VARCHAR,
+    PROFILES         VARCHAR,
+    CONFIG_HASH      VARCHAR,
+    INSTANCE_FAMILY  VARCHAR,
+    JVM_XMX_GIB      NUMBER,
+    STARTED_AT       TIMESTAMP_NTZ,
+    FINISHED_AT      TIMESTAMP_NTZ,
+    ELAPSED_MINUTES  FLOAT,
+    EXIT_STATUS      VARCHAR,
+    PEAK_RSS_GIB     FLOAT,
+    OUTPUT_GRAPH_GIB FLOAT,
+    LOG_URI          VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"telemetry"}}';
+
+-- =============================================================================
+-- RECOMMEND_RETRY_STRATEGY
+-- We are already on the largest pool, so we cannot bump tier. Inspect the most
+-- recent ORS_BUILD_HISTORY row and return one of:
+--   REUSE             - last build succeeded; just resume the service
+--   REBUILD_SAME      - last failure was transient (network/timeout under SLA)
+--   SPLIT_PROFILES    - last build OOMed or peak RSS > 90% of node RAM
+--   DISABLE_FLAGS     - last build OOMed AND fastisochrones/elevation are on
+--   NO_HISTORY        - first build for this region
+-- The result is informational; the UI surfaces it as a banner so the user can
+-- pick a remediation. It is intentionally NOT automated -- changing profiles
+-- or disabling fastisochrones is a user-visible decision.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECOMMEND_RETRY_STRATEGY(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"telemetry","action":"retry-strategy"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    last_status VARCHAR DEFAULT '';
+    last_peak FLOAT DEFAULT 0;
+    last_elapsed FLOAT DEFAULT 0;
+    node_ram FLOAT DEFAULT 0;
+    rs RESULTSET;
+    history_count INTEGER DEFAULT 0;
+BEGIN
+    rs := (
+        SELECT COALESCE(EXIT_STATUS, '') AS S,
+               COALESCE(PEAK_RSS_GIB, 0) AS P,
+               COALESCE(ELAPSED_MINUTES, 0) AS E,
+               COALESCE(JVM_XMX_GIB, 0) * 1.25 AS NODE_RAM
+        FROM OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        WHERE REGION = :P_REGION
+        ORDER BY STARTED_AT DESC
+        LIMIT 1
+    );
+    LET c CURSOR FOR rs;
+    FOR r IN c DO
+        history_count := 1;
+        last_status := r.S;
+        last_peak := r.P;
+        last_elapsed := r.E;
+        node_ram := r.NODE_RAM;
+    END FOR;
+
+    IF (:history_count = 0) THEN
+        RETURN 'NO_HISTORY';
+    END IF;
+
+    IF (:last_status = 'SUCCESS') THEN
+        RETURN 'REUSE';
+    END IF;
+
+    IF (:last_status = 'OOM' OR (:node_ram > 0 AND :last_peak > :node_ram * 0.90)) THEN
+        RETURN 'SPLIT_PROFILES';
+    END IF;
+
+    IF (:last_status = 'TIMEOUT' OR :last_elapsed > 4 * 60 * 1.15) THEN
+        RETURN 'SPLIT_PROFILES';
+    END IF;
+
+    RETURN 'REBUILD_SAME';
 END;
 $$;

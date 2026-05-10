@@ -69,7 +69,7 @@ type ComputeSize = 'S' | 'M' | 'L' | 'XL' | 'XXL';
 
 const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
   { id: 'S', label: 'Small', instance: 'GEN_X64_G2_8', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities only' },
-  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_64', vcpu: 60, mem: '492 GB', heap: '400 GB', desc: 'Sub-regions, countries, continents (default for non-city)' },
+  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_192 / largest', vcpu: 188, mem: '1436 GB', heap: '1100 GB', desc: 'Sub-regions, countries, continents (default for non-city)' },
 ];
 
 const COMPUTE_SIZES_ADVANCED: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
@@ -138,6 +138,21 @@ export default function RegionBuilder() {
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
   const [computeSize, setComputeSize] = useState<ComputeSize>('XXL');
   const [showAdvancedSizes, setShowAdvancedSizes] = useState<boolean>(false);
+  // Largest high-memory family resolved on the server via
+  // RESOLVE_LARGEST_HIGHMEM_FAMILY(); used in the XXL banner so users see
+  // exactly which instance family will back their build before they click
+  // Deploy. Falls back to the published default if the API call fails.
+  const [largestFamily, setLargestFamily] = useState<string>('MEM_X64_G2_192');
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/regions/largest-family')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && d && d.family) setLargestFamily(d.family);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -674,7 +689,7 @@ export default function RegionBuilder() {
               </div>
               {computeSize === 'XXL' && (
                 <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
-                  First-time graph build runs on MEM_X64_G2_64 (~2.3 credits/hr). The service should be downsized to a runtime tier after the first successful build.
+                  Resolved compute pool: <strong>{largestFamily}</strong>. Graph build runs on the largest high-memory family available in this cloud / region. The service should be downsized to a runtime tier after the first successful build (DOWNSIZE_REGION_AFTER_BUILD).
                 </p>
               )}
               <div style={{ marginTop: '0.5rem' }}>
