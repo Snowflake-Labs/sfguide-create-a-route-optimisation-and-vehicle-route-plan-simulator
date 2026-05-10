@@ -264,8 +264,16 @@ BEGIN
     END FOR;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
-    FOR i IN 1 TO 40 DO
-        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(15)';
+    -- Wait ceiling scales with compute size. Country-scale HGV builds on the
+    -- largest high-memory hardware routinely take 60-120 minutes; smaller
+    -- regions complete in single-digit minutes. Hard-fail at the ceiling so
+    -- the UI surfaces a real error instead of a soft "check ORS_STATUS".
+    LET wait_iters INTEGER DEFAULT 40;       -- 30s * 40  = 20 min default
+    LET wait_secs  INTEGER DEFAULT 30;
+    IF (:P_COMPUTE_SIZE = 'XXL') THEN wait_iters := 240; END IF;        -- 2h
+    IF (UPPER(:P_COMPUTE_SIZE) IN ('M','L','XL')) THEN wait_iters := 120; END IF; -- 1h
+    FOR i IN 1 TO :wait_iters DO
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || :wait_secs || ')';
         BEGIN
             rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
             LET c2 CURSOR FOR rs;
@@ -283,6 +291,13 @@ BEGIN
                     -- so subsequent suspend/resume cycles reuse the built graphs instead of rebuilding.
                     BEGIN
                         CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                    -- Write success marker so create_region_ors_service can
+                    -- safely reuse persisted graphs on the next deploy.
+                    BEGIN
+                        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                            '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
@@ -321,20 +336,23 @@ BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
-    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+    -- Wait loop exhausted without service_ready=true. Treat as deployment
+    -- failure so the UI surfaces the problem instead of reporting green over
+    -- an OOM-loop or stuck graph build. RECOMMEND_RETRY_STRATEGY will see
+    -- EXIT_STATUS=TIMEOUT and recommend SPLIT_PROFILES on the next attempt.
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='FAILED' WHERE REGION = :P_REGION;
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    SET STATUS='COMPLETE', STAGE='READY',
-        MESSAGE='Service running but graph may still be loading. Check ORS_STATUS.',
+    SET STATUS='ERROR', STAGE='BUILDING_GRAPH',
+        MESSAGE='ORS service did not become ready within timeout. Check service logs and ORS_BUILD_HISTORY.',
+        ERROR_MSG='graph_load_timeout',
         COMPLETED_AT=CURRENT_TIMESTAMP()
     WHERE JOB_ID = :P_JOB_ID;
-    -- The graph wait loop hit its 10-minute ceiling without service_ready.
-    -- Mark the build as TIMEOUT so retry policy can recommend SPLIT_PROFILES.
     UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
     SET FINISHED_AT = CURRENT_TIMESTAMP(),
         ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
         EXIT_STATUS = 'TIMEOUT'
     WHERE BUILD_ID = :build_id;
-    RETURN 'Job ' || :P_JOB_ID || ' complete (graph may still be loading)';
+    RETURN 'Job ' || :P_JOB_ID || ' failed: ORS service did not load graphs within timeout';
 
 EXCEPTION
     WHEN OTHER THEN
@@ -564,16 +582,67 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- Probe graphs stage: if a prior successful build left artifacts, reuse them
-    -- (REBUILD_GRAPHS=false). Only set true when the stage is empty.
+    -- Probe graphs stage for the success marker (_BUILD_OK) written by
+    -- PROVISION_REGION_WRAPPER on a clean build. Reuse persisted graphs ONLY
+    -- when the marker is present; otherwise treat the stage as dirty
+    -- (partial / corrupt artifacts from a prior failed build) and purge it
+    -- so ORS does not try to load incomplete graphs.
+    LET marker_count INTEGER DEFAULT 0;
+    BEGIN
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/_BUILD_OK';
+        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        LET c_mk CURSOR FOR rs;
+        FOR r IN c_mk DO marker_count := r.C; END FOR;
+    EXCEPTION WHEN OTHER THEN marker_count := 0;
+    END;
+
     BEGIN
         EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
         rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
-        LET c CURSOR FOR rs;
-        FOR r IN c DO graph_file_count := r.C; END FOR;
+        LET c_g CURSOR FOR rs;
+        FOR r IN c_g DO graph_file_count := r.C; END FOR;
     EXCEPTION WHEN OTHER THEN graph_file_count := 0;
     END;
-    IF (:graph_file_count > 0) THEN rebuild_flag := 'false'; ELSE rebuild_flag := 'true'; END IF;
+
+    IF (:marker_count > 0) THEN
+        rebuild_flag := 'false';
+    ELSE
+        -- No success marker: either first build, or prior build did not
+        -- finish cleanly. Purge whatever partial files remain and rebuild.
+        IF (:graph_file_count > 0) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        rebuild_flag := 'true';
+    END IF;
+
+    -- ===== Family reconciliation =====
+    -- CREATE COMPUTE POOL IF NOT EXISTS will not change INSTANCE_FAMILY on
+    -- an existing pool, and SPCS forbids ALTER ... INSTANCE_FAMILY. If the
+    -- existing pool's family does not match the resolved family, drop the
+    -- dependent service + pool here so the CREATE below recreates them on
+    -- the correct family. No-op when the families already match.
+    LET existing_family VARCHAR DEFAULT NULL;
+    BEGIN
+        EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''' || :pool_name || '''';
+        LET rs_p RESULTSET := (SELECT "instance_family" AS F
+                               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+        LET c_p CURSOR FOR rs_p;
+        FOR r IN c_p DO existing_family := r.F; END FOR;
+    EXCEPTION WHEN OTHER THEN existing_family := NULL;
+    END;
+
+    IF (:existing_family IS NOT NULL AND :existing_family <> :instance_family) THEN
+        BEGIN EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name;
+        EXCEPTION WHEN OTHER THEN NULL; END;
+        BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' STOP ALL';
+        EXCEPTION WHEN OTHER THEN NULL; END;
+        BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' SUSPEND';
+        EXCEPTION WHEN OTHER THEN NULL; END;
+        EXECUTE IMMEDIATE 'DROP COMPUTE POOL IF EXISTS ' || :pool_name;
+    END IF;
 
     EXECUTE IMMEDIATE 'CREATE COMPUTE POOL IF NOT EXISTS ' || :pool_name ||
         ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :instance_family ||
