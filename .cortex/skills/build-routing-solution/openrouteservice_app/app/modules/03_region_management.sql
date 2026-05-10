@@ -539,11 +539,11 @@ BEGIN
     ELSEIF (:P_COMPUTE_SIZE = 'M') THEN
         instance_family := 'CPU_X64_SL';        -- legacy override
     ELSEIF (:P_COMPUTE_SIZE = 'XXL') THEN
-        instance_family := OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY();
+        CALL OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY() INTO :instance_family;
     ELSE
         -- Default: any unrecognized non-city size resolves to the largest
         -- available family. Never silently downgrade a non-city build.
-        instance_family := OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY();
+        CALL OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY() INTO :instance_family;
     END IF;
 
     -- Pre-flight: confirm the resolved family actually exists. Fail fast with a
