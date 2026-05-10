@@ -142,6 +142,13 @@ export default function RegionBuilder() {
     phase: string; progress: number; profileProgress?: number; nodesRemaining?: number; nodesTotal?: number;
     currentProfile?: string | null; completedProfiles?: string[]; totalProfiles?: number; detail?: string;
   }>>({});
+  const [diagState, setDiagState] = useState<Record<string, {
+    loading: boolean;
+    markdown?: string;
+    error?: string;
+    raw?: any;
+    expanded: boolean;
+  }>>({});
 
   const fetchRegions = useCallback(async () => {
     try {
@@ -287,6 +294,33 @@ export default function RegionBuilder() {
     } catch {}
   }, []);
 
+  const askForStatus = useCallback(async (region: string) => {
+    setDiagState(prev => ({
+      ...prev,
+      [region]: { ...(prev[region] || {}), loading: true, expanded: true, error: undefined },
+    }));
+    try {
+      const r = await fetch(`/api/regions/${encodeURIComponent(region)}/diagnose`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        setDiagState(prev => ({
+          ...prev,
+          [region]: { loading: false, markdown: d.markdown, raw: d.raw_snapshot, expanded: true },
+        }));
+      } else {
+        setDiagState(prev => ({
+          ...prev,
+          [region]: { loading: false, error: d.error || 'Unknown error', expanded: true },
+        }));
+      }
+    } catch (e: any) {
+      setDiagState(prev => ({
+        ...prev,
+        [region]: { loading: false, error: e.message, expanded: true },
+      }));
+    }
+  }, []);
+
   const retryJob = useCallback((job: ProvisionJob) => {
     const match = catalog.find((r) => r.regionKey.toUpperCase() === job.region.toUpperCase());
     if (match) {
@@ -369,7 +403,10 @@ export default function RegionBuilder() {
                   <div className="job-header">
                     <strong>{job.display_name || job.region}</strong>
                     <span className="badge running">{job.status}</span>
-                    <button className="btn danger small" onClick={() => cancelJob(job.region)} style={{ marginLeft: 'auto' }}>Cancel</button>
+                    <button className="btn small" onClick={() => askForStatus(job.region)} style={{ marginLeft: 'auto' }}>
+                      {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
+                    </button>
+                    <button className="btn danger small" onClick={() => cancelJob(job.region)}>Cancel</button>
                   </div>
                   <div className="provision-progress">
                     {PROVISION_PHASES.map((phase) => {
@@ -409,6 +446,40 @@ export default function RegionBuilder() {
                   </div>
                   {job.profiles && <div className="job-meta">Profiles: {job.profiles}</div>}
                   {job.started_at && <div className="job-meta">Started {getTimeSince(job.started_at)}</div>}
+                  {diagState[job.region]?.expanded && (
+                    <div style={{
+                      marginTop: 8, padding: '10px 12px',
+                      background: 'rgba(46, 134, 171, 0.08)',
+                      borderLeft: '3px solid var(--accent)',
+                      borderRadius: 6, fontSize: 13,
+                    }}>
+                      {diagState[job.region]?.loading && <div>Diagnosing...</div>}
+                      {diagState[job.region]?.error && (
+                        <div style={{ color: 'var(--error, #e53935)' }}>Error: {diagState[job.region]?.error}</div>
+                      )}
+                      {diagState[job.region]?.markdown && (
+                        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit' }}>{diagState[job.region]!.markdown!}</pre>
+                      )}
+                      {diagState[job.region]?.markdown && (
+                        <details style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+                          <summary>Raw diagnostic data</summary>
+                          <pre style={{ overflow: 'auto', maxHeight: 240 }}>
+                            {JSON.stringify(diagState[job.region]?.raw, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                      <button
+                        className="btn small ghost"
+                        style={{ marginTop: 6 }}
+                        onClick={() => setDiagState(prev => ({
+                          ...prev,
+                          [job.region]: { ...(prev[job.region] || { loading: false, expanded: false }), expanded: false },
+                        }))}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -698,6 +769,9 @@ export default function RegionBuilder() {
                   {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{getTimeSince(job.completed_at)}</span>}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn small" onClick={() => askForStatus(job.region)}>
+                    {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
+                  </button>
                   <button className="btn small primary" onClick={() => retryJob(job)}>Retry</button>
                   <button className="btn small" onClick={() => dismissJob(job.job_id)}>Dismiss</button>
                 </div>
@@ -706,6 +780,40 @@ export default function RegionBuilder() {
                 {job.error_msg || job.message || 'Unknown error'}
               </div>
               {job.profiles && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Profiles: {job.profiles}</div>}
+              {diagState[job.region]?.expanded && (
+                <div style={{
+                  marginTop: 8, padding: '10px 12px',
+                  background: 'rgba(46, 134, 171, 0.08)',
+                  borderLeft: '3px solid var(--accent)',
+                  borderRadius: 6, fontSize: 13,
+                }}>
+                  {diagState[job.region]?.loading && <div>Diagnosing...</div>}
+                  {diagState[job.region]?.error && (
+                    <div style={{ color: '#e53935' }}>Error: {diagState[job.region]?.error}</div>
+                  )}
+                  {diagState[job.region]?.markdown && (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit' }}>{diagState[job.region]!.markdown!}</pre>
+                  )}
+                  {diagState[job.region]?.markdown && (
+                    <details style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+                      <summary>Raw diagnostic data</summary>
+                      <pre style={{ overflow: 'auto', maxHeight: 240 }}>
+                        {JSON.stringify(diagState[job.region]?.raw, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                  <button
+                    className="btn small ghost"
+                    style={{ marginTop: 6 }}
+                    onClick={() => setDiagState(prev => ({
+                      ...prev,
+                      [job.region]: { ...(prev[job.region] || { loading: false, expanded: false }), expanded: false },
+                    }))}
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </>
