@@ -311,7 +311,8 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     MIN_LON FLOAT,
     MAX_LON FLOAT,
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
-    COMPUTE_SIZE VARCHAR DEFAULT 'M',
+    COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
+    INSTANCE_FAMILY VARCHAR,
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
@@ -335,9 +336,9 @@ AS
 $$
     '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
     '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '40G' WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
     '","XMX":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '400G' WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
     '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
@@ -364,14 +365,21 @@ BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
-    IF (:P_COMPUTE_SIZE = 'XL') THEN
+    -- Default for non-city regions: XXL on the GA Gen2 high-memory family.
+    -- 60 vCPU / 492 GB / 400 G heap finishes USA-class graph builds within ~4h.
+    -- Legacy tiers retained for the UI advanced override path.
+    IF (:P_COMPUTE_SIZE = 'XXL') THEN
+        instance_family := 'MEM_X64_G2_64';
+    ELSEIF (:P_COMPUTE_SIZE = 'XL') THEN
         instance_family := 'HIGHMEM_X64_M';
     ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
         instance_family := 'CPU_X64_L';
-    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
-        instance_family := 'CPU_X64_M';
-    ELSE
+    ELSEIF (:P_COMPUTE_SIZE = 'M') THEN
         instance_family := 'CPU_X64_SL';
+    ELSEIF (:P_COMPUTE_SIZE = 'S') THEN
+        instance_family := 'GEN_X64_G2_8';
+    ELSE
+        instance_family := 'MEM_X64_G2_64';
     END IF;
 
     -- Probe graphs stage: if a prior successful build left artifacts, reuse them
@@ -397,7 +405,7 @@ BEGIN
     EXECUTE IMMEDIATE :create_sql;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, UPDATED_AT = CURRENT_TIMESTAMP()
+    SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, INSTANCE_FAMILY = :instance_family, UPDATED_AT = CURRENT_TIMESTAMP()
     WHERE REGION = :P_REGION;
 
     RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ')';
@@ -532,8 +540,11 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         'M':  {'init_threads': 1, 'ch_threads': 10, 'lm_threads': 8},
         'L':  {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
         'XL': {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
+        # XXL: MEM_X64_G2_64 (60 vCPU / 492 GB) -- parallelize graph contraction across
+        # all 3 default profiles so USA-class builds finish within ~4 hours.
+        'XXL': {'init_threads': 3, 'ch_threads': 40, 'lm_threads': 24},
     }
-    tc = thread_config.get(p_compute_size, thread_config['M'])
+    tc = thread_config.get(p_compute_size, thread_config['XXL'])
 
     profiles_list = [p.strip() for p in p_profiles.split(',') if p.strip()]
     all_profiles = [
@@ -662,5 +673,114 @@ BEGIN
     ))::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
     RETURN COALESCE(result, '[]');
+END;
+$$;
+
+-- =============================================================================
+-- INSTANCE_FAMILY column migration (idempotent)
+-- Pre-existing deployments need this column added before create_region_ors_service
+-- can populate it. Safe to run repeatedly.
+-- =============================================================================
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+    ADD COLUMN IF NOT EXISTS INSTANCE_FAMILY VARCHAR;
+
+-- =============================================================================
+-- DOWNSIZE_REGION_AFTER_BUILD
+-- Cost guardrail: after a region's first successful graph build (graphs persisted
+-- on @ORS_GRAPHS_SPCS_STAGE/<region>/), move the runtime service off the XXL
+-- (MEM_X64_G2_64) build pool onto a cheaper runtime tier so the account does not
+-- pay XXL rates 24/7 for query serving.
+--
+-- Workflow:
+--   1. Verify graphs exist on the stage (refuse to downsize if not).
+--   2. Re-render the service spec at the runtime size (P_RUNTIME_SIZE, default 'M').
+--   3. SUSPEND the service, ALTER FROM SPECIFICATION to apply the new spec, then
+--      DROP+CREATE the compute pool at the smaller instance family
+--      (ALTER COMPUTE POOL cannot change INSTANCE_FAMILY).
+--   4. RESUME the service and update REGION_ORS_MAP to the new tier/family.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(
+    P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M'
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    svc_name VARCHAR;
+    pool_name VARCHAR;
+    runtime_family VARCHAR;
+    new_spec VARCHAR;
+    graph_file_count INTEGER DEFAULT 0;
+    rs RESULTSET;
+BEGIN
+    svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
+    pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+
+    -- Refuse to downsize if no graphs exist (would force a full rebuild on small node).
+    BEGIN
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        LET c CURSOR FOR rs;
+        FOR r IN c DO graph_file_count := r.C; END FOR;
+    EXCEPTION WHEN OTHER THEN graph_file_count := 0;
+    END;
+    IF (:graph_file_count = 0) THEN
+        RETURN 'Refusing to downsize ' || :P_REGION || ': no graph files found on stage. Run REBUILD_REGION_GRAPHS first.';
+    END IF;
+
+    -- Resolve runtime instance family (mirrors create_region_ors_service mapping).
+    IF (:P_RUNTIME_SIZE = 'XXL') THEN
+        runtime_family := 'MEM_X64_G2_64';
+    ELSEIF (:P_RUNTIME_SIZE = 'XL') THEN
+        runtime_family := 'HIGHMEM_X64_M';
+    ELSEIF (:P_RUNTIME_SIZE = 'L') THEN
+        runtime_family := 'CPU_X64_L';
+    ELSEIF (:P_RUNTIME_SIZE = 'M') THEN
+        runtime_family := 'CPU_X64_SL';
+    ELSEIF (:P_RUNTIME_SIZE = 'S') THEN
+        runtime_family := 'GEN_X64_G2_8';
+    ELSE
+        runtime_family := 'CPU_X64_SL';
+    END IF;
+
+    -- Persist graphs across the cycle (REBUILD_GRAPHS=false).
+    new_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_RUNTIME_SIZE, 'false');
+
+    -- Suspend service so we can swap the underlying pool.
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- Drop the XXL pool and recreate at the runtime family.
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP COMPUTE POOL IF EXISTS ' || :pool_name;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL ' || :pool_name ||
+        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :runtime_family ||
+        ' AUTO_SUSPEND_SECS = 14400 AUTO_RESUME = TRUE' ||
+        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '","stage":"runtime"}}''';
+
+    -- Apply the new (runtime-sized) spec on top of the new pool.
+    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name ||
+        ' FROM SPECIFICATION ''' || :new_spec || '''';
+
+    -- Resume to load graphs from the persisted stage.
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' RESUME';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family, UPDATED_AT = CURRENT_TIMESTAMP()
+    WHERE REGION = :P_REGION;
+
+    RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
+           ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage.';
 END;
 $$;

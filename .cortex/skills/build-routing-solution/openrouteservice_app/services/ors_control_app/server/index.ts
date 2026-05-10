@@ -819,7 +819,10 @@ app.post('/api/regions/provision', async (req, res) => {
     ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
     : defaultProfiles;
   const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
-  const safeComputeSize = ['S', 'M', 'L'].includes(compute_size) ? compute_size : 'M';
+  // Allow legacy tiers (M/L/XL) for the UI advanced override; default to XXL for any non-city
+  // request that arrives without a recognized tier so we never silently downgrade large regions.
+  const ALLOWED_SIZES = ['S', 'M', 'L', 'XL', 'XXL'] as const;
+  const safeComputeSize = (ALLOWED_SIZES as readonly string[]).includes(compute_size) ? compute_size : 'XXL';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 

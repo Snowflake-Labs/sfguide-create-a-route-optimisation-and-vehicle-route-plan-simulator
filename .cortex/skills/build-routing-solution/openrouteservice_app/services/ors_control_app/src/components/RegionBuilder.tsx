@@ -65,23 +65,25 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 
-type ComputeSize = 'S' | 'M' | 'L' | 'XL';
+type ComputeSize = 'S' | 'M' | 'L' | 'XL' | 'XXL';
 
 const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
-  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities and small regions' },
-  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Sub-regions and small countries' },
-  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Countries and continents' },
-  { id: 'XL', label: 'Extra Large', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Large countries (US, Russia, etc.)' },
+  { id: 'S', label: 'Small', instance: 'GEN_X64_G2_8', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities only' },
+  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_64', vcpu: 60, mem: '492 GB', heap: '400 GB', desc: 'Sub-regions, countries, continents (default for non-city)' },
 ];
 
+const COMPUTE_SIZES_ADVANCED: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
+  { id: 'M', label: 'Medium (legacy)', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Legacy override only' },
+  { id: 'L', label: 'Large (legacy)', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Legacy override only' },
+  { id: 'XL', label: 'Extra Large (legacy)', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Legacy override only' },
+];
+
+// City -> S; everything else (sub-region, country, continent) -> XXL on MEM_X64_G2_64.
+// XXL provides 60 vCPU / 492 GB / 400 G heap and finishes USA-class graph builds in <= 4h.
+// After first successful build, the runtime service should be auto-downsized via
+// DOWNSIZE_REGION_AFTER_BUILD to avoid 24/7 XXL spend.
 function recommendComputeSize(level: string | undefined): ComputeSize {
-  switch (level) {
-    case 'city': return 'S';
-    case 'sub-region': return 'M';
-    case 'country': return 'L';
-    case 'continent': return 'XL';
-    default: return 'M';
-  }
+  return level === 'city' ? 'S' : 'XXL';
 }
 
 type SourceTab = 'bbbike' | 'geofabrik';
@@ -134,7 +136,8 @@ export default function RegionBuilder() {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
-  const [computeSize, setComputeSize] = useState<ComputeSize>('S');
+  const [computeSize, setComputeSize] = useState<ComputeSize>('XXL');
+  const [showAdvancedSizes, setShowAdvancedSizes] = useState<boolean>(false);
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -668,6 +671,36 @@ export default function RegionBuilder() {
                     <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
                   </button>
                 ))}
+              </div>
+              {computeSize === 'XXL' && (
+                <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
+                  First-time graph build runs on MEM_X64_G2_64 (~2.3 credits/hr). The service should be downsized to a runtime tier after the first successful build.
+                </p>
+              )}
+              <div style={{ marginTop: '0.5rem' }}>
+                <button
+                  className="btn small"
+                  onClick={() => setShowAdvancedSizes((v) => !v)}
+                  style={{ fontSize: '11px', opacity: 0.8 }}
+                >
+                  {showAdvancedSizes ? 'Hide advanced override' : 'Advanced override (legacy tiers)'}
+                </button>
+                {showAdvancedSizes && (
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                    {COMPUTE_SIZES_ADVANCED.map((s) => (
+                      <button
+                        key={s.id}
+                        className={`btn small${computeSize === s.id ? ' primary' : ''}`}
+                        onClick={() => setComputeSize(s.id)}
+                        style={{ flex: 1, textAlign: 'center' }}
+                      >
+                        <div><strong>{s.label}</strong></div>
+                        <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
+                        <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
