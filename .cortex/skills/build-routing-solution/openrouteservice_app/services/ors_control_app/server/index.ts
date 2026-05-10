@@ -708,13 +708,12 @@ app.get('/api/regions/healthcheck', async (_req, res) => {
     { key: 'build_history',     sql: `SELECT 1 FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY LIMIT 1` },
     { key: 'build_spec',        sql: `SELECT ${SF_DATABASE}.CORE.BUILD_ORS_SERVICE_SPEC('X','XXL','false')` },
     { key: 'downsize_proc',     sql: `SHOW PROCEDURES LIKE 'DOWNSIZE_REGION_AFTER_BUILD' IN SCHEMA ${SF_DATABASE}.CORE` },
-    { key: 'backfill_proc',     sql: `SHOW PROCEDURES LIKE 'BACKFILL_ORS_BUILD_HISTORY' IN SCHEMA ${SF_DATABASE}.CORE` },
   ];
 
   await Promise.all(probes.map(async ({ key, sql }) => {
     try {
       const rows = await runSql(sql);
-      if (key === 'downsize_proc' || key === 'backfill_proc') {
+      if (key === 'downsize_proc') {
         status[key] = (rows && rows.length > 0) ? 'ok' : 'missing';
       } else {
         status[key] = 'ok';

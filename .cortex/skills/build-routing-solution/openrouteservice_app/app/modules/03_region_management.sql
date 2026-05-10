@@ -103,7 +103,12 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     STARTED_AT TIMESTAMP_NTZ,
     COMPLETED_AT TIMESTAMP_NTZ,
     ERROR_MSG VARCHAR,
-    DISMISSED BOOLEAN DEFAULT FALSE
+    DISMISSED BOOLEAN DEFAULT FALSE,
+    -- Captured at provision time so the row is self-describing without
+    -- joining REGION_ORS_MAP. PBF_SIZE_GIB is recorded after PBF download.
+    COMPUTE_SIZE VARCHAR,
+    INSTANCE_FAMILY VARCHAR,
+    PBF_SIZE_GIB FLOAT
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}';
 
@@ -855,28 +860,6 @@ END;
 $$;
 
 -- =============================================================================
--- INSTANCE_FAMILY column migration (idempotent)
--- Pre-existing deployments need this column added before create_region_ors_service
--- can populate it. Safe to run repeatedly.
--- =============================================================================
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    ADD COLUMN IF NOT EXISTS INSTANCE_FAMILY VARCHAR;
-
--- Build-history column additions (idempotent). Allows PROVISION_REGION_WRAPPER
--- to capture per-job compute size, instance family, and PBF size for later
--- correlation with ORS_BUILD_HISTORY rows.
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR;
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    ADD COLUMN IF NOT EXISTS INSTANCE_FAMILY VARCHAR;
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    ADD COLUMN IF NOT EXISTS PBF_SIZE_GIB FLOAT;
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-    ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR;
-ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-    ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR;
-
--- =============================================================================
 -- DOWNSIZE_REGION_AFTER_BUILD
 -- Cost guardrail: after a region's first successful graph build (graphs persisted
 -- on @ORS_GRAPHS_SPCS_STAGE/<region>/), move the runtime service off the XXL
@@ -985,12 +968,14 @@ $$;
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY (
     BUILD_ID         VARCHAR DEFAULT UUID_STRING(),
+    JOB_ID           VARCHAR,
     REGION           VARCHAR,
     PBF_URL          VARCHAR,
     PBF_SIZE_GIB     FLOAT,
     OSM_TIMESTAMP    TIMESTAMP_NTZ,
     ORS_VERSION      VARCHAR,
     PROFILES         VARCHAR,
+    COMPUTE_SIZE     VARCHAR,
     CONFIG_HASH      VARCHAR,
     INSTANCE_FAMILY  VARCHAR,
     JVM_XMX_GIB      NUMBER,
@@ -1071,59 +1056,3 @@ BEGIN
 END;
 $$;
 
--- =============================================================================
--- BACKFILL_ORS_BUILD_HISTORY
--- One-shot procedure that imports rows from REGION_PROVISION_JOBS that are not
--- yet represented in ORS_BUILD_HISTORY. Useful immediately after upgrading so
--- existing job history is not lost. Safe to re-run; deduped on JOB_ID.
--- =============================================================================
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BACKFILL_ORS_BUILD_HISTORY()
-RETURNS NUMBER
-LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"telemetry","action":"backfill"}}'
-EXECUTE AS OWNER
-AS
-$$
-DECLARE
-    inserted_rows INTEGER DEFAULT 0;
-BEGIN
-    INSERT INTO OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-        (BUILD_ID, JOB_ID, REGION, PBF_URL, PROFILES, COMPUTE_SIZE,
-         INSTANCE_FAMILY, STARTED_AT, FINISHED_AT, ELAPSED_MINUTES,
-         EXIT_STATUS, ORS_VERSION)
-    SELECT
-        UUID_STRING(),
-        j.JOB_ID,
-        j.REGION,
-        j.PBF_URL,
-        j.PROFILES,
-        COALESCE(j.COMPUTE_SIZE, m.COMPUTE_SIZE),
-        COALESCE(j.INSTANCE_FAMILY, m.INSTANCE_FAMILY),
-        COALESCE(j.STARTED_AT, j.CREATED_AT),
-        j.COMPLETED_AT,
-        TIMESTAMPDIFF(
-            SECOND,
-            COALESCE(j.STARTED_AT, j.CREATED_AT),
-            COALESCE(j.COMPLETED_AT, CURRENT_TIMESTAMP())
-        ) / 60.0,
-        CASE
-            WHEN j.STATUS = 'COMPLETE' THEN 'SUCCESS'
-            WHEN j.STATUS = 'FAILED'   THEN 'ERROR'
-            WHEN j.STATUS = 'ERROR'    THEN 'ERROR'
-            WHEN j.STATUS = 'CANCELLED' THEN 'CANCELLED'
-            WHEN j.STATUS = 'RUNNING'  THEN 'IN_PROGRESS'
-            WHEN j.STATUS = 'PENDING'  THEN 'IN_PROGRESS'
-            ELSE COALESCE(j.STATUS, 'UNKNOWN')
-        END,
-        'v9.0.0'
-    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
-    LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP m
-        ON UPPER(m.REGION) = UPPER(j.REGION)
-    LEFT JOIN OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY h
-        ON h.JOB_ID = j.JOB_ID
-    WHERE h.JOB_ID IS NULL;
-
-    inserted_rows := SQLROWCOUNT;
-    RETURN :inserted_rows;
-END;
-$$;
