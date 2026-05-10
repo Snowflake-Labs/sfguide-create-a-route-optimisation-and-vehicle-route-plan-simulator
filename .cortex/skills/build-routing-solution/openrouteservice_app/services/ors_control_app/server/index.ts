@@ -707,6 +707,27 @@ app.get('/api/regions/:region/retry-strategy', async (req, res) => {
   }
 });
 
+// Last 25 build attempts for a region from ORS_BUILD_HISTORY. Powers the UI
+// build-history card so users can see past compute size, instance family,
+// elapsed minutes, and exit status without inspecting Snowflake directly.
+app.get('/api/regions/:region/build-history', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const rows = await runSql(
+      `SELECT BUILD_ID, JOB_ID, REGION, INSTANCE_FAMILY, COMPUTE_SIZE,
+              PROFILES, JVM_XMX_GIB, STARTED_AT, FINISHED_AT, ELAPSED_MINUTES,
+              EXIT_STATUS, PEAK_RSS_GIB, OUTPUT_GRAPH_GIB
+       FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY
+       WHERE UPPER(REGION) = UPPER('${safeRegion}')
+       ORDER BY STARTED_AT DESC
+       LIMIT 25`
+    );
+    res.json({ region: safeRegion, history: rows || [] });
+  } catch (err: any) {
+    res.status(500).json({ region: req.params.region, history: [], error: err.message });
+  }
+});
+
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');

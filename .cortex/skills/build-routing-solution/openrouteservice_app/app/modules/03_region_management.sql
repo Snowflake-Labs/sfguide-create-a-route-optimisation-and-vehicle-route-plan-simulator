@@ -131,7 +131,32 @@ DECLARE
     status_json VARIANT;
     profile_count INTEGER DEFAULT 0;
     rs RESULTSET;
+    -- Build-history bookkeeping: one BUILD_ID per job, used by every UPDATE
+    -- below so retries on the same JOB_ID overwrite a single history row.
+    build_id VARCHAR DEFAULT UUID_STRING();
+    xmx_gib NUMBER DEFAULT 0;
+    peak_rss FLOAT DEFAULT NULL;
+    graph_gib FLOAT DEFAULT NULL;
+    resolved_family VARCHAR DEFAULT '';
+    pbf_gib FLOAT DEFAULT NULL;
 BEGIN
+    -- JVM heap mirrors the BUILD_ORS_SERVICE_SPEC heap CASE so build history
+    -- captures the actual headroom the JVM was given.
+    xmx_gib := CASE UPPER(:P_COMPUTE_SIZE)
+        WHEN 'XXL' THEN 1100 WHEN 'XL' THEN 200 WHEN 'L' THEN 96
+        WHEN 'S' THEN 20 ELSE 44 END;
+
+    INSERT INTO OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        (BUILD_ID, JOB_ID, REGION, PBF_URL, PROFILES, COMPUTE_SIZE,
+         JVM_XMX_GIB, STARTED_AT, EXIT_STATUS, ORS_VERSION)
+    VALUES
+        (:build_id, :P_JOB_ID, :P_REGION, :P_PBF_URL, :P_PROFILES, :P_COMPUTE_SIZE,
+         :xmx_gib, CURRENT_TIMESTAMP(), 'IN_PROGRESS', 'v9.0.0');
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    SET COMPUTE_SIZE = :P_COMPUTE_SIZE
+    WHERE JOB_ID = :P_JOB_ID;
+
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=CURRENT_TIMESTAMP(),
         MESSAGE='Inserting region metadata and downloading PBF file...'
@@ -181,6 +206,12 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+        UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        SET FINISHED_AT = CURRENT_TIMESTAMP(),
+            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+            EXIT_STATUS = 'ERROR',
+            LOG_URI = :dl_err
+        WHERE BUILD_ID = :build_id;
         RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
     END;
 
@@ -194,6 +225,21 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='STARTING_SERVICE', MESSAGE='Creating ORS service...' WHERE JOB_ID = :P_JOB_ID;
     CALL OPENROUTESERVICE_APP.CORE.CREATE_REGION_ORS_SERVICE(:P_REGION, :P_COMPUTE_SIZE);
+
+    -- Capture the resolved instance family on both the job row and the
+    -- in-progress history row now that create_region_ors_service has decided.
+    BEGIN
+        rs := (SELECT INSTANCE_FAMILY AS IF FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
+        LET cf CURSOR FOR rs;
+        FOR r IN cf DO resolved_family := COALESCE(r.IF, ''); END FOR;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    SET INSTANCE_FAMILY = :resolved_family
+    WHERE JOB_ID = :P_JOB_ID;
+    UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+    SET INSTANCE_FAMILY = :resolved_family
+    WHERE BUILD_ID = :build_id;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='WAITING_FOR_SERVICE', MESSAGE='Waiting for ORS service to start...' WHERE JOB_ID = :P_JOB_ID;
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -239,6 +285,26 @@ BEGIN
                         MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
                         COMPLETED_AT=CURRENT_TIMESTAMP()
                     WHERE JOB_ID = :P_JOB_ID;
+                    -- Best-effort peak RSS for telemetry; NULL on failure.
+                    -- Inlined here because SYSTEM$GET_SERVICE_STATUS requires a
+                    -- constant argument and cannot be wrapped in a reusable UDF.
+                    BEGIN
+                        LET svc_full VARCHAR := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
+                        EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || ''')';
+                        rs := (SELECT TRY_CAST(
+                                  TRY_PARSE_JSON(VALUE::VARCHAR)[0]:containerStatus:peakMemoryGiB::VARCHAR
+                                  AS FLOAT) AS V
+                               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+                        LET c_rss CURSOR FOR rs;
+                        FOR r IN c_rss DO peak_rss := r.V; END FOR;
+                    EXCEPTION WHEN OTHER THEN peak_rss := NULL;
+                    END;
+                    UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+                    SET FINISHED_AT = CURRENT_TIMESTAMP(),
+                        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+                        EXIT_STATUS = 'SUCCESS',
+                        PEAK_RSS_GIB = :peak_rss
+                    WHERE BUILD_ID = :build_id;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
                 END IF;
             END IF;
@@ -256,6 +322,13 @@ BEGIN
         MESSAGE='Service running but graph may still be loading. Check ORS_STATUS.',
         COMPLETED_AT=CURRENT_TIMESTAMP()
     WHERE JOB_ID = :P_JOB_ID;
+    -- The graph wait loop hit its 10-minute ceiling without service_ready.
+    -- Mark the build as TIMEOUT so retry policy can recommend SPLIT_PROFILES.
+    UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+    SET FINISHED_AT = CURRENT_TIMESTAMP(),
+        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+        EXIT_STATUS = 'TIMEOUT'
+    WHERE BUILD_ID = :build_id;
     RETURN 'Job ' || :P_JOB_ID || ' complete (graph may still be loading)';
 
 EXCEPTION
@@ -272,6 +345,17 @@ EXCEPTION
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
+        -- Heuristic: surface OOM separately so RECOMMEND_RETRY_STRATEGY can
+        -- recommend SPLIT_PROFILES instead of REBUILD_SAME.
+        UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        SET FINISHED_AT = CURRENT_TIMESTAMP(),
+            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+            EXIT_STATUS = CASE
+                WHEN UPPER(:err_msg) LIKE '%OUT OF MEMORY%' OR UPPER(:err_msg) LIKE '%OOM%'
+                  OR UPPER(:err_msg) LIKE '%JAVA HEAP SPACE%' THEN 'OOM'
+                ELSE 'ERROR' END,
+            LOG_URI = :err_msg
+        WHERE BUILD_ID = :build_id;
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;
 $$;
@@ -778,6 +862,20 @@ $$;
 ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
     ADD COLUMN IF NOT EXISTS INSTANCE_FAMILY VARCHAR;
 
+-- Build-history column additions (idempotent). Allows PROVISION_REGION_WRAPPER
+-- to capture per-job compute size, instance family, and PBF size for later
+-- correlation with ORS_BUILD_HISTORY rows.
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    ADD COLUMN IF NOT EXISTS INSTANCE_FAMILY VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    ADD COLUMN IF NOT EXISTS PBF_SIZE_GIB FLOAT;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+    ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR;
+ALTER TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+    ADD COLUMN IF NOT EXISTS COMPUTE_SIZE VARCHAR;
+
 -- =============================================================================
 -- DOWNSIZE_REGION_AFTER_BUILD
 -- Cost guardrail: after a region's first successful graph build (graphs persisted
@@ -970,5 +1068,62 @@ BEGIN
     END IF;
 
     RETURN 'REBUILD_SAME';
+END;
+$$;
+
+-- =============================================================================
+-- BACKFILL_ORS_BUILD_HISTORY
+-- One-shot procedure that imports rows from REGION_PROVISION_JOBS that are not
+-- yet represented in ORS_BUILD_HISTORY. Useful immediately after upgrading so
+-- existing job history is not lost. Safe to re-run; deduped on JOB_ID.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BACKFILL_ORS_BUILD_HISTORY()
+RETURNS NUMBER
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"telemetry","action":"backfill"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    inserted_rows INTEGER DEFAULT 0;
+BEGIN
+    INSERT INTO OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        (BUILD_ID, JOB_ID, REGION, PBF_URL, PROFILES, COMPUTE_SIZE,
+         INSTANCE_FAMILY, STARTED_AT, FINISHED_AT, ELAPSED_MINUTES,
+         EXIT_STATUS, ORS_VERSION)
+    SELECT
+        UUID_STRING(),
+        j.JOB_ID,
+        j.REGION,
+        j.PBF_URL,
+        j.PROFILES,
+        COALESCE(j.COMPUTE_SIZE, m.COMPUTE_SIZE),
+        COALESCE(j.INSTANCE_FAMILY, m.INSTANCE_FAMILY),
+        COALESCE(j.STARTED_AT, j.CREATED_AT),
+        j.COMPLETED_AT,
+        TIMESTAMPDIFF(
+            SECOND,
+            COALESCE(j.STARTED_AT, j.CREATED_AT),
+            COALESCE(j.COMPLETED_AT, CURRENT_TIMESTAMP())
+        ) / 60.0,
+        CASE
+            WHEN j.STATUS = 'COMPLETE' THEN 'SUCCESS'
+            WHEN j.STATUS = 'FAILED'   THEN 'ERROR'
+            WHEN j.STATUS = 'ERROR'    THEN 'ERROR'
+            WHEN j.STATUS = 'CANCELLED' THEN 'CANCELLED'
+            WHEN j.STATUS = 'RUNNING'  THEN 'IN_PROGRESS'
+            WHEN j.STATUS = 'PENDING'  THEN 'IN_PROGRESS'
+            ELSE COALESCE(j.STATUS, 'UNKNOWN')
+        END,
+        'v9.0.0'
+    FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS j
+    LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP m
+        ON UPPER(m.REGION) = UPPER(j.REGION)
+    LEFT JOIN OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY h
+        ON h.JOB_ID = j.JOB_ID
+    WHERE h.JOB_ID IS NULL;
+
+    inserted_rows := SQLROWCOUNT;
+    RETURN :inserted_rows;
 END;
 $$;

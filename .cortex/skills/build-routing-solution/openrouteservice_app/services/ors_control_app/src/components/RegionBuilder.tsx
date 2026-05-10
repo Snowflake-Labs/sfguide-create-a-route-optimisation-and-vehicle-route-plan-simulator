@@ -153,6 +153,24 @@ export default function RegionBuilder() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+  // Aggregated build history across all provisioned regions, fed by
+  // /api/regions/:region/build-history. Refreshed whenever the regions list
+  // changes so a freshly-completed build shows up in the recent-builds card.
+  type BuildHistoryRow = {
+    BUILD_ID?: string;
+    REGION?: string;
+    INSTANCE_FAMILY?: string;
+    COMPUTE_SIZE?: string;
+    PROFILES?: string;
+    JVM_XMX_GIB?: number;
+    STARTED_AT?: string;
+    FINISHED_AT?: string;
+    ELAPSED_MINUTES?: number;
+    EXIT_STATUS?: string;
+    PEAK_RSS_GIB?: number | null;
+    OUTPUT_GRAPH_GIB?: number | null;
+  };
+  const [buildHistory, setBuildHistory] = useState<BuildHistoryRow[]>([]);
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -207,6 +225,36 @@ export default function RegionBuilder() {
     fetchCatalog();
     fetchProvisionJobs();
   }, [fetchRegions, fetchCatalog, fetchProvisionJobs]);
+
+  // Fetch the latest build history rows for every provisioned region whenever
+  // the regions list changes. Each region returns up to 25 rows; we then sort
+  // by STARTED_AT desc and keep only the most recent 10 across the whole
+  // account so the card stays compact.
+  useEffect(() => {
+    let cancelled = false;
+    if (regions.length === 0) {
+      setBuildHistory([]);
+      return;
+    }
+    Promise.all(
+      regions.map((c) =>
+        fetch(`/api/regions/${encodeURIComponent(c.region)}/build-history`)
+          .then((r) => r.json())
+          .then((d) => (Array.isArray(d?.history) ? d.history : []))
+          .catch(() => [])
+      )
+    ).then((all) => {
+      if (cancelled) return;
+      const flat: BuildHistoryRow[] = ([] as BuildHistoryRow[]).concat(...all);
+      flat.sort((a, b) => {
+        const ta = a.STARTED_AT ? new Date(a.STARTED_AT).getTime() : 0;
+        const tb = b.STARTED_AT ? new Date(b.STARTED_AT).getTime() : 0;
+        return tb - ta;
+      });
+      setBuildHistory(flat.slice(0, 10));
+    });
+    return () => { cancelled = true; };
+  }, [regions]);
 
   useEffect(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -530,6 +578,54 @@ export default function RegionBuilder() {
             })}
           </tbody>
         </table>
+      )}
+
+      {buildHistory.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3 style={{ fontSize: '14px', margin: '0 0 0.5rem' }}>Recent builds</h3>
+          <p style={{ fontSize: '11px', opacity: 0.7, margin: '0 0 0.5rem' }}>
+            Last {buildHistory.length} build attempts across all regions. Sourced from ORS_BUILD_HISTORY.
+          </p>
+          <table className="services-table" style={{ fontSize: '12px' }}>
+            <thead>
+              <tr>
+                <th>Region</th>
+                <th>Started</th>
+                <th>Family / size</th>
+                <th>Profiles</th>
+                <th>Elapsed</th>
+                <th>Status</th>
+                <th>Peak RSS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buildHistory.map((b) => {
+                const minutes = b.ELAPSED_MINUTES != null ? Math.round(b.ELAPSED_MINUTES * 10) / 10 : null;
+                const elapsed = minutes == null
+                  ? '\u2014'
+                  : minutes >= 60
+                    ? `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`
+                    : `${minutes}m`;
+                const statusBadge = b.EXIT_STATUS === 'SUCCESS'
+                  ? 'ok'
+                  : b.EXIT_STATUS === 'IN_PROGRESS'
+                    ? 'warn'
+                    : 'error';
+                return (
+                  <tr key={b.BUILD_ID || `${b.REGION}-${b.STARTED_AT}`}>
+                    <td>{b.REGION || '\u2014'}</td>
+                    <td>{b.STARTED_AT ? new Date(b.STARTED_AT).toLocaleString() : '\u2014'}</td>
+                    <td>{b.INSTANCE_FAMILY || '\u2014'}{b.COMPUTE_SIZE ? ` / ${b.COMPUTE_SIZE}` : ''}</td>
+                    <td title={b.PROFILES || ''} style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.PROFILES || '\u2014'}</td>
+                    <td>{elapsed}</td>
+                    <td><span className={`badge ${statusBadge}`}>{b.EXIT_STATUS || 'UNKNOWN'}</span></td>
+                    <td>{b.PEAK_RSS_GIB != null ? `${Math.round(b.PEAK_RSS_GIB)} GB` : '\u2014'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <h3>Provision New Region</h3>
