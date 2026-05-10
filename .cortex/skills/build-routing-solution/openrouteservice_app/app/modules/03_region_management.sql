@@ -119,7 +119,8 @@ CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
     P_PBF_URL VARCHAR,
     P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT,
     P_PROFILES VARCHAR,
-    P_COMPUTE_SIZE VARCHAR
+    P_COMPUTE_SIZE VARCHAR,
+    P_FORCE_REDOWNLOAD BOOLEAN DEFAULT FALSE
 )
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -201,24 +202,54 @@ BEGIN
     IF (pbf_filename IS NULL OR pbf_filename = '') THEN
         pbf_filename := 'data.osm.pbf';
     END IF;
+
+    -- Probe stage for cached PBF. Skip the download call entirely when the
+    -- file exists with non-zero size and the caller did not request a forced
+    -- refresh. Geofabrik refreshes weekly, so users can pass
+    -- P_FORCE_REDOWNLOAD=TRUE to pull a fresh copy.
+    LET pbf_cached_bytes INTEGER DEFAULT 0;
     BEGIN
-        EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
-    EXCEPTION WHEN OTHER THEN
-        LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
-        SYSTEM$LOG_INFO(dl_err);
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
+        LET rs_pbf RESULTSET := (SELECT COALESCE("size", 0)::INTEGER AS B
+                                 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+        LET c_pbf CURSOR FOR rs_pbf;
+        FOR r IN c_pbf DO pbf_cached_bytes := r.B; END FOR;
+    EXCEPTION WHEN OTHER THEN pbf_cached_bytes := 0;
+    END;
+
+    IF (:pbf_cached_bytes > 0 AND NOT :P_FORCE_REDOWNLOAD) THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        SET MESSAGE = 'PBF cache hit (' || ROUND(:pbf_cached_bytes / 1048576.0, 1) ||
+                      ' MB on stage). Skipping download.',
+            PBF_SIZE_GIB = :pbf_cached_bytes / 1073741824.0
+        WHERE JOB_ID = :P_JOB_ID;
+        UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        SET PBF_SIZE_GIB = :pbf_cached_bytes / 1073741824.0
+        WHERE BUILD_ID = :build_id;
         BEGIN
             ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
-        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
-        UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-        SET FINISHED_AT = CURRENT_TIMESTAMP(),
-            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
-            EXIT_STATUS = 'ERROR',
-            LOG_URI = :dl_err
-        WHERE BUILD_ID = :build_id;
-        RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
-    END;
+    ELSE
+        BEGIN
+            EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+        EXCEPTION WHEN OTHER THEN
+            LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
+            SYSTEM$LOG_INFO(dl_err);
+            BEGIN
+                ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+            UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+            SET FINISHED_AT = CURRENT_TIMESTAMP(),
+                ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+                EXIT_STATUS = 'ERROR',
+                LOG_URI = :dl_err
+            WHERE BUILD_ID = :build_id;
+            RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
+        END;
+    END IF;
 
     BEGIN
         ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;

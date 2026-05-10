@@ -138,6 +138,10 @@ export default function RegionBuilder() {
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
   const [computeSize, setComputeSize] = useState<ComputeSize>('XXL');
   const [showAdvancedSizes, setShowAdvancedSizes] = useState<boolean>(false);
+  // PBF source preference. Default false = reuse the staged .osm.pbf when
+  // present (turns multi-GB redeploys into seconds). True = force a fresh
+  // download from Geofabrik / BBBike, e.g. to pick up a weekly refresh.
+  const [forcePbfRedownload, setForcePbfRedownload] = useState<boolean>(false);
   // Largest high-memory family resolved on the server via
   // RESOLVE_LARGEST_HIGHMEM_FAMILY(); used in the XXL banner so users see
   // exactly which instance family will back their build before they click
@@ -343,6 +347,7 @@ export default function RegionBuilder() {
           bbox: selectedRegion.bbox || { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 },
           profiles: selectedProfiles,
           compute_size: computeSize,
+          force_redownload_pbf: forcePbfRedownload,
         }),
       });
       const data = await resp.json();
@@ -351,7 +356,7 @@ export default function RegionBuilder() {
         fetchProvisionJobs();
       }
     } catch {}
-  }, [selectedRegion, selectedProfiles, fetchProvisionJobs]);
+  }, [selectedRegion, selectedProfiles, computeSize, forcePbfRedownload, fetchProvisionJobs]);
 
   const cancelJob = useCallback(async (region: string) => {
     try {
@@ -863,6 +868,42 @@ export default function RegionBuilder() {
             {isRegionProvisioning(selectedRegion.regionKey) && (
               <div className="warning-banner">This region is already being provisioned.</div>
             )}
+
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>PBF source</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="pbf-source"
+                    checked={!forcePbfRedownload}
+                    onChange={() => setForcePbfRedownload(false)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Use cached file if available</strong>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Reuse the .osm.pbf already on the SPCS stage. Multi-GB redeploys complete in seconds.
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="pbf-source"
+                    checked={forcePbfRedownload}
+                    onChange={() => setForcePbfRedownload(true)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Force re-download from URL</strong>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Pull a fresh copy from Geofabrik / BBBike. Use after a weekly refresh or if cached file is corrupt.
+                    </div>
+                  </span>
+                </label>
+              </div>
+            </div>
           </>
         )}
 

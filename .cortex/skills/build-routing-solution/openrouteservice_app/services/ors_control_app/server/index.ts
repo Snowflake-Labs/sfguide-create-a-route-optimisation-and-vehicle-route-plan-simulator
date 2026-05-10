@@ -874,7 +874,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 });
 
 app.post('/api/regions/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox, profiles, compute_size } = req.body;
+  const { city, region, pbf_url, bbox, profiles, compute_size, force_redownload_pbf } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -906,6 +906,11 @@ app.post('/api/regions/provision', async (req, res) => {
   // request that arrives without a recognized tier so we never silently downgrade large regions.
   const ALLOWED_SIZES = ['S', 'M', 'L', 'XL', 'XXL'] as const;
   const safeComputeSize = (ALLOWED_SIZES as readonly string[]).includes(compute_size) ? compute_size : 'XXL';
+  // PBF cache control: when true, skip the on-stage probe in
+  // PROVISION_REGION_WRAPPER and always re-download from the upstream URL.
+  // Defaults to false so cached files (e.g. weekly Geofabrik snapshots already
+  // staged) are reused, which makes redeploys complete in seconds.
+  const safeForceRedownload = force_redownload_pbf === true ? 'TRUE' : 'FALSE';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
@@ -918,7 +923,7 @@ app.post('/api/regions/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}', ${safeForceRedownload})`;
     const handle = await submitSqlAsync(callSql);
     await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
