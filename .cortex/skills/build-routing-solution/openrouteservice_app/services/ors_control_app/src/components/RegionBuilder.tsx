@@ -65,25 +65,24 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 
-type ComputeSize = 'S' | 'M' | 'L' | 'XL' | 'XXL';
+type ComputeSize = 'S' | 'L' | 'XXL';
 
 const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
-  { id: 'S', label: 'Small', instance: 'GEN_X64_G2_8', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities only' },
-  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_192 / largest', vcpu: 188, mem: '1436 GB', heap: '1100 GB', desc: 'Sub-regions, countries, continents (default for non-city)' },
+  { id: 'S',   label: 'Small',             instance: 'GEN_X64_G2_8',   vcpu: 6,   mem: '28 GB',   heap: '20 GB',   desc: 'Cities (e.g. San Francisco, London)' },
+  { id: 'L',   label: 'Large',             instance: 'HIGHMEM_X64_L',  vcpu: 124, mem: '984 GB',  heap: '700 GB',  desc: 'States or single countries (e.g. USA, Germany, California)' },
+  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_192', vcpu: 188, mem: '1436 GB', heap: '1100 GB', desc: 'Continents or super-regions (e.g. Europe, North America)' },
 ];
 
-const COMPUTE_SIZES_ADVANCED: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
-  { id: 'M', label: 'Medium (legacy)', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Legacy override only' },
-  { id: 'L', label: 'Large (legacy)', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Legacy override only' },
-  { id: 'XL', label: 'Extra Large (legacy)', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Legacy override only' },
-];
-
-// City -> S; everything else (sub-region, country, continent) -> XXL on MEM_X64_G2_64.
-// XXL provides 60 vCPU / 492 GB / 400 G heap and finishes USA-class graph builds in <= 4h.
+// Auto-recommend a tier from the region's level field.
+//   city                      -> S   (GEN_X64_G2_8)
+//   country / sub-region      -> L   (HIGHMEM_X64_L, ~700 G heap)
+//   continent / unknown       -> XXL (MEM_X64_G2_192, ~1100 G heap)
 // After first successful build, the runtime service should be auto-downsized via
-// DOWNSIZE_REGION_AFTER_BUILD to avoid 24/7 XXL spend.
+// DOWNSIZE_REGION_AFTER_BUILD to avoid 24/7 spend on the build tier.
 function recommendComputeSize(level: string | undefined): ComputeSize {
-  return level === 'city' ? 'S' : 'XXL';
+  if (level === 'city') return 'S';
+  if (level === 'country' || level === 'sub-region') return 'L';
+  return 'XXL';
 }
 
 type SourceTab = 'bbbike' | 'geofabrik';
@@ -136,8 +135,7 @@ export default function RegionBuilder() {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
-  const [computeSize, setComputeSize] = useState<ComputeSize>('XXL');
-  const [showAdvancedSizes, setShowAdvancedSizes] = useState<boolean>(false);
+  const [computeSize, setComputeSize] = useState<ComputeSize>('L');
   // PBF source preference. Default false = reuse the staged .osm.pbf when
   // present (turns multi-GB redeploys into seconds). True = force a fresh
   // download from Geofabrik / BBBike, e.g. to pick up a weekly refresh.
@@ -820,49 +818,37 @@ export default function RegionBuilder() {
                 Auto-selected based on region level. Larger regions need more memory for graph building.
               </p>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {COMPUTE_SIZES.map((s) => (
-                  <button
-                    key={s.id}
-                    className={`btn small${computeSize === s.id ? ' primary' : ''}`}
-                    onClick={() => setComputeSize(s.id)}
-                    style={{ flex: 1, textAlign: 'center' }}
-                  >
-                    <div><strong>{s.label}</strong></div>
-                    <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
-                    <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
-                  </button>
-                ))}
+                {COMPUTE_SIZES.map((s) => {
+                  const isRecommended = s.id === recommendComputeSize(selectedRegion?.level);
+                  return (
+                    <button
+                      key={s.id}
+                      className={`btn small${computeSize === s.id ? ' primary' : ''}`}
+                      onClick={() => setComputeSize(s.id)}
+                      style={{ flex: 1, textAlign: 'center' }}
+                      title={s.desc}
+                    >
+                      <div>
+                        <strong>{s.label}</strong>
+                        {isRecommended && <span style={{ fontSize: '10px', marginLeft: 6, padding: '1px 6px', borderRadius: 4, background: 'rgba(38, 132, 255, 0.18)', color: '#2684ff' }}>Recommended</span>}
+                      </div>
+                      <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
+                      <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
+                    </button>
+                  );
+                })}
               </div>
               {computeSize === 'XXL' && (
                 <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
                   Resolved compute pool: <strong>{largestFamily}</strong>. Graph build runs on the largest high-memory family available in this cloud / region. The service should be downsized to a runtime tier after the first successful build (DOWNSIZE_REGION_AFTER_BUILD).
                 </p>
               )}
-              <div style={{ marginTop: '0.5rem' }}>
-                <button
-                  className="btn small"
-                  onClick={() => setShowAdvancedSizes((v) => !v)}
-                  style={{ fontSize: '11px', opacity: 0.8 }}
-                >
-                  {showAdvancedSizes ? 'Hide advanced override' : 'Advanced override (legacy tiers)'}
-                </button>
-                {showAdvancedSizes && (
-                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-                    {COMPUTE_SIZES_ADVANCED.map((s) => (
-                      <button
-                        key={s.id}
-                        className={`btn small${computeSize === s.id ? ' primary' : ''}`}
-                        onClick={() => setComputeSize(s.id)}
-                        style={{ flex: 1, textAlign: 'center' }}
-                      >
-                        <div><strong>{s.label}</strong></div>
-                        <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
-                        <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {computeSize === 'L' && (
+                <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
+                  Resolved compute pool: <strong>HIGHMEM_X64_L</strong>. Graph build runs on a 124 vCPU / 984 GB high-memory node. The service should be downsized to a runtime tier after the first successful build (DOWNSIZE_REGION_AFTER_BUILD).
+                </p>
+              )}
+              {/* Advanced override drawer removed: legacy CPU tiers (CPU_X64_SL, CPU_X64_L, HIGHMEM_X64_M) caused OOM-kill loops on country builds; HIGHMEM_X64_L is now the default for country/sub-region via the L tier above. */}
             </div>
 
             {isRegionProvisioning(selectedRegion.regionKey) && (
