@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
 import { RES_LABELS, RES_CUTOFFS, RES_HEX_PER_SQDEG, ROUTING_PROFILES } from '../types';
+import { safeFetchJson } from '../utils/safeFetch';
 
 const RATE_PAIRS_PER_SEC = 31500;
 const CREDIT_PER_HOUR_SMALL = 2;
@@ -108,50 +109,45 @@ export default function MatrixBuilder() {
 
   const fetchRegions = useCallback(async () => {
     setLoadingRegions(true);
-    try {
-      const r = await fetch('/api/matrix/regions');
-      const data = await r.json();
-      const fetched: RegionInfo[] = data.regions || [];
+    const { ok, data } = await safeFetchJson<{ regions: RegionInfo[] }>('/api/matrix/regions');
+    if (ok && data) {
+      const fetched = data.regions || [];
       setRegions(fetched);
       if (fetched.length > 0 && !selectedRegion) {
         const sf = fetched.find((r) => r.region.toUpperCase() === 'SANFRANCISCO');
         const running = fetched.find((r) => r.serviceStatus === 'RUNNING');
         setSelectedRegion((sf || running || fetched[0]).region);
       }
-    } catch {}
+    }
     setLoadingRegions(false);
   }, []);
 
   const fetchJobs = useCallback(async () => {
-    try {
-      const r = await fetch('/api/matrix/status');
-      const data = await r.json();
-      setJobs(data.jobs || []);
-    } catch {}
+    const { ok, data } = await safeFetchJson<{ jobs: MatrixJob[] }>('/api/matrix/status');
+    if (ok && data) setJobs(data.jobs || []);
   }, []);
 
   const fetchInventory = useCallback(async () => {
-    try {
-      const r = await fetch('/api/matrix/inventory');
-      const data = await r.json();
-      setInventory(data.inventory || []);
-    } catch {}
+    const { ok, data } = await safeFetchJson<{ inventory: MatrixInventoryItem[] }>('/api/matrix/inventory');
+    if (ok && data) setInventory(data.inventory || []);
   }, []);
 
   useEffect(() => {
     fetchRegions();
     fetchJobs();
     fetchInventory();
-    fetch('/api/matrix/road-filter-available')
-      .then((r) => r.json())
-      .then((data) => {
+    safeFetchJson<{ available: boolean; reason?: string }>('/api/matrix/road-filter-available').then(({ ok, data }) => {
+      if (ok && data) {
         setRoadFilterAvailable(!!data.available);
         if (!data.available) {
           setRoadFilterReason(data.reason || 'Overture Transportation not accessible');
           setRoadFilterEnabled(false);
         }
-      })
-      .catch(() => { setRoadFilterAvailable(false); setRoadFilterEnabled(false); });
+      } else {
+        setRoadFilterAvailable(false);
+        setRoadFilterEnabled(false);
+      }
+    });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchRegions, fetchJobs, fetchInventory]);
 
@@ -161,20 +157,20 @@ export default function MatrixBuilder() {
       return;
     }
     let cancelled = false;
-    setEstimateLoading(true);
-    fetch('/api/matrix/cost-estimate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        region: selectedRegion,
-        profile: selectedProfile,
-        resolutions: Array.from(selectedRes).sort(),
-        road_filter: true,
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
+    const timer = setTimeout(async () => {
+      setEstimateLoading(true);
+      const { ok, data, error } = await safeFetchJson<{ resolutions: any[] }>('/api/matrix/cost-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          region: selectedRegion,
+          profile: selectedProfile,
+          resolutions: Array.from(selectedRes).sort(),
+          road_filter: true,
+        }),
+      });
+      if (cancelled) return;
+      if (ok && data) {
         const map: Record<number, number> = {};
         (data.resolutions || []).forEach((e: any) => {
           if (e.road_filter_applied) {
@@ -182,10 +178,15 @@ export default function MatrixBuilder() {
           }
         });
         setServerHexEstimate(map);
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setEstimateLoading(false); });
-    return () => { cancelled = true; };
+      } else {
+        setServerHexEstimate({});
+        if (error?.includes('504') || error?.includes('timed out')) {
+          setBuildError('Road-aware estimate timed out. Try disabling Road-aware filter or selecting fewer resolutions.');
+        }
+      }
+      setEstimateLoading(false);
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedProfile, selectedRes]);
 
   useEffect(() => {
@@ -232,23 +233,23 @@ export default function MatrixBuilder() {
     if (!selectedRegion) return;
     setIsLaunching(true);
     setBuildError(null);
-    try {
-      const resp = await fetch('/api/matrix/build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          region: selectedRegion,
-          resolutions: Array.from(selectedRes).sort(),
-          profile: selectedProfile,
-          road_filter: roadFilterEnabled && roadFilterAvailable === true,
-        }),
-      });
-      const data = await resp.json();
+    const { ok, data, error } = await safeFetchJson<{ status: string; error?: string; warning?: string }>('/api/matrix/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        region: selectedRegion,
+        resolutions: Array.from(selectedRes).sort(),
+        profile: selectedProfile,
+        road_filter: roadFilterEnabled && roadFilterAvailable === true,
+      }),
+    });
+    if (ok && data) {
       if (data.error) setBuildError(data.error);
-      await fetchJobs();
-    } catch (e: any) {
-      setBuildError(e.message || 'Failed to launch build');
+      else if (data.warning) setBuildError(data.warning);
+    } else {
+      setBuildError(error || 'Failed to launch build');
     }
+    await fetchJobs();
     setIsLaunching(false);
   }, [selectedRegion, selectedRes, selectedProfile, roadFilterEnabled, roadFilterAvailable, fetchJobs]);
 
@@ -318,7 +319,7 @@ export default function MatrixBuilder() {
                       <button
                         className="btn small danger"
                         disabled={deletingKey === key}
-                        onClick={() => deleteConfig(item.region, item.profile, item.resolution)}
+                        onClick={() => deleteConfig(item.table_region, item.profile, item.resolution)}
                       >
                         {deletingKey === key ? '...' : 'Delete'}
                       </button>
@@ -499,8 +500,8 @@ export default function MatrixBuilder() {
         <div className="existing-info">
           {activeJobs.length > 0 && <span>{activeJobs.length} build{activeJobs.length > 1 ? 's' : ''} in progress</span>}
         </div>
-        <button className="btn primary" onClick={startBuild} disabled={isLaunching || selectedRes.size === 0 || !region?.ready}>
-          {isLaunching ? 'Launching...' : `Build Matrix for ${region?.label || 'Region'}`}
+        <button className="btn primary" onClick={startBuild} disabled={isLaunching || estimateLoading || selectedRes.size === 0 || !region?.ready}>
+          {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
       {buildError && (
