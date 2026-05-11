@@ -375,7 +375,13 @@ BEGIN
                         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
-                    -- Issue #59: graphs are now persisted on stage. Flip REBUILD_GRAPHS to false
+                    -- Restore pool auto-suspend on success path. Was set to 0
+                    -- during provisioning to keep the build container alive
+                    -- across silent CH/LM phases.
+                    BEGIN
+                        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     -- so subsequent suspend/resume cycles reuse the built graphs instead of rebuilding.
                     BEGIN
                         CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
@@ -459,6 +465,52 @@ BEGIN
         IF (:stale_polls >= :stall_threshold) THEN
             BREAK;
         END IF;
+
+        -- Fix 6a: phase-marker writer. As graph artifacts appear on the stage,
+        -- write tiny marker files so a future container restart can do a
+        -- partial resume instead of wiping everything for a full rebuild.
+        -- Each marker is written at most once (REMOVE-on-mismatch in
+        -- CREATE_REGION_ORS_SERVICE will clean these up if files don't agree).
+        --   _OSM_DONE -> location_index present
+        --   _LM_DONE  -> landmarks_*_with_turn_costs present
+        --   _CH_DONE  -> nodes_ch_* AND shortcuts_* both present
+        BEGIN
+            EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+            LET rs_m RESULTSET := (SELECT
+                BOOLOR_AGG("name" ILIKE '%/location_index')                AS HAS_OSM,
+                BOOLOR_AGG("name" ILIKE '%/landmarks\\_%\\_with\\_turn\\_costs') AS HAS_LM,
+                BOOLOR_AGG("name" ILIKE '%/nodes\\_ch\\_%')                 AS HAS_CH_NODES,
+                BOOLOR_AGG("name" ILIKE '%/shortcuts\\_%')                  AS HAS_CH_SHORTCUTS,
+                BOOLOR_AGG("name" ILIKE '%/\\_OSM\\_DONE%')                 AS MARKER_OSM,
+                BOOLOR_AGG("name" ILIKE '%/\\_LM\\_DONE%')                  AS MARKER_LM,
+                BOOLOR_AGG("name" ILIKE '%/\\_CH\\_DONE%')                  AS MARKER_CH
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_m CURSOR FOR rs_m;
+            FOR mr IN c_m DO
+                IF (mr.HAS_OSM AND NOT COALESCE(mr.MARKER_OSM, FALSE)) THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                            '/_OSM_DONE FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+                IF (mr.HAS_LM AND NOT COALESCE(mr.MARKER_LM, FALSE)) THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                            '/_LM_DONE FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+                IF (mr.HAS_CH_NODES AND mr.HAS_CH_SHORTCUTS AND NOT COALESCE(mr.MARKER_CH, FALSE)) THEN
+                    BEGIN
+                        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                            '/_CH_DONE FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
     END FOR;
 
     BEGIN
@@ -755,33 +807,86 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- Probe graphs stage for the success marker (_BUILD_OK) written by
-    -- PROVISION_REGION_WRAPPER on a clean build. Reuse persisted graphs ONLY
-    -- when the marker is present; otherwise treat the stage as dirty
-    -- (partial / corrupt artifacts from a prior failed build) and purge it
-    -- so ORS does not try to load incomplete graphs.
+    -- Probe graphs stage for the success marker (_BUILD_OK) plus the
+    -- intermediate phase markers (_OSM_DONE, _LM_DONE, _CH_DONE) written by
+    -- PROVISION_REGION_WRAPPER's wait loop. Smart-resume policy:
+    --
+    --   _BUILD_OK present -> full success last time. Reuse all graphs
+    --                        (REBUILD_GRAPHS=false). Fast resume in seconds.
+    --
+    --   _CH_DONE present -> CH+LM both written but service never came up.
+    --                        Reuse all graphs (REBUILD_GRAPHS=false). ORS will
+    --                        load the persisted CH/LM and skip both phases.
+    --
+    --   _LM_DONE present -> LM written but CH did not finish. Remove any
+    --                        partial nodes_ch_* / shortcuts_* but keep
+    --                        location_index + landmarks_*. ORS will skip OSM
+    --                        and LM, only re-run CH.
+    --
+    --   _OSM_DONE present -> only OSM import done. Remove landmarks_* and
+    --                        nodes_ch_* / shortcuts_* (any partial LM or CH);
+    --                        keep location_index. ORS will skip OSM, re-run CH+LM.
+    --
+    --   no markers       -> first build OR earlier build did not complete OSM.
+    --                        Wipe everything and rebuild from scratch.
     LET marker_count INTEGER DEFAULT 0;
-    BEGIN
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/_BUILD_OK';
-        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
-        LET c_mk CURSOR FOR rs;
-        FOR r IN c_mk DO marker_count := r.C; END FOR;
-    EXCEPTION WHEN OTHER THEN marker_count := 0;
-    END;
-
+    LET marker_lm_done   BOOLEAN DEFAULT FALSE;
+    LET marker_ch_done   BOOLEAN DEFAULT FALSE;
+    LET marker_osm_done  BOOLEAN DEFAULT FALSE;
     BEGIN
         EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
-        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
-        LET c_g CURSOR FOR rs;
-        FOR r IN c_g DO graph_file_count := r.C; END FOR;
-    EXCEPTION WHEN OTHER THEN graph_file_count := 0;
+        rs := (SELECT
+            BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%')  AS HAS_OK,
+            BOOLOR_AGG("name" ILIKE '%/_CH_DONE%')   AS HAS_CH,
+            BOOLOR_AGG("name" ILIKE '%/_LM_DONE%')   AS HAS_LM,
+            BOOLOR_AGG("name" ILIKE '%/_OSM_DONE%')  AS HAS_OSM,
+            COUNT(*)                                  AS C
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        LET c_mk CURSOR FOR rs;
+        FOR r IN c_mk DO
+            IF (COALESCE(r.HAS_OK, FALSE))  THEN marker_count    := 1; END IF;
+            IF (COALESCE(r.HAS_CH, FALSE))  THEN marker_ch_done  := TRUE; END IF;
+            IF (COALESCE(r.HAS_LM, FALSE))  THEN marker_lm_done  := TRUE; END IF;
+            IF (COALESCE(r.HAS_OSM, FALSE)) THEN marker_osm_done := TRUE; END IF;
+            graph_file_count := r.C;
+        END FOR;
+    EXCEPTION WHEN OTHER THEN
+        marker_count := 0; marker_ch_done := FALSE; marker_lm_done := FALSE; marker_osm_done := FALSE; graph_file_count := 0;
     END;
 
-    IF (:marker_count > 0) THEN
+    IF (:marker_count > 0 OR :marker_ch_done) THEN
+        -- Full graph or CH+LM persisted: REBUILD_GRAPHS=false, no purge needed.
         rebuild_flag := 'false';
+    ELSEIF (:marker_lm_done) THEN
+        -- LM written, CH partial. Remove any partial CH artifacts so ORS
+        -- reruns CH cleanly without trying to load a torn nodes_ch_* file.
+        rebuild_flag := 'false';
+        BEGIN
+            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*nodes_ch_.*''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*shortcuts_.*''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    ELSEIF (:marker_osm_done) THEN
+        -- Only OSM done. Remove any partial LM/CH artifacts. Keep location_index.
+        rebuild_flag := 'false';
+        BEGIN
+            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*landmarks_.*''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*nodes_ch_.*''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*shortcuts_.*''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
     ELSE
-        -- No success marker: either first build, or prior build did not
-        -- finish cleanly. Purge whatever partial files remain and rebuild.
+        -- No markers: either first build, or prior build did not finish OSM
+        -- import cleanly. Purge whatever partial files remain and rebuild.
         IF (:graph_file_count > 0) THEN
             BEGIN
                 EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
@@ -1880,6 +1985,20 @@ BEGIN
                     ELAPSED_MINUTES=NULL,
                     LOG_URI=NULL
                 WHERE JOB_ID = :job_id AND EXIT_STATUS='TIMEOUT';
+                -- Restore the AGENTS.md "no auto-suspend during provisioning"
+                -- invariant. The wrapper sets AUTO_SUSPEND_SECS=14400 on its
+                -- way out of the wait loop (line ~464); without this restore
+                -- the JVM idle-suspends mid-build (no HTTP requests during
+                -- silent CH/LM phases) and the compute pool follows 1h later,
+                -- which kills the container and forces a full rebuild on resume.
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS ' || :svc_full_alive || ' SET AUTO_SUSPEND_SECS = 0';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 0';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
@@ -1890,6 +2009,14 @@ BEGIN
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
     BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    -- Restore pool auto-suspend on success path (Fix 5b). Was set to 0
+    -- during provisioning to keep the build container alive across silent
+    -- CH/LM phases; restore to default cost-guard interval now that build
+    -- is done.
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     BEGIN
