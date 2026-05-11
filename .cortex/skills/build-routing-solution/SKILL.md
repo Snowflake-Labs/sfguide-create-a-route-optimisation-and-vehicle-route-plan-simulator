@@ -535,7 +535,10 @@ Every procedure that flips these values to 0 must restore 14400 on ALL exit path
 To remove all objects created by this skill:
 
 ```sql
--- 
+-- Suspend the rescue task before dropping the database so it does not fire
+-- against a half-deleted environment.
+ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
+
 DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;

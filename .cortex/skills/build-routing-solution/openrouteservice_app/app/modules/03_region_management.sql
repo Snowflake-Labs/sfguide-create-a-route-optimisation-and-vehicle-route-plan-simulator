@@ -323,13 +323,21 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='BUILDING_GRAPH', MESSAGE='Service running — waiting for routing graph to load...' WHERE JOB_ID = :P_JOB_ID;
     -- Wait ceiling scales with compute size. Country-scale HGV builds on the
-    -- largest high-memory hardware routinely take 60-120 minutes; smaller
-    -- regions complete in single-digit minutes. Hard-fail at the ceiling so
-    -- the UI surfaces a real error instead of a soft "check ORS_STATUS".
+    -- largest high-memory hardware can take 4-6 hours during CH preparation;
+    -- smaller regions complete in single-digit minutes. The loop has two exit
+    -- conditions: (1) hard wall-clock ceiling (Layer 2 backstop) and (2) a
+    -- progress-aware stall detector (Layer 1) that breaks early only when the
+    -- on-stage graph byte count has not grown for `stall_threshold` polls
+    -- (10 min). A separate task-based rescue layer (RESCUE_PENDING_PROVISIONS)
+    -- finalizes any job whose container becomes ready after this loop exits.
     LET wait_iters INTEGER DEFAULT 40;       -- 30s * 40  = 20 min default (S, city builds)
     LET wait_secs  INTEGER DEFAULT 30;
-    IF (:P_COMPUTE_SIZE = 'XXL') THEN wait_iters := 240; END IF;        -- 2h for continent builds
-    IF (:P_COMPUTE_SIZE = 'L')   THEN wait_iters := 200; END IF;        -- 1h40m for country / sub-region builds (HIGHMEM_X64_L)
+    IF (:P_COMPUTE_SIZE = 'XXL') THEN wait_iters := 720; END IF;        -- 6h for continent builds (USA HGV measured ~5h15m)
+    IF (:P_COMPUTE_SIZE = 'L')   THEN wait_iters := 360; END IF;        -- 3h for country / sub-region builds (HIGHMEM_X64_L)
+    LET last_bytes      INTEGER DEFAULT 0;
+    LET stale_polls     INTEGER DEFAULT 0;
+    LET stall_threshold INTEGER DEFAULT 20;  -- 20 polls * 30s = 10 min of zero growth = real stall
+    LET cur_bytes       INTEGER DEFAULT 0;
     FOR i IN 1 TO :wait_iters DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || :wait_secs || ')';
         BEGIN
@@ -400,6 +408,28 @@ BEGIN
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Layer 1: progress-aware stall detector. Probe the persisted graph
+        -- stage size; if it has not grown for `stall_threshold` consecutive
+        -- polls (10 min) we treat the build as genuinely stuck and break out
+        -- early. Builds that are still producing output (even multi-hour CH
+        -- preparation) keep the loop alive until the wall-clock ceiling.
+        BEGIN
+            EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+            LET rs_g RESULTSET := (SELECT COALESCE(SUM("size"), 0)::INTEGER AS B
+                                   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_g CURSOR FOR rs_g;
+            FOR r IN c_g DO cur_bytes := r.B; END FOR;
+        EXCEPTION WHEN OTHER THEN cur_bytes := :last_bytes;
+        END;
+        IF (:cur_bytes > :last_bytes) THEN
+            last_bytes := :cur_bytes;
+            stale_polls := 0;
+        ELSE
+            stale_polls := :stale_polls + 1;
+        END IF;
+        IF (:stale_polls >= :stall_threshold) THEN
+            BREAK;
+        END IF;
     END FOR;
 
     BEGIN
@@ -1305,3 +1335,199 @@ BEGIN
 END;
 $$;
 
+
+-- =============================================================================
+-- LAYER 3: TASK-BASED RESCUE FOR LATE-COMPLETING BUILDS
+-- =============================================================================
+-- The PROVISION_REGION_WRAPPER wait loop above is bounded by a wall-clock
+-- ceiling AND a progress-aware stall detector, but the SPCS container can
+-- still legitimately become `service_ready=true` AFTER the wrapper has
+-- already exited (e.g. if a transient ORS_STATUS probe error caused the
+-- stall detector to break early). The rescue layer is a sub-second polling
+-- task that finalizes any such job whenever the container reports ready.
+--
+-- Objects:
+--   FINALIZE_PROVISION_ITER(P_REGION) - single-region finalizer (idempotent).
+--   RESCUE_PENDING_PROVISIONS()       - scans for stuck jobs, calls finalizer.
+--   RESCUE_PENDING_PROVISIONS_TASK    - cron */2 min, managed XSMALL warehouse.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_PROVISION_ITER(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"rescue","action":"finalize-iter"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    job_id VARCHAR DEFAULT '';
+    build_id VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT '';
+    profile_count INTEGER DEFAULT 0;
+    status_raw VARCHAR DEFAULT '';
+    status_json VARIANT;
+    is_ready BOOLEAN DEFAULT FALSE;
+    peak_rss FLOAT DEFAULT NULL;
+BEGIN
+    -- Find the most recent qualifying job for this region (ERROR with the
+    -- well-known timeout/unreachable signature, OR still RUNNING in
+    -- BUILDING_GRAPH stage and likely past the wrapper's wait loop).
+    rs := (
+        SELECT JOB_ID, COALESCE(COMPUTE_SIZE, '') AS CS
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE REGION = :P_REGION
+          AND (
+                (STATUS = 'ERROR' AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable'))
+             OR (STATUS = 'RUNNING' AND STAGE = 'BUILDING_GRAPH'
+                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, CURRENT_TIMESTAMP()) > 30)
+              )
+          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP()))
+        ORDER BY STARTED_AT DESC
+        LIMIT 1
+    );
+    LET c1 CURSOR FOR rs;
+    FOR r IN c1 DO
+        job_id := r.JOB_ID;
+        compute_size := r.CS;
+    END FOR;
+    IF (:job_id = '') THEN
+        RETURN 'nothing_to_do:' || :P_REGION;
+    END IF;
+
+    -- Probe the container.
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
+        LET c2 CURSOR FOR rs;
+        FOR r IN c2 DO status_raw := r.S; END FOR;
+        status_json := TRY_PARSE_JSON(:status_raw);
+        IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
+            profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
+            IF (:profile_count > 0) THEN is_ready := TRUE; END IF;
+        END IF;
+    EXCEPTION WHEN OTHER THEN is_ready := FALSE;
+    END;
+    IF (NOT :is_ready) THEN
+        RETURN 'not_ready:' || :P_REGION;
+    END IF;
+
+    -- Container is ready - finalize the job exactly like the wrapper would.
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+            '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    SET STATUS='COMPLETE', STAGE='READY',
+        MESSAGE='Region provisioned via rescue task — ' || :profile_count || ' profile(s) ready',
+        ERROR_MSG=NULL,
+        COMPLETED_AT=CURRENT_TIMESTAMP()
+    WHERE JOB_ID = :job_id;
+
+    -- Update the matching ORS_BUILD_HISTORY row (most recent IN_PROGRESS or
+    -- TIMEOUT for this region, which is the row the wrapper opened).
+    BEGIN
+        rs := (
+            SELECT BUILD_ID
+            FROM OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+            WHERE REGION = :P_REGION
+              AND EXIT_STATUS IN ('IN_PROGRESS','TIMEOUT')
+            ORDER BY STARTED_AT DESC
+            LIMIT 1
+        );
+        LET cb CURSOR FOR rs;
+        FOR r IN cb DO build_id := r.BUILD_ID; END FOR;
+    EXCEPTION WHEN OTHER THEN build_id := '';
+    END;
+    IF (:build_id <> '') THEN
+        BEGIN
+            LET svc_full VARCHAR := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
+            EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || ''')';
+            rs := (SELECT TRY_CAST(
+                      TRY_PARSE_JSON(VALUE::VARCHAR)[0]:containerStatus:peakMemoryGiB::VARCHAR
+                      AS FLOAT) AS V
+                   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_rss CURSOR FOR rs;
+            FOR r IN c_rss DO peak_rss := r.V; END FOR;
+        EXCEPTION WHEN OTHER THEN peak_rss := NULL;
+        END;
+        UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+        SET FINISHED_AT = CURRENT_TIMESTAMP(),
+            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+            EXIT_STATUS = 'SUCCESS',
+            PEAK_RSS_GIB = :peak_rss
+        WHERE BUILD_ID = :build_id;
+    END IF;
+
+    -- Best-effort runtime downsize (same as wrapper success path).
+    IF (UPPER(:compute_size) IN ('L','XXL')) THEN
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+
+    RETURN 'rescued:' || :P_REGION || ' (job=' || :job_id || ', profiles=' || :profile_count || ')';
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"rescue","action":"scan"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    rescued INTEGER DEFAULT 0;
+    seen INTEGER DEFAULT 0;
+    msg VARCHAR DEFAULT '';
+    region VARCHAR DEFAULT '';
+BEGIN
+    rs := (
+        SELECT DISTINCT REGION
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE (
+                (STATUS = 'ERROR' AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable'))
+             OR (STATUS = 'RUNNING' AND STAGE = 'BUILDING_GRAPH'
+                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, CURRENT_TIMESTAMP()) > 30)
+              )
+          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP()))
+    );
+    LET c CURSOR FOR rs;
+    FOR r IN c DO
+        seen := :seen + 1;
+        region := r.REGION;
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.FINALIZE_PROVISION_ITER(:region) INTO :msg;
+            IF (LEFT(:msg, 8) = 'rescued:') THEN
+                rescued := :rescued + 1;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+    RETURN 'scanned=' || :seen || ' rescued=' || :rescued;
+END;
+$$;
+
+CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
+    SCHEDULE = 'USING CRON */2 * * * * UTC'
+    USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"rescue","action":"task"}}'
+AS
+    CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
+
+BEGIN
+    ALTER TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+EXCEPTION WHEN OTHER THEN NULL;
+END;
