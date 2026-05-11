@@ -434,6 +434,46 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 - Step 6: After deployment — verify application created successfully
 - Step 8: After presenting demo list — wait for user selection before deploying
 
+## Redeploys (`scripts/deploy.sh`)
+
+After the initial install, use the one-command deploy script for any subsequent
+SQL, image, or service-spec change. It replaces ~12 manual steps with a single
+idempotent run.
+
+```bash
+bash .cortex/skills/build-routing-solution/scripts/deploy.sh [connection]
+```
+
+Default connection: `fleet_test_evals`. The script:
+
+1. Refuses to run if the working tree is dirty (set `ALLOW_DIRTY=1` to override).
+2. Applies every `app/modules/*.sql` file via `snow sql -f` (idempotent
+   `CREATE OR REPLACE` and `ADD COLUMN IF NOT EXISTS`).
+3. Logs in to the SPCS image registry, derives an image tag from the current
+   YAML version + `git rev-parse --short HEAD`, and rebuilds the image with
+   `--no-cache` so a stale layer cache can never silently ship the previous
+   build. The git SHA is baked into the image as a `git.sha` label.
+4. Pushes the image, templates the new tag into `ors_control_app_service.yaml`
+   (without modifying the file in-place), uploads to stage, and runs
+   `SUSPEND -> ALTER FROM SPECIFICATION -> RESUME` per the AGENTS.md cycle.
+5. Resolves the public endpoint URL via `SHOW ENDPOINTS` and prints it.
+6. If the current branch is not `main` or `dev`, prints the
+   `pull/new/<branch>` URL — `gh pr create` does not work for Snowflake-Labs
+   Enterprise Managed Users, so PRs must be opened in the GitHub UI.
+
+Optional env overrides: `SKIP_SQL=1`, `SKIP_IMAGE=1`, `SKIP_SERVICE=1`,
+`IMAGE_TAG=<tag>`.
+
+After deploy completes, the UI exposes a healthcheck banner: if any of the
+new SQL artifacts (resolver, retry-strategy, build-history, etc.) are
+missing, the Region Builder displays a yellow "Partial deploy detected"
+banner instead of silently degrading to hardcoded fallbacks.
+
+For the SQL constraints the script's writers handle — particularly
+`SYSTEM$GET_SERVICE_STATUS` requiring a constant argument, `UUID_STRING()`
+not allowed in `INSERT ... VALUES`, and `SHOW ... + RESULT_SCAN` columns
+being quoted-lowercase — see `references/snowflake-sql-gotchas.md`.
+
 ## Troubleshooting
 
 See `references/troubleshooting.md` for detailed solutions to common issues:
@@ -495,7 +535,10 @@ Every procedure that flips these values to 0 must restore 14400 on ALL exit path
 To remove all objects created by this skill:
 
 ```sql
--- 
+-- Suspend the rescue task before dropping the database so it does not fire
+-- against a half-deleted environment.
+ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
+
 DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;

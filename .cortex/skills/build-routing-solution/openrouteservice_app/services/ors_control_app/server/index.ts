@@ -683,6 +683,89 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   }
 });
 
+// Returns the largest high-memory SPCS instance family available in the
+// current cloud + region. Used by the UI to show users which family will
+// back any non-city XXL build before they click Deploy.
+app.get('/api/regions/largest-family', async (_req, res) => {
+  try {
+    const family = (await callProcedure('RESOLVE_LARGEST_HIGHMEM_FAMILY()')) || 'HIGHMEM_X64_M';
+    res.json({ family: family.trim() });
+  } catch (err: any) {
+    res.status(500).json({ family: 'HIGHMEM_X64_M', error: err.message });
+  }
+});
+
+// Healthcheck for the new build-routing-solution procedures and tables.
+// Surfaces partial deploys (e.g. image updated but SQL modules skipped) so
+// the UI can warn instead of silently degrading to hardcoded fallbacks.
+app.get('/api/regions/healthcheck', async (_req, res) => {
+  const status: Record<string, 'ok' | 'missing' | 'error'> = {};
+  const errors: Record<string, string> = {};
+
+  const probes: { key: string; sql: string }[] = [
+    { key: 'resolver',          sql: `CALL ${SF_DATABASE}.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()` },
+    { key: 'retry_strategy',    sql: `CALL ${SF_DATABASE}.CORE.RECOMMEND_RETRY_STRATEGY('__HEALTHCHECK__')` },
+    { key: 'build_history',     sql: `SELECT 1 FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY LIMIT 1` },
+    { key: 'build_spec',        sql: `SELECT ${SF_DATABASE}.CORE.BUILD_ORS_SERVICE_SPEC('X','XXL','false')` },
+    { key: 'downsize_proc',     sql: `SHOW PROCEDURES LIKE 'DOWNSIZE_REGION_AFTER_BUILD' IN SCHEMA ${SF_DATABASE}.CORE` },
+  ];
+
+  await Promise.all(probes.map(async ({ key, sql }) => {
+    try {
+      const rows = await runSql(sql);
+      if (key === 'downsize_proc') {
+        status[key] = (rows && rows.length > 0) ? 'ok' : 'missing';
+      } else {
+        status[key] = 'ok';
+      }
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (/does not exist|not authorized|unknown function/i.test(msg)) {
+        status[key] = 'missing';
+      } else {
+        status[key] = 'error';
+        errors[key] = msg.slice(0, 200);
+      }
+    }
+  }));
+
+  const overall = Object.values(status).every((v) => v === 'ok') ? 'ok' : 'degraded';
+  res.json({ overall, status, errors });
+});
+
+// Returns the recommended retry strategy for a region whose previous build
+// failed: REUSE / REBUILD_SAME / SPLIT_PROFILES / NO_HISTORY.
+app.get('/api/regions/:region/retry-strategy', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const strategy = await callProcedure(`RECOMMEND_RETRY_STRATEGY('${safeRegion}')`);
+    res.json({ region: safeRegion, strategy: (strategy || 'NO_HISTORY').trim() });
+  } catch (err: any) {
+    res.status(500).json({ strategy: 'NO_HISTORY', error: err.message });
+  }
+});
+
+// Last 25 build attempts for a region from ORS_BUILD_HISTORY. Powers the UI
+// build-history card so users can see past compute size, instance family,
+// elapsed minutes, and exit status without inspecting Snowflake directly.
+app.get('/api/regions/:region/build-history', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const rows = await runSql(
+      `SELECT BUILD_ID, JOB_ID, REGION, INSTANCE_FAMILY, COMPUTE_SIZE,
+              PROFILES, JVM_XMX_GIB, STARTED_AT, FINISHED_AT, ELAPSED_MINUTES,
+              EXIT_STATUS, PEAK_RSS_GIB, OUTPUT_GRAPH_GIB
+       FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY
+       WHERE UPPER(REGION) = UPPER('${safeRegion}')
+       ORDER BY STARTED_AT DESC
+       LIMIT 25`
+    );
+    res.json({ region: safeRegion, history: rows || [] });
+  } catch (err: any) {
+    res.status(500).json({ region: req.params.region, history: [], error: err.message });
+  }
+});
+
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');
@@ -791,7 +874,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 });
 
 app.post('/api/regions/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox, profiles, compute_size } = req.body;
+  const { city, region, pbf_url, bbox, profiles, compute_size, force_redownload_pbf } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -819,7 +902,15 @@ app.post('/api/regions/provision', async (req, res) => {
     ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
     : defaultProfiles;
   const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
-  const safeComputeSize = ['S', 'M', 'L'].includes(compute_size) ? compute_size : 'M';
+  // Allow legacy tiers (M/L/XL) for the UI advanced override; default to XXL for any non-city
+  // request that arrives without a recognized tier so we never silently downgrade large regions.
+  const ALLOWED_SIZES = ['S', 'M', 'L', 'XL', 'XXL'] as const;
+  const safeComputeSize = (ALLOWED_SIZES as readonly string[]).includes(compute_size) ? compute_size : 'XXL';
+  // PBF cache control: when true, skip the on-stage probe in
+  // PROVISION_REGION_WRAPPER and always re-download from the upstream URL.
+  // Defaults to false so cached files (e.g. weekly Geofabrik snapshots already
+  // staged) are reused, which makes redeploys complete in seconds.
+  const safeForceRedownload = force_redownload_pbf === true ? 'TRUE' : 'FALSE';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
@@ -832,7 +923,7 @@ app.post('/api/regions/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}', ${safeForceRedownload})`;
     const handle = await submitSqlAsync(callSql);
     await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
@@ -1169,6 +1260,10 @@ app.get('/api/matrix/road-filter-available', async (_req, res) => {
   }
 });
 
+const COST_ESTIMATE_TIMEOUT_MS = 60_000;
+const MAX_CONCURRENT_ESTIMATE_QUERIES = 2;
+let activeEstimateQueries = 0;
+
 app.post('/api/matrix/cost-estimate', async (req, res) => {
   try {
     const { region, resolutions, profile, road_filter } = req.body;
@@ -1199,12 +1294,16 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
 
     const polygon = `POLYGON((${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)}))`;
 
-    const estimates = await Promise.all((resolutions as number[]).filter((r) => r >= 5 && r <= 10).map(async (resolution) => {
+    const computeEstimate = async (resolution: number) => {
       let hexCount = Math.ceil(areaSqKm / (hexAreaKm2[resolution] || 1));
       const hexCountBbox = hexCount;
       let filteredApplied = false;
 
       if (useRoadFilter) {
+        while (activeEstimateQueries >= MAX_CONCURRENT_ESTIMATE_QUERIES) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+        activeEstimateQueries++;
         try {
           const sampleClause = resolution >= 9 ? 'SAMPLE (20)' : '';
           const scaleFactor = resolution >= 9 ? 5 : 1;
@@ -1226,7 +1325,9 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
             hexCount = raw * scaleFactor;
             filteredApplied = true;
           }
-        } catch {}
+        } finally {
+          activeEstimateQueries--;
+        }
       }
 
       const totalPairs = hexCount * (hexCount - 1);
@@ -1253,7 +1354,40 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
           estimated_cost_usd: Math.round(estimatedCostDollars * 100) / 100,
         },
       };
-    }));
+    };
+
+    const safeResolutions = (resolutions as number[]).filter((r) => r >= 5 && r <= 10);
+
+    const estimatesPromise = Promise.all(safeResolutions.map(computeEstimate));
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('COST_ESTIMATE_TIMEOUT')), COST_ESTIMATE_TIMEOUT_MS)
+    );
+
+    let estimates: Awaited<ReturnType<typeof computeEstimate>>[];
+    try {
+      estimates = await Promise.race([estimatesPromise, timeoutPromise]);
+    } catch (e: any) {
+      if (e.message === 'COST_ESTIMATE_TIMEOUT') {
+        return res.json({
+          region: safeRegion,
+          profile: profile || 'driving-car',
+          road_filter: useRoadFilter,
+          area_sq_km: Math.round(areaSqKm),
+          resolutions: safeResolutions.map((r) => ({
+            resolution: `RES${r}`,
+            hex_count: Math.ceil(areaSqKm / (hexAreaKm2[r] || 1)),
+            hex_count_bbox: Math.ceil(areaSqKm / (hexAreaKm2[r] || 1)),
+            road_filter_applied: false,
+            total_pairs: 0,
+            estimated_build_time_minutes: 0,
+            timed_out: true,
+          })),
+          error: 'Road-aware cost estimate timed out (>60s). The Overture query is too expensive for this region/resolution combination. Estimates shown use bbox approximation.',
+          timed_out: true,
+        });
+      }
+      throw e;
+    }
 
     const totalCredits = estimates.reduce((sum, e) => sum + e.cost_breakdown.total_credits, 0);
     res.json({
@@ -1271,7 +1405,7 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
         : 'Estimates based on 30K pairs/sec throughput with 10-node compute pool. Actual costs depend on ORS graph complexity, network conditions, and retry rates.',
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
@@ -1297,7 +1431,7 @@ app.get('/api/matrix/existing', async (req, res) => {
 });
 
 app.post('/api/matrix/build', async (req, res) => {
-  const { region, resolutions, profile: reqProfile, road_filter } = req.body;
+  const { region, resolutions, profile: reqProfile, road_filter, force } = req.body;
   if (!region || !resolutions) return res.status(400).json({ error: 'region and resolutions required' });
   const profile = reqProfile || 'driving-car';
   const roadFilter = road_filter === true;
@@ -1311,8 +1445,36 @@ app.post('/api/matrix/build', async (req, res) => {
   const safeResolutions = (resolutions as number[]).filter((r) => r >= 5 && r <= 10);
   if (safeResolutions.length === 0) return res.status(400).json({ error: 'resolutions must be between 5 and 10' });
   const safeProfile = escapeString(profile);
+  const safeProfileUpper = profile.replace(/-/g, '_').toUpperCase();
 
   try {
+    const preflightWarnings: string[] = [];
+    for (const resolution of safeResolutions) {
+      const listTable = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion.toUpperCase()}_${safeProfileUpper}_LIST_RES${resolution}`;
+      let hexCount = 0;
+      try {
+        const rows = await runSql(`SELECT COUNT(*) AS CNT FROM ${listTable}`);
+        hexCount = parseInt(rows?.[0]?.CNT || '0');
+      } catch {
+        continue;
+      }
+      const impliedPairs = hexCount * (hexCount - 1);
+      if (impliedPairs > 10_000_000_000 && !force) {
+        return res.status(422).json({
+          error: `Region too large for RES${resolution}: ${hexCount.toLocaleString()} hexagons implies ${(impliedPairs / 1e9).toFixed(1)}B pairs. Split the region or use a coarser resolution. Pass force:true to override.`,
+          hex_count: hexCount,
+          implied_pairs: impliedPairs,
+          resolution,
+          requires_force: true,
+        });
+      }
+      if (impliedPairs > 625_000_000) {
+        preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e9).toFixed(1)}B pairs) — recommend XLARGE warehouse`);
+      } else if (impliedPairs > 25_000_000) {
+        preflightWarnings.push(`RES${resolution}: ${hexCount.toLocaleString()} hexagons (${(impliedPairs / 1e6).toFixed(0)}M pairs) — recommend LARGE warehouse`);
+      }
+    }
+
     let bbox = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
     try {
       const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
@@ -1320,9 +1482,6 @@ app.post('/api/matrix/build', async (req, res) => {
     } catch {}
 
     let matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR`;
-    // For non-default regions, the procedure passes (region, profile, origin, dest)
-    // but MATRIX_TABULAR expects (profile, origin, dest, region).
-    // Use the MATRIX_TABULAR_W wrapper which corrects the argument order.
     if (safeRegion && safeRegion.toUpperCase() !== 'DEFAULT' && safeRegion.toUpperCase() !== 'SANFRANCISCO') {
       matrixFn = `${SF_DATABASE}.CORE.MATRIX_TABULAR_W`;
     }
@@ -1337,7 +1496,11 @@ app.post('/api/matrix/build', async (req, res) => {
     });
     await runSql(`INSERT INTO ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS (JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE) VALUES ${insertValues.join(', ')}`);
 
-    res.json({ status: 'launched', jobs });
+    res.json({
+      status: 'launched',
+      jobs,
+      ...(preflightWarnings.length > 0 ? { warning: preflightWarnings.join('; ') } : {}),
+    });
 
     (async () => {
       for (const { job_id: jobId, resolution } of jobs) {
@@ -1359,7 +1522,7 @@ app.post('/api/matrix/build', async (req, res) => {
       }
     })().catch(() => {});
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
@@ -1475,20 +1638,19 @@ app.get('/api/matrix/inventory', async (_req, res) => {
          FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
          WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
            AND TABLE_NAME LIKE '%_MATRIX_RES%'
+           AND ROW_COUNT > 0
          ORDER BY CREATED DESC`
       );
       inventory = (rows || []).map((t: any) => {
         const name = (t.TABLE_NAME || '').toUpperCase();
         const parts = name.match(/^(.+?)_(DRIVING_CAR|DRIVING_HGV|CYCLING_ROAD|CYCLING_REGULAR|CYCLING_ELECTRIC|FOOT_WALKING|FOOT_HIKING|WHEELCHAIR)_MATRIX_(RES\d+)$/);
-        let region = name, profileName = 'driving-car', resolution = 'RES7';
-        if (parts) {
-          region = parts[1].replace(/_/g, '').toLowerCase();
-          region = region.charAt(0).toUpperCase() + region.slice(1);
-          profileName = parts[2].toLowerCase().replace(/_/g, '-');
-          resolution = parts[3];
-        }
-        const lookupKey = `${region.toUpperCase()}_${profileName.replace(/-/g, '_').toUpperCase()}_${resolution}`;
-        return { region, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0, road_filter: roadFilterMap[lookupKey] === true };
+        if (!parts) return null;
+        const tableRegion = parts[1];
+        const region = tableRegion.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()).replace(/ /g, '');
+        const profileName = parts[2].toLowerCase().replace(/_/g, '-');
+        const resolution = parts[3];
+        const lookupKey = `${tableRegion}_${parts[2]}_${resolution}`;
+        return { region, table_region: tableRegion, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0, road_filter: roadFilterMap[lookupKey] === true };
       }).filter(Boolean);
     } catch {}
     res.json({ inventory });
@@ -1504,11 +1666,18 @@ app.delete('/api/matrix/:region/:profile/:resolution', async (req, res) => {
     const safeRes = sanitizeIdentifier(req.params.resolution);
     const tablePrefix = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile.toUpperCase().replace(/-/g,'_')}_`;
     const tables = [`${tablePrefix}MATRIX_${safeRes}`, `${tablePrefix}MATRIX_RAW_${safeRes}`, `${tablePrefix}WORK_QUEUE_${safeRes}`, `${tablePrefix}LIST_${safeRes}`];
+    let droppedCount = 0;
     for (const t of tables) {
-      try { await runSql(`DROP TABLE IF EXISTS ${t}`); } catch {}
+      try {
+        const checkRows = await runSql(`SELECT 1 FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX' AND TABLE_NAME = '${t.split('.').pop()}'`);
+        if (checkRows && checkRows.length > 0) {
+          await runSql(`DROP TABLE IF EXISTS ${t}`);
+          droppedCount++;
+        }
+      } catch {}
     }
     await runSql(`DELETE FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE REGION = '${escapeString(req.params.region)}' AND PROFILE = '${safeProfile}' AND RESOLUTION = '${escapeString(safeRes)}'`);
-    res.json({ status: 'ok' });
+    res.json({ status: droppedCount > 0 ? 'ok' : 'not_found', dropped_count: droppedCount });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
