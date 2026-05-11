@@ -50,6 +50,55 @@
       .badge.ok { background: rgba(13,176,72,0.1); color: var(--green); }
       .badge.warn { background: rgba(229,161,0,0.1); color: var(--yellow); }
       .badge.error { background: rgba(229,72,77,0.1); color: var(--red); }
+
+      /* Pool-grouped service sections */
+      .pool-section { margin: 12px 0 18px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.015); }
+      .pool-section.pool-state-ok { border-left: 4px solid var(--green); }
+      .pool-section.pool-state-warn { border-left: 4px solid var(--yellow); }
+      .pool-section.pool-state-error { border-left: 4px solid var(--red); }
+      .pool-section.pool-state-muted { border-left: 4px solid var(--border); }
+      .pool-section-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(0,0,0,0.02); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+      .pool-section-title { display: flex; gap: 10px; align-items: center; }
+      .pool-section-icon { font-size: 14px; color: var(--green); }
+      .pool-state-warn .pool-section-icon { color: var(--yellow); }
+      .pool-state-error .pool-section-icon { color: var(--red); }
+      .pool-state-muted .pool-section-icon { color: var(--text-secondary); }
+      .pool-section-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 600; }
+      .pool-section-subtitle { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+      .pool-section-state { display: flex; gap: 6px; align-items: center; }
+      .pool-services-table { background: transparent; }
+      .pool-services-table th, .pool-services-table td { border-bottom-color: rgba(0,0,0,0.05); }
+
+      /* Phase pips (OSM / LM / CH) */
+      .phase-pip-row { display: inline-flex; gap: 4px; align-items: center; }
+      .phase-pip-row.size-sm .phase-pip { font-size: 10px; padding: 1px 6px; min-width: 14px; }
+      .phase-pip { display: inline-flex; gap: 4px; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; line-height: 1; border: 1px solid transparent; }
+      .phase-pip-glyph { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .phase-pip-label { letter-spacing: 0.4px; }
+      .phase-pip.done { background: rgba(13,176,72,0.12); color: var(--green); border-color: rgba(13,176,72,0.3); }
+      .phase-pip.in-progress { background: rgba(229,161,0,0.12); color: var(--yellow); border-color: rgba(229,161,0,0.3); animation: phasePulse 1.4s ease-in-out infinite; }
+      .phase-pip.not-started { background: rgba(0,0,0,0.04); color: var(--text-secondary); border-color: var(--border); }
+      .phase-pip.na { background: transparent; color: var(--text-secondary); border-color: var(--border); opacity: 0.6; }
+      @keyframes phasePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+      .phase-legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 11px; color: var(--text-secondary); margin: 6px 0 10px; }
+      .phase-legend .phase-pip { padding: 1px 6px; }
+
+      /* Phase matrix table (per-region build progress) */
+      .phase-matrix { margin: 6px 0 0; border-collapse: collapse; font-size: 11px; min-width: 220px; }
+      .phase-matrix th { text-align: left; padding: 4px 8px; color: var(--text-secondary); font-weight: 500; border-bottom: 1px solid var(--border); }
+      .phase-matrix td { padding: 3px 8px; border-bottom: 1px solid rgba(0,0,0,0.04); }
+      .phase-matrix .profile-date { font-size: 10px; color: var(--text-secondary); }
+      .phase-matrix .phase-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; min-width: 28px; }
+      .phase-matrix .phase-done { color: var(--green); font-weight: 700; }
+      .phase-matrix .phase-in_progress { color: var(--yellow); animation: phasePulse 1.4s ease-in-out infinite; }
+      .phase-matrix .phase-not_started { color: var(--text-secondary); opacity: 0.6; }
+      .phase-matrix .phase-na { color: var(--text-secondary); opacity: 0.4; }
+
+      @media (max-width: 720px) {
+        .pool-section-header { flex-direction: column; align-items: flex-start; }
+        .pool-section-state { width: 100%; }
+        .phase-matrix { font-size: 10px; }
+      }
       .action-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
       .scale-row { display: flex; gap: 12px; align-items: end; }
       .scale-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }

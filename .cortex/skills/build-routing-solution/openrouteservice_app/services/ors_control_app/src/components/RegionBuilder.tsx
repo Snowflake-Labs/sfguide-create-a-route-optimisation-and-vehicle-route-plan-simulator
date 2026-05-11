@@ -1,10 +1,18 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { CatalogRegion } from '../types';
+import PhasePips, { PhaseLegend } from '../shared/PhasePips';
+
+interface PhaseInfo {
+  osm: 'done' | 'in_progress' | 'not_started' | 'na';
+  lm: 'done' | 'in_progress' | 'not_started' | 'na';
+  ch: 'done' | 'in_progress' | 'not_started' | 'na';
+}
 
 interface GraphInfo {
   profile: string;
   ready: boolean;
   build_date?: string | null;
+  phases?: PhaseInfo;
 }
 
 interface GraphReadiness {
@@ -603,6 +611,7 @@ export default function RegionBuilder() {
       )}
 
       <h3>Provisioned Regions</h3>
+      <PhaseLegend />
       {loading ? (
         <div className="loading-text">Loading...</div>
       ) : regions.length === 0 ? (
@@ -662,25 +671,56 @@ export default function RegionBuilder() {
                   ) : gr.service_ready && readyCount === totalCount && totalCount > 0 ? (
                     <>
                       <span className="badge ok">{readyCount}/{totalCount} ready</span>
-                      <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
-                        {gr.graphs.map(g => (
-                          <li key={g.profile} style={{ color: 'var(--color-ok)' }}>
-                            {'\u2713'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
-                          </li>
-                        ))}
-                      </ul>
+                      <table className="phase-matrix">
+                        <thead>
+                          <tr>
+                            <th>Profile</th>
+                            <th>OSM</th>
+                            <th>LM</th>
+                            <th>CH</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {gr.graphs.map((g: any) => (
+                            <tr key={g.profile}>
+                              <td>{g.profile}{g.build_date ? <span className="profile-date"> ({g.build_date})</span> : null}</td>
+                              <td><PhasePips phases={g.phases} ready={g.ready} showLabel={false} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </>
                   ) : (
                     <>
                       <span className="badge warn">Building {readyCount}/{totalCount}</span>
                       {totalCount > 0 && (
-                        <ul style={{ margin: '4px 0 0', paddingLeft: 16, listStyle: 'none', fontSize: 11 }}>
-                          {gr.graphs.map(g => (
-                            <li key={g.profile} style={{ color: g.ready ? 'var(--color-ok)' : 'var(--text-secondary)' }}>
-                              {g.ready ? '\u2713' : '\u25CB'} {g.profile}{g.build_date ? ` (${g.build_date})` : ''}
-                            </li>
-                          ))}
-                        </ul>
+                        <table className="phase-matrix">
+                          <thead>
+                            <tr>
+                              <th>Profile</th>
+                              <th>OSM</th>
+                              <th>LM</th>
+                              <th>CH</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {gr.graphs.map((g: any) => {
+                              const phases = g.phases || (g.ready
+                                ? { osm: 'done', lm: 'done', ch: 'done' }
+                                : { osm: 'in_progress', lm: 'not_started', ch: 'not_started' });
+                              const cellClass = (s: string) => `phase-cell phase-${s}`;
+                              const glyph: Record<string, string> = { done: '\u2713', in_progress: '\u22EF', not_started: '\u25CB', na: '\u2014' };
+                              return (
+                                <tr key={g.profile}>
+                                  <td>{g.profile}</td>
+                                  <td className={cellClass(phases.osm)} title={`OSM: ${phases.osm}`}>{glyph[phases.osm]}</td>
+                                  <td className={cellClass(phases.lm)} title={`LM: ${phases.lm}`}>{glyph[phases.lm]}</td>
+                                  <td className={cellClass(phases.ch)} title={`CH: ${phases.ch}`}>{glyph[phases.ch]}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       )}
                     </>
                   )}
