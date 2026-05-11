@@ -283,6 +283,28 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- After the download path (cache miss), REGION_PROVISION_JOBS.PBF_SIZE_GIB is still
+    -- null. Without this backfill the diagnostic agent has no PBF size signal and the
+    -- ETA computation in DIAGNOSE_REGION cannot derive a band. LIST the staged file and
+    -- UPSERT the size; safe to re-run on cache-hit path (already populated).
+    BEGIN
+        LET pbf_post_bytes INTEGER DEFAULT 0;
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/' || :pbf_filename;
+        LET rs_pbf_post RESULTSET := (SELECT COALESCE("size", 0)::INTEGER AS B
+                                       FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+        LET c_pbf_post CURSOR FOR rs_pbf_post;
+        FOR r IN c_pbf_post DO pbf_post_bytes := r.B; END FOR;
+        IF (:pbf_post_bytes > 0) THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET PBF_SIZE_GIB = :pbf_post_bytes / 1073741824.0
+            WHERE JOB_ID = :P_JOB_ID AND PBF_SIZE_GIB IS NULL;
+            UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+            SET PBF_SIZE_GIB = :pbf_post_bytes / 1073741824.0
+            WHERE BUILD_ID = :build_id AND PBF_SIZE_GIB IS NULL;
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STAGE='CONFIGURING', MESSAGE='Writing ORS configuration...' WHERE JOB_ID = :P_JOB_ID;
     CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_filename, :P_PROFILES, :P_COMPUTE_SIZE);
 
@@ -424,7 +446,14 @@ BEGIN
         IF (:cur_bytes > :last_bytes) THEN
             last_bytes := :cur_bytes;
             stale_polls := 0;
-        ELSE
+        ELSEIF (:last_bytes > 0) THEN
+            -- Only count stalls AFTER the first graph byte has been written.
+            -- ORS does not write to ORS_GRAPHS_SPCS_STAGE during the OSM import
+            -- phase (which can run 25-50 min for multi-GiB PBFs); the first
+            -- write happens at the cleanUp boundary. Counting pre-first-write
+            -- iterations as stalls falsely trips graph_load_timeout for every
+            -- continent-scale build. Pre-first-write the wall-clock ceiling
+            -- (wait_iters * 30s) is the only bound.
             stale_polls := :stale_polls + 1;
         END IF;
         IF (:stale_polls >= :stall_threshold) THEN
@@ -1356,7 +1385,7 @@ DECLARE
     job_json VARIANT;
     history_json VARIANT;
     service_status VARIANT;
-    service_logs VARCHAR;
+    service_logs VARCHAR DEFAULT '';
     ors_status VARIANT;
     task_history_json VARIANT;
     region_map_json VARIANT;
@@ -1365,6 +1394,26 @@ DECLARE
     system_prompt VARCHAR;
     llm_response VARCHAR;
     svc_full VARCHAR;
+    -- Parsed log signals
+    log_chars NUMBER DEFAULT 0;
+    log_lines NUMBER DEFAULT 0;
+    log_ts_count NUMBER DEFAULT 0;
+    last_log_ts VARCHAR DEFAULT NULL;
+    current_phase VARCHAR DEFAULT 'UNKNOWN';
+    container_start VARCHAR DEFAULT NULL;
+    service_age_seconds NUMBER DEFAULT 0;
+    -- ETA inputs / outputs
+    pbf_gib_resolved FLOAT DEFAULT NULL;
+    profiles_str VARCHAR DEFAULT '';
+    profile_factor FLOAT DEFAULT 1.0;
+    base_minutes NUMBER DEFAULT 0;
+    phase_done_pct FLOAT DEFAULT 0.0;
+    eta_total_minutes NUMBER DEFAULT NULL;
+    eta_remaining_minutes NUMBER DEFAULT NULL;
+    -- Deterministic banner prepended to every LLM response
+    banner VARCHAR DEFAULT '';
+    -- Misc safe-default
+    restart_count_str VARCHAR DEFAULT '?';
 BEGIN
     svc_full := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
 
@@ -1403,7 +1452,7 @@ BEGIN
     EXCEPTION WHEN OTHER THEN history_json := NULL;
     END;
 
-    -- 3. Service container status
+    -- 3. Service container status + parsed startTime + service_age_seconds
     BEGIN
         EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || ''')';
         rs := (SELECT TRY_PARSE_JSON(VALUE::VARCHAR)[0] AS S
@@ -1413,10 +1462,74 @@ BEGIN
     EXCEPTION WHEN OTHER THEN service_status := NULL;
     END;
 
-    -- 4. Last 200 lines of container logs (truncate to ~6000 chars for the LLM)
     BEGIN
-        service_logs := SUBSTR(SYSTEM$GET_SERVICE_LOGS(:svc_full, '0', 'ors', 200), -6000);
-    EXCEPTION WHEN OTHER THEN service_logs := NULL;
+        LET ss_str VARCHAR := TO_VARCHAR(:service_status);
+        rs := (SELECT
+                   v:startTime::VARCHAR AS ST,
+                   COALESCE(DATEDIFF('second',
+                       TO_TIMESTAMP_TZ(v:startTime::VARCHAR),
+                       CURRENT_TIMESTAMP()), 0) AS A
+               FROM (SELECT TRY_PARSE_JSON(:ss_str) AS v));
+        LET cas CURSOR FOR rs;
+        FOR r IN cas DO container_start := r.ST; service_age_seconds := r.A; END FOR;
+    EXCEPTION WHEN OTHER THEN service_age_seconds := 0;
+    END;
+
+    -- 4. Last 1000 lines of container logs (Snowflake hard cap) + parsed signals.
+    -- Container name is "ors" (verified via SYSTEM$GET_SERVICE_STATUS). NEVER guess.
+    BEGIN
+        service_logs := SYSTEM$GET_SERVICE_LOGS(:svc_full, '0', 'ors', 1000);
+    EXCEPTION WHEN OTHER THEN service_logs := '';
+    END;
+    IF (service_logs IS NULL) THEN service_logs := ''; END IF;
+
+    BEGIN
+        rs := (SELECT
+                   LENGTH(:service_logs)                                        AS LC,
+                   REGEXP_COUNT(:service_logs, '\\n') + 1                       AS LL,
+                   REGEXP_COUNT(:service_logs,
+                       '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}') AS LT);
+        LET clog CURSOR FOR rs;
+        FOR r IN clog DO log_chars := r.LC; log_lines := r.LL; log_ts_count := r.LT; END FOR;
+    EXCEPTION WHEN OTHER THEN
+        log_chars := 0; log_lines := 0; log_ts_count := 0;
+    END;
+
+    IF (log_ts_count > 0) THEN
+        BEGIN
+            rs := (SELECT MAX(VALUE::VARCHAR) AS T
+                   FROM TABLE(FLATTEN(input => REGEXP_SUBSTR_ALL(
+                       :service_logs,
+                       '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}'))));
+            LET clt CURSOR FOR rs;
+            FOR r IN clt DO last_log_ts := r.T; END FOR;
+        EXCEPTION WHEN OTHER THEN last_log_ts := NULL;
+        END;
+    END IF;
+
+    -- Phase detection via REGEXP_INSTR position ordering. Pick whichever phase
+    -- marker appears LATEST in the log so we follow the timeline. Naive ILIKE
+    -- gives false positives (e.g. "Loaded landmark" appears in startup banner).
+    BEGIN
+        rs := (SELECT CASE
+                   WHEN p_ready  > 0 THEN 'SERVICE_READY'
+                   WHEN p_lm     > GREATEST(p_ch, p_osm, p_spring, p_init) THEN 'LM_PREPARE'
+                   WHEN p_ch     > GREATEST(p_osm, p_spring, p_init)       THEN 'CH_PREPARE'
+                   WHEN p_osm    > GREATEST(p_spring, p_init)              THEN 'OSM_IMPORT'
+                   WHEN p_spring > p_init                                   THEN 'SPRING_BOOT_START'
+                   WHEN p_init   > 0                                        THEN 'CONTAINER_INIT'
+                   ELSE 'UNKNOWN'
+               END AS PHASE
+               FROM (SELECT
+                   REGEXP_INSTR(:service_logs, 'Listening on port', 1, 1, 0, 'i')                                                AS p_ready,
+                   REGEXP_INSTR(:service_logs, 'PrepareLM|landmark calculation|Calculating tower nodes', 1, 1, 0, 'i')           AS p_lm,
+                   REGEXP_INSTR(:service_logs, 'PrepareCore|contraction', 1, 1, 0, 'i')                                          AS p_ch,
+                   REGEXP_INSTR(:service_logs, 'GraphProcessContext|OSMReader|optimizing|sorting|start creating graph from', 1, 1, 0, 'i') AS p_osm,
+                   REGEXP_INSTR(:service_logs, 'Started Application in', 1, 1, 0, 'i')                                           AS p_spring,
+                   REGEXP_INSTR(:service_logs, 'Container ENV', 1, 1, 0, 'i')                                                    AS p_init));
+        LET cph CURSOR FOR rs;
+        FOR r IN cph DO current_phase := r.PHASE; END FOR;
+    EXCEPTION WHEN OTHER THEN current_phase := 'UNKNOWN';
     END;
 
     -- 5. ORS_STATUS UDF
@@ -1469,53 +1582,170 @@ BEGIN
     EXCEPTION WHEN OTHER THEN pool_json := NULL;
     END;
 
-    -- Assemble the snapshot
+    -- 9. Resolve PBF size: prefer DB value, fall back to LIST @stage on first
+    -- download (REGION_PROVISION_JOBS.PBF_SIZE_GIB is null until the cache hit
+    -- path runs; without this fallback the agent has no scale signal).
+    BEGIN
+        LET jj_str VARCHAR := TO_VARCHAR(:job_json);
+        rs := (SELECT j:pbf_size_gib::FLOAT AS V FROM (SELECT TRY_PARSE_JSON(:jj_str) AS j));
+        LET cjp CURSOR FOR rs;
+        FOR r IN cjp DO pbf_gib_resolved := r.V; END FOR;
+    EXCEPTION WHEN OTHER THEN pbf_gib_resolved := NULL;
+    END;
+
+    IF (pbf_gib_resolved IS NULL) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || :P_REGION || '/';
+            rs := (SELECT MAX("size") / 1073741824.0 AS B
+                   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+                   WHERE "name" ILIKE '%.osm.pbf' AND "name" NOT ILIKE '%heidelberg%');
+            LET cps CURSOR FOR rs;
+            FOR r IN cps DO pbf_gib_resolved := r.B; END FOR;
+        EXCEPTION WHEN OTHER THEN pbf_gib_resolved := NULL;
+        END;
+    END IF;
+
+    -- 10. ETA computation: bands by pbf size * profile factor * (1 - phase_done_pct) - elapsed
+    BEGIN
+        LET jj_str2 VARCHAR := TO_VARCHAR(:job_json);
+        rs := (SELECT
+                   COALESCE(j:profiles::VARCHAR, '')                                       AS PRF,
+                   CASE
+                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%driving-hgv%' THEN 2.0
+                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%cycling%'     THEN 0.5
+                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%foot%'        THEN 0.5
+                       ELSE 1.0
+                   END                                                                              AS PF,
+                   CASE
+                       WHEN p IS NULL  THEN 0
+                       WHEN p < 0.5    THEN 10
+                       WHEN p < 3      THEN 75
+                       WHEN p < 8      THEN 240
+                       ELSE                  480
+                   END                                                                              AS BM,
+                   CASE ph
+                       WHEN 'CONTAINER_INIT'    THEN 0.00
+                       WHEN 'SPRING_BOOT_START' THEN 0.05
+                       WHEN 'OSM_IMPORT'        THEN 0.30
+                       WHEN 'CH_PREPARE'        THEN 0.65
+                       WHEN 'LM_PREPARE'        THEN 0.90
+                       WHEN 'SERVICE_READY'     THEN 1.00
+                       ELSE 0.00
+                   END                                                                              AS PD
+               FROM (SELECT TRY_PARSE_JSON(:jj_str2) AS j, :pbf_gib_resolved AS p, :current_phase AS ph));
+        LET ceta CURSOR FOR rs;
+        FOR r IN ceta DO
+            profiles_str   := r.PRF;
+            profile_factor := r.PF;
+            base_minutes   := r.BM;
+            phase_done_pct := r.PD;
+        END FOR;
+
+        IF (pbf_gib_resolved IS NOT NULL) THEN
+            eta_total_minutes := ROUND(base_minutes * profile_factor);
+            eta_remaining_minutes := GREATEST(0,
+                ROUND(eta_total_minutes * (1 - phase_done_pct) - service_age_seconds/60.0));
+        END IF;
+    EXCEPTION WHEN OTHER THEN
+        eta_total_minutes := NULL;
+        eta_remaining_minutes := NULL;
+    END;
+
+    -- Assemble the snapshot (now with all parsed + derived fields)
     snapshot := OBJECT_CONSTRUCT(
         'region', :P_REGION,
         'generated_at', CURRENT_TIMESTAMP(),
         'provision_job', :job_json,
         'build_history', :history_json,
         'service_status', :service_status,
+        'service_age_seconds', :service_age_seconds,
         'ors_status', :ors_status,
         'rescue_task_history', :task_history_json,
         'region_map', :region_map_json,
         'compute_pool', :pool_json,
-        'log_tail', :service_logs
+        'log_tail', :service_logs,
+        'log_chars', :log_chars,
+        'log_lines', :log_lines,
+        'last_log_ts', :last_log_ts,
+        'current_phase', :current_phase,
+        'pbf_size_gib_resolved', :pbf_gib_resolved,
+        'profiles_str', :profiles_str,
+        'profile_factor', :profile_factor,
+        'phase_done_pct', :phase_done_pct,
+        'eta_total_minutes', :eta_total_minutes,
+        'eta_remaining_minutes', :eta_remaining_minutes
     );
 
+    -- Deterministic operator-facing banner. Always prepended to LLM response so
+    -- the user sees correct phase / age / ETA even if the LLM hallucinates, and
+    -- so we have a useful answer if AI_COMPLETE errors.
+    BEGIN
+        LET ss_str2 VARCHAR := TO_VARCHAR(:service_status);
+        rs := (SELECT COALESCE(v:restartCount::VARCHAR, '?') AS R FROM (SELECT TRY_PARSE_JSON(:ss_str2) AS v));
+        LET crc CURSOR FOR rs;
+        FOR r IN crc DO restart_count_str := r.R; END FOR;
+    EXCEPTION WHEN OTHER THEN restart_count_str := '?';
+    END;
+
+    banner :=
+        '**Diagnostic snapshot (deterministic):**' || CHR(10) || CHR(10) ||
+        '| Field | Value |' || CHR(10) ||
+        '|---|---|' || CHR(10) ||
+        '| current_phase | `' || COALESCE(:current_phase, 'UNKNOWN') || '` |' || CHR(10) ||
+        '| service_age_min | ' || COALESCE(ROUND(:service_age_seconds/60.0, 1)::VARCHAR, '?') || ' |' || CHR(10) ||
+        '| restart_count | ' || :restart_count_str || ' |' || CHR(10) ||
+        '| log_chars | ' || COALESCE(:log_chars::VARCHAR, '0') || ' |' || CHR(10) ||
+        '| log_lines | ' || COALESCE(:log_lines::VARCHAR, '0') || ' |' || CHR(10) ||
+        '| last_log_ts | ' || COALESCE(:last_log_ts, 'n/a') || ' |' || CHR(10) ||
+        '| pbf_size_gib | ' || COALESCE(ROUND(:pbf_gib_resolved, 2)::VARCHAR, 'unknown') || ' |' || CHR(10) ||
+        '| profile_factor | ' || COALESCE(:profile_factor::VARCHAR, '1.0') || ' |' || CHR(10) ||
+        '| eta_total_min | ' || COALESCE(:eta_total_minutes::VARCHAR, 'unknown') || ' |' || CHR(10) ||
+        '| eta_remaining_min | ' || COALESCE(:eta_remaining_minutes::VARCHAR, 'unknown') || ' |' || CHR(10) ||
+        CHR(10);
+
     -- System prompt encodes the decision tree the human operator follows.
+    -- HARD RULES are designed to prevent the "logs are empty" hallucination and
+    -- the made-up 20-45 min ETA we observed in v1.
     system_prompt :=
 'You are an ORS region build diagnostic assistant for a Snowflake-native routing solution. ' ||
 'The user clicked "Ask for status" on a region in the Region Builder UI. You receive a JSON ' ||
-'snapshot of the build state. Return concise markdown with this structure:' || CHR(10) ||
-'  - One-line "**TL;DR**" at the top.' || CHR(10) ||
-'  - A short table or bullet list of key signals (phase, container restartCount, service_ready, last log time, elapsed).' || CHR(10) ||
-'  - A "What is happening" paragraph (2-4 sentences).' || CHR(10) ||
+'snapshot of the build state plus a deterministic banner with parsed phase, age, and ETA.' || CHR(10) ||
+'Return concise markdown with this structure:' || CHR(10) ||
+'  - One-line "**TL;DR**" at the top (e.g. "OSM import in progress, ~5 h remaining").' || CHR(10) ||
+'  - A short bullet list of "Key signals" referencing the deterministic banner values.' || CHR(10) ||
+'  - A "What is happening" paragraph (2-4 sentences) referencing the latest 1-2 log lines.' || CHR(10) ||
 '  - A "What to do" section: clear recommended action.' || CHR(10) ||
-'  - An "ETA" line if a build is in progress.' || CHR(10) ||
+'  - An "ETA" line that cites pbf_size_gib_resolved, profile_factor, current_phase, and eta_remaining_minutes.' || CHR(10) ||
+'HARD RULES (violations = wrong answer):' || CHR(10) ||
+'  R1. NEVER claim "logs are empty" if log_chars > 0. Quote actual log content.' || CHR(10) ||
+'  R2. NEVER invent ETA numbers. Use eta_remaining_minutes from the snapshot. ' ||
+       'If pbf_size_gib_resolved is null, say "size unknown; cannot estimate ETA".' || CHR(10) ||
+'  R3. NEVER substitute or guess container names. The container is "ors".' || CHR(10) ||
+'  R4. ALWAYS quote pbf_size_gib_resolved and profile_factor in the ETA line.' || CHR(10) ||
 'Decision tree:' || CHR(10) ||
 '1. service_status.restartCount > 0 -> container has crashed (likely OOM if exitCode 137). ' ||
 '   Recommend: dismiss the job and retry on a smaller compute size, or split profiles.' || CHR(10) ||
 '2. ors_status.service_ready = true -> graph is loaded. If provision_job.status is still ' ||
 '   ERROR with error_msg=graph_load_timeout, the rescue task will finalize within 2 min. ' ||
 '   Recommend: wait briefly; UI will flip green automatically.' || CHR(10) ||
-'3. ors_status.service_ready = false AND service_status.status = READY -> container is alive ' ||
-'   and building the graph. Inspect log_tail for the latest phase:' || CHR(10) ||
-'   - If logs show CoreLMPreparationHandler with N/4 progress, report which step and ETA ' ||
-'     based on per-step time observed in earlier steps.' || CHR(10) ||
-'   - If logs show PrepareCore (CH preparation), report the contraction progress (nodes ' ||
-'     remaining, shortcuts built) and ETA.' || CHR(10) ||
-'   - If logs are silent for >30 minutes AND no fresh activity, raise concern.' || CHR(10) ||
-'4. provision_job.error_msg = graph_load_timeout AND container alive -> wrapper exited but ' ||
+'3. ors_status.service_ready = false AND service_status.status = READY -> container alive, ' ||
+'   building the graph. Sub-cases by log_chars + service_age_seconds:' || CHR(10) ||
+'   3a. log_chars > 0 -> NEVER say "logs are empty". Quote latest log line; report current_phase.' || CHR(10) ||
+'   3b. log_chars = 0 AND service_age_seconds < 60   -> "container booting; logs flushing in <1 min".' || CHR(10) ||
+'   3c. log_chars = 0 AND service_age_seconds < 600  -> "Spring Boot still initialising; check again in 1-2 min".' || CHR(10) ||
+'   3d. log_chars = 0 AND service_age_seconds >= 600 -> escalate as a logging issue.' || CHR(10) ||
+'4. ETA bands (already computed in eta_remaining_minutes; report and contextualize):' || CHR(10) ||
+'   pbf<0.5GiB city ~10 min base; pbf<3GiB country ~75 min; pbf<8GiB ~4 h; pbf>=8GiB continent ~8 h. ' ||
+'   profile_factor: driving-hgv 2.0x, driving-car 1.0x, cycling/foot 0.5x. ' ||
+'   phase derate: CONTAINER_INIT 0%, SPRING_BOOT 5%, OSM_IMPORT 30%, CH_PREPARE 65%, LM_PREPARE 90%.' || CHR(10) ||
+'5. provision_job.error_msg = graph_load_timeout AND container alive -> wrapper exited but ' ||
 '   the build continues; rescue task will close the loop. Reassure user.' || CHR(10) ||
-'5. provision_job.error_msg = container_crash_during_build -> OOM. Recommend retry on a ' ||
+'6. provision_job.error_msg = container_crash_during_build -> OOM. Recommend retry on ' ||
 '   smaller compute or different family.' || CHR(10) ||
-'6. compute_pool.instance_family does not match region_map.instance_family -> stale pool ' ||
-'   from earlier failed attempt. The patched create_region_ors_service should reconcile on ' ||
-'   next provision.' || CHR(10) ||
-'7. provision_job is null -> no provision attempt found. Recommend deploying.' || CHR(10) ||
-'Be specific. Quote numeric values from the snapshot. Do not invent data; if a field is null, ' ||
-'say so. Keep total output under 300 words.';
+'7. compute_pool.instance_family != region_map.instance_family -> stale pool from earlier ' ||
+'   failed attempt. The patched create_region_ors_service should reconcile on next provision.' || CHR(10) ||
+'8. provision_job is null -> no provision attempt found. Recommend deploying.' || CHR(10) ||
+'Be specific. Quote numeric values from the snapshot. Keep total output under 350 words.';
 
     -- Call Cortex AI to summarize. claude-4-sonnet has the deepest reasoning for this kind
     -- of correlation; swap to claude-3-5-haiku for cheaper but adequate responses.
@@ -1526,14 +1756,13 @@ BEGIN
             'Snapshot:' || CHR(10) || TO_VARCHAR(:snapshot)
         );
     EXCEPTION WHEN OTHER THEN
-        llm_response := '**Diagnostic agent unavailable.** Raw snapshot below.\n\n' ||
-                        '```json\n' || TO_VARCHAR(:snapshot) || '\n```';
+        llm_response := '_(LLM unavailable; relying on the deterministic banner above.)_';
     END;
 
     RETURN OBJECT_CONSTRUCT(
         'region', :P_REGION,
         'generated_at', CURRENT_TIMESTAMP(),
-        'markdown', :llm_response,
+        'markdown', :banner || COALESCE(:llm_response, ''),
         'raw_snapshot', :snapshot
     )::VARCHAR;
 END;
@@ -1612,6 +1841,32 @@ BEGIN
     EXCEPTION WHEN OTHER THEN is_ready := FALSE;
     END;
     IF (NOT :is_ready) THEN
+        -- Container alive but graph not loaded yet. The wrapper may have exited
+        -- prematurely (stall detector / wall-clock); leaving STATUS='ERROR' on
+        -- the row puts it in the UI's failed-jobs panel even though the build
+        -- is still progressing. Downgrade to RUNNING / BUILDING_GRAPH while the
+        -- container is healthy so the UI shows it as in-progress, and the next
+        -- rescue iteration will keep monitoring (the scan filter below already
+        -- includes RUNNING + BUILDING_GRAPH + elapsed > 30 min).
+        BEGIN
+            LET svc_alive BOOLEAN DEFAULT FALSE;
+            LET svc_full_alive VARCHAR := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
+            EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full_alive || ''')';
+            rs := (SELECT (TRY_PARSE_JSON(VALUE::VARCHAR)[0]:status::VARCHAR = 'READY') AS A
+                   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET csa CURSOR FOR rs;
+            FOR r IN csa DO svc_alive := COALESCE(r.A, FALSE); END FOR;
+            IF (:svc_alive) THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                SET STATUS='RUNNING',
+                    STAGE='BUILDING_GRAPH',
+                    MESSAGE='Container alive; graph still loading (rescue task monitoring).',
+                    ERROR_MSG=NULL,
+                    COMPLETED_AT=NULL
+                WHERE JOB_ID = :job_id AND STATUS='ERROR';
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
         RETURN 'not_ready:' || :P_REGION;
     END IF;
 
