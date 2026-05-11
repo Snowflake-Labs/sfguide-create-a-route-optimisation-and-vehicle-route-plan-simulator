@@ -149,8 +149,8 @@ BEGIN
     -- JVM heap mirrors the BUILD_ORS_SERVICE_SPEC heap CASE so build history
     -- captures the actual headroom the JVM was given.
     xmx_gib := CASE UPPER(:P_COMPUTE_SIZE)
-        WHEN 'XXL' THEN 1100 WHEN 'XL' THEN 200 WHEN 'L' THEN 96
-        WHEN 'S' THEN 20 ELSE 44 END;
+        WHEN 'XXL' THEN 1100 WHEN 'L' THEN 700
+        WHEN 'S' THEN 20 ELSE 700 END;
 
     INSERT INTO OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
         (BUILD_ID, JOB_ID, REGION, PBF_URL, PROFILES, COMPUTE_SIZE,
@@ -326,10 +326,10 @@ BEGIN
     -- largest high-memory hardware routinely take 60-120 minutes; smaller
     -- regions complete in single-digit minutes. Hard-fail at the ceiling so
     -- the UI surfaces a real error instead of a soft "check ORS_STATUS".
-    LET wait_iters INTEGER DEFAULT 40;       -- 30s * 40  = 20 min default
+    LET wait_iters INTEGER DEFAULT 40;       -- 30s * 40  = 20 min default (S, city builds)
     LET wait_secs  INTEGER DEFAULT 30;
-    IF (:P_COMPUTE_SIZE = 'XXL') THEN wait_iters := 240; END IF;        -- 2h
-    IF (UPPER(:P_COMPUTE_SIZE) IN ('M','L','XL')) THEN wait_iters := 120; END IF; -- 1h
+    IF (:P_COMPUTE_SIZE = 'XXL') THEN wait_iters := 240; END IF;        -- 2h for continent builds
+    IF (:P_COMPUTE_SIZE = 'L')   THEN wait_iters := 200; END IF;        -- 1h40m for country / sub-region builds (HIGHMEM_X64_L)
     FOR i IN 1 TO :wait_iters DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(' || :wait_secs || ')';
         BEGIN
@@ -383,6 +383,18 @@ BEGIN
                         EXIT_STATUS = 'SUCCESS',
                         PEAK_RSS_GIB = :peak_rss
                     WHERE BUILD_ID = :build_id;
+                    -- Auto-downsize the runtime service to a smaller tier so the user
+                    -- does not pay 24/7 build-tier rates for steady-state querying.
+                    -- Only applies to non-city builds (S is already minimal). Mapping
+                    -- is in DOWNSIZE_REGION_AFTER_BUILD: L -> HIGHMEM_X64_M, XXL ->
+                    -- MEM_X64_G2_64. Best-effort; failure is non-fatal so the build
+                    -- still reports COMPLETE even if the downsize hits a transient.
+                    IF (UPPER(:P_COMPUTE_SIZE) IN ('L','XXL')) THEN
+                        BEGIN
+                            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
+                        EXCEPTION WHEN OTHER THEN NULL;
+                        END;
+                    END IF;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
                 END IF;
             END IF;
@@ -616,9 +628,9 @@ AS
 $$
     '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
     '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END ||
     '","XMX":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'XL' THEN '200G' WHEN 'L' THEN '96G' WHEN 'S' THEN '20G' ELSE '44G' END ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END ||
     '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
@@ -650,14 +662,14 @@ BEGIN
     -- bigger than a city must run on the biggest box this account can get, so
     -- a single graph build never loses hours of work to OOM. The S tier is the
     -- only level-driven hardcoded family because cities never need high-mem.
+    -- Three-tier model: S (city) | L (country/sub-region, HIGHMEM_X64_L) | XXL (continent, largest available high-mem)
+    -- Legacy CPU_X64 tiers (M / XL with CPU_X64_SL / HIGHMEM_X64_M) were removed: their heap was too small for
+    -- country builds and caused OOM-kill loops. Any unrecognized size resolves to XXL (largest available) -- never
+    -- silently downgrade a non-city build.
     IF (:P_COMPUTE_SIZE = 'S') THEN
         instance_family := 'GEN_X64_G2_8';
-    ELSEIF (:P_COMPUTE_SIZE = 'XL') THEN
-        instance_family := 'HIGHMEM_X64_M';     -- legacy override
     ELSEIF (:P_COMPUTE_SIZE = 'L') THEN
-        instance_family := 'CPU_X64_L';         -- legacy override
-    ELSEIF (:P_COMPUTE_SIZE = 'M') THEN
-        instance_family := 'CPU_X64_SL';        -- legacy override
+        instance_family := 'HIGHMEM_X64_L';     -- 124 vCPU / 984 GB / ~700 G heap (country / sub-region builds)
     ELSEIF (:P_COMPUTE_SIZE = 'XXL') THEN
         CALL OPENROUTESERVICE_APP.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY() INTO :instance_family;
     ELSE
@@ -890,9 +902,9 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
 
     thread_config = {
         'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
-        'M':  {'init_threads': 1, 'ch_threads': 10, 'lm_threads': 8},
-        'L':  {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
-        'XL': {'init_threads': 1, 'ch_threads': 20, 'lm_threads': 14},
+        # L: HIGHMEM_X64_L (124 vCPU / 984 GB) -- country / sub-region builds.
+        # Saturate cores for graph contraction; runtime tier downsized after build.
+        'L':  {'init_threads': 4, 'ch_threads': 80, 'lm_threads': 40},
         # XXL: largest available high-mem family (MEM_X64_G2_192 / HIGHMEM_X64_L)
         # -- saturate the box: build all profiles in parallel and use most cores
         # for graph contraction so USA/Europe-class builds finish quickly.
@@ -1146,18 +1158,16 @@ BEGIN
     END IF;
 
     -- Resolve runtime instance family (mirrors create_region_ors_service mapping).
+    -- Three-tier model: S (city) | L (country, was HIGHMEM_X64_L for build) | XXL (continent).
+    -- Runtime is intentionally smaller than build to avoid 24/7 spend at build-tier rates.
     IF (:P_RUNTIME_SIZE = 'XXL') THEN
-        runtime_family := 'MEM_X64_G2_64';
-    ELSEIF (:P_RUNTIME_SIZE = 'XL') THEN
-        runtime_family := 'HIGHMEM_X64_M';
+        runtime_family := 'MEM_X64_G2_64';        -- downsize XXL build -> mid-tier high-mem
     ELSEIF (:P_RUNTIME_SIZE = 'L') THEN
-        runtime_family := 'CPU_X64_L';
-    ELSEIF (:P_RUNTIME_SIZE = 'M') THEN
-        runtime_family := 'CPU_X64_SL';
+        runtime_family := 'HIGHMEM_X64_M';        -- downsize L build -> smaller high-mem (was unsafe CPU_X64_L)
     ELSEIF (:P_RUNTIME_SIZE = 'S') THEN
         runtime_family := 'GEN_X64_G2_8';
     ELSE
-        runtime_family := 'CPU_X64_SL';
+        runtime_family := 'HIGHMEM_X64_M';        -- default to safe high-mem; never CPU-only for non-city
     END IF;
 
     -- Persist graphs across the cycle (REBUILD_GRAPHS=false).
