@@ -65,23 +65,25 @@ const ALL_PROFILES: { id: string; label: string; group: string }[] = [
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 
-type ComputeSize = 'S' | 'M' | 'L' | 'XL';
+type ComputeSize = 'S' | 'L' | 'XXL';
 
 const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: number; mem: string; heap: string; desc: string }[] = [
-  { id: 'S', label: 'Small', instance: 'CPU_X64_M', vcpu: 6, mem: '28 GB', heap: '20 GB', desc: 'Cities and small regions' },
-  { id: 'M', label: 'Medium', instance: 'CPU_X64_SL', vcpu: 14, mem: '58 GB', heap: '44 GB', desc: 'Sub-regions and small countries' },
-  { id: 'L', label: 'Large', instance: 'CPU_X64_L', vcpu: 28, mem: '116 GB', heap: '96 GB', desc: 'Countries and continents' },
-  { id: 'XL', label: 'Extra Large', instance: 'HIGHMEM_X64_M', vcpu: 28, mem: '240 GB', heap: '200 GB', desc: 'Large countries (US, Russia, etc.)' },
+  { id: 'S',   label: 'Small',             instance: 'GEN_X64_G2_8',   vcpu: 6,   mem: '28 GB',   heap: '20 GB',   desc: 'Cities (e.g. San Francisco, London)' },
+  { id: 'L',   label: 'Large',             instance: 'HIGHMEM_X64_L',  vcpu: 124, mem: '984 GB',  heap: '700 GB',  desc: 'States or single countries (e.g. USA, Germany, California)' },
+  { id: 'XXL', label: 'Extra Extra Large', instance: 'MEM_X64_G2_192', vcpu: 188, mem: '1436 GB', heap: '1100 GB', desc: 'Continents or super-regions (e.g. Europe, North America)' },
 ];
 
+// Auto-recommend a tier from the region's level field.
+//   city                      -> S   (GEN_X64_G2_8)
+//   country / sub-region      -> L   (HIGHMEM_X64_L, ~700 G heap)
+//   continent / unknown       -> XXL (MEM_X64_G2_192, ~1100 G heap)
+// After first successful build, PROVISION_REGION_WRAPPER auto-calls
+// DOWNSIZE_REGION_AFTER_BUILD so the runtime service does not pay
+// build-tier rates 24/7. No user action required.
 function recommendComputeSize(level: string | undefined): ComputeSize {
-  switch (level) {
-    case 'city': return 'S';
-    case 'sub-region': return 'M';
-    case 'country': return 'L';
-    case 'continent': return 'XL';
-    default: return 'M';
-  }
+  if (level === 'city') return 'S';
+  if (level === 'country' || level === 'sub-region') return 'L';
+  return 'XXL';
 }
 
 type SourceTab = 'bbbike' | 'geofabrik';
@@ -134,7 +136,58 @@ export default function RegionBuilder() {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<CatalogRegion | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<string[]>(DEFAULT_PROFILES);
-  const [computeSize, setComputeSize] = useState<ComputeSize>('S');
+  const [computeSize, setComputeSize] = useState<ComputeSize>('L');
+  // PBF source preference. Default false = reuse the staged .osm.pbf when
+  // present (turns multi-GB redeploys into seconds). True = force a fresh
+  // download from Geofabrik / BBBike, e.g. to pick up a weekly refresh.
+  const [forcePbfRedownload, setForcePbfRedownload] = useState<boolean>(false);
+  // Largest high-memory family resolved on the server via
+  // RESOLVE_LARGEST_HIGHMEM_FAMILY(); used in the XXL banner so users see
+  // exactly which instance family will back their build before they click
+  // Deploy. Falls back to the published default if the API call fails.
+  const [largestFamily, setLargestFamily] = useState<string>('MEM_X64_G2_192');
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/regions/largest-family')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && d && d.family) setLargestFamily(d.family);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  // Healthcheck for new build-routing-solution procs/tables. If the SQL
+  // modules were not deployed alongside this image, the UI would silently
+  // fall back to hardcoded defaults; surfacing a banner makes partial
+  // deploys obvious instead of degrading quietly.
+  type HealthStatus = { overall: string; status: Record<string, string>; errors?: Record<string, string> };
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/regions/healthcheck')
+      .then((r) => r.json())
+      .then((d: HealthStatus) => { if (!cancelled) setHealth(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  // Aggregated build history across all provisioned regions, fed by
+  // /api/regions/:region/build-history. Refreshed whenever the regions list
+  // changes so a freshly-completed build shows up in the recent-builds card.
+  type BuildHistoryRow = {
+    BUILD_ID?: string;
+    REGION?: string;
+    INSTANCE_FAMILY?: string;
+    COMPUTE_SIZE?: string;
+    PROFILES?: string;
+    JVM_XMX_GIB?: number;
+    STARTED_AT?: string;
+    FINISHED_AT?: string;
+    ELAPSED_MINUTES?: number;
+    EXIT_STATUS?: string;
+    PEAK_RSS_GIB?: number | null;
+    OUTPUT_GRAPH_GIB?: number | null;
+  };
+  const [buildHistory, setBuildHistory] = useState<BuildHistoryRow[]>([]);
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
@@ -189,6 +242,36 @@ export default function RegionBuilder() {
     fetchCatalog();
     fetchProvisionJobs();
   }, [fetchRegions, fetchCatalog, fetchProvisionJobs]);
+
+  // Fetch the latest build history rows for every provisioned region whenever
+  // the regions list changes. Each region returns up to 25 rows; we then sort
+  // by STARTED_AT desc and keep only the most recent 10 across the whole
+  // account so the card stays compact.
+  useEffect(() => {
+    let cancelled = false;
+    if (regions.length === 0) {
+      setBuildHistory([]);
+      return;
+    }
+    Promise.all(
+      regions.map((c) =>
+        fetch(`/api/regions/${encodeURIComponent(c.region)}/build-history`)
+          .then((r) => r.json())
+          .then((d) => (Array.isArray(d?.history) ? d.history : []))
+          .catch(() => [])
+      )
+    ).then((all) => {
+      if (cancelled) return;
+      const flat: BuildHistoryRow[] = ([] as BuildHistoryRow[]).concat(...all);
+      flat.sort((a, b) => {
+        const ta = a.STARTED_AT ? new Date(a.STARTED_AT).getTime() : 0;
+        const tb = b.STARTED_AT ? new Date(b.STARTED_AT).getTime() : 0;
+        return tb - ta;
+      });
+      setBuildHistory(flat.slice(0, 10));
+    });
+    return () => { cancelled = true; };
+  }, [regions]);
 
   useEffect(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -263,6 +346,7 @@ export default function RegionBuilder() {
           bbox: selectedRegion.bbox || { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 },
           profiles: selectedProfiles,
           compute_size: computeSize,
+          force_redownload_pbf: forcePbfRedownload,
         }),
       });
       const data = await resp.json();
@@ -271,7 +355,7 @@ export default function RegionBuilder() {
         fetchProvisionJobs();
       }
     } catch {}
-  }, [selectedRegion, selectedProfiles, fetchProvisionJobs]);
+  }, [selectedRegion, selectedProfiles, computeSize, forcePbfRedownload, fetchProvisionJobs]);
 
   const cancelJob = useCallback(async (region: string) => {
     try {
@@ -357,6 +441,37 @@ export default function RegionBuilder() {
     <div className="panel">
       <h2>Region Builder</h2>
       <p className="subtitle">Deploy per-region ORS instances from OSM map data (Geofabrik + BBBike)</p>
+
+      {health && health.overall !== 'ok' && (
+        <div
+          role="alert"
+          style={{
+            background: 'rgba(234,179,8,0.15)',
+            border: '1px solid rgba(234,179,8,0.5)',
+            color: '#854d0e',
+            padding: '0.5rem 0.75rem',
+            borderRadius: 6,
+            marginBottom: '0.75rem',
+            fontSize: 12,
+          }}
+        >
+          <strong>Partial deploy detected.</strong>{' '}
+          The following back-end pieces are missing or returned an error; the UI may be falling back to hardcoded defaults:
+          <ul style={{ margin: '4px 0 0 16px', padding: 0, listStyle: 'disc' }}>
+            {Object.entries(health.status)
+              .filter(([, v]) => v !== 'ok')
+              .map(([k, v]) => (
+                <li key={k}>
+                  <code>{k}</code>: {v}
+                  {health.errors?.[k] ? ` - ${health.errors[k]}` : ''}
+                </li>
+              ))}
+          </ul>
+          <span style={{ fontSize: 11, opacity: 0.85 }}>
+            Run <code>scripts/deploy.sh</code> to redeploy the SQL modules and image together.
+          </span>
+        </div>
+      )}
 
       {activeJobs.length > 0 && (
         <>
@@ -514,6 +629,54 @@ export default function RegionBuilder() {
         </table>
       )}
 
+      {buildHistory.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3 style={{ fontSize: '14px', margin: '0 0 0.5rem' }}>Recent builds</h3>
+          <p style={{ fontSize: '11px', opacity: 0.7, margin: '0 0 0.5rem' }}>
+            Last {buildHistory.length} build attempts across all regions. Sourced from ORS_BUILD_HISTORY.
+          </p>
+          <table className="services-table" style={{ fontSize: '12px' }}>
+            <thead>
+              <tr>
+                <th>Region</th>
+                <th>Started</th>
+                <th>Family / size</th>
+                <th>Profiles</th>
+                <th>Elapsed</th>
+                <th>Status</th>
+                <th>Peak RSS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buildHistory.map((b) => {
+                const minutes = b.ELAPSED_MINUTES != null ? Math.round(b.ELAPSED_MINUTES * 10) / 10 : null;
+                const elapsed = minutes == null
+                  ? '\u2014'
+                  : minutes >= 60
+                    ? `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`
+                    : `${minutes}m`;
+                const statusBadge = b.EXIT_STATUS === 'SUCCESS'
+                  ? 'ok'
+                  : b.EXIT_STATUS === 'IN_PROGRESS'
+                    ? 'warn'
+                    : 'error';
+                return (
+                  <tr key={b.BUILD_ID || `${b.REGION}-${b.STARTED_AT}`}>
+                    <td>{b.REGION || '\u2014'}</td>
+                    <td>{b.STARTED_AT ? new Date(b.STARTED_AT).toLocaleString() : '\u2014'}</td>
+                    <td>{b.INSTANCE_FAMILY || '\u2014'}{b.COMPUTE_SIZE ? ` / ${b.COMPUTE_SIZE}` : ''}</td>
+                    <td title={b.PROFILES || ''} style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.PROFILES || '\u2014'}</td>
+                    <td>{elapsed}</td>
+                    <td><span className={`badge ${statusBadge}`}>{b.EXIT_STATUS || 'UNKNOWN'}</span></td>
+                    <td>{b.PEAK_RSS_GIB != null ? `${Math.round(b.PEAK_RSS_GIB)} GB` : '\u2014'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <h3>Provision New Region</h3>
       <div className="provision-form">
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', alignItems: 'center' }}>
@@ -656,24 +819,78 @@ export default function RegionBuilder() {
                 Auto-selected based on region level. Larger regions need more memory for graph building.
               </p>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {COMPUTE_SIZES.map((s) => (
-                  <button
-                    key={s.id}
-                    className={`btn small${computeSize === s.id ? ' primary' : ''}`}
-                    onClick={() => setComputeSize(s.id)}
-                    style={{ flex: 1, textAlign: 'center' }}
-                  >
-                    <div><strong>{s.label}</strong></div>
-                    <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
-                    <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
-                  </button>
-                ))}
+                {COMPUTE_SIZES.map((s) => {
+                  const isRecommended = s.id === recommendComputeSize(selectedRegion?.level);
+                  return (
+                    <button
+                      key={s.id}
+                      className={`btn small${computeSize === s.id ? ' primary' : ''}`}
+                      onClick={() => setComputeSize(s.id)}
+                      style={{ flex: 1, textAlign: 'center' }}
+                      title={s.desc}
+                    >
+                      <div>
+                        <strong>{s.label}</strong>
+                        {isRecommended && <span style={{ fontSize: '10px', marginLeft: 6, padding: '1px 6px', borderRadius: 4, background: 'rgba(38, 132, 255, 0.18)', color: '#2684ff' }}>Recommended</span>}
+                      </div>
+                      <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
+                      <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
+                    </button>
+                  );
+                })}
               </div>
+              {computeSize === 'XXL' && (
+                <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
+                  Resolved compute pool: <strong>{largestFamily}</strong>. Graph build runs on the largest high-memory family available in this cloud / region. The runtime service is auto-downsized to a smaller tier after the first successful build (no manual action required).
+                </p>
+              )}
+              {computeSize === 'L' && (
+                <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
+                  Resolved compute pool: <strong>HIGHMEM_X64_L</strong>. Graph build runs on a 124 vCPU / 984 GB high-memory node. The runtime service is auto-downsized to a smaller tier after the first successful build (no manual action required).
+                </p>
+              )}
+              {/* Advanced override drawer removed: legacy CPU tiers (CPU_X64_SL, CPU_X64_L, HIGHMEM_X64_M) caused OOM-kill loops on country builds; HIGHMEM_X64_L is now the default for country/sub-region via the L tier above. */}
             </div>
 
             {isRegionProvisioning(selectedRegion.regionKey) && (
               <div className="warning-banner">This region is already being provisioned.</div>
             )}
+
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>PBF source</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="pbf-source"
+                    checked={!forcePbfRedownload}
+                    onChange={() => setForcePbfRedownload(false)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Use cached file if available</strong>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Reuse the .osm.pbf already on the SPCS stage. Multi-GB redeploys complete in seconds.
+                    </div>
+                  </span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="pbf-source"
+                    checked={forcePbfRedownload}
+                    onChange={() => setForcePbfRedownload(true)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Force re-download from URL</strong>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                      Pull a fresh copy from Geofabrik / BBBike. Use after a weekly refresh or if cached file is corrupt.
+                    </div>
+                  </span>
+                </label>
+              </div>
+            </div>
           </>
         )}
 
