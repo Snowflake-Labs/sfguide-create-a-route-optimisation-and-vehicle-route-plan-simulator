@@ -383,6 +383,18 @@ BEGIN
                         EXIT_STATUS = 'SUCCESS',
                         PEAK_RSS_GIB = :peak_rss
                     WHERE BUILD_ID = :build_id;
+                    -- Auto-downsize the runtime service to a smaller tier so the user
+                    -- does not pay 24/7 build-tier rates for steady-state querying.
+                    -- Only applies to non-city builds (S is already minimal). Mapping
+                    -- is in DOWNSIZE_REGION_AFTER_BUILD: L -> HIGHMEM_X64_M, XXL ->
+                    -- MEM_X64_G2_64. Best-effort; failure is non-fatal so the build
+                    -- still reports COMPLETE even if the downsize hits a transient.
+                    IF (UPPER(:P_COMPUTE_SIZE) IN ('L','XXL')) THEN
+                        BEGIN
+                            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
+                        EXCEPTION WHEN OTHER THEN NULL;
+                        END;
+                    END IF;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
                 END IF;
             END IF;

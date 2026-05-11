@@ -77,8 +77,9 @@ const COMPUTE_SIZES: { id: ComputeSize; label: string; instance: string; vcpu: n
 //   city                      -> S   (GEN_X64_G2_8)
 //   country / sub-region      -> L   (HIGHMEM_X64_L, ~700 G heap)
 //   continent / unknown       -> XXL (MEM_X64_G2_192, ~1100 G heap)
-// After first successful build, the runtime service should be auto-downsized via
-// DOWNSIZE_REGION_AFTER_BUILD to avoid 24/7 spend on the build tier.
+// After first successful build, PROVISION_REGION_WRAPPER auto-calls
+// DOWNSIZE_REGION_AFTER_BUILD so the runtime service does not pay
+// build-tier rates 24/7. No user action required.
 function recommendComputeSize(level: string | undefined): ComputeSize {
   if (level === 'city') return 'S';
   if (level === 'country' || level === 'sub-region') return 'L';
@@ -840,12 +841,12 @@ export default function RegionBuilder() {
               </div>
               {computeSize === 'XXL' && (
                 <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
-                  Resolved compute pool: <strong>{largestFamily}</strong>. Graph build runs on the largest high-memory family available in this cloud / region. The service should be downsized to a runtime tier after the first successful build (DOWNSIZE_REGION_AFTER_BUILD).
+                  Resolved compute pool: <strong>{largestFamily}</strong>. Graph build runs on the largest high-memory family available in this cloud / region. The runtime service is auto-downsized to a smaller tier after the first successful build (no manual action required).
                 </p>
               )}
               {computeSize === 'L' && (
                 <p style={{ fontSize: '11px', opacity: 0.7, margin: '0.5rem 0 0' }}>
-                  Resolved compute pool: <strong>HIGHMEM_X64_L</strong>. Graph build runs on a 124 vCPU / 984 GB high-memory node. The service should be downsized to a runtime tier after the first successful build (DOWNSIZE_REGION_AFTER_BUILD).
+                  Resolved compute pool: <strong>HIGHMEM_X64_L</strong>. Graph build runs on a 124 vCPU / 984 GB high-memory node. The runtime service is auto-downsized to a smaller tier after the first successful build (no manual action required).
                 </p>
               )}
               {/* Advanced override drawer removed: legacy CPU tiers (CPU_X64_SL, CPU_X64_L, HIGHMEM_X64_M) caused OOM-kill loops on country builds; HIGHMEM_X64_L is now the default for country/sub-region via the L tier above. */}
