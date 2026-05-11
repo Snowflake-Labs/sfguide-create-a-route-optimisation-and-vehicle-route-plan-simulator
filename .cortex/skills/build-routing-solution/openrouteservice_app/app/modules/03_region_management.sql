@@ -1869,6 +1869,17 @@ BEGIN
                     ERROR_MSG=NULL,
                     COMPLETED_AT=NULL
                 WHERE JOB_ID = :job_id AND STATUS='ERROR';
+                -- Also reset the matching build_history row. The Region Builder
+                -- "Recent builds" card reads ORS_BUILD_HISTORY directly; without
+                -- this reset the false TIMEOUT badge stays red even after the
+                -- provision_jobs row has been downgraded. Idempotent: only fires
+                -- on rows that the wrapper falsely marked TIMEOUT.
+                UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+                SET EXIT_STATUS='IN_PROGRESS',
+                    FINISHED_AT=NULL,
+                    ELAPSED_MINUTES=NULL,
+                    LOG_URI=NULL
+                WHERE JOB_ID = :job_id AND EXIT_STATUS='TIMEOUT';
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
