@@ -43,6 +43,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 | DATABASE | `FLEET_INTELLIGENCE` | Database for demo objects |
 | SCHEMA | `ROUTE_OPTIMIZATION` | Schema for VRP tables and notebooks |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
+| VEHICLE_TYPE | `driving-car` | ORS routing profile (NOT 'ebike' — VRP uses car routing) |
+| REGION_GEOHASH | `9q` | Geohash prefix for Overture Maps filter (SF Bay Area) |
+| REGION_NAME | `SanFrancisco` | Region identifier used in all tables |
 | MARKETPLACE_CARTO | `CARTO Academy` | CARTO Academy Marketplace listing name |
 
 ## Error Logging
@@ -55,6 +58,9 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 2. Replace longer phrases before shorter ones when editing notebook prompts to avoid garbled text.
 3. Replace complete prompt strings, not individual words.
 4. Always validate JSON validity of modified `.ipynb` files before uploading.
+5. **CONFIG.VEHICLE_TYPE must be `'driving-car'`** (the ORS car routing profile). Do NOT use `'ebike'` — the VRP solver and OPTIMIZATION function use driving-car.
+6. **In workspace environments** (no `snow sql -f` available), use Option B in Step 5 — execute each SQL statement individually via `snowflake_sql_execute` with literal values substituted for `$REGION_GEOHASH` and `$REGION_NAME`.
+7. **LOOKUP table schema** must include ARRAY columns (`IND, IND2, CTYPE, STYPE`) and a `REGION` column. The app reads industries dynamically from this table. Without ARRAY columns the industry dropdown will be empty.
 
 ## Workflow
 
@@ -127,17 +133,108 @@ CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
    - `$REGION_GEOHASH`: see geohash table in `references/notebook-deployment.md`
    - `$REGION_NAME`: the city/region name (e.g., `'NewYork'`, `'London'`)
 2. If the user requested custom industries in Step 3, update the LOOKUP INSERT section in `references/seed-data.sql` per `references/industry-customization.md`.
+
+#### Option A: CLI execution (preserves SET variables)
 3. Run:
    ```bash
    snow sql -f .cortex/skills/route-optimization/references/seed-data.sql -c <connection>
    ```
+
+#### Option B: Workspace / snowflake_sql_execute (one statement per call)
+
+> **CRITICAL:** `SET` session variables do NOT persist across `snowflake_sql_execute` calls. You MUST substitute literal values directly into each SQL statement. Replace `$REGION_GEOHASH` with `'9q'` and `$REGION_NAME` with `'SanFrancisco'` (or the chosen region) in every statement.
+
+Execute each statement individually in this order:
+
+```sql
+-- 5a: Infrastructure
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS WAREHOUSE_SIZE='XSMALL' AUTO_SUSPEND=60 AUTO_RESUME=TRUE COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
+```sql
+-- 5b: CONFIG table (VEHICLE_TYPE must be 'driving-car' for VRP routing)
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (VEHICLE_TYPE VARCHAR NOT NULL, REGION VARCHAR NOT NULL) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+```sql
+MERGE INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG tgt USING (SELECT 'driving-car' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src ON TRUE WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION) WHEN MATCHED THEN UPDATE SET VEHICLE_TYPE = src.VEHICLE_TYPE, REGION = src.REGION;
+```
+
+```sql
+-- 5c: PLACES from Overture Maps (substitute geohash literal)
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    'SanFrancisco' AS REGION,
+    GEOMETRY,
+    PHONES[0]::TEXT AS PHONES,
+    CATEGORIES:primary::TEXT AS CATEGORY,
+    NAMES:primary::TEXT AS NAME,
+    ADDRESSES[0] AS ADDRESS,
+    COALESCE(CATEGORIES:alternate:list, ARRAY_CONSTRUCT()) AS ALTERNATE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+WHERE ST_GEOHASH(GEOMETRY, 2) = '9q'
+  AND CATEGORIES:primary IS NOT NULL;
+```
+
+```sql
+-- 5d: Search optimization
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION ON EQUALITY(ALTERNATE);
+```
+
+```sql
+-- 5e: JOB_TEMPLATE (29 delivery jobs with time windows and skills)
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (ID INT AUTOINCREMENT PRIMARY KEY, SLOT_START INT NOT NULL, SLOT_END INT, SKILLS INT, PRODUCT STRING, STATUS STRING DEFAULT 'active', REGION STRING) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION)
+SELECT column1, column2, column3, column4, 'active', 'SanFrancisco' FROM VALUES
+(9,10,1,'pa'),(11,15,2,'pb'),(16,18,2,'pb'),(11,13,3,'pc'),(7,16,3,'pc'),
+(10,15,2,'pa'),(10,15,2,'pa'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),
+(13,18,2,'pb'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc'),
+(11,15,2,'pb'),(16,18,2,'pb'),(11,13,1,'pa'),(7,16,1,'pa'),(10,15,2,'pb'),
+(10,15,2,'pb'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),(13,18,2,'pb'),
+(13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc');
+```
+
+```sql
+-- 5f: LOOKUP (4 industries - customize per references/industry-customization.md)
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION STRING, INDUSTRY STRING, PA STRING, PB STRING, PC STRING, IND ARRAY, IND2 ARRAY, CTYPE ARRAY, STYPE ARRAY) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
+SELECT 'SanFrancisco', 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
+       ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
+       ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
+       ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
+       ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge')
+UNION ALL
+SELECT 'SanFrancisco', 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
+       ARRAY_CONSTRUCT('food vegatables meat vegatable'),
+       ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
+       ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
+       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery')
+UNION ALL
+SELECT 'SanFrancisco', 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
+       ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
+       ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
+       ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
+       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery')
+UNION ALL
+SELECT 'SanFrancisco', 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
+       ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
+       ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
+       ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
+       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity');
+```
+
 4. Verify:
    ```sql
    SELECT 'PLACES' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
    UNION ALL SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
    UNION ALL SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
    ```
-   Expected: PLACES 50K-500K, LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
+   Expected: PLACES 50K–1.5M (depends on geohash density), LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
 
 **Output:** Standing data populated for `<REGION_NAME>`.
 
