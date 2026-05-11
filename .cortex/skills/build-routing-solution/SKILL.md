@@ -59,6 +59,67 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 
 > **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` with complete schemas from the start. All columns (JOB_ID, GEOGRAPHY, etc.) are defined in the initial CREATE TABLE statements -- no ALTER TABLE migration steps are needed.
 
+### Step 0: Clean Previous Installation
+
+**Goal:** Remove any pre-existing FLEET_INTELLIGENCE, OPENROUTESERVICE_APP, or SYNTHETIC_DATASETS objects to prevent conflicts (e.g., from a prior native app install or earlier run of this skill).
+
+**Actions:**
+
+1. **Detect** existing objects:
+   ```sql
+   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
+   SHOW DATABASES LIKE 'OPENROUTESERVICE_APP';
+   SHOW DATABASES LIKE 'SYNTHETIC_DATASETS';
+   SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
+   SHOW COMPUTE POOLS LIKE 'ORS_COMPUTE_POOL';
+   ```
+
+2. **If any objects exist**, present the findings to the user and ask for confirmation:
+   > "I found the following pre-existing objects that will conflict with this deployment:
+   > - DATABASE: FLEET_INTELLIGENCE (owner: <role>)
+   > - DATABASE: OPENROUTESERVICE_APP (owner: <role>)
+   > - ...
+   >
+   > These must be dropped for a clean install. Proceed with cleanup?"
+
+3. **On confirmation**, drop in dependency order (services first, then databases):
+   ```sql
+   -- Suspend and drop any running services (prevents orphaned compute)
+   DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
+   DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE;
+   DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE;
+   DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.VROOM_SERVICE;
+   DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER;
+
+   -- Drop compute pool (must be empty of services first)
+   DROP COMPUTE POOL IF EXISTS ORS_COMPUTE_POOL;
+
+   -- Drop Cortex Agent if exists (from routing-agent skill)
+   DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
+
+   -- Drop databases
+   DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
+   DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
+   DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
+
+   -- Drop warehouse
+   DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+   ```
+
+4. **Verify** clean state:
+   ```sql
+   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
+   SHOW DATABASES LIKE 'OPENROUTESERVICE_APP';
+   SHOW DATABASES LIKE 'SYNTHETIC_DATASETS';
+   ```
+   Expected: 0 rows for each query.
+
+**If no objects exist:** Report "Clean state confirmed — no pre-existing objects found" and proceed to Step 1.
+
+**If user declines cleanup:** STOP. Explain that deployment cannot proceed with conflicting objects and suggest they rename or move existing data manually.
+
+**Output:** Clean Snowflake environment ready for fresh deployment
+
 ### Step 1: Set Query Tag for Tracking
 
 **Goal:** Set session query tag for attribution tracking.

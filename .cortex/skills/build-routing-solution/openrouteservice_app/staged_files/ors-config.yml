@@ -6,7 +6,7 @@ ors:
   engine:
     profile_default:
       build:
-        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        source_file: /home/ors/files/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf
         instructions: false
       service:
         maximum_distance: 1500000
