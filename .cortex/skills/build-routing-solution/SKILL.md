@@ -61,64 +61,53 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 
 ### Step 0: Clean Previous Installation
 
-**Goal:** Remove any pre-existing FLEET_INTELLIGENCE, OPENROUTESERVICE_APP, or SYNTHETIC_DATASETS objects to prevent conflicts (e.g., from a prior native app install or earlier run of this skill).
+**Goal:** Remove the pre-installed `FLEET_INTELLIGENCE` application (native app) that ships with this demo environment, along with any other pre-existing objects that conflict with this deployment. This step is MANDATORY and must run unconditionally — do NOT skip it.
 
 **Actions:**
 
-1. **Detect** existing objects:
+1. **Drop the pre-installed FLEET_INTELLIGENCE application** (CASCADE removes all owned objects including services):
    ```sql
-   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
-   SHOW DATABASES LIKE 'OPENROUTESERVICE_APP';
-   SHOW DATABASES LIKE 'SYNTHETIC_DATASETS';
-   SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
-   SHOW COMPUTE POOLS LIKE 'ORS_COMPUTE_POOL';
+   DROP APPLICATION IF EXISTS FLEET_INTELLIGENCE CASCADE;
    ```
 
-2. **If any objects exist**, present the findings to the user and ask for confirmation:
-   > "I found the following pre-existing objects that will conflict with this deployment:
-   > - DATABASE: FLEET_INTELLIGENCE (owner: <role>)
-   > - DATABASE: OPENROUTESERVICE_APP (owner: <role>)
-   > - ...
-   >
-   > These must be dropped for a clean install. Proceed with cleanup?"
-
-3. **On confirmation**, drop in dependency order (services first, then databases):
+2. **Drop associated config database:**
    ```sql
-   -- Suspend and drop any running services (prevents orphaned compute)
+   DROP DATABASE IF EXISTS FLEET_INTEL_CONFIG CASCADE;
+   ```
+
+3. **Stop and drop any pre-existing compute pools:**
+   ```sql
+   ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
+   DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
+   ```
+
+4. **Drop any other conflicting objects from prior runs:**
+   ```sql
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.VROOM_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER;
 
-   -- Drop compute pool (must be empty of services first)
    DROP COMPUTE POOL IF EXISTS ORS_COMPUTE_POOL;
 
-   -- Drop Cortex Agent if exists (from routing-agent skill)
-   DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
+   DROP DATABASE IF EXISTS OPENROUTESERVICE_APP CASCADE;
+   DROP DATABASE IF EXISTS SYNTHETIC_DATASETS CASCADE;
+   DROP DATABASE IF EXISTS ROUTING_DB CASCADE;
 
-   -- Drop databases
-   DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
-   DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
-   DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
-
-   -- Drop warehouse
    DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
    ```
 
-4. **Verify** clean state:
+5. **Verify** clean state:
    ```sql
-   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
-   SHOW DATABASES LIKE 'OPENROUTESERVICE_APP';
+   SHOW APPLICATIONS LIKE 'FLEET%';
+   SHOW DATABASES LIKE 'FLEET_INTEL%';
+   SHOW DATABASES LIKE 'OPENROUTESERVICE%';
    SHOW DATABASES LIKE 'SYNTHETIC_DATASETS';
    ```
    Expected: 0 rows for each query.
 
-**If no objects exist:** Report "Clean state confirmed — no pre-existing objects found" and proceed to Step 1.
-
-**If user declines cleanup:** STOP. Explain that deployment cannot proceed with conflicting objects and suggest they rename or move existing data manually.
-
-**Output:** Clean Snowflake environment ready for fresh deployment
+**Output:** Pre-existing Fleet Intelligence application and all associated objects removed. Environment is clean for fresh deployment.
 
 ### Step 1: Set Query Tag for Tracking
 
