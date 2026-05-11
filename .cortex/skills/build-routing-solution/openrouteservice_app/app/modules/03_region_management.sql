@@ -1453,10 +1453,13 @@ BEGIN
     END;
 
     -- 3. Service container status + parsed startTime + service_age_seconds
+    -- Use direct SYSTEM$GET_SERVICE_STATUS() function form via EXECUTE IMMEDIATE
+    -- with svc_full baked in as a literal. The CALL + RESULT_SCAN(VALUE::VARCHAR)
+    -- pattern silently returns NULL for service_status under EXECUTE AS OWNER,
+    -- which cascades to service_age_seconds=0 and restart_count=NULL in the
+    -- banner.
     BEGIN
-        EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || ''')';
-        rs := (SELECT TRY_PARSE_JSON(VALUE::VARCHAR)[0] AS S
-               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || '''))[0] AS S');
         LET cs CURSOR FOR rs;
         FOR r IN cs DO service_status := r.S; END FOR;
     EXCEPTION WHEN OTHER THEN service_status := NULL;
@@ -1851,9 +1854,11 @@ BEGIN
         BEGIN
             LET svc_alive BOOLEAN DEFAULT FALSE;
             LET svc_full_alive VARCHAR := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
-            EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full_alive || ''')';
-            rs := (SELECT (TRY_PARSE_JSON(VALUE::VARCHAR)[0]:status::VARCHAR = 'READY') AS A
-                   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            -- Use direct SYSTEM$GET_SERVICE_STATUS function form. The
+            -- CALL + RESULT_SCAN(VALUE::VARCHAR) pattern silently returns
+            -- NULL under EXECUTE AS OWNER, leaving svc_alive=FALSE and
+            -- preventing the downgrade UPDATE from firing.
+            rs := (EXECUTE IMMEDIATE 'SELECT (TRY_PARSE_JSON(SYSTEM$GET_SERVICE_STATUS(''' || :svc_full_alive || '''))[0]:status::VARCHAR = ''READY'') AS A');
             LET csa CURSOR FOR rs;
             FOR r IN csa DO svc_alive := COALESCE(r.A, FALSE); END FOR;
             IF (:svc_alive) THEN
@@ -1864,6 +1869,17 @@ BEGIN
                     ERROR_MSG=NULL,
                     COMPLETED_AT=NULL
                 WHERE JOB_ID = :job_id AND STATUS='ERROR';
+                -- Also reset the matching build_history row. The Region Builder
+                -- "Recent builds" card reads ORS_BUILD_HISTORY directly; without
+                -- this reset the false TIMEOUT badge stays red even after the
+                -- provision_jobs row has been downgraded. Idempotent: only fires
+                -- on rows that the wrapper falsely marked TIMEOUT.
+                UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+                SET EXIT_STATUS='IN_PROGRESS',
+                    FINISHED_AT=NULL,
+                    ELAPSED_MINUTES=NULL,
+                    LOG_URI=NULL
+                WHERE JOB_ID = :job_id AND EXIT_STATUS='TIMEOUT';
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;

@@ -15,6 +15,38 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// Normalise Snowflake-returned timestamps to ISO 8601 strings so JS Date()
+// can parse them in the browser. Used by every endpoint that returns a
+// timestamp column. Without this transform, raw Snowflake values such as
+// '2026-05-11 06:52:13.367' (no timezone) cause `new Date(s)` to return
+// 'Invalid Date' in some browsers/locales.
+function toIso(v: any): any {
+  if (v == null) return v;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
+  if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
+    try { return (v as any).toISOString(); } catch { return null; }
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return new Date(v > 1e12 ? v : v * 1000).toISOString();
+  }
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (/^-?\d+(\.\d+)?$/.test(s)) {
+      const n = Number(s);
+      if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
+    }
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
+    if (m) {
+      const tz = m[3] || 'Z';
+      const d = new Date(`${m[1]}T${m[2]}${tz}`);
+      return isNaN(d.getTime()) ? s : d.toISOString();
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : d.toISOString();
+  }
+  return v;
+}
+
 async function detectWarehouse(): Promise<void> {
   if (SF_WAREHOUSE) return;
   try {
@@ -760,7 +792,12 @@ app.get('/api/regions/:region/build-history', async (req, res) => {
        ORDER BY STARTED_AT DESC
        LIMIT 25`
     );
-    res.json({ region: safeRegion, history: rows || [] });
+    const history = (rows || []).map((r: any) => ({
+      ...r,
+      STARTED_AT: toIso(r.STARTED_AT),
+      FINISHED_AT: toIso(r.FINISHED_AT),
+    }));
+    res.json({ region: safeRegion, history });
   } catch (err: any) {
     res.status(500).json({ region: req.params.region, history: [], error: err.message });
   }
@@ -1540,32 +1577,6 @@ app.get('/api/matrix/status', async (req, res) => {
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
-      const toIso = (v: any): any => {
-        if (v == null) return v;
-        if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString();
-        if (typeof v === 'object' && typeof (v as any).toISOString === 'function') {
-          try { return (v as any).toISOString(); } catch { return null; }
-        }
-        if (typeof v === 'number' && Number.isFinite(v)) {
-          return new Date(v > 1e12 ? v : v * 1000).toISOString();
-        }
-        if (typeof v === 'string') {
-          const s = v.trim();
-          if (/^-?\d+(\.\d+)?$/.test(s)) {
-            const n = Number(s);
-            if (Number.isFinite(n)) return new Date(n * 1000).toISOString();
-          }
-          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})?$/);
-          if (m) {
-            const tz = m[3] || 'Z';
-            const d = new Date(`${m[1]}T${m[2]}${tz}`);
-            return isNaN(d.getTime()) ? s : d.toISOString();
-          }
-          const d = new Date(s);
-          return isNaN(d.getTime()) ? s : d.toISOString();
-        }
-        return v;
-      };
       jobs = (rows || []).map((r: any) => ({
         job_id: r.JOB_ID,
         region: r.REGION,
