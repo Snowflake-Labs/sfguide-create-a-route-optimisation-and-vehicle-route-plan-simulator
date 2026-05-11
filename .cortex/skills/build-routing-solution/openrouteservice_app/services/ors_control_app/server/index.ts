@@ -1112,6 +1112,34 @@ app.delete('/api/regions/:region', async (req, res) => {
   }
 });
 
+// One-click diagnostic agent. Calls DIAGNOSE_REGION which gathers an 8-source
+// snapshot and asks AI_COMPLETE for a markdown diagnosis. 30s server-side cache
+// per region absorbs spam clicks. See docs/plans/in-app-diagnostic-agent.md.
+app.post('/api/regions/:region/diagnose', async (req, res) => {
+  let safeRegion: string;
+  try {
+    safeRegion = sanitizeIdentifier(req.params.region);
+  } catch (err: any) {
+    return res.status(400).json({ ok: false, error: `Invalid region: ${err.message}` });
+  }
+  const now = Date.now();
+  const cacheKey = `diag:${safeRegion}`;
+  const cached = (globalThis as any).__diagCache?.[cacheKey];
+  if (cached && now - cached.ts < 30_000) {
+    return res.json(cached.payload);
+  }
+  try {
+    const result = await callProcedure(`DIAGNOSE_REGION('${safeRegion}')`);
+    const parsed = JSON.parse(result || '{}');
+    const payload = { ok: true, ...parsed };
+    (globalThis as any).__diagCache = (globalThis as any).__diagCache || {};
+    (globalThis as any).__diagCache[cacheKey] = { ts: now, payload };
+    res.json(payload);
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/matrix/regions', async (_req, res) => {
   try {
     const orsRegions = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);

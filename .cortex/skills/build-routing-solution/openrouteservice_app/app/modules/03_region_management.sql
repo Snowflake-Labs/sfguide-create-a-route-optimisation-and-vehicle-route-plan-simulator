@@ -1334,6 +1334,211 @@ BEGIN
     RETURN 'REBUILD_SAME';
 END;
 $$;
+-- =============================================================================
+-- DIAGNOSE_REGION
+-- One-click diagnostic agent. Gathers a structured snapshot of build state
+-- from eight read-only sources, hands it to AI_COMPLETE with a decision-tree
+-- system prompt, and returns a JSON object with both natural-language
+-- diagnosis (markdown) and raw context (for power users).
+--
+-- Used by the Region Builder UI's "Ask for status" button via the
+-- /api/regions/<region>/diagnose endpoint.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DIAGNOSE_REGION(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"diagnostic","action":"agent"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    job_json VARIANT;
+    history_json VARIANT;
+    service_status VARIANT;
+    service_logs VARCHAR;
+    ors_status VARIANT;
+    task_history_json VARIANT;
+    region_map_json VARIANT;
+    pool_json VARIANT;
+    snapshot VARIANT;
+    system_prompt VARCHAR;
+    llm_response VARCHAR;
+    svc_full VARCHAR;
+BEGIN
+    svc_full := 'OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION);
+
+    -- 1. Latest provision job for this region
+    BEGIN
+        rs := (SELECT OBJECT_CONSTRUCT(
+                   'job_id', JOB_ID, 'stage', STAGE, 'status', STATUS,
+                   'message', MESSAGE, 'error_msg', ERROR_MSG,
+                   'compute_size', COMPUTE_SIZE, 'instance_family', INSTANCE_FAMILY,
+                   'pbf_size_gib', PBF_SIZE_GIB, 'profiles', PROFILES,
+                   'created_at', CREATED_AT, 'started_at', STARTED_AT,
+                   'completed_at', COMPLETED_AT,
+                   'elapsed_min', DATEDIFF('second', COALESCE(STARTED_AT, CREATED_AT), CURRENT_TIMESTAMP())/60.0
+               ) AS J
+               FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+               WHERE REGION = :P_REGION AND DISMISSED = FALSE
+               ORDER BY CREATED_AT DESC LIMIT 1);
+        LET cj CURSOR FOR rs;
+        FOR r IN cj DO job_json := r.J; END FOR;
+    EXCEPTION WHEN OTHER THEN job_json := NULL;
+    END;
+
+    -- 2. Last 3 build history rows
+    BEGIN
+        rs := (SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+                   'build_id', BUILD_ID, 'started_at', STARTED_AT,
+                   'finished_at', FINISHED_AT, 'elapsed_minutes', ELAPSED_MINUTES,
+                   'exit_status', EXIT_STATUS, 'compute_size', COMPUTE_SIZE,
+                   'instance_family', INSTANCE_FAMILY, 'jvm_xmx_gib', JVM_XMX_GIB,
+                   'peak_rss_gib', PEAK_RSS_GIB
+               )) WITHIN GROUP (ORDER BY STARTED_AT DESC) AS H
+               FROM (SELECT * FROM OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
+                     WHERE REGION = :P_REGION ORDER BY STARTED_AT DESC LIMIT 3));
+        LET ch CURSOR FOR rs;
+        FOR r IN ch DO history_json := r.H; END FOR;
+    EXCEPTION WHEN OTHER THEN history_json := NULL;
+    END;
+
+    -- 3. Service container status
+    BEGIN
+        EXECUTE IMMEDIATE 'CALL SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || ''')';
+        rs := (SELECT TRY_PARSE_JSON(VALUE::VARCHAR)[0] AS S
+               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        LET cs CURSOR FOR rs;
+        FOR r IN cs DO service_status := r.S; END FOR;
+    EXCEPTION WHEN OTHER THEN service_status := NULL;
+    END;
+
+    -- 4. Last 200 lines of container logs (truncate to ~6000 chars for the LLM)
+    BEGIN
+        service_logs := SUBSTR(SYSTEM$GET_SERVICE_LOGS(:svc_full, '0', 'ors', 200), -6000);
+    EXCEPTION WHEN OTHER THEN service_logs := NULL;
+    END;
+
+    -- 5. ORS_STATUS UDF
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' ||
+               :P_REGION || ''')::VARCHAR AS S');
+        LET co CURSOR FOR rs;
+        FOR r IN co DO ors_status := TRY_PARSE_JSON(r.S); END FOR;
+    EXCEPTION WHEN OTHER THEN ors_status := NULL;
+    END;
+
+    -- 6. Last 5 rescue TASK runs
+    BEGIN
+        rs := (SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+                   'state', STATE, 'scheduled_time', SCHEDULED_TIME,
+                   'completed_time', COMPLETED_TIME, 'error_message', ERROR_MESSAGE
+               )) WITHIN GROUP (ORDER BY SCHEDULED_TIME DESC) AS T
+               FROM TABLE(OPENROUTESERVICE_APP.INFORMATION_SCHEMA.TASK_HISTORY(
+                   TASK_NAME => 'RESCUE_PENDING_PROVISIONS_TASK',
+                   SCHEDULED_TIME_RANGE_START => DATEADD('minute', -30, CURRENT_TIMESTAMP())
+               )) LIMIT 5);
+        LET ct CURSOR FOR rs;
+        FOR r IN ct DO task_history_json := r.T; END FOR;
+    EXCEPTION WHEN OTHER THEN task_history_json := NULL;
+    END;
+
+    -- 7. REGION_ORS_MAP
+    BEGIN
+        rs := (SELECT OBJECT_CONSTRUCT(
+                   'region', REGION, 'status', STATUS, 'compute_size', COMPUTE_SIZE,
+                   'instance_family', INSTANCE_FAMILY, 'updated_at', UPDATED_AT
+               ) AS M
+               FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
+        LET cm CURSOR FOR rs;
+        FOR r IN cm DO region_map_json := r.M; END FOR;
+    EXCEPTION WHEN OTHER THEN region_map_json := NULL;
+    END;
+
+    -- 8. Compute pool
+    BEGIN
+        EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''ORS_POOL_' || UPPER(:P_REGION) || '''';
+        rs := (SELECT OBJECT_CONSTRUCT(
+                   'name', "name", 'state', "state",
+                   'instance_family', "instance_family", 'active_nodes', "active_nodes",
+                   'auto_suspend_secs', "auto_suspend_secs"
+               ) AS P
+               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+        LET cp CURSOR FOR rs;
+        FOR r IN cp DO pool_json := r.P; END FOR;
+    EXCEPTION WHEN OTHER THEN pool_json := NULL;
+    END;
+
+    -- Assemble the snapshot
+    snapshot := OBJECT_CONSTRUCT(
+        'region', :P_REGION,
+        'generated_at', CURRENT_TIMESTAMP(),
+        'provision_job', :job_json,
+        'build_history', :history_json,
+        'service_status', :service_status,
+        'ors_status', :ors_status,
+        'rescue_task_history', :task_history_json,
+        'region_map', :region_map_json,
+        'compute_pool', :pool_json,
+        'log_tail', :service_logs
+    );
+
+    -- System prompt encodes the decision tree the human operator follows.
+    system_prompt :=
+'You are an ORS region build diagnostic assistant for a Snowflake-native routing solution. ' ||
+'The user clicked "Ask for status" on a region in the Region Builder UI. You receive a JSON ' ||
+'snapshot of the build state. Return concise markdown with this structure:' || CHR(10) ||
+'  - One-line "**TL;DR**" at the top.' || CHR(10) ||
+'  - A short table or bullet list of key signals (phase, container restartCount, service_ready, last log time, elapsed).' || CHR(10) ||
+'  - A "What is happening" paragraph (2-4 sentences).' || CHR(10) ||
+'  - A "What to do" section: clear recommended action.' || CHR(10) ||
+'  - An "ETA" line if a build is in progress.' || CHR(10) ||
+'Decision tree:' || CHR(10) ||
+'1. service_status.restartCount > 0 -> container has crashed (likely OOM if exitCode 137). ' ||
+'   Recommend: dismiss the job and retry on a smaller compute size, or split profiles.' || CHR(10) ||
+'2. ors_status.service_ready = true -> graph is loaded. If provision_job.status is still ' ||
+'   ERROR with error_msg=graph_load_timeout, the rescue task will finalize within 2 min. ' ||
+'   Recommend: wait briefly; UI will flip green automatically.' || CHR(10) ||
+'3. ors_status.service_ready = false AND service_status.status = READY -> container is alive ' ||
+'   and building the graph. Inspect log_tail for the latest phase:' || CHR(10) ||
+'   - If logs show CoreLMPreparationHandler with N/4 progress, report which step and ETA ' ||
+'     based on per-step time observed in earlier steps.' || CHR(10) ||
+'   - If logs show PrepareCore (CH preparation), report the contraction progress (nodes ' ||
+'     remaining, shortcuts built) and ETA.' || CHR(10) ||
+'   - If logs are silent for >30 minutes AND no fresh activity, raise concern.' || CHR(10) ||
+'4. provision_job.error_msg = graph_load_timeout AND container alive -> wrapper exited but ' ||
+'   the build continues; rescue task will close the loop. Reassure user.' || CHR(10) ||
+'5. provision_job.error_msg = container_crash_during_build -> OOM. Recommend retry on a ' ||
+'   smaller compute or different family.' || CHR(10) ||
+'6. compute_pool.instance_family does not match region_map.instance_family -> stale pool ' ||
+'   from earlier failed attempt. The patched create_region_ors_service should reconcile on ' ||
+'   next provision.' || CHR(10) ||
+'7. provision_job is null -> no provision attempt found. Recommend deploying.' || CHR(10) ||
+'Be specific. Quote numeric values from the snapshot. Do not invent data; if a field is null, ' ||
+'say so. Keep total output under 300 words.';
+
+    -- Call Cortex AI to summarize. claude-4-sonnet has the deepest reasoning for this kind
+    -- of correlation; swap to claude-3-5-haiku for cheaper but adequate responses.
+    BEGIN
+        llm_response := AI_COMPLETE(
+            'claude-4-sonnet',
+            :system_prompt || CHR(10) || CHR(10) ||
+            'Snapshot:' || CHR(10) || TO_VARCHAR(:snapshot)
+        );
+    EXCEPTION WHEN OTHER THEN
+        llm_response := '**Diagnostic agent unavailable.** Raw snapshot below.\n\n' ||
+                        '```json\n' || TO_VARCHAR(:snapshot) || '\n```';
+    END;
+
+    RETURN OBJECT_CONSTRUCT(
+        'region', :P_REGION,
+        'generated_at', CURRENT_TIMESTAMP(),
+        'markdown', :llm_response,
+        'raw_snapshot', :snapshot
+    )::VARCHAR;
+END;
+$$;
+
 
 
 -- =============================================================================
