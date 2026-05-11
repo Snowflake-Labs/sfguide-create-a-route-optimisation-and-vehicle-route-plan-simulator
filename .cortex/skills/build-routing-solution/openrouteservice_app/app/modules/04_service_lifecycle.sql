@@ -236,7 +236,8 @@ BEGIN
             "min_instances" AS svc_min,
             "max_instances" AS svc_max,
             "current_instances" AS svc_cur,
-            "target_instances" AS svc_target
+            "target_instances" AS svc_target,
+            "auto_suspend_secs" AS svc_auto_suspend
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         WHERE "is_job" = 'false'
     );
@@ -250,7 +251,8 @@ BEGIN
             'min_instances', rec.svc_min,
             'max_instances', rec.svc_max,
             'current_instances', rec.svc_cur,
-            'target_instances', rec.svc_target
+            'target_instances', rec.svc_target,
+            'auto_suspend_secs', rec.svc_auto_suspend
         ));
     END FOR;
 
