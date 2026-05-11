@@ -240,6 +240,33 @@ BEGIN
                 ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
             EXCEPTION WHEN OTHER THEN NULL;
             END;
+            -- Cost guard parity (download path): if a per-region service exists
+            -- AND is not in READY status, suspend it. Service almost certainly
+            -- doesn't exist yet (download runs before CREATE SERVICE) so this is
+            -- a no-op in normal flow, but the audit row tells us the path fired.
+            LET dl_svc_state VARCHAR DEFAULT '';
+            BEGIN
+                EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''ORS_SERVICE_'
+                    || UPPER(:P_REGION) || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+                LET dl_rs RESULTSET := (SELECT "status" AS S
+                                        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+                LET dl_csc CURSOR FOR dl_rs;
+                FOR r IN dl_csc DO dl_svc_state := COALESCE(r.S, ''); END FOR;
+            EXCEPTION WHEN OTHER THEN dl_svc_state := '';
+            END;
+            IF (:dl_svc_state IN ('FAILED', 'PENDING', 'SUSPENDED', '')) THEN
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
+                        || UPPER(:P_REGION) || ' SUSPEND';
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+                BEGIN
+                    INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
+                    VALUES (:P_REGION, 'pbf_download_failure_suspend', CURRENT_TIMESTAMP(),
+                            'svc_state=' || :dl_svc_state || '; err=' || :dl_err);
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+            END IF;
             UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
             UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
             SET FINISHED_AT = CURRENT_TIMESTAMP(),
@@ -396,6 +423,34 @@ EXCEPTION
             EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Cost guard: if the service either does not exist yet OR is not in
+        -- READY status, suspend it. A service in READY status is mid-build
+        -- and protected by the same contract as the fall-through path
+        -- (lines 229-239) — leave it alone for the operator to inspect via
+        -- DIAGNOSE_REGION. See cost-guard-v3-head-aligned.plan.md.
+        LET svc_state VARCHAR DEFAULT '';
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''ORS_SERVICE_'
+                || UPPER(:P_REGION) || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            LET rs2 RESULTSET := (SELECT "status" AS S
+                                  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+            LET csc CURSOR FOR rs2;
+            FOR r IN csc DO svc_state := COALESCE(r.S, ''); END FOR;
+        EXCEPTION WHEN OTHER THEN svc_state := '';
+        END;
+        IF (:svc_state IN ('FAILED', 'PENDING', 'SUSPENDED', '')) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_'
+                    || UPPER(:P_REGION) || ' SUSPEND';
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+            BEGIN
+                INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
+                VALUES (:P_REGION, 'wrapper_exception_suspend', CURRENT_TIMESTAMP(),
+                        'svc_state=' || :svc_state || '; err=' || :err_msg);
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
         WHERE JOB_ID = :P_JOB_ID;
@@ -475,6 +530,22 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- =============================================================================
+-- COST_GUARD_LOG
+-- Audit trail for cost-guard actions taken by the wrapper EXCEPTION block.
+-- Fires only when the wrapper raises an exception AND the service is not in
+-- READY status (i.e. no useful build is in progress). Strictly additive: never
+-- contradicts the fall-through path which marks STATUS=COMPLETE while the
+-- container keeps building.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (
+    REGION VARCHAR,
+    ACTION VARCHAR,
+    FIRED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    REASON VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"cost-guard","action":"audit"}}';
 
 -- =============================================================================
 -- Spec builder + REBUILD_GRAPHS management
@@ -929,12 +1000,80 @@ AS
 $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
-
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
-
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
-
     RETURN 'Dropped region ORS for ' || :P_REGION;
+END;
+$$;
+
+-- =============================================================================
+-- SOFT_SUSPEND_REGION
+-- Park a region's compute cheaply without dropping the service object. Refuses
+-- if a provision job is in-flight to honor M1 (AUTO_SUSPEND_SECS=0 during
+-- BUILDING_GRAPH) and M5/M10 (alive containers must be left to finish).
+-- Resume is fast (~1-2 min) via M11/M12 graph reuse.
+-- =============================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SOFT_SUSPEND_REGION(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"cost-guard"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    in_flight_count INTEGER DEFAULT 0;
+BEGIN
+    LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
+    LET pool_name VARCHAR := 'ORS_POOL_' || UPPER(:P_REGION);
+
+    rs := (SELECT COUNT(*) AS C
+           FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+           WHERE REGION = :P_REGION
+             AND DISMISSED = FALSE
+             AND STATUS = 'RUNNING'
+             AND STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE',
+                           'WAITING_FOR_SERVICE','BUILDING_GRAPH'));
+    LET c CURSOR FOR rs;
+    FOR r IN c DO in_flight_count := r.C; END FOR;
+
+    IF (:in_flight_count > 0) THEN
+        BEGIN
+            INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
+            VALUES (:P_REGION, 'soft_suspend_refused', CURRENT_TIMESTAMP(),
+                    'in-flight provision job - refusing suspend to preserve build');
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        RETURN 'REFUSED: in-flight provision job for ' || :P_REGION ||
+               '. Use DIAGNOSE_REGION first; dismiss the job before suspending.';
+    END IF;
+
+    LET ors_ready VARCHAR DEFAULT 'unknown';
+    BEGIN
+        rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+            || :P_REGION || ''')::VARCHAR):service_ready::VARCHAR AS R');
+        LET c2 CURSOR FOR rs;
+        FOR r IN c2 DO ors_ready := COALESCE(r.R, 'unknown'); END FOR;
+    EXCEPTION WHEN OTHER THEN ors_ready := 'unknown';
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || pool_name || ' SUSPEND';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
+        VALUES (:P_REGION, 'soft_suspend_region', CURRENT_TIMESTAMP(),
+                'service+pool suspended (no in-flight job; service_ready=' || :ors_ready ||
+                '); resume preserves service object');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    RETURN 'Soft-suspended ' || :P_REGION ||
+           ' (resume via resume_region_ors). service_ready was ' || :ors_ready;
 END;
 $$;
 
