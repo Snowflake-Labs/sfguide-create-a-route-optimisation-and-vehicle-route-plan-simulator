@@ -1,22 +1,14 @@
-/*
- * deploy-agent.sql — Routing Agent
- * Creates all 3 tool procedures + Cortex Agent in a single executable file.
- * Run: snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>
- *
- * For annotated explanations of each procedure, see agent-definitions.md.
- */
+-- deploy-agent.sql
+-- Generated from agent-definitions.md
+-- Deploys all routing agent procedures and Cortex Agent to FLEET_INTELLIGENCE.ROUTING_AGENT
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+-- Prerequisites: FLEET_INTELLIGENCE database and ROUTING_AGENT schema must exist
 
-CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
-    WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+USE WAREHOUSE ROUTING_ANALYTICS;
 
+----------------------------------------------------------------------
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
+----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -44,7 +36,7 @@ DECLARE
         directions AS (
             SELECT geo, coords, d.RESPONSE AS dir_result
             FROM coordinates,
-                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.DIRECTIONS(?, OBJECT_CONSTRUCT('coordinates', coords)::VARIANT)) d
+                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(?, OBJECT_CONSTRUCT('coordinates', coords)::VARIANT)) d
         )
         SELECT
             geo:locations AS locations,
@@ -100,7 +92,9 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
+----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
@@ -123,7 +117,7 @@ DECLARE
         isochrone AS (
             SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
             FROM geocoded,
-                 TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.ISOCHRONES(?, geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
         )
         SELECT
             geo AS center,
@@ -176,7 +170,9 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
 -- TOOL_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
+----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
@@ -250,7 +246,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         vehicles_json = json.dumps(vehicles).replace("'", "''")
 
         opt_query = f"""
-        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_NATIVE_APP.CORE.OPTIMIZATION(
+        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
             PARSE_JSON('{jobs_json}')::ARRAY,
             PARSE_JSON('{vehicles_json}')::ARRAY
         ))
@@ -304,7 +300,9 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- CREATE AGENT with tool bindings
+----------------------------------------------------------------------
+-- ROUTING_AGENT: Cortex Agent with tool bindings
+----------------------------------------------------------------------
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
 COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
@@ -433,7 +431,8 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
 $$;
 
--- Validation
-SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
-UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
-UNION ALL SELECT 'TOOL_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_OPTIMIZATION';
+----------------------------------------------------------------------
+-- Register with Snowflake Intelligence (optional)
+----------------------------------------------------------------------
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
+ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;

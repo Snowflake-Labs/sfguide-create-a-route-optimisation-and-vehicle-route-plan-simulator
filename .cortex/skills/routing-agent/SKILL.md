@@ -63,6 +63,50 @@ No seed data or pre-computed tables required. The routing agent consists of stor
 
 > All stored procedure and agent SQL definitions are in [references/agent-definitions.md](references/agent-definitions.md).
 
+### Step 0: Clean Previous Installation
+
+**Goal:** Remove any pre-existing FLEET_INTELLIGENCE routing agent objects to prevent conflicts (e.g., from a prior native app install or earlier run of this skill).
+
+**Actions:**
+
+1. **Detect** existing objects:
+   ```sql
+   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
+   SHOW SCHEMAS LIKE 'ROUTING_AGENT' IN DATABASE FLEET_INTELLIGENCE;
+   SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
+   ```
+
+2. **If any objects exist**, present the findings to the user and ask for confirmation:
+   > "I found the following pre-existing objects that will conflict with this deployment:
+   > - DATABASE: FLEET_INTELLIGENCE
+   > - SCHEMA: FLEET_INTELLIGENCE.ROUTING_AGENT
+   > - WAREHOUSE: ROUTING_ANALYTICS
+   >
+   > These must be dropped for a clean install. Proceed with cleanup?"
+
+3. **On confirmation**, drop in dependency order:
+   ```sql
+   DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
+   DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR);
+   DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR);
+   DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+   DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT;
+   DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
+   DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+   ```
+
+4. **Verify** clean state:
+   ```sql
+   SHOW DATABASES LIKE 'FLEET_INTELLIGENCE';
+   ```
+   Expected: 0 rows.
+
+**If no objects exist:** Report "Clean state confirmed — no pre-existing routing agent objects found" and proceed to Step 1.
+
+**If user declines cleanup:** STOP. Explain that deployment cannot proceed with conflicting objects.
+
+**Output:** Clean Snowflake environment ready for routing agent deployment
+
 ### Step 1: Set Query Tag for Tracking
 
 Set session query tag for attribution tracking.
