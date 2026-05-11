@@ -200,7 +200,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(P_RES VARCHAR, P_REGION VARCHAR, P_PROFILE VARCHAR, P_JOB_ID VARCHAR DEFAULT NULL)
 RETURNS VARCHAR
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}'
@@ -211,50 +211,63 @@ DECLARE
     hex_table VARCHAR;
     queue_table VARCHAR;
     safe_profile VARCHAR;
-    row_count INTEGER;
+    hex_count INTEGER;
+    num_shards INTEGER;
+    shard_idx INTEGER DEFAULT 0;
+    total_inserted INTEGER DEFAULT 0;
+    shard_rows INTEGER;
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     hex_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_LIST_' || P_RES;
     queue_table := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile || '_WORK_QUEUE_' || P_RES;
 
+    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
+    LET cnt_cursor CURSOR FOR rs;
+    FOR r IN cnt_cursor DO hex_count := r.CNT; END FOR;
+
+    num_shards := GREATEST(1, LEAST(100, CEIL(hex_count / 5000)));
+
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || queue_table;
 
-    EXECUTE IMMEDIATE '
-    INSERT INTO ' || queue_table || ' (SEQ_ID, ORIGIN_H3, ORIGIN_POINT, DEST_COORDS, DEST_HEX_IDS)
-    WITH numbered_pairs AS (
+    FOR shard_idx IN 0 TO num_shards - 1 DO
+        EXECUTE IMMEDIATE '
+        INSERT INTO ' || queue_table || ' (SEQ_ID, ORIGIN_H3, ORIGIN_POINT, DEST_COORDS, DEST_HEX_IDS)
+        WITH pairs AS (
+            SELECT
+                a.H3_INDEX AS origin_h3,
+                a.CENTER_POINT AS origin_point,
+                b.H3_INDEX AS dest_h3,
+                b.CENTER_POINT AS dest_point,
+                MOD(HASH(b.H3_INDEX), GREATEST(CEIL(' || hex_count::VARCHAR || '.0 / 1000), 1)) AS chunk_idx
+            FROM ' || hex_table || ' a
+            CROSS JOIN ' || hex_table || ' b
+            WHERE a.H3_INDEX != b.H3_INDEX
+              AND MOD(HASH(a.H3_INDEX), ' || num_shards::VARCHAR || ') = ' || shard_idx::VARCHAR || '
+        )
         SELECT
-            a.H3_INDEX AS origin_h3,
-            a.CENTER_POINT AS origin_point,
-            b.H3_INDEX AS dest_h3,
-            b.CENTER_POINT AS dest_point,
-            ROW_NUMBER() OVER (PARTITION BY a.H3_INDEX ORDER BY b.H3_INDEX) AS dest_seq
-        FROM ' || hex_table || ' a
-        CROSS JOIN ' || hex_table || ' b
-        WHERE a.H3_INDEX != b.H3_INDEX
-    ),
-    chunked AS (
-        SELECT
-            origin_h3, ANY_VALUE(origin_point) AS origin_point,
-            FLOOR((dest_seq - 1) / 1000) AS chunk_idx,
-            ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(dest_point), ST_Y(dest_point))) AS dest_coords,
-            ARRAY_AGG(dest_h3) AS dest_hex_ids
-        FROM numbered_pairs
-        GROUP BY origin_h3, chunk_idx
-    )
-    SELECT
-        ROW_NUMBER() OVER (ORDER BY origin_h3, chunk_idx) AS seq_id,
-        origin_h3, origin_point,
-        dest_coords, dest_hex_ids
-    FROM chunked';
+            ROW_NUMBER() OVER (ORDER BY origin_h3, chunk_idx) + ' || total_inserted::VARCHAR || ' AS seq_id,
+            origin_h3,
+            ANY_VALUE(origin_point),
+            ARRAY_AGG(ARRAY_CONSTRUCT(ST_X(dest_point), ST_Y(dest_point))),
+            ARRAY_AGG(dest_h3)
+        FROM pairs
+        GROUP BY origin_h3, chunk_idx';
 
-    rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || queue_table);
-    LET c CURSOR FOR rs;
-    FOR row_val IN c DO
-        row_count := row_val.CNT;
+        rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || queue_table || ' WHERE SEQ_ID > ' || total_inserted::VARCHAR);
+        LET sc CURSOR FOR rs;
+        FOR r IN sc DO shard_rows := r.CNT; END FOR;
+        total_inserted := total_inserted + shard_rows;
+
+        IF (P_JOB_ID IS NOT NULL) THEN
+            UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            SET PCT_COMPLETE = ROUND((:shard_idx + 1) / :num_shards * 30, 1),
+                WORK_QUEUE_ROWS = :total_inserted
+            WHERE JOB_ID = :P_JOB_ID;
+        END IF;
     END FOR;
 
-    RETURN P_RES || ' work queue built: ' || row_count || ' origins ready';
+    RETURN P_RES || ' work queue built: ' || total_inserted || ' chunks (' || num_shards || ' shards, ' || hex_count || ' origins)';
 END;
 $$;
 
@@ -903,7 +916,42 @@ BEGIN
         FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, CURRENT_TIMESTAMP())
     WHERE JOB_ID = :P_JOB_ID;
 
-    CALL OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE);
+    LET original_wh_size VARCHAR := NULL;
+    IF (hex_count > 5000) THEN
+        BEGIN
+            LET wh_name VARCHAR := CURRENT_WAREHOUSE();
+            EXECUTE IMMEDIATE 'SHOW WAREHOUSES LIKE ''' || wh_name || '''';
+            LET wh_rs RESULTSET := (SELECT "size" AS SZ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+            LET wh_c CURSOR FOR wh_rs;
+            FOR r IN wh_c DO original_wh_size := r.SZ; END FOR;
+            IF (hex_count > 25000) THEN
+                EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''X-LARGE''';
+            ELSE
+                EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''LARGE''';
+            END IF;
+        EXCEPTION WHEN OTHER THEN
+            original_wh_size := NULL;
+        END;
+    END IF;
+
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE, :P_JOB_ID);
+    EXCEPTION WHEN OTHER THEN
+        IF (original_wh_size IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        RAISE;
+    END;
+
+    IF (original_wh_size IS NOT NULL) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || prefix || '_WORK_QUEUE_' || P_RES);
     LET c2 CURSOR FOR rs; FOR r IN c2 DO queue_count := r.CNT; END FOR;
