@@ -683,6 +683,89 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   }
 });
 
+// Returns the largest high-memory SPCS instance family available in the
+// current cloud + region. Used by the UI to show users which family will
+// back any non-city XXL build before they click Deploy.
+app.get('/api/regions/largest-family', async (_req, res) => {
+  try {
+    const family = (await callProcedure('RESOLVE_LARGEST_HIGHMEM_FAMILY()')) || 'HIGHMEM_X64_M';
+    res.json({ family: family.trim() });
+  } catch (err: any) {
+    res.status(500).json({ family: 'HIGHMEM_X64_M', error: err.message });
+  }
+});
+
+// Healthcheck for the new build-routing-solution procedures and tables.
+// Surfaces partial deploys (e.g. image updated but SQL modules skipped) so
+// the UI can warn instead of silently degrading to hardcoded fallbacks.
+app.get('/api/regions/healthcheck', async (_req, res) => {
+  const status: Record<string, 'ok' | 'missing' | 'error'> = {};
+  const errors: Record<string, string> = {};
+
+  const probes: { key: string; sql: string }[] = [
+    { key: 'resolver',          sql: `CALL ${SF_DATABASE}.CORE.RESOLVE_LARGEST_HIGHMEM_FAMILY()` },
+    { key: 'retry_strategy',    sql: `CALL ${SF_DATABASE}.CORE.RECOMMEND_RETRY_STRATEGY('__HEALTHCHECK__')` },
+    { key: 'build_history',     sql: `SELECT 1 FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY LIMIT 1` },
+    { key: 'build_spec',        sql: `SELECT ${SF_DATABASE}.CORE.BUILD_ORS_SERVICE_SPEC('X','XXL','false')` },
+    { key: 'downsize_proc',     sql: `SHOW PROCEDURES LIKE 'DOWNSIZE_REGION_AFTER_BUILD' IN SCHEMA ${SF_DATABASE}.CORE` },
+  ];
+
+  await Promise.all(probes.map(async ({ key, sql }) => {
+    try {
+      const rows = await runSql(sql);
+      if (key === 'downsize_proc') {
+        status[key] = (rows && rows.length > 0) ? 'ok' : 'missing';
+      } else {
+        status[key] = 'ok';
+      }
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (/does not exist|not authorized|unknown function/i.test(msg)) {
+        status[key] = 'missing';
+      } else {
+        status[key] = 'error';
+        errors[key] = msg.slice(0, 200);
+      }
+    }
+  }));
+
+  const overall = Object.values(status).every((v) => v === 'ok') ? 'ok' : 'degraded';
+  res.json({ overall, status, errors });
+});
+
+// Returns the recommended retry strategy for a region whose previous build
+// failed: REUSE / REBUILD_SAME / SPLIT_PROFILES / NO_HISTORY.
+app.get('/api/regions/:region/retry-strategy', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const strategy = await callProcedure(`RECOMMEND_RETRY_STRATEGY('${safeRegion}')`);
+    res.json({ region: safeRegion, strategy: (strategy || 'NO_HISTORY').trim() });
+  } catch (err: any) {
+    res.status(500).json({ strategy: 'NO_HISTORY', error: err.message });
+  }
+});
+
+// Last 25 build attempts for a region from ORS_BUILD_HISTORY. Powers the UI
+// build-history card so users can see past compute size, instance family,
+// elapsed minutes, and exit status without inspecting Snowflake directly.
+app.get('/api/regions/:region/build-history', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const rows = await runSql(
+      `SELECT BUILD_ID, JOB_ID, REGION, INSTANCE_FAMILY, COMPUTE_SIZE,
+              PROFILES, JVM_XMX_GIB, STARTED_AT, FINISHED_AT, ELAPSED_MINUTES,
+              EXIT_STATUS, PEAK_RSS_GIB, OUTPUT_GRAPH_GIB
+       FROM ${SF_DATABASE}.CORE.ORS_BUILD_HISTORY
+       WHERE UPPER(REGION) = UPPER('${safeRegion}')
+       ORDER BY STARTED_AT DESC
+       LIMIT 25`
+    );
+    res.json({ region: safeRegion, history: rows || [] });
+  } catch (err: any) {
+    res.status(500).json({ region: req.params.region, history: [], error: err.message });
+  }
+});
+
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');
@@ -791,7 +874,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 });
 
 app.post('/api/regions/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox, profiles, compute_size } = req.body;
+  const { city, region, pbf_url, bbox, profiles, compute_size, force_redownload_pbf } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -819,7 +902,15 @@ app.post('/api/regions/provision', async (req, res) => {
     ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
     : defaultProfiles;
   const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
-  const safeComputeSize = ['S', 'M', 'L'].includes(compute_size) ? compute_size : 'M';
+  // Allow legacy tiers (M/L/XL) for the UI advanced override; default to XXL for any non-city
+  // request that arrives without a recognized tier so we never silently downgrade large regions.
+  const ALLOWED_SIZES = ['S', 'M', 'L', 'XL', 'XXL'] as const;
+  const safeComputeSize = (ALLOWED_SIZES as readonly string[]).includes(compute_size) ? compute_size : 'XXL';
+  // PBF cache control: when true, skip the on-stage probe in
+  // PROVISION_REGION_WRAPPER and always re-download from the upstream URL.
+  // Defaults to false so cached files (e.g. weekly Geofabrik snapshots already
+  // staged) are reused, which makes redeploys complete in seconds.
+  const safeForceRedownload = force_redownload_pbf === true ? 'TRUE' : 'FALSE';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
@@ -832,7 +923,7 @@ app.post('/api/regions/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}', ${safeForceRedownload})`;
     const handle = await submitSqlAsync(callSql);
     await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
