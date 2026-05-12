@@ -72,9 +72,11 @@ function offsetPoint(center: [number, number], dlat: number, dlon: number): [num
 }
 
 function isoRangeFor(profile: string): number {
-  if (profile.startsWith('driving')) return 600;
-  if (profile.startsWith('cycling')) return 900;
-  return 900;
+  // ISOCHRONES range parameter is in MINUTES (gateway multiplies by 60 internally).
+  // ORS engine max is ~60 minutes for time-based isochrones.
+  if (profile.startsWith('driving')) return 15;
+  if (profile.startsWith('cycling')) return 20;
+  return 30;
 }
 
 function isProvisionedRegion(r: RegionOption | null): boolean {

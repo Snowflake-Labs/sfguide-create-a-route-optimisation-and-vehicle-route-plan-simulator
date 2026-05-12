@@ -2713,7 +2713,13 @@ app.get('/api/sample-road-points', async (req, res) => {
   }
 
   let classFilter: string;
-  if (profile.startsWith('driving')) {
+  if (profile === 'driving-hgv') {
+    // HGV is forbidden on residential / living_street / service / track / unclassified
+    // by default ORS profile config. Restrict to truck-eligible road classes so
+    // ANY_VALUE per tile reliably lands on a routable HGV point (otherwise ORS returns
+    // engine error 2010 "Could not find routable point ..." or 3099 for isochrones).
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary')`;
+  } else if (profile.startsWith('driving')) {
     classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
   } else if (profile.startsWith('cycling')) {
     classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
