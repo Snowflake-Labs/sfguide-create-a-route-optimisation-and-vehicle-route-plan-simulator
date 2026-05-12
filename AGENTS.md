@@ -108,6 +108,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 - One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
 - Commits land on `feat/obielov-feat`. Never on a fresh per-change branch.
 - After every commit, run `git push origin feat/obielov-feat` immediately. A change is not "done" until it is pushed to remote.
+  - **CRITICAL: Plain `git push` will fail with SSH permission denied.** Before your first push in a session, ALWAYS read `/memories/git-push-method.md` for the working command (uses `gh auth token` + `GIT_CONFIG_GLOBAL=/dev/null` to bypass the global SSH `insteadOf` rule). Do NOT attempt `git push origin <branch>` directly — it always fails for this repo.
 - Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
 - Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
 - Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
