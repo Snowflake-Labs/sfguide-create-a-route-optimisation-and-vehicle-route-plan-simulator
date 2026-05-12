@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
     MESSAGE VARCHAR,
     ERROR_MSG VARCHAR,
     STATEMENT_HANDLE VARCHAR,
-    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
     STARTED_AT TIMESTAMP_NTZ,
     COMPLETED_AT TIMESTAMP_NTZ
 )
@@ -57,7 +57,7 @@ BEGIN
 
     EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || raw_table || ' (SEQ_ID INTEGER, ORIGIN_H3 VARCHAR, DEST_HEX_IDS ARRAY, MATRIX_RESULT VARIANT) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
 
-    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table || ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
+    EXECUTE IMMEDIATE 'CREATE TABLE IF NOT EXISTS ' || matrix_table || ' (ORIGIN_H3 VARCHAR, DEST_H3 VARCHAR, TRAVEL_TIME_SECONDS FLOAT, TRAVEL_DISTANCE_METERS FLOAT, CALCULATED_AT TIMESTAMP_LTZ DEFAULT SYSDATE()) COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}''';
     RETURN 'Tables ensured: ' || list_table || ', ' || wq_table || ', ' || raw_table || ', ' || matrix_table;
 END;
 $$;
@@ -564,7 +564,7 @@ BEGIN
         r.DEST_HEX_IDS[f.INDEX]::VARCHAR AS DEST_H3,
         r.MATRIX_RESULT:durations[0][f.INDEX]::FLOAT AS TRAVEL_TIME_SECONDS,
         r.MATRIX_RESULT:distances[0][f.INDEX]::FLOAT AS TRAVEL_DISTANCE_METERS,
-        CURRENT_TIMESTAMP() AS CALCULATED_AT
+        SYSDATE() AS CALCULATED_AT
     FROM ' || raw_table || ' r,
         LATERAL FLATTEN(input => r.MATRIX_RESULT:durations[0]) f
     WHERE r.MATRIX_RESULT:durations IS NOT NULL
@@ -717,7 +717,7 @@ BEGIN
         WHERE UPPER(REGION) = UPPER(:P_REGION)
           AND UPPER(REPLACE(PROFILE, '-', '_')) = UPPER(REPLACE(:P_PROFILE, '-', '_'))
           AND STATUS IN ('RUNNING', 'COMPLETE', 'ERROR')
-          AND CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
+          AND CREATED_AT > DATEADD('day', -30, SYSDATE())
     );
     LET c CURSOR FOR rs;
     FOR row_val IN c DO result := row_val.OBJ; END FOR;
@@ -790,13 +790,13 @@ BEGIN
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
     SET STATUS = 'ERROR',
         ERROR_MSG = 'Stale job: still RUNNING after 2+ hours, marked as zombie',
-        COMPLETED_AT = CURRENT_TIMESTAMP()
+        COMPLETED_AT = SYSDATE()
     WHERE STATUS = 'RUNNING'
-      AND STARTED_AT < DATEADD('HOUR', -2, CURRENT_TIMESTAMP())
+      AND STARTED_AT < DATEADD('HOUR', -2, SYSDATE())
       AND JOB_ID != :P_JOB_ID;
 
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=CURRENT_TIMESTAMP()
+    SET STATUS='RUNNING', STAGE='HEXAGONS', STARTED_AT=SYSDATE()
     WHERE JOB_ID = :P_JOB_ID;
 
     CALL OPENROUTESERVICE_APP.CORE.ENSURE_MATRIX_TABLES(:P_REGION, :P_PROFILE, :P_RES);
@@ -863,13 +863,13 @@ BEGIN
     LET wait_secs INTEGER := wait_attempt * 15;
 
     IF (NOT profile_ready) THEN
-        EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET STATUS=''ERROR'', ERROR_MSG=''ORS profile ' || P_PROFILE || ' not ready after ' || wait_secs || ' seconds. Service may need more time to load graphs.'', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=''' || P_JOB_ID || '''';
+        EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET STATUS=''ERROR'', ERROR_MSG=''ORS profile ' || P_PROFILE || ' not ready after ' || wait_secs || ' seconds. Service may need more time to load graphs.'', COMPLETED_AT=SYSDATE() WHERE JOB_ID=''' || P_JOB_ID || '''';
         RETURN 'Job ' || :P_JOB_ID || ' failed: profile ' || :P_PROFILE || ' not ready';
     END IF;
 
     EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET MESSAGE=''ORS profile ' || P_PROFILE || ' ready after ' || wait_secs || 's'' WHERE JOB_ID=''' || P_JOB_ID || '''';
 
-    filter_start := CURRENT_TIMESTAMP();
+    filter_start := SYSDATE();
     used_road_filter := FALSE;
     hex_before := 0;
     resolution_int := CASE P_RES
@@ -913,7 +913,7 @@ BEGIN
         ROAD_FILTER = :used_road_filter,
         HEXAGONS_BEFORE_FILTER = :hex_before,
         HEXAGONS_AFTER_FILTER = :hex_count,
-        FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, CURRENT_TIMESTAMP())
+        FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, SYSDATE())
     WHERE JOB_ID = :P_JOB_ID;
 
     LET original_wh_size VARCHAR := NULL;
@@ -1086,7 +1086,7 @@ BEGIN
         UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
         SET STATUS='ERROR', STAGE='BUILDING',
             ERROR_MSG='ORS returned errors for all ' || :raw_count || ' origins. Sample: ' || :sample_error,
-            RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
+            RAW_ROWS=:raw_count, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         BEGIN
             ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
@@ -1130,7 +1130,7 @@ BEGIN
         UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
         SET STATUS='ERROR', STAGE='FLATTENING',
             ERROR_MSG='Flatten produced 0 pairs from ' || :raw_count || ' RAW rows (valid=' || :valid_count || ', errors=' || :error_count || ')',
-            RAW_ROWS=:raw_count, COMPLETED_AT=CURRENT_TIMESTAMP()
+            RAW_ROWS=:raw_count, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         BEGIN
             ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service SET AUTO_SUSPEND_SECS = 14400;
@@ -1146,7 +1146,7 @@ BEGIN
 
     UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
     SET STATUS='COMPLETE', STAGE='COMPLETE', MATRIX_ROWS=:matrix_count,
-        RAW_ROWS=:raw_count, PCT_COMPLETE=100, COMPLETED_AT=CURRENT_TIMESTAMP()
+        RAW_ROWS=:raw_count, PCT_COMPLETE=100, COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :P_JOB_ID;
 
     BEGIN EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || prefix || '_LIST_' || P_RES; EXCEPTION WHEN OTHER THEN NULL; END;
@@ -1177,7 +1177,7 @@ EXCEPTION
             BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
         END;
         UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
+        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         RETURN 'Job ' || :P_JOB_ID || ' failed: ' || :err_msg;
 END;

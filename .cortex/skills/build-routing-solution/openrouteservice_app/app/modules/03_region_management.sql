@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
     MAX_LAT       FLOAT,
     MIN_LON       FLOAT,
     MAX_LON       FLOAT,
-    UPDATED_AT    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    UPDATED_AT    TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
 
@@ -70,7 +70,7 @@ BEGIN
                 $1:MAX_LAT::FLOAT,
                 $1:MIN_LON::FLOAT,
                 $1:MAX_LON::FLOAT,
-                CURRENT_TIMESTAMP()
+                SYSDATE()
             FROM ' || P_STAGE_PREFIX || '/region_catalog/
         )
         FILE_FORMAT = (TYPE = PARQUET)
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS (
     STAGE VARCHAR DEFAULT 'NOT_STARTED',
     MESSAGE VARCHAR,
     STATEMENT_HANDLE VARCHAR,
-    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
     STARTED_AT TIMESTAMP_NTZ,
     COMPLETED_AT TIMESTAMP_NTZ,
     ERROR_MSG VARCHAR,
@@ -157,14 +157,14 @@ BEGIN
          JVM_XMX_GIB, STARTED_AT, EXIT_STATUS, ORS_VERSION)
     VALUES
         (:build_id, :P_JOB_ID, :P_REGION, :P_PBF_URL, :P_PROFILES, :P_COMPUTE_SIZE,
-         :xmx_gib, CURRENT_TIMESTAMP(), 'IN_PROGRESS', 'v9.0.0');
+         :xmx_gib, SYSDATE(), 'IN_PROGRESS', 'v9.0.0');
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
     SET COMPUTE_SIZE = :P_COMPUTE_SIZE
     WHERE JOB_ID = :P_JOB_ID;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=CURRENT_TIMESTAMP(),
+    SET STATUS='RUNNING', STAGE='DOWNLOADING', STARTED_AT=SYSDATE(),
         MESSAGE='Inserting region metadata and downloading PBF file...'
     WHERE JOB_ID = :P_JOB_ID;
 
@@ -262,15 +262,15 @@ BEGIN
                 END;
                 BEGIN
                     INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
-                    VALUES (:P_REGION, 'pbf_download_failure_suspend', CURRENT_TIMESTAMP(),
+                    VALUES (:P_REGION, 'pbf_download_failure_suspend', SYSDATE(),
                             'svc_state=' || :dl_svc_state || '; err=' || :dl_err);
                 EXCEPTION WHEN OTHER THEN NULL;
                 END;
             END IF;
             UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
             UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-            SET FINISHED_AT = CURRENT_TIMESTAMP(),
-                ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+            SET FINISHED_AT = SYSDATE(),
+                ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
                 EXIT_STATUS = 'ERROR',
                 LOG_URI = :dl_err
             WHERE BUILD_ID = :build_id;
@@ -397,7 +397,7 @@ BEGIN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
                         MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
-                        COMPLETED_AT=CURRENT_TIMESTAMP()
+                        COMPLETED_AT=SYSDATE()
                     WHERE JOB_ID = :P_JOB_ID;
                     -- Best-effort peak RSS for telemetry; NULL on failure.
                     -- Inlined here because SYSTEM$GET_SERVICE_STATUS requires a
@@ -414,8 +414,8 @@ BEGIN
                     EXCEPTION WHEN OTHER THEN peak_rss := NULL;
                     END;
                     UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-                    SET FINISHED_AT = CURRENT_TIMESTAMP(),
-                        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+                    SET FINISHED_AT = SYSDATE(),
+                        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
                         EXIT_STATUS = 'SUCCESS',
                         PEAK_RSS_GIB = :peak_rss
                     WHERE BUILD_ID = :build_id;
@@ -526,11 +526,11 @@ BEGIN
     SET STATUS='ERROR', STAGE='BUILDING_GRAPH',
         MESSAGE='ORS service did not become ready within timeout. Check service logs and ORS_BUILD_HISTORY.',
         ERROR_MSG='graph_load_timeout',
-        COMPLETED_AT=CURRENT_TIMESTAMP()
+        COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :P_JOB_ID;
     UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-    SET FINISHED_AT = CURRENT_TIMESTAMP(),
-        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+    SET FINISHED_AT = SYSDATE(),
+        ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
         EXIT_STATUS = 'TIMEOUT'
     WHERE BUILD_ID = :build_id;
     RETURN 'Job ' || :P_JOB_ID || ' failed: ORS service did not load graphs within timeout';
@@ -569,19 +569,19 @@ EXCEPTION
             END;
             BEGIN
                 INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
-                VALUES (:P_REGION, 'wrapper_exception_suspend', CURRENT_TIMESTAMP(),
+                VALUES (:P_REGION, 'wrapper_exception_suspend', SYSDATE(),
                         'svc_state=' || :svc_state || '; err=' || :err_msg);
             EXCEPTION WHEN OTHER THEN NULL;
             END;
         END IF;
         UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=CURRENT_TIMESTAMP()
+        SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;
         -- Heuristic: surface OOM separately so RECOMMEND_RETRY_STRATEGY can
         -- recommend SPLIT_PROFILES instead of REBUILD_SAME.
         UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-        SET FINISHED_AT = CURRENT_TIMESTAMP(),
-            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+        SET FINISHED_AT = SYSDATE(),
+            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
             EXIT_STATUS = CASE
                 WHEN UPPER(:err_msg) LIKE '%OUT OF MEMORY%' OR UPPER(:err_msg) LIKE '%OOM%'
                   OR UPPER(:err_msg) LIKE '%JAVA HEAP SPACE%' THEN 'OOM'
@@ -607,12 +607,12 @@ BEGIN
         'profiles', COALESCE(PROFILES, ''), 'status', STATUS, 'stage', STAGE,
         'message', COALESCE(MESSAGE, ''), 'error_msg', COALESCE(ERROR_MSG, ''),
         'statement_handle', COALESCE(STATEMENT_HANDLE, ''),
-        'created_at', TO_VARCHAR(CONVERT_TIMEZONE('UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
-        'started_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
-        'completed_at', COALESCE(TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', '')
+        'created_at', TO_VARCHAR(CREATED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z',
+        'started_at', COALESCE(TO_VARCHAR(STARTED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', ''),
+        'completed_at', COALESCE(TO_VARCHAR(COMPLETED_AT, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z', '')
     )), ARRAY_CONSTRUCT())::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-    WHERE CREATED_AT > DATEADD('day', -30, CURRENT_TIMESTAMP())
+    WHERE CREATED_AT > DATEADD('day', -30, SYSDATE())
       AND (DISMISSED = FALSE OR DISMISSED IS NULL)
     ORDER BY CREATED_AT DESC;
     RETURN result;
@@ -649,8 +649,8 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
     COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
     INSTANCE_FAMILY VARCHAR,
-    CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-    UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
+    UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
@@ -665,7 +665,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (
     REGION VARCHAR,
     ACTION VARCHAR,
-    FIRED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    FIRED_AT TIMESTAMP_LTZ DEFAULT SYSDATE(),
     REASON VARCHAR
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"cost-guard","action":"audit"}}';
@@ -934,7 +934,7 @@ BEGIN
     EXECUTE IMMEDIATE :create_sql;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, INSTANCE_FAMILY = :instance_family, UPDATED_AT = CURRENT_TIMESTAMP()
+    SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, INSTANCE_FAMILY = :instance_family, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
     RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ')';
@@ -1216,7 +1216,7 @@ BEGIN
     IF (:in_flight_count > 0) THEN
         BEGIN
             INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
-            VALUES (:P_REGION, 'soft_suspend_refused', CURRENT_TIMESTAMP(),
+            VALUES (:P_REGION, 'soft_suspend_refused', SYSDATE(),
                     'in-flight provision job - refusing suspend to preserve build');
         EXCEPTION WHEN OTHER THEN NULL;
         END;
@@ -1243,7 +1243,7 @@ BEGIN
     END;
     BEGIN
         INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, FIRED_AT, REASON)
-        VALUES (:P_REGION, 'soft_suspend_region', CURRENT_TIMESTAMP(),
+        VALUES (:P_REGION, 'soft_suspend_region', SYSDATE(),
                 'service+pool suspended (no in-flight job; service_ready=' || :ors_ready ||
                 '); resume preserves service object');
     EXCEPTION WHEN OTHER THEN NULL;
@@ -1365,7 +1365,7 @@ BEGIN
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family, UPDATED_AT = CURRENT_TIMESTAMP()
+    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
     RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
@@ -1531,7 +1531,7 @@ BEGIN
                    'pbf_size_gib', PBF_SIZE_GIB, 'profiles', PROFILES,
                    'created_at', CREATED_AT, 'started_at', STARTED_AT,
                    'completed_at', COMPLETED_AT,
-                   'elapsed_min', DATEDIFF('second', COALESCE(STARTED_AT, CREATED_AT), CURRENT_TIMESTAMP())/60.0
+                   'elapsed_min', DATEDIFF('second', COALESCE(STARTED_AT, CREATED_AT), SYSDATE())/60.0
                ) AS J
                FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                WHERE REGION = :P_REGION AND DISMISSED = FALSE
@@ -1576,7 +1576,7 @@ BEGIN
                    v:startTime::VARCHAR AS ST,
                    COALESCE(DATEDIFF('second',
                        TO_TIMESTAMP_TZ(v:startTime::VARCHAR),
-                       CURRENT_TIMESTAMP()), 0) AS A
+                       SYSDATE()), 0) AS A
                FROM (SELECT TRY_PARSE_JSON(:ss_str) AS v));
         LET cas CURSOR FOR rs;
         FOR r IN cas DO container_start := r.ST; service_age_seconds := r.A; END FOR;
@@ -1657,7 +1657,7 @@ BEGIN
                )) WITHIN GROUP (ORDER BY SCHEDULED_TIME DESC) AS T
                FROM TABLE(OPENROUTESERVICE_APP.INFORMATION_SCHEMA.TASK_HISTORY(
                    TASK_NAME => 'RESCUE_PENDING_PROVISIONS_TASK',
-                   SCHEDULED_TIME_RANGE_START => DATEADD('minute', -30, CURRENT_TIMESTAMP())
+                   SCHEDULED_TIME_RANGE_START => DATEADD('minute', -30, SYSDATE())
                )) LIMIT 5);
         LET ct CURSOR FOR rs;
         FOR r IN ct DO task_history_json := r.T; END FOR;
@@ -1762,7 +1762,7 @@ BEGIN
     -- Assemble the snapshot (now with all parsed + derived fields)
     snapshot := OBJECT_CONSTRUCT(
         'region', :P_REGION,
-        'generated_at', CURRENT_TIMESTAMP(),
+        'generated_at', SYSDATE(),
         'provision_job', :job_json,
         'build_history', :history_json,
         'service_status', :service_status,
@@ -1869,7 +1869,7 @@ BEGIN
 
     RETURN OBJECT_CONSTRUCT(
         'region', :P_REGION,
-        'generated_at', CURRENT_TIMESTAMP(),
+        'generated_at', SYSDATE(),
         'markdown', :banner || COALESCE(:llm_response, ''),
         'raw_snapshot', :snapshot
     )::VARCHAR;
@@ -1921,9 +1921,9 @@ BEGIN
           AND (
                 (STATUS = 'ERROR' AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable'))
              OR (STATUS = 'RUNNING' AND STAGE = 'BUILDING_GRAPH'
-                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, CURRENT_TIMESTAMP()) > 30)
+                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, SYSDATE()) > 30)
               )
-          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP()))
+          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE()))
         ORDER BY STARTED_AT DESC
         LIMIT 1
     );
@@ -2033,7 +2033,7 @@ BEGIN
     SET STATUS='COMPLETE', STAGE='READY',
         MESSAGE='Region provisioned via rescue task — ' || :profile_count || ' profile(s) ready',
         ERROR_MSG=NULL,
-        COMPLETED_AT=CURRENT_TIMESTAMP()
+        COMPLETED_AT=SYSDATE()
     WHERE JOB_ID = :job_id;
 
     -- Update the matching ORS_BUILD_HISTORY row (most recent IN_PROGRESS or
@@ -2064,8 +2064,8 @@ BEGIN
         EXCEPTION WHEN OTHER THEN peak_rss := NULL;
         END;
         UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
-        SET FINISHED_AT = CURRENT_TIMESTAMP(),
-            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, CURRENT_TIMESTAMP()) / 60.0,
+        SET FINISHED_AT = SYSDATE(),
+            ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
             EXIT_STATUS = 'SUCCESS',
             PEAK_RSS_GIB = :peak_rss
         WHERE BUILD_ID = :build_id;
@@ -2103,9 +2103,9 @@ BEGIN
         WHERE (
                 (STATUS = 'ERROR' AND ERROR_MSG IN ('graph_load_timeout','ors_status_unreachable'))
              OR (STATUS = 'RUNNING' AND STAGE = 'BUILDING_GRAPH'
-                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, CURRENT_TIMESTAMP()) > 30)
+                 AND TIMESTAMPDIFF(MINUTE, STARTED_AT, SYSDATE()) > 30)
               )
-          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP()))
+          AND (COMPLETED_AT IS NULL OR COMPLETED_AT > DATEADD(HOUR, -24, SYSDATE()))
     );
     LET c CURSOR FOR rs;
     FOR r IN c DO

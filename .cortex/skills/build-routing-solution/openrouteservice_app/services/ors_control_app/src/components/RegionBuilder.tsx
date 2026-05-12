@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'react';
-import type { ReactNode } from 'react';
 import type { CatalogRegion } from '../types';
-import PhasePips, { PhaseLegend } from '../shared/PhasePips';
+import PhasePips from '../shared/PhasePips';
+import OverflowMenu from '../shared/OverflowMenu';
 
 interface PhaseInfo {
   osm: 'done' | 'in_progress' | 'not_started' | 'na';
@@ -64,9 +64,10 @@ const STEP_GLYPH = { done: '\u2713', active: '\u22EF', pending: '\u25CB' } as co
 
 type StepState = 'done' | 'active' | 'pending';
 
-function StepsStrip({ currentStage, allDone = false }: { currentStage?: string; allDone?: boolean }) {
+function StepsStrip({ currentStage, allDone = false, elapsedHint }: { currentStage?: string; allDone?: boolean; elapsedHint?: string }) {
   const stage = (currentStage || '').toLowerCase();
   const currentIdx = stage === 'ready' ? PROVISION_PHASES.length : PHASE_ORDER.indexOf(stage);
+  const activePhase = currentIdx > 0 && currentIdx <= PROVISION_PHASES.length ? PROVISION_PHASES[currentIdx - 1] : null;
   return (
     <span className="steps-strip" aria-label="Provisioning steps">
       {PROVISION_PHASES.map((phase, idx) => {
@@ -86,6 +87,11 @@ function StepsStrip({ currentStage, allDone = false }: { currentStage?: string; 
           </span>
         );
       })}
+      {!allDone && activePhase && elapsedHint && (
+        <span className="steps-elapsed" title={`Active step: ${activePhase.label}`}>
+          {activePhase.label} · {elapsedHint}
+        </span>
+      )}
     </span>
   );
 }
@@ -520,11 +526,6 @@ export default function RegionBuilder() {
   const completedJobs = finishedJobs.filter((j) => j.status !== 'ERROR' && j.status !== 'CANCELLED').slice(0, 10);
   const canProvisionSelected = selectedRegion && !isRegionProvisioning(selectedRegion.regionKey);
 
-  const getPhaseProgress = (stage: string) => {
-    const idx = PHASE_ORDER.indexOf(stage.toLowerCase());
-    return idx >= 0 ? idx : 0;
-  };
-
   const getTimeSince = (timestamp: string) => {
     if (!timestamp) return '';
     const diff = Date.now() - new Date(timestamp).getTime();
@@ -579,10 +580,10 @@ export default function RegionBuilder() {
             <thead>
               <tr>
                 <th>Region</th>
-                <th>Service</th>
-                <th>Profiles</th>
+                <th>Job status</th>
+                <th>Profile</th>
                 <th>Steps</th>
-                <th>Comments</th>
+                <th>Comment</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -601,77 +602,104 @@ export default function RegionBuilder() {
                 const profileList = job.profiles
                   ? job.profiles.split(',').map((p) => p.trim()).filter(Boolean)
                   : [];
+                const profileRows = profileList.length > 0 ? profileList : ['(no profiles)'];
+                const region = regions.find((r) => r.region.toUpperCase() === job.region.toUpperCase());
+                const gr = region?.graphReadiness;
+                const showPhaseTriplet = stage === 'building_graph';
+                const elapsedHint = job.started_at ? getTimeSince(job.started_at) : undefined;
                 return (
                   <Fragment key={job.job_id}>
-                    <tr className="active-job-row">
-                      <td>
-                        <strong>{job.display_name || job.region}</strong>
-                        {job.started_at && (
-                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                            Started {getTimeSince(job.started_at)}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span className="badge running">{job.status}</span>
-                      </td>
-                      <td>
-                        {profileList.length > 0 ? (
-                          <div style={{ fontSize: 12, lineHeight: 1.4 }}>
-                            {profileList.map((p) => (
-                              <div key={p}>{p}</div>
-                            ))}
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--text-secondary)' }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        <StepsStrip currentStage={job.stage} />
-                      </td>
-                      <td className="comments-cell">
-                        {job.message && (
-                          <>
-                            <span className="comment-label">Current step</span>
-                            <span className="comment-text">{job.message}</span>
-                          </>
-                        )}
-                        {showBuildBar && (
-                          <div className="build-progress" style={{ marginTop: job.message ? 6 : 0 }}>
-                            <div className="progress-bar-track">
-                              <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
-                            </div>
-                            <div className="progress-stats">
-                              <span>{bp.progress}%</span>
-                              {bp.currentProfile && bp.totalProfiles && (
-                                <span>
-                                  Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
-                                </span>
+                    {profileRows.map((profile, idx) => {
+                      const isFirst = idx === 0;
+                      const phases = gr?.graphs?.find((g) => g.profile === profile)?.phases;
+                      return (
+                        <tr
+                          key={`${job.job_id}-${profile}`}
+                          className={`active-job-row ${idx > 0 ? 'profile-sub-row' : ''}`}
+                        >
+                          {isFirst && (
+                            <td rowSpan={profileRows.length}>
+                              <strong>{job.display_name || job.region}</strong>
+                              {job.started_at && (
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                  Started {getTimeSince(job.started_at)}
+                                </div>
                               )}
-                              {(bp.nodesRemaining ?? 0) > 0 && (
-                                <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
+                            </td>
+                          )}
+                          {isFirst && (
+                            <td rowSpan={profileRows.length}>
+                              <span className="badge running">{job.status}</span>
+                            </td>
+                          )}
+                          <td style={{ fontSize: 12 }}>{profile}</td>
+                          {isFirst && (
+                            <td rowSpan={profileRows.length}>
+                              <StepsStrip currentStage={job.stage} elapsedHint={elapsedHint} />
+                              {showPhaseTriplet && (
+                                <div style={{ marginTop: 6 }}>
+                                  <span style={{ fontSize: 10, opacity: 0.7, display: 'block', marginBottom: 2 }}>
+                                    Graph build (per profile):
+                                  </span>
+                                </div>
                               )}
-                            </div>
-                          </div>
-                        )}
-                        {!showBuildBar && startupHint && (
-                          <div style={{ marginTop: job.message ? 4 : 0, fontSize: 11 }}>{startupHint}</div>
-                        )}
-                        {!job.message && !showBuildBar && !startupHint && (
-                          <span style={{ color: 'var(--text-secondary)' }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          <button className="btn small" onClick={() => askForStatus(job.region)}>
-                            {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
-                          </button>
-                          <button className="btn danger small" onClick={() => cancelJob(job.region)}>
-                            Cancel
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                            </td>
+                          )}
+                          <td className="comments-cell">
+                            {showPhaseTriplet ? (
+                              <PhasePips phases={phases} ready={false} showLabel={true} />
+                            ) : isFirst ? (
+                              <>
+                                {job.message && (
+                                  <>
+                                    <span className="comment-label">Current step</span>
+                                    <span className="comment-text">{job.message}</span>
+                                  </>
+                                )}
+                                {showBuildBar && (
+                                  <div className="build-progress" style={{ marginTop: job.message ? 6 : 0 }}>
+                                    <div className="progress-bar-track">
+                                      <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
+                                    </div>
+                                    <div className="progress-stats">
+                                      <span>{bp.progress}%</span>
+                                      {bp.currentProfile && bp.totalProfiles && (
+                                        <span>
+                                          Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
+                                        </span>
+                                      )}
+                                      {(bp.nodesRemaining ?? 0) > 0 && (
+                                        <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                                {!showBuildBar && startupHint && (
+                                  <div style={{ marginTop: job.message ? 4 : 0, fontSize: 11 }}>{startupHint}</div>
+                                )}
+                                {!job.message && !showBuildBar && !startupHint && (
+                                  <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                                )}
+                              </>
+                            ) : (
+                              <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                            )}
+                          </td>
+                          {isFirst && (
+                            <td rowSpan={profileRows.length}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <button className="btn small" onClick={() => askForStatus(job.region)}>
+                                  {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
+                                </button>
+                                <button className="btn danger small" onClick={() => cancelJob(job.region)}>
+                                  Cancel
+                                </button>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
                     {diagState[job.region]?.expanded && (
                       <tr key={`${job.job_id}-diag`} className="active-job-row">
                         <td colSpan={6}>
@@ -729,185 +757,122 @@ export default function RegionBuilder() {
       )}
 
       <h3>Provisioned Regions</h3>
-      <PhaseLegend />
       {loading ? (
         <div className="loading-text">Loading...</div>
       ) : regions.length === 0 ? (
-        <div className="empty-state">No regions provisioned yet. Select a region below to deploy.</div>
+        <div className="empty-state">
+          <strong>No regions provisioned yet.</strong>
+          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+            Search the catalog below and pick a region to deploy. ORS service, routing graphs, and stage data
+            will be created automatically.
+          </div>
+        </div>
       ) : (
         <table className="services-table">
           <thead>
             <tr>
               <th>Region</th>
               <th>Service</th>
-              <th>Profiles</th>
-              <th>Steps</th>
-              <th>Comments</th>
+              <th>Profile</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {regions.map((c) => {
-              const bp = buildProgress[c.region];
-              const isBuilding = bp && bp.phase !== 'ready' && bp.phase !== 'unknown' && !c.isDefault;
               const gr = c.graphReadiness;
               const readyCount = gr?.graphs?.filter((g) => g.ready).length ?? 0;
               const totalCount = gr?.graphs?.length ?? 0;
               const isReady = gr?.service_ready && readyCount === totalCount && totalCount > 0;
-              const stepsAllDone = !!isReady;
-              const stepsStage = isBuilding
-                ? bp?.phase === 'building'
-                  ? 'building_graph'
-                  : bp?.phase === 'importing' || bp?.phase === 'initializing'
-                  ? 'waiting_for_service'
-                  : 'building_graph'
-                : isReady
-                ? 'ready'
-                : '';
-              let commentNode: ReactNode = <span style={{ color: 'var(--text-secondary)' }}>—</span>;
-              if (gr?.error) {
-                commentNode = (
-                  <span style={{ color: '#e53935', fontSize: 12 }} title={gr.error}>
-                    {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
-                  </span>
-                );
-              } else if (isBuilding && bp?.phase === 'building') {
-                commentNode = (
-                  <div className="build-progress">
-                    <div className="progress-bar-track">
-                      <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
-                    </div>
-                    <div className="progress-stats">
-                      <span>{bp.progress}%</span>
-                      {bp.currentProfile && bp.totalProfiles && (
-                        <span>
-                          {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              } else if (isBuilding && bp?.phase === 'importing') {
-                commentNode = <span style={{ fontSize: 12 }}>Importing OSM for {bp.currentProfile}...</span>;
-              } else if (isBuilding && bp?.phase === 'initializing') {
-                commentNode = <span style={{ fontSize: 12 }}>ORS starting up...</span>;
-              } else if (isBuilding && bp?.phase === 'finalizing') {
-                commentNode = <span style={{ fontSize: 12 }}>Finalizing...</span>;
-              } else if (c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY') {
-                commentNode = <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Service not running</span>;
-              } else if (!gr) {
-                commentNode = <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Checking...</span>;
-              }
-              const profilesNode = (() => {
-                if (c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY') {
-                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>—</span>;
+              const isServiceUp = c.serviceStatus === 'RUNNING' || c.serviceStatus === 'READY';
+              const profileRows: GraphInfo[] = (gr?.graphs && gr.graphs.length > 0)
+                ? gr.graphs
+                : [{ profile: '(no profiles)', ready: false }];
+              const aggregateBadge = (() => {
+                if (!isServiceUp) {
+                  return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Service paused</span>;
                 }
-                if (!gr) {
-                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Checking...</span>;
-                }
-                if (gr.error) {
-                  return <span className="badge error">Failed</span>;
-                }
-                if (totalCount === 0) {
-                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>—</span>;
-                }
-                if (isReady) {
-                  return (
-                    <>
-                      <span className="badge ok">{readyCount}/{totalCount} ready</span>
-                      <table className="phase-matrix">
-                        <thead>
-                          <tr>
-                            <th>Profile</th>
-                            <th>OSM</th>
-                            <th>LM</th>
-                            <th>CH</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {gr.graphs.map((g: any) => (
-                            <tr key={g.profile}>
-                              <td>
-                                {g.profile}
-                                {g.build_date ? <span className="profile-date"> ({g.build_date})</span> : null}
-                              </td>
-                              <td colSpan={3}>
-                                <PhasePips phases={g.phases} ready={g.ready} showLabel={false} />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  );
-                }
-                return (
-                  <>
-                    <span className="badge warn">Building {readyCount}/{totalCount}</span>
-                    <table className="phase-matrix">
-                      <thead>
-                        <tr>
-                          <th>Profile</th>
-                          <th>OSM</th>
-                          <th>LM</th>
-                          <th>CH</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {gr.graphs.map((g: any) => {
-                          const phases =
-                            g.phases ||
-                            (g.ready
-                              ? { osm: 'done', lm: 'done', ch: 'done' }
-                              : { osm: 'in_progress', lm: 'not_started', ch: 'not_started' });
-                          const cellClass = (s: string) => `phase-cell phase-${s}`;
-                          const glyph: Record<string, string> = {
-                            done: '\u2713',
-                            in_progress: '\u22EF',
-                            not_started: '\u25CB',
-                            na: '\u2014',
-                          };
-                          return (
-                            <tr key={g.profile}>
-                              <td>{g.profile}</td>
-                              <td className={cellClass(phases.osm)} title={`OSM: ${phases.osm}`}>
-                                {glyph[phases.osm]}
-                              </td>
-                              <td className={cellClass(phases.lm)} title={`LM: ${phases.lm}`}>
-                                {glyph[phases.lm]}
-                              </td>
-                              <td className={cellClass(phases.ch)} title={`CH: ${phases.ch}`}>
-                                {glyph[phases.ch]}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </>
-                );
+                if (gr?.error) return <span className="badge error">Failed</span>;
+                if (!gr) return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Checking...</span>;
+                if (totalCount === 0) return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                if (isReady) return <span className="badge ok">{readyCount}/{totalCount} ready</span>;
+                return <span className="badge warn">Building {readyCount}/{totalCount}</span>;
               })();
+              const overflowActions = c.isDefault
+                ? [
+                    { label: 'Repair (coming soon)', disabled: true, title: 'Per-region repair not yet implemented' },
+                  ]
+                : [
+                    { label: 'Repair (coming soon)', disabled: true, title: 'Per-region repair not yet implemented' },
+                    { label: 'Drop region', danger: true, confirmText: 'Confirm drop?', onClick: () => dropRegion(c.region) },
+                  ];
               return (
-                <tr key={c.region}>
-                  <td>{c.display_name || c.region}</td>
-                  <td>
-                    <span className={`badge ${c.serviceStatus === 'RUNNING' ? 'ok' : 'warn'}`}>{c.serviceStatus}</span>
-                  </td>
-                  <td>{profilesNode}</td>
-                  <td>
-                    <StepsStrip currentStage={stepsStage} allDone={stepsAllDone} />
-                  </td>
-                  <td className="comments-cell">{commentNode}</td>
-                  <td>
-                    {c.isDefault ? (
-                      <span className="badge ok">Built-in</span>
-                    ) : (
-                      <button className="btn danger small" onClick={() => dropRegion(c.region)}>
-                        Drop
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                <Fragment key={c.region}>
+                  {profileRows.map((g, idx) => {
+                    const isFirst = idx === 0;
+                    const phases = g.phases;
+                    const profileBadge = (() => {
+                      if (g.profile === '(no profiles)') {
+                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                      }
+                      if (!isServiceUp) {
+                        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>—</span>;
+                      }
+                      if (g.ready) return <span className="badge ok">Ready</span>;
+                      if (gr?.error) return <span className="badge error">Failed</span>;
+                      if (phases) {
+                        const done = (phases.osm === 'done' ? 1 : 0) + (phases.lm === 'done' ? 1 : 0) + (phases.ch === 'done' ? 1 : 0);
+                        return <span className="badge warn">Building {done}/3</span>;
+                      }
+                      return <span className="badge warn">Pending</span>;
+                    })();
+                    return (
+                      <tr key={`${c.region}-${g.profile}`} className={idx > 0 ? 'profile-sub-row' : ''}>
+                        {isFirst && (
+                          <td rowSpan={profileRows.length}>
+                            <strong>{c.display_name || c.region}</strong>
+                            {c.isDefault && (
+                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>Built-in</div>
+                            )}
+                          </td>
+                        )}
+                        {isFirst && (
+                          <td rowSpan={profileRows.length}>
+                            <span className={`badge ${isServiceUp ? 'ok' : 'warn'}`}>{c.serviceStatus}</span>
+                            <div style={{ marginTop: 4 }}>{aggregateBadge}</div>
+                            {!isServiceUp && (
+                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, maxWidth: 220 }}>
+                                Service {c.serviceStatus.toLowerCase()}. Resume from Service Manager or recreate via Repair.
+                              </div>
+                            )}
+                            {gr?.error && isServiceUp && (
+                              <div style={{ fontSize: 11, color: '#e53935', marginTop: 4, maxWidth: 220 }} title={gr.error}>
+                                {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
+                              </div>
+                            )}
+                          </td>
+                        )}
+                        <td style={{ fontSize: 12 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span>{g.profile}</span>
+                            {profileBadge}
+                            {g.build_date && (
+                              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{g.build_date}</span>
+                            )}
+                          </div>
+                        </td>
+                        {isFirst && (
+                          <td rowSpan={profileRows.length}>
+                            {c.isDefault ? (
+                              <span className="badge ok">Built-in</span>
+                            ) : (
+                              <OverflowMenu actions={overflowActions} />
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </Fragment>
               );
             })}
           </tbody>
@@ -930,6 +895,7 @@ export default function RegionBuilder() {
                 <th>Elapsed</th>
                 <th>Status</th>
                 <th>Peak RSS</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -945,6 +911,25 @@ export default function RegionBuilder() {
                   : b.EXIT_STATUS === 'IN_PROGRESS'
                     ? 'warn'
                     : 'error';
+                const rerun = () => {
+                  if (!b.REGION) return;
+                  const match = catalog.find((r) => r.regionKey.toUpperCase() === b.REGION!.toUpperCase());
+                  if (!match) return;
+                  setSelectedRegion(match);
+                  const profiles = b.PROFILES
+                    ? b.PROFILES.split(',').map((p) => p.trim()).filter(Boolean)
+                    : DEFAULT_PROFILES;
+                  setSelectedProfiles(profiles);
+                  if (b.COMPUTE_SIZE === 'S' || b.COMPUTE_SIZE === 'L' || b.COMPUTE_SIZE === 'XXL') {
+                    setComputeSize(b.COMPUTE_SIZE);
+                  } else {
+                    setComputeSize(recommendComputeSize(match.level));
+                  }
+                  if (typeof window !== 'undefined') {
+                    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                  }
+                };
+                const canRerun = !!b.REGION && catalog.some((r) => r.regionKey.toUpperCase() === b.REGION!.toUpperCase());
                 return (
                   <tr key={b.BUILD_ID || `${b.REGION}-${b.STARTED_AT}`}>
                     <td>{b.REGION || '\u2014'}</td>
@@ -954,6 +939,16 @@ export default function RegionBuilder() {
                     <td>{elapsed}</td>
                     <td><span className={`badge ${statusBadge}`}>{b.EXIT_STATUS || 'UNKNOWN'}</span></td>
                     <td>{b.PEAK_RSS_GIB != null ? `${Math.round(b.PEAK_RSS_GIB)} GB` : '\u2014'}</td>
+                    <td>
+                      <button
+                        className="btn small"
+                        onClick={rerun}
+                        disabled={!canRerun}
+                        title={canRerun ? 'Pre-fill the Provision form with this build\u2019s region, profiles and size' : 'Region not found in current catalog'}
+                      >
+                        Rerun
+                      </button>
+                    </td>
                   </tr>
                 );
               })}

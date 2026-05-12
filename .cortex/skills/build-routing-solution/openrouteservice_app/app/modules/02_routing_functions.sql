@@ -183,8 +183,8 @@
       max_lon FLOAT,
       osm_file_name VARCHAR,
       sample_addresses VARIANT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+      created_at TIMESTAMP DEFAULT SYSDATE(),
+      updated_at TIMESTAMP DEFAULT SYSDATE()
    )
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}';
  

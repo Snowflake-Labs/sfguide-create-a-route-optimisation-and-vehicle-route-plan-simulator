@@ -144,7 +144,7 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
              ORS_PROFILE='${ors_profile || ''}',
              REGION='${region || ''}',
              CONFIG=PARSE_JSON($$${configJson}$$),
-             UPDATED_AT=CURRENT_TIMESTAMP()
+             UPDATED_AT=SYSDATE()
          WHERE PRESET_ID='${req.params.id}'`,
         'FLEET_INTELLIGENCE', 'CORE'
       );
@@ -229,7 +229,7 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
                   TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS STARTED_AT,
                   TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS COMPLETED_AT,
                   ERROR_MESSAGE,
-                  DATEDIFF('second', STARTED_AT, COALESCE(COMPLETED_AT, CURRENT_TIMESTAMP())) AS DURATION_SEC,
+                  DATEDIFF('second', STARTED_AT, COALESCE(COMPLETED_AT, SYSDATE())) AS DURATION_SEC,
                   START_DATE, END_DATE
            FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE STATUS != 'DELETED' ORDER BY STARTED_AT DESC LIMIT 50`,
           'FLEET_INTELLIGENCE', 'CORE'
