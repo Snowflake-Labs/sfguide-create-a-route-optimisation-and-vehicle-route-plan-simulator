@@ -179,6 +179,34 @@ This creates:
    ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
    ```
 
+### Step 5b: Deploy Agent Playground Demo Data
+
+> **IMPORTANT:** This step deploys the demographic, pharma, and supply chain data needed for the Agent Playground to work. Without this, catchment analysis, drug demand, and supply chain scenarios will fail with "Object does not exist" errors.
+
+**Action:** Invoke the `$setup-agent-playground` skill, which will:
+1. Update all 6 CONFIG tables to `ebike` / `SanFrancisco`
+2. Create the DELIVERIES view
+3. Create 4 data tables: SF_PHARMA_JOBS (30 rows), SF_HEALTH_DEMOGRAPHICS (55 rows), SF_DRUG_FORMULARY (25 rows), SF_TOP_PHARMACIES (6 rows)
+4. Create 4 stored procedures: TOOL_ROUTE_OPTIMIZATION, TOOL_PHARMA_OPTIMIZATION, TOOL_PHARMA_CATCHMENT, TOOL_SUPPLY_CHAIN
+5. Upload `agent-demos.json` config to `@ORS_SPCS_STAGE/config/`
+
+**Verification after `$setup-agent-playground` completes:**
+
+```sql
+SELECT 'SF_PHARMA_JOBS' AS TBL, COUNT(*) AS ROW_COUNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS
+UNION ALL SELECT 'SF_HEALTH_DEMOGRAPHICS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS
+UNION ALL SELECT 'SF_DRUG_FORMULARY', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY
+UNION ALL SELECT 'SF_TOP_PHARMACIES', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES;
+```
+
+Expected: 30 + 55 + 25 + 6 rows respectively.
+
+```sql
+SHOW PROCEDURES LIKE 'TOOL_%' IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
+```
+
+Expected: 7 procedures (3 base + 4 demo).
+
 ### Step 6: Test the Agent
 
 Test queries must use locations within the ORS-configured region. To determine the region:
@@ -238,15 +266,19 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 - **Step 2**: Verify ORS functions exist before proceeding
 - **Step 3**: Verify database, schema, and warehouse exist
 - **Step 4**: Verify deploy-agent.sql completes without errors
-- **Step 6**: Confirm all 3 tools work correctly
+- **Step 5b**: Verify all 4 demo data tables populated and 7 procedures exist
+- **Step 6**: Confirm all tools work correctly
 
 ## Output
 
 - 1 database: `FLEET_INTELLIGENCE`
 - 1 schema: `FLEET_INTELLIGENCE.ROUTING_AGENT`
 - 1 warehouse: `ROUTING_ANALYTICS`
-- 3 stored procedures with AI geocoding and error handling
+- 7 stored procedures (3 base routing + 4 demo from `$setup-agent-playground`)
+- 4 demo data tables (pharma jobs, demographics, drug formulary, pharmacies)
+- 1 DELIVERIES view
 - 1 Cortex Agent registered in Snowflake Intelligence
+- Agent Playground config at `@ORS_SPCS_STAGE/config/agent-demos.json`
 - Agent accessible via Snowsight UI and REST API
 
 ## Troubleshooting
