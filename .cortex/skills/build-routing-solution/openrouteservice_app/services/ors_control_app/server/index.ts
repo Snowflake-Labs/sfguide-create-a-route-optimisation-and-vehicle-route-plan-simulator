@@ -256,7 +256,7 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS='COMPLETED' ORDER BY COMPLETED_AT DESC LIMIT 1`);
+    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS IN ('COMPLETE','COMPLETED') ORDER BY COMPLETED_AT DESC LIMIT 1`);
     const profileStr = rows?.[0]?.PROFILES;
     if (profileStr && typeof profileStr === 'string') {
       return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);
