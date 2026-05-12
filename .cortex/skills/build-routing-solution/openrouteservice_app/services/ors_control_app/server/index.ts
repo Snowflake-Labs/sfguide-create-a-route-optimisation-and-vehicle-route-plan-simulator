@@ -129,7 +129,7 @@ function getSpcsToken(): string {
 function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
   const tmpFile = join(tmpdir(), `ors_query_${Date.now()}.sql`);
   const db = database || SF_DATABASE;
-  let fullSql = `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
+  let fullSql = `ALTER SESSION SET TIMEZONE='UTC';\nALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';\nUSE WAREHOUSE ${SF_WAREHOUSE};\nUSE DATABASE ${db};\n`;
   if (schema) fullSql += `USE SCHEMA ${schema};\n`;
   fullSql += `${sql};`;
   writeFileSync(tmpFile, fullSql);
@@ -148,7 +148,7 @@ function snowSqlLocal(sql: string, database?: string, schema?: string): any[] {
 async function snowSqlSpcs(sql: string, database?: string, schema?: string, timeoutSecs: number = 600): Promise<any[]> {
   const token = getSpcsToken();
   const QUERY_TAG = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-  const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG } };
+  const body = { statement: sql, timeout: timeoutSecs, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG, TIMEZONE: 'UTC' } };
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
@@ -800,7 +800,7 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
         const values = batch.map(r => {
           const esc = (v: string | null) => v === null ? 'NULL' : "'" + v.replace(/'/g, "''") + "'";
           const num = (v: number | null) => v === null ? 'NULL' : String(v);
-          return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},${num(r.min_lat)},${num(r.max_lat)},${num(r.min_lon)},${num(r.max_lon)},CURRENT_TIMESTAMP())`;
+          return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},${num(r.min_lat)},${num(r.max_lat)},${num(r.min_lon)},${num(r.max_lon)},SYSDATE())`;
         }).join(',');
         await runSql(`INSERT INTO ${SF_DATABASE}.CORE.REGION_CATALOG (CATALOG_ID,SOURCE,REGION_NAME,REGION_KEY,HIERARCHY,CONTINENT,COUNTRY,PBF_URL,PBF_SIZE_MB,LEVEL,MIN_LAT,MAX_LAT,MIN_LON,MAX_LON,UPDATED_AT) VALUES ${values}`);
       }
@@ -1230,7 +1230,7 @@ app.post('/api/regions/:region/cancel', async (req, res) => {
     const jobs = JSON.parse(result || '[]');
     const active = jobs.find((j: any) => j.region === safeRegion && (j.status === 'RUNNING' || j.status === 'PENDING'));
     if (active?.statement_handle) await cancelStatement(active.statement_handle);
-    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=SYSDATE() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
     res.json({ status: 'cancelled' });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
@@ -1239,7 +1239,7 @@ app.delete('/api/regions/:region', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const result = await callProcedure(`DROP_REGION_ORS('${safeRegion}')`);
-    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
+    await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATUS='CANCELLED', COMPLETED_AT=SYSDATE() WHERE REGION='${safeRegion}' AND STATUS IN ('RUNNING','PENDING')`);
     res.json({ status: 'ok', result });
   } catch (err: any) {
     res.json({ status: 'error', error: err.message });
@@ -1668,9 +1668,9 @@ app.get('/api/matrix/status', async (req, res) => {
         `SELECT JOB_ID, REGION, PROFILE, RESOLUTION, STATUS, STAGE,
                 HEXAGONS, WORK_QUEUE_ROWS, RAW_ROWS, MATRIX_ROWS,
                 PCT_COMPLETE, ERROR_MSG, STATEMENT_HANDLE,
-                TO_VARCHAR(CREATED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED_AT,
-                TO_VARCHAR(STARTED_AT::TIMESTAMP_LTZ,   'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS STARTED_AT,
-                TO_VARCHAR(COMPLETED_AT::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS COMPLETED_AT
+                TO_VARCHAR(CREATED_AT,   'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS CREATED_AT,
+                TO_VARCHAR(STARTED_AT,   'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS STARTED_AT,
+                TO_VARCHAR(COMPLETED_AT, 'YYYY-MM-DD"T"HH24:MI:SS.FF3') || 'Z' AS COMPLETED_AT
          FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
          ORDER BY CREATED_AT DESC LIMIT 50`
       );
@@ -2799,8 +2799,25 @@ app.get('*', (_req, res) => {
   res.sendFile(join(distDir, 'index.html'));
 });
 
+async function verifySessionUtc(): Promise<void> {
+  try {
+    const rows = await runSql(`SELECT TO_VARCHAR(CURRENT_TIMESTAMP(),'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS NOW_LTZ, TO_VARCHAR(SYSDATE(),'YYYY-MM-DD"T"HH24:MI:SS.FF3') AS NOW_UTC`);
+    const nowLtz: string = rows?.[0]?.NOW_LTZ || '';
+    const nowUtc: string = rows?.[0]?.NOW_UTC || '';
+    const ok = /\+00:?00$/.test(nowLtz) || /Z$/.test(nowLtz);
+    if (!ok) {
+      console.error(`[FATAL] Session TZ guard failed. CURRENT_TIMESTAMP=${nowLtz} (expected +00:00). SYSDATE=${nowUtc}.`);
+      process.exit(1);
+    }
+    console.log(`[TZ guard] Session is UTC. CURRENT_TIMESTAMP=${nowLtz} SYSDATE=${nowUtc}`);
+  } catch (err: any) {
+    console.error(`[FATAL] Session TZ guard query failed: ${err.message?.slice(0, 300)}`);
+    process.exit(1);
+  }
+}
+
 const PORT = parseInt(process.env.PORT || '3001');
-detectWarehouse().then(() => {
+detectWarehouse().then(verifySessionUtc).then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ORS Control App server running on port ${PORT} (SPCS: ${IS_SPCS}, WH: ${SF_WAREHOUSE})`);
   });

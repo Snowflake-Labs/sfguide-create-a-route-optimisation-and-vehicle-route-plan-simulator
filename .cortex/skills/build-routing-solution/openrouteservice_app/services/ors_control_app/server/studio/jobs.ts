@@ -60,7 +60,7 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   }
   try {
     await snowSql(
-      `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='DELETED', COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`,
+      `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='DELETED', COMPLETED_AT=SYSDATE() WHERE JOB_ID=${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE'
     );
   } catch (e: any) {
@@ -174,7 +174,7 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       START_DATE VARCHAR, END_DATE VARCHAR,
       STATUS VARCHAR(20), CONFIG VARIANT,
       POINTS_GENERATED INT DEFAULT 0, TRIPS_GENERATED INT DEFAULT 0,
-      ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+      ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
       COMPLETED_AT TIMESTAMP_NTZ
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
@@ -474,7 +474,7 @@ export async function startGeneration(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='${job.status}',
            POINTS_GENERATED=${job.pointsGenerated}, TRIPS_GENERATED=${job.tripsGenerated},
            ${errMsg ? `ERROR_MESSAGE=${escVal(errMsg)},` : ''}
-           COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`,
+           COMPLETED_AT=SYSDATE() WHERE JOB_ID=${escVal(jobId)}`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
       } catch (e2: any) {
@@ -492,7 +492,7 @@ export async function startGeneration(
         await snowSql(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='FAILED',
            ERROR_MESSAGE=${escVal(e.message?.slice(0, 500))},
-           COMPLETED_AT=CURRENT_TIMESTAMP() WHERE JOB_ID=${escVal(jobId)}`,
+           COMPLETED_AT=SYSDATE() WHERE JOB_ID=${escVal(jobId)}`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
       } catch (e3: any) {
