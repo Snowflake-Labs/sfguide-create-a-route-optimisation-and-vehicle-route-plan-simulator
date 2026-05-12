@@ -2659,6 +2659,35 @@ app.post('/api/diagnostics/logs/clear', (_req, res) => {
   res.json({ ok: true });
 });
 
+// In-process LRU cache for /api/sample-road-points results, keyed by (region bbox + profile).
+// TTL avoids hammering Overture on rapid UI reshuffles. Reshuffle button bypasses via ?nocache=1.
+const ROAD_POINTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ROAD_POINTS_CACHE_MAX = 64;
+const roadPointsCache = new Map<string, { ts: number; points: [number, number][] }>();
+
+function roadPointsCacheKey(minLat: number, maxLat: number, minLon: number, maxLon: number, profile: string): string {
+  const r = (n: number) => n.toFixed(4);
+  return `${r(minLat)}|${r(maxLat)}|${r(minLon)}|${r(maxLon)}|${profile}`;
+}
+
+function roadPointsCacheGet(key: string): [number, number][] | null {
+  const hit = roadPointsCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > ROAD_POINTS_CACHE_TTL_MS) {
+    roadPointsCache.delete(key);
+    return null;
+  }
+  return hit.points;
+}
+
+function roadPointsCacheSet(key: string, points: [number, number][]): void {
+  if (roadPointsCache.size >= ROAD_POINTS_CACHE_MAX) {
+    const oldest = [...roadPointsCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 16);
+    for (const [k] of oldest) roadPointsCache.delete(k);
+  }
+  roadPointsCache.set(key, { ts: Date.now(), points });
+}
+
 app.get('/api/sample-road-points', async (req, res) => {
   const minLat = parseFloat(req.query.min_lat as string);
   const maxLat = parseFloat(req.query.max_lat as string);
@@ -2666,40 +2695,85 @@ app.get('/api/sample-road-points', async (req, res) => {
   const maxLon = parseFloat(req.query.max_lon as string);
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const profile = (req.query.profile as string) || 'driving-car';
+  const noCache = req.query.nocache === '1';
 
   if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
     return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
   }
+  if (minLat >= maxLat || minLon >= maxLon) {
+    return res.status(400).json({ ok: false, reason: 'invalid bbox: min must be < max' });
+  }
+
+  const cacheKey = roadPointsCacheKey(minLat, maxLat, minLon, maxLon, profile);
+  if (!noCache) {
+    const cached = roadPointsCacheGet(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, points: cached, cached: true });
+    }
+  }
 
   let classFilter: string;
   if (profile.startsWith('driving')) {
-    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
   } else if (profile.startsWith('cycling')) {
-    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
   } else {
-    classFilter = `class IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
+    classFilter = `CLASS IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
   }
 
+  // tileDeg: aim for ~50-100 tiles across the bbox; floor at 0.05 deg so small regions still get spread.
+  const lonSpan = maxLon - minLon;
+  const latSpan = maxLat - minLat;
+  const tileDeg = Math.max(Math.min(lonSpan, latSpan) / 8, 0.05);
+
+  // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
+  // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
+  // without an expensive ORDER BY RANDOM() over the full filtered set.
+  const sql = `
+    SELECT
+      ANY_VALUE(ST_X(ST_STARTPOINT(GEOMETRY))) AS LON,
+      ANY_VALUE(ST_Y(ST_STARTPOINT(GEOMETRY))) AS LAT
+    FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
+    WHERE SUBTYPE = 'road'
+      AND ${classFilter}
+      AND BBOX:xmin <= ${maxLon} AND BBOX:xmax >= ${minLon}
+      AND BBOX:ymin <= ${maxLat} AND BBOX:ymax >= ${minLat}
+    GROUP BY
+      FLOOR((BBOX:xmin::FLOAT + BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
+      FLOOR((BBOX:ymin::FLOAT + BBOX:ymax::FLOAT) / 2 / ${tileDeg})
+    LIMIT ${limit}`;
+
+  const TIMEOUT_MS = 10_000;
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('sample-road-points query timed out')), TIMEOUT_MS);
+  });
+
   try {
-    const sql = `
-      SELECT lon, lat FROM (
-        SELECT ST_X(ST_STARTPOINT(geometry)) AS lon,
-               ST_Y(ST_STARTPOINT(geometry)) AS lat
-        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
-        WHERE subtype = 'road'
-          AND ${classFilter}
-          AND ST_X(ST_STARTPOINT(geometry)) BETWEEN ${minLon} AND ${maxLon}
-          AND ST_Y(ST_STARTPOINT(geometry)) BETWEEN ${minLat} AND ${maxLat}
-      )
-      ORDER BY RANDOM()
-      LIMIT ${limit}`;
-    const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
-    const points = (rows || [])
+    const rows = await Promise.race([
+      runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO'),
+      timeoutPromise,
+    ]) as any[];
+    if (timer) clearTimeout(timer);
+    const points: [number, number][] = (rows || [])
       .filter((r: any) => r.LON != null && r.LAT != null)
-      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)]);
+      // Defensive: keep only points actually inside the requested bbox (Overture indexes
+      // are based on segment bbox overlap, so a segment can poke outside the requested box).
+      .filter((r: any) => {
+        const lon = parseFloat(r.LON), lat = parseFloat(r.LAT);
+        return lon >= minLon && lon <= maxLon && lat >= minLat && lat <= maxLat;
+      })
+      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)] as [number, number]);
+    if (points.length > 0) roadPointsCacheSet(cacheKey, points);
     res.json({ ok: true, points });
   } catch (e: any) {
-    res.json({ ok: false, reason: e.message?.slice(0, 200) || 'Overture Transportation unavailable' });
+    if (timer) clearTimeout(timer);
+    const msg = e?.message || '';
+    const reason = /timed out/i.test(msg)
+      ? 'timeout'
+      : msg.slice(0, 200) || 'Overture Transportation unavailable';
+    log('WARN', 'SampleRoadPoints', `Failed for bbox=[${minLon},${minLat},${maxLon},${maxLat}] profile=${profile}: ${reason}`);
+    res.json({ ok: false, reason });
   }
 });
 

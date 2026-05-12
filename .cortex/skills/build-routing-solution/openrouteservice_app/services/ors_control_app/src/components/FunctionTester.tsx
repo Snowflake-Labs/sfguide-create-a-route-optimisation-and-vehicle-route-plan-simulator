@@ -71,6 +71,12 @@ function offsetPoint(center: [number, number], dlat: number, dlon: number): [num
   return [+(center[0] + dlon).toFixed(4), +(center[1] + dlat).toFixed(4)];
 }
 
+function isoRangeFor(profile: string): number {
+  if (profile.startsWith('driving')) return 600;
+  if (profile.startsWith('cycling')) return 900;
+  return 900;
+}
+
 function isProvisionedRegion(r: RegionOption | null): boolean {
   return !!(r && !r.isDefault && r.region !== 'default');
 }
@@ -130,7 +136,7 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
     case 'DIRECTIONS':
       return `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ${rg}))`;
     case 'ISOCHRONES':
-      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${isoPoint![0]}::FLOAT, ${isoPoint![1]}::FLOAT, 10, ${rg}))`;
+      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${isoPoint![0]}::FLOAT, ${isoPoint![1]}::FLOAT, ${isoRangeFor(profile)}, ${rg}))`;
     case 'MATRIX':
       return `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start![0]},${start![1]}],[${end![0]},${end![1]}],[${dest2![0]},${dest2![1]}]]'), ${rg})`;
     case 'MATRIX_TABULAR':
@@ -469,7 +475,13 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
   );
 }
 
-async function fetchRoadPoints(bbox: BBox, profile: string): Promise<[number, number][] | null> {
+interface RoadPointsResult {
+  points: [number, number][] | null;
+  reason?: string;
+  cached?: boolean;
+}
+
+async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean }): Promise<RoadPointsResult> {
   try {
     const params = new URLSearchParams({
       min_lat: bbox.min_lat.toString(),
@@ -479,12 +491,15 @@ async function fetchRoadPoints(bbox: BBox, profile: string): Promise<[number, nu
       limit: '50',
       profile,
     });
+    if (opts?.nocache) params.set('nocache', '1');
     const resp = await fetch(`/api/sample-road-points?${params}`);
     const data = await resp.json();
-    if (data.ok && data.points?.length > 0) return data.points;
-    return null;
-  } catch {
-    return null;
+    if (data.ok && data.points?.length > 0) {
+      return { points: data.points, cached: data.cached };
+    }
+    return { points: null, reason: data.reason || 'no road points returned' };
+  } catch (e: any) {
+    return { points: null, reason: e?.message || 'network error' };
   }
 }
 
@@ -504,6 +519,7 @@ export default function FunctionTester() {
   const [running, setRunning] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
   const [roadPoints, setRoadPoints] = useState<[number, number][] | null>(null);
+  const [roadPointsReason, setRoadPointsReason] = useState<string | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const userEditedRef = useRef(false);
@@ -557,8 +573,10 @@ export default function FunctionTester() {
           setSelectedRegion(def);
           let roads: [number, number][] | null = null;
           if (probeOvertureOk && def.bbox) {
-            roads = await fetchRoadPoints(def.bbox, 'driving-car');
+            const r = await fetchRoadPoints(def.bbox, 'driving-car');
+            roads = r.points;
             setRoadPoints(roads);
+            setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
           }
           setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
         }
@@ -612,8 +630,13 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads: [number, number][] | null = null;
     if (overtureAvailable && r?.bbox) {
-      roads = await fetchRoadPoints(r.bbox, selectedProfile);
+      const rp = await fetchRoadPoints(r.bbox, selectedProfile);
+      roads = rp.points;
       setRoadPoints(roads);
+      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
+    } else {
+      setRoadPoints(null);
+      setRoadPointsReason(null);
     }
     regeneratePoints(selectedFn, r, selectedProfile, sfDatabase, roads);
   }, [regions, selectedFn, selectedProfile, sfDatabase, overtureAvailable, regeneratePoints]);
@@ -629,16 +652,25 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads: [number, number][] | null = roadPoints;
     if (overtureAvailable && selectedRegion?.bbox) {
-      roads = await fetchRoadPoints(selectedRegion.bbox, profile);
+      const rp = await fetchRoadPoints(selectedRegion.bbox, profile);
+      roads = rp.points;
       setRoadPoints(roads);
+      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
     }
     regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roads);
   }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
 
-  const handleReshuffle = useCallback(() => {
+  const handleReshuffle = useCallback(async () => {
     userEditedRef.current = false;
-    regeneratePoints(selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints);
-  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+    let roads = roadPoints;
+    if (overtureAvailable && selectedRegion?.bbox) {
+      const rp = await fetchRoadPoints(selectedRegion.bbox, selectedProfile, { nocache: true });
+      roads = rp.points;
+      setRoadPoints(roads);
+      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
+    }
+    regeneratePoints(selectedFn, selectedRegion, selectedProfile, sfDatabase, roads);
+  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
 
   const handleSqlChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     userEditedRef.current = true;
@@ -734,6 +766,16 @@ export default function FunctionTester() {
       />
       {sampleHint && (
         <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>{sampleHint}</p>
+      )}
+      {COORD_FUNCTIONS.includes(selectedFn) && overtureAvailable && roadPoints && roadPoints.length > 0 && (
+        <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0' }}>
+          Snapped to {roadPoints.length} Overture road point{roadPoints.length === 1 ? '' : 's'} for region.
+        </p>
+      )}
+      {COORD_FUNCTIONS.includes(selectedFn) && overtureAvailable && roadPointsReason && (!roadPoints || roadPoints.length === 0) && (
+        <p style={{ color: 'var(--warning, #f0ad4e)', fontSize: 12, margin: '4px 0 0' }}>
+          Couldn't snap to roads ({roadPointsReason}) — recommended point may be outside the active graph.
+        </p>
       )}
       {overtureAvailable === false && COORD_FUNCTIONS.includes(selectedFn) && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>

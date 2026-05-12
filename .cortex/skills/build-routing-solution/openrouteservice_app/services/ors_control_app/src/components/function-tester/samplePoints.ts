@@ -107,6 +107,20 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
       const idx = Math.floor(rand() * candidates.length);
       return [+candidates[idx][0].toFixed(5), +candidates[idx][1].toFixed(5)];
     }
+    // No road point in the target distance ring. On continent-scale regions the seeded
+    // road points are spread by tile (~degrees apart), so target ranges of a few km will
+    // never match. Fall back to the nearest road points to the anchor — keeps both ends
+    // on real roads (avoids angular offsets into ocean/wilderness) and stays geographically
+    // local instead of coast-to-coast.
+    const sorted = roadPoints
+      .map(rp => ({ rp, d: haversineKm(anchor, rp) }))
+      .filter(x => x.d > 0.01)
+      .sort((a, b) => a.d - b.d);
+    if (sorted.length > 0) {
+      const pool = sorted.slice(0, Math.min(5, sorted.length));
+      const choice = pool[Math.floor(rand() * pool.length)];
+      return [+choice.rp[0].toFixed(5), +choice.rp[1].toFixed(5)];
+    }
   }
   const midLat = (bbox.min_lat + bbox.max_lat) / 2;
   const targetKm = minKm + rand() * (maxKm - minKm);
@@ -176,6 +190,24 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   const margin = Math.max(latMargin, lonMargin);
 
   const depot = sampleOne(bbox, rand, roadPoints, margin);
+
+  // Continent-scale regions: the road-point seed is spread by tile (~degrees apart), so
+  // randomly picking jobs from the full set produces a depot in NYC and jobs across the USA.
+  // Keep the route plan locally meaningful by drawing all jobs from the road points nearest
+  // to the depot. This still gives a varied but routable plan.
+  if (roadPoints && roadPoints.length >= 5) {
+    const sorted = roadPoints
+      .map(rp => ({ rp, d: haversineKm(depot, rp) }))
+      .filter(x => x.d > 0.01)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, Math.min(roadPoints.length - 1, 12));
+    if (sorted.length >= 4) {
+      const shuffled = [...sorted].sort(() => rand() - 0.5).slice(0, 4);
+      const jobs = shuffled.map(x => [+x.rp[0].toFixed(5), +x.rp[1].toFixed(5)] as [number, number]);
+      return { points: [depot, ...jobs] };
+    }
+  }
+
   const jobs: [number, number][] = [];
   for (let attempt = 0; attempt < 5; attempt++) {
     jobs.length = 0;
