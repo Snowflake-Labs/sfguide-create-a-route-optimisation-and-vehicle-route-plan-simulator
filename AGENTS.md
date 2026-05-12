@@ -85,21 +85,27 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected — changes only land via merged PRs from `dev`.
-- **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from feature branches.
-- **All work happens on feature branches** named `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`, etc.
+- **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from per-user branches.
+- **All work happens on a per-user long-lived branch** named `<username>/work` (e.g. `obielov/work`). This branch is shared by all parallel Cortex Code chats on that user's machine, so no branch switching is needed mid-session.
+- **Do NOT create a new feature branch per change.** Multiple parallel chats sharing one working tree cannot each own their own branch — that causes constant `git checkout` thrashing and lost work. Commit straight onto the user's personal branch instead.
+- **Optional topic branches** named `<username>/<topic>` (e.g. `obielov/fleet-rework`) MAY be used, but ONLY when the user explicitly asks for one. Default to `<username>/work`.
 - **All PRs target `dev`** (not `main`). Only release/promotion PRs go from `dev` → `main`, and those are opened by humans, not assistants.
-- Before starting work, verify the current branch with `git branch --show-current`. If it is `main` or `dev`, create a feature branch first:
+- Before starting work, verify the current branch with `git branch --show-current`. Expected: `<username>/work` (or an explicitly-requested `<username>/<topic>`).
+  - If the current branch is `main` or `dev`, switch to the user's personal branch (create it if missing):
+    ```bash
+    git checkout <username>/work 2>/dev/null || git checkout -b <username>/work
+    ```
+  - If the current branch is a legacy `feat/*` / `fix/*` / `docs/*` feature branch from the old workflow, ASK the user before switching — they may have unmerged work there.
+- After committing, push the personal branch and open a PR into `dev`:
   ```bash
-  git checkout -b feat/my-change
-  ```
-- After committing, push the feature branch and open a PR into `dev`:
-  ```bash
-  git push -u origin feat/my-change
+  git push -u origin <username>/work
   gh pr create --base dev --title "..." --body "..."
   ```
+- A PR may include several commits from the personal branch. Keep PRs scoped to one logical theme — open a new PR rather than piling unrelated commits into one.
 
 ### Commit Rules
 - One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
+- Commits land on the user's personal branch (`<username>/work`), not on a fresh feature branch per change
 - Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
 - Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
 - Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
@@ -109,7 +115,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
     - `docs(AGENTS.md): add commit discipline rule`
 - If a change spans multiple skills, prefer multiple smaller commits over one large one
 - Never amend or force-push commits the user has not explicitly authorized
-- Never push directly to `main` or `dev` — push only to feature branches
+- Never push directly to `main` or `dev` — push only to the user's personal branch
 
 ## Friction Logging
 
@@ -153,7 +159,8 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
 - **Skip committing after a completed change** — every verified change must result in a commit on the feature branch (see `## Commit Discipline`)
-- **Commit directly to `main` or `dev`** — both are protected. All work goes on feature branches with PRs targeting `dev`. Only humans promote `dev` → `main`.
+- **Commit directly to `main` or `dev`** — both are protected. All work goes on the user's personal branch (`<username>/work`) with PRs targeting `dev`. Only humans promote `dev` → `main`.
+- **Create a new feature branch per change** — this causes branch-switching conflicts when multiple Cortex Code chats run in parallel against the same working tree. Use the user's personal `<username>/work` branch instead, unless the user explicitly requests a topic branch.
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
 ## Control App Image Deployment (ors_control_app)
