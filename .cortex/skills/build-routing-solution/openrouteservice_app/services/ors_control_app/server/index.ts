@@ -256,12 +256,12 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
-    // Use the most recent non-failed job record for this region so that an
-    // in-flight RUNNING job's requested profiles drive the UI rather than
-    // falling through to the hardcoded DEFAULT_PROFILES (which would surface
-    // phantom profiles like 'driving-car' for a build that only requested
-    // 'driving-hgv'). FAILED/ERROR rows are excluded.
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL AND COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') ORDER BY COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
+    // Prefer the most recent non-failed job record for this region so that an
+    // in-flight RUNNING job's requested profiles drive the UI. If only FAILED
+    // rows exist, fall back to the most recent of those (still better than
+    // DEFAULT_PROFILES, which would surface phantom profiles like 'driving-car'
+    // for a job that only requested 'driving-hgv').
+    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END, COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
     const profileStr = rows?.[0]?.PROFILES;
     if (profileStr && typeof profileStr === 'string') {
       return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);

@@ -268,6 +268,12 @@ BEGIN
                 END;
             END IF;
             UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS SET STATUS='FAILED', MESSAGE=:dl_err WHERE JOB_ID = :P_JOB_ID;
+            -- Parity with timeout handler: reset REGION_ORS_MAP so the region is
+            -- not stuck in PROVISIONING after a download failure (the per-region
+            -- service was never created, so 'FAILED' marks it as a clean retry candidate).
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+            SET STATUS = 'FAILED', UPDATED_AT = SYSDATE()
+            WHERE REGION = :P_REGION;
             UPDATE OPENROUTESERVICE_APP.CORE.ORS_BUILD_HISTORY
             SET FINISHED_AT = SYSDATE(),
                 ELAPSED_MINUTES = TIMESTAMPDIFF(SECOND, STARTED_AT, SYSDATE()) / 60.0,
