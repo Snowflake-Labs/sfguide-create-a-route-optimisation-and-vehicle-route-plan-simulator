@@ -2130,7 +2130,12 @@ CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
 
-BEGIN
-    ALTER TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
-EXCEPTION WHEN OTHER THEN NULL;
-END;
+-- Resume the task. CREATE OR REPLACE TASK creates the task in SUSPENDED state
+-- by default; without this RESUME the rescue loop never runs and every
+-- finalization (Fix 2 downgrade, Fix 3 build-history reset, Fix 5a
+-- auto-suspend restore, eventual STATUS=COMPLETE flip) requires a manual
+-- CALL FINALIZE_PROVISION_ITER. ALTER TASK IF EXISTS is a plain statement
+-- that snow sql -f can parse (the previous BEGIN/EXCEPTION/END wrapper
+-- failed parsing with "unexpected EOF" and left the task suspended after
+-- every deploy).
+ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
