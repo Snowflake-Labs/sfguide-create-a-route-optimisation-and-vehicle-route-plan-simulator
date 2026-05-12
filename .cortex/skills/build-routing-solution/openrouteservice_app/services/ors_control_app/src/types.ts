@@ -6,6 +6,7 @@ export interface ServiceInfo {
   max_instances?: number;
   current_instances?: number;
   target_instances?: number;
+  auto_suspend_secs?: number;
 }
 
 export interface ComputePoolInfo {
@@ -18,10 +19,26 @@ export interface ComputePoolInfo {
   num_services?: number;
 }
 
+export type PhaseStatus = 'done' | 'in_progress' | 'not_started' | 'na';
+
+export interface OrsProfilePhases {
+  osm: PhaseStatus;
+  lm: PhaseStatus;
+  ch: PhaseStatus;
+}
+
 export interface OrsGraphInfo {
   profile: string;
   ready: boolean;
   build_date?: string;
+  phases?: OrsProfilePhases;
+}
+
+export interface OrsRegionMarkers {
+  osm_done: boolean;
+  lm_done: boolean;
+  ch_done: boolean;
+  build_ok: boolean;
 }
 
 export interface OrsRegionReadiness {
@@ -30,6 +47,8 @@ export interface OrsRegionReadiness {
   profiles: string[];
   expected_profiles?: string[];
   graphs: OrsGraphInfo[];
+  graphs_persisted?: boolean;
+  markers?: OrsRegionMarkers;
   error?: string;
 }
 
