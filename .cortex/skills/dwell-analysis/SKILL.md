@@ -61,27 +61,49 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES RESUME;
 -- Repeat for other DTs as needed
 ```
 
+## Execution Rules
+
+1. **FACT_VEHICLE_TELEMETRY MUST have a `POINT_GEOM` (GEOGRAPHY) column.** If only `POINT_GEOM_WKT` exists, add and populate: `ALTER TABLE ... ADD COLUMN POINT_GEOM GEOGRAPHY; UPDATE ... SET POINT_GEOM = TRY_TO_GEOGRAPHY(POINT_GEOM_WKT);`
+2. **DT_DWELL_ENRICHED.STATUS must contain telemetry STATUS values** (`DWELL_ORIGIN`, `DWELL_DESTINATION`, `IDLE`) — NOT location types like `RESTAURANT`. TripInspector filters with `WHERE STATUS LIKE 'DWELL%'`.
+3. **DT_DWELL_ENRICHED must include `AVG_POINT` column** (alias for DWELL_CENTER GEOGRAPHY). TripInspector calls `ST_X(AVG_POINT)`.
+4. **SLA_THRESHOLDS must be tight for seed data** (avg dwell is 3.5 min). Use `WARNING_MINUTES=3, MAX_DWELL_MINUTES=5` for RESTAURANT type to generate meaningful alerts.
+5. **Do NOT reference `DIM_TRIP_SCHEDULE`** — it doesn't exist in seed data. Skip `VW_TRIP_SCHEDULE`.
+
 ## Pipeline Architecture
 
 ```
 VW_VEHICLE_TELEMETRY (source, from SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY)
     |
-    v
-DT_STATE_CHANGES (Layer 1: LAG-based state detection)
+    +---> DT_STATE_CHANGES (LAG-based state detection, for LiveOperations)
     |
-    v
-DT_DWELL_SESSIONS (Layer 2: CONDITIONAL_CHANGE_EVENT sessionization + H3)
-    |
-    v
-DT_DWELL_ENRICHED (Layer 3: joins location + fleet metadata)
-    |
-    +---> DT_H3_CONGESTION (hourly H3 heatmap)
-    +---> DT_SLA_ALERTS (WARNING/CRITICAL breach detection)
-    |       +---> SLA_ALERT_LOG (Task MERGE, 5-min schedule)
-    +---> DT_FACILITY_UTILIZATION (daily visit stats)
-    +---> DT_DRIVER_DWELL_SUMMARY (per-driver breach counts)
-    +---> DT_DAILY_TRENDS (fleet-wide daily aggregates)
+    +---> DT_DWELL_EVENTS (GROUP BY session detection)
+              |
+              v
+         DT_DWELL_ENRICHED (joins POI names, adds AVG_POINT/STATUS)
+              |
+              +---> DT_H3_CONGESTION (hourly H3 R7 heatmap)
+              +---> DT_SLA_ALERTS (WARNING/CRITICAL/INFO breach detection)
+              +---> DT_FACILITY_UTILIZATION (per-location stats)
+              +---> DT_DRIVER_DWELL_SUMMARY (per-driver breach counts)
+              +---> DT_DAILY_TRENDS (fleet-wide daily aggregates)
 ```
+
+## Dashboard Schema Contract
+
+The React components query these EXACT DT names and columns:
+
+| Component | DT Name | Key Columns |
+|-----------|---------|-------------|
+| DwellOverview | `DT_DWELL_ENRICHED` | SESSION_ID, DWELL_MINUTES, VEHICLE_ID |
+| DwellOverview | `DT_DAILY_TRENDS` | TREND_DATE, TOTAL_SESSIONS, ACTIVE_VEHICLES |
+| DwellOverview | `DT_FACILITY_UTILIZATION` | LOCATION_NAME, TOTAL_SESSIONS |
+| FacilityUtilization | `DT_FACILITY_UTILIZATION` | LOCATION_NAME, FACILITY_TYPE, TOTAL_SESSIONS, AVG_DWELL_MIN, UNIQUE_VEHICLES |
+| SLAAlerts | `DT_SLA_ALERTS` | SLA_STATUS, SESSION_ID, VEHICLE_ID, LOCATION_NAME, DWELL_MINUTES, WARNING_MINUTES, SESSION_START |
+| DriverPerformance | `DT_DRIVER_DWELL_SUMMARY` | VEHICLE_ID, UNIQUE_LOCATIONS, TOTAL_DWELL_SESSIONS, AVG_SESSION_MIN, SLA_BREACH_COUNT, TOTAL_DWELL_MIN |
+| CongestionMap | `DT_H3_CONGESTION` | H3_CELL_R7, HOUR_BUCKET, SESSION_COUNT, AVG_DWELL_MIN |
+| TripInspector | `DT_DWELL_ENRICHED` | TRIP_ID, VEHICLE_ID, SESSION_START, SESSION_END, STATUS (LIKE 'DWELL%'), AVG_POINT (GEOGRAPHY) |
+| LiveOperations | `DT_STATE_CHANGES` | VEHICLE_ID, STATUS, POINT_GEOM, TS, SPEED_KMH, IS_STATE_CHANGE |
+| LiveOperations | `DT_DWELL_ENRICHED` | VEHICLE_ID, LOCATION_NAME, SESSION_START, DWELL_MINUTES |
 
 ## Error Logging
 
@@ -94,77 +116,75 @@ The fastest path to a working demo. Creates projection views over `SYNTHETIC_DAT
 ### Quick check
 
 ```sql
-SELECT COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
+SELECT COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED;
 ```
 
-If the table exists and has rows, data is already loaded. Skip to Step 1 (Run SQL Pipeline) -- the seed only creates views and static tables, DTs must still be created.
+If > 0 rows, the pipeline is deployed. Skip to verification.
 
-### Create views and tables
+### Deploy (CLI)
 
-Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, GEOFENCE_POLYGONS (computed from views), and SLA_THRESHOLDS.
+```bash
+snow sql -f .cortex/skills/dwell-analysis/references/sql-pipeline.sql -c <connection>
+```
 
-After loading, you must still create the Dynamic Tables by running `references/sql-pipeline.sql` Steps 5-13. Dynamic Tables cannot be pre-baked.
+### Deploy (Workspace — no snow sql -f)
 
-### Generate data for other regions (optional)
+Execute each statement from `references/sql-pipeline.sql` individually via `snowflake_sql_execute`.
 
-To generate data for a region other than San Francisco, use the full pipeline starting at Step 1.
-
-Or use the centralized provisioner:
+**PREREQUISITE:** FACT_VEHICLE_TELEMETRY must have `POINT_GEOM` (GEOGRAPHY) column:
 ```sql
-CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('dwell-analysis'));
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY ADD COLUMN IF NOT EXISTS POINT_GEOM GEOGRAPHY;
+UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY SET POINT_GEOM = TRY_TO_GEOGRAPHY(POINT_GEOM_WKT) WHERE POINT_GEOM IS NULL AND POINT_GEOM_WKT IS NOT NULL;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_POIS ADD COLUMN IF NOT EXISTS POINT_GEOM GEOGRAPHY;
+UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_POIS SET POINT_GEOM = TRY_TO_GEOGRAPHY(POINT_GEOM_WKT) WHERE POINT_GEOM IS NULL AND POINT_GEOM_WKT IS NOT NULL;
 ```
 
 ## Workflow
 
 ### Step 1: Run SQL Pipeline
 
-Execute the complete SQL pipeline from `references/sql-pipeline.sql`. Run each statement sequentially using `snowflake_sql_execute`. All CREATE statements in the referenced SQL include COMMENT tracking tags per AGENTS.md convention (`"origin":"sf_sit-is-fleet","name":"oss-dwell-analysis"`).
-
-**IMPORTANT:** Step 4 (SLA_THRESHOLDS) requires two separate SQL calls -- one CREATE TABLE and one INSERT.
+Execute `references/sql-pipeline.sql` — the single source of truth for this skill.
 
 | Step | Object | Type | Description |
 |------|--------|------|-------------|
-| 1 | Database + Schema | DDL | Create FLEET_INTELLIGENCE.DWELL_ANALYSIS |
-| 1b | CONFIG | Table | Single-row vehicle type and region config |
-| 2 | VW_VEHICLE_TELEMETRY, VW_VEHICLE_FLEET, VW_DESTINATIONS, VW_REST_STOPS, VW_TRIP_SCHEDULE | Views | Projection views from UNIFIED |
-
-> **Note:** VW_REST_STOPS will return 0 rows with seed data because DIM_POIS contains no `LOCATION_TYPE = 'REST_STOP'` records. The dwell pipeline still works using geofence-based analysis from VW_DESTINATIONS. REST_STOP data appears when generating data via Data Studio with POI diversity enabled.
-
-| 3 | GEOFENCE_POLYGONS | Table | Destinations + rest stops with buffer radii |
-| 4 | SLA_THRESHOLDS | Table + INSERT | WARNING/CRITICAL minutes per location type (2 calls) |
-| 5 | DT_STATE_CHANGES | Dynamic Table | LAG-based state change detection |
-| 6 | DT_DWELL_SESSIONS | Dynamic Table | CONDITIONAL_CHANGE_EVENT sessionization |
-| 7 | DT_DWELL_ENRICHED | Dynamic Table | Join location + fleet metadata |
-| 8 | DT_H3_CONGESTION | Dynamic Table | Hourly H3 heatmap |
-| 9 | DT_SLA_ALERTS | Dynamic Table | SLA breach detection |
-| 10 | DT_FACILITY_UTILIZATION | Dynamic Table | Daily facility visit stats |
-| 11 | DT_DRIVER_DWELL_SUMMARY | Dynamic Table | Per-driver dwell + breach counts |
-| 12 | DT_DAILY_TRENDS | Dynamic Table | Fleet-wide daily aggregates |
-| 13 | SLA_ALERT_LOG + Task | Table + Task | Schedule-based alert logging (every 5 min) |
+| 1 | Database + Schema + CONFIG | DDL + Table | Infrastructure |
+| 2 | VW_VEHICLE_TELEMETRY, VW_TRIP_SUMMARY | Views | Projection views from UNIFIED |
+| 3 | SLA_THRESHOLDS | Table | Dwell time limits (WARNING=3min, MAX=5min for RESTAURANT) |
+| 4 | DT_STATE_CHANGES | Dynamic Table | LAG-based state detection (LiveOperations) |
+| 5 | DT_DWELL_EVENTS | Dynamic Table | Session grouping |
+| 6 | DT_DWELL_ENRICHED | Dynamic Table | POI-enriched dwells with AVG_POINT + STATUS |
+| 7 | DT_H3_CONGESTION | Dynamic Table | Hourly H3 R7 heatmap (CongestionMap) |
+| 8 | DT_SLA_ALERTS | Dynamic Table | SLA breach events (SLAAlerts) |
+| 9 | DT_FACILITY_UTILIZATION | Dynamic Table | Per-location stats (FacilityUtilization) |
+| 10 | DT_DRIVER_DWELL_SUMMARY | Dynamic Table | Per-driver breach counts (DriverPerformance) |
+| 11 | DT_DAILY_TRENDS | Dynamic Table | Fleet-wide daily aggregates (DwellOverview) |
 
 ### Step 2: Verify Pipeline
 
 ```sql
 SELECT 'DT_STATE_CHANGES' AS DT, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
-UNION ALL SELECT 'DT_DWELL_SESSIONS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS
+UNION ALL SELECT 'DT_DWELL_ENRICHED', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+UNION ALL SELECT 'DT_H3_CONGESTION', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION
 UNION ALL SELECT 'DT_SLA_ALERTS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
+UNION ALL SELECT 'DT_FACILITY_UTILIZATION', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION
+UNION ALL SELECT 'DT_DRIVER_DWELL_SUMMARY', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
 UNION ALL SELECT 'DT_DAILY_TRENDS', COUNT(*) FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS;
 ```
 
+Expected (SF seed data): STATE_CHANGES ~470K, DWELL_ENRICHED ~12K, H3_CONGESTION ~1.5K, SLA_ALERTS ~3K, FACILITY_UTIL ~12K, DRIVER_SUMMARY 50, DAILY_TRENDS 7.
 
 ## SLA Threshold Tuning
 
-Default thresholds in SLA_THRESHOLDS table:
+Default thresholds (tuned for seed data with avg 3.5 min dwell):
 
-| Location Type | Warning (min) | Critical (min) |
-|---------------|---------------|----------------|
-| WAREHOUSE | 5 | 15 |
-| DESTINATION | 3 | 10 |
-| REST_STOP | 5 | 12 |
-| STORE | 2 | 8 |
-| DETOUR | 2 | 5 |
+| Location Type | Warning (min) | Max (min) | Priority |
+|---------------|---------------|-----------|----------|
+| RESTAURANT | 3 | 5 | HIGH |
+| DWELL_ORIGIN | 3 | 5 | HIGH |
+| DWELL_DESTINATION | 3 | 5 | MEDIUM |
+| IDLE | 5 | 10 | LOW |
 
-> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min).
+> **Production note:** For real-world data, increase to realistic values (e.g., RESTAURANT: 20/30 min).
 
 Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS will refresh automatically.
 

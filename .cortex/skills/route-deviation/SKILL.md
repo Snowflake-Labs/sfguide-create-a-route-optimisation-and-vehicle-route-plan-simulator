@@ -52,7 +52,23 @@ CRITICAL: Verify these before starting:
 1. **One statement per `snowflake_sql_execute` tool call.** Multi-statement blocks can silently fail. This rule applies to the `snowflake_sql_execute` tool only; `snow sql -f` and other CLI execution is fine.
 2. **Always use fully qualified object names.** `{TARGET_DB}.{TARGET_SCHEMA}.<table>`.
 3. **Verify row counts after each CTAS.** Catch silent failures early.
-4. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation",...}'`. See `references/sql-pipeline.md` for tagged SQL.
+4. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation",...}'`. See `references/seed-data.sql` for tagged SQL.
+5. **FACT_TRIPS must have GEOGRAPHY columns** (ORIGIN, DESTINATION, ROUTE_GEOG, PLANNED_ROUTE_GEOG). RouteComparison calls `ST_ASGEOJSON(ACTUAL_PATH):coordinates`.
+6. **FACT_VEHICLE_TELEMETRY must have POINT_GEOM (GEOGRAPHY)**. RouteInspector calls `ST_X(POINT_GEOM)`.
+7. **Do NOT reference DIM_TRIP_SCHEDULE** — it doesn't exist in seed data. Use FACT_TRIPS instead for schedule info.
+
+## Dashboard Schema Contract
+
+The React components query `FLEET_INTELLIGENCE.ROUTE_DEVIATION`:
+
+| Component | Object | Key Columns |
+|-----------|--------|-------------|
+| DeviationDashboard | `TRIP_DEVIATION_ANALYSIS` | DISTANCE_DEVIATION_PCT, TOTAL_ROUTES (COUNT), ON_ROUTE_PCT |
+| DeviationDashboard | `DAILY_DEVIATION_TRENDS` | TRIP_DATE, TOTAL_TRIPS, DEVIATION_RATE_PCT |
+| DeviationDashboard | `DRIVER_DEVIATION_SUMMARY` | DRIVER_ID, TOTAL_TRIPS, AVG_DISTANCE_DEVIATION_PCT, AVG_DURATION_DEVIATION_PCT |
+| RouteComparison | `TRIP_DEVIATION_ANALYSIS` | TRIP_ID, DRIVER_ID, TRIP_DATE, ACTUAL_PATH (GEOGRAPHY), EXPECTED_PATH (GEOGRAPHY), ORIGIN_NAME, DEST_NAME, DISTANCE_DEVIATION_PCT |
+| RouteInspector | `VW_VEHICLE_TELEMETRY` | POINT_GEOM (GEOGRAPHY), SPEED_KMH, HEADING_DEG, IS_DETOUR, IS_SPEEDING, GPS_ACCURACY_M, POSTED_SPEED_KMH, TS, STATUS |
+| RouteInspector | `TRIP_DEVIATION_ANALYSIS` | VEHICLE_ID, TRIP_DATE, DISTANCE_DEVIATION_PCT, POINT_COUNT |
 
 ## Quick Start
 

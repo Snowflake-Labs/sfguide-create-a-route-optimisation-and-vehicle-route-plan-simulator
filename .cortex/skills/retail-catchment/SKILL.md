@@ -53,10 +53,17 @@ Deploy the Retail Catchment Analysis demo that visualizes trade areas, competito
 
 1. One statement per `snowflake_sql_execute` tool call.
 2. Always use fully qualified object names.
-3. Never use `SET` session variables - use literal values in each query.
+3. Never use `SET` session variables — substitute literal values directly (`'SanFrancisco'`, `-123.0`, etc.).
 4. Verify row counts after each INSERT.
 5. All CREATE statements must include a COMMENT tracking tag.
-6. Follow the exact schema in Step 5 - do not deviate from column names or types.
+6. **Follow the exact column names in Step 5** — the React app queries by these exact names. Common mistakes:
+   - ❌ `NAME` → ✅ `POI_NAME`
+   - ❌ `CATEGORY` → ✅ `BASIC_CATEGORY`
+   - ❌ `POINT_GEOM` → ✅ `GEOMETRY`
+   - ❌ `ADDRESS_ID` → ✅ `ID`
+7. **REGIONAL_ADDRESSES.CITY** must come from `POSTAL_CITY` column (NOT `ADDRESS_LEVELS[1]:value`).
+8. **RETAIL_POIS** must be filtered to retail-relevant `BASIC_CATEGORY` values only (see category list in Step 5b). Using unfiltered Overture data will include millions of irrelevant entries.
+9. **In workspace environments** (no `snow sql -f`), execute each statement in Step 5 individually via `snowflake_sql_execute` with literal values substituted for all `$VARIABLE` references.
 
 ## Workflow
 

@@ -617,6 +617,16 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow sql -f datasets/load-seed-data.sql -c <connection>
    ```
 
+   **⚠️ WORKSPACE ENVIRONMENTS (no `snow sql -f`):** You MUST use the explicit COPY INTO transforms from `datasets/load-seed-data.sql` — do NOT use `INFER_SCHEMA` + `MATCH_BY_COLUMN_NAME`. The Parquet files store GEOGRAPHY data as WKT strings. The loader script converts them via `TRY_TO_GEOGRAPHY()` during COPY INTO. Without this conversion:
+   - `INTRO_TRIPS.ROUTE_GEOJSON` will be VARCHAR (must be OBJECT via `TRY_PARSE_JSON`)
+   - `FACT_TRIPS.ORIGIN/DESTINATION/ROUTE_GEOG` will be VARCHAR (must be GEOGRAPHY)
+   - All React dashboard ST_X/ST_Y/ST_ASGEOJSON calls will fail silently
+
+   **Critical table locations:**
+   - `OPENROUTESERVICE_APP.CORE.INTRO_TRIPS` — NOT FLEET_INTELLIGENCE.CORE (Intro page queries OPENROUTESERVICE_APP)
+   - `SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS` — with GEOGRAPHY columns ORIGIN, DESTINATION, ROUTE_GEOG
+   - `SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY` — with FLOAT lat/lon (no GEOGRAPHY needed)
+
 4. **Verify** the data loaded:
    ```sql
    SELECT 'INTRO_TRIPS' AS TBL, COUNT(*) AS CNT FROM OPENROUTESERVICE_APP.CORE.INTRO_TRIPS
