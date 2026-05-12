@@ -1,7 +1,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.0.0
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.0.1
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000

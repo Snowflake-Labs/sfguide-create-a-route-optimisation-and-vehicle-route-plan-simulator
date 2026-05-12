@@ -17,7 +17,7 @@ ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
-GATEWAY_VERSION = 'v1.0.0'
+GATEWAY_VERSION = 'v1.0.1'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -77,6 +77,24 @@ def _get_ors_health(ors_host=None):
         return False
 
 
+def _probe_ors_state(ors_host=None):
+    """Distinguish 'warming_up' (process up, /health returns non-200, e.g. 503)
+    from 'unreachable' (TCP refused / DNS fails, i.e. service suspended or not provisioned).
+    Returns one of: 'ready' | 'warming_up' | 'unreachable' | 'unknown'."""
+    host = ors_host or ORS_HOST
+    try:
+        health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
+        r = requests.get(url=health_url, timeout=5)
+        if r.status_code == 200:
+            return 'ready'
+        # Process is accepting connections but /health says not-ready: graph still loading.
+        return 'warming_up'
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        return 'unreachable'
+    except Exception:
+        return 'unknown'
+
+
 def _get_ors_status(ors_host=None):
     host = ors_host or ORS_HOST
     try:
@@ -102,11 +120,27 @@ def _get_ors_status(ors_host=None):
         status_data['ors_host'] = host
         return status_data
     except requests.exceptions.ConnectionError:
-        logger.error(f'Cannot connect to ORS at {host} - service may not be provisioned or is suspended')
+        # Differentiate warming-up vs suspended/unknown by probing /health separately.
+        state = _probe_ors_state(host)
+        if state == 'warming_up':
+            logger.info(f'ORS at {host} is warming up - /health returned non-200 while loading graph')
+            return {
+                'error': 'service_warming_up',
+                'graph_loading': True,
+                'message': f'ORS at {host} is warming up: graph is loading from stage. '
+                           f'Typical wait: 1-10 min depending on region size. '
+                           f'Re-poll ORS_STATUS(region) until service_ready=true.',
+                'service_ready': False,
+                'health_ready': False,
+                'ors_host': host
+            }
+        logger.error(f'Cannot connect to ORS at {host} - service is suspended or region not provisioned')
         return {
-            'error': 'connection_failed',
-            'message': f'Cannot connect to ORS at {host}. Region may not be provisioned or service is suspended. '
-                       f'Use SETUP_CITY_ORS(region) to provision.',
+            'error': 'service_unreachable',
+            'graph_loading': False,
+            'message': f'Cannot connect to ORS at {host}. Service appears suspended or region not provisioned. '
+                       f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
+                       f'2) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
             'service_ready': False,
             'health_ready': False,
             'ors_host': host
@@ -609,6 +643,69 @@ def get_vroom_response(payload):
     return vroom_r
 
 
+def _extract_payload_locations(payload):
+    """Best-effort extraction of [lon, lat] pairs from an ORS request payload.
+    Different endpoints use different keys (coordinates / locations).
+    Returns a list of [lon, lat] pairs, or [] if none can be found."""
+    if not isinstance(payload, dict):
+        return []
+    for key in ('locations', 'coordinates'):
+        val = payload.get(key)
+        if isinstance(val, list) and val and isinstance(val[0], list):
+            return val
+    return []
+
+
+def _is_plausible_us_lonlat(lon, lat):
+    """CONUS bbox sanity check. Used only to hint at swapped lon/lat."""
+    try:
+        return -125.0 <= float(lon) <= -66.0 and 24.0 <= float(lat) <= 49.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _annotate_engine_error(resp, host, payload):
+    """If ORS returned an engine-level error (e.g. code 3099 'Unable to build an
+    isochrone map'), enrich the response with gateway diagnostics: host, the
+    coordinates that were sent, and a swapped-lon/lat hint when applicable.
+    Adds a non-destructive `gateway_diagnostics` block; existing fields are
+    untouched so downstream UDF error mapping continues to work."""
+    if not isinstance(resp, dict):
+        return resp
+    err = resp.get('error')
+    if not isinstance(err, dict):
+        return resp
+    code = err.get('code')
+    locations = _extract_payload_locations(payload)
+    diagnostics = {
+        'ors_host': host,
+        'requested_locations_lon_lat': locations,
+        'hint': None,
+    }
+    # Swapped lon/lat hint: ORS expects [lon, lat]. If the caller passed
+    # [lat, lon] and only the swapped form is plausible CONUS, point that out.
+    if locations:
+        first = locations[0]
+        if isinstance(first, list) and len(first) >= 2:
+            lon, lat = first[0], first[1]
+            if not _is_plausible_us_lonlat(lon, lat) and _is_plausible_us_lonlat(lat, lon):
+                diagnostics['hint'] = (
+                    'Coordinates may be swapped. ORS expects [longitude, latitude] '
+                    '(longitude first). For US points longitude is negative, '
+                    'roughly -125..-66, and latitude is +24..+49.'
+                )
+    if code == 3099:
+        diagnostics['hint'] = diagnostics['hint'] or (
+            'ORS could not snap the start point to a routable edge. The point '
+            'is likely outside the loaded region graph, in water, or far from '
+            'any road. Verify the coordinate is on land within the region '
+            'bounding box and that longitude is passed before latitude.'
+        )
+    if diagnostics['hint'] or code is not None:
+        resp['gateway_diagnostics'] = diagnostics
+    return resp
+
+
 def get_ors_response(function, profile, payload, format, ors_host=None):
     host = ors_host or ORS_HOST
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
@@ -622,15 +719,28 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
 
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=120)
-        logger.debug(r.json())
-        return r.json()
+        resp = r.json()
+        logger.debug(resp)
+        return _annotate_engine_error(resp, host, payload)
     except requests.exceptions.ConnectionError:
         region_hint = f' (host: {host})' if host != ORS_HOST else ''
-        logger.error(f'Cannot connect to ORS{region_hint}')
+        # Differentiate warming-up vs suspended/unknown by probing /health separately.
+        state = _probe_ors_state(host)
+        if state == 'warming_up':
+            logger.info(f'ORS{region_hint} is warming up - graph still loading')
+            return {
+                'error': 'service_warming_up',
+                'graph_loading': True,
+                'message': f'ORS{region_hint} is warming up: graph is loading from stage. '
+                           f'Typical wait: 1-10 min depending on region size. '
+                           f'Re-poll SELECT CORE.ORS_STATUS(region) until service_ready=true, then retry.',
+                'ors_host': host
+            }
+        logger.error(f'Cannot connect to ORS{region_hint} - suspended or not provisioned')
         return {
-            'error': 'connection_failed',
-            'message': f'Cannot connect to ORS{region_hint}. '
-                       f'Region may not be provisioned or service is suspended. '
+            'error': 'service_unreachable',
+            'graph_loading': False,
+            'message': f'Cannot connect to ORS{region_hint}. Service appears suspended or region not provisioned. '
                        f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
                        f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
                        f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
