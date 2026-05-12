@@ -429,6 +429,11 @@ app.get('/api/ors-readiness', async (_req, res) => {
       expected_profiles: expectedProfiles,
       graphs,
       graphs_persisted: probe.graphs_persisted || probe.build_ok,
+      // Forward gateway-side state codes so the UI can distinguish
+      // warming-up (graph loading) from suspended / not-provisioned.
+      gateway_state: data.error || null,
+      gateway_message: data.message || null,
+      graph_loading: data.graph_loading === true,
       markers: {
         osm_done: probe.osm_done,
         lm_done: probe.lm_done,
