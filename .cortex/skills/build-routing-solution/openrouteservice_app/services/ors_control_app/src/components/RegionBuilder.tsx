@@ -583,7 +583,6 @@ export default function RegionBuilder() {
                 <th>Job status</th>
                 <th>Profile</th>
                 <th>Steps</th>
-                <th>Comment</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -620,11 +619,6 @@ export default function RegionBuilder() {
                           {isFirst && (
                             <td rowSpan={profileRows.length}>
                               <strong>{job.display_name || job.region}</strong>
-                              {job.started_at && (
-                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                                  Started {getTimeSince(job.started_at)}
-                                </div>
-                              )}
                             </td>
                           )}
                           {isFirst && (
@@ -632,59 +626,19 @@ export default function RegionBuilder() {
                               <span className="badge running">{job.status}</span>
                             </td>
                           )}
-                          <td style={{ fontSize: 12 }}>{profile}</td>
+                          <td style={{ fontSize: 12 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span>{profile}</span>
+                              {showPhaseTriplet && profile !== '(no profiles)' && (
+                                <PhasePips phases={phases} ready={false} showLabel={false} />
+                              )}
+                            </div>
+                          </td>
                           {isFirst && (
                             <td rowSpan={profileRows.length}>
                               <StepsStrip currentStage={job.stage} elapsedHint={elapsedHint} />
-                              {showPhaseTriplet && (
-                                <div style={{ marginTop: 6 }}>
-                                  <span style={{ fontSize: 10, opacity: 0.7, display: 'block', marginBottom: 2 }}>
-                                    Graph build (per profile):
-                                  </span>
-                                </div>
-                              )}
                             </td>
                           )}
-                          <td className="comments-cell">
-                            {showPhaseTriplet ? (
-                              <PhasePips phases={phases} ready={false} showLabel={true} />
-                            ) : isFirst ? (
-                              <>
-                                {job.message && (
-                                  <>
-                                    <span className="comment-label">Current step</span>
-                                    <span className="comment-text">{job.message}</span>
-                                  </>
-                                )}
-                                {showBuildBar && (
-                                  <div className="build-progress" style={{ marginTop: job.message ? 6 : 0 }}>
-                                    <div className="progress-bar-track">
-                                      <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
-                                    </div>
-                                    <div className="progress-stats">
-                                      <span>{bp.progress}%</span>
-                                      {bp.currentProfile && bp.totalProfiles && (
-                                        <span>
-                                          Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
-                                        </span>
-                                      )}
-                                      {(bp.nodesRemaining ?? 0) > 0 && (
-                                        <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                                {!showBuildBar && startupHint && (
-                                  <div style={{ marginTop: job.message ? 4 : 0, fontSize: 11 }}>{startupHint}</div>
-                                )}
-                                {!job.message && !showBuildBar && !startupHint && (
-                                  <span style={{ color: 'var(--text-secondary)' }}>—</span>
-                                )}
-                              </>
-                            ) : (
-                              <span style={{ color: 'var(--text-secondary)' }}>—</span>
-                            )}
-                          </td>
                           {isFirst && (
                             <td rowSpan={profileRows.length}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -700,9 +654,54 @@ export default function RegionBuilder() {
                         </tr>
                       );
                     })}
+                    <tr key={`${job.job_id}-details`} className="details-row">
+                      <td colSpan={5}>
+                        <div className="details-grid">
+                          {job.started_at && (
+                            <span>
+                              <span className="details-label">Started</span>
+                              {getTimeSince(job.started_at)}
+                            </span>
+                          )}
+                          {job.message && (
+                            <span>
+                              <span className="details-label">Current step</span>
+                              {job.message}
+                            </span>
+                          )}
+                          {showBuildBar && (
+                            <div className="build-progress" style={{ minWidth: 220, flex: '1 1 240px' }}>
+                              <div className="progress-bar-track">
+                                <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
+                              </div>
+                              <div className="progress-stats">
+                                <span>{bp.progress}%</span>
+                                {bp.currentProfile && bp.totalProfiles && (
+                                  <span>
+                                    Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
+                                  </span>
+                                )}
+                                {(bp.nodesRemaining ?? 0) > 0 && (
+                                  <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {!showBuildBar && startupHint && (
+                            <span>
+                              <span className="details-label">Status</span>
+                              {startupHint}
+                            </span>
+                          )}
+                          {!job.started_at && !job.message && !showBuildBar && !startupHint && (
+                            <span style={{ opacity: 0.7 }}>Waiting for first status update...</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
                     {diagState[job.region]?.expanded && (
                       <tr key={`${job.job_id}-diag`} className="active-job-row">
-                        <td colSpan={6}>
+                        <td colSpan={5}>
                           <div
                             style={{
                               padding: '10px 12px',

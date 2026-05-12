@@ -108,10 +108,32 @@
       .steps-legend .legend-glyph.active { color: var(--yellow); }
       .steps-legend .legend-glyph.pending { color: var(--text-secondary); opacity: 0.7; }
       .steps-legend .legend-divider { opacity: 0.4; padding: 0 4px; }
-      .comments-cell { font-size: 12px; color: var(--text-secondary); max-width: 320px; }
-      .comments-cell .comment-label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-bottom: 2px; }
-      .comments-cell .comment-text { color: var(--text-primary, inherit); }
       tr.active-job-row > td { background: rgba(41,181,232,0.05); }
+      .services-table tr.details-row > td {
+        padding: 6px 14px 10px;
+        background: rgba(41,181,232,0.04);
+        border-bottom: 1px solid var(--border);
+        border-top: 0;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+      .services-table tr.details-row .details-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 20px;
+        align-items: baseline;
+      }
+      .services-table tr.details-row .details-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.7;
+        margin-right: 6px;
+      }
+      .services-table tr.details-row .build-progress { margin: 0; }
+      /* Visually attach the main job row (and any per-profile rows) to its details row */
+      .services-table tr.active-job-row > td { border-bottom: 0; }
+      .services-table tr.profile-sub-row > td { border-bottom: 0; }
       tr.profile-sub-row > td { border-top: 1px dashed var(--border); padding-top: 6px; padding-bottom: 6px; }
       tr.profile-sub-row > td:first-child { padding-left: 12px; opacity: 0.95; }
       .steps-strip .steps-elapsed { font-size: 11px; color: var(--text-secondary); margin-left: 8px; font-family: inherit; font-weight: 400; }
