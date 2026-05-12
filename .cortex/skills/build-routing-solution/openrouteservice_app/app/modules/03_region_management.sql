@@ -1142,7 +1142,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '          value: 2147483647',
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 2147483647',
+        '          value: 7200',
         '    snap:',
         '      maximum_locations: 2147483647',
         '',

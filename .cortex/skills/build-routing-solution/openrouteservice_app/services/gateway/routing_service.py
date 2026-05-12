@@ -17,7 +17,12 @@ ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
-GATEWAY_VERSION = 'v1.0.1'
+# Per-endpoint downstream timeouts (seconds). Isochrones on continental graphs
+# (e.g. USA driving-hgv) routinely take longer than the legacy 120 s default
+# because fastisochrones is not enabled — see GitHub issue tracking that.
+ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
+ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
+GATEWAY_VERSION = 'v1.0.2'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -714,11 +719,15 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
 
     downstream_url = f'http://{host}:{ORS_PORT}{endpoint}'
     downstream_headers = {"Content-Type": "application/json"}
-    logger.info(f'Calling: {downstream_url}')
+    # Isochrones on large graphs (e.g. USA driving-hgv) can take > 120 s because
+    # fastisochrones preparation is not enabled. Use a longer per-endpoint
+    # timeout for isochrones to avoid silent gateway-side cliffs.
+    timeout_s = ORS_TIMEOUT_ISOCHRONES if function == 'isochrones' else ORS_TIMEOUT_DEFAULT
+    logger.info(f'Calling: {downstream_url} (timeout={timeout_s}s)')
     logger.info(f'Payload: {payload}')
 
     try:
-        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=120)
+        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
         resp = r.json()
         logger.debug(resp)
         return _annotate_engine_error(resp, host, payload)
@@ -747,13 +756,15 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
             'ors_host': host
         }
     except requests.exceptions.Timeout:
-        logger.error(f'ORS request timed out on {host}')
+        logger.error(f'ORS request timed out on {host} after {timeout_s}s')
         return {
             'error': 'timeout',
-            'message': f'ORS request timed out on {host}. '
+            'message': f'ORS request timed out on {host} after {timeout_s}s. '
                        f'Possible causes: graphs still loading after resume (~2-3 min), '
-                       f'or request too large. Try reducing batch size or check ORS_STATUS().',
-            'ors_host': host
+                       f'or request too large (e.g. very large isochrone range on a continental graph). '
+                       f'Try reducing range/batch size, or check ORS_STATUS().',
+            'ors_host': host,
+            'timeout_seconds': timeout_s
         }
 
 

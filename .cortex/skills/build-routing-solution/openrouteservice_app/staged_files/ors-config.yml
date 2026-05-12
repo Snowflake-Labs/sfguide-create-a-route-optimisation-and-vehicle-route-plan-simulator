@@ -54,9 +54,14 @@ ors:
       maximum_range_distance: 
         - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
           value: 2147483647
+      # Cap isochrone time-range at 2 hours so requests beyond what the gateway
+      # can compute within its 300 s timeout fail fast with a clear ORS error
+      # instead of producing a silent gateway timeout. Without fastisochrones
+      # enabled, plain Dijkstra flood-fill on continental graphs (e.g. USA HGV)
+      # exceeds the gateway timeout above ~120 min from the densest origins.
       maximum_range_time:
         - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
-          value: 2147483647
+          value: 7200
     snap:
       maximum_locations: 2147483647
 ################################################################################
