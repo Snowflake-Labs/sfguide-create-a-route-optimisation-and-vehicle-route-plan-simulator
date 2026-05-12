@@ -1114,29 +1114,37 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '        source_file: /home/ors/files/' + p_pbf_file,
         '        instructions: false',
         '      service:',
-        '        maximum_distance: 1500000',
-        '        maximum_distance_dynamic_weights: 1500000',
-        '        maximum_distance_avoid_areas: 1500000',
-        '        maximum_distance_alternative_routes: 1500000',
-        '        maximum_distance_round_trip_routes: 1500000',
-        '        maximum_visited_nodes: 100000000',
+        '        maximum_distance: 2147483647',
+        '        maximum_distance_dynamic_weights: 2147483647',
+        '        maximum_distance_avoid_areas: 2147483647',
+        '        maximum_distance_alternative_routes: 2147483647',
+        '        maximum_distance_round_trip_routes: 2147483647',
+        '        maximum_visited_nodes: 2147483647',
+        '        maximum_waypoints: 2147483647',
+        '        maximum_snapping_radius: 2147483647',
+        '        maximum_avoid_polygon_area: 2147483647',
+        '        maximum_avoid_polygon_extent: 2147483647',
         '    profiles:',
     ]
     yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'
     yaml_content += '\n'.join([
         '  endpoints:',
         '    matrix:',
-        '      maximum_visited_nodes: 100000000',
-        '      maximum_routes: 250000',
+        '      maximum_routes: 2147483647',
+        '      maximum_routes_flexible: 2147483647',
+        '      maximum_visited_nodes: 2147483647',
+        '      maximum_search_radius: 2147483647',
         '    isochrones:',
-        '      maximum_locations: 2',
-        '      maximum_intervals: 10',
+        '      maximum_locations: 2147483647',
+        '      maximum_intervals: 2147483647',
         '      maximum_range_distance:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 1500000',
+        '          value: 2147483647',
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 18000',
+        '          value: 2147483647',
+        '    snap:',
+        '      maximum_locations: 2147483647',
         '',
     ])
 
@@ -1155,13 +1163,19 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', threads: init=' + str(tc['init_threads']) + ' ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads'])
 $$;
 
-CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR)
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
 RETURNS STRING
 LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    rs RESULTSET;
+    ready BOOLEAN DEFAULT FALSE;
+    elapsed INTEGER DEFAULT 0;
+    poll_secs INTEGER DEFAULT 15;
+    started_at TIMESTAMP DEFAULT SYSDATE();
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
@@ -1169,6 +1183,32 @@ BEGIN
         ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service RESUME;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+
+    -- Block until ORS is actually warmed up, so the very next user query is not
+    -- exposed to the connection_failed race during graph load. Caller can disable
+    -- the wait with P_WAIT_FOR_READY = FALSE to retain legacy fire-and-forget.
+    IF (:P_WAIT_FOR_READY) THEN
+        WHILE (NOT :ready AND :elapsed < :P_TIMEOUT_SECONDS) DO
+            BEGIN
+                rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+                    || :P_REGION || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+                LET c CURSOR FOR rs;
+                FOR r IN c DO ready := COALESCE(r.R, FALSE); END FOR;
+            EXCEPTION WHEN OTHER THEN ready := FALSE;
+            END;
+            IF (NOT :ready) THEN
+                CALL SYSTEM$WAIT(:poll_secs);
+                elapsed := TIMESTAMPDIFF(SECOND, :started_at, SYSDATE());
+            END IF;
+        END WHILE;
+        IF (:ready) THEN
+            RETURN 'Resumed ORS services for ' || :P_REGION || ' (ready in ' || :elapsed || 's)';
+        ELSE
+            RETURN 'Resumed ORS services for ' || :P_REGION ||
+                   ' but service_ready=false after ' || :elapsed ||
+                   's. Re-poll ORS_STATUS(region) - graph may still be loading.';
+        END IF;
+    END IF;
     RETURN 'Resumed ORS services for ' || :P_REGION;
 END;
 $$;
