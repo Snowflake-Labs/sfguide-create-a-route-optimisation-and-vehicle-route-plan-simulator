@@ -256,7 +256,12 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND STATUS IN ('COMPLETE','COMPLETED') ORDER BY COMPLETED_AT DESC LIMIT 1`);
+    // Use the most recent non-failed job record for this region so that an
+    // in-flight RUNNING job's requested profiles drive the UI rather than
+    // falling through to the hardcoded DEFAULT_PROFILES (which would surface
+    // phantom profiles like 'driving-car' for a build that only requested
+    // 'driving-hgv'). FAILED/ERROR rows are excluded.
+    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL AND COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') ORDER BY COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
     const profileStr = rows?.[0]?.PROFILES;
     if (profileStr && typeof profileStr === 'string') {
       return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);

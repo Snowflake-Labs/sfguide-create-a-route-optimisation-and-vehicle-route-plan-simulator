@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'react';
+import type { ReactNode } from 'react';
 import type { CatalogRegion } from '../types';
 import PhasePips, { PhaseLegend } from '../shared/PhasePips';
 
@@ -58,6 +59,61 @@ const PROVISION_PHASES = [
 ];
 
 const PHASE_ORDER = ['not_started', 'downloading', 'configuring', 'starting_service', 'waiting_for_service', 'building_graph', 'ready'];
+
+const STEP_GLYPH = { done: '\u2713', active: '\u22EF', pending: '\u25CB' } as const;
+
+type StepState = 'done' | 'active' | 'pending';
+
+function StepsStrip({ currentStage, allDone = false }: { currentStage?: string; allDone?: boolean }) {
+  const stage = (currentStage || '').toLowerCase();
+  const currentIdx = stage === 'ready' ? PROVISION_PHASES.length : PHASE_ORDER.indexOf(stage);
+  return (
+    <span className="steps-strip" aria-label="Provisioning steps">
+      {PROVISION_PHASES.map((phase, idx) => {
+        let state: StepState;
+        if (allDone) state = 'done';
+        else if (currentIdx < 0) state = 'pending';
+        else if (idx + 1 < currentIdx) state = 'done';
+        else if (idx + 1 === currentIdx) state = 'active';
+        else state = 'pending';
+        return (
+          <span
+            key={phase.id}
+            className={`step-pip ${state}`}
+            title={`${idx + 1}. ${phase.label} — ${state === 'done' ? 'done' : state === 'active' ? 'in progress' : 'not started'}`}
+          >
+            {STEP_GLYPH[state]}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function StepsLegend() {
+  return (
+    <div className="steps-legend" role="note">
+      <div className="legend-section">
+        <strong style={{ color: 'var(--text-primary, inherit)', opacity: 0.85 }}>Steps:</strong>
+        {PROVISION_PHASES.map((p, i) => (
+          <span key={p.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ opacity: 0.7 }}>{i + 1}.</span>
+            <span>{p.label}</span>
+            {i < PROVISION_PHASES.length - 1 && <span className="legend-arrow">{'\u2192'}</span>}
+          </span>
+        ))}
+      </div>
+      <span className="legend-divider">|</span>
+      <div className="legend-section">
+        <strong style={{ color: 'var(--text-primary, inherit)', opacity: 0.85 }}>Legend:</strong>
+        <span><span className="legend-glyph done">{STEP_GLYPH.done}</span>Done</span>
+        <span><span className="legend-glyph active">{STEP_GLYPH.active}</span>In progress</span>
+        <span><span className="legend-glyph pending">{STEP_GLYPH.pending}</span>Not started</span>
+      </div>
+    </div>
+  );
+}
+
 
 const ALL_PROFILES: { id: string; label: string; group: string }[] = [
   { id: 'driving-car', label: 'Car', group: 'Driving' },
@@ -518,95 +574,157 @@ export default function RegionBuilder() {
       {activeJobs.length > 0 && (
         <>
           <h3>Active Provisioning Jobs</h3>
-          <div className="job-cards">
-            {activeJobs.map((job) => {
-              const currentPhase = getPhaseProgress(job.stage);
-              return (
-                <div key={job.job_id} className="job-card active">
-                  <div className="job-header">
-                    <strong>{job.display_name || job.region}</strong>
-                    <span className="badge running">{job.status}</span>
-                    <button className="btn small" onClick={() => askForStatus(job.region)} style={{ marginLeft: 'auto' }}>
-                      {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
-                    </button>
-                    <button className="btn danger small" onClick={() => cancelJob(job.region)}>Cancel</button>
-                  </div>
-                  <div className="provision-progress">
-                    {PROVISION_PHASES.map((phase) => {
-                      const pIdx = PHASE_ORDER.indexOf(phase.id);
-                      const isDone = currentPhase > pIdx;
-                      const isCurrent = job.stage.toLowerCase() === phase.id;
-                      return (
-                        <div key={phase.id} className={`progress-step ${isDone ? 'done' : ''} ${isCurrent ? 'active' : ''}`}>
-                          <span className="step-icon">{isDone ? '\u2713' : isCurrent ? '\u27F3' : '\u25CB'}</span>
-                          <span className="step-label">{phase.label}</span>
-                          {isCurrent && job.message && <span className="step-message">{job.message}</span>}
-                          {isCurrent && phase.id === 'building_graph' && buildProgress[job.region]?.phase === 'building' && (
-                            <div className="build-progress">
-                              <div className="progress-bar-track">
-                                <div className="progress-bar-fill" style={{ width: `${buildProgress[job.region].progress}%` }} />
-                              </div>
-                              <div className="progress-stats">
-                                <span>{buildProgress[job.region].progress}%</span>
-                                {buildProgress[job.region].currentProfile && buildProgress[job.region].totalProfiles && (
-                                  <span>Profile {(buildProgress[job.region].completedProfiles?.length ?? 0) + 1}/{buildProgress[job.region].totalProfiles}: {buildProgress[job.region].currentProfile}</span>
-                                )}
-                                {(buildProgress[job.region].nodesRemaining ?? 0) > 0 && (
-                                  <span>{((buildProgress[job.region].nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
-                                )}
-                              </div>
+          <StepsLegend />
+          <table className="services-table">
+            <thead>
+              <tr>
+                <th>Region</th>
+                <th>Service</th>
+                <th>Profiles</th>
+                <th>Steps</th>
+                <th>Comments</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeJobs.map((job) => {
+                const bp = buildProgress[job.region];
+                const stage = job.stage?.toLowerCase() || '';
+                const buildPhase = bp?.phase;
+                const showBuildBar = stage === 'building_graph' && buildPhase === 'building';
+                const startupHint =
+                  (stage === 'building_graph' || stage === 'waiting_for_service') && buildPhase === 'initializing'
+                    ? 'ORS engine starting up...'
+                    : (stage === 'building_graph' || stage === 'waiting_for_service') && buildPhase === 'importing'
+                    ? `Importing OSM data for ${bp?.currentProfile || ''}...`
+                    : null;
+                const profileList = job.profiles
+                  ? job.profiles.split(',').map((p) => p.trim()).filter(Boolean)
+                  : [];
+                return (
+                  <Fragment key={job.job_id}>
+                    <tr className="active-job-row">
+                      <td>
+                        <strong>{job.display_name || job.region}</strong>
+                        {job.started_at && (
+                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                            Started {getTimeSince(job.started_at)}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <span className="badge running">{job.status}</span>
+                      </td>
+                      <td>
+                        {profileList.length > 0 ? (
+                          <div style={{ fontSize: 12, lineHeight: 1.4 }}>
+                            {profileList.map((p) => (
+                              <div key={p}>{p}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <StepsStrip currentStage={job.stage} />
+                      </td>
+                      <td className="comments-cell">
+                        {job.message && (
+                          <>
+                            <span className="comment-label">Current step</span>
+                            <span className="comment-text">{job.message}</span>
+                          </>
+                        )}
+                        {showBuildBar && (
+                          <div className="build-progress" style={{ marginTop: job.message ? 6 : 0 }}>
+                            <div className="progress-bar-track">
+                              <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
                             </div>
-                          )}
-                          {isCurrent && (phase.id === 'building_graph' || phase.id === 'waiting_for_service') && buildProgress[job.region]?.phase === 'initializing' && (
-                            <span className="step-message">ORS engine starting up...</span>
-                          )}
-                          {isCurrent && (phase.id === 'building_graph' || phase.id === 'waiting_for_service') && buildProgress[job.region]?.phase === 'importing' && (
-                            <span className="step-message">Importing OSM data for {buildProgress[job.region].currentProfile}...</span>
-                          )}
+                            <div className="progress-stats">
+                              <span>{bp.progress}%</span>
+                              {bp.currentProfile && bp.totalProfiles && (
+                                <span>
+                                  Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
+                                </span>
+                              )}
+                              {(bp.nodesRemaining ?? 0) > 0 && (
+                                <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {!showBuildBar && startupHint && (
+                          <div style={{ marginTop: job.message ? 4 : 0, fontSize: 11 }}>{startupHint}</div>
+                        )}
+                        {!job.message && !showBuildBar && !startupHint && (
+                          <span style={{ color: 'var(--text-secondary)' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <button className="btn small" onClick={() => askForStatus(job.region)}>
+                            {diagState[job.region]?.loading ? 'Asking...' : 'Ask for status'}
+                          </button>
+                          <button className="btn danger small" onClick={() => cancelJob(job.region)}>
+                            Cancel
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                  {job.profiles && <div className="job-meta">Profiles: {job.profiles}</div>}
-                  {job.started_at && <div className="job-meta">Started {getTimeSince(job.started_at)}</div>}
-                  {diagState[job.region]?.expanded && (
-                    <div style={{
-                      marginTop: 8, padding: '10px 12px',
-                      background: 'rgba(46, 134, 171, 0.08)',
-                      borderLeft: '3px solid var(--accent)',
-                      borderRadius: 6, fontSize: 13,
-                    }}>
-                      {diagState[job.region]?.loading && <div>Diagnosing...</div>}
-                      {diagState[job.region]?.error && (
-                        <div style={{ color: 'var(--error, #e53935)' }}>Error: {diagState[job.region]?.error}</div>
-                      )}
-                      {diagState[job.region]?.markdown && (
-                        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit' }}>{diagState[job.region]!.markdown!}</pre>
-                      )}
-                      {diagState[job.region]?.markdown && (
-                        <details style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
-                          <summary>Raw diagnostic data</summary>
-                          <pre style={{ overflow: 'auto', maxHeight: 240 }}>
-                            {JSON.stringify(diagState[job.region]?.raw, null, 2)}
-                          </pre>
-                        </details>
-                      )}
-                      <button
-                        className="btn small ghost"
-                        style={{ marginTop: 6 }}
-                        onClick={() => setDiagState(prev => ({
-                          ...prev,
-                          [job.region]: { ...(prev[job.region] || { loading: false, expanded: false }), expanded: false },
-                        }))}
-                      >
-                        Close
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                      </td>
+                    </tr>
+                    {diagState[job.region]?.expanded && (
+                      <tr key={`${job.job_id}-diag`} className="active-job-row">
+                        <td colSpan={6}>
+                          <div
+                            style={{
+                              padding: '10px 12px',
+                              background: 'rgba(46, 134, 171, 0.08)',
+                              borderLeft: '3px solid var(--accent)',
+                              borderRadius: 6,
+                              fontSize: 13,
+                            }}
+                          >
+                            {diagState[job.region]?.loading && <div>Diagnosing...</div>}
+                            {diagState[job.region]?.error && (
+                              <div style={{ color: 'var(--error, #e53935)' }}>Error: {diagState[job.region]?.error}</div>
+                            )}
+                            {diagState[job.region]?.markdown && (
+                              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit' }}>
+                                {diagState[job.region]!.markdown!}
+                              </pre>
+                            )}
+                            {diagState[job.region]?.markdown && (
+                              <details style={{ marginTop: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+                                <summary>Raw diagnostic data</summary>
+                                <pre style={{ overflow: 'auto', maxHeight: 240 }}>
+                                  {JSON.stringify(diagState[job.region]?.raw, null, 2)}
+                                </pre>
+                              </details>
+                            )}
+                            <button
+                              className="btn small ghost"
+                              style={{ marginTop: 6 }}
+                              onClick={() =>
+                                setDiagState((prev) => ({
+                                  ...prev,
+                                  [job.region]: {
+                                    ...(prev[job.region] || { loading: false, expanded: false }),
+                                    expanded: false,
+                                  },
+                                }))
+                              }
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </>
       )}
 
@@ -619,56 +737,82 @@ export default function RegionBuilder() {
       ) : (
         <table className="services-table">
           <thead>
-            <tr><th>Region</th><th>Service</th><th>Graphs</th><th>Functions</th><th>Actions</th></tr>
+            <tr>
+              <th>Region</th>
+              <th>Service</th>
+              <th>Profiles</th>
+              <th>Steps</th>
+              <th>Comments</th>
+              <th>Actions</th>
+            </tr>
           </thead>
           <tbody>
             {regions.map((c) => {
               const bp = buildProgress[c.region];
               const isBuilding = bp && bp.phase !== 'ready' && bp.phase !== 'unknown' && !c.isDefault;
               const gr = c.graphReadiness;
-              const readyCount = gr?.graphs?.filter(g => g.ready).length ?? 0;
+              const readyCount = gr?.graphs?.filter((g) => g.ready).length ?? 0;
               const totalCount = gr?.graphs?.length ?? 0;
-              return (
-              <tr key={c.region}>
-                <td>{c.display_name || c.region}</td>
-                <td>
-                  <span className={`badge ${c.serviceStatus === 'RUNNING' ? 'ok' : 'warn'}`}>{c.serviceStatus}</span>
-                  {isBuilding && bp.phase === 'building' && (
-                    <div className="build-progress inline">
-                      <div className="progress-bar-track">
-                        <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
-                      </div>
-                      <div className="progress-stats">
-                        <span>{bp.progress}%</span>
-                        {bp.currentProfile && bp.totalProfiles && (
-                          <span>{(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}</span>
-                        )}
-                      </div>
+              const isReady = gr?.service_ready && readyCount === totalCount && totalCount > 0;
+              const stepsAllDone = !!isReady;
+              const stepsStage = isBuilding
+                ? bp?.phase === 'building'
+                  ? 'building_graph'
+                  : bp?.phase === 'importing' || bp?.phase === 'initializing'
+                  ? 'waiting_for_service'
+                  : 'building_graph'
+                : isReady
+                ? 'ready'
+                : '';
+              let commentNode: ReactNode = <span style={{ color: 'var(--text-secondary)' }}>—</span>;
+              if (gr?.error) {
+                commentNode = (
+                  <span style={{ color: '#e53935', fontSize: 12 }} title={gr.error}>
+                    {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
+                  </span>
+                );
+              } else if (isBuilding && bp?.phase === 'building') {
+                commentNode = (
+                  <div className="build-progress">
+                    <div className="progress-bar-track">
+                      <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
                     </div>
-                  )}
-                  {isBuilding && bp.phase === 'importing' && (
-                    <div className="build-progress inline"><span className="step-message">Importing OSM for {bp.currentProfile}...</span></div>
-                  )}
-                  {isBuilding && bp.phase === 'initializing' && (
-                    <div className="build-progress inline"><span className="step-message">ORS starting up...</span></div>
-                  )}
-                  {isBuilding && bp.phase === 'finalizing' && (
-                    <div className="build-progress inline"><span className="step-message">Finalizing...</span></div>
-                  )}
-                </td>
-                <td>
-                  {c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY' ? (
-                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Service not running</span>
-                  ) : !gr ? (
-                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Checking...</span>
-                  ) : gr.error ? (
-                    <>
-                      <span className="badge error">Failed</span>
-                      <div style={{ fontSize: 11, color: '#e53935', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={gr.error}>
-                        {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
-                      </div>
-                    </>
-                  ) : gr.service_ready && readyCount === totalCount && totalCount > 0 ? (
+                    <div className="progress-stats">
+                      <span>{bp.progress}%</span>
+                      {bp.currentProfile && bp.totalProfiles && (
+                        <span>
+                          {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              } else if (isBuilding && bp?.phase === 'importing') {
+                commentNode = <span style={{ fontSize: 12 }}>Importing OSM for {bp.currentProfile}...</span>;
+              } else if (isBuilding && bp?.phase === 'initializing') {
+                commentNode = <span style={{ fontSize: 12 }}>ORS starting up...</span>;
+              } else if (isBuilding && bp?.phase === 'finalizing') {
+                commentNode = <span style={{ fontSize: 12 }}>Finalizing...</span>;
+              } else if (c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY') {
+                commentNode = <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Service not running</span>;
+              } else if (!gr) {
+                commentNode = <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Checking...</span>;
+              }
+              const profilesNode = (() => {
+                if (c.serviceStatus !== 'RUNNING' && c.serviceStatus !== 'READY') {
+                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>—</span>;
+                }
+                if (!gr) {
+                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Checking...</span>;
+                }
+                if (gr.error) {
+                  return <span className="badge error">Failed</span>;
+                }
+                if (totalCount === 0) {
+                  return <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>—</span>;
+                }
+                if (isReady) {
+                  return (
                     <>
                       <span className="badge ok">{readyCount}/{totalCount} ready</span>
                       <table className="phase-matrix">
@@ -683,57 +827,87 @@ export default function RegionBuilder() {
                         <tbody>
                           {gr.graphs.map((g: any) => (
                             <tr key={g.profile}>
-                              <td>{g.profile}{g.build_date ? <span className="profile-date"> ({g.build_date})</span> : null}</td>
-                              <td><PhasePips phases={g.phases} ready={g.ready} showLabel={false} /></td>
+                              <td>
+                                {g.profile}
+                                {g.build_date ? <span className="profile-date"> ({g.build_date})</span> : null}
+                              </td>
+                              <td colSpan={3}>
+                                <PhasePips phases={g.phases} ready={g.ready} showLabel={false} />
+                              </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </>
-                  ) : (
-                    <>
-                      <span className="badge warn">Building {readyCount}/{totalCount}</span>
-                      {totalCount > 0 && (
-                        <table className="phase-matrix">
-                          <thead>
-                            <tr>
-                              <th>Profile</th>
-                              <th>OSM</th>
-                              <th>LM</th>
-                              <th>CH</th>
+                  );
+                }
+                return (
+                  <>
+                    <span className="badge warn">Building {readyCount}/{totalCount}</span>
+                    <table className="phase-matrix">
+                      <thead>
+                        <tr>
+                          <th>Profile</th>
+                          <th>OSM</th>
+                          <th>LM</th>
+                          <th>CH</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gr.graphs.map((g: any) => {
+                          const phases =
+                            g.phases ||
+                            (g.ready
+                              ? { osm: 'done', lm: 'done', ch: 'done' }
+                              : { osm: 'in_progress', lm: 'not_started', ch: 'not_started' });
+                          const cellClass = (s: string) => `phase-cell phase-${s}`;
+                          const glyph: Record<string, string> = {
+                            done: '\u2713',
+                            in_progress: '\u22EF',
+                            not_started: '\u25CB',
+                            na: '\u2014',
+                          };
+                          return (
+                            <tr key={g.profile}>
+                              <td>{g.profile}</td>
+                              <td className={cellClass(phases.osm)} title={`OSM: ${phases.osm}`}>
+                                {glyph[phases.osm]}
+                              </td>
+                              <td className={cellClass(phases.lm)} title={`LM: ${phases.lm}`}>
+                                {glyph[phases.lm]}
+                              </td>
+                              <td className={cellClass(phases.ch)} title={`CH: ${phases.ch}`}>
+                                {glyph[phases.ch]}
+                              </td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {gr.graphs.map((g: any) => {
-                              const phases = g.phases || (g.ready
-                                ? { osm: 'done', lm: 'done', ch: 'done' }
-                                : { osm: 'in_progress', lm: 'not_started', ch: 'not_started' });
-                              const cellClass = (s: string) => `phase-cell phase-${s}`;
-                              const glyph: Record<string, string> = { done: '\u2713', in_progress: '\u22EF', not_started: '\u25CB', na: '\u2014' };
-                              return (
-                                <tr key={g.profile}>
-                                  <td>{g.profile}</td>
-                                  <td className={cellClass(phases.osm)} title={`OSM: ${phases.osm}`}>{glyph[phases.osm]}</td>
-                                  <td className={cellClass(phases.lm)} title={`LM: ${phases.lm}`}>{glyph[phases.lm]}</td>
-                                  <td className={cellClass(phases.ch)} title={`CH: ${phases.ch}`}>{glyph[phases.ch]}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </>
-                  )}
-                </td>
-                <td>{c.functionExists ? '\u2713' : '\u2014'}</td>
-                <td>
-                  {c.isDefault ? (
-                    <span className="badge ok">Built-in</span>
-                  ) : (
-                    <button className="btn danger small" onClick={() => dropRegion(c.region)}>Drop</button>
-                  )}
-                </td>
-              </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </>
+                );
+              })();
+              return (
+                <tr key={c.region}>
+                  <td>{c.display_name || c.region}</td>
+                  <td>
+                    <span className={`badge ${c.serviceStatus === 'RUNNING' ? 'ok' : 'warn'}`}>{c.serviceStatus}</span>
+                  </td>
+                  <td>{profilesNode}</td>
+                  <td>
+                    <StepsStrip currentStage={stepsStage} allDone={stepsAllDone} />
+                  </td>
+                  <td className="comments-cell">{commentNode}</td>
+                  <td>
+                    {c.isDefault ? (
+                      <span className="badge ok">Built-in</span>
+                    ) : (
+                      <button className="btn danger small" onClick={() => dropRegion(c.region)}>
+                        Drop
+                      </button>
+                    )}
+                  </td>
+                </tr>
               );
             })}
           </tbody>
