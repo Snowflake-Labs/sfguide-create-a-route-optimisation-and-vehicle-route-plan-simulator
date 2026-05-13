@@ -234,6 +234,7 @@ export default function FleetDataStudio() {
       if (!e.data) return;
       retryCountRef.current = 0;
       const data = JSON.parse(e.data);
+      if (data._replay) return;
       let msg = data.status || JSON.stringify(data);
       if (data.routeFailures > 0) msg += ` (${data.routeFailures} route failures)`;
       setLogLines(prev => [...prev.slice(-50), msg]);
@@ -243,17 +244,20 @@ export default function FleetDataStudio() {
       if (!e.data) return;
       retryCountRef.current = 0;
       const data = JSON.parse(e.data);
+      if (data._replay) return;
       setLogLines(prev => [...prev.slice(-50), `Batch: ${data.inserted?.toLocaleString()} pts (total: ${data.total?.toLocaleString()})`]);
     });
     evtSource.addEventListener('warning', (e) => {
       if (!e.data) return;
       const data = JSON.parse(e.data);
+      if (data._replay) return;
       setLogLines(prev => [...prev.slice(-50), `WARNING: ${data.message}`]);
       console.warn('[Studio SSE warning]', data.message);
     });
     evtSource.addEventListener('complete', (e) => {
       if (!e.data) return;
       const data = JSON.parse(e.data);
+      if (data._replay) return;
       setLogLines(prev => [...prev, `Complete: ${data.pointsGenerated?.toLocaleString()} points, ${data.tripsGenerated?.toLocaleString()} trips`]);
       setGenerating(false);
       evtSource.close();
@@ -262,6 +266,7 @@ export default function FleetDataStudio() {
     evtSource.addEventListener('stopped', (e) => {
       if (!e.data) return;
       const d = JSON.parse(e.data);
+      if (d._replay) return;
       setLogLines(prev => [
         ...prev,
         '--- Generation Stopped ---',
@@ -302,7 +307,11 @@ export default function FleetDataStudio() {
       setLogLines(prev => [...prev, `Connection lost, retrying in ${(delay / 1000).toFixed(0)}s (attempt ${retryCountRef.current}/20)...`]);
       retryTimerRef.current = setTimeout(() => connectSSE(jobId), delay);
     });
-    evtSource.addEventListener('cancelled', () => {
+    evtSource.addEventListener('cancelled', (e: any) => {
+      try {
+        const data = e?.data ? JSON.parse(e.data) : {};
+        if (data._replay) return;
+      } catch {}
       setLogLines(prev => [...prev, 'Job cancelled']);
       setGenerating(false);
       evtSource.close();

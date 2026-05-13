@@ -702,7 +702,10 @@ export async function startGeneration(
           job.tripsGenerated = p.totalTrips;
           broadcast(job, 'progress', p);
         },
-        job.abort
+        job.abort,
+        (msg: string) => {
+          broadcast(job, 'progress', { status: msg });
+        }
       );
 
       for await (const event of gen) {
