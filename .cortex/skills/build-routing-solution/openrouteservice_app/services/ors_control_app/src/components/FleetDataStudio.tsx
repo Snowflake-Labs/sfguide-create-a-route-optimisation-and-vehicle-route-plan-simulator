@@ -86,12 +86,19 @@ export default function FleetDataStudio() {
   const [jobHistory, setJobHistory] = useState<any[]>([]);
   const [generating, setGenerating] = useState(false);
   const [deletingJob, setDeletingJob] = useState<string | null>(null);
+  const [cancellingJob, setCancellingJob] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [stats, setStats] = useState<any[]>([]);
   const [coverage, setCoverage] = useState<CoverageEntry[]>([]);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['fleet', 'time']));
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [detailLines, setDetailLines] = useState<string[]>([]);
+  const [detailMeta, setDetailMeta] = useState<any>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const detailLogRef = useRef<HTMLDivElement>(null);
   const evtSourceRef = useRef<EventSource | null>(null);
+  const detailEvtRef = useRef<EventSource | null>(null);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectedRef = useRef(false);
@@ -303,6 +310,137 @@ export default function FleetDataStudio() {
     });
   }, [fetchJobs, fetchStats, fetchCoverage]);
 
+  const formatEventLine = (event: string, data: any): string | string[] | null => {
+    if (!data) return null;
+    switch (event) {
+      case 'started':
+        return `Job started: ${data.presetName || ''} | ${data.region || ''} | ${data.orsProfile || ''}`;
+      case 'progress': {
+        let msg = data.status || JSON.stringify(data);
+        if (data.routeFailures > 0) msg += ` (${data.routeFailures} route failures)`;
+        return msg;
+      }
+      case 'batch':
+        return `Batch: ${Number(data.inserted || 0).toLocaleString()} pts (total: ${Number(data.total || 0).toLocaleString()})`;
+      case 'warning':
+        return `WARNING: ${data.message}`;
+      case 'complete':
+        return `Complete: ${Number(data.pointsGenerated || 0).toLocaleString()} points, ${Number(data.tripsGenerated || 0).toLocaleString()} trips`;
+      case 'stopped':
+        return [
+          '--- Generation Stopped ---',
+          `Reason: ${data.reason}`,
+          `Days completed: ${data.completedDays} / ${data.totalDays}`,
+          `Points generated: ${Number(data.pointsGenerated || 0).toLocaleString()}`,
+          `Trips generated: ${Number(data.tripsGenerated || 0).toLocaleString()}`,
+          `Routes: ${data.routeSuccesses} succeeded, ${data.routeFailures} failed`,
+        ];
+      case 'error':
+        return `Error: ${data.error}`;
+      case 'cancelled':
+        return 'Job cancelled';
+      case 'status':
+        return `Status: ${data.status} (points: ${Number(data.points || 0).toLocaleString()}, trips: ${Number(data.trips || 0).toLocaleString()})`;
+      default:
+        return null;
+    }
+  };
+
+  const appendDetailLine = (line: string | string[] | null) => {
+    if (line == null) return;
+    setDetailLines(prev => Array.isArray(line) ? [...prev, ...line] : [...prev, line]);
+  };
+
+  const closeJobDetail = useCallback(() => {
+    detailEvtRef.current?.close();
+    detailEvtRef.current = null;
+    setSelectedJobId(null);
+    setDetailLines([]);
+    setDetailMeta(null);
+    setDetailLoading(false);
+  }, []);
+
+  const openJobDetail = useCallback(async (jobId: string, status: string) => {
+    detailEvtRef.current?.close();
+    detailEvtRef.current = null;
+    setSelectedJobId(jobId);
+    setDetailLines([]);
+    setDetailMeta(null);
+    setDetailLoading(true);
+
+    const tryFetchSnapshot = async () => {
+      try {
+        const res = await fetch(`/api/studio/jobs/${jobId}/logs`);
+        if (!res.ok) {
+          setDetailLines(['(Failed to load logs)']);
+          return null;
+        }
+        const data = await res.json();
+        setDetailMeta(data);
+        const lines: string[] = [];
+        for (const ev of data.events || []) {
+          const formatted = formatEventLine(ev.event, ev.data);
+          if (Array.isArray(formatted)) lines.push(...formatted);
+          else if (formatted) lines.push(formatted);
+        }
+        if (lines.length === 0) lines.push('(No log events recorded for this job)');
+        setDetailLines(lines);
+        return data;
+      } catch (e: any) {
+        setDetailLines([`(Error loading logs: ${e.message})`]);
+        return null;
+      }
+    };
+
+    if (status !== 'RUNNING') {
+      await tryFetchSnapshot();
+      setDetailLoading(false);
+      return;
+    }
+
+    // For running jobs, attach SSE which replays buffered events + streams live ones.
+    const evt = new EventSource(`/api/studio/jobs/${jobId}/stream`);
+    detailEvtRef.current = evt;
+    let gotAnyEvent = false;
+    const handler = (event: string) => (e: any) => {
+      if (!e.data) return;
+      gotAnyEvent = true;
+      try {
+        const data = JSON.parse(e.data);
+        appendDetailLine(formatEventLine(event, data));
+        if (event === 'progress') {
+          setDetailMeta((prev: any) => ({ ...(prev || {}), pointsGenerated: data.totalPoints ?? prev?.pointsGenerated, tripsGenerated: data.totalTrips ?? prev?.tripsGenerated }));
+        }
+      } catch {}
+    };
+    ['status', 'started', 'progress', 'batch', 'warning', 'complete', 'stopped', 'cancelled'].forEach(ev =>
+      evt.addEventListener(ev, handler(ev))
+    );
+    evt.addEventListener('replay-end', () => {
+      setDetailLoading(false);
+      appendDetailLine('--- Live ---');
+    });
+    evt.addEventListener('error', async () => {
+      evt.close();
+      detailEvtRef.current = null;
+      if (!gotAnyEvent) {
+        // SSE failed (likely 404 because server restarted). Fall back to DB snapshot.
+        await tryFetchSnapshot();
+      }
+      setDetailLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      detailEvtRef.current?.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (detailLogRef.current) detailLogRef.current.scrollTop = detailLogRef.current.scrollHeight;
+  }, [detailLines]);
+
   useEffect(() => {
     if (reconnectedRef.current) return;
     reconnectedRef.current = true;
@@ -371,6 +509,23 @@ export default function FleetDataStudio() {
     const running = activeJobs.find(j => j.status === 'RUNNING');
     if (running) {
       await fetch(`/api/studio/jobs/${running.jobId}/cancel`, { method: 'POST' });
+    }
+  };
+
+  const cancelJobById = async (jobId: string) => {
+    if (!confirm('Cancel this running generation job? Partial data will remain in tables until you delete it.')) return;
+    setCancellingJob(jobId);
+    try {
+      const res = await fetch(`/api/studio/jobs/${jobId}/cancel`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(`Cancel failed (${body.mode || 'unknown'}): ${body.message || 'See server logs.'}`);
+      }
+      fetchJobs(); fetchStats();
+    } catch (e: any) {
+      alert(`Cancel failed: ${e.message}`);
+    } finally {
+      setCancellingJob(null);
     }
   };
 
@@ -769,7 +924,12 @@ export default function FleetDataStudio() {
                   const durStr = dur != null ? (dur >= 3600 ? `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}m` : dur >= 60 ? `${Math.floor(dur / 60)}m ${dur % 60}s` : `${dur}s`) : '-';
                   const started = j.STARTED_AT ? new Date(j.STARTED_AT).toLocaleString() : '-';
                   return (
-                    <tr key={j.JOB_ID || i}>
+                    <tr
+                      key={j.JOB_ID || i}
+                      onClick={() => j.JOB_ID && openJobDetail(j.JOB_ID, status)}
+                      style={{ cursor: j.JOB_ID ? 'pointer' : 'default' }}
+                      title={j.JOB_ID ? 'Click to view logs and progress' : undefined}
+                    >
                       <td style={{ fontWeight: 500, fontSize: 12 }}>{j.PRESET_NAME || '-'}</td>
                       <td style={{ fontSize: 12 }}>{j.REGION || '-'}</td>
                       <td style={{ fontSize: 12 }}>{j.ORS_PROFILE || '-'}</td>
@@ -792,8 +952,17 @@ export default function FleetDataStudio() {
                           <span style={{ color: '#9CA3AF' }}>-</span>
                         )}
                       </td>
-                      <td style={{ textAlign: 'center' }}>
-                        {status !== 'RUNNING' && status !== 'DELETED' && (
+                      <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                        {status === 'RUNNING' ? (
+                          <button
+                            onClick={() => cancelJobById(j.JOB_ID)}
+                            disabled={cancellingJob === j.JOB_ID}
+                            title="Cancel this running job"
+                            style={{ background: 'none', border: '1px solid #D32F2F', color: '#D32F2F', cursor: cancellingJob === j.JOB_ID ? 'wait' : 'pointer', padding: '2px 8px', borderRadius: 4, fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 4, opacity: cancellingJob === j.JOB_ID ? 0.5 : 1 }}
+                          >
+                            <Square size={11} /> {cancellingJob === j.JOB_ID ? 'Cancelling...' : 'Cancel'}
+                          </button>
+                        ) : status !== 'DELETED' && (
                           <button
                             onClick={() => deleteJobData(j.JOB_ID)}
                             disabled={deletingJob === j.JOB_ID}
@@ -809,6 +978,54 @@ export default function FleetDataStudio() {
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {selectedJobId && (
+        <div
+          onClick={closeJobDetail}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 8, width: 'min(900px, 100%)', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 40px rgba(0,0,0,0.25)' }}
+          >
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>Job Details</div>
+                <div style={{ fontSize: 11, color: '#6E7681', marginTop: 2, fontFamily: 'monospace' }}>{selectedJobId}</div>
+              </div>
+              <button
+                onClick={closeJobDetail}
+                style={{ background: 'none', border: '1px solid #E5E7EB', borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}
+              >Close</button>
+            </div>
+            <div style={{ padding: '12px 18px', borderBottom: '1px solid #F1F3F5', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, fontSize: 12 }}>
+              <div><div style={{ color: '#6E7681', fontSize: 10 }}>Status</div><div style={{ fontWeight: 600 }}>{detailMeta?.status || '-'}</div></div>
+              <div><div style={{ color: '#6E7681', fontSize: 10 }}>Points</div><div style={{ fontWeight: 600 }}>{Number(detailMeta?.pointsGenerated || 0).toLocaleString()}</div></div>
+              <div><div style={{ color: '#6E7681', fontSize: 10 }}>Trips</div><div style={{ fontWeight: 600 }}>{Number(detailMeta?.tripsGenerated || 0).toLocaleString()}</div></div>
+              <div><div style={{ color: '#6E7681', fontSize: 10 }}>Source</div><div style={{ fontWeight: 600 }}>{detailMeta?.source === 'memory' ? 'Live (memory)' : detailMeta?.source === 'db' ? 'Persisted (DB)' : '-'}</div></div>
+            </div>
+            <div
+              ref={detailLogRef}
+              style={{ flex: 1, overflowY: 'auto', background: '#1B1F23', color: '#8DC891', fontFamily: 'monospace', fontSize: 11, padding: 12, minHeight: 240 }}
+            >
+              {detailLoading && detailLines.length === 0 ? (
+                <span style={{ color: '#6E7681' }}>Loading logs...</span>
+              ) : detailLines.length === 0 ? (
+                <span style={{ color: '#6E7681' }}>(No log events)</span>
+              ) : (
+                detailLines.map((line, i) => (
+                  <div key={i} style={{ color: line === '--- Live ---' ? '#E0AF68' : line.startsWith('WARNING') ? '#E5C07B' : line.startsWith('Error') ? '#F07178' : undefined }}>{line}</div>
+                ))
+              )}
+            </div>
+            {detailMeta?.error && (
+              <div style={{ padding: '8px 18px', background: '#FFEBEE', color: '#D32F2F', fontSize: 12, borderTop: '1px solid #FFCDD2' }}>
+                {detailMeta.error}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -5,6 +5,14 @@ import { log } from '../diagnostics.js';
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
 
+export interface BufferedEvent {
+  event: string;
+  data: any;
+  ts: number;
+}
+
+const EVENT_BUFFER_CAP = 500;
+
 export interface Job {
   jobId: string;
   presetName: string;
@@ -19,16 +27,22 @@ export interface Job {
   error: string | null;
   abort: { aborted: boolean };
   listeners: Set<SseCallback>;
+  events: BufferedEvent[];
 }
 
 const activeJobs = new Map<string, Job>();
 
 export function getJobs(): Job[] {
-  return [...activeJobs.values()].map(j => ({ ...j, abort: undefined as any, listeners: undefined as any }));
+  return [...activeJobs.values()].map(j => ({ ...j, abort: undefined as any, listeners: undefined as any, events: undefined as any }));
 }
 
 export function getJob(jobId: string): Job | undefined {
   return activeJobs.get(jobId);
+}
+
+export function getJobEvents(jobId: string): BufferedEvent[] | undefined {
+  const job = activeJobs.get(jobId);
+  return job?.events;
 }
 
 export type CancelMode = 'in-memory' | 'orphan' | 'not-running' | 'not-found' | 'error';
@@ -47,6 +61,9 @@ export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<Can
     job.completedAt = new Date();
     broadcast(job, 'cancelled', { jobId });
     log('INFO', 'Studio', `Cancelled in-memory job ${jobId}`);
+    if (snowSql) {
+      try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
+    }
     return { ok: true, mode: 'in-memory' };
   }
   if (job && job.status !== 'RUNNING') {
@@ -143,10 +160,37 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
 }
 
 function broadcast(job: Job, event: string, data: any) {
+  job.events.push({ event, data, ts: Date.now() });
+  if (job.events.length > EVENT_BUFFER_CAP) {
+    job.events.splice(0, job.events.length - EVENT_BUFFER_CAP);
+  }
   for (const cb of job.listeners) {
     try { cb(event, data); } catch (e: any) {
       log('WARN', 'Studio', `SSE broadcast failed: ${e.message?.slice(0, 100)}`);
     }
+  }
+}
+
+async function persistJobLog(job: Job, snowSql: SnowSqlFn): Promise<void> {
+  try {
+    const payload = JSON.stringify({
+      jobId: job.jobId,
+      status: job.status,
+      pointsGenerated: job.pointsGenerated,
+      tripsGenerated: job.tripsGenerated,
+      startedAt: job.startedAt.toISOString(),
+      completedAt: job.completedAt ? job.completedAt.toISOString() : null,
+      error: job.error,
+      events: job.events,
+    }).replace(/\$\$/g, '$ $');
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+       SET LOG_TEXT = PARSE_JSON($$${payload}$$)
+       WHERE JOB_ID = ${escVal(job.jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio', `persistJobLog failed for ${job.jobId}: ${e.message?.slice(0, 200)}`);
   }
 }
 
@@ -408,8 +452,9 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       STATUS VARCHAR(20), CONFIG VARIANT,
       POINTS_GENERATED INT DEFAULT 0, TRIPS_GENERATED INT DEFAULT 0,
       ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
-      COMPLETED_AT TIMESTAMP_NTZ
+      COMPLETED_AT TIMESTAMP_NTZ, LOG_TEXT VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS LOG_TEXT VARIANT`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
   for (const { sql, db, schema } of ddls) {
     try {
@@ -583,8 +628,17 @@ export async function startGeneration(
     error: null,
     abort: { aborted: false },
     listeners: new Set(),
+    events: [],
   };
   activeJobs.set(jobId, job);
+  broadcast(job, 'started', {
+    jobId,
+    presetName,
+    region: config.region,
+    orsProfile: config.ors_profile,
+    vehicleType: vt,
+    startedAt: job.startedAt.toISOString(),
+  });
 
   (async () => {
     let scalingState: ScalingState | null = null;
@@ -747,6 +801,7 @@ export async function startGeneration(
     } finally {
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
       await restoreOrsAutoSuspend(snowSql);
+      try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
     }
   })();
 

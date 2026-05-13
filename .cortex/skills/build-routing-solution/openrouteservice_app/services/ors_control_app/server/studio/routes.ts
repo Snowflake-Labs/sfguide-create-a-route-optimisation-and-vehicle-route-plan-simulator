@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData } from './jobs.js';
+import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents } from './jobs.js';
 import { GenerationConfig, PROFILE_TEMPLATES } from './profiles.js';
 import { log } from '../diagnostics.js';
 
@@ -260,6 +260,12 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
 
     send('status', { jobId, status: job.status, points: job.pointsGenerated, trips: job.tripsGenerated });
 
+    // Replay buffered events so reconnecting clients see the full history
+    for (const ev of job.events) {
+      send(ev.event, { ...ev.data, _replay: true, _ts: ev.ts });
+    }
+    send('replay-end', { jobId, count: job.events.length });
+
     if (job.status !== 'RUNNING') {
       send(job.status === 'COMPLETED' ? 'complete' : job.status === 'STOPPED' ? 'stopped' : 'error', { status: job.status });
       return res.end();
@@ -278,9 +284,59 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
     });
   });
 
-  router.post('/jobs/:id/cancel', (_req, res) => {
-    const ok = cancelJob(_req.params.id);
-    res.json({ ok });
+  router.get('/jobs/:id/logs', async (req, res) => {
+    const jobId = req.params.id;
+    try {
+      const events = getJobEvents(jobId);
+      if (events) {
+        const job = getJob(jobId)!;
+        return res.json({
+          jobId,
+          source: 'memory',
+          status: job.status,
+          pointsGenerated: job.pointsGenerated,
+          tripsGenerated: job.tripsGenerated,
+          startedAt: job.startedAt,
+          completedAt: job.completedAt,
+          error: job.error,
+          events,
+        });
+      }
+      const rows = await snowSql(
+        `SELECT JOB_ID, STATUS, POINTS_GENERATED, TRIPS_GENERATED, ERROR_MESSAGE,
+                TO_VARCHAR(CONVERT_TIMEZONE('UTC', STARTED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS STARTED_AT,
+                TO_VARCHAR(CONVERT_TIMEZONE('UTC', COMPLETED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS COMPLETED_AT,
+                LOG_TEXT
+         FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE JOB_ID = '${jobId.replace(/'/g, "''")}'`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+      if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+      const row = rows[0];
+      const logRaw = row.LOG_TEXT;
+      const log = typeof logRaw === 'string' ? (logRaw ? JSON.parse(logRaw) : null) : logRaw;
+      res.json({
+        jobId,
+        source: 'db',
+        status: row.STATUS,
+        pointsGenerated: row.POINTS_GENERATED,
+        tripsGenerated: row.TRIPS_GENERATED,
+        startedAt: row.STARTED_AT,
+        completedAt: row.COMPLETED_AT,
+        error: row.ERROR_MESSAGE,
+        events: log?.events || [],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post('/jobs/:id/cancel', async (_req, res) => {
+    const result = await cancelJob(_req.params.id, snowSql);
+    if (!result.ok) {
+      const code = result.mode === 'not-found' ? 404 : result.mode === 'error' ? 500 : 409;
+      return res.status(code).json(result);
+    }
+    res.json(result);
   });
 
   router.delete('/jobs/:id', async (req, res) => {
