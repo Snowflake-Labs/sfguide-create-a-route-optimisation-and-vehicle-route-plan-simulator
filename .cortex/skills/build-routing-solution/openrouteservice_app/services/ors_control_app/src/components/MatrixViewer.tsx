@@ -77,15 +77,41 @@ function formatBytes(bytes: number): string {
   return bytes + ' B';
 }
 
+// 12-stop Viridis palette (sampled from matplotlib reference).
+// Perceptually uniform, monotonic luminance, colorblind-friendly.
 const COLORS: [number, number, number][] = [
-  [103, 0, 161],
-  [137, 8, 165],
-  [170, 30, 149],
-  [199, 55, 118],
-  [221, 85, 83],
-  [237, 121, 47],
-  [245, 160, 12],
+  [68, 1, 84],
+  [72, 35, 116],
+  [64, 67, 135],
+  [52, 94, 141],
+  [41, 120, 142],
+  [32, 144, 140],
+  [34, 167, 132],
+  [68, 190, 112],
+  [121, 209, 81],
+  [189, 222, 38],
+  [253, 231, 36],
+  [253, 231, 60],
 ];
+
+function rgb(c: [number, number, number]): string {
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function lerpColor(stops: [number, number, number][], t: number): [number, number, number] {
+  const clamped = Math.max(0, Math.min(1, t));
+  const scaled = clamped * (stops.length - 1);
+  const i = Math.floor(scaled);
+  const f = scaled - i;
+  if (i >= stops.length - 1) return stops[stops.length - 1];
+  const a = stops[i];
+  const b = stops[i + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
 
 const KM_PER_M = 1 / 1000;
 
@@ -325,7 +351,7 @@ export default function MatrixViewer() {
       filled: true,
       extruded: false,
       getHexagon: (d: any) => d.hex_id,
-      getFillColor: [160, 160, 175, 70] as [number, number, number, number],
+      getFillColor: [160, 160, 175, 50] as [number, number, number, number],
       opacity: 0.5,
       updateTriggers: { data: [reachSet, originHex] },
     });
@@ -339,17 +365,34 @@ export default function MatrixViewer() {
       pickable: true,
       filled: true,
       extruded: false,
+      stroked: true,
+      lineWidthMinPixels: 0.5,
+      getLineColor: [255, 255, 255, 40] as [number, number, number, number],
       getHexagon: (d: ReachabilityData) => d.hex_id,
       getFillColor: (d: ReachabilityData) => {
         const val = rawValue(d, gradientMetric, timeUnit);
         const t = Math.min(val / scaleMax, 1);
-        const idx = Math.min(Math.floor(t * COLORS.length), COLORS.length - 1);
-        return [...COLORS[idx], 180] as [number, number, number, number];
+        const [r, g, b] = lerpColor(COLORS, t);
+        return [r, g, b, 200] as [number, number, number, number];
       },
-      opacity: 0.7,
+      opacity: 0.85,
       updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, scaleMax] },
     });
   }, [destinations, gradientMetric, timeUnit, scaleMax]);
+
+  const originHaloLayer = useMemo(() => {
+    if (!originHex) return null;
+    return new ScatterplotLayer({
+      id: 'origin-halo',
+      data: [{ lat: originLat, lon: originLon }],
+      pickable: false,
+      getPosition: (d: any) => [d.lon, d.lat],
+      getFillColor: [41, 181, 232, 50],
+      getRadius: 160,
+      stroked: false,
+      filled: true,
+    });
+  }, [originHex, originLat, originLon]);
 
   const originLayer = useMemo(() => {
     if (!originHex) return null;
@@ -368,8 +411,8 @@ export default function MatrixViewer() {
   }, [originHex, originLat, originLon]);
 
   const layers = useMemo(
-    () => [basemap, bgLayer, reachLayer, originLayer].filter(Boolean),
-    [basemap, bgLayer, reachLayer, originLayer]
+    () => [basemap, bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean),
+    [basemap, bgLayer, reachLayer, originHaloLayer, originLayer]
   );
 
   const getTooltip = useCallback(({ object }: any) => {
@@ -401,14 +444,15 @@ export default function MatrixViewer() {
     return Math.ceil(maxSecs / 60);
   }, [destinations]);
 
-  const legendLabels = useMemo(() => {
-    const labels: string[] = [];
-    for (let i = 0; i <= COLORS.length; i++) {
-      const val = (i / COLORS.length) * scaleMax;
-      labels.push(fmtLegend(val));
-    }
-    return labels;
+  const legendTicks = useMemo(() => {
+    const stops = [0, 0.25, 0.5, 0.75, 1];
+    return stops.map(p => ({ p, label: fmtLegend(p * scaleMax) }));
   }, [scaleMax]);
+
+  const legendGradient = useMemo(
+    () => `linear-gradient(to right, ${COLORS.map(rgb).join(', ')})`,
+    []
+  );
 
   return (
     <div className="panel">
@@ -524,14 +568,15 @@ export default function MatrixViewer() {
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden' }}>
-              {COLORS.map((c, i) => (
-                <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />
-              ))}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)' }}>
-              {legendLabels.map((l, i) => (
-                <span key={i}>{l}{i < legendLabels.length - 1 ? '' : '+'} {i === 0 || i === legendLabels.length - 1 ? suffix : ''}</span>
+            <div style={{
+              height: 10,
+              borderRadius: 5,
+              background: legendGradient,
+              border: '1px solid var(--border)',
+            }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+              {legendTicks.map(({ p, label }) => (
+                <span key={p}>{label}{p === 0 || p === 1 ? ` ${suffix}` : ''}</span>
               ))}
             </div>
           </div>
