@@ -7,6 +7,11 @@ import { RES_LABELS } from '../types';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
+type GradientMetric = 'time' | 'distance';
+type ScaleMode = 'auto' | 'fixed';
+type TimeUnit = 'min' | 'hr';
+type DistUnit = 'km' | 'mi';
+
 function RoadFilterBadge({ on }: { on: boolean | undefined }) {
   if (!on) return null;
   return (
@@ -29,6 +34,16 @@ function RoadFilterBadge({ on }: { on: boolean | undefined }) {
     >
       road-aware
     </span>
+  );
+}
+
+function SegControl<T extends string>({ value, options, onChange }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <div className="seg-control">
+      {options.map(o => (
+        <button key={o.value} className={`seg-btn${value === o.value ? ' active' : ''}`} onClick={() => onChange(o.value)}>{o.label}</button>
+      ))}
+    </div>
   );
 }
 
@@ -73,6 +88,28 @@ const COLORS: [number, number, number][] = [
   [245, 160, 12],
 ];
 
+const MI_PER_M = 1 / 1609.344;
+const KM_PER_M = 1 / 1000;
+
+function rawValue(d: ReachabilityData, metric: GradientMetric, timeUnit: TimeUnit, distUnit: DistUnit): number {
+  if (metric === 'time') {
+    return timeUnit === 'min' ? d.travel_time_secs / 60 : d.travel_time_secs / 3600;
+  }
+  return distUnit === 'km' ? d.distance_meters * KM_PER_M : d.distance_meters * MI_PER_M;
+}
+
+function unitSuffix(metric: GradientMetric, timeUnit: TimeUnit, distUnit: DistUnit): string {
+  if (metric === 'time') return timeUnit === 'min' ? 'min' : 'hr';
+  return distUnit === 'km' ? 'km' : 'mi';
+}
+
+function fmtLegend(val: number): string {
+  if (val >= 100) return Math.round(val).toString();
+  if (val >= 10) return val.toFixed(0);
+  if (val >= 1) return val.toFixed(1);
+  return val.toFixed(2);
+}
+
 export default function MatrixViewer() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,6 +127,12 @@ export default function MatrixViewer() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const hasLoadedOnce = useRef(false);
+
+  const [gradientMetric, setGradientMetric] = useState<GradientMetric>('time');
+  const [scaleMode, setScaleMode] = useState<ScaleMode>('auto');
+  const [timeUnit, setTimeUnit] = useState<TimeUnit>('min');
+  const [distUnit, setDistUnit] = useState<DistUnit>('km');
+  const [fixedMax, setFixedMax] = useState(30);
 
   useEffect(() => {
     fetch('/api/matrix/viewer-inventory')
@@ -262,6 +305,18 @@ export default function MatrixViewer() {
 
   const reachSet = useMemo(() => new Set(destinations.map(d => d.hex_id)), [destinations]);
 
+  const dataMax = useMemo(() => {
+    if (destinations.length === 0) return 1;
+    return destinations.reduce((m, d) => Math.max(m, rawValue(d, gradientMetric, timeUnit, distUnit)), 0) || 1;
+  }, [destinations, gradientMetric, timeUnit, distUnit]);
+
+  const scaleMax = useMemo(() => {
+    if (scaleMode === 'fixed') return Math.max(fixedMax, 0.01);
+    return dataMax;
+  }, [scaleMode, fixedMax, dataMax]);
+
+  const suffix = useMemo(() => unitSuffix(gradientMetric, timeUnit, distUnit), [gradientMetric, timeUnit, distUnit]);
+
   const bgLayer = useMemo(() => {
     if (allHexes.length === 0) return null;
     const bgData = allHexes.filter(h => !reachSet.has(h) && h !== originHex).map(h => ({ hex_id: h }));
@@ -289,14 +344,15 @@ export default function MatrixViewer() {
       extruded: false,
       getHexagon: (d: ReachabilityData) => d.hex_id,
       getFillColor: (d: ReachabilityData) => {
-        const bucket = Math.floor(d.travel_time_secs / 300);
-        const idx = Math.min(bucket, COLORS.length - 1);
+        const val = rawValue(d, gradientMetric, timeUnit, distUnit);
+        const t = Math.min(val / scaleMax, 1);
+        const idx = Math.min(Math.floor(t * COLORS.length), COLORS.length - 1);
         return [...COLORS[idx], 180] as [number, number, number, number];
       },
       opacity: 0.7,
-      updateTriggers: { getFillColor: [destinations] },
+      updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, distUnit, scaleMax] },
     });
-  }, [destinations]);
+  }, [destinations, gradientMetric, timeUnit, distUnit, scaleMax]);
 
   const originLayer = useMemo(() => {
     if (!originHex) return null;
@@ -322,8 +378,16 @@ export default function MatrixViewer() {
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.travel_time_secs !== undefined) {
+      const timeFmt = timeUnit === 'min'
+        ? `${(object.travel_time_secs / 60).toFixed(1)} min`
+        : `${(object.travel_time_secs / 3600).toFixed(2)} hr`;
+      const distFmt = distUnit === 'km'
+        ? `${(object.distance_meters / 1000).toFixed(1)} km`
+        : `${(object.distance_meters * MI_PER_M).toFixed(1)} mi`;
+      const timeStr = gradientMetric === 'time' ? `<b>${timeFmt}</b>` : timeFmt;
+      const distStr = gradientMetric === 'distance' ? `<b>${distFmt}</b>` : distFmt;
       return {
-        html: `<b>${object.hex_id}</b><br/>Travel time: ${(object.travel_time_secs / 60).toFixed(1)} min<br/>Distance: ${(object.distance_meters / 1000).toFixed(1)} km`,
+        html: `<b>${object.hex_id}</b><br/>Travel time: ${timeStr}<br/>Distance: ${distStr}`,
         style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
       };
     }
@@ -334,13 +398,22 @@ export default function MatrixViewer() {
       };
     }
     return null;
-  }, []);
+  }, [gradientMetric, timeUnit, distUnit]);
 
   const localMaxMin = useMemo(() => {
     if (destinations.length === 0) return 0;
     const maxSecs = destinations.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
     return Math.ceil(maxSecs / 60);
   }, [destinations]);
+
+  const legendLabels = useMemo(() => {
+    const labels: string[] = [];
+    for (let i = 0; i <= COLORS.length; i++) {
+      const val = (i / COLORS.length) * scaleMax;
+      labels.push(fmtLegend(val));
+    }
+    return labels;
+  }, [scaleMax]);
 
   return (
     <div className="panel">
@@ -426,14 +499,46 @@ export default function MatrixViewer() {
                 }} />
               )}
             </div>
+
+            <div className="gradient-controls">
+              <div className="ctrl-group">
+                <span className="ctrl-label">Metric</span>
+                <SegControl value={gradientMetric} onChange={setGradientMetric} options={[{ value: 'time', label: 'Time' }, { value: 'distance', label: 'Distance' }]} />
+              </div>
+              <div className="ctrl-group">
+                <span className="ctrl-label">Unit</span>
+                {gradientMetric === 'time'
+                  ? <SegControl value={timeUnit} onChange={setTimeUnit} options={[{ value: 'min', label: 'min' }, { value: 'hr', label: 'hr' }]} />
+                  : <SegControl value={distUnit} onChange={setDistUnit} options={[{ value: 'km', label: 'km' }, { value: 'mi', label: 'mi' }]} />
+                }
+              </div>
+              <div className="ctrl-group">
+                <span className="ctrl-label">Scale</span>
+                <SegControl value={scaleMode} onChange={setScaleMode} options={[{ value: 'auto', label: 'Auto' }, { value: 'fixed', label: 'Fixed' }]} />
+                {scaleMode === 'fixed' && (
+                  <>
+                    <input
+                      type="number"
+                      className="fixed-input"
+                      min={1}
+                      value={fixedMax}
+                      onChange={e => setFixedMax(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{suffix}</span>
+                  </>
+                )}
+              </div>
+            </div>
+
             <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden' }}>
               {COLORS.map((c, i) => (
                 <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />
               ))}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)' }}>
-              {COLORS.map((_, i) => <span key={i}>{i * 5}m</span>)}
-              <span>{COLORS.length * 5}m+</span>
+              {legendLabels.map((l, i) => (
+                <span key={i}>{l}{i < legendLabels.length - 1 ? '' : '+'} {i === 0 || i === legendLabels.length - 1 ? suffix : ''}</span>
+              ))}
             </div>
           </div>
 
