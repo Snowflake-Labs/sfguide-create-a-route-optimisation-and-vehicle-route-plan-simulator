@@ -1,17 +1,25 @@
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 
+export interface DatasetPair { vehicleType: string; region: string; }
+
 interface VehicleTypeContextValue {
   vehicleType: string;
   availableTypes: string[];
+  datasetPairs: DatasetPair[];
   loading: boolean;
   switchVehicleType: (type: string) => Promise<void>;
+  regionsForType: (type: string) => string[];
+  typesForRegion: (region: string) => string[];
 }
 
 const defaults: VehicleTypeContextValue = {
   vehicleType: 'ebike',
   availableTypes: [],
+  datasetPairs: [],
   loading: true,
   switchVehicleType: async () => {},
+  regionsForType: () => [],
+  typesForRegion: () => [],
 };
 
 const VehicleTypeContext = createContext<VehicleTypeContextValue>(defaults);
@@ -23,6 +31,7 @@ export function useVehicleType() {
 export function useVehicleTypeProvider() {
   const [vehicleType, setVehicleType] = useState(defaults.vehicleType);
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
+  const [datasetPairs, setDatasetPairs] = useState<DatasetPair[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchConfig = useCallback(async () => {
@@ -32,6 +41,7 @@ export function useVehicleTypeProvider() {
         const data = await res.json();
         if (data.vehicleType) setVehicleType(data.vehicleType);
         if (data.availableTypes) setAvailableTypes(data.availableTypes);
+        if (data.datasetPairs) setDatasetPairs(data.datasetPairs);
       }
     } catch {
     } finally {
@@ -52,11 +62,22 @@ export function useVehicleTypeProvider() {
     } catch {}
   }, []);
 
+  const regionsForType = useCallback((type: string) => {
+    return [...new Set(datasetPairs.filter(p => p.vehicleType === type).map(p => p.region))];
+  }, [datasetPairs]);
+
+  const typesForRegion = useCallback((region: string) => {
+    return [...new Set(datasetPairs.filter(p => p.region === region).map(p => p.vehicleType))];
+  }, [datasetPairs]);
+
   const value: VehicleTypeContextValue = {
     vehicleType,
     availableTypes,
+    datasetPairs,
     loading,
     switchVehicleType,
+    regionsForType,
+    typesForRegion,
   };
 
   return { value, VehicleTypeContext };

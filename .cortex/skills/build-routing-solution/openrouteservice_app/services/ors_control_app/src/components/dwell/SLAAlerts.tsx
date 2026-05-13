@@ -3,10 +3,14 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 const SEV_COLORS: Record<string, string> = { CRITICAL: '#E5484D', WARNING: '#E5A100', INFO: '#29B5E8' };
 
 export default function SLAAlerts() {
+  const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [severity, setSeverity] = useState('ALL');
   const [alerts, setAlerts] = useState<any[]>([]);
   const [summary, setSummary] = useState<any[]>([]);
@@ -14,7 +18,7 @@ export default function SLAAlerts() {
 
   useEffect(() => {
     sfQuery(`SELECT SLA_STATUS AS SEVERITY, COUNT(*) AS CNT FROM DT_SLA_ALERTS GROUP BY SLA_STATUS`).then(rows => setSummary(rows));
-  }, []);
+  }, [regionName, vehicleType]);
 
   useEffect(() => {
     setLoading(true);
@@ -25,7 +29,7 @@ export default function SLAAlerts() {
       setAlerts(rows);
       setLoading(false);
     });
-  }, [severity]);
+  }, [severity, regionName, vehicleType]);
 
   const total = useMemo(() => summary.reduce((s, r) => s + Number(r.CNT || 0), 0), [summary]);
   const critical = useMemo(() => Number(summary.find(r => r.SEVERITY === 'CRITICAL')?.CNT || 0), [summary]);

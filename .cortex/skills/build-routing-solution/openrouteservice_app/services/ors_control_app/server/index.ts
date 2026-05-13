@@ -2296,13 +2296,15 @@ app.get('/api/fleet-config', async (_req, res) => {
       }
     } catch {}
     let availableTypes: string[] = [];
+    let datasetPairs: { vehicleType: string; region: string }[] = [];
     try {
-      const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY ORDER BY VEHICLE_TYPE');
-      availableTypes = rows.map((r: any) => r.VEHICLE_TYPE).filter(Boolean);
+      const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ORDER BY VEHICLE_TYPE, REGION');
+      datasetPairs = rows.map((r: any) => ({ vehicleType: r.VEHICLE_TYPE, region: r.REGION })).filter((p: any) => p.vehicleType && p.region);
+      availableTypes = [...new Set(datasetPairs.map(p => p.vehicleType))];
     } catch {}
     if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
     if (availableTypes.length === 0) availableTypes = [vehicleType];
-    res.json({ vehicleType, region, availableTypes });
+    res.json({ vehicleType, region, availableTypes, datasetPairs });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

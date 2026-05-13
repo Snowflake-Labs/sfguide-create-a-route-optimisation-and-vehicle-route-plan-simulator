@@ -1,6 +1,7 @@
 import { ChevronDown, Truck } from 'lucide-react';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useVehicleType } from '../hooks/useVehicleType';
+import { useRegion } from '../hooks/useRegion';
 
 const TYPE_LABELS: Record<string, string> = {
   hgv: 'Truck (HGV)',
@@ -10,7 +11,8 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export default function VehicleTypeSwitcher() {
-  const { vehicleType, availableTypes, switchVehicleType } = useVehicleType();
+  const { vehicleType, availableTypes, switchVehicleType, typesForRegion, datasetPairs } = useVehicleType();
+  const { regionName } = useRegion();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -22,6 +24,13 @@ export default function VehicleTypeSwitcher() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  const filteredTypes = useMemo(() => {
+    if (!datasetPairs.length) return availableTypes;
+    const valid = new Set(typesForRegion(regionName));
+    const filtered = availableTypes.filter(t => valid.has(t));
+    return filtered.length ? filtered : availableTypes;
+  }, [availableTypes, regionName, datasetPairs, typesForRegion]);
+
   return (
     <div className="region-switcher" ref={ref}>
       <button className="region-trigger" onClick={() => setOpen(!open)}>
@@ -31,7 +40,7 @@ export default function VehicleTypeSwitcher() {
       </button>
       {open && (
         <div className="region-dropdown">
-          {availableTypes.map((t: string) => (
+          {filteredTypes.map((t: string) => (
             <button
               key={t}
               className={`region-option ${t === vehicleType ? 'active' : ''}`}
