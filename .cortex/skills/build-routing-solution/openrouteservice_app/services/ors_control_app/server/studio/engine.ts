@@ -133,42 +133,29 @@ const UNROUTABLE_PATTERNS: RegExp[] = [
   /coordinate \d+:\s*-?\d+(\.\d+)?\s+-?\d+(\.\d+)?/i,
 ];
 
-// Map region name to ISO-2 country codes accepted by Overture's ADDRESSES[0]:country.
-// When the active region maps to one or more codes, loadPOIs will filter POIs to those
-// countries, eliminating border-bbox leakage (e.g. Swiss POIs sneaking into Germany).
-// Multi-country regions (Europe, World) intentionally have no entry; they rely on the
-// matrix-snap filter and probeRoutability instead.
-const COUNTRY_CODES_BY_REGION: Record<string, string[]> = {
-  Germany: ['DE'],
-  UnitedStatesOfAmerica: ['US'],
-  France: ['FR'],
-  Netherlands: ['NL'],
-  Italy: ['IT'],
-  Spain: ['ES'],
-  UnitedKingdom: ['GB'],
-  Japan: ['JP'],
-  Brazil: ['BR'],
-  Australia: ['AU'],
-  Canada: ['CA'],
-  Poland: ['PL'],
-  Belgium: ['BE'],
-  Austria: ['AT'],
-  Switzerland: ['CH'],
-  Czechia: ['CZ'],
-  Denmark: ['DK'],
-  Sweden: ['SE'],
-  Norway: ['NO'],
-  Finland: ['FI'],
-  Ireland: ['IE'],
-  Portugal: ['PT'],
-};
-
-function countryCodesForRegion(region: string): string[] | null {
+// Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
+// When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
+// leakage). When NULL/empty, no country filter is applied and the job relies on the snap-distance
+// filter + probeRoutability for safety. Returns null on lookup failure (logged WARN, non-fatal).
+async function fetchRegionCountryCodes(region: string, snowSql: SnowSqlFn): Promise<string[] | null> {
   if (!region) return null;
-  // Try exact match first, then case-insensitive.
-  if (COUNTRY_CODES_BY_REGION[region]) return COUNTRY_CODES_BY_REGION[region];
-  const key = Object.keys(COUNTRY_CODES_BY_REGION).find(k => k.toLowerCase() === region.toLowerCase());
-  return key ? COUNTRY_CODES_BY_REGION[key] : null;
+  const safe = region.replace(/'/g, "''");
+  try {
+    const rows = await snowSql(
+      `SELECT COUNTRY_CODES FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE REGION_NAME = '${safe}' LIMIT 1`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const raw = rows?.[0]?.COUNTRY_CODES;
+    if (raw == null) return null;
+    const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw) : null);
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    return arr.map((c: unknown) => String(c).trim()).filter(Boolean);
+  } catch (e: any) {
+    log('WARN', 'Studio', `REGION_REGISTRY country lookup failed (continuing without country filter): ${e.message?.slice(0, 200)}`, {
+      detail: { region },
+    });
+    return null;
+  }
 }
 
 // Per-profile snap-distance threshold (metres) used by filterRoutablePois.
@@ -300,7 +287,7 @@ export async function loadPOIs(
   const { bbox } = config;
   const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'corporate_or_business_office'];
   const catFilter = cats.map(c => `'${c}'`).join(',');
-  const countryCodes = countryCodesForRegion(config.region);
+  const countryCodes = await fetchRegionCountryCodes(config.region, snowSql);
   const countryFilter = countryCodes && countryCodes.length
     ? `
       AND ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
