@@ -10,7 +10,6 @@ const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 type GradientMetric = 'time' | 'distance';
 type ScaleMode = 'auto' | 'fixed';
 type TimeUnit = 'min' | 'hr';
-type DistUnit = 'km' | 'mi';
 
 function RoadFilterBadge({ on }: { on: boolean | undefined }) {
   if (!on) return null;
@@ -88,19 +87,18 @@ const COLORS: [number, number, number][] = [
   [245, 160, 12],
 ];
 
-const MI_PER_M = 1 / 1609.344;
 const KM_PER_M = 1 / 1000;
 
-function rawValue(d: ReachabilityData, metric: GradientMetric, timeUnit: TimeUnit, distUnit: DistUnit): number {
+function rawValue(d: ReachabilityData, metric: GradientMetric, timeUnit: TimeUnit): number {
   if (metric === 'time') {
     return timeUnit === 'min' ? d.travel_time_secs / 60 : d.travel_time_secs / 3600;
   }
-  return distUnit === 'km' ? d.distance_meters * KM_PER_M : d.distance_meters * MI_PER_M;
+  return d.distance_meters * KM_PER_M;
 }
 
-function unitSuffix(metric: GradientMetric, timeUnit: TimeUnit, distUnit: DistUnit): string {
+function unitSuffix(metric: GradientMetric, timeUnit: TimeUnit): string {
   if (metric === 'time') return timeUnit === 'min' ? 'min' : 'hr';
-  return distUnit === 'km' ? 'km' : 'mi';
+  return 'km';
 }
 
 function fmtLegend(val: number): string {
@@ -131,7 +129,6 @@ export default function MatrixViewer() {
   const [gradientMetric, setGradientMetric] = useState<GradientMetric>('time');
   const [scaleMode, setScaleMode] = useState<ScaleMode>('auto');
   const [timeUnit, setTimeUnit] = useState<TimeUnit>('min');
-  const [distUnit, setDistUnit] = useState<DistUnit>('km');
   const [fixedMax, setFixedMax] = useState(30);
 
   useEffect(() => {
@@ -307,15 +304,15 @@ export default function MatrixViewer() {
 
   const dataMax = useMemo(() => {
     if (destinations.length === 0) return 1;
-    return destinations.reduce((m, d) => Math.max(m, rawValue(d, gradientMetric, timeUnit, distUnit)), 0) || 1;
-  }, [destinations, gradientMetric, timeUnit, distUnit]);
+    return destinations.reduce((m, d) => Math.max(m, rawValue(d, gradientMetric, timeUnit)), 0) || 1;
+  }, [destinations, gradientMetric, timeUnit]);
 
   const scaleMax = useMemo(() => {
     if (scaleMode === 'fixed') return Math.max(fixedMax, 0.01);
     return dataMax;
   }, [scaleMode, fixedMax, dataMax]);
 
-  const suffix = useMemo(() => unitSuffix(gradientMetric, timeUnit, distUnit), [gradientMetric, timeUnit, distUnit]);
+  const suffix = useMemo(() => unitSuffix(gradientMetric, timeUnit), [gradientMetric, timeUnit]);
 
   const bgLayer = useMemo(() => {
     if (allHexes.length === 0) return null;
@@ -344,15 +341,15 @@ export default function MatrixViewer() {
       extruded: false,
       getHexagon: (d: ReachabilityData) => d.hex_id,
       getFillColor: (d: ReachabilityData) => {
-        const val = rawValue(d, gradientMetric, timeUnit, distUnit);
+        const val = rawValue(d, gradientMetric, timeUnit);
         const t = Math.min(val / scaleMax, 1);
         const idx = Math.min(Math.floor(t * COLORS.length), COLORS.length - 1);
         return [...COLORS[idx], 180] as [number, number, number, number];
       },
       opacity: 0.7,
-      updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, distUnit, scaleMax] },
+      updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, scaleMax] },
     });
-  }, [destinations, gradientMetric, timeUnit, distUnit, scaleMax]);
+  }, [destinations, gradientMetric, timeUnit, scaleMax]);
 
   const originLayer = useMemo(() => {
     if (!originHex) return null;
@@ -381,9 +378,7 @@ export default function MatrixViewer() {
       const timeFmt = timeUnit === 'min'
         ? `${(object.travel_time_secs / 60).toFixed(1)} min`
         : `${(object.travel_time_secs / 3600).toFixed(2)} hr`;
-      const distFmt = distUnit === 'km'
-        ? `${(object.distance_meters / 1000).toFixed(1)} km`
-        : `${(object.distance_meters * MI_PER_M).toFixed(1)} mi`;
+      const distFmt = `${(object.distance_meters / 1000).toFixed(1)} km`;
       const timeStr = gradientMetric === 'time' ? `<b>${timeFmt}</b>` : timeFmt;
       const distStr = gradientMetric === 'distance' ? `<b>${distFmt}</b>` : distFmt;
       return {
@@ -398,7 +393,7 @@ export default function MatrixViewer() {
       };
     }
     return null;
-  }, [gradientMetric, timeUnit, distUnit]);
+  }, [gradientMetric, timeUnit]);
 
   const localMaxMin = useMemo(() => {
     if (destinations.length === 0) return 0;
@@ -505,13 +500,12 @@ export default function MatrixViewer() {
                 <span className="ctrl-label">Metric</span>
                 <SegControl value={gradientMetric} onChange={setGradientMetric} options={[{ value: 'time', label: 'Time' }, { value: 'distance', label: 'Distance' }]} />
               </div>
-              <div className="ctrl-group">
-                <span className="ctrl-label">Unit</span>
-                {gradientMetric === 'time'
-                  ? <SegControl value={timeUnit} onChange={setTimeUnit} options={[{ value: 'min', label: 'min' }, { value: 'hr', label: 'hr' }]} />
-                  : <SegControl value={distUnit} onChange={setDistUnit} options={[{ value: 'km', label: 'km' }, { value: 'mi', label: 'mi' }]} />
-                }
-              </div>
+              {gradientMetric === 'time' && (
+                <div className="ctrl-group">
+                  <span className="ctrl-label">Unit</span>
+                  <SegControl value={timeUnit} onChange={setTimeUnit} options={[{ value: 'min', label: 'min' }, { value: 'hr', label: 'hr' }]} />
+                </div>
+              )}
               <div className="ctrl-group">
                 <span className="ctrl-label">Scale</span>
                 <SegControl value={scaleMode} onChange={setScaleMode} options={[{ value: 'auto', label: 'Auto' }, { value: 'fixed', label: 'Fixed' }]} />
