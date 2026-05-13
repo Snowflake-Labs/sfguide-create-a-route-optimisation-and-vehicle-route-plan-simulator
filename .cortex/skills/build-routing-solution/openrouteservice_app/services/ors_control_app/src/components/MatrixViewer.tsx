@@ -389,6 +389,8 @@ export default function MatrixViewer() {
       getPosition: (d: any) => [d.lon, d.lat],
       getFillColor: [41, 181, 232, 50],
       getRadius: 160,
+      radiusMinPixels: 18,
+      radiusMaxPixels: 60,
       stroked: false,
       filled: true,
     });
@@ -404,6 +406,8 @@ export default function MatrixViewer() {
       getFillColor: [255, 255, 255, 220],
       getLineColor: [41, 181, 232, 255],
       getRadius: 80,
+      radiusMinPixels: 8,
+      radiusMaxPixels: 30,
       lineWidthMinPixels: 3,
       stroked: true,
       filled: true,

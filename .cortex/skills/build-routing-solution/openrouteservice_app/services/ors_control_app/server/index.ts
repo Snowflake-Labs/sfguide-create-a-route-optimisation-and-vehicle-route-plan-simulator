@@ -637,6 +637,21 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   function parseGeofabrikIndex(html: string, basePath: string): Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> {
     const rows: Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> = [];
     const trBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    // Geofabrik mixes two href conventions in the same site:
+    //   (1) Root-relative full path on top-level pages, e.g. on /north-america.html the
+    //       US row is href="north-america/us.html" and pbf is "north-america/us-latest.osm.pbf".
+    //       Detected by cleanHref/rawSub starting with `bp + '/'`.
+    //   (2) Dir-relative path on deeper pages, e.g. on /north-america/us.html the California row
+    //       is href="us/california.html" and pbf is "us/california-latest.osm.pbf"
+    //       (relative to /north-america/, NOT to /north-america/us/).
+    //       Detected by cleanHref/rawSub starting with bp's last segment + '/'.
+    //   (3) Absolute path: href="/russia.html" (Russia special case).
+    // The previous implementation always resolved relative hrefs against the Geofabrik
+    // root which produced 404 PBF URLs for every 3rd-level sub-region (US states,
+    // Canadian provinces, German Lander, etc.). Russia survived because its href is absolute.
+    const bp = basePath ? basePath.replace(/^\/|\/$/g, '') : '';
+    const bpLast = bp ? (bp.split('/').pop() || '') : '';
+    const bpParent = bp.includes('/') ? bp.split('/').slice(0, -1).join('/') : '';
     for (const block of trBlocks) {
       const pbfMatch = block.match(/<a\s+href="([^"]+\.osm\.pbf)"/i);
       if (!pbfMatch) continue;
@@ -661,21 +676,38 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
       const sizeMb = sizeMatch ? parseSize(sizeMatch[1]) : null;
 
       let pbfUrl: string;
-      if (pbfHref.startsWith('http')) pbfUrl = pbfHref;
-      else if (pbfHref.startsWith('/')) pbfUrl = GEOFABRIK_BASE + pbfHref;
-      else {
+      if (pbfHref.startsWith('http')) {
+        pbfUrl = pbfHref;
+      } else if (pbfHref.startsWith('/')) {
+        pbfUrl = GEOFABRIK_BASE + pbfHref;
+      } else {
         const cleanHref = pbfHref.replace(/^\.\//,  '');
-        pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        if (!bp) {
+          pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        } else if (cleanHref.startsWith(bp + '/')) {
+          // Convention (1): root-relative full path
+          pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        } else if (bpLast && cleanHref.startsWith(bpLast + '/')) {
+          // Convention (2): dir-relative; resolve against parent of bp
+          pbfUrl = GEOFABRIK_BASE + '/' + (bpParent ? bpParent + '/' : '') + cleanHref;
+        } else {
+          // Convention (3): purely relative to bp
+          pbfUrl = GEOFABRIK_BASE + '/' + bp + '/' + cleanHref;
+        }
       }
 
-      let subPath = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
-      if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
-        const bp = basePath ? basePath.replace(/^\/|\/$/g, '') : '';
-        // Geofabrik uses continent-relative hrefs (e.g. "north-america/us.html" on north-america.html).
-        // Only prepend basePath when subPath does not already start with it, otherwise we get
-        // "north-america/north-america/us" which 404s. Russia uses an absolute "/russia.html" href
-        // and is handled by the !startsWith('/') guard above.
-        subPath = bp && !subPath.startsWith(bp + '/') ? bp + '/' + subPath : subPath;
+      const rawSub = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
+      let subPath: string;
+      if (!rawSub || rawSub.startsWith('http') || rawSub.startsWith('/')) {
+        subPath = rawSub;
+      } else if (!bp) {
+        subPath = rawSub;
+      } else if (rawSub === bp || rawSub.startsWith(bp + '/')) {
+        subPath = rawSub;
+      } else if (bpLast && (rawSub === bpLast || rawSub.startsWith(bpLast + '/'))) {
+        subPath = (bpParent ? bpParent + '/' : '') + rawSub;
+      } else {
+        subPath = bp + '/' + rawSub;
       }
 
       rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
@@ -727,8 +759,15 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
         const subRegions = parseGeofabrikIndex(sub2Html, country.sub_path);
 
         for (const subReg of subRegions) {
-          const srId = subReg.sub_path.split('/').pop() || subReg.name.toLowerCase().replace(/ /g, '-');
-          const srBbox = gfBbox.get(srId) || gfBbox.get(subReg.name.toLowerCase().replace(/ /g, '-'));
+          const srKey = subReg.sub_path;
+          const srId = srKey.split('/').pop() || subReg.name.toLowerCase().replace(/ /g, '-');
+          // Geofabrik bbox keys (index-v1.json) use various conventions across regions.
+          // Try in order: full path, full path minus continent, last segment, lowercased name.
+          const srBbox =
+            gfBbox.get(srKey) ||
+            gfBbox.get(srKey.split('/').slice(1).join('/')) ||
+            gfBbox.get(srId) ||
+            gfBbox.get(subReg.name.toLowerCase().replace(/ /g, '-'));
           allRows.push({
             catalog_id: 'geofabrik:' + country.sub_path + '/' + subReg.name.toLowerCase().replace(/ /g, '-'),
             source: 'geofabrik',

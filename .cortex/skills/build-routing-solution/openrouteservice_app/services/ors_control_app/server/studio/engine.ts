@@ -249,6 +249,7 @@ async function fetchRoute(
   originLat: number, originLng: number,
   destLat: number, destLng: number,
   profile: string,
+  region: string,
   snowSql: SnowSqlFn,
 ): Promise<RouteGeometry | null> {
   const sql = `
@@ -256,7 +257,8 @@ async function fetchRoute(
     FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
       ARRAY_CONSTRUCT(${originLng},${originLat}),
-      ARRAY_CONSTRUCT(${destLng},${destLat})
+      ARRAY_CONSTRUCT(${destLng},${destLat}),
+      '${region.replace(/'/g, "''")}'
     ))`;
   try {
     const rows = await snowSql(sql);
@@ -287,6 +289,7 @@ async function fetchDetourRoute(
   waypointLat: number, waypointLng: number,
   destLat: number, destLng: number,
   profile: string,
+  region: string,
   snowSql: SnowSqlFn,
 ): Promise<RouteGeometry | null> {
   const coordsJson = JSON.stringify({
@@ -300,7 +303,8 @@ async function fetchDetourRoute(
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
     FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
-      PARSE_JSON('${coordsJson}')::VARIANT
+      PARSE_JSON('${coordsJson}')::VARIANT,
+      '${region.replace(/'/g, "''")}'
     ))`;
   try {
     const rows = await snowSql(sql);
@@ -653,7 +657,7 @@ export async function* generateTelemetry(
         let isDetour = false;
 
         for (let attempt = 0; attempt < MAX_ROUTE_RETRIES; attempt++) {
-          plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
+          plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, config.region, snowSql);
           if (plannedRoute) break;
           if (attempt < MAX_ROUTE_RETRIES - 1) {
             destPoi = pickDestination(currentOriginPoi, pois, config, rng);
@@ -718,7 +722,7 @@ export async function* generateTelemetry(
               lifecycle.lat, lifecycle.lng,
               waypoint.lat, waypoint.lng,
               destPoi.lat, destPoi.lng,
-              config.ors_profile, snowSql
+              config.ors_profile, config.region, snowSql
             );
             if (detoured && detoured.coordinates.length >= 2) {
               actualRoute = detoured;
