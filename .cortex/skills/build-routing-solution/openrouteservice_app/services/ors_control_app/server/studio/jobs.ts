@@ -31,14 +31,86 @@ export function getJob(jobId: string): Job | undefined {
   return activeJobs.get(jobId);
 }
 
-export function cancelJob(jobId: string): boolean {
+export type CancelMode = 'in-memory' | 'orphan' | 'not-running' | 'not-found' | 'error';
+export interface CancelResult {
+  ok: boolean;
+  mode: CancelMode;
+  message?: string;
+}
+
+export async function cancelJob(jobId: string, snowSql?: SnowSqlFn): Promise<CancelResult> {
   const job = activeJobs.get(jobId);
-  if (!job || job.status !== 'RUNNING') return false;
-  job.abort.aborted = true;
-  job.status = 'CANCELLED';
-  job.completedAt = new Date();
-  broadcast(job, 'cancelled', { jobId });
-  return true;
+
+  if (job && job.status === 'RUNNING') {
+    job.abort.aborted = true;
+    job.status = 'CANCELLED';
+    job.completedAt = new Date();
+    broadcast(job, 'cancelled', { jobId });
+    log('INFO', 'Studio', `Cancelled in-memory job ${jobId}`);
+    return { ok: true, mode: 'in-memory' };
+  }
+  if (job && job.status !== 'RUNNING') {
+    return { ok: false, mode: 'not-running', message: `Job is already ${job.status}` };
+  }
+
+  if (!snowSql) {
+    return { ok: false, mode: 'not-found', message: 'No in-memory job and no DB connection available' };
+  }
+
+  try {
+    const rows = await snowSql(
+      `SELECT STATUS FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    if (!rows.length) {
+      return { ok: false, mode: 'not-found', message: 'Job not found in DB' };
+    }
+    const dbStatus = rows[0].STATUS;
+    if (dbStatus !== 'RUNNING') {
+      return { ok: false, mode: 'not-running', message: `Job is already ${dbStatus}` };
+    }
+
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+       SET STATUS='CANCELLED',
+           COMPLETED_AT=SYSDATE(),
+           ERROR_MESSAGE='Cancelled by user (orphaned worker - no in-process state)'
+       WHERE JOB_ID=${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    log('INFO', 'Studio', `Force-cancelled orphaned job ${jobId}`);
+    return { ok: true, mode: 'orphan' };
+  } catch (e: any) {
+    log('WARN', 'Studio', `Force-cancel failed for ${jobId}: ${e.message?.slice(0, 200)}`);
+    return { ok: false, mode: 'error', message: e.message?.slice(0, 200) };
+  }
+}
+
+export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: number = 30): Promise<number> {
+  try {
+    const inMemoryIds = [...activeJobs.keys()];
+    const inMemFilter = inMemoryIds.length > 0
+      ? `AND JOB_ID NOT IN (${inMemoryIds.map(escVal).join(',')})`
+      : '';
+    const result = await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+       SET STATUS='FAILED',
+           COMPLETED_AT=SYSDATE(),
+           ERROR_MESSAGE='Worker crashed or container restarted (auto-reconciled at boot)'
+       WHERE STATUS='RUNNING'
+         AND STARTED_AT < DATEADD(minute, -${staleMinutes}, CURRENT_TIMESTAMP())
+         ${inMemFilter}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const n = result?.[0]?.['number of rows updated'] ?? 0;
+    if (n > 0) {
+      log('INFO', 'Studio', `Reconciled ${n} stale RUNNING job(s) at boot`);
+    }
+    return n;
+  } catch (e: any) {
+    log('WARN', 'Studio', `reconcileStaleJobs failed: ${e.message?.slice(0, 200)}`);
+    return 0;
+  }
 }
 
 export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
@@ -117,6 +189,167 @@ async function restoreOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
     try { await snowSql(sql); } catch (_) { /* best-effort */ }
   }
   log('INFO', 'Studio', 'Restored ORS auto-suspend after generation');
+}
+
+// ===== Compute pool / service scale-up for synthetic data generation =====
+// Mirrors the matrix-build pattern in app/modules/05_matrix_pipeline.sql.
+// captureAndScaleUp() snapshots current sizes and bumps per-region pool +
+// ORS_SERVICE_<REGION> + gateway pool + routing_gateway_service to the targets
+// below. scaleDown() reverts using the captured originals at every exit.
+//
+// PARALLEL JOB EDGE CASE: if two generation jobs (or a generation job and a
+// matrix build) run concurrently, the second flow will SHOW the *already
+// bumped* sizes as its "original" and on completion will leave the pool/service
+// at the bumped size. Acceptable trade-off: both jobs benefit from the larger
+// pool. The operator can manually ALTER pools back to baseline after all
+// concurrent jobs complete, or rely on the next clean run to re-capture and
+// restore the true baseline. RECONCILE_AUTO_SUSPEND() handles the
+// AUTO_SUSPEND_SECS leg of this same race.
+
+type ScalingState = {
+  regionPoolName: string | null;
+  regionSvcName: string | null;
+  origRegionPoolMaxNodes: number | null;
+  origRegionSvcMin: number | null;
+  origRegionSvcMax: number | null;
+  origGatewayPoolMaxNodes: number | null;
+  origGatewaySvcMin: number | null;
+  origGatewaySvcMax: number | null;
+};
+
+const TARGET_REGION_NODES = 4;
+const TARGET_REGION_INSTANCES = 4;
+const TARGET_GATEWAY_NODES = 8;
+const TARGET_GATEWAY_INSTANCES = 8;
+const ORS_READY_MAX_ATTEMPTS = 8;
+const ORS_READY_INTERVAL_MS = 15_000;
+
+function pickFirstNumber(rows: any[], keys: string[]): number | null {
+  if (!rows || rows.length === 0) return null;
+  const r = rows[0];
+  for (const k of keys) {
+    if (r[k] !== undefined && r[k] !== null) {
+      const n = Number(r[k]);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+  return null;
+}
+
+async function captureAndScaleUp(snowSql: SnowSqlFn, region: string): Promise<ScalingState> {
+  const state: ScalingState = {
+    regionPoolName: null,
+    regionSvcName: null,
+    origRegionPoolMaxNodes: null,
+    origRegionSvcMin: null,
+    origRegionSvcMax: null,
+    origGatewayPoolMaxNodes: null,
+    origGatewaySvcMin: null,
+    origGatewaySvcMax: null,
+  };
+
+  const isDefault = !region || region.toUpperCase() === 'DEFAULT';
+  if (!isDefault) {
+    const upperRegion = region.toUpperCase();
+    state.regionPoolName = `ORS_POOL_${upperRegion}`;
+    state.regionSvcName = `ORS_SERVICE_${upperRegion}`;
+
+    try {
+      await snowSql(`SHOW COMPUTE POOLS LIKE '${state.regionPoolName}'`);
+      const rows = await snowSql(`SELECT "max_nodes" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+      state.origRegionPoolMaxNodes = pickFirstNumber(rows, ['max_nodes', 'MAX_NODES']);
+    } catch (_) { /* best-effort */ }
+
+    try {
+      await snowSql(`SHOW SERVICES LIKE '${state.regionSvcName}' IN SCHEMA OPENROUTESERVICE_APP.CORE`);
+      const rows = await snowSql(`SELECT "min_instances", "max_instances" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+      state.origRegionSvcMin = pickFirstNumber(rows, ['min_instances', 'MIN_INSTANCES']);
+      state.origRegionSvcMax = pickFirstNumber(rows, ['max_instances', 'MAX_INSTANCES']);
+    } catch (_) { /* best-effort */ }
+
+    try {
+      await snowSql(`ALTER COMPUTE POOL ${state.regionPoolName} SET MAX_NODES = ${TARGET_REGION_NODES}`);
+    } catch (_) { /* best-effort */ }
+    try {
+      await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${state.regionSvcName} SET MIN_INSTANCES = ${TARGET_REGION_INSTANCES} MAX_INSTANCES = ${TARGET_REGION_INSTANCES}`);
+    } catch (_) { /* best-effort */ }
+  }
+
+  try {
+    await snowSql(`SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL'`);
+    const rows = await snowSql(`SELECT "max_nodes" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+    state.origGatewayPoolMaxNodes = pickFirstNumber(rows, ['max_nodes', 'MAX_NODES']);
+  } catch (_) { /* best-effort */ }
+
+  try {
+    await snowSql(`SHOW SERVICES LIKE 'ROUTING_GATEWAY_SERVICE' IN SCHEMA OPENROUTESERVICE_APP.CORE`);
+    const rows = await snowSql(`SELECT "min_instances", "max_instances" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+    state.origGatewaySvcMin = pickFirstNumber(rows, ['min_instances', 'MIN_INSTANCES']);
+    state.origGatewaySvcMax = pickFirstNumber(rows, ['max_instances', 'MAX_INSTANCES']);
+  } catch (_) { /* best-effort */ }
+
+  try {
+    await snowSql(`ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ${TARGET_GATEWAY_NODES}`);
+  } catch (_) { /* best-effort */ }
+  try {
+    await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET MIN_INSTANCES = ${TARGET_GATEWAY_INSTANCES} MAX_INSTANCES = ${TARGET_GATEWAY_INSTANCES}`);
+  } catch (_) { /* best-effort */ }
+
+  log('INFO', 'Studio', 'Scaled compute pools up for generation', {
+    region: region || 'DEFAULT',
+    targets: { regionNodes: TARGET_REGION_NODES, regionInstances: TARGET_REGION_INSTANCES, gatewayNodes: TARGET_GATEWAY_NODES, gatewayInstances: TARGET_GATEWAY_INSTANCES },
+    captured: state as any,
+  } as any);
+  return state;
+}
+
+async function scaleDown(snowSql: SnowSqlFn, state: ScalingState | null): Promise<void> {
+  if (!state) return;
+
+  if (state.regionPoolName && state.origRegionPoolMaxNodes !== null) {
+    try {
+      await snowSql(`ALTER COMPUTE POOL ${state.regionPoolName} SET MAX_NODES = ${state.origRegionPoolMaxNodes}`);
+    } catch (_) { /* best-effort */ }
+  }
+  if (state.regionSvcName && state.origRegionSvcMin !== null && state.origRegionSvcMax !== null) {
+    try {
+      await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${state.regionSvcName} SET MIN_INSTANCES = ${state.origRegionSvcMin} MAX_INSTANCES = ${state.origRegionSvcMax}`);
+    } catch (_) { /* best-effort */ }
+  }
+  if (state.origGatewayPoolMaxNodes !== null) {
+    try {
+      await snowSql(`ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ${state.origGatewayPoolMaxNodes}`);
+    } catch (_) { /* best-effort */ }
+  }
+  if (state.origGatewaySvcMin !== null && state.origGatewaySvcMax !== null) {
+    try {
+      await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET MIN_INSTANCES = ${state.origGatewaySvcMin} MAX_INSTANCES = ${state.origGatewaySvcMax}`);
+    } catch (_) { /* best-effort */ }
+  }
+
+  log('INFO', 'Studio', 'Scaled compute pools back down after generation');
+}
+
+async function waitForOrsReady(snowSql: SnowSqlFn, region: string, profile: string): Promise<void> {
+  const isDefault = !region || region.toUpperCase() === 'DEFAULT';
+  for (let attempt = 0; attempt < ORS_READY_MAX_ATTEMPTS; attempt++) {
+    try {
+      const sql = isDefault
+        ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS S`
+        : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${region}')) AS S`;
+      const rows = await snowSql(sql);
+      const raw = rows?.[0]?.S || rows?.[0]?.s || '';
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.profiles && parsed.profiles[profile]) {
+          log('INFO', 'Studio', `ORS profile ${profile} ready after ${attempt * (ORS_READY_INTERVAL_MS / 1000)}s`);
+          return;
+        }
+      }
+    } catch (_) { /* best-effort */ }
+    await new Promise(resolve => setTimeout(resolve, ORS_READY_INTERVAL_MS));
+  }
+  log('WARN', 'Studio', `ORS profile ${profile} did not report ready within ${ORS_READY_MAX_ATTEMPTS * (ORS_READY_INTERVAL_MS / 1000)}s; continuing anyway`);
 }
 
 async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
@@ -354,9 +587,20 @@ export async function startGeneration(
   activeJobs.set(jobId, job);
 
   (async () => {
+    let scalingState: ScalingState | null = null;
     try {
       await ensureTables(snowSql);
       await disableOrsAutoSuspend(snowSql);
+      try {
+        scalingState = await captureAndScaleUp(snowSql, config.region);
+      } catch (e: any) {
+        log('WARN', 'Studio', `Scale-up failed (continuing with current capacity): ${e.message?.slice(0, 200)}`, { jobId });
+      }
+      try {
+        await waitForOrsReady(snowSql, config.region, config.ors_profile);
+      } catch (e: any) {
+        log('WARN', 'Studio', `ORS readiness wait threw (continuing): ${e.message?.slice(0, 200)}`, { jobId });
+      }
 
       try {
         const configJson = JSON.stringify(config).replace(/\$\$/g, '$ $');
@@ -501,6 +745,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
     } finally {
+      try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
       await restoreOrsAutoSuspend(snowSql);
     }
   })();
