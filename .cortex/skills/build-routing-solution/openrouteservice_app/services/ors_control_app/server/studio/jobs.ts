@@ -642,6 +642,23 @@ export async function startGeneration(
 
   (async () => {
     let scalingState: ScalingState | null = null;
+    // Periodic flush of job.events into GENERATION_JOBS.LOG_TEXT so a worker crash or
+    // container restart mid-run does not lose the event buffer (which would render the
+    // UI logs panel as "(No log events recorded for this job)"). Skip flushes when no
+    // new events have arrived since the last persist.
+    const JOB_LOG_FLUSH_MS = 60_000;
+    let lastPersistedEventCount = 0;
+    let persistInFlight = false;
+    const flushTimer: NodeJS.Timeout = setInterval(() => {
+      if (persistInFlight) return;
+      if (job.events.length === lastPersistedEventCount) return;
+      const expected = job.events.length;
+      persistInFlight = true;
+      persistJobLog(job, snowSql)
+        .then(() => { lastPersistedEventCount = expected; })
+        .catch(() => { /* persistJobLog already logs; never throw from timer */ })
+        .finally(() => { persistInFlight = false; });
+    }, JOB_LOG_FLUSH_MS);
     try {
       await ensureTables(snowSql);
       await disableOrsAutoSuspend(snowSql);
@@ -802,6 +819,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
     } finally {
+      clearInterval(flushTimer);
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
       await restoreOrsAutoSuspend(snowSql);
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
