@@ -6,6 +6,7 @@ import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
+import { reconcileStaleJobs } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
 
@@ -2944,5 +2945,8 @@ const PORT = parseInt(process.env.PORT || '3001');
 detectWarehouse().then(verifySessionUtc).then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ORS Control App server running on port ${PORT} (SPCS: ${IS_SPCS}, WH: ${SF_WAREHOUSE})`);
+  });
+  reconcileStaleJobs(runSql, 30).catch((e) => {
+    log('WARN', 'Studio', `Boot reconcile failed: ${e?.message?.slice(0, 200)}`);
   });
 });
