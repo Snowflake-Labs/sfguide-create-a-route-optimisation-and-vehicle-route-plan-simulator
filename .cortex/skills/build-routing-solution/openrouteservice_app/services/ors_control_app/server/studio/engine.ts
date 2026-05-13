@@ -343,6 +343,18 @@ function pickDestination(
   return pool[Math.floor(rng() * pool.length)];
 }
 
+function pickNearestRoutableNeighbor(
+  origin: POI, pois: POI[], rng: () => number,
+): POI | null {
+  const NEIGHBOR_RADIUS_KM = 10;
+  const candidates = pois.filter(p =>
+    p.location_id !== origin.location_id &&
+    haversineKm(origin.lat, origin.lng, p.lat, p.lng) <= NEIGHBOR_RADIUS_KM
+  );
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(rng() * candidates.length)];
+}
+
 function pickDetourWaypoint(
   origin: POI, dest: POI, pois: POI[], rng: () => number,
 ): POI | null {
@@ -582,7 +594,8 @@ export async function* generateTelemetry(
   const MIN_ATTEMPTS_BEFORE_STOP = 20;
   const MAX_ROUTE_RETRIES = 3;
   const RECOVERY_THRESHOLD = 10;
-  let recoveryAttempted = false;
+  const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+  let lastRecoveryMs = 0;
 
   for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
     if (abortSignal?.aborted) return;
@@ -661,6 +674,16 @@ export async function* generateTelemetry(
           if (plannedRoute) break;
           if (attempt < MAX_ROUTE_RETRIES - 1) {
             destPoi = pickDestination(currentOriginPoi, pois, config, rng);
+            if (attempt === MAX_ROUTE_RETRIES - 2) {
+              const nearbyPoi = pickNearestRoutableNeighbor(currentOriginPoi, pois, rng);
+              if (nearbyPoi) {
+                currentOriginPoi = nearbyPoi;
+                lifecycle.lat = nearbyPoi.lat;
+                lifecycle.lng = nearbyPoi.lng;
+                lifecycle.location_id = nearbyPoi.location_id;
+                lifecycle.location_type = nearbyPoi.location_type;
+              }
+            }
           }
         }
 
@@ -671,8 +694,8 @@ export async function* generateTelemetry(
         } else {
           routeFailures++;
           consecutiveFails++;
-          if (consecutiveFails === RECOVERY_THRESHOLD && !recoveryAttempted) {
-            recoveryAttempted = true;
+          if (consecutiveFails >= RECOVERY_THRESHOLD && Date.now() - lastRecoveryMs > RECOVERY_COOLDOWN_MS) {
+            lastRecoveryMs = Date.now();
             log('WARN', 'Studio', `${consecutiveFails} consecutive failures, attempting ORS service recovery...`, {
               detail: { region: config.region, profile: config.ors_profile, routeSuccesses },
             });
@@ -705,7 +728,10 @@ export async function* generateTelemetry(
             }
             yield {
               type: 'stopped',
-              reason: `ORS became unavailable after ${consecutiveFails} consecutive route failures`,
+              reason: `Stopped after ${consecutiveFails} consecutive route failures ` +
+                      `(profile=${config.ors_profile}, region=${config.region}, ` +
+                      `${routeSuccesses}/${routeSuccesses + routeFailures} routes succeeded). ` +
+                      `If ORS is healthy, many POIs may be unroutable for this profile.`,
               completedDays: dayOffset,
               totalDays,
               routeSuccesses,
@@ -713,6 +739,7 @@ export async function* generateTelemetry(
             } as GenerationEvent;
             return;
           }
+          break;
         }
 
         if (shouldDetour && plannedRoute) {
