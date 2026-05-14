@@ -243,6 +243,19 @@ Complete Route Deviation Analysis demo with:
 - 3 ETL analytics tables (deviation analysis, driver summary, daily trends)
 - React dashboard pages in ORS Control Center (Deviation Dashboard, Route Comparison, Route Inspector)
 
+## Thresholds
+
+Per-vehicle deviation threshold lives in `FLEET_INTELLIGENCE.ROUTE_DEVIATION.VEHICLE_THRESHOLDS` (Issue #33). `TRIP_DEVIATION_ANALYSIS` reads `DEVIATION_PCT` for `LOCATION_TYPE='*'` and the active `CONFIG.VEHICLE_TYPE`; falls back to 20% if no row matches.
+
+| Vehicle | Deviation % | Speed limit factor | H3 resolution |
+|---|---|---|---|
+| car | 15 | 1.10 | 8 |
+| ebike | 25 | 1.05 | 9 |
+| hgv | 10 | 1.05 | 7 |
+| escooter | 30 | 1.05 | 10 |
+
+To change the active vehicle: `UPDATE FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG SET VEHICLE_TYPE='hgv';` (or use the Control App vehicle picker, which fans out to all skill schemas).
+
 ## Cleanup
 
 To remove all objects created by this skill:
@@ -251,6 +264,7 @@ To remove all objects created by this skill:
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VEHICLE_THRESHOLDS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION;

@@ -265,6 +265,8 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 
 ## Common Patterns
 
+- **Vehicle-aware thresholds (`VEHICLE_THRESHOLDS`)**: every skill schema with a `CONFIG` table also carries a pre-seeded `VEHICLE_THRESHOLDS` reference table (Issue #33). Pipelines join it on `VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM CONFIG LIMIT 1)` and `LOCATION_TYPE` (use `LOCATION_TYPE='*'` for vehicle-level globals like deviation %, speed factor, H3 resolution). Switching vehicles in the Control App updates `CONFIG` only; thresholds resolve at query time so DTs pick up new values within one refresh cycle. The Control App also exposes `GET /api/fleet-config/thresholds` for UI display. Always include the `COMMENT` tracking tag when creating the table.
+
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.

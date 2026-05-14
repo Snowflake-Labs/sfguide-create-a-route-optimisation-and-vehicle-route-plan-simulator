@@ -1556,6 +1556,55 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
   }
 });
 
+// Issue #39: Calibration-backed cost estimator (proc-driven, returns dual road_filter ON/OFF)
+app.post('/api/matrix/estimate', async (req, res) => {
+  try {
+    const { region, resolution, profile, road_filter } = req.body;
+    if (!region || resolution === undefined || resolution === null) {
+      return res.status(400).json({ error: 'region and resolution required' });
+    }
+
+    let safeRegion: string;
+    try { safeRegion = sanitizeIdentifier(region); }
+    catch { return res.status(400).json({ error: 'Invalid region' }); }
+
+    const safeProfile = (profile || 'driving-car').replace(/[^a-z\-]/gi, '');
+    const safeRes = parseInt(resolution);
+    if (!Number.isFinite(safeRes) || safeRes < 5 || safeRes > 10) {
+      return res.status(400).json({ error: 'resolution must be 5-10' });
+    }
+
+    let bbox: any = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
+    try {
+      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
+      if (cityRow?.[0]) bbox = cityRow[0];
+    } catch {}
+
+    const rfArg = road_filter === true ? 'TRUE' : road_filter === false ? 'FALSE' : 'NULL';
+
+    const callSql = `CALL ${SF_DATABASE}.CORE.ESTIMATE_MATRIX_COST(
+      '${escapeString(safeRegion)}',
+      ${safeRes},
+      '${escapeString(safeProfile)}',
+      ${sanitizeFloat(bbox.MIN_LAT)},
+      ${sanitizeFloat(bbox.MAX_LAT)},
+      ${sanitizeFloat(bbox.MIN_LON)},
+      ${sanitizeFloat(bbox.MAX_LON)},
+      ${rfArg}
+    )`;
+
+    const rows = await runSql(callSql);
+    const raw = rows?.[0]?.ESTIMATE_MATRIX_COST ?? rows?.[0]?.[Object.keys(rows?.[0] || {})[0]];
+    let payload: any = raw;
+    if (typeof raw === 'string') {
+      try { payload = JSON.parse(raw); } catch {}
+    }
+    res.json({ region: safeRegion, profile: safeProfile, resolution: safeRes, payload });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
 app.get('/api/matrix/existing', async (req, res) => {
   try {
     const region = req.query.region as string;
@@ -2291,6 +2340,37 @@ app.post('/api/fleet-config/vehicle-type', async (req, res) => {
       }
     }
     res.json({ ok: true, vehicleType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/fleet-config/thresholds - returns per-vehicle thresholds for the active vehicle.
+// Reads from FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS as the canonical copy
+// (all 6 skill schemas hold an identical seed). Issue #33.
+app.get('/api/fleet-config/thresholds', async (_req, res) => {
+  try {
+    let vehicleType = 'ebike';
+    try {
+      const cfgRows = await runSql('SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
+      if (cfgRows?.[0]?.VEHICLE_TYPE) vehicleType = cfgRows[0].VEHICLE_TYPE;
+    } catch {}
+    let perLocation: any[] = [];
+    let globals: any = null;
+    try {
+      const safe = escapeString(vehicleType);
+      const rows = await runSql(
+        `SELECT LOCATION_TYPE, SLA_WARNING_MIN, SLA_CRITICAL_MIN, GEOFENCE_RADIUS_M, DEVIATION_PCT, SPEED_LIMIT_FACTOR, H3_RESOLUTION
+         FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS
+         WHERE VEHICLE_TYPE = '${safe}'
+         ORDER BY LOCATION_TYPE`
+      );
+      perLocation = rows.filter((r: any) => r.LOCATION_TYPE !== '*');
+      globals = rows.find((r: any) => r.LOCATION_TYPE === '*') || null;
+    } catch (e: any) {
+      log('WARN', 'CONFIG', `Failed to read VEHICLE_THRESHOLDS: ${e.message}`);
+    }
+    res.json({ vehicleType, globals, perLocation });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
