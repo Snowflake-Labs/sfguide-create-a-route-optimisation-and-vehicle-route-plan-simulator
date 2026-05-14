@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'rea
 import type { CatalogRegion } from '../types';
 import PhasePips from '../shared/PhasePips';
 import OverflowMenu from '../shared/OverflowMenu';
+import BuildSummaryCard, { type BuildSummary } from './BuildSummaryCard';
 
 interface PhaseInfo {
   osm: 'done' | 'in_progress' | 'not_started' | 'na';
@@ -261,10 +262,7 @@ export default function RegionBuilder() {
   const [provisionJobs, setProvisionJobs] = useState<ProvisionJob[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoRefreshedRef = useRef(false);
-  const [buildProgress, setBuildProgress] = useState<Record<string, {
-    phase: string; progress: number; profileProgress?: number; nodesRemaining?: number; nodesTotal?: number;
-    currentProfile?: string | null; completedProfiles?: string[]; totalProfiles?: number; detail?: string;
-  }>>({});
+  const [buildProgress, setBuildProgress] = useState<Record<string, BuildSummary>>({});
   const [diagState, setDiagState] = useState<Record<string, {
     loading: boolean;
     markdown?: string;
@@ -590,14 +588,7 @@ export default function RegionBuilder() {
               {activeJobs.map((job) => {
                 const bp = buildProgress[job.region];
                 const stage = job.stage?.toLowerCase() || '';
-                const buildPhase = bp?.phase;
-                const showBuildBar = stage === 'building_graph' && buildPhase === 'building';
-                const startupHint =
-                  (stage === 'building_graph' || stage === 'waiting_for_service') && buildPhase === 'initializing'
-                    ? 'ORS engine starting up...'
-                    : (stage === 'building_graph' || stage === 'waiting_for_service') && buildPhase === 'importing'
-                    ? `Importing OSM data for ${bp?.currentProfile || ''}...`
-                    : null;
+                const showSummary = stage === 'building_graph' || stage === 'waiting_for_service';
                 const profileList = job.profiles
                   ? job.profiles.split(',').map((p) => p.trim()).filter(Boolean)
                   : [];
@@ -669,31 +660,16 @@ export default function RegionBuilder() {
                               {job.message}
                             </span>
                           )}
-                          {showBuildBar && (
-                            <div className="build-progress" style={{ minWidth: 220, flex: '1 1 240px' }}>
-                              <div className="progress-bar-track">
-                                <div className="progress-bar-fill" style={{ width: `${bp.progress}%` }} />
-                              </div>
-                              <div className="progress-stats">
-                                <span>{bp.progress}%</span>
-                                {bp.currentProfile && bp.totalProfiles && (
-                                  <span>
-                                    Profile {(bp.completedProfiles?.length ?? 0) + 1}/{bp.totalProfiles}: {bp.currentProfile}
-                                  </span>
-                                )}
-                                {(bp.nodesRemaining ?? 0) > 0 && (
-                                  <span>{((bp.nodesRemaining ?? 0) / 1000).toFixed(0)}K nodes left</span>
-                                )}
-                              </div>
+                          {showSummary && (
+                            <div style={{ minWidth: 280, flex: '1 1 320px' }}>
+                              <BuildSummaryCard
+                                region={job.region}
+                                summary={bp}
+                                displayName={job.display_name || job.region}
+                              />
                             </div>
                           )}
-                          {!showBuildBar && startupHint && (
-                            <span>
-                              <span className="details-label">Status</span>
-                              {startupHint}
-                            </span>
-                          )}
-                          {!job.started_at && !job.message && !showBuildBar && !startupHint && (
+                          {!showSummary && !job.started_at && !job.message && (
                             <span style={{ opacity: 0.7 }}>Waiting for first status update...</span>
                           )}
                         </div>
@@ -871,6 +847,22 @@ export default function RegionBuilder() {
                       </tr>
                     );
                   })}
+                  {(() => {
+                    const bp = buildProgress[c.region];
+                    const isBuilding = !isReady && isServiceUp && !c.isDefault && bp && bp.phase !== 'ready';
+                    if (!isBuilding) return null;
+                    return (
+                      <tr key={`${c.region}-build-summary`} className="details-row">
+                        <td colSpan={4}>
+                          <BuildSummaryCard
+                            region={c.region}
+                            summary={bp}
+                            displayName={c.display_name || c.region}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })()}
                 </Fragment>
               );
             })}
