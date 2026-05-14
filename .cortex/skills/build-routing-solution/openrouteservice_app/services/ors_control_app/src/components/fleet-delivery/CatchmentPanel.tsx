@@ -4,11 +4,15 @@ import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 const ZONE_MINUTES = [5, 10, 15];
 
 export default function CatchmentPanel() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<any[]>([]);
   const [restaurants, setRestaurants] = useState<any[]>([]);
@@ -18,13 +22,17 @@ export default function CatchmentPanel() {
   const [travelMode, setTravelMode] = useState('cycling-electric');
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     sfQuery(`SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED ORDER BY TOTAL_ORDERS DESC LIMIT 100`)
       .then(r => { setRestaurants(r); setLoading(false); });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
 

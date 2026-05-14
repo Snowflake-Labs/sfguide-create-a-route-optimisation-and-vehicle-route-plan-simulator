@@ -413,6 +413,17 @@
       .progress-bar-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
       .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 1s ease; }
       .build-progress.inline .progress-stats { font-size: 11px; }
+
+      .seg-control { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+      .seg-btn { padding: 4px 12px; font-size: 12px; font-weight: 500; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s, color 0.15s; font-family: inherit; }
+      .seg-btn:not(:last-child) { border-right: 1px solid var(--border); }
+      .seg-btn:hover { background: rgba(0,0,0,0.04); color: var(--text); }
+      .seg-btn.active { background: var(--accent); color: white; }
+      .gradient-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+      .gradient-controls .ctrl-group { display: flex; align-items: center; gap: 6px; }
+      .gradient-controls .ctrl-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+      .fixed-input { width: 60px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; text-align: center; transition: border-color 0.15s, box-shadow 0.15s; }
+      .fixed-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px rgba(41,181,232,0.2); }
     </style>
   </head>
   <body>

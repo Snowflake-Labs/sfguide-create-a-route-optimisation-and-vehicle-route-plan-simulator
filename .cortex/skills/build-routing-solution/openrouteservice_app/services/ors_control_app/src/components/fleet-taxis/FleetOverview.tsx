@@ -5,13 +5,17 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 export default function FleetOverview() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [kpis, setKpis] = useState<any>({});
   const [trips, setTrips] = useState<any[]>([]);
   const [hourly, setHourly] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.42, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -30,7 +34,11 @@ export default function FleetOverview() {
       setHourly(h);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 

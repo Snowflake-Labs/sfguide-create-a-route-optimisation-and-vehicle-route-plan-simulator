@@ -119,16 +119,179 @@ export interface GenerationProgress {
   totalTrips: number;
   routeSuccesses: number;
   routeFailures: number;
+  unroutableSkips?: number;
+  unroutablePois?: number;
   status: string;
+}
+
+export type RouteFetchResult = RouteGeometry | null | 'UNROUTABLE';
+
+const UNROUTABLE_PATTERNS: RegExp[] = [
+  /Could not find routable point/i,
+  /code['":\s]+2010/i,
+  /point .* not found/i,
+  /coordinate \d+:\s*-?\d+(\.\d+)?\s+-?\d+(\.\d+)?/i,
+];
+
+// Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
+// When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
+// leakage). When NULL/empty, no country filter is applied and the job relies on the snap-distance
+// filter + probeRoutability for safety. Returns null on lookup failure (logged WARN, non-fatal).
+async function fetchRegionCountryCodes(region: string, snowSql: SnowSqlFn): Promise<string[] | null> {
+  if (!region) return null;
+  const safe = region.replace(/'/g, "''");
+  try {
+    const rows = await snowSql(
+      `SELECT COUNTRY_CODES FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE REGION_NAME = '${safe}' LIMIT 1`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const raw = rows?.[0]?.COUNTRY_CODES;
+    if (raw == null) return null;
+    const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw) : null);
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    return arr.map((c: unknown) => String(c).trim()).filter(Boolean);
+  } catch (e: any) {
+    log('WARN', 'Studio', `REGION_REGISTRY country lookup failed (continuing without country filter): ${e.message?.slice(0, 200)}`, {
+      detail: { region },
+    });
+    return null;
+  }
+}
+
+// Per-profile snap-distance threshold (metres) used by filterRoutablePois.
+// Driving graphs are dense, so a snap > 300 m almost always means the point is
+// off the active country graph (e.g. across a national border). Cycling/foot
+// graphs are sparser and need a wider radius.
+const SNAP_THRESHOLD_M_BY_PROFILE: Record<string, number> = {
+  'driving-car': 300,
+  'driving-hgv': 300,
+  'cycling-regular': 2000,
+  'cycling-electric': 2000,
+  'cycling-mountain': 2000,
+  'cycling-road': 2000,
+  'foot-walking': 2000,
+  'foot-hiking': 2000,
+};
+
+function snapThresholdForProfile(profile: string): number {
+  return SNAP_THRESHOLD_M_BY_PROFILE[profile] ?? 2000;
+}
+
+function isUnroutableError(msg: string): boolean {
+  return UNROUTABLE_PATTERNS.some(p => p.test(msg));
+}
+
+async function filterRoutablePois(
+  pois: POI[],
+  profile: string,
+  region: string,
+  bbox: { min_lat: number; max_lat: number; min_lng: number; max_lng: number },
+  snowSql: SnowSqlFn,
+  onProgressLog?: (msg: string) => void,
+): Promise<POI[]> {
+  if (pois.length === 0) return pois;
+
+  const centerLat = (bbox.min_lat + bbox.max_lat) / 2;
+  const centerLng = (bbox.min_lng + bbox.max_lng) / 2;
+  const sourcesArr = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${centerLng}, ${centerLat}))`;
+  const profileEsc = profile.replace(/'/g, "''");
+  const regionEsc = region.replace(/'/g, "''");
+
+  const BATCH_SIZE = 1000;
+  const SNAP_THRESHOLD_M = snapThresholdForProfile(profile);
+  const reachable = new Array<boolean>(pois.length).fill(false);
+  let droppedNullDuration = 0;
+  let droppedFarSnap = 0;
+
+  for (let i = 0; i < pois.length; i += BATCH_SIZE) {
+    const batch = pois.slice(i, i + BATCH_SIZE);
+    const destsArr = 'ARRAY_CONSTRUCT(' +
+      batch.map(p => `ARRAY_CONSTRUCT(${p.lng}, ${p.lat})`).join(',') +
+      ')';
+    const sql = `
+      SELECT TO_VARCHAR(M:durations[0]) AS DURATIONS,
+             TO_VARCHAR(M:destinations) AS DESTINATIONS
+      FROM (
+        SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR(
+          '${profileEsc}',
+          ${sourcesArr},
+          ${destsArr},
+          '${regionEsc}'
+        ) AS M
+      )
+    `;
+    try {
+      const rows = await snowSql(sql);
+      const rawDur = rows?.[0]?.DURATIONS;
+      const rawDest = rows?.[0]?.DESTINATIONS;
+      if (!rawDur) {
+        log('WARN', 'Studio', `POI filter batch ${i}-${i + batch.length}: empty result, keeping batch`);
+        for (let j = 0; j < batch.length; j++) reachable[i + j] = true;
+        continue;
+      }
+      const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
+      const destinations = rawDest ? JSON.parse(typeof rawDest === 'string' ? rawDest : String(rawDest)) : [];
+      if (!Array.isArray(durations)) {
+        log('WARN', 'Studio', `POI filter batch ${i}: non-array durations, keeping batch`);
+        for (let j = 0; j < batch.length; j++) reachable[i + j] = true;
+        continue;
+      }
+      for (let j = 0; j < batch.length; j++) {
+        const d = durations[j];
+        if (d == null || !Number.isFinite(Number(d))) {
+          droppedNullDuration++;
+          continue;
+        }
+        const dest = Array.isArray(destinations) ? destinations[j] : null;
+        // Treat a null destination object as not routable: ORS could not snap the POI to any
+        // road in the active graph. Older code kept these because snap was undefined.
+        if (dest == null) {
+          droppedNullDuration++;
+          continue;
+        }
+        const snap = dest?.snapped_distance;
+        if (snap == null || !Number.isFinite(Number(snap)) || Number(snap) > SNAP_THRESHOLD_M) {
+          droppedFarSnap++;
+          continue;
+        }
+        reachable[i + j] = true;
+      }
+    } catch (e: any) {
+      log('WARN', 'Studio', `POI filter batch ${i} failed (non-fatal): ${e.message?.slice(0, 200)}`);
+      for (let j = 0; j < batch.length; j++) reachable[i + j] = true;
+    }
+  }
+
+  const filtered = pois.filter((_p, i) => reachable[i]);
+  const dropped = pois.length - filtered.length;
+  log('INFO', 'Studio', `POI routability filter: ${filtered.length}/${pois.length} routable`, {
+    detail: { dropped, droppedNullDuration, droppedFarSnap, profile, region, source: [centerLng, centerLat], snapThresholdM: SNAP_THRESHOLD_M },
+  });
+
+  if (filtered.length < Math.max(50, Math.floor(pois.length * 0.5))) {
+    const msg = `POI filter dropped too many (${dropped}/${pois.length}); falling back to unfiltered list (probable bbox-centroid mismatch with graph)`;
+    log('WARN', 'Studio', msg);
+    onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable - too aggressive, using unfiltered list`);
+    return pois;
+  }
+
+  onProgressLog?.(`POI filter: ${filtered.length}/${pois.length} routable (dropped ${droppedNullDuration} unreachable, ${droppedFarSnap} far-snap)`);
+  return filtered;
 }
 
 export async function loadPOIs(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
+  onLog?: (msg: string) => void,
 ): Promise<POI[]> {
   const { bbox } = config;
   const cats = config.poi_categories || ['restaurant', 'bar', 'hotel', 'corporate_or_business_office'];
   const catFilter = cats.map(c => `'${c}'`).join(',');
+  const countryCodes = await fetchRegionCountryCodes(config.region, snowSql);
+  const countryFilter = countryCodes && countryCodes.length
+    ? `
+      AND ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
+    : '';
   const sql = `
     SELECT ID AS LOCATION_ID, NAMES::VARIANT:primary AS NAME,
            BASIC_CATEGORY AS CATEGORY,
@@ -136,10 +299,10 @@ export async function loadPOIs(
     FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
     WHERE ST_Y(GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
       AND ST_X(GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
-      AND BASIC_CATEGORY IN (${catFilter})
+      AND BASIC_CATEGORY IN (${catFilter})${countryFilter}
     LIMIT 5000`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
-    detail: { categories: cats, bbox, mode: config.mode, sql: sql.trim().replace(/\s+/g, ' ') },
+    detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, sql: sql.trim().replace(/\s+/g, ' ') },
   });
   try {
     const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
@@ -161,7 +324,8 @@ export async function loadPOIs(
       log('INFO', 'Studio', `Loaded ${pois.length} POIs from Overture Maps`, {
         detail: { source: 'overture', categories: catCounts, types: typeCounts },
       });
-      return pois;
+      const sanitized = await filterRoutablePois(pois, config.ors_profile, config.region, bbox, snowSql, onLog);
+      return sanitized;
     }
     log('ERROR', 'Studio', `Overture Maps returned 0 POIs for bbox`, {
       detail: { bbox, categories: cats },
@@ -181,6 +345,40 @@ export async function loadPOIs(
       `Ensure the OVERTURE_MAPS__PLACES share is mounted. Error: ${e.message?.slice(0, 200)}`
     );
   }
+}
+
+// Pre-flight probe: pick N random ordered pairs from the (post-filter) POI list and
+// confirm they actually route on the active graph. Catches any remaining POI/graph
+// mismatch before vehicles are generated. For multi-country regions (no country filter)
+// this is the only safety net, so we keep it conservative.
+export async function probeRoutability(
+  pois: POI[],
+  profile: string,
+  region: string,
+  snowSql: SnowSqlFn,
+  opts?: { sampleSize?: number; minSuccess?: number; rng?: () => number },
+): Promise<{ ok: boolean; success: number; total: number; failures: Array<{ origin: [number, number]; dest: [number, number]; reason: string }> }> {
+  const sampleSize = opts?.sampleSize ?? 5;
+  const minSuccess = opts?.minSuccess ?? 3;
+  const rng = opts?.rng ?? Math.random;
+  if (pois.length < 2) {
+    return { ok: false, success: 0, total: 0, failures: [{ origin: [0, 0], dest: [0, 0], reason: 'fewer than 2 POIs available' }] };
+  }
+  const failures: Array<{ origin: [number, number]; dest: [number, number]; reason: string }> = [];
+  let success = 0;
+  for (let i = 0; i < sampleSize; i++) {
+    const a = pois[Math.floor(rng() * pois.length)];
+    let b = pois[Math.floor(rng() * pois.length)];
+    let guard = 0;
+    while (b.location_id === a.location_id && guard++ < 10) b = pois[Math.floor(rng() * pois.length)];
+    const result = await fetchRoute(a.lat, a.lng, b.lat, b.lng, profile, region, snowSql);
+    if (result && result !== 'UNROUTABLE') {
+      success++;
+    } else {
+      failures.push({ origin: [a.lat, a.lng], dest: [b.lat, b.lng], reason: result === 'UNROUTABLE' ? 'UNROUTABLE' : 'hard_fail' });
+    }
+  }
+  return { ok: success >= minSuccess, success, total: sampleSize, failures };
 }
 
 function mapCategoryToType(category: string, mode: string): string {
@@ -249,33 +447,40 @@ async function fetchRoute(
   originLat: number, originLng: number,
   destLat: number, destLng: number,
   profile: string,
+  region: string,
   snowSql: SnowSqlFn,
-): Promise<RouteGeometry | null> {
+): Promise<RouteFetchResult> {
   const sql = `
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
     FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
       ARRAY_CONSTRUCT(${originLng},${originLat}),
-      ARRAY_CONSTRUCT(${destLng},${destLat})
+      ARRAY_CONSTRUCT(${destLng},${destLat}),
+      '${region.replace(/'/g, "''")}'
     ))`;
   try {
     const rows = await snowSql(sql);
     if (!rows.length) {
-      log('WARN', 'Studio', 'Route returned empty result', {
-        detail: { origin: [originLat, originLng], dest: [destLat, destLng], profile },
-      });
-      return null;
+      return 'UNROUTABLE';
     }
+    const dist = rows[0].DISTANCE;
+    const dur = rows[0].DURATION;
     const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
     const coords: [number, number][] = geo?.coordinates || [];
-    if (coords.length < 2) return null;
+    if (coords.length < 2 || dist == null || dur == null) {
+      return 'UNROUTABLE';
+    }
     return {
       coordinates: coords.map(c => [c[1], c[0]]),
-      distance_m: Number(rows[0].DISTANCE) || 0,
-      duration_sec: Number(rows[0].DURATION) || 0,
+      distance_m: Number(dist) || 0,
+      duration_sec: Number(dur) || 0,
     };
   } catch (e: any) {
-    log('WARN', 'Studio', `Route fetch failed: ${e.message?.slice(0, 300)}`, {
+    const msg = String(e?.message || '');
+    if (isUnroutableError(msg)) {
+      return 'UNROUTABLE';
+    }
+    log('WARN', 'Studio', `Route fetch failed: ${msg.slice(0, 300)}`, {
       detail: { origin: [originLat, originLng], dest: [destLat, destLng], profile },
     });
     return null;
@@ -287,8 +492,9 @@ async function fetchDetourRoute(
   waypointLat: number, waypointLng: number,
   destLat: number, destLng: number,
   profile: string,
+  region: string,
   snowSql: SnowSqlFn,
-): Promise<RouteGeometry | null> {
+): Promise<RouteFetchResult> {
   const coordsJson = JSON.stringify({
     coordinates: [
       [originLng, originLat],
@@ -300,21 +506,28 @@ async function fetchDetourRoute(
     SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
     FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
       '${profile}',
-      PARSE_JSON('${coordsJson}')::VARIANT
+      PARSE_JSON('${coordsJson}')::VARIANT,
+      '${region.replace(/'/g, "''")}'
     ))`;
   try {
     const rows = await snowSql(sql);
-    if (!rows.length) return null;
+    if (!rows.length) return 'UNROUTABLE';
+    const dist = rows[0].DISTANCE;
+    const dur = rows[0].DURATION;
     const geo = typeof rows[0].GEO_STR === 'string' ? JSON.parse(rows[0].GEO_STR) : rows[0].GEO_STR;
     const coords: [number, number][] = geo?.coordinates || [];
-    if (coords.length < 2) return null;
+    if (coords.length < 2 || dist == null || dur == null) return 'UNROUTABLE';
     return {
       coordinates: coords.map(c => [c[1], c[0]]),
-      distance_m: Number(rows[0].DISTANCE) || 0,
-      duration_sec: Number(rows[0].DURATION) || 0,
+      distance_m: Number(dist) || 0,
+      duration_sec: Number(dur) || 0,
     };
   } catch (e: any) {
-    log('WARN', 'Studio', `Detour route fetch failed: ${e.message?.slice(0, 300)}`, {
+    const msg = String(e?.message || '');
+    if (isUnroutableError(msg)) {
+      return 'UNROUTABLE';
+    }
+    log('WARN', 'Studio', `Detour route fetch failed: ${msg.slice(0, 300)}`, {
       detail: { profile },
     });
     return null;
@@ -337,6 +550,18 @@ function pickDestination(
   const nearby = destPois.filter(p => haversineKm(origin.lat, origin.lng, p.lat, p.lng) <= maxKm);
   const pool = nearby.length > 0 ? nearby : destPois;
   return pool[Math.floor(rng() * pool.length)];
+}
+
+function pickNearestRoutableNeighbor(
+  origin: POI, pois: POI[], rng: () => number,
+): POI | null {
+  const NEIGHBOR_RADIUS_KM = 10;
+  const candidates = pois.filter(p =>
+    p.location_id !== origin.location_id &&
+    haversineKm(origin.lat, origin.lng, p.lat, p.lng) <= NEIGHBOR_RADIUS_KM
+  );
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(rng() * candidates.length)];
 }
 
 function pickDetourWaypoint(
@@ -540,6 +765,7 @@ export async function* generateTelemetry(
   snowSql: SnowSqlFn,
   onProgress?: (p: GenerationProgress) => void,
   abortSignal?: { aborted: boolean },
+  onLog?: (msg: string) => void,
 ): AsyncGenerator<GenerationEvent, void, void> {
   const rng = createRng(config.time.start_date.length * 31 + config.fleet.num_vehicles);
   const vt = resolveVehicleType(config);
@@ -552,7 +778,26 @@ export async function* generateTelemetry(
       driverProfiles: Object.keys(config.driver_profiles),
     },
   });
-  const pois = await loadPOIs(config, snowSql);
+  const pois = await loadPOIs(config, snowSql, onLog);
+
+  // Pre-flight probe: confirm at least 3 of 5 random POI pairs actually route on the
+  // active graph before we burn time generating telemetry. This catches both the
+  // historical Germany/CH border-leak and any other graph/POI mismatch (wrong profile,
+  // unprovisioned region, partial graph).
+  const probe = await probeRoutability(pois, config.ors_profile, config.region, snowSql, { rng });
+  log('INFO', 'Studio', `Pre-flight POI routability probe: ${probe.success}/${probe.total} succeeded`, {
+    detail: { region: config.region, profile: config.ors_profile, failures: probe.failures.slice(0, 3) },
+  });
+  onLog?.(`Pre-flight routability: ${probe.success}/${probe.total} of random POI pairs routed`);
+  if (!probe.ok) {
+    const sample = probe.failures.slice(0, 3).map(f => `(${f.origin[0].toFixed(4)},${f.origin[1].toFixed(4)})->(${f.dest[0].toFixed(4)},${f.dest[1].toFixed(4)}):${f.reason}`).join('; ');
+    throw new Error(
+      `POI/graph mismatch: only ${probe.success}/${probe.total} pre-flight pairs routed for ` +
+      `region=${config.region} profile=${config.ors_profile}. ` +
+      `Likely causes: bbox extends beyond country graph, wrong profile for region, or graph not yet ready. ` +
+      `Sample failures: ${sample}`
+    );
+  }
 
   const fleet = buildFleet(config, pois, rng);
   const profileBreakdown: Record<string, number> = {};
@@ -574,11 +819,14 @@ export async function* generateTelemetry(
   let routeSuccesses = 0;
   let routeFailures = 0;
   let consecutiveFails = 0;
+  let unroutableSkips = 0;
+  const unroutablePoiIds = new Set<string>();
   const MAX_CONSECUTIVE_FAILURES = 25;
   const MIN_ATTEMPTS_BEFORE_STOP = 20;
   const MAX_ROUTE_RETRIES = 3;
   const RECOVERY_THRESHOLD = 10;
-  let recoveryAttempted = false;
+  const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+  let lastRecoveryMs = 0;
 
   for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
     if (abortSignal?.aborted) return;
@@ -651,12 +899,36 @@ export async function* generateTelemetry(
         let plannedRoute: RouteGeometry | null = null;
         let actualRoute: RouteGeometry | null = null;
         let isDetour = false;
+        let attemptsUnroutable = 0;
+        let attemptsHardFail = 0;
 
         for (let attempt = 0; attempt < MAX_ROUTE_RETRIES; attempt++) {
-          plannedRoute = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, snowSql);
-          if (plannedRoute) break;
+          const result = await fetchRoute(lifecycle.lat, lifecycle.lng, destPoi.lat, destPoi.lng, config.ors_profile, config.region, snowSql);
+          if (result && result !== 'UNROUTABLE') {
+            plannedRoute = result;
+            break;
+          }
+          if (result === 'UNROUTABLE') {
+            attemptsUnroutable++;
+            if (destPoi.location_id) unroutablePoiIds.add(destPoi.location_id);
+            if (currentOriginPoi.location_id) unroutablePoiIds.add(currentOriginPoi.location_id);
+          } else {
+            attemptsHardFail++;
+          }
           if (attempt < MAX_ROUTE_RETRIES - 1) {
-            destPoi = pickDestination(currentOriginPoi, pois, config, rng);
+            const candidatePois = pois.filter(p => !unroutablePoiIds.has(p.location_id));
+            const fromPois = candidatePois.length > 10 ? candidatePois : pois;
+            destPoi = pickDestination(currentOriginPoi, fromPois, config, rng);
+            if (attempt === MAX_ROUTE_RETRIES - 2) {
+              const nearbyPoi = pickNearestRoutableNeighbor(currentOriginPoi, fromPois, rng);
+              if (nearbyPoi) {
+                currentOriginPoi = nearbyPoi;
+                lifecycle.lat = nearbyPoi.lat;
+                lifecycle.lng = nearbyPoi.lng;
+                lifecycle.location_id = nearbyPoi.location_id;
+                lifecycle.location_type = nearbyPoi.location_type;
+              }
+            }
           }
         }
 
@@ -664,11 +936,14 @@ export async function* generateTelemetry(
           routeSuccesses++;
           consecutiveFails = 0;
           totalTrips++;
+        } else if (attemptsHardFail === 0 && attemptsUnroutable > 0) {
+          unroutableSkips++;
+          continue;
         } else {
           routeFailures++;
           consecutiveFails++;
-          if (consecutiveFails === RECOVERY_THRESHOLD && !recoveryAttempted) {
-            recoveryAttempted = true;
+          if (consecutiveFails >= RECOVERY_THRESHOLD && Date.now() - lastRecoveryMs > RECOVERY_COOLDOWN_MS) {
+            lastRecoveryMs = Date.now();
             log('WARN', 'Studio', `${consecutiveFails} consecutive failures, attempting ORS service recovery...`, {
               detail: { region: config.region, profile: config.ors_profile, routeSuccesses },
             });
@@ -701,7 +976,10 @@ export async function* generateTelemetry(
             }
             yield {
               type: 'stopped',
-              reason: `ORS became unavailable after ${consecutiveFails} consecutive route failures`,
+              reason: `Stopped after ${consecutiveFails} consecutive route failures ` +
+                      `(profile=${config.ors_profile}, region=${config.region}, ` +
+                      `${routeSuccesses}/${routeSuccesses + routeFailures} routes succeeded). ` +
+                      `If ORS is healthy, many POIs may be unroutable for this profile.`,
               completedDays: dayOffset,
               totalDays,
               routeSuccesses,
@@ -709,6 +987,7 @@ export async function* generateTelemetry(
             } as GenerationEvent;
             return;
           }
+          break;
         }
 
         if (shouldDetour && plannedRoute) {
@@ -718,11 +997,13 @@ export async function* generateTelemetry(
               lifecycle.lat, lifecycle.lng,
               waypoint.lat, waypoint.lng,
               destPoi.lat, destPoi.lng,
-              config.ors_profile, snowSql
+              config.ors_profile, config.region, snowSql
             );
-            if (detoured && detoured.coordinates.length >= 2) {
+            if (detoured && detoured !== 'UNROUTABLE' && detoured.coordinates.length >= 2) {
               actualRoute = detoured;
               isDetour = true;
+            } else if (detoured === 'UNROUTABLE' && waypoint.location_id) {
+              unroutablePoiIds.add(waypoint.location_id);
             }
           }
         }
@@ -796,11 +1077,14 @@ export async function* generateTelemetry(
         totalTrips,
         routeSuccesses,
         routeFailures,
+        unroutableSkips,
+        unroutablePois: unroutablePoiIds.size,
         status: `Day ${dayOffset + 1}: ${member.vehicle_id} (${dayBatch.length} pts, ${totalTrips} trips)`,
       });
     }
 
     totalPoints += dayBatch.length;
+    const unroutableSuffix = unroutableSkips > 0 ? `, ${unroutableSkips} unroutable POI skips (${unroutablePoiIds.size} unique)` : '';
     onProgress?.({
       day: dayOffset + 1,
       totalDays,
@@ -809,7 +1093,9 @@ export async function* generateTelemetry(
       totalTrips,
       routeSuccesses,
       routeFailures,
-      status: `Day ${dayOffset + 1}/${totalDays} complete: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips`,
+      unroutableSkips,
+      unroutablePois: unroutablePoiIds.size,
+      status: `Day ${dayOffset + 1}/${totalDays} complete: ${dayBatch.length.toLocaleString()} points, ${totalTrips} trips${unroutableSuffix}`,
     });
 
     if (dayBatch.length > 0) {

@@ -6,6 +6,7 @@ import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
+import { reconcileStaleJobs } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
 
@@ -256,12 +257,12 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
-    // Use the most recent non-failed job record for this region so that an
-    // in-flight RUNNING job's requested profiles drive the UI rather than
-    // falling through to the hardcoded DEFAULT_PROFILES (which would surface
-    // phantom profiles like 'driving-car' for a build that only requested
-    // 'driving-hgv'). FAILED/ERROR rows are excluded.
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL AND COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') ORDER BY COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
+    // Prefer the most recent non-failed job record for this region so that an
+    // in-flight RUNNING job's requested profiles drive the UI. If only FAILED
+    // rows exist, fall back to the most recent of those (still better than
+    // DEFAULT_PROFILES, which would surface phantom profiles like 'driving-car'
+    // for a job that only requested 'driving-hgv').
+    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END, COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
     const profileStr = rows?.[0]?.PROFILES;
     if (profileStr && typeof profileStr === 'string') {
       return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);
@@ -429,6 +430,11 @@ app.get('/api/ors-readiness', async (_req, res) => {
       expected_profiles: expectedProfiles,
       graphs,
       graphs_persisted: probe.graphs_persisted || probe.build_ok,
+      // Forward gateway-side state codes so the UI can distinguish
+      // warming-up (graph loading) from suspended / not-provisioned.
+      gateway_state: data.error || null,
+      gateway_message: data.message || null,
+      graph_loading: data.graph_loading === true,
       markers: {
         osm_done: probe.osm_done,
         lm_done: probe.lm_done,
@@ -632,6 +638,21 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   function parseGeofabrikIndex(html: string, basePath: string): Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> {
     const rows: Array<{ name: string; pbf_url: string; size_mb: number | null; sub_path: string; has_sub: boolean }> = [];
     const trBlocks = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) || [];
+    // Geofabrik mixes two href conventions in the same site:
+    //   (1) Root-relative full path on top-level pages, e.g. on /north-america.html the
+    //       US row is href="north-america/us.html" and pbf is "north-america/us-latest.osm.pbf".
+    //       Detected by cleanHref/rawSub starting with `bp + '/'`.
+    //   (2) Dir-relative path on deeper pages, e.g. on /north-america/us.html the California row
+    //       is href="us/california.html" and pbf is "us/california-latest.osm.pbf"
+    //       (relative to /north-america/, NOT to /north-america/us/).
+    //       Detected by cleanHref/rawSub starting with bp's last segment + '/'.
+    //   (3) Absolute path: href="/russia.html" (Russia special case).
+    // The previous implementation always resolved relative hrefs against the Geofabrik
+    // root which produced 404 PBF URLs for every 3rd-level sub-region (US states,
+    // Canadian provinces, German Lander, etc.). Russia survived because its href is absolute.
+    const bp = basePath ? basePath.replace(/^\/|\/$/g, '') : '';
+    const bpLast = bp ? (bp.split('/').pop() || '') : '';
+    const bpParent = bp.includes('/') ? bp.split('/').slice(0, -1).join('/') : '';
     for (const block of trBlocks) {
       const pbfMatch = block.match(/<a\s+href="([^"]+\.osm\.pbf)"/i);
       if (!pbfMatch) continue;
@@ -656,21 +677,38 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
       const sizeMb = sizeMatch ? parseSize(sizeMatch[1]) : null;
 
       let pbfUrl: string;
-      if (pbfHref.startsWith('http')) pbfUrl = pbfHref;
-      else if (pbfHref.startsWith('/')) pbfUrl = GEOFABRIK_BASE + pbfHref;
-      else {
+      if (pbfHref.startsWith('http')) {
+        pbfUrl = pbfHref;
+      } else if (pbfHref.startsWith('/')) {
+        pbfUrl = GEOFABRIK_BASE + pbfHref;
+      } else {
         const cleanHref = pbfHref.replace(/^\.\//,  '');
-        pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        if (!bp) {
+          pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        } else if (cleanHref.startsWith(bp + '/')) {
+          // Convention (1): root-relative full path
+          pbfUrl = GEOFABRIK_BASE + '/' + cleanHref;
+        } else if (bpLast && cleanHref.startsWith(bpLast + '/')) {
+          // Convention (2): dir-relative; resolve against parent of bp
+          pbfUrl = GEOFABRIK_BASE + '/' + (bpParent ? bpParent + '/' : '') + cleanHref;
+        } else {
+          // Convention (3): purely relative to bp
+          pbfUrl = GEOFABRIK_BASE + '/' + bp + '/' + cleanHref;
+        }
       }
 
-      let subPath = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
-      if (subPath && !subPath.startsWith('http') && !subPath.startsWith('/')) {
-        const bp = basePath ? basePath.replace(/^\/|\/$/g, '') : '';
-        // Geofabrik uses continent-relative hrefs (e.g. "north-america/us.html" on north-america.html).
-        // Only prepend basePath when subPath does not already start with it, otherwise we get
-        // "north-america/north-america/us" which 404s. Russia uses an absolute "/russia.html" href
-        // and is handled by the !startsWith('/') guard above.
-        subPath = bp && !subPath.startsWith(bp + '/') ? bp + '/' + subPath : subPath;
+      const rawSub = link.replace(/\.html$/, '').replace(/^\.\//,  '').replace(/\/$/, '');
+      let subPath: string;
+      if (!rawSub || rawSub.startsWith('http') || rawSub.startsWith('/')) {
+        subPath = rawSub;
+      } else if (!bp) {
+        subPath = rawSub;
+      } else if (rawSub === bp || rawSub.startsWith(bp + '/')) {
+        subPath = rawSub;
+      } else if (bpLast && (rawSub === bpLast || rawSub.startsWith(bpLast + '/'))) {
+        subPath = (bpParent ? bpParent + '/' : '') + rawSub;
+      } else {
+        subPath = bp + '/' + rawSub;
       }
 
       rows.push({ name, pbf_url: pbfUrl, size_mb: sizeMb, sub_path: subPath.replace(/^\/|\/$/g, ''), has_sub: !!(link && (link.endsWith('/') || link.endsWith('.html'))) });
@@ -722,8 +760,15 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
         const subRegions = parseGeofabrikIndex(sub2Html, country.sub_path);
 
         for (const subReg of subRegions) {
-          const srId = subReg.sub_path.split('/').pop() || subReg.name.toLowerCase().replace(/ /g, '-');
-          const srBbox = gfBbox.get(srId) || gfBbox.get(subReg.name.toLowerCase().replace(/ /g, '-'));
+          const srKey = subReg.sub_path;
+          const srId = srKey.split('/').pop() || subReg.name.toLowerCase().replace(/ /g, '-');
+          // Geofabrik bbox keys (index-v1.json) use various conventions across regions.
+          // Try in order: full path, full path minus continent, last segment, lowercased name.
+          const srBbox =
+            gfBbox.get(srKey) ||
+            gfBbox.get(srKey.split('/').slice(1).join('/')) ||
+            gfBbox.get(srId) ||
+            gfBbox.get(subReg.name.toLowerCase().replace(/ /g, '-'));
           allRows.push({
             catalog_id: 'geofabrik:' + country.sub_path + '/' + subReg.name.toLowerCase().replace(/ /g, '-'),
             source: 'geofabrik',
@@ -2251,13 +2296,15 @@ app.get('/api/fleet-config', async (_req, res) => {
       }
     } catch {}
     let availableTypes: string[] = [];
+    let datasetPairs: { vehicleType: string; region: string }[] = [];
     try {
-      const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY ORDER BY VEHICLE_TYPE');
-      availableTypes = rows.map((r: any) => r.VEHICLE_TYPE).filter(Boolean);
+      const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ORDER BY VEHICLE_TYPE, REGION');
+      datasetPairs = rows.map((r: any) => ({ vehicleType: r.VEHICLE_TYPE, region: r.REGION })).filter((p: any) => p.vehicleType && p.region);
+      availableTypes = [...new Set(datasetPairs.map(p => p.vehicleType))];
     } catch {}
     if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
     if (availableTypes.length === 0) availableTypes = [vehicleType];
-    res.json({ vehicleType, region, availableTypes });
+    res.json({ vehicleType, region, availableTypes, datasetPairs });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2654,6 +2701,35 @@ app.post('/api/diagnostics/logs/clear', (_req, res) => {
   res.json({ ok: true });
 });
 
+// In-process LRU cache for /api/sample-road-points results, keyed by (region bbox + profile).
+// TTL avoids hammering Overture on rapid UI reshuffles. Reshuffle button bypasses via ?nocache=1.
+const ROAD_POINTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ROAD_POINTS_CACHE_MAX = 64;
+const roadPointsCache = new Map<string, { ts: number; points: [number, number][] }>();
+
+function roadPointsCacheKey(minLat: number, maxLat: number, minLon: number, maxLon: number, profile: string): string {
+  const r = (n: number) => n.toFixed(4);
+  return `${r(minLat)}|${r(maxLat)}|${r(minLon)}|${r(maxLon)}|${profile}`;
+}
+
+function roadPointsCacheGet(key: string): [number, number][] | null {
+  const hit = roadPointsCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > ROAD_POINTS_CACHE_TTL_MS) {
+    roadPointsCache.delete(key);
+    return null;
+  }
+  return hit.points;
+}
+
+function roadPointsCacheSet(key: string, points: [number, number][]): void {
+  if (roadPointsCache.size >= ROAD_POINTS_CACHE_MAX) {
+    const oldest = [...roadPointsCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 16);
+    for (const [k] of oldest) roadPointsCache.delete(k);
+  }
+  roadPointsCache.set(key, { ts: Date.now(), points });
+}
+
 app.get('/api/sample-road-points', async (req, res) => {
   const minLat = parseFloat(req.query.min_lat as string);
   const maxLat = parseFloat(req.query.max_lat as string);
@@ -2661,40 +2737,91 @@ app.get('/api/sample-road-points', async (req, res) => {
   const maxLon = parseFloat(req.query.max_lon as string);
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const profile = (req.query.profile as string) || 'driving-car';
+  const noCache = req.query.nocache === '1';
 
   if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
     return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
   }
-
-  let classFilter: string;
-  if (profile.startsWith('driving')) {
-    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
-  } else if (profile.startsWith('cycling')) {
-    classFilter = `class IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
-  } else {
-    classFilter = `class IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
+  if (minLat >= maxLat || minLon >= maxLon) {
+    return res.status(400).json({ ok: false, reason: 'invalid bbox: min must be < max' });
   }
 
+  const cacheKey = roadPointsCacheKey(minLat, maxLat, minLon, maxLon, profile);
+  if (!noCache) {
+    const cached = roadPointsCacheGet(cacheKey);
+    if (cached) {
+      return res.json({ ok: true, points: cached, cached: true });
+    }
+  }
+
+  let classFilter: string;
+  if (profile === 'driving-hgv') {
+    // HGV is forbidden on residential / living_street / service / track / unclassified
+    // by default ORS profile config. Restrict to truck-eligible road classes so
+    // ANY_VALUE per tile reliably lands on a routable HGV point (otherwise ORS returns
+    // engine error 2010 "Could not find routable point ..." or 3099 for isochrones).
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary')`;
+  } else if (profile.startsWith('driving')) {
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
+  } else if (profile.startsWith('cycling')) {
+    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
+  } else {
+    classFilter = `CLASS IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
+  }
+
+  // tileDeg: aim for ~50-100 tiles across the bbox; floor at 0.05 deg so small regions still get spread.
+  const lonSpan = maxLon - minLon;
+  const latSpan = maxLat - minLat;
+  const tileDeg = Math.max(Math.min(lonSpan, latSpan) / 8, 0.05);
+
+  // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
+  // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
+  // without an expensive ORDER BY RANDOM() over the full filtered set.
+  const sql = `
+    SELECT
+      ANY_VALUE(ST_X(ST_STARTPOINT(GEOMETRY))) AS LON,
+      ANY_VALUE(ST_Y(ST_STARTPOINT(GEOMETRY))) AS LAT
+    FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
+    WHERE SUBTYPE = 'road'
+      AND ${classFilter}
+      AND BBOX:xmin <= ${maxLon} AND BBOX:xmax >= ${minLon}
+      AND BBOX:ymin <= ${maxLat} AND BBOX:ymax >= ${minLat}
+    GROUP BY
+      FLOOR((BBOX:xmin::FLOAT + BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
+      FLOOR((BBOX:ymin::FLOAT + BBOX:ymax::FLOAT) / 2 / ${tileDeg})
+    LIMIT ${limit}`;
+
+  const TIMEOUT_MS = 10_000;
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('sample-road-points query timed out')), TIMEOUT_MS);
+  });
+
   try {
-    const sql = `
-      SELECT lon, lat FROM (
-        SELECT ST_X(ST_STARTPOINT(geometry)) AS lon,
-               ST_Y(ST_STARTPOINT(geometry)) AS lat
-        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
-        WHERE subtype = 'road'
-          AND ${classFilter}
-          AND ST_X(ST_STARTPOINT(geometry)) BETWEEN ${minLon} AND ${maxLon}
-          AND ST_Y(ST_STARTPOINT(geometry)) BETWEEN ${minLat} AND ${maxLat}
-      )
-      ORDER BY RANDOM()
-      LIMIT ${limit}`;
-    const rows = await runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO');
-    const points = (rows || [])
+    const rows = await Promise.race([
+      runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO'),
+      timeoutPromise,
+    ]) as any[];
+    if (timer) clearTimeout(timer);
+    const points: [number, number][] = (rows || [])
       .filter((r: any) => r.LON != null && r.LAT != null)
-      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)]);
+      // Defensive: keep only points actually inside the requested bbox (Overture indexes
+      // are based on segment bbox overlap, so a segment can poke outside the requested box).
+      .filter((r: any) => {
+        const lon = parseFloat(r.LON), lat = parseFloat(r.LAT);
+        return lon >= minLon && lon <= maxLon && lat >= minLat && lat <= maxLat;
+      })
+      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)] as [number, number]);
+    if (points.length > 0) roadPointsCacheSet(cacheKey, points);
     res.json({ ok: true, points });
   } catch (e: any) {
-    res.json({ ok: false, reason: e.message?.slice(0, 200) || 'Overture Transportation unavailable' });
+    if (timer) clearTimeout(timer);
+    const msg = e?.message || '';
+    const reason = /timed out/i.test(msg)
+      ? 'timeout'
+      : msg.slice(0, 200) || 'Overture Transportation unavailable';
+    log('WARN', 'SampleRoadPoints', `Failed for bbox=[${minLon},${minLat},${maxLon},${maxLat}] profile=${profile}: ${reason}`);
+    res.json({ ok: false, reason });
   }
 });
 
@@ -2820,5 +2947,8 @@ const PORT = parseInt(process.env.PORT || '3001');
 detectWarehouse().then(verifySessionUtc).then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ORS Control App server running on port ${PORT} (SPCS: ${IS_SPCS}, WH: ${SF_WAREHOUSE})`);
+  });
+  reconcileStaleJobs(runSql, 30).catch((e) => {
+    log('WARN', 'Studio', `Boot reconcile failed: ${e?.message?.slice(0, 200)}`);
   });
 });

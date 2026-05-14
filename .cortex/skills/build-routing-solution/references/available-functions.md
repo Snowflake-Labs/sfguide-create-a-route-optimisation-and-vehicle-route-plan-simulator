@@ -121,10 +121,11 @@ All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walkin
 
 ## Default Service Limits
 
-| Setting | Value | Description |
-|---------|-------|-------------|
-| maximum_distance | 1,500 km | Max route distance for all profiles |
-| maximum_range_time (isochrones) | 18,000 s (5 hours) | Max isochrone travel time |
-| maximum_range_distance (isochrones) | 1,500 km | Max isochrone travel distance |
-| maximum_intervals (isochrones) | 10 | Max isochrone intervals per request |
-| maximum_routes (matrix) | 250,000 | Max matrix routes |
+All configurable ORS service limits are set to `Integer.MAX_VALUE` (**2,147,483,647**) — i.e. effectively unlimited. ORS does not enforce a hard ceiling on these fields; the value is the practical Java `int` upper bound. This applies to:
+
+| Endpoint | Settings raised to 2,147,483,647 |
+|---|---|
+| routing (`profile_default.service`) | `maximum_distance`, `maximum_distance_dynamic_weights`, `maximum_distance_avoid_areas`, `maximum_distance_alternative_routes`, `maximum_distance_round_trip_routes`, `maximum_visited_nodes`, `maximum_waypoints`, `maximum_snapping_radius`, `maximum_avoid_polygon_area`, `maximum_avoid_polygon_extent` |
+| matrix | `maximum_routes`, `maximum_routes_flexible`, `maximum_visited_nodes`, `maximum_search_radius` |
+| isochrones | `maximum_locations`, `maximum_intervals`, `maximum_range_distance`, `maximum_range_time` |
+| snap | `maximum_locations` |

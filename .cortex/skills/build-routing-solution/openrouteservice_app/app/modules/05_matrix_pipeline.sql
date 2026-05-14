@@ -664,7 +664,7 @@ BEGIN
         EXCEPTION WHEN OTHER THEN svc_inst := 1;
         END;
     END IF;
-    parallel_count := LEAST(GREATEST(svc_inst * 2, 2), 4);
+    parallel_count := LEAST(GREATEST(svc_inst * 2, 2), 8);
 
     chunk_size := GREATEST(CEIL(queue_count / parallel_count), 1);
     chunk_start := 1;
@@ -776,14 +776,28 @@ DECLARE
     sample_error VARCHAR DEFAULT '';
     rs RESULTSET;
     wait_attempt INTEGER DEFAULT 0;
-    max_wait_attempts INTEGER DEFAULT 20;
+    max_wait_attempts INTEGER DEFAULT 40;
     profile_ready BOOLEAN DEFAULT FALSE;
     status_json VARIANT;
     filter_start TIMESTAMP_NTZ;
     used_road_filter BOOLEAN DEFAULT FALSE;
     hex_before INTEGER DEFAULT 0;
     resolution_int INTEGER;
+    region_pool_name VARCHAR;
+    region_svc_name VARCHAR;
+    orig_region_pool_max_nodes INTEGER DEFAULT NULL;
+    orig_region_svc_min INTEGER DEFAULT NULL;
+    orig_region_svc_max INTEGER DEFAULT NULL;
+    orig_gateway_pool_max_nodes INTEGER DEFAULT NULL;
+    orig_gateway_svc_min INTEGER DEFAULT NULL;
+    orig_gateway_svc_max INTEGER DEFAULT NULL;
+    target_region_nodes INTEGER DEFAULT 4;
+    target_region_instances INTEGER DEFAULT 4;
+    target_gateway_nodes INTEGER DEFAULT 8;
+    target_gateway_instances INTEGER DEFAULT 8;
 BEGIN
+    region_pool_name := 'ORS_POOL_' || UPPER(P_REGION);
+    region_svc_name := 'ORS_SERVICE_' || UPPER(P_REGION);
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
     prefix := 'travel_matrix.' || UPPER(P_REGION) || '_' || safe_profile;
 
@@ -836,6 +850,86 @@ BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(P_REGION) || ' SET AUTO_SUSPEND_SECS = 0';
     EXCEPTION WHEN OTHER THEN
         BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 0; EXCEPTION WHEN OTHER THEN NULL; END;
+    END;
+
+    -- ===== Compute pool / service scale-up for matrix build =====
+    -- Capture original sizes, then bump per-region pool to 4 nodes / ORS service to 4
+    -- instances and gateway pool to 8 nodes / gateway service to 8 instances. All
+    -- ALTERs are wrapped in EXCEPTION WHEN OTHER THEN NULL so a quota or permission
+    -- failure degrades performance but never aborts the build. Sizes are restored
+    -- at every exit point (success, early-error returns, EXCEPTION block).
+    --
+    -- NOTE: If two matrix builds run concurrently against the same region, the
+    -- second build will capture the *already-bumped* values as its "original",
+    -- so on completion it will leave the pool/service at the bumped size. This
+    -- is acceptable since both jobs benefit from the larger pool; the operator
+    -- can call OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND() / manually
+    -- ALTER back to baseline once all builds complete.
+    IF (NOT is_default) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW COMPUTE POOLS LIKE ''' || region_pool_name || '''';
+            LET rp_rs RESULTSET := (
+                SELECT "max_nodes"::INTEGER AS MN
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1
+            );
+            LET rp_c CURSOR FOR rp_rs;
+            FOR r IN rp_c DO orig_region_pool_max_nodes := r.MN; END FOR;
+        EXCEPTION WHEN OTHER THEN orig_region_pool_max_nodes := NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || region_svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+            LET rs_rs RESULTSET := (
+                SELECT "min_instances"::INTEGER AS MN, "max_instances"::INTEGER AS MX
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1
+            );
+            LET rs_c CURSOR FOR rs_rs;
+            FOR r IN rs_c DO orig_region_svc_min := r.MN; orig_region_svc_max := r.MX; END FOR;
+        EXCEPTION WHEN OTHER THEN orig_region_svc_min := NULL; orig_region_svc_max := NULL;
+        END;
+    END IF;
+    BEGIN
+        SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';
+        LET gp_rs RESULTSET := (
+            SELECT "max_nodes"::INTEGER AS MN
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1
+        );
+        LET gp_c CURSOR FOR gp_rs;
+        FOR r IN gp_c DO orig_gateway_pool_max_nodes := r.MN; END FOR;
+    EXCEPTION WHEN OTHER THEN orig_gateway_pool_max_nodes := NULL;
+    END;
+    BEGIN
+        SHOW SERVICES LIKE 'routing_gateway_service' IN SCHEMA OPENROUTESERVICE_APP.CORE;
+        LET gs_rs RESULTSET := (
+            SELECT "min_instances"::INTEGER AS MN, "max_instances"::INTEGER AS MX
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1
+        );
+        LET gs_c CURSOR FOR gs_rs;
+        FOR r IN gs_c DO orig_gateway_svc_min := r.MN; orig_gateway_svc_max := r.MX; END FOR;
+    EXCEPTION WHEN OTHER THEN orig_gateway_svc_min := NULL; orig_gateway_svc_max := NULL;
+    END;
+
+    IF (NOT is_default) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || region_pool_name ||
+                              ' SET MAX_NODES = ' || target_region_nodes;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || region_svc_name ||
+                              ' SET MIN_INSTANCES = ' || target_region_instances ||
+                              ' MAX_INSTANCES = ' || target_region_instances;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ' || target_gateway_nodes;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.routing_gateway_service' ||
+                          ' SET MIN_INSTANCES = ' || target_gateway_instances ||
+                          ' MAX_INSTANCES = ' || target_gateway_instances;
+    EXCEPTION WHEN OTHER THEN NULL;
     END;
 
     EXECUTE IMMEDIATE 'UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS SET MESSAGE=''Waiting for ORS profile ' || P_PROFILE || ' to become ready...'' WHERE JOB_ID=''' || P_JOB_ID || '''';
@@ -978,7 +1072,7 @@ BEGIN
         EXCEPTION WHEN OTHER THEN svc_instances := 1;
         END;
     END IF;
-    LET parallel_count INTEGER := LEAST(GREATEST(svc_instances * 2, 2), 4);
+    LET parallel_count INTEGER := LEAST(GREATEST(svc_instances * 2, 2), 8);
     LET chunk_size INTEGER := GREATEST(CEIL(queue_count / parallel_count), 1);
     LET chunk_start INTEGER := 1;
     LET chunk_end INTEGER;
@@ -1097,6 +1191,35 @@ BEGIN
         EXCEPTION WHEN OTHER THEN
             BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
         END;
+        IF (orig_region_pool_max_nodes IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || region_pool_name ||
+                                  ' SET MAX_NODES = ' || orig_region_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_region_svc_min IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || region_svc_name ||
+                                  ' SET MIN_INSTANCES = ' || orig_region_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_region_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_pool_max_nodes IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ' || orig_gateway_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_svc_min IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.routing_gateway_service' ||
+                                  ' SET MIN_INSTANCES = ' || orig_gateway_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_gateway_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         RETURN 'Job ' || :P_JOB_ID || ' failed: all ' || raw_count || ' ORS responses were errors';
     END IF;
 
@@ -1141,6 +1264,35 @@ BEGIN
         EXCEPTION WHEN OTHER THEN
             BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
         END;
+        IF (orig_region_pool_max_nodes IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || region_pool_name ||
+                                  ' SET MAX_NODES = ' || orig_region_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_region_svc_min IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || region_svc_name ||
+                                  ' SET MIN_INSTANCES = ' || orig_region_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_region_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_pool_max_nodes IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ' || orig_gateway_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_svc_min IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.routing_gateway_service' ||
+                                  ' SET MIN_INSTANCES = ' || orig_gateway_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_gateway_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         RETURN 'Job ' || :P_JOB_ID || ' failed: 0 pairs after flatten';
     END IF;
 
@@ -1162,6 +1314,35 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
     END;
+    IF (orig_region_pool_max_nodes IS NOT NULL AND NOT is_default) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || region_pool_name ||
+                              ' SET MAX_NODES = ' || orig_region_pool_max_nodes;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+    IF (orig_region_svc_min IS NOT NULL AND NOT is_default) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || region_svc_name ||
+                              ' SET MIN_INSTANCES = ' || orig_region_svc_min ||
+                              ' MAX_INSTANCES = ' || orig_region_svc_max;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+    IF (orig_gateway_pool_max_nodes IS NOT NULL) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ' || orig_gateway_pool_max_nodes;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+    IF (orig_gateway_svc_min IS NOT NULL) THEN
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.routing_gateway_service' ||
+                              ' SET MIN_INSTANCES = ' || orig_gateway_svc_min ||
+                              ' MAX_INSTANCES = ' || orig_gateway_svc_max;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
 
     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || matrix_count || ' travel time pairs';
 EXCEPTION
@@ -1176,6 +1357,35 @@ EXCEPTION
         EXCEPTION WHEN OTHER THEN
             BEGIN ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400; EXCEPTION WHEN OTHER THEN NULL; END;
         END;
+        IF (orig_region_pool_max_nodes IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || region_pool_name ||
+                                  ' SET MAX_NODES = ' || orig_region_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_region_svc_min IS NOT NULL AND NOT is_default) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || region_svc_name ||
+                                  ' SET MIN_INSTANCES = ' || orig_region_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_region_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_pool_max_nodes IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET MAX_NODES = ' || orig_gateway_pool_max_nodes;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+        IF (orig_gateway_svc_min IS NOT NULL) THEN
+            BEGIN
+                EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.routing_gateway_service' ||
+                                  ' SET MIN_INSTANCES = ' || orig_gateway_svc_min ||
+                                  ' MAX_INSTANCES = ' || orig_gateway_svc_max;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         UPDATE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
         SET STATUS='ERROR', ERROR_MSG=:err_msg, COMPLETED_AT=SYSDATE()
         WHERE JOB_ID = :P_JOB_ID;

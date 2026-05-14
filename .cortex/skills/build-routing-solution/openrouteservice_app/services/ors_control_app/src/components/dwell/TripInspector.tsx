@@ -2,16 +2,20 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 
 export default function TripInspector() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [trips, setTrips] = useState<any[]>([]);
   const [tripsLoading, setTripsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedTrip, setSelectedTrip] = useState<string | null>(null);
   const [tripPoints, setTripPoints] = useState<any[]>([]);
   const [dwellPoints, setDwellPoints] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setTripsLoading(true);
@@ -26,7 +30,11 @@ export default function TripInspector() {
       setTripsLoading(false);
       setError('Failed to load trips. Check that the API is reachable.');
     });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);

@@ -7,6 +7,10 @@ import { RES_LABELS } from '../types';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
+type GradientMetric = 'time' | 'distance';
+type ScaleMode = 'auto' | 'fixed';
+type TimeUnit = 'min' | 'hr';
+
 function RoadFilterBadge({ on }: { on: boolean | undefined }) {
   if (!on) return null;
   return (
@@ -29,6 +33,16 @@ function RoadFilterBadge({ on }: { on: boolean | undefined }) {
     >
       road-aware
     </span>
+  );
+}
+
+function SegControl<T extends string>({ value, options, onChange }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <div className="seg-control">
+      {options.map(o => (
+        <button key={o.value} className={`seg-btn${value === o.value ? ' active' : ''}`} onClick={() => onChange(o.value)}>{o.label}</button>
+      ))}
+    </div>
   );
 }
 
@@ -63,15 +77,62 @@ function formatBytes(bytes: number): string {
   return bytes + ' B';
 }
 
+// 12-stop Viridis palette (sampled from matplotlib reference).
+// Perceptually uniform, monotonic luminance, colorblind-friendly.
 const COLORS: [number, number, number][] = [
-  [103, 0, 161],
-  [137, 8, 165],
-  [170, 30, 149],
-  [199, 55, 118],
-  [221, 85, 83],
-  [237, 121, 47],
-  [245, 160, 12],
+  [68, 1, 84],
+  [72, 35, 116],
+  [64, 67, 135],
+  [52, 94, 141],
+  [41, 120, 142],
+  [32, 144, 140],
+  [34, 167, 132],
+  [68, 190, 112],
+  [121, 209, 81],
+  [189, 222, 38],
+  [253, 231, 36],
+  [253, 231, 60],
 ];
+
+function rgb(c: [number, number, number]): string {
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function lerpColor(stops: [number, number, number][], t: number): [number, number, number] {
+  const clamped = Math.max(0, Math.min(1, t));
+  const scaled = clamped * (stops.length - 1);
+  const i = Math.floor(scaled);
+  const f = scaled - i;
+  if (i >= stops.length - 1) return stops[stops.length - 1];
+  const a = stops[i];
+  const b = stops[i + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+const KM_PER_M = 1 / 1000;
+
+function rawValue(d: ReachabilityData, metric: GradientMetric, timeUnit: TimeUnit): number {
+  if (metric === 'time') {
+    return timeUnit === 'min' ? d.travel_time_secs / 60 : d.travel_time_secs / 3600;
+  }
+  return d.distance_meters * KM_PER_M;
+}
+
+function unitSuffix(metric: GradientMetric, timeUnit: TimeUnit): string {
+  if (metric === 'time') return timeUnit === 'min' ? 'min' : 'hr';
+  return 'km';
+}
+
+function fmtLegend(val: number): string {
+  if (val >= 100) return Math.round(val).toString();
+  if (val >= 10) return val.toFixed(0);
+  if (val >= 1) return val.toFixed(1);
+  return val.toFixed(2);
+}
 
 export default function MatrixViewer() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
@@ -90,6 +151,11 @@ export default function MatrixViewer() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const hasLoadedOnce = useRef(false);
+
+  const [gradientMetric, setGradientMetric] = useState<GradientMetric>('time');
+  const [scaleMode, setScaleMode] = useState<ScaleMode>('auto');
+  const [timeUnit, setTimeUnit] = useState<TimeUnit>('min');
+  const [fixedMax, setFixedMax] = useState(30);
 
   useEffect(() => {
     fetch('/api/matrix/viewer-inventory')
@@ -262,6 +328,18 @@ export default function MatrixViewer() {
 
   const reachSet = useMemo(() => new Set(destinations.map(d => d.hex_id)), [destinations]);
 
+  const dataMax = useMemo(() => {
+    if (destinations.length === 0) return 1;
+    return destinations.reduce((m, d) => Math.max(m, rawValue(d, gradientMetric, timeUnit)), 0) || 1;
+  }, [destinations, gradientMetric, timeUnit]);
+
+  const scaleMax = useMemo(() => {
+    if (scaleMode === 'fixed') return Math.max(fixedMax, 0.01);
+    return dataMax;
+  }, [scaleMode, fixedMax, dataMax]);
+
+  const suffix = useMemo(() => unitSuffix(gradientMetric, timeUnit), [gradientMetric, timeUnit]);
+
   const bgLayer = useMemo(() => {
     if (allHexes.length === 0) return null;
     const bgData = allHexes.filter(h => !reachSet.has(h) && h !== originHex).map(h => ({ hex_id: h }));
@@ -273,7 +351,7 @@ export default function MatrixViewer() {
       filled: true,
       extruded: false,
       getHexagon: (d: any) => d.hex_id,
-      getFillColor: [160, 160, 175, 70] as [number, number, number, number],
+      getFillColor: [160, 160, 175, 50] as [number, number, number, number],
       opacity: 0.5,
       updateTriggers: { data: [reachSet, originHex] },
     });
@@ -287,16 +365,36 @@ export default function MatrixViewer() {
       pickable: true,
       filled: true,
       extruded: false,
+      stroked: true,
+      lineWidthMinPixels: 0.5,
+      getLineColor: [255, 255, 255, 40] as [number, number, number, number],
       getHexagon: (d: ReachabilityData) => d.hex_id,
       getFillColor: (d: ReachabilityData) => {
-        const bucket = Math.floor(d.travel_time_secs / 300);
-        const idx = Math.min(bucket, COLORS.length - 1);
-        return [...COLORS[idx], 180] as [number, number, number, number];
+        const val = rawValue(d, gradientMetric, timeUnit);
+        const t = Math.min(val / scaleMax, 1);
+        const [r, g, b] = lerpColor(COLORS, t);
+        return [r, g, b, 200] as [number, number, number, number];
       },
-      opacity: 0.7,
-      updateTriggers: { getFillColor: [destinations] },
+      opacity: 0.85,
+      updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, scaleMax] },
     });
-  }, [destinations]);
+  }, [destinations, gradientMetric, timeUnit, scaleMax]);
+
+  const originHaloLayer = useMemo(() => {
+    if (!originHex) return null;
+    return new ScatterplotLayer({
+      id: 'origin-halo',
+      data: [{ lat: originLat, lon: originLon }],
+      pickable: false,
+      getPosition: (d: any) => [d.lon, d.lat],
+      getFillColor: [41, 181, 232, 50],
+      getRadius: 160,
+      radiusMinPixels: 18,
+      radiusMaxPixels: 60,
+      stroked: false,
+      filled: true,
+    });
+  }, [originHex, originLat, originLon]);
 
   const originLayer = useMemo(() => {
     if (!originHex) return null;
@@ -308,6 +406,8 @@ export default function MatrixViewer() {
       getFillColor: [255, 255, 255, 220],
       getLineColor: [41, 181, 232, 255],
       getRadius: 80,
+      radiusMinPixels: 8,
+      radiusMaxPixels: 30,
       lineWidthMinPixels: 3,
       stroked: true,
       filled: true,
@@ -315,15 +415,21 @@ export default function MatrixViewer() {
   }, [originHex, originLat, originLon]);
 
   const layers = useMemo(
-    () => [basemap, bgLayer, reachLayer, originLayer].filter(Boolean),
-    [basemap, bgLayer, reachLayer, originLayer]
+    () => [basemap, bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean),
+    [basemap, bgLayer, reachLayer, originHaloLayer, originLayer]
   );
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.travel_time_secs !== undefined) {
+      const timeFmt = timeUnit === 'min'
+        ? `${(object.travel_time_secs / 60).toFixed(1)} min`
+        : `${(object.travel_time_secs / 3600).toFixed(2)} hr`;
+      const distFmt = `${(object.distance_meters / 1000).toFixed(1)} km`;
+      const timeStr = gradientMetric === 'time' ? `<b>${timeFmt}</b>` : timeFmt;
+      const distStr = gradientMetric === 'distance' ? `<b>${distFmt}</b>` : distFmt;
       return {
-        html: `<b>${object.hex_id}</b><br/>Travel time: ${(object.travel_time_secs / 60).toFixed(1)} min<br/>Distance: ${(object.distance_meters / 1000).toFixed(1)} km`,
+        html: `<b>${object.hex_id}</b><br/>Travel time: ${timeStr}<br/>Distance: ${distStr}`,
         style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
       };
     }
@@ -334,13 +440,23 @@ export default function MatrixViewer() {
       };
     }
     return null;
-  }, []);
+  }, [gradientMetric, timeUnit]);
 
   const localMaxMin = useMemo(() => {
     if (destinations.length === 0) return 0;
     const maxSecs = destinations.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
     return Math.ceil(maxSecs / 60);
   }, [destinations]);
+
+  const legendTicks = useMemo(() => {
+    const stops = [0, 0.25, 0.5, 0.75, 1];
+    return stops.map(p => ({ p, label: fmtLegend(p * scaleMax) }));
+  }, [scaleMax]);
+
+  const legendGradient = useMemo(
+    () => `linear-gradient(to right, ${COLORS.map(rgb).join(', ')})`,
+    []
+  );
 
   return (
     <div className="panel">
@@ -426,14 +542,46 @@ export default function MatrixViewer() {
                 }} />
               )}
             </div>
-            <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden' }}>
-              {COLORS.map((c, i) => (
-                <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />
-              ))}
+
+            <div className="gradient-controls">
+              <div className="ctrl-group">
+                <span className="ctrl-label">Metric</span>
+                <SegControl value={gradientMetric} onChange={setGradientMetric} options={[{ value: 'time', label: 'Time' }, { value: 'distance', label: 'Distance' }]} />
+              </div>
+              {gradientMetric === 'time' && (
+                <div className="ctrl-group">
+                  <span className="ctrl-label">Unit</span>
+                  <SegControl value={timeUnit} onChange={setTimeUnit} options={[{ value: 'min', label: 'min' }, { value: 'hr', label: 'hr' }]} />
+                </div>
+              )}
+              <div className="ctrl-group">
+                <span className="ctrl-label">Scale</span>
+                <SegControl value={scaleMode} onChange={setScaleMode} options={[{ value: 'auto', label: 'Auto' }, { value: 'fixed', label: 'Fixed' }]} />
+                {scaleMode === 'fixed' && (
+                  <>
+                    <input
+                      type="number"
+                      className="fixed-input"
+                      min={1}
+                      value={fixedMax}
+                      onChange={e => setFixedMax(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{suffix}</span>
+                  </>
+                )}
+              </div>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)' }}>
-              {COLORS.map((_, i) => <span key={i}>{i * 5}m</span>)}
-              <span>{COLORS.length * 5}m+</span>
+
+            <div style={{
+              height: 10,
+              borderRadius: 5,
+              background: legendGradient,
+              border: '1px solid var(--border)',
+            }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+              {legendTicks.map(({ p, label }) => (
+                <span key={p}>{label}{p === 0 || p === 1 ? ` ${suffix}` : ''}</span>
+              ))}
             </div>
           </div>
 

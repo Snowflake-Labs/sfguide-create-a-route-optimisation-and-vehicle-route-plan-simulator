@@ -316,9 +316,9 @@ export default function ServiceManager() {
 
       {orsReadiness && Object.entries(orsReadiness).some(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)) && (
         <div style={{ margin: '12px 0', padding: '12px 16px', background: 'rgba(255, 193, 7, 0.15)', borderRadius: 8, border: '1px solid rgba(255, 193, 7, 0.5)', fontSize: 13, color: '#b38600' }}>
-          {Object.values(orsReadiness).every((r: any) => r.graphs_persisted)
-            ? <><strong>Graphs Loading:</strong> Pre-built graphs are being loaded into memory. Functions will be ready shortly — this typically takes 1–3 minutes.</>
-            : <><strong>Graphs Building:</strong> ORS is building routing graphs from map data. Functions will return errors until all profiles are ready. This typically takes 5–15 minutes.</>
+          {Object.values(orsReadiness).every((r: any) => r.graph_loading || r.graphs_persisted)
+            ? <><strong>Graphs Loading:</strong> Pre-built graphs are being loaded into memory after a recent resume. Functions will be ready shortly &mdash; this typically takes 1&ndash;10 minutes depending on region size.</>
+            : <><strong>Graphs Building:</strong> ORS is building routing graphs from map data. Functions will return errors until all profiles are ready. This typically takes 5&ndash;15 minutes.</>
           }
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)).map(([region, r]: [string, any]) => (
