@@ -104,6 +104,32 @@
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
          FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, region) AS resp)';
 
+   -- ISOCHRONES_CLIPPED: same as ISOCHRONES but clips the returned polygon
+   -- to the named region's actual boundary so catchment zones don't claim
+   -- foreign territory or water. Falls through (no clip) when the catalog
+   -- has no boundary for the region.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing","feature":"boundary-clip"}}'
+      AS
+      $$
+      SELECT
+        resp AS RESPONSE,
+        COALESCE(
+          ST_INTERSECTION(
+            TO_GEOGRAPHY(resp:features[0]:geometry),
+            (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+             WHERE rc.BOUNDARY IS NOT NULL
+               AND (UPPER(rc.LOOKUP_NAME) = UPPER(region)
+                    OR UPPER(rc.REGION_KEY) = UPPER(region))
+             ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)
+          ),
+          TO_GEOGRAPHY(resp:features[0]:geometry)
+        ) AS GEOJSON
+      FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, region) AS resp)
+      $$;
+
    -- OPTIMIZATION (tabular: jobs/vehicles/matrices)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(jobs ARRAY, vehicles ARRAY, matrices ARRAY DEFAULT [], region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY, VEHICLE INT, DURATION INT, STEPS VARIANT)
@@ -194,4 +220,75 @@
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"routing"}}'
    AS
    'SELECT CASE WHEN OPENROUTESERVICE_APP.CORE._ORS_STATUS_RAW(NULL) IS NOT NULL THEN TRUE ELSE FALSE END';
+
+   -- =====================================================================
+   -- REVERSE-REGION LOOKUP: given a point, return the smallest containing
+   -- region from REGION_CATALOG. Useful for:
+   --   * Auto-picking region from a user-pasted lat/lon
+   --   * Tagging fact-table rows with the resolved region
+   --   * Detecting cross-region drift in fleet telemetry
+   --   * Validating LLM-extracted coordinates from the routing agent
+   -- =====================================================================
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON FLOAT, LAT FLOAT)
+   RETURNS OBJECT
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"region-catalog","feature":"reverse-lookup"}}'
+   AS
+   $$
+   SELECT OBJECT_CONSTRUCT(
+     'region_name',     rc.REGION_NAME,
+     'lookup_name',     rc.LOOKUP_NAME,
+     'region_key',      rc.REGION_KEY,
+     'iso_country_a2',  rc.ISO_COUNTRY_A2,
+     'iso_country_a3',  rc.ISO_COUNTRY_A3,
+     'iso_subdivision', rc.ISO_SUBDIVISION,
+     'level',           rc.LEVEL,
+     'area_km2',        rc.BOUNDARY_AREA_KM2
+   )
+   FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+   WHERE rc.BOUNDARY IS NOT NULL
+     AND ST_CONTAINS(rc.BOUNDARY, ST_MAKEPOINT(LON, LAT))
+   ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+   LIMIT 1
+   $$;
+
+   -- Boolean variant: is the given point inside the named region?
+   -- Returns FALSE when the region has no boundary (no false positives).
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.POINT_IN_REGION(LON FLOAT, LAT FLOAT, REGION VARCHAR)
+   RETURNS BOOLEAN
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"region-catalog","feature":"reverse-lookup"}}'
+   AS
+   $$
+   SELECT COALESCE(
+     (SELECT ST_CONTAINS(rc.BOUNDARY, ST_MAKEPOINT(LON, LAT))
+      FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+      WHERE rc.BOUNDARY IS NOT NULL
+        AND (UPPER(rc.LOOKUP_NAME) = UPPER(REGION)
+             OR UPPER(rc.REGION_KEY) = UPPER(REGION))
+      ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+      LIMIT 1),
+     FALSE)
+   $$;
+
+   -- Filter MAP_CONFIG sample_addresses to those falling inside the region's
+   -- BOUNDARY. Drops curated addresses that drifted out of region (different
+   -- city of same name, edge-case admin moves). Falls through if no boundary.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.SAMPLE_ADDRESSES_FOR_REGION(P_REGION VARCHAR)
+   RETURNS ARRAY
+   LANGUAGE SQL
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.0","attributes":{"component":"region-catalog","feature":"address-validation"}}'
+   AS
+   $$
+   SELECT ARRAY_AGG(addr.value)
+   FROM OPENROUTESERVICE_APP.CORE.MAP_CONFIG mc,
+        TABLE(FLATTEN(mc.sample_addresses)) addr
+   WHERE UPPER(mc.city_name) = UPPER(P_REGION)
+     AND COALESCE(
+       OPENROUTESERVICE_APP.CORE.POINT_IN_REGION(
+         addr.value:lng::FLOAT,
+         addr.value:lat::FLOAT,
+         P_REGION),
+       TRUE)
+   $$;
 

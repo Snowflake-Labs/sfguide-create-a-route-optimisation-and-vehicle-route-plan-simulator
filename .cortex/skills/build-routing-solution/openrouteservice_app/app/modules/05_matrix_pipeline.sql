@@ -99,22 +99,31 @@ BEGIN
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
+    -- Boundary-aware: enumerate H3 cells inside the region's actual polygon
+    -- (from REGION_CATALOG) when available, otherwise fall back to bbox.
+    -- This drops water cells and out-of-region cells before any ORS Matrix call.
     EXECUTE IMMEDIATE '
     INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
-    SELECT
-        h.VALUE::VARCHAR AS h3_index,
-        H3_CELL_TO_POINT(h.VALUE::VARCHAR) AS center_point
-    FROM TABLE(FLATTEN(
-        H3_POLYGON_TO_CELLS_STRINGS(
+    WITH region_geom AS (
+        SELECT COALESCE(
+            (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(''' || P_REGION || ''')
+                    OR UPPER(REGION_KEY) = UPPER(''' || P_REGION || '''))
+             ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1),
             TO_GEOGRAPHY(''POLYGON((' ||
                 P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
                 P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
                 P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
                 P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
-                P_MIN_LON || ' ' || P_MIN_LAT || '))''),
-            ' || resolution || '
-        )
-    )) h';
+                P_MIN_LON || ' ' || P_MIN_LAT || '))'')
+        ) AS geom
+    )
+    SELECT
+        h.VALUE::VARCHAR AS h3_index,
+        H3_CELL_TO_POINT(h.VALUE::VARCHAR) AS center_point
+    FROM region_geom r,
+         TABLE(FLATTEN(H3_POLYGON_TO_CELLS_STRINGS(r.geom, ' || resolution || '))) h';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
@@ -159,36 +168,54 @@ BEGIN
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
-    -- H3_COVERAGE_STRINGS is a table function; invoke via TABLE(...) with lateral join.
-    -- Returns every hexagon intersecting the geometry (complete coverage with no edge gaps).
+    -- Boundary-aware road-aware tessellation:
+    --   * Keep Overture native bbox prefilter (partition prune; without it the
+    --     query scans the global transportation table).
+    --   * Refine road segments via ST_INTERSECTS against the region's actual
+    --     polygon (REGION_CATALOG.BOUNDARY) instead of the bbox rectangle.
+    --     Drops foreign-country segments that bleed across the bbox - a
+    --     single foreign road would otherwise spawn dozens of out-of-graph
+    --     hex candidates via H3_COVERAGE_STRINGS.
+    --   * Final clip uses ST_WITHIN(centroid, BOUNDARY) instead of bbox
+    --     BETWEEN, catching stray hexes whose centroid sits in foreign
+    --     territory but inside the bbox.
+    --   * Falls back to bbox polygon if no catalog row exists.
     EXECUTE IMMEDIATE '
     INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
-    WITH bbox_poly AS (
-        SELECT TO_GEOGRAPHY(''POLYGON((' ||
-            P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
-            P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
-            P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
-            P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
-            P_MIN_LON || ' ' || P_MIN_LAT || '))'') AS poly
+    WITH region_geom AS (
+        SELECT COALESCE(
+            (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(''' || P_REGION || ''')
+                    OR UPPER(REGION_KEY) = UPPER(''' || P_REGION || '''))
+             ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1),
+            TO_GEOGRAPHY(''POLYGON((' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || '))'')
+        ) AS poly
     ),
     road_segments AS (
         SELECT s.geometry
-        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s, bbox_poly b
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s, region_geom r
         WHERE s.subtype = ''road''
+          -- Overture native bbox prefilter (UNCHANGED - partition prune):
           AND s.bbox:xmin::FLOAT <= ' || P_MAX_LON || '
           AND s.bbox:xmax::FLOAT >= ' || P_MIN_LON || '
           AND s.bbox:ymin::FLOAT <= ' || P_MAX_LAT || '
           AND s.bbox:ymax::FLOAT >= ' || P_MIN_LAT || '
-          AND ST_INTERSECTS(s.geometry, b.poly)
+          -- Polygon refine (replaces ST_INTERSECTS against bbox polygon):
+          AND ST_INTERSECTS(s.geometry, r.poly)
     ),
     road_hexes AS (
         SELECT DISTINCT c.value::VARCHAR AS h3_index
         FROM road_segments r, TABLE(FLATTEN(H3_COVERAGE_STRINGS(r.geometry, ' || resolution || '))) c
     )
     SELECT h3_index, H3_CELL_TO_POINT(h3_index) AS center_point
-    FROM road_hexes
-    WHERE ST_Y(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LAT || ' AND ' || P_MAX_LAT || '
-      AND ST_X(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LON || ' AND ' || P_MAX_LON || '';
+    FROM road_hexes h, region_geom r
+    WHERE ST_WITHIN(H3_CELL_TO_POINT(h.h3_index), r.poly)';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
