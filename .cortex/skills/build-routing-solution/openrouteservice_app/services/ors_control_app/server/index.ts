@@ -619,6 +619,15 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
   }
 
   function parseBBBikePoly(polyText: string): { min_lat: number; max_lat: number; min_lon: number; max_lon: number } | null {
+    // BBBike .poly files are bbox rectangles (bbbike clips PBFs to a rectangle),
+    // so extracting the four extents is sufficient.
+    //
+    // For full polygon boundaries (Geofabrik, MultiPolygon support, holes):
+    // see datasets/region_catalog/build_boundaries.py. That offline bake
+    // populates REGION_CATALOG.BOUNDARY for all ~460 shipped regions. Newly-
+    // added regions discovered via this dynamic-refresh path will have a NULL
+    // BOUNDARY column until the bake script is re-run and the seed parquet
+    // re-committed. Downstream consumers fall back to bbox in that case.
     const coords: [number, number][] = [];
     for (const line of polyText.split('\n')) {
       const parts = line.trim().split(/\s+/);

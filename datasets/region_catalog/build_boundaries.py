@@ -19,10 +19,23 @@ Output columns appended to datasets/region_catalog/data_0_0_0.snappy.parquet:
     BOUNDARY_AREA_KM2   FLOAT      area in km^2
     BOUNDARY_BAKED_AT   DATE       bake date
 
+When to re-run:
+    * Geofabrik publishes a meaningful boundary change (rare, ~yearly for
+      admin shifts).
+    * A new region is added to the catalog (e.g. a city added via the dynamic
+      catalog refresh path - see ors_control_app/server/index.ts which
+      currently captures bbox only). Re-running this script picks up new
+      Geofabrik regions automatically; BBBike additions need a manual
+      refresh of the upstream seed.
+    * manual_iso_overrides.json is updated with corrected codes.
+
 Run:
     python3 datasets/region_catalog/build_boundaries.py
 
 Idempotent. Caches downloaded .poly files in tmp/poly_cache/ so reruns are fast.
+After running, commit the updated parquet:
+    git add datasets/region_catalog/data_0_0_0.snappy.parquet
+    git commit -m "data(region-catalog): refresh boundary snapshot"
 """
 from __future__ import annotations
 
