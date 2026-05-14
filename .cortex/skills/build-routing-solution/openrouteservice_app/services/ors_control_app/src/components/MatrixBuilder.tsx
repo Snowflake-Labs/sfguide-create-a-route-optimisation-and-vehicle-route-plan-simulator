@@ -7,6 +7,34 @@ const RATE_PAIRS_PER_SEC = 31500;
 const CREDIT_PER_HOUR_SMALL = 2;
 const ALL_RESOLUTIONS = [5, 6, 7, 8, 9, 10];
 
+// Issue #39: cost-gating thresholds
+const CREDITS_GREEN_MAX = 5;
+const CREDITS_YELLOW_MAX = 25;
+const PAIR_CAP = 100_000_000;
+
+interface CostEstimateVariant {
+  cells: number;
+  matrix_rows: number;
+  warehouse_credits: number;
+  spcs_credits: number;
+  total_credits: number;
+  duration_seconds: number;
+  confidence: 'high' | 'medium' | 'low';
+  sample_size: number;
+}
+interface CostEstimatePayload {
+  region: string;
+  profile: string;
+  h3_resolution: number;
+  bucket: string;
+  area_km2: number;
+  generated_at: string;
+  estimates: {
+    road_filter_off: CostEstimateVariant;
+    road_filter_on: CostEstimateVariant;
+  };
+}
+
 function estimateHexCount(bounds: RegionInfo['bounds'], res: number): number {
   const area = (bounds.maxLat - bounds.minLat) * (bounds.maxLon - bounds.minLon);
   return Math.round(area * (RES_HEX_PER_SQDEG[res] || 2000));
@@ -88,6 +116,43 @@ function RoadFilterBadge({ on }: { on: boolean | undefined }) {
   );
 }
 
+function creditBand(credits: number): 'green' | 'yellow' | 'red' {
+  if (credits <= CREDITS_GREEN_MAX) return 'green';
+  if (credits <= CREDITS_YELLOW_MAX) return 'yellow';
+  return 'red';
+}
+
+function CostEstimateCard({ variant, label }: { variant: CostEstimateVariant | undefined; label: string }) {
+  if (!variant || variant.cells == null) {
+    return (
+      <div className="estimate-mini" style={{ padding: 12, border: '1px solid var(--border, #333)', borderRadius: 8, opacity: 0.6 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{label}</div>
+        <div style={{ fontSize: 11 }}>No data</div>
+      </div>
+    );
+  }
+  const band = creditBand(variant.total_credits || 0);
+  const bandColor = band === 'green' ? '#3fb950' : band === 'yellow' ? '#d29922' : '#e53935';
+  const minutes = Math.round((variant.duration_seconds || 0) / 6) / 10;
+  return (
+    <div className="estimate-mini" style={{ padding: 12, border: `1px solid ${bandColor}55`, background: `${bandColor}14`, borderRadius: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        {label} <span style={{ float: 'right', fontSize: 10, textTransform: 'uppercase', color: bandColor }}>{band}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 4, fontSize: 12 }}>
+        <span>Cells</span><span style={{ textAlign: 'right' }}>{formatNumber(variant.cells)}</span>
+        <span>Matrix rows</span><span style={{ textAlign: 'right' }}>{formatNumber(variant.matrix_rows)}</span>
+        <span>WH credits</span><span style={{ textAlign: 'right' }}>{(variant.warehouse_credits || 0).toFixed(2)}</span>
+        <span>SPCS credits</span><span style={{ textAlign: 'right' }}>{(variant.spcs_credits || 0).toFixed(2)}</span>
+        <span style={{ fontWeight: 600 }}>Total credits</span>
+        <span style={{ textAlign: 'right', fontWeight: 600, color: bandColor }}>{(variant.total_credits || 0).toFixed(2)}</span>
+        <span>Duration</span><span style={{ textAlign: 'right' }}>{minutes < 1 ? `${variant.duration_seconds}s` : formatDuration(minutes)}</span>
+        <span>Confidence</span><span style={{ textAlign: 'right' }}>{variant.confidence} ({variant.sample_size})</span>
+      </div>
+    </div>
+  );
+}
+
 export default function MatrixBuilder() {
   const [regions, setRegions] = useState<RegionInfo[]>([]);
   const [loadingRegions, setLoadingRegions] = useState(true);
@@ -105,6 +170,10 @@ export default function MatrixBuilder() {
   const [roadFilterReason, setRoadFilterReason] = useState<string>('');
   const [serverHexEstimate, setServerHexEstimate] = useState<Record<number, number>>({});
   const [estimateLoading, setEstimateLoading] = useState(false);
+  const [costEstimates, setCostEstimates] = useState<Record<number, CostEstimatePayload>>({});
+  const [costEstimateLoading, setCostEstimateLoading] = useState(false);
+  const [costEstimateError, setCostEstimateError] = useState<string | null>(null);
+  const [acknowledgeHighCost, setAcknowledgeHighCost] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchRegions = useCallback(async () => {
@@ -227,7 +296,53 @@ export default function MatrixBuilder() {
     };
   }, [hexEstimates, selectedRes, region]);
 
+  // Issue #39: aggregate calibration-backed estimate across selected resolutions, using selected road_filter variant
+  const { totalEstimatedCredits, totalEstimatedPairs } = React.useMemo(() => {
+    const useFilter = roadFilterEnabled && roadFilterAvailable === true;
+    let credits = 0;
+    let pairs = 0;
+    Array.from(selectedRes).forEach((res) => {
+      const payload = costEstimates[res];
+      if (!payload) return;
+      const v = useFilter ? payload.estimates?.road_filter_on : payload.estimates?.road_filter_off;
+      if (v) {
+        credits += v.total_credits || 0;
+        pairs += v.matrix_rows || 0;
+      }
+    });
+    return { totalEstimatedCredits: credits, totalEstimatedPairs: pairs };
+  }, [costEstimates, selectedRes, roadFilterEnabled, roadFilterAvailable]);
+
+  const requiresAcknowledgement = totalEstimatedCredits > CREDITS_YELLOW_MAX || totalEstimatedPairs > PAIR_CAP;
+
   const toggleRes = (res: number) => setSelectedRes((prev) => { const next = new Set(prev); if (next.has(res)) next.delete(res); else next.add(res); return next; });
+
+  const fetchCostEstimates = useCallback(async () => {
+    if (!selectedRegion || selectedRes.size === 0) return;
+    setCostEstimateLoading(true);
+    setCostEstimateError(null);
+    setAcknowledgeHighCost(false);
+    const next: Record<number, CostEstimatePayload> = {};
+    try {
+      await Promise.all(Array.from(selectedRes).map(async (res) => {
+        const { ok, data, error } = await safeFetchJson<{ payload: CostEstimatePayload }>('/api/matrix/estimate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            region: selectedRegion,
+            resolution: res,
+            profile: selectedProfile,
+            road_filter: null,
+          }),
+        });
+        if (ok && data?.payload) next[res] = data.payload;
+        else if (error) setCostEstimateError(error);
+      }));
+      setCostEstimates(next);
+    } finally {
+      setCostEstimateLoading(false);
+    }
+  }, [selectedRegion, selectedRes, selectedProfile]);
 
   const startBuild = useCallback(async () => {
     if (!selectedRegion) return;
@@ -493,6 +608,50 @@ export default function MatrixBuilder() {
             <div className="estimate-card"><div className="estimate-label">Est. Time</div><div className="estimate-value">{formatDuration(estimate.total_time_minutes)}</div></div>
             <div className="estimate-card"><div className="estimate-label">Credits</div><div className="estimate-value">{estimate.total_credits.toFixed(1)}</div></div>
           </div>
+
+          {/* Issue #39: calibration-backed cost estimator with road_filter ON/OFF comparison */}
+          <div style={{ marginTop: 16, padding: 12, border: '1px solid var(--border, #333)', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <strong>Calibrated Cost Estimate</strong>
+              <button className="btn small" onClick={fetchCostEstimates} disabled={costEstimateLoading || selectedRes.size === 0}>
+                {costEstimateLoading ? 'Estimating...' : 'Estimate cost'}
+              </button>
+            </div>
+            {costEstimateError && (
+              <div style={{ fontSize: 12, color: '#e53935', marginBottom: 8 }}>{costEstimateError}</div>
+            )}
+            {Object.keys(costEstimates).length === 0 && !costEstimateLoading && (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                Click "Estimate cost" to see calibration-backed predictions for road-filter ON vs OFF.
+              </div>
+            )}
+            {Object.entries(costEstimates).sort(([a], [b]) => parseInt(a) - parseInt(b)).map(([resKey, payload]) => (
+              <div key={resKey} style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                  Res {resKey} — {payload.area_km2} km^2 · {payload.bucket}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <CostEstimateCard variant={payload.estimates?.road_filter_off} label="Road filter OFF" />
+                  <CostEstimateCard variant={payload.estimates?.road_filter_on}  label="Road filter ON" />
+                </div>
+              </div>
+            ))}
+            {totalEstimatedCredits > 0 && (
+              <div style={{ marginTop: 12, padding: 8, background: 'var(--surface, #1a1a1a)', borderRadius: 6, fontSize: 12 }}>
+                Total estimated credits across selected resolutions:{' '}
+                <strong style={{ color: creditBand(totalEstimatedCredits) === 'green' ? '#3fb950' : creditBand(totalEstimatedCredits) === 'yellow' ? '#d29922' : '#e53935' }}>
+                  {totalEstimatedCredits.toFixed(2)}
+                </strong>
+                {' · '}Total pairs: {formatNumber(totalEstimatedPairs)}
+              </div>
+            )}
+            {requiresAcknowledgement && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: '#d29922' }}>
+                <input type="checkbox" checked={acknowledgeHighCost} onChange={(e) => setAcknowledgeHighCost(e.target.checked)} />
+                I understand this build is expected to consume {totalEstimatedCredits.toFixed(1)} credits ({formatNumber(totalEstimatedPairs)} pairs)
+              </label>
+            )}
+          </div>
         </>
       )}
 
@@ -500,7 +659,18 @@ export default function MatrixBuilder() {
         <div className="existing-info">
           {activeJobs.length > 0 && <span>{activeJobs.length} build{activeJobs.length > 1 ? 's' : ''} in progress</span>}
         </div>
-        <button className="btn primary" onClick={startBuild} disabled={isLaunching || estimateLoading || selectedRes.size === 0 || !region?.ready}>
+        <button
+          className="btn primary"
+          onClick={startBuild}
+          disabled={
+            isLaunching ||
+            estimateLoading ||
+            selectedRes.size === 0 ||
+            !region?.ready ||
+            (requiresAcknowledgement && !acknowledgeHighCost)
+          }
+          title={requiresAcknowledgement && !acknowledgeHighCost ? 'High-cost build: tick the acknowledgement above to proceed' : ''}
+        >
           {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
