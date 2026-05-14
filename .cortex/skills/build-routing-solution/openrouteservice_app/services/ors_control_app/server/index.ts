@@ -9,6 +9,7 @@ import { createStudioRouter } from './studio/routes.js';
 import { reconcileStaleJobs } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
+import { parseOrsBuildLogs } from './logParser.js';
 
 config();
 
@@ -1150,10 +1151,20 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
 
-    // Fast path: ORS_STATUS is the source of truth. If the service reports ready
-    // with profiles loaded, return 'ready' immediately. Avoids unreliable log
-    // tail scraping for long-running builds where start/finish markers have
-    // rolled out of the 1000-line window (Issue: UI stuck on "ORS starting up...").
+    // Pull the log tail and let parseOrsBuildLogs() turn it into a structured
+    // BuildSummary (phase, LM step, ETA, CH progress, memory, warnings).
+    // Issue #40 — replaces the previous ad-hoc scrape that produced opaque
+    // 95% pins for long region builds.
+    const rows = await runSql(
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
+    );
+    const logs: string = rows?.[0]?.LOGS || '';
+    const summary = parseOrsBuildLogs(logs);
+
+    // ORS_STATUS is the source of truth for "is the service answering /health
+    // with profiles loaded?". Fold it into the summary so the UI can flip to
+    // ready as soon as the service is healthy, even if the start/finish
+    // markers have rolled out of the 1000-line log window.
     try {
       const statusRows = await runSql(
         `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')::VARCHAR AS S`
@@ -1161,108 +1172,45 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
       const statusRaw = statusRows?.[0]?.S;
       if (statusRaw) {
         const parsed = JSON.parse(statusRaw);
-        if (parsed?.service_ready === true && parsed?.profiles) {
+        summary.serviceReady = !!parsed?.service_ready;
+        summary.healthReady = !!parsed?.health_ready;
+        if (summary.serviceReady && parsed?.profiles) {
           const loaded = Object.keys(parsed.profiles);
           if (loaded.length > 0) {
-            res.json({
-              phase: 'ready',
-              progress: 100,
-              completedProfiles: loaded,
-              totalProfiles: loaded.length,
-              currentProfile: null,
-            });
-            return;
+            summary.completedProfiles = loaded;
+            summary.totalProfiles = loaded.length;
+            summary.phase = 'ready';
+            summary.progress = 100;
+            summary.currentProfile = null;
           }
         }
       }
     } catch {
-      // fall through to log-based scraping
+      // fall through with log-only summary
     }
 
-    const rows = await runSql(
-      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
-    );
-    const logs: string = rows?.[0]?.LOGS || '';
-
-    // ORS v9 logs profile completion as "[N] Profiles: 'name', location: ..." (plural).
-    const finishedProfiles = [...logs.matchAll(/\[\d+\] Profiles?: '([\w-]+)'/g)].map(m => m[1]);
-    const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
-    const uniqueStarted = [...new Set(startedProfiles)];
-    const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
-    const lastStarted = uniqueStarted.length > 0 ? uniqueStarted[uniqueStarted.length - 1] : null;
-    const currentProfile = lastStarted && !finishedProfiles.includes(lastStarted) ? lastStarted : null;
-
-    if (finishedProfiles.length === totalProfiles && totalProfiles > 0 && !currentProfile) {
-      const healthOk = logs.includes('Started Application');
-      res.json({
-        phase: healthOk ? 'ready' : 'finalizing',
-        progress: healthOk ? 100 : 99,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        currentProfile: null,
-      });
-      return;
-    }
-
-    const nodeLines = [...logs.matchAll(/edge,\s*nodes:\s*([\d\s]+\d),\s*shortcuts:\s*([\d\s]+\d)/g)];
-
-    const profileTagEsc = currentProfile ? `ORS-pl-${currentProfile}`.replace(/[-/]/g, '\\$&') : null;
-    const hasImport = profileTagEsc ? new RegExp(`${profileTagEsc}.*?start creating graph`).test(logs) : false;
-    const hasCH = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating CH preparations`).test(logs) : false;
-    const hasLM = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating LM preparations`).test(logs) : false;
-
-    if (nodeLines.length === 0 || !hasCH) {
-      const started = logs.includes('Starting Application') || logs.includes('Spring Boot');
-      let phase = 'waiting';
-      if (started) {
-        if (hasImport) phase = 'importing';
-        else if (currentProfile) phase = 'initializing';
-        else phase = 'initializing';
+    // Backward-compat alias so older UI code that switches on
+    // phase === 'building' still works while the BuildSummaryCard rolls in.
+    const legacyPhase = (() => {
+      switch (summary.phase) {
+        case 'ch_preparing':
+        case 'ch_contracting':
+        case 'lm_preparing':
+          return 'building';
+        case 'ready':
+          return 'ready';
+        case 'importing':
+          return 'importing';
+        case 'initializing':
+          return 'initializing';
+        case 'waiting':
+          return 'waiting';
+        default:
+          return 'unknown';
       }
-      res.json({
-        phase,
-        progress: totalProfiles > 0 ? Math.round((finishedProfiles.length / totalProfiles) * 100) : 0,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        currentProfile,
-      });
-      return;
-    }
+    })();
 
-    if (hasLM) {
-      const overallProgress = totalProfiles > 0
-        ? Math.round(((finishedProfiles.length + 0.95) / totalProfiles) * 100)
-        : 95;
-      res.json({
-        phase: 'building',
-        progress: Math.min(overallProgress, 99),
-        profileProgress: 95,
-        currentProfile,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        detail: 'Landmark preparation',
-      });
-      return;
-    }
-
-    const parseNum = (s: string) => parseInt(s.replace(/\s/g, ''), 10);
-    const firstNodes = parseNum(nodeLines[0][1]);
-    const lastNodes = parseNum(nodeLines[nodeLines.length - 1][1]);
-    const profileProgress = firstNodes > 0 ? (1 - lastNodes / firstNodes) : 0;
-    const overallProgress = totalProfiles > 0
-      ? Math.round(((finishedProfiles.length + profileProgress * 0.9) / totalProfiles) * 100)
-      : Math.round(profileProgress * 90);
-
-    res.json({
-      phase: 'building',
-      progress: Math.min(overallProgress, 99),
-      profileProgress: Math.min(Math.round(profileProgress * 100), 99),
-      nodesRemaining: lastNodes,
-      nodesTotal: firstNodes,
-      currentProfile,
-      completedProfiles: finishedProfiles,
-      totalProfiles,
-    });
+    res.json({ ...summary, phaseLegacy: legacyPhase });
   } catch (err: any) {
     res.json({ phase: 'unknown', progress: 0, error: err.message });
   }
