@@ -2062,11 +2062,27 @@ app.get('/api/regions', async (_req, res) => {
     let regions: any[] = [];
     try {
       regions = await runSql(
-        `SELECT REGION_NAME, DISPLAY_NAME, CENTER_LAT, CENTER_LON,
-                BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON,
-                ZOOM_LEVEL, ORS_REGION_KEY, DATA_SOURCE, IS_DEFAULT
-         FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
-         ORDER BY IS_DEFAULT DESC, PROVISIONED_AT`,
+        `SELECT rr.REGION_NAME, rr.DISPLAY_NAME, rr.CENTER_LAT, rr.CENTER_LON,
+                rr.BBOX_MIN_LAT, rr.BBOX_MAX_LAT, rr.BBOX_MIN_LON, rr.BBOX_MAX_LON,
+                rr.ZOOM_LEVEL, rr.ORS_REGION_KEY, rr.DATA_SOURCE, rr.IS_DEFAULT,
+                -- Boundary fields from REGION_CATALOG (joined via LOOKUP_NAME).
+                -- Returned as GeoJSON string for direct deck.gl + turf.js use.
+                CAST(ST_ASGEOJSON(rc.BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON,
+                rc.BOUNDARY_SOURCE,
+                rc.BOUNDARY_AREA_KM2,
+                rc.BOUNDARY_BAKED_AT,
+                ST_X(ST_CENTROID(rc.BOUNDARY))::FLOAT AS BOUNDARY_CENTROID_LON,
+                ST_Y(ST_CENTROID(rc.BOUNDARY))::FLOAT AS BOUNDARY_CENTROID_LAT,
+                rc.ISO_COUNTRY_A2,
+                rc.ISO_COUNTRY_A3,
+                rc.ISO_SUBDIVISION
+         FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
+         LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+           ON rc.BOUNDARY IS NOT NULL
+          AND (UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY)
+               OR UPPER(rc.REGION_KEY) = UPPER(rr.ORS_REGION_KEY))
+         QUALIFY ROW_NUMBER() OVER (PARTITION BY rr.REGION_NAME ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC) = 1
+         ORDER BY rr.IS_DEFAULT DESC, rr.PROVISIONED_AT`,
         'FLEET_INTELLIGENCE', 'CORE'
       );
     } catch {}

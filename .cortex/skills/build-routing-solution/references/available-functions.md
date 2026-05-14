@@ -53,6 +53,44 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 - `LIST_REGIONS()` — Returns JSON array of all provisioned regions
 - `REFRESH_REGION_CATALOG()` — Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
 
+## Region Boundary Helpers
+
+`REGION_CATALOG.BOUNDARY` is a `GEOGRAPHY` column populated at install time
+from a shipped snapshot of Geofabrik `.poly` files (real admin polygons,
+simplified to ~100m). Use it to filter sample points / POIs / hexagons
+to the region's actual shape instead of bbox rectangles. See the seed
+parquet at `datasets/region_catalog/data_0_0_0.snappy.parquet`.
+
+```sql
+-- Reverse-region lookup: which region does a coordinate fall in?
+SELECT OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(-122.42, 37.77);
+
+-- Boolean variant: is a coordinate inside a named region?
+SELECT OPENROUTESERVICE_APP.CORE.POINT_IN_REGION(-122.42, 37.77, 'SanFrancisco');
+
+-- Filter Overture POIs to a region's actual shape (not bbox):
+SELECT p.* FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  ON UPPER(rc.LOOKUP_NAME) = 'BAYERN'
+WHERE rc.BOUNDARY IS NOT NULL
+  AND ST_INTERSECTS(p.GEOMETRY, rc.BOUNDARY);
+
+-- Isochrone clipped to region boundary (no foreign-territory bleed):
+SELECT GEOJSON FROM TABLE(
+  OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+    'driving-car', -122.42, 37.77, 600, 'SanFrancisco'));
+
+-- H3 hexagon coverage over actual region (drops water cells):
+SELECT h.VALUE::VARCHAR AS h3_index
+FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc,
+     TABLE(FLATTEN(H3_POLYGON_TO_CELLS_STRINGS(rc.BOUNDARY, 8))) h
+WHERE UPPER(rc.LOOKUP_NAME) = 'SANFRANCISCO';
+```
+
+Prefer these patterns over `WHERE ST_X/Y BETWEEN bbox` for cleaner POI sets,
+fewer null ORS responses, and faster matrix builds (water cells dropped
+upstream).
+
 Note: Per-region function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
 ```sql
 SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start, end, 'berlin'))

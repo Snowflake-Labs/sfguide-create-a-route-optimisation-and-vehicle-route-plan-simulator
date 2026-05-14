@@ -484,6 +484,10 @@ export default function FleetDataStudio() {
               bbox: editRegion === 'Germany'
                 ? { min_lat: 47.27, max_lat: 55.06, min_lng: 5.87, max_lng: 15.04 }
                 : { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 },
+              // NOTE: bbox fallbacks above are last-resort defaults used only
+              // when REGION_REGISTRY has no row for the selected region.
+              // Once REGION_CATALOG.BOUNDARY is populated, the active region's
+              // polygon comes through /api/regions and the bbox here is unused.
             },
             preset_name: editName,
           };

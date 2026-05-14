@@ -183,15 +183,49 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         name = preset.NAME;
 
         const regionRows = await snowSql(
-          `SELECT BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE REGION_NAME='${preset.REGION}'`,
+          `SELECT
+             COALESCE(rr.BBOX_MIN_LAT, rc.MIN_LAT) AS BBOX_MIN_LAT,
+             COALESCE(rr.BBOX_MAX_LAT, rc.MAX_LAT) AS BBOX_MAX_LAT,
+             COALESCE(rr.BBOX_MIN_LON, rc.MIN_LON) AS BBOX_MIN_LON,
+             COALESCE(rr.BBOX_MAX_LON, rc.MAX_LON) AS BBOX_MAX_LON
+           FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
+           LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+             ON UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY)
+             OR UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY)
+           WHERE rr.REGION_NAME='${preset.REGION}'
+           QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
-        const bbox = regionRows.length ? {
+        // Fall back to REGION_CATALOG bbox alone if no REGION_REGISTRY row exists.
+        let bbox = regionRows.length ? {
           min_lat: Number(regionRows[0].BBOX_MIN_LAT),
           max_lat: Number(regionRows[0].BBOX_MAX_LAT),
           min_lng: Number(regionRows[0].BBOX_MIN_LON),
           max_lng: Number(regionRows[0].BBOX_MAX_LON),
-        } : { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 };
+        } : null;
+        if (!bbox || [bbox.min_lat, bbox.max_lat, bbox.min_lng, bbox.max_lng].some(v => v == null || Number.isNaN(v))) {
+          const catalogOnly = await snowSql(
+            `SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON
+             FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE UPPER(LOOKUP_NAME)=UPPER('${preset.REGION}')
+                OR UPPER(REGION_KEY)=UPPER('${preset.REGION}')
+             QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+            'OPENROUTESERVICE_APP', 'CORE'
+          ).catch(() => [] as any[]);
+          if (catalogOnly.length) {
+            bbox = {
+              min_lat: Number(catalogOnly[0].MIN_LAT),
+              max_lat: Number(catalogOnly[0].MAX_LAT),
+              min_lng: Number(catalogOnly[0].MIN_LON),
+              max_lng: Number(catalogOnly[0].MAX_LON),
+            };
+          }
+        }
+        // Last-resort default (SanFrancisco) only when no row exists in either
+        // registry or catalog.
+        if (!bbox) {
+          bbox = { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 };
+        }
 
         config = {
           ...presetConfig,

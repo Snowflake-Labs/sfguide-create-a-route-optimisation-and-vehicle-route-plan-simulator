@@ -9,6 +9,11 @@ interface RegionOption {
   display_name?: string;
   isDefault?: boolean;
   bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
+  // Boundary GeoJSON parsed from REGION_CATALOG.BOUNDARY (via /api/regions).
+  // When present, samplePoints uses rejection sampling against the polygon
+  // instead of bbox - dramatically reduces ORS PointNotFound for water-bordered
+  // regions and shows the real region shape on the map.
+  boundaryGeoJson?: any | null;
 }
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
@@ -538,7 +543,11 @@ export default function FunctionTester() {
       setSqlInput(generateSql(fnName, region, profile, db, null));
       return;
     }
-    const sampled = samplePoints({ fnName, bbox, profile, roadPoints: roads || undefined });
+    const sampled = samplePoints({
+      fnName, bbox, profile,
+      roadPoints: roads || undefined,
+      boundary: region?.boundaryGeoJson || undefined,
+    });
     setSampleHint(sampled?.hint || null);
     setSqlInput(generateSql(fnName, region, profile, db, sampled));
     userEditedRef.current = false;

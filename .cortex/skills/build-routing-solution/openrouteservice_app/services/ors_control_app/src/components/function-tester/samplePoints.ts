@@ -5,12 +5,25 @@ export interface BBox {
   max_lon: number;
 }
 
+// GeoJSON Polygon or MultiPolygon, parsed from REGION_CATALOG.BOUNDARY.
+// Used for rejection sampling so points fall on the actual region shape
+// rather than the bbox rectangle.
+export type BoundaryGeoJson = {
+  type: 'Polygon' | 'MultiPolygon';
+  coordinates: any;
+};
+
 export interface SamplePointsInput {
   fnName: string;
   bbox: BBox;
   profile: string;
   seed?: number;
   roadPoints?: [number, number][];
+  // Optional region polygon. When provided, every sampled point that
+  // doesn't fall inside the polygon is rejected and re-rolled (capped at
+  // 50 attempts). Reduces ORS PointNotFound errors for water-bordered
+  // regions from ~5-15% to <1%.
+  boundary?: BoundaryGeoJson | null;
 }
 
 export interface SampledPoints {
@@ -65,6 +78,36 @@ function isBBoxValid(bbox: BBox): boolean {
 
 const MIN_EDGE_MARGIN = 0.05;
 
+function pointInRing(lon: number, lat: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const intersect = ((yi > lat) !== (yj > lat))
+      && (lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInBoundary(lon: number, lat: number, boundary: BoundaryGeoJson): boolean {
+  // Polygon: coordinates = [outer_ring, hole1, hole2, ...]
+  // MultiPolygon: coordinates = [[outer_ring, hole1, ...], ...]
+  const polys = boundary.type === 'MultiPolygon'
+    ? boundary.coordinates
+    : [boundary.coordinates];
+  for (const poly of polys) {
+    if (poly.length === 0) continue;
+    if (!pointInRing(lon, lat, poly[0])) continue;
+    let inHole = false;
+    for (let i = 1; i < poly.length; i++) {
+      if (pointInRing(lon, lat, poly[i])) { inHole = true; break; }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
 function randomPointInBBox(bbox: BBox, rand: () => number, shrink = 0): [number, number] {
   const latRange = bbox.max_lat - bbox.min_lat;
   const lonRange = bbox.max_lon - bbox.min_lon;
@@ -74,15 +117,34 @@ function randomPointInBBox(bbox: BBox, rand: () => number, shrink = 0): [number,
   return [+lon.toFixed(5), +lat.toFixed(5)];
 }
 
+// Rejection sample inside the boundary polygon, falling back to bbox
+// after a maxAttempts cap (e.g. degenerate boundary, very thin region).
+const BOUNDARY_REJECT_MAX_ATTEMPTS = 50;
+function randomPointInBoundary(
+  boundary: BoundaryGeoJson,
+  bbox: BBox,
+  rand: () => number,
+  shrink = 0,
+): [number, number] {
+  for (let i = 0; i < BOUNDARY_REJECT_MAX_ATTEMPTS; i++) {
+    const pt = randomPointInBBox(bbox, rand, shrink);
+    if (pointInBoundary(pt[0], pt[1], boundary)) return pt;
+  }
+  return randomPointInBBox(bbox, rand, shrink);
+}
+
 function pickFromRoad(roadPoints: [number, number][], rand: () => number): [number, number] {
   const idx = Math.floor(rand() * roadPoints.length);
   const p = roadPoints[idx];
   return [+p[0].toFixed(5), +p[1].toFixed(5)];
 }
 
-function sampleOne(bbox: BBox, rand: () => number, roadPoints?: [number, number][], shrink = 0): [number, number] {
+function sampleOne(bbox: BBox, rand: () => number, roadPoints?: [number, number][], shrink = 0, boundary?: BoundaryGeoJson | null): [number, number] {
   if (roadPoints && roadPoints.length > 0) {
     return pickFromRoad(roadPoints, rand);
+  }
+  if (boundary) {
+    return randomPointInBoundary(boundary, bbox, rand, shrink);
   }
   return randomPointInBBox(bbox, rand, shrink);
 }
@@ -143,9 +205,10 @@ function sampleWithSeparation(
   rand: () => number,
   roadPoints?: [number, number][],
   shrink = 0,
+  boundary?: BoundaryGeoJson | null,
 ): { points: [number, number][]; hint?: string } {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const first = sampleOne(bbox, rand, roadPoints, shrink);
+    const first = sampleOne(bbox, rand, roadPoints, shrink, boundary);
     const pts: [number, number][] = [first];
     for (let i = 1; i < count; i++) {
       pts.push(samplePointNear(first, constraints.minKm, constraints.maxKm, bbox, rand, roadPoints));
@@ -154,7 +217,7 @@ function sampleWithSeparation(
       return { points: pts };
     }
   }
-  const first = sampleOne(bbox, rand, roadPoints, shrink);
+  const first = sampleOne(bbox, rand, roadPoints, shrink, boundary);
   const pts: [number, number][] = [first];
   for (let i = 1; i < count; i++) {
     pts.push(samplePointNear(first, constraints.minKm * 0.5, constraints.maxKm, bbox, rand, roadPoints));
@@ -162,24 +225,24 @@ function sampleWithSeparation(
   return { points: pts, hint: 'Region is small — using reduced sample distances.' };
 }
 
-function sampleDirections(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][]): { points: [number, number][]; hint?: string } {
-  return sampleWithSeparation(2, bbox, constraints, rand, roadPoints);
+function sampleDirections(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  return sampleWithSeparation(2, bbox, constraints, rand, roadPoints, 0, boundary);
 }
 
-function sampleIsochrones(bbox: BBox, rand: () => number, roadPoints?: [number, number][]): { points: [number, number][]; hint?: string } {
-  const pt = sampleOne(bbox, rand, roadPoints, 0.15);
+function sampleIsochrones(bbox: BBox, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  const pt = sampleOne(bbox, rand, roadPoints, 0.15, boundary);
   return { points: [pt] };
 }
 
-function sampleMatrix(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][]): { points: [number, number][]; hint?: string } {
-  return sampleWithSeparation(3, bbox, constraints, rand, roadPoints);
+function sampleMatrix(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  return sampleWithSeparation(3, bbox, constraints, rand, roadPoints, 0, boundary);
 }
 
-function sampleMatrixTabular(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][]): { points: [number, number][]; hint?: string } {
-  return sampleWithSeparation(4, bbox, constraints, rand, roadPoints);
+function sampleMatrixTabular(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
+  return sampleWithSeparation(4, bbox, constraints, rand, roadPoints, 0, boundary);
 }
 
-function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][]): { points: [number, number][]; hint?: string } {
+function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): { points: [number, number][]; hint?: string } {
   const latEdgeKm = 1;
   const lonEdgeKm = 1;
   const latRange = bbox.max_lat - bbox.min_lat;
@@ -189,7 +252,7 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   const lonMargin = Math.min(lonEdgeKm / degToKmLon(midLat) / lonRange, 0.3);
   const margin = Math.max(latMargin, lonMargin);
 
-  const depot = sampleOne(bbox, rand, roadPoints, margin);
+  const depot = sampleOne(bbox, rand, roadPoints, margin, boundary);
 
   // Continent-scale regions: the road-point seed is spread by tile (~degrees apart), so
   // randomly picking jobs from the full set produces a depot in NYC and jobs across the USA.
@@ -212,7 +275,7 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   for (let attempt = 0; attempt < 5; attempt++) {
     jobs.length = 0;
     for (let i = 0; i < 4; i++) {
-      jobs.push(sampleOne(bbox, rand, roadPoints));
+      jobs.push(sampleOne(bbox, rand, roadPoints, 0, boundary));
     }
     const allWithinMax = jobs.every(j => haversineKm(depot, j) <= constraints.maxKm);
     if (allWithinMax) {
@@ -223,7 +286,7 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
 }
 
 export function samplePoints(input: SamplePointsInput): SampledPoints | null {
-  const { fnName, bbox, profile, seed, roadPoints } = input;
+  const { fnName, bbox, profile, seed, roadPoints, boundary } = input;
 
   if (!isBBoxValid(bbox)) return null;
 
@@ -235,15 +298,15 @@ export function samplePoints(input: SamplePointsInput): SampledPoints | null {
 
   switch (fnName) {
     case 'DIRECTIONS':
-      return sampleDirections(bbox, constraints, rand, roadPoints);
+      return sampleDirections(bbox, constraints, rand, roadPoints, boundary);
     case 'ISOCHRONES':
-      return sampleIsochrones(bbox, rand, roadPoints);
+      return sampleIsochrones(bbox, rand, roadPoints, boundary);
     case 'MATRIX':
-      return sampleMatrix(bbox, constraints, rand, roadPoints);
+      return sampleMatrix(bbox, constraints, rand, roadPoints, boundary);
     case 'MATRIX_TABULAR':
-      return sampleMatrixTabular(bbox, constraints, rand, roadPoints);
+      return sampleMatrixTabular(bbox, constraints, rand, roadPoints, boundary);
     case 'OPTIMIZATION':
-      return sampleOptimization(bbox, constraints, rand, roadPoints);
+      return sampleOptimization(bbox, constraints, rand, roadPoints, boundary);
     default:
       return null;
   }

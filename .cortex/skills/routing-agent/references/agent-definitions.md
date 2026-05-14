@@ -7,6 +7,13 @@ SQL and Python definitions for the OpenRouteService Routing Agent.
 ## TOOL_DIRECTIONS Procedure
 
 Wraps ORS DIRECTIONS with AI geocoding for natural language location input.
+The geocoded coordinates are cross-checked against `REGION_CATALOG.BOUNDARY`
+via `REGION_FOR_POINT()` so the agent can produce a friendly error when the
+LLM returns coordinates outside any provisioned region (e.g. "Cambridge"
+geocoded to Cambridge MA when the user meant Cambridge UK), instead of a
+silent ORS RouteNotFound.
+
+See [`deploy-agent.sql`](./deploy-agent.sql) for the canonical implementation.
 
 ```sql
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(

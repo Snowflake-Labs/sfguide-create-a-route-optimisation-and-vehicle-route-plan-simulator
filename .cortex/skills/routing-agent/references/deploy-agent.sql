@@ -36,6 +36,9 @@ DECLARE
     v_segments VARIANT;
     v_geometry VARIANT;
     v_ors_error VARIANT;
+    v_detected_regions VARIANT;
+    v_out_of_region_count INT;
+    v_total_coords INT;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -66,10 +69,29 @@ BEGIN
             FROM geocoded, TABLE(FLATTEN(geocoded.geocoded_result, ''locations''))
             GROUP BY geocoded_result
         ),
-        directions AS (
-            SELECT geo, coords, d.RESPONSE AS dir_result
+        validated AS (
+            -- Cross-check each LLM-extracted coord against REGION_CATALOG
+            -- boundaries. detected_region is the smallest containing region;
+            -- mismatched_regions captures coords that resolve to different
+            -- regions (e.g. user asked for Cambridge UK but LLM returned
+            -- Cambridge MA). out_of_region_count is the number of coords
+            -- that don''t match any boundary at all.
+            SELECT geo, coords,
+                ARRAY_AGG(DISTINCT region_obj:lookup_name::STRING) WITHIN GROUP (ORDER BY region_obj:lookup_name::STRING) AS detected_regions,
+                COUNT_IF(region_obj IS NULL) AS out_of_region_count,
+                COUNT(*) AS total_coords
             FROM coordinates,
-                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(''' || v_safe_profile || ''', OBJECT_CONSTRUCT(''coordinates'', coords)::VARIANT)) d
+                 LATERAL (
+                   SELECT OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(c.value[0]::FLOAT, c.value[1]::FLOAT) AS region_obj
+                   FROM TABLE(FLATTEN(coords)) c
+                 )
+            GROUP BY geo, coords
+        ),
+        directions AS (
+            SELECT v.geo, v.coords, v.detected_regions, v.out_of_region_count, v.total_coords,
+                   d.RESPONSE AS dir_result
+            FROM validated v,
+                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(''' || v_safe_profile || ''', OBJECT_CONSTRUCT(''coordinates'', v.coords)::VARIANT)) d
         )
         SELECT
             geo:locations AS locations,
@@ -78,13 +100,16 @@ BEGIN
             dir_result:features[0]:properties:summary:duration::FLOAT AS duration_raw,
             dir_result:features[0]:properties:segments AS segments,
             dir_result:features[0]:geometry AS geometry,
-            dir_result:error AS ors_error
+            dir_result:error AS ors_error,
+            detected_regions,
+            out_of_region_count,
+            total_coords
         FROM directions';
 
     res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
+    FETCH c INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error, v_detected_regions, v_out_of_region_count, v_total_coords;
     CLOSE c;
 
     IF (v_locations IS NULL) THEN
@@ -97,8 +122,26 @@ BEGIN
 
     IF (v_distance_raw IS NULL OR v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error', 'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. This typically means the locations are OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area. Please request routes only within the supported region.',
+            'error',
+              CASE
+                WHEN v_out_of_region_count > 0 THEN
+                  CONCAT(
+                    'ROUTING FAILED: ', v_out_of_region_count::VARCHAR, ' of ', v_total_coords::VARCHAR,
+                    ' geocoded coordinates fell outside every provisioned region (detected: ',
+                    COALESCE(v_detected_regions::VARCHAR, '[]'),
+                    '). The LLM may have geocoded to the wrong city of the same name, or the destination is not in any provisioned region. Try specifying the country or region in your prompt.'
+                  )
+                ELSE
+                  CONCAT(
+                    'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. Detected regions: ',
+                    COALESCE(v_detected_regions::VARCHAR, '[]'),
+                    '. The locations are inside known regions but no routing graph is loaded that covers them all. Provision the necessary region(s) and retry.'
+                  )
+              END,
             'locations_requested', v_locations,
+            'detected_regions', v_detected_regions,
+            'out_of_region_count', v_out_of_region_count,
+            'total_coords', v_total_coords,
             'status', 'FAILED'
         );
     END IF;
@@ -110,6 +153,7 @@ BEGIN
         'duration_mins', ROUND(DIV0(v_duration_raw, 60), 1),
         'segments', v_segments,
         'geometry', v_geometry,
+        'detected_regions', v_detected_regions,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -140,6 +184,7 @@ DECLARE
     v_area_raw FLOAT;
     v_geometry VARIANT;
     v_ors_error VARIANT;
+    v_detected_region OBJECT;
 BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
@@ -162,10 +207,31 @@ BEGIN
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
         ),
+        validated AS (
+            -- Resolve LLM-extracted coord to a region; the isochrone is then
+            -- clipped to that region''s boundary so it doesn''t extend into
+            -- foreign territory or water.
+            SELECT geocoded_result,
+                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+                     geocoded_result:longitude::FLOAT,
+                     geocoded_result:latitude::FLOAT) AS detected_region
+            FROM geocoded
+        ),
         isochrone AS (
-            SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
-            FROM geocoded,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(''' || v_safe_profile || ''', geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
+            SELECT v.geocoded_result AS geo,
+                   v.detected_region,
+                   i.RESPONSE AS iso_result,
+                   -- Use ISOCHRONES_CLIPPED with detected region to trim
+                   -- isochrone to the region boundary. Falls through to
+                   -- unclipped result when detected_region is NULL.
+                   i.GEOJSON AS clipped_geom
+            FROM validated v,
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+                     ''' || v_safe_profile || ''',
+                     v.geocoded_result:longitude::FLOAT,
+                     v.geocoded_result:latitude::FLOAT,
+                     ?::NUMBER,
+                     v.detected_region:lookup_name::STRING)) i
         )
         SELECT
             geo AS center,
@@ -173,13 +239,14 @@ BEGIN
             ''' || v_safe_profile || ''' AS profile,
             iso_result:features[0]:properties:area::FLOAT AS area_raw,
             iso_result:features[0]:geometry AS geometry,
-            iso_result:error AS ors_error
+            iso_result:error AS ors_error,
+            detected_region AS detected_region
         FROM isochrone';
 
     res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error;
+    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error, v_detected_region;
     CLOSE c;
 
     IF (v_center IS NULL) THEN
@@ -192,8 +259,19 @@ BEGIN
 
     IF (v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error', 'ISOCHRONE FAILED: OpenRouteService could not compute an isochrone for the requested location. This typically means the location is OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area. Please request isochrones only within the supported region.',
+            'error',
+              CASE
+                WHEN v_detected_region IS NULL THEN
+                  'ISOCHRONE FAILED: The geocoded coordinates fall outside every provisioned region. The LLM may have geocoded to the wrong city of the same name. Try specifying the country or region in your prompt.'
+                ELSE
+                  CONCAT(
+                    'ISOCHRONE FAILED: OpenRouteService could not compute an isochrone for ',
+                    v_detected_region:lookup_name::VARCHAR,
+                    '. The point is inside the region''s boundary but no routing graph is loaded for it - provision the region and retry.'
+                  )
+              END,
             'location_requested', v_center,
+            'detected_region', v_detected_region,
             'status', 'FAILED'
         );
     END IF;
@@ -204,6 +282,7 @@ BEGIN
         'profile', v_profile,
         'area_km2', ROUND(DIV0(v_area_raw, 1000000), 2),
         'geometry', v_geometry,
+        'detected_region', v_detected_region,
         'status', 'SUCCESS'
     );
 EXCEPTION
