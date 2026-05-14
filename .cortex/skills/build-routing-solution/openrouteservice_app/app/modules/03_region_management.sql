@@ -5,21 +5,31 @@ USE SCHEMA OPENROUTESERVICE_APP.CORE;
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
-    CATALOG_ID    VARCHAR NOT NULL,
-    SOURCE        VARCHAR NOT NULL,
-    REGION_NAME   VARCHAR NOT NULL,
-    REGION_KEY    VARCHAR NOT NULL,
-    HIERARCHY     VARCHAR,
-    CONTINENT     VARCHAR,
-    COUNTRY       VARCHAR,
-    PBF_URL       VARCHAR NOT NULL,
-    PBF_SIZE_MB   FLOAT,
-    LEVEL         VARCHAR NOT NULL,
-    MIN_LAT       FLOAT,
-    MAX_LAT       FLOAT,
-    MIN_LON       FLOAT,
-    MAX_LON       FLOAT,
-    UPDATED_AT    TIMESTAMP_NTZ DEFAULT SYSDATE()
+    CATALOG_ID         VARCHAR NOT NULL,
+    SOURCE             VARCHAR NOT NULL,
+    REGION_NAME        VARCHAR NOT NULL,
+    REGION_KEY         VARCHAR NOT NULL,
+    LOOKUP_NAME        VARCHAR,                  -- canonical name consumers use after loading
+    HIERARCHY          VARCHAR,
+    CONTINENT          VARCHAR,
+    COUNTRY            VARCHAR,
+    ISO_COUNTRY_A2     VARCHAR(2),               -- ISO 3166-1 alpha-2 (e.g. 'US', 'DE')
+    ISO_COUNTRY_A3     VARCHAR(3),               -- ISO 3166-1 alpha-3 (e.g. 'USA', 'DEU')
+    ISO_SUBDIVISION    VARCHAR,                  -- ISO 3166-2 (e.g. 'US-CA', 'DE-BY')
+    UN_M49             INT,                      -- UN M49 numeric country code
+    PBF_URL            VARCHAR NOT NULL,
+    PBF_SIZE_MB        FLOAT,
+    LEVEL              VARCHAR NOT NULL,
+    MIN_LAT            FLOAT,
+    MAX_LAT            FLOAT,
+    MIN_LON            FLOAT,
+    MAX_LON            FLOAT,
+    BOUNDARY           GEOGRAPHY,                -- simplified region polygon (~100m tolerance)
+    BOUNDARY_SOURCE    VARCHAR,                  -- 'geofabrik-poly' | 'bbbike-bbox' | 'manual-bbox'
+    BOUNDARY_VERTICES  INT,                      -- vertex count post-simplify
+    BOUNDARY_AREA_KM2  FLOAT,                    -- area in km^2 (sanity check)
+    BOUNDARY_BAKED_AT  DATE,                     -- when the boundary snapshot was generated
+    UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
 
@@ -60,9 +70,14 @@ BEGIN
                 $1:SOURCE::VARCHAR,
                 $1:REGION_NAME::VARCHAR,
                 $1:REGION_KEY::VARCHAR,
+                $1:LOOKUP_NAME::VARCHAR,
                 $1:HIERARCHY::VARCHAR,
                 $1:CONTINENT::VARCHAR,
                 $1:COUNTRY::VARCHAR,
+                $1:ISO_COUNTRY_A2::VARCHAR,
+                $1:ISO_COUNTRY_A3::VARCHAR,
+                $1:ISO_SUBDIVISION::VARCHAR,
+                $1:UN_M49::INT,
                 $1:PBF_URL::VARCHAR,
                 $1:PBF_SIZE_MB::FLOAT,
                 $1:LEVEL::VARCHAR,
@@ -70,6 +85,11 @@ BEGIN
                 $1:MAX_LAT::FLOAT,
                 $1:MIN_LON::FLOAT,
                 $1:MAX_LON::FLOAT,
+                TRY_TO_GEOGRAPHY($1:BOUNDARY_WKB::VARCHAR),
+                $1:BOUNDARY_SOURCE::VARCHAR,
+                $1:BOUNDARY_VERTICES::INT,
+                $1:BOUNDARY_AREA_KM2::FLOAT,
+                $1:BOUNDARY_BAKED_AT::DATE,
                 SYSDATE()
             FROM ' || P_STAGE_PREFIX || '/region_catalog/
         )

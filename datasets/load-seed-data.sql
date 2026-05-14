@@ -336,6 +336,49 @@ FILE_FORMAT = (TYPE = PARQUET)
 PURGE = FALSE
 FORCE = TRUE;
 
+--------------------------------------------------------------------------------
+-- 3a-bis. REGION_REGISTRY_V (joins REGION_REGISTRY to REGION_CATALOG so
+--          downstream consumers see real region polygons + ISO codes from
+--          the shipped boundary snapshot. Falls back to bbox if no catalog
+--          row exists yet for a manually-added region.)
+--------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.CORE.REGION_REGISTRY_V
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+  rr.REGION_NAME,
+  rr.DISPLAY_NAME,
+  rr.CENTER_LAT,
+  rr.CENTER_LON,
+  rr.CENTER_POINT,
+  rr.BBOX_MIN_LAT,
+  rr.BBOX_MAX_LAT,
+  rr.BBOX_MIN_LON,
+  rr.BBOX_MAX_LON,
+  rr.BBOX,
+  rr.ZOOM_LEVEL,
+  rr.ORS_REGION_KEY,
+  rr.DATA_SOURCE,
+  rr.IS_DEFAULT,
+  rr.PROVISIONED_AT,
+  COALESCE(rc.BOUNDARY, rr.BBOX)                  AS BOUNDARY,
+  COALESCE(rc.BOUNDARY_SOURCE, 'bbox-fallback')   AS BOUNDARY_SOURCE,
+  rc.BOUNDARY_VERTICES,
+  rc.BOUNDARY_AREA_KM2,
+  rc.BOUNDARY_BAKED_AT,
+  rc.ISO_COUNTRY_A2,
+  rc.ISO_COUNTRY_A3,
+  rc.ISO_SUBDIVISION,
+  rc.UN_M49,
+  rc.LOOKUP_NAME       AS CATALOG_LOOKUP_NAME,
+  rc.HIERARCHY         AS CATALOG_HIERARCHY,
+  rc.CONTINENT         AS CATALOG_CONTINENT,
+  rc.COUNTRY           AS CATALOG_COUNTRY
+FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
+LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  ON rc.LOOKUP_NAME = rr.ORS_REGION_KEY
+  OR rc.REGION_KEY  = rr.ORS_REGION_KEY;
+
 -- 3b. GENERATION_JOBS
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
   JOB_ID VARCHAR,
