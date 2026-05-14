@@ -1,0 +1,25 @@
+################# # Container ENV # #################
+2026-05-11 03:09:52 INFO   o.h.o.a.Application                       Starting Application v9.0.0 using Java 21.0.4 with PID 1 (/ors.jar started by root in /home/ors)
+2026-05-11 03:09:53 INFO   o.h.o.a.ORSEnvironmentPostProcessor       Configuration lookup started.
+2026-05-11 03:10:01 INFO   o.h.o.r.RoutingProfileManager             Total - 3 routing profiles loaded.
+2026-05-11 03:10:02 INFO   o.h.o.r.RoutingProfileManager             ORS-pl-driving-car
+2026-05-11 03:10:02 INFO   o.h.o.r.RoutingProfileManager             ORS-pl-driving-car start creating graph
+2026-05-11 03:10:30 INFO   o.h.o.r.RoutingProfileManager             ORS-pl-driving-car prepare graph for routing
+2026-05-11 03:11:00 INFO   o.h.o.r.RoutingProfileManager             ORS-pl-driving-car Creating CH preparations
+2026-05-11 03:11:05 INFO   c.g.GraphBuilder                          start contracting nodes
+2026-05-11 03:11:10 INFO   c.g.PrepareContractionHierarchies         edge, nodes:    1 200 000, shortcuts:    150 000, totalMB:8192, usedMB:1024
+2026-05-11 03:11:25 INFO   c.g.PrepareContractionHierarchies         edge, nodes:      900 000, shortcuts:    220 000, totalMB:8192, usedMB:1280
+2026-05-11 03:11:50 INFO   c.g.PrepareContractionHierarchies         edge, nodes:      450 000, shortcuts:    310 000, totalMB:8192, usedMB:1450
+2026-05-11 03:12:30 INFO   c.g.PrepareContractionHierarchies         edge, nodes:      120 000, shortcuts:    420 000, totalMB:8192, usedMB:1620
+2026-05-11 03:12:45 INFO   o.h.o.r.RoutingProfileManager             ORS-pl-driving-car Creating LM preparations
+2026-05-11 03:12:46 INFO   c.g.LandmarkStorage                       1/4 calling LM prepare.doWork for car_ors_fastest
+2026-05-11 03:13:30 INFO   c.g.LandmarkStorage                       LM car_ors_fastest finished
+2026-05-11 03:13:31 INFO   c.g.LandmarkStorage                       2/4 calling LM prepare.doWork for car_ors_shortest
+2026-05-11 03:14:15 INFO   c.g.LandmarkStorage                       LM car_ors_shortest finished
+2026-05-11 03:14:16 INFO   c.g.LandmarkStorage                       3/4 calling LM prepare.doWork for car_ors_fastest_with_turn_costs
+2026-05-11 03:15:00 INFO   c.g.LandmarkStorage                       LM car_ors_fastest_with_turn_costs finished
+2026-05-11 03:15:01 INFO   c.g.LandmarkStorage                       4/4 calling LM prepare.doWork for car_ors_shortest_with_turn_costs
+2026-05-11 03:15:42 WARN   o.h.o.r.RoutingProfileManager             slow disk I/O while writing landmark cache
+2026-05-11 03:15:50 INFO   c.g.LandmarkStorage                       LM car_ors_shortest_with_turn_costs finished
+2026-05-11 03:15:55 INFO   o.h.o.r.RoutingProfileManager             [1] Profiles: 'driving-car', location: /home/ors/graphs/driving-car
+2026-05-11 03:15:58 INFO   o.h.o.a.Application                       Started Application in 366.124 seconds
