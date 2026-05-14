@@ -1216,6 +1216,26 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
   }
 });
 
+// On-demand log tail for the BuildSummaryCard "Show recent logs" disclosure.
+// Issue #40 — kept separate from the 5s build-progress poller so the cheap
+// poll path stays cheap; this endpoint is only hit when the user expands.
+app.get('/api/regions/:region/logs', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const requested = parseInt(String(req.query.tail || '100'), 10);
+    const tail = Math.min(Math.max(Number.isFinite(requested) ? requested : 100, 1), 500);
+    const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+    const rows = await runSql(
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', ${tail}) AS LOGS`
+    );
+    const raw: string = rows?.[0]?.LOGS || '';
+    const lines = raw.replace(/\x1b\[[0-9;]*m/g, '').split('\n').slice(-tail);
+    res.json({ lines });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/regions/:region/cancel', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
