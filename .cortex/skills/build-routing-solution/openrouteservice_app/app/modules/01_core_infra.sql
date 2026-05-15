@@ -39,9 +39,16 @@ CREATE COMPUTE POOL IF NOT EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL
    AUTO_SUSPEND_SECS = 600;
 ALTER COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
+CREATE COMPUTE POOL IF NOT EXISTS ORS_CONTROL_APP_COMPUTE_POOL
+   INSTANCE_FAMILY = CPU_X64_XS
+   MIN_NODES = 1
+   MAX_NODES = 1
+   AUTO_RESUME = true;
+ALTER COMPUTE POOL ORS_CONTROL_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP"}}';
+
 -- Verify compute pool is ACTIVE before creating services.
 -- State must be ACTIVE; if STARTING wait ~2 minutes and re-run this module.
-SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';
+SHOW COMPUTE POOLS LIKE '%OPENROUTESERVICE_APP%' OR LIKE '%ORS_CONTROL_APP%';
 SELECT
     "name",
     "state",
@@ -50,7 +57,7 @@ SELECT
         ELSE 'WARNING: Pool state is ' || "state" || '. Wait for ACTIVE then re-run 01_core_infra.sql'
     END AS POOL_STATUS_CHECK
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-WHERE "name" = 'OPENROUTESERVICE_APP_COMPUTE_POOL';
+WHERE "name" IN ('OPENROUTESERVICE_APP_COMPUTE_POOL', 'ORS_CONTROL_APP_COMPUTE_POOL');
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
@@ -88,10 +95,10 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- ors_control_app has public endpoints, which are incompatible with AUTO_SUSPEND_SECS.
--- It also requires QUERY_WAREHOUSE and EXTERNAL_ACCESS_INTEGRATIONS, which must appear
--- before the FROM SPECIFICATION clause.
+-- It runs on its own smaller pool (CPU_X64_XS) since it must stay running and doesn't
+-- need the high-memory instances required by the ORS routing engine.
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_control_app
-   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
+   IN COMPUTE POOL ORS_CONTROL_APP_COMPUTE_POOL
    FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app
    SPECIFICATION_FILE = 'ors_control_app_service.yaml'
    MIN_INSTANCES = 1

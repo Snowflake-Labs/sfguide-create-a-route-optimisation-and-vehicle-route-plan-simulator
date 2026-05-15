@@ -53,7 +53,8 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for ORS operations |
 | WAREHOUSE_SIZE | `MEDIUM` | Size of the routing warehouse |
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
-| COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
+| COMPUTE_POOL | `OPENROUTESERVICE_APP_COMPUTE_POOL` | High-memory compute pool for ORS engine, gateway, VROOM, and downloader |
+| CONTROL_APP_POOL | `ORS_CONTROL_APP_COMPUTE_POOL` | Small compute pool for the control app (cannot auto-suspend due to public endpoint) |
 
 ## Workflow
 
@@ -61,7 +62,9 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 
 ### Step 0: Clean Previous Installation
 
-**Goal:** Remove the pre-installed `FLEET_INTELLIGENCE` application (native app) that ships with this demo environment, along with any other pre-existing objects that conflict with this deployment. This step is MANDATORY and must run unconditionally — do NOT skip it.
+**Goal:** Remove the pre-installed `FLEET_INTELLIGENCE` application (native app) and conflicting objects, while **preserving** the `OPENROUTESERVICE_APP` database which contains pre-loaded container images. This step is MANDATORY and must run unconditionally — do NOT skip it.
+
+> **CRITICAL: Do NOT drop the `OPENROUTESERVICE_APP` database.** It contains the image repository with pre-built container images. If this database is dropped, the images cannot be recovered without Docker (which is not available in this environment). Only drop services, compute pools, stages, and non-image objects within it.
 
 **Actions:**
 
@@ -75,39 +78,41 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
    DROP DATABASE IF EXISTS FLEET_INTEL_CONFIG CASCADE;
    ```
 
-3. **Stop and drop any pre-existing compute pools:**
-   ```sql
-   ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
-   DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
-   ```
-
-4. **Drop any other conflicting objects from prior runs:**
+3. **Drop any running services** (so compute pools can be released):
    ```sql
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.VROOM_SERVICE;
    DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER;
+   ```
 
+4. **Stop and drop any pre-existing compute pools:**
+   ```sql
+   ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
+   DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
+   ALTER COMPUTE POOL IF EXISTS ORS_CONTROL_APP_COMPUTE_POOL STOP ALL;
+   DROP COMPUTE POOL IF EXISTS ORS_CONTROL_APP_COMPUTE_POOL;
    DROP COMPUTE POOL IF EXISTS ORS_COMPUTE_POOL;
+   ```
 
-   DROP DATABASE IF EXISTS OPENROUTESERVICE_APP CASCADE;
+5. **Drop other conflicting databases and warehouses** (NOT OPENROUTESERVICE_APP):
+   ```sql
    DROP DATABASE IF EXISTS SYNTHETIC_DATASETS CASCADE;
    DROP DATABASE IF EXISTS ROUTING_DB CASCADE;
-
    DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
    ```
 
-5. **Verify** clean state:
+6. **Verify** the OPENROUTESERVICE_APP database still exists with images:
    ```sql
-   SHOW APPLICATIONS LIKE 'FLEET%';
-   SHOW DATABASES LIKE 'FLEET_INTEL%';
-   SHOW DATABASES LIKE 'OPENROUTESERVICE%';
-   SHOW DATABASES LIKE 'SYNTHETIC_DATASETS';
+   SHOW DATABASES LIKE 'OPENROUTESERVICE_APP';
+   SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
    ```
-   Expected: 0 rows for each query.
+   Expected: Database exists. At least 5 images (openrouteservice, ors_control_app, routing_reverse_proxy, vroom-docker, downloader).
 
-**Output:** Pre-existing Fleet Intelligence application and all associated objects removed. Environment is clean for fresh deployment.
+   If the database or images are **missing**, STOP and inform the user: *"The OPENROUTESERVICE_APP database with pre-built container images is missing. This environment requires Docker to rebuild them, which is not available in Snowsight workspaces. Please contact your administrator to restore the images."*
+
+**Output:** Pre-existing Fleet Intelligence application removed. OPENROUTESERVICE_APP database preserved with container images intact.
 
 ### Step 1: Set Query Tag for Tracking
 
@@ -996,6 +1001,10 @@ DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;
 DROP DATABASE IF EXISTS FLEET_INTELLIGENCE;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
+ALTER COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL STOP ALL;
+DROP COMPUTE POOL IF EXISTS OPENROUTESERVICE_APP_COMPUTE_POOL;
+ALTER COMPUTE POOL IF EXISTS ORS_CONTROL_APP_COMPUTE_POOL STOP ALL;
+DROP COMPUTE POOL IF EXISTS ORS_CONTROL_APP_COMPUTE_POOL;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.
