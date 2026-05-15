@@ -30,7 +30,7 @@ When to re-run:
     * manual_iso_overrides.json is updated with corrected codes.
 
 Run:
-    python3 datasets/region_catalog/build_boundaries.py
+    python3 scripts/region_catalog/build_boundaries.py
 
 Idempotent. Caches downloaded .poly files in tmp/poly_cache/ so reruns are fast.
 After running, commit the updated parquet:

@@ -623,7 +623,7 @@ app.post('/api/regions/catalog/refresh', async (_req, res) => {
     // so extracting the four extents is sufficient.
     //
     // For full polygon boundaries (Geofabrik, MultiPolygon support, holes):
-    // see datasets/region_catalog/build_boundaries.py. That offline bake
+    // see scripts/region_catalog/build_boundaries.py. That offline bake
     // populates REGION_CATALOG.BOUNDARY for all ~460 shipped regions. Newly-
     // added regions discovered via this dynamic-refresh path will have a NULL
     // BOUNDARY column until the bake script is re-run and the seed parquet
