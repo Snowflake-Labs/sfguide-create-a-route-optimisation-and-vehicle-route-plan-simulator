@@ -21,6 +21,7 @@ import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
 import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
+import DatasetPicker from './shared/DatasetPicker';
 
 interface SubPage { key: string; label: string; }
 
@@ -215,8 +216,7 @@ export default function App() {
                   {region.value.regionName} / {vehicleTypeCtx.value.vehicleType} @ ({region.value.center.lat.toFixed(2)},{region.value.center.lng.toFixed(2)})
                 </span>
               )}
-              <VehicleTypeSwitcher />
-              <RegionSwitcher />
+              <DatasetPicker />
               <button
                 onClick={() => {
                   document.cookie.split(';').forEach(c => {

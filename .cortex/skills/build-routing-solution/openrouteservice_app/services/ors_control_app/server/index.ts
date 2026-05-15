@@ -2483,6 +2483,70 @@ app.post('/api/fleet-config/vehicle-type', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/datasets — list completed Data Studio generation jobs as a single
+// unified dataset list. Used by the DatasetPicker header dropdown to replace
+// the separate region + vehicle-type switchers.
+// ---------------------------------------------------------------------------
+const ORS_PROFILE_TO_VEHICLE_TYPE: Record<string, string> = {
+  'cycling-electric': 'ebike',
+  'driving-hgv': 'hgv',
+  'driving-car': 'car',
+  'cycling-road': 'ebike',
+};
+
+app.get('/api/datasets', async (_req, res) => {
+  try {
+    let currentRegion = 'SanFrancisco';
+    let currentVehicleType = 'ebike';
+    try {
+      const cfgRows = await runSql('SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
+      if (cfgRows?.[0]) {
+        currentRegion = cfgRows[0].REGION || currentRegion;
+        currentVehicleType = cfgRows[0].VEHICLE_TYPE || currentVehicleType;
+      }
+    } catch {}
+
+    const rows = await runSql(`
+      SELECT
+        j.JOB_ID,
+        j.PRESET_NAME,
+        j.REGION,
+        j.ORS_PROFILE,
+        j.STATUS,
+        j.TRIPS_GENERATED AS TRIP_COUNT,
+        j.POINTS_GENERATED AS POINT_COUNT,
+        j.COMPLETED_AT,
+        COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY
+      FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+      LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
+      WHERE j.STATUS IN ('COMPLETED', 'STOPPED')
+        AND j.TRIPS_GENERATED > 0
+      ORDER BY j.COMPLETED_AT DESC
+    `, 'FLEET_INTELLIGENCE', 'CORE');
+
+    const datasets = (rows || []).map((r: any) => {
+      const vehicleType = ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
+      return {
+        jobId: r.JOB_ID,
+        presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
+        region: r.REGION,
+        regionDisplay: r.REGION_DISPLAY || r.REGION,
+        orsProfile: r.ORS_PROFILE,
+        vehicleType,
+        tripCount: r.TRIP_COUNT ?? 0,
+        pointCount: r.POINT_COUNT ?? 0,
+        completedAt: r.COMPLETED_AT,
+        isActive: r.REGION === currentRegion && vehicleType === currentVehicleType,
+      };
+    });
+
+    res.json({ datasets, currentRegion, currentVehicleType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, datasets: [] });
+  }
+});
+
 const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
 1. Driving/cycling/walking directions between locations
 2. Reachability analysis (isochrones) - areas reachable within X minutes
