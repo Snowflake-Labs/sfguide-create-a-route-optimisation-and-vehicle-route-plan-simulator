@@ -88,7 +88,13 @@ function isProvisionedRegion(r: RegionOption | null): boolean {
   return !!(r && !r.isDefault && r.region !== 'default');
 }
 
-function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): string {
+interface InputPoints {
+  start?: [number, number];
+  end?: [number, number];
+  isoPoint?: [number, number];
+}
+
+function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): { sql: string; inputs: InputPoints } {
   const bbox = region?.bbox;
   const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
@@ -133,21 +139,27 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
     isoPoint = center;
   }
 
+  const inputs: InputPoints = {
+    start: start! ? [start![0], start![1]] : undefined,
+    end: end! ? [end![0], end![1]] : undefined,
+    isoPoint: isoPoint! ? [isoPoint![0], isoPoint![1]] : undefined,
+  };
+
   switch (fnName) {
     case 'LIST_REGIONS':
-      return `CALL ${p}.LIST_REGIONS()`;
+      return { sql: `CALL ${p}.LIST_REGIONS()`, inputs };
     case 'ORS_STATUS':
-      return `SELECT ${p}.ORS_STATUS(${rg})`;
+      return { sql: `SELECT ${p}.ORS_STATUS(${rg})`, inputs };
     case 'CHECK_HEALTH':
-      return `SELECT ${p}.CHECK_HEALTH()`;
+      return { sql: `SELECT ${p}.CHECK_HEALTH()`, inputs };
     case 'DIRECTIONS':
-      return `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ${rg}))`;
+      return { sql: `SELECT * FROM TABLE(${p}.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ${rg}))`, inputs };
     case 'ISOCHRONES':
-      return `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${isoPoint![0]}::FLOAT, ${isoPoint![1]}::FLOAT, ${isoRangeFor(profile)}, ${rg}))`;
+      return { sql: `SELECT * FROM TABLE(${p}.ISOCHRONES('${profile}', ${isoPoint![0]}::FLOAT, ${isoPoint![1]}::FLOAT, ${isoRangeFor(profile)}, ${rg}))`, inputs };
     case 'MATRIX':
-      return `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start![0]},${start![1]}],[${end![0]},${end![1]}],[${dest2![0]},${dest2![1]}]]'), ${rg})`;
+      return { sql: `SELECT ${p}.MATRIX('${profile}', PARSE_JSON('[[${start![0]},${start![1]}],[${end![0]},${end![1]}],[${dest2![0]},${dest2![1]}]]'), ${rg})`, inputs };
     case 'MATRIX_TABULAR':
-      return `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ARRAY_CONSTRUCT(${dest2![0]}, ${dest2![1]})), ${rg})`;
+      return { sql: `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ARRAY_CONSTRUCT(${dest2![0]}, ${dest2![1]})), ${rg})`, inputs };
     case 'OPTIMIZATION': {
       const jobs = sampledPoints && sampledPoints.points.length >= 5
         ? sampledPoints.points.slice(1)
@@ -155,10 +167,10 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
       const jobEntries = jobs.map((j, i) =>
         `    OBJECT_CONSTRUCT('id', ${i + 1}, 'location', ARRAY_CONSTRUCT(${j[0]}, ${j[1]}))`
       ).join(',\n');
-      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}))\n  ),\n  [], ${rg}\n))`;
+      return { sql: `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}))\n  ),\n  [], ${rg}\n))`, inputs };
     }
     default:
-      return '';
+      return { sql: '', inputs };
   }
 }
 
@@ -305,7 +317,7 @@ function travelTimeColor(t: number, maxT: number): [number, number, number, numb
   return [r, g, b, 230];
 }
 
-function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: string; regionCenter: [number, number] }) {
+function ResultMap({ result, fnName, regionCenter, inputPoints }: { result: any; fnName: string; regionCenter: [number, number]; inputPoints: InputPoints }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
   const [viewState, setViewState] = useState({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 });
@@ -385,6 +397,23 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     });
   }, [geo.points]);
 
+  const isoOriginLayer = useMemo(() => {
+    if (fnName !== 'ISOCHRONES' || !inputPoints.isoPoint) return null;
+    return new ScatterplotLayer({
+      id: 'iso-origin',
+      data: [{ position: inputPoints.isoPoint, label: 'Origin' }],
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: [245, 158, 11, 255],
+      getLineColor: [255, 255, 255, 255],
+      getRadius: 120,
+      radiusMinPixels: 9,
+      radiusMaxPixels: 14,
+      stroked: true,
+      lineWidthMinPixels: 3,
+    });
+  }, [fnName, inputPoints.isoPoint]);
+
   const matrixLayers = useMemo(() => {
     if (!matrix) return [];
     const layers: any[] = [];
@@ -431,14 +460,15 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
   const basemap = useMemo(() => cartoBasemap(), []);
   const layers = useMemo(() => matrix
     ? [basemap, ...matrixLayers]
-    : [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean),
-    [basemap, matrix, matrixLayers, geojsonLayer, startEndLayer, pointsLayer]);
+    : [basemap, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer].filter(Boolean),
+    [basemap, matrix, matrixLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer]);
 
   const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix);
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
     if (layer?.id === 'matrix-origins') return { text: object.name, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    if (layer?.id === 'iso-origin') return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     if (layer?.id === 'matrix-destinations') {
       return { text: `${object.name}\n${(object.duration / 60).toFixed(1)} min · ${(object.distance / 1000).toFixed(2)} km`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '6px 10px', borderRadius: '4px', whiteSpace: 'pre-line' } };
     }
@@ -466,6 +496,12 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(245,158,11)', display: 'inline-block' }} /> Origin</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(34,197,94)', display: 'inline-block' }} /> Fast</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Slow</span>
+        </div>
+      )}
+      {!matrix && fnName === 'ISOCHRONES' && inputPoints.isoPoint && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(245,158,11)', display: 'inline-block' }} /> Origin</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, background: 'rgba(255,107,53,0.4)', border: '2px solid rgb(255,107,53)', display: 'inline-block' }} /> Reachable area</span>
         </div>
       )}
       <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
@@ -529,18 +565,23 @@ export default function FunctionTester() {
   const [roadPointsReason, setRoadPointsReason] = useState<string | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
+  const [inputPoints, setInputPoints] = useState<InputPoints>({});
   const userEditedRef = useRef(false);
 
   const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
     if (!COORD_FUNCTIONS.includes(fnName)) {
       setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
+      const gen = generateSql(fnName, region, profile, db, null);
+      setSqlInput(gen.sql);
+      setInputPoints(gen.inputs);
       return;
     }
     const bbox = region?.bbox;
     if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
       setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
+      const gen = generateSql(fnName, region, profile, db, null);
+      setSqlInput(gen.sql);
+      setInputPoints(gen.inputs);
       return;
     }
     const sampled = samplePoints({
@@ -549,7 +590,9 @@ export default function FunctionTester() {
       boundary: region?.boundaryGeoJson || undefined,
     });
     setSampleHint(sampled?.hint || null);
-    setSqlInput(generateSql(fnName, region, profile, db, sampled));
+    const gen = generateSql(fnName, region, profile, db, sampled);
+    setSqlInput(gen.sql);
+    setInputPoints(gen.inputs);
     userEditedRef.current = false;
   }, []);
 
@@ -589,7 +632,9 @@ export default function FunctionTester() {
             setRoadPoints(roads);
             setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
           }
-          setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
+          const gen = generateSql('ORS_STATUS', def, 'driving-car', db);
+          setSqlInput(gen.sql);
+          setInputPoints(gen.inputs);
         }
       } catch (err: any) {
         setRegionsError(err.message || 'Failed to load regions');
@@ -814,7 +859,7 @@ export default function FunctionTester() {
         </div>
       )}
 
-      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} />}
+      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} inputPoints={inputPoints} />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {
         const raw = result?.[0] ? Object.values(result[0])[0] : null;
