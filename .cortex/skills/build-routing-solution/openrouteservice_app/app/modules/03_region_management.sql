@@ -373,7 +373,6 @@ BEGIN
     ELSE
         instance_family := 'CPU_X64_SL';
     END IF;
-
     -- Probe graphs stage: if a prior successful build left artifacts, reuse them
     -- (REBUILD_GRAPHS=false). Only set true when the stage is empty.
     BEGIN
@@ -399,7 +398,6 @@ BEGIN
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
     SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, UPDATED_AT = CURRENT_TIMESTAMP()
     WHERE REGION = :P_REGION;
-
     RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ')';
 END;
 $$;
@@ -662,5 +660,19 @@ BEGIN
     ))::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
     RETURN COALESCE(result, '[]');
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DISMISS_PROVISION_JOB(P_JOB_ID VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"provisioner"}}'
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+    WHERE JOB_ID = :P_JOB_ID AND STATUS IN ('COMPLETE', 'ERROR', 'CANCELLED');
+    RETURN OBJECT_CONSTRUCT('dismissed', TRUE, 'job_id', :P_JOB_ID)::VARCHAR;
 END;
 $$;
