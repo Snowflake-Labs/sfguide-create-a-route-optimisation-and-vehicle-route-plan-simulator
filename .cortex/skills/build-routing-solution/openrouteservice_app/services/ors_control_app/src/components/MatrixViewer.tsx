@@ -365,9 +365,7 @@ export default function MatrixViewer() {
       pickable: true,
       filled: true,
       extruded: false,
-      stroked: true,
-      lineWidthMinPixels: 0.5,
-      getLineColor: [255, 255, 255, 40] as [number, number, number, number],
+      stroked: false,
       getHexagon: (d: ReachabilityData) => d.hex_id,
       getFillColor: (d: ReachabilityData) => {
         const val = rawValue(d, gradientMetric, timeUnit);
