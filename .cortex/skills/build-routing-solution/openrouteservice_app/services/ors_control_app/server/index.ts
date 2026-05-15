@@ -6,7 +6,7 @@ import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createStudioRouter } from './studio/routes.js';
-import { reconcileStaleJobs } from './studio/jobs.js';
+import { reconcileStaleJobs, setRegionActivatedHandler } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
 
@@ -2141,20 +2141,90 @@ app.get('/api/regions', async (_req, res) => {
       } catch {}
     } catch {}
     try {
-      const synthRows = await runSql('SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY');
-      for (const row of synthRows) {
-        if (row.REGION && !knownNames.has(row.REGION)) {
+      // For regions that exist only in FACT_VEHICLE_TELEMETRY (e.g. user
+      // generated data via Data Studio for a region not yet promoted to
+      // REGION_REGISTRY), resolve geometry from REGION_CATALOG when possible
+      // (real Geofabrik polygons, baked by build_boundaries.py), otherwise
+      // fall back to a centroid/envelope derived from the telemetry itself.
+      // This replaces the previous behaviour of returning CENTER_LAT=0,
+      // CENTER_LON=0 (null island).
+      const synthRows = await runSql(`
+        WITH telemetry_regions AS (
+          SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE REGION IS NOT NULL
+        ),
+        catalog_match AS (
+          SELECT
+            t.REGION                                                AS REGION_NAME,
+            rc.BOUNDARY                                             AS BOUNDARY,
+            COALESCE(rc.LOOKUP_NAME, rc.REGION_KEY, t.REGION)       AS ORS_REGION_KEY
+          FROM telemetry_regions t
+          LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+            ON rc.BOUNDARY IS NOT NULL
+           AND (UPPER(rc.LOOKUP_NAME) = UPPER(t.REGION)
+                OR UPPER(rc.REGION_KEY) = UPPER(t.REGION)
+                OR UPPER(rc.REGION_NAME) = UPPER(t.REGION))
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY rc.BOUNDARY_AREA_KM2 ASC NULLS LAST) = 1
+        ),
+        telemetry_hull AS (
+          SELECT
+            REGION                                                  AS REGION_NAME,
+            ST_MAKEPOLYGON(TO_GEOGRAPHY('LINESTRING(' ||
+              MIN(LONGITUDE) || ' ' || MIN(LATITUDE) || ',' ||
+              MAX(LONGITUDE) || ' ' || MIN(LATITUDE) || ',' ||
+              MAX(LONGITUDE) || ' ' || MAX(LATITUDE) || ',' ||
+              MIN(LONGITUDE) || ' ' || MAX(LATITUDE) || ',' ||
+              MIN(LONGITUDE) || ' ' || MIN(LATITUDE) || ')'))      AS BOUNDARY
+          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
+          WHERE REGION IS NOT NULL
+            AND LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
+          GROUP BY REGION
+        ),
+        resolved AS (
+          SELECT
+            c.REGION_NAME,
+            COALESCE(c.BOUNDARY, h.BOUNDARY)                          AS BOUNDARY,
+            CASE WHEN c.BOUNDARY IS NOT NULL THEN 'catalog' ELSE 'telemetry-bbox' END AS BOUNDARY_SOURCE,
+            c.ORS_REGION_KEY
+          FROM catalog_match c
+          LEFT JOIN telemetry_hull h ON h.REGION_NAME = c.REGION_NAME
+        )
+        SELECT
+          REGION_NAME,
+          BOUNDARY_SOURCE,
+          ORS_REGION_KEY,
+          ST_Y(ST_CENTROID(BOUNDARY))::FLOAT AS CENTER_LAT,
+          ST_X(ST_CENTROID(BOUNDARY))::FLOAT AS CENTER_LON,
+          ST_YMIN(BOUNDARY)::FLOAT          AS BBOX_MIN_LAT,
+          ST_YMAX(BOUNDARY)::FLOAT          AS BBOX_MAX_LAT,
+          ST_XMIN(BOUNDARY)::FLOAT          AS BBOX_MIN_LON,
+          ST_XMAX(BOUNDARY)::FLOAT          AS BBOX_MAX_LON,
+          CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON
+        FROM resolved
+      `);
+      for (const row of synthRows || []) {
+        if (row.REGION_NAME && !knownNames.has(row.REGION_NAME)) {
           regions.push({
-            REGION_NAME: row.REGION,
-            DISPLAY_NAME: row.REGION.replace(/([A-Z])/g, ' $1').trim(),
-            CENTER_LAT: 0, CENTER_LON: 0,
-            BBOX_MIN_LAT: null, BBOX_MAX_LAT: null, BBOX_MIN_LON: null, BBOX_MAX_LON: null,
-            ZOOM_LEVEL: 11, ORS_REGION_KEY: null,
-            DATA_SOURCE: 'SYNTHETIC', IS_DEFAULT: false,
+            REGION_NAME: row.REGION_NAME,
+            DISPLAY_NAME: String(row.REGION_NAME).replace(/([A-Z])/g, ' $1').trim(),
+            CENTER_LAT: row.CENTER_LAT ?? 0,
+            CENTER_LON: row.CENTER_LON ?? 0,
+            BBOX_MIN_LAT: row.BBOX_MIN_LAT ?? null,
+            BBOX_MAX_LAT: row.BBOX_MAX_LAT ?? null,
+            BBOX_MIN_LON: row.BBOX_MIN_LON ?? null,
+            BBOX_MAX_LON: row.BBOX_MAX_LON ?? null,
+            ZOOM_LEVEL: 11,
+            ORS_REGION_KEY: row.ORS_REGION_KEY ?? null,
+            DATA_SOURCE: 'SYNTHETIC',
+            IS_DEFAULT: false,
+            BOUNDARY_GEOJSON: row.BOUNDARY_GEOJSON ?? null,
+            BOUNDARY_SOURCE: row.BOUNDARY_SOURCE ?? null,
           });
+          knownNames.add(row.REGION_NAME);
         }
       }
-    } catch {}
+    } catch (e: any) {
+      log('WARN', 'Region', `synthetic-region geometry resolve failed: ${e.message?.slice(0, 150)}`);
+    }
     if (regions.length === 0) {
       regions = [{
         REGION_NAME: 'SanFrancisco',
@@ -2975,5 +3045,37 @@ detectWarehouse().then(verifySessionUtc).then(() => {
   });
   reconcileStaleJobs(runSql, 30).catch((e) => {
     log('WARN', 'Studio', `Boot reconcile failed: ${e?.message?.slice(0, 200)}`);
+  });
+
+  // Hydrate activeRegionOverride from REGION_REGISTRY so the user's last
+  // region selection survives SPCS container restarts. POST /api/regions/active
+  // already persists the choice to REGION_REGISTRY.IS_DEFAULT (via the
+  // SET_ACTIVE_REGION procedure), but the in-memory override resets to null
+  // on every container boot. Read it back here so the next /api/regions call
+  // returns the persisted active region instead of falling back to the seeded
+  // SanFrancisco default.
+  (async () => {
+    try {
+      const rows = await runSql(
+        `SELECT REGION_NAME FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE IS_DEFAULT = TRUE LIMIT 1`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      const persisted = rows?.[0]?.REGION_NAME;
+      if (persisted) {
+        activeRegionOverride = persisted;
+        log('INFO', 'Region', `Hydrated activeRegionOverride from REGION_REGISTRY: ${persisted}`);
+      }
+    } catch (e: any) {
+      log('WARN', 'Region', `activeRegionOverride hydrate failed: ${e?.message?.slice(0, 150)}`);
+    }
+  })();
+
+  // Wire Data Studio completion -> immediately refresh in-memory override so
+  // the freshly generated region appears as active without waiting for the
+  // user to click the switcher (or for a container restart to re-hydrate).
+  setRegionActivatedHandler((region: string) => {
+    if (!region) return;
+    activeRegionOverride = region;
+    log('INFO', 'Region', `Active region updated by Data Studio: ${region}`);
   });
 });
