@@ -133,7 +133,7 @@ export default function FleetDataStudio() {
       const res = await fetch('/api/studio/jobs');
       const data = await res.json();
       setActiveJobs(data.active || []);
-      setJobHistory(data.history || []);
+      setJobHistory((data.history || []).filter((j: any) => j.STATUS !== 'DELETED'));
       return data.active || [];
     } catch (e: any) {
       console.error('Failed to fetch jobs:', e);

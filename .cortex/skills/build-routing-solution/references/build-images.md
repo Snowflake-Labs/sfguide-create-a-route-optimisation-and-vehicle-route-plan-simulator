@@ -66,8 +66,8 @@ npm install --legacy-peer-deps && npm run build && npm run build:server
 $CONTAINER_CMD build --rm --platform linux/amd64 \
   --ignorefile .dockerignore.prebuilt \
   -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:v1.0.119 .
-$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.119
+  -t $REPO_URL/ors_control_app:v1.0.154 .
+$CONTAINER_CMD push $REPO_URL/ors_control_app:v1.0.154
 cd ../../..
 ```
 
@@ -78,9 +78,9 @@ cd ../../..
 > cp .dockerignore .dockerignore.bak && cp .dockerignore.prebuilt .dockerignore
 > docker build --rm --platform linux/amd64 \
 >   -f Dockerfile.runtime \
->   -t $REPO_URL/ors_control_app:v1.0.118 .
+>   -t $REPO_URL/ors_control_app:v1.0.154 .
 > mv .dockerignore.bak .dockerignore
-> docker push $REPO_URL/ors_control_app:v1.0.118
+> docker push $REPO_URL/ors_control_app:v1.0.154
 > ```
 
 > **CRITICAL — shell operator precedence:** Run the npm commands and the `docker`/`podman` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app.
@@ -109,7 +109,7 @@ Expected: 5 images with tags matching the Image Inventory below.
 | Downloader | downloader | v0.0.3 |
 | Gateway | routing_reverse_proxy | v1.0.0 |
 | VROOM | vroom-docker | v1.0.1 |
-| Control App | ors_control_app | v1.0.117 |
+| Control App | ors_control_app | v1.0.154 |
 
 ## Expected Duration
 

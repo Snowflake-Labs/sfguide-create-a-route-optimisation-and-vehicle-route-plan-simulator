@@ -15,7 +15,7 @@ export default function CatchmentPanel() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
-  const [travelMode, setTravelMode] = useState('cycling-regular');
+  const [travelMode, setTravelMode] = useState('cycling-electric');
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
@@ -126,8 +126,8 @@ export default function CatchmentPanel() {
           <label>Travel Mode</label>
           <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
             <option value="cycling-electric">E-Bike</option>
-            <option value="driving-car">Car</option>
-            <option value="driving-hgv">HGV / Truck</option>
+            <option value="cycling-regular">Bicycle</option>
+            <option value="foot-walking">Walking</option>
           </select>
         </div>
         <div style={{ minWidth: 100 }}>

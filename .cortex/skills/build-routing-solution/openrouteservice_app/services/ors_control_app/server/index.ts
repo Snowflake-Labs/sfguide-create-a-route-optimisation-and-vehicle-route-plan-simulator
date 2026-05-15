@@ -281,8 +281,12 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/ors-readiness', async (_req, res) => {
   const readiness: Record<string, any> = {};
 
-  async function checkGraphsPersisted(_regionKey: string): Promise<boolean> {
-    return true;
+  async function checkGraphsPersisted(regionKey: string): Promise<boolean> {
+    try {
+      const stageRegion = regionKey === 'default' ? 'SanFrancisco' : regionKey;
+      const rows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_GRAPHS_SPCS_STAGE/${stageRegion} PATTERN='.*stamp.txt.*'`);
+      return (rows?.length ?? 0) > 0;
+    } catch { return false; }
   }
 
   async function buildReadiness(regionKey: string, data: any): Promise<any> {
@@ -351,6 +355,35 @@ app.post('/api/suspend', async (_req, res) => {
     res.json({ status: 'ok', result });
   } catch (err: any) {
     res.json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/services/:name/resume', async (req, res) => {
+  try {
+    const name = sanitizeIdentifier(req.params.name);
+    const rows = await runSql(`CALL ${SF_DATABASE}.CORE.RESUME_SERVICE('${escapeString(name)}')`);
+    const raw = rows?.[0]?.[Object.keys(rows[0] || {})[0]] || '{}';
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed.status === 'error') return res.status(400).json(parsed);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(400).json({ status: 'error', error: err.message });
+  }
+});
+
+app.post('/api/services/:name/suspend', async (req, res) => {
+  try {
+    const name = sanitizeIdentifier(req.params.name);
+    if (name.toUpperCase() === 'ORS_CONTROL_APP') {
+      return res.status(400).json({ status: 'error', error: 'ORS_CONTROL_APP cannot be suspended from itself' });
+    }
+    const rows = await runSql(`CALL ${SF_DATABASE}.CORE.SUSPEND_SERVICE('${escapeString(name)}')`);
+    const raw = rows?.[0]?.[Object.keys(rows[0] || {})[0]] || '{}';
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed.status === 'error') return res.status(400).json(parsed);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(400).json({ status: 'error', error: err.message });
   }
 });
 
@@ -673,7 +706,34 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         } catch {}
       }
 
-      return { ...c, bbox, serviceStatus, functionExists: true };
+      let graphReadiness: any = null;
+      if (serviceStatus === 'RUNNING' || serviceStatus === 'READY') {
+        try {
+          const safeRegion = sanitizeIdentifier(c.region);
+          const orsRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')) AS S`);
+          const raw = orsRows?.[0]?.S;
+          if (raw) {
+            const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const builtProfiles = Object.keys(data.profiles || {});
+            const expectedProfiles = await getExpectedProfiles(c.region);
+            const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
+            graphReadiness = {
+              service_ready: data.service_ready ?? false,
+              profiles_loaded: builtProfiles,
+              expected_profiles: expectedProfiles,
+              graphs: allProfiles.map((p: string) => ({
+                profile: p,
+                ready: builtProfiles.includes(p),
+                build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
+              })),
+            };
+          }
+        } catch (e: any) {
+          graphReadiness = { service_ready: false, error: e.message, profiles_loaded: [], expected_profiles: [], graphs: [] };
+        }
+      }
+
+      return { ...c, bbox, serviceStatus, functionExists: true, graphReadiness };
     }));
 
     let defaultStatus = 'NOT_FOUND';
@@ -681,6 +741,31 @@ app.get('/api/regions/provisioned', async (_req, res) => {
       const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA ${SF_DATABASE}.CORE`);
       defaultStatus = rows?.[0]?.status || 'NOT_FOUND';
     } catch {}
+    let defaultGraphReadiness: any = null;
+    if (defaultStatus === 'RUNNING' || defaultStatus === 'READY') {
+      try {
+        const orsRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
+        const raw = orsRows?.[0]?.S;
+        if (raw) {
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          const builtProfiles = Object.keys(data.profiles || {});
+          const expectedProfiles = await getExpectedProfiles('default');
+          const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
+          defaultGraphReadiness = {
+            service_ready: data.service_ready ?? false,
+            profiles_loaded: builtProfiles,
+            expected_profiles: expectedProfiles,
+            graphs: allProfiles.map((p: string) => ({
+              profile: p,
+              ready: builtProfiles.includes(p),
+              build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
+            })),
+          };
+        }
+      } catch (e: any) {
+        defaultGraphReadiness = { service_ready: false, error: e.message, profiles_loaded: [], expected_profiles: [], graphs: [] };
+      }
+    }
     if (defaultStatus !== 'NOT_FOUND') {
       enriched.unshift({
         region: 'default',
@@ -690,6 +775,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         functionExists: true,
         isDefault: true,
         bbox: { min_lat: 37.71, max_lat: 37.81, min_lon: -122.51, max_lon: -122.37 },
+        graphReadiness: defaultGraphReadiness,
       });
     }
 
@@ -700,7 +786,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 });
 
 app.post('/api/regions/provision', async (req, res) => {
-  const { city, region, pbf_url, bbox, profiles } = req.body;
+  const { city, region, pbf_url, bbox, profiles, compute_size } = req.body;
   if (!region) return res.status(400).json({ error: 'region required' });
 
   let safeRegion: string;
@@ -728,6 +814,7 @@ app.post('/api/regions/provision', async (req, res) => {
     ? profiles.filter((p: string) => validProfiles.includes(p)).join(',')
     : defaultProfiles;
   const safeProfiles = escapeString(selectedProfiles || defaultProfiles);
+  const safeComputeSize = ['S', 'M', 'L'].includes(compute_size) ? compute_size : 'M';
 
   const jobId = `PROVISION_${safeRegion}_${Date.now()}`.toUpperCase();
 
@@ -740,7 +827,7 @@ app.post('/api/regions/provision', async (req, res) => {
   res.json({ status: 'launched', job_id: jobId });
 
   try {
-    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}')`;
+    const callSql = `CALL ${SF_DATABASE}.CORE.PROVISION_REGION_WRAPPER('${escapeString(jobId)}', '${safeRegion}', '${safeCity}', '${safePbfUrl}', ${minLat}, ${maxLat}, ${minLon}, ${maxLon}, '${safeProfiles}', '${safeComputeSize}')`;
     const handle = await submitSqlAsync(callSql);
     await runSql(`UPDATE ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS SET STATEMENT_HANDLE='${escapeString(handle)}' WHERE JOB_ID='${escapeString(jobId)}'`);
   } catch (e: any) {
@@ -755,6 +842,16 @@ app.get('/api/regions/provision/status', async (_req, res) => {
     res.json({ jobs });
   } catch (err: any) {
     res.json({ jobs: [], error: err.message });
+  }
+});
+
+app.post('/api/regions/provision/:jobId/dismiss', async (req, res) => {
+  try {
+    const jobId = sanitizeIdentifier(req.params.jobId);
+    await callProcedure(`DISMISS_PROVISION_JOB('${jobId}')`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -777,12 +874,43 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+
+    // Fast path: ORS_STATUS is the source of truth. If the service reports ready
+    // with profiles loaded, return 'ready' immediately. Avoids unreliable log
+    // tail scraping for long-running builds where start/finish markers have
+    // rolled out of the 1000-line window (Issue: UI stuck on "ORS starting up...").
+    try {
+      const statusRows = await runSql(
+        `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')::VARCHAR AS S`
+      );
+      const statusRaw = statusRows?.[0]?.S;
+      if (statusRaw) {
+        const parsed = JSON.parse(statusRaw);
+        if (parsed?.service_ready === true && parsed?.profiles) {
+          const loaded = Object.keys(parsed.profiles);
+          if (loaded.length > 0) {
+            res.json({
+              phase: 'ready',
+              progress: 100,
+              completedProfiles: loaded,
+              totalProfiles: loaded.length,
+              currentProfile: null,
+            });
+            return;
+          }
+        }
+      }
+    } catch {
+      // fall through to log-based scraping
+    }
+
     const rows = await runSql(
       `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
     );
     const logs: string = rows?.[0]?.LOGS || '';
 
-    const finishedProfiles = [...logs.matchAll(/\[1\] Profile: '([\w-]+)'/g)].map(m => m[1]);
+    // ORS v9 logs profile completion as "[N] Profiles: 'name', location: ..." (plural).
+    const finishedProfiles = [...logs.matchAll(/\[\d+\] Profiles?: '([\w-]+)'/g)].map(m => m[1]);
     const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
     const uniqueStarted = [...new Set(startedProfiles)];
     const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
@@ -1388,11 +1516,8 @@ app.get('/api/matrix/reachability', async (req, res) => {
     const rows = await runSql(`
       SELECT
         DEST_H3 AS HEX_ID,
-        ST_Y(H3_CELL_TO_POINT(DEST_H3)) AS LAT,
-        ST_X(H3_CELL_TO_POINT(DEST_H3)) AS LON,
         TRAVEL_TIME_SECONDS,
-        TRAVEL_DISTANCE_METERS,
-        0 AS RING
+        TRAVEL_DISTANCE_METERS
       FROM ${table}
       WHERE ORIGIN_H3 = '${safeOrigin}'
         AND TRAVEL_TIME_SECONDS IS NOT NULL
@@ -1609,18 +1734,6 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
     params: ['jobs_description', 'num_vehicles', 'profile'],
   },
-  tool_pharma_demo: {
-    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
-    params: ['profile'],
-  },
-  tool_pharma_catchment: {
-    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
-    params: ['pharmacy_description', 'range_minutes', 'profile'],
-  },
-  tool_supply_chain: {
-    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
-    params: ['profile'],
-  },
   tool_poi: {
     identifier: '__local__',
     params: ['location_description', 'category', 'range_minutes', 'profile'],
@@ -1739,16 +1852,10 @@ Available tools:
    Input: {"location_description": "string describing the center location (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 3. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
    Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
-4. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
-   Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
-5. tool_pharma_demo - Run a pre-built SF pharmaceutical delivery demo with 30 stops across 3 specialist vehicles (cold chain, controlled substances, standard medicines). Use when user asks for the pharma demo, SF drug delivery demo, or pharmaceutical fleet example.
-   Input: {"profile": "string (default: driving-car)"}
+4. tool_poi - Find points of interest within a reachable area from a location. Use when user asks to show/find specific place types within a travel time (e.g. "restaurants within 10 min drive").
    Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
 
 Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)
-
-7. tool_supply_chain - Run a full pharmaceutical supply chain optimisation. Loads 6 SF pharmacies, computes drug demand from population health data (diabetes, hypertension, cardiovascular, respiratory, mobility), generates delivery jobs with VROOM skills, and optimises routes for 3 specialist vehicles (cold chain, controlled, standard). Use when asked to plan supply chain, generate delivery plan, or optimise pharmaceutical logistics.
-   Input: {"profile": "string (default: driving-car)"}
 
 CRITICAL RULES:
 1. ALWAYS call the appropriate tool for ANY routing question. NEVER answer from general knowledge.
@@ -1756,8 +1863,7 @@ CRITICAL RULES:
 3. After receiving tool results, format them clearly: distances in km, durations in minutes.
 4. If a tool returns an error, report it clearly. Do NOT retry with a different profile.
 5. NEVER fabricate routing data.
-6. tool_pharma_catchment - Analyse the health demographics of the population within a pharmacy catchment area. Shows isochrone + population morbidity profile (diabetes, hypertension, cardiovascular, respiratory, mobility issues, accessibility). Use when asked about pharmacy catchment, patient population, health demographics, morbidity analysis, or population accessibility.
-   Input: {"pharmacy_description": "string describing pharmacy name/address (required)", "range_minutes": number (default: 10), "profile": "string (default: driving-car)"}
+6. Use tool_poi (NOT tool_isochrone) when the user asks to find/show specific place types within a travel time.
 7. ONLY use these exact profile strings: driving-car, cycling-electric, driving-hgv. Never use cycling-regular, cycling-road, foot-walking or any other variant.`;
 
 const AGENT_PROFILE_ALIASES: Record<string, string> = {
@@ -1835,7 +1941,7 @@ async function callCortexCompleteStreaming(
     temperature: 0,
   });
   const url = `https://${SNOWFLAKE_HOST}/api/v2/cortex/inference:complete`;
-  console.log(`[Agent] Streaming AI_COMPLETE model=${agentModel}, msgCount=${messages.length}`);
+  console.log(`[Agent] Streaming CORTEX.COMPLETE model=${agentModel}, msgCount=${messages.length}`);
   const startMs = Date.now();
   const res = await fetch(url, { method: 'POST', headers, body });
   if (!res.ok) {
@@ -1873,14 +1979,14 @@ async function callCortexComplete(messages: Array<{role: string; content: string
   const msgArray = messages.map(m => {
     return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
   }).join(',');
-  const sql = `SELECT AI_COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
-  console.log(`[Agent] Calling AI_COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
+  const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
+  console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
   const startMs = Date.now();
   let rows: any[];
   try {
     rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
   } catch (err: any) {
-    console.error(`[Agent] AI_COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
+    console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
     if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
       console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
       agentModel = AGENT_MODELS[1];
@@ -1890,25 +1996,18 @@ async function callCortexComplete(messages: Array<{role: string; content: string
       throw err;
     }
   }
-  console.log(`[Agent] AI_COMPLETE returned in ${Date.now() - startMs}ms`);
-  if (!rows || rows.length === 0) throw new Error('No response from AI_COMPLETE');
+  console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
+  if (!rows || rows.length === 0) throw new Error('No response from CORTEX.COMPLETE');
   const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
   let content = '';
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    if (typeof parsed === 'string') {
-      content = parsed;
-    } else {
-      content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || parsed.message || '';
-    }
+    content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
   } catch {
     content = String(raw);
   }
-  if (!content && typeof raw === 'string') {
-    content = raw;
-  }
   if (!content) {
-    console.error(`[Agent] Empty content from AI_COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
+    console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
     throw new Error('Empty response from LLM');
   }
   return content.trim();
@@ -1930,183 +2029,63 @@ function findMatchingBrace(s: string): number {
 
 function parseToolCall(text: string): { name: string; input: Record<string, any> } | null {
   try {
-    let cleanText = text.replace(/```[\w]*\s*/g, '').replace(/```/g, '');
-    const match = cleanText.match(/\{\s*"tool_call"\s*:/s);
+    const match = text.match(/\{\s*"tool_call"\s*:/s);
     if (!match) return null;
-    const jsonStr = cleanText.slice(cleanText.indexOf('{'));
+    const jsonStr = text.slice(text.indexOf('{'));
     const braceEnd = findMatchingBrace(jsonStr);
     if (braceEnd < 0) return null;
     const parsed = JSON.parse(jsonStr.slice(0, braceEnd + 1));
-    let toolName = parsed.tool_call?.name;
-    if (!toolName) return null;
-    if (TOOL_PROCEDURE_MAP[toolName]) {
-      return { name: toolName, input: parsed.tool_call.input || {} };
+    if (parsed.tool_call?.name && TOOL_PROCEDURE_MAP[parsed.tool_call.name]) {
+      return { name: parsed.tool_call.name, input: parsed.tool_call.input || {} };
     }
-    const TOOL_ALIASES: Record<string, string> = {
-      'tool_pois_in_isochrone': 'tool_poi',
-      'tool_pois': 'tool_poi',
-      'tool_find_pois': 'tool_poi',
-      'tool_nearby': 'tool_poi',
-      'tool_places': 'tool_poi',
-      'tool_route_optimization': 'tool_optimization',
-      'tool_optimise': 'tool_optimization',
-      'tool_optimize': 'tool_optimization',
-      'tool_isochrones': 'tool_isochrone',
-      'tool_reachability': 'tool_isochrone',
-      'tool_direction': 'tool_directions',
-      'tool_route': 'tool_directions',
-      'tool_pharma_delivery': 'tool_pharma_demo',
-      'tool_pharma_fleet': 'tool_pharma_demo',
-      'tool_pharmaceutical_delivery': 'tool_supply_chain',
-      'tool_pharma_supply': 'tool_supply_chain',
-      'tool_catchment': 'tool_pharma_catchment',
-      'tool_pharmacy_catchment': 'tool_pharma_catchment',
-    };
-    const mapped = TOOL_ALIASES[toolName];
-    if (mapped && TOOL_PROCEDURE_MAP[mapped]) {
-      console.log(`[Agent] Remapped hallucinated tool ${toolName} -> ${mapped}`);
-      return { name: mapped, input: parsed.tool_call.input || {} };
-    }
-    console.warn(`[Agent] Unknown tool: ${toolName}, no alias found`);
-    return null;
   } catch {}
   return null;
-}
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.8);
-}
-
-function estimateMessagesTokens(messages: Array<{role: string; content: string}>): number {
-  return messages.reduce((acc, m) => acc + estimateTokens(m.content) + 4, 0);
-}
-
-const CONTEXT_TOKEN_LIMIT = 8000;
-const SUMMARY_MAX_TOKENS = 500;
-
-async function summariseOlderMessages(messages: Array<{role: string; content: string}>, maxTokens: number): Promise<{messages: Array<{role: string; content: string}>; summaryText: string; messagesSummarised: number}> {
-  if (messages.length <= 3) return { messages, summaryText: '', messagesSummarised: 0 };
-  const systemMsg = messages[0];
-  const recentMessages = messages.slice(-3);
-  const olderMessages = messages.slice(1, -3);
-  if (olderMessages.length === 0) return { messages, summaryText: '', messagesSummarised: 0 };
-  const olderText = olderMessages.map(m => `${m.role}: ${m.content.slice(0, 500)}`).join('\n');
-  const summaryPrompt = `Summarise this conversation history in under 200 words. Focus on key facts, tool results, and decisions made. Do not include greetings or filler.\n\n${olderText}`;
-  try {
-    const summaryContent = await callCortexComplete([
-      { role: 'system', content: 'You summarise conversations concisely.' },
-      { role: 'user', content: summaryPrompt },
-    ]);
-    console.log(`[Agent] Context summarised: ${olderMessages.length} messages -> ${estimateTokens(summaryContent)} tokens`);
-    return {
-      messages: [
-        systemMsg,
-        { role: 'user', content: `[Previous conversation summary]: ${summaryContent}` },
-        ...recentMessages,
-      ],
-      summaryText: summaryContent,
-      messagesSummarised: olderMessages.length,
-    };
-  } catch (e: any) {
-    console.warn(`[Agent] Summarisation failed: ${e.message}`);
-    return { messages, summaryText: '', messagesSummarised: 0 };
-  }
 }
 
 async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
   onToken?: (text: string) => void,
-  history?: Array<{role: string; content: string}>,
-  maxTokenLimit?: number,
-  onWorkflow?: (data: any) => void,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
-  console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}" (history: ${history?.length || 0} msgs)`);
-  let messages: Array<{role: string; content: string}> = [
+  console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
+  const messages: Array<{role: string; content: string}> = [
     { role: 'system', content: ROUTING_SYSTEM_PROMPT },
+    { role: 'user', content: message },
   ];
-  if (history && history.length > 0) {
-    for (const h of history) {
-      if (h.role === 'user' || h.role === 'assistant') {
-        messages.push({ role: h.role, content: (h.content || '') });
-      }
-    }
-  }
-  messages.push({ role: 'user', content: message });
   const maxIterations = 5;
   const allToolResults: any[] = [];
   let toolsExecuted = false;
-  let totalPromptTokens = 0;
-  let totalCompletionTokens = 0;
-  let wasSummarised = false;
-  let summaryText = '';
-  let messagesSummarisedCount = 0;
-  let messagesRawCount = 0;
-  const tokenLimit = maxTokenLimit || CONTEXT_TOKEN_LIMIT;
-  let workflowSteps: any[] = [];
 
   for (let iter = 0; iter < maxIterations; iter++) {
-    const contextTokens = estimateMessagesTokens(messages);
-    if (contextTokens > tokenLimit && messages.length > 3) {
-      onProgress?.({ step: 'formatting', detail: 'Summarising context...' });
-      const result = await summariseOlderMessages(messages, tokenLimit);
-      messages = result.messages;
-      if (result.summaryText) {
-        wasSummarised = true;
-        summaryText = result.summaryText;
-        messagesSummarisedCount += result.messagesSummarised;
-        const afterTokens = estimateMessagesTokens(messages);
-        const stepData = { type: 'summarise', tokens_before: contextTokens, tokens_after: afterTokens, messages_compressed: result.messagesSummarised };
-        workflowSteps.push(stepData);
-        onWorkflow?.(stepData);
-      }
-    }
-    messagesRawCount = messages.length - 1;
-    const promptTokens = estimateMessagesTokens(messages);
-    totalPromptTokens += promptTokens;
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
 
     if (toolsExecuted && onToken) {
       onProgress?.({ step: 'formatting', detail: 'Generating response...' });
       try {
         const streamedText = await callCortexCompleteStreaming(messages, onToken);
-        const compTokens = estimateTokens(streamedText);
-        totalCompletionTokens += compTokens;
-        const stepData = { type: 'llm_stream', prompt_tokens: promptTokens, completion_tokens: compTokens };
-        workflowSteps.push(stepData);
-        onWorkflow?.(stepData);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
-        totalCompletionTokens += estimateTokens(fallback);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults };
       }
     }
 
     const response = await callCortexComplete(messages);
-    const respTokens = estimateTokens(response);
-    totalCompletionTokens += respTokens;
     console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
     const toolCall = parseToolCall(response);
 
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
       if (onToken) onToken(response);
-      const stepData = { type: 'llm_response', prompt_tokens: promptTokens, completion_tokens: respTokens };
-      workflowSteps.push(stepData);
-      onWorkflow?.(stepData);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: promptTokens, total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount, max_token_limit: tokenLimit, workflow_steps: workflowSteps } };
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
     onProgress?.({ step: 'executing_tool', detail: toolLabel });
     console.log(`[Agent] Executing tool: ${toolCall.name}`);
-    const toolStepData = { type: 'tool_call', tool: toolCall.name, prompt_tokens: promptTokens, completion_tokens: respTokens };
-    workflowSteps.push(toolStepData);
-    onWorkflow?.(toolStepData);
     messages.push({ role: 'assistant', content: response });
     const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
     allToolResults.push(toolResult);
@@ -2114,42 +2093,15 @@ async function callCortexAgentWithToolLoop(
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _tokenUsage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, context_tokens: estimateMessagesTokens(messages), total_tokens: totalPromptTokens + totalCompletionTokens, summarised: wasSummarised, summary_text: summaryText, messages_summarised: messagesSummarisedCount, messages_raw: messagesRawCount } };
+  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults };
 }
-
-let cachedAgentConfig: any = null;
-let agentConfigLastFetch = 0;
-const AGENT_CONFIG_CACHE_MS = 60000;
-
-const DEFAULT_AGENT_CONFIG = {"version":"1.0","default_scenario":"pharma","max_token_limit":8000,"scenarios":[{"id":"pharma","label":"Pharma Supply Chain","icon":"💊","description":"Pharmaceutical delivery planning","prompts":[{"label":"1. Catchment analysis","icon":"🏥","prompt":"Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco"},{"label":"2. Drug demand","icon":"💊","prompt":"Based on that catchment population, what drugs would this pharmacy need most?"},{"label":"3. Patient directions","icon":"🗺️","prompt":"Give me driving directions from 742 Valencia Street, San Francisco to Walgreens at 498 Castro Street"},{"label":"4. Cycling access","icon":"🚲","prompt":"Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco"},{"label":"5. Supply chain plan","icon":"🚚","prompt":"Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles"}]},{"id":"retail","label":"Retail & Catchment","icon":"🏪","description":"Retail site analysis","prompts":[{"label":"1. Store catchment","icon":"📍","prompt":"Show me the area reachable within a 10 minute drive from Union Square, San Francisco"},{"label":"2. Nearby competitors","icon":"🏪","prompt":"Show me all shops within a 10 minute drive from Union Square"},{"label":"3. Restaurants","icon":"🍽️","prompt":"Show me restaurants within a 15 minute drive from the Ferry Building"},{"label":"4. Drive to store","icon":"🗺️","prompt":"Get driving directions from 3100 Scott Street to Union Square, San Francisco"},{"label":"5. Multi-store route","icon":"🚚","prompt":"Get driving directions from 1 Market Street to Pier 39, then Fisherman's Wharf, then Ghirardelli Square"}]},{"id":"logistics","label":"Fleet Logistics","icon":"🚛","description":"Fleet delivery optimisation","prompts":[{"label":"1. Pharma fleet demo","icon":"🚚","prompt":"Run the SF pharmaceutical fleet delivery demo"},{"label":"2. HGV directions","icon":"🚛","prompt":"Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street"},{"label":"3. Bike courier","icon":"🚲","prompt":"Get cycling directions from 1 Market Street to 498 Castro Street"},{"label":"4. Reachability","icon":"⏱️","prompt":"Show me the area reachable within 20 minutes by HGV from the Port of San Francisco"},{"label":"5. Custom route","icon":"📍","prompt":"I have 2 vehicles from 1 Market Street. Optimise routes to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, Walgreens 2690 Mission St"}]}]};
-
-app.get('/api/agent/config', async (_req, res) => {
-  const now = Date.now();
-  if (cachedAgentConfig && (now - agentConfigLastFetch) < AGENT_CONFIG_CACHE_MS) {
-    return res.json(cachedAgentConfig);
-  }
-  try {
-    const rows = await runSql(`SELECT $1 AS CONFIG FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => (TYPE = 'JSON', STRIP_OUTER_ARRAY = FALSE))`);
-    if (rows && rows.length > 0) {
-      const raw = rows[0].CONFIG || rows[0];
-      cachedAgentConfig = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      agentConfigLastFetch = now;
-      return res.json(cachedAgentConfig);
-    }
-  } catch (e: any) {
-    console.log(`[AgentConfig] Stage read failed (using default): ${e.message?.slice(0, 100)}`);
-  }
-  cachedAgentConfig = DEFAULT_AGENT_CONFIG;
-  agentConfigLastFetch = now;
-  res.json(cachedAgentConfig);
-});
 
 function sendSseEvent(res: any, event: string, data: any) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 app.post('/api/agent/chat', async (req, res) => {
-  const { message, history, max_tokens, thread_id, parent_message_id } = req.body;
+  const { message, thread_id, parent_message_id } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2159,8 +2111,7 @@ app.post('/api/agent/chat', async (req, res) => {
   try {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
     const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-    const onWorkflow = (data: any) => { res.write(`event: workflow\ndata: ${JSON.stringify(data)}\n\n`); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, history, max_tokens ? Number(max_tokens) : undefined, onWorkflow);
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
@@ -2172,7 +2123,6 @@ app.post('/api/agent/chat', async (req, res) => {
     if (geometry) response.geometry = geometry;
     if (agentResult?.metadata?.thread_id) response.thread_id = agentResult.metadata.thread_id;
     if (agentResult?.metadata?.message_id) response.message_id = agentResult.metadata.message_id;
-    if (agentResult?._tokenUsage) response.token_usage = agentResult._tokenUsage;
     sendSseEvent(res, 'result', response);
     res.end();
   } catch (err: any) {

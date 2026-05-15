@@ -171,8 +171,8 @@ export default function RetailCatchment() {
           <label>Travel Mode</label>
           <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
             <option value="driving-car">Car</option>
-            <option value="cycling-electric">Bicycle (Electric)</option>
-            <option value="driving-hgv">HGV / Truck</option>
+            <option value="cycling-regular">Bicycle</option>
+            <option value="foot-walking">Walking</option>
           </select>
         </div>
         <div style={{ minWidth: 100 }}>

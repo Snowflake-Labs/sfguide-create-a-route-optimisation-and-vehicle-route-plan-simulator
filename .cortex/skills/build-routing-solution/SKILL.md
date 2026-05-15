@@ -221,7 +221,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    | downloader | v0.0.3 |
    | routing_reverse_proxy | v1.0.0 |
    | vroom-docker | v1.0.1 |
-   | ors_control_app | v1.0.130 |
+   | ors_control_app | v1.0.154 |
 
 3. **Decision:**
    - If **all 5 images exist with correct tags** → Report to user that images are already present, **skip Step 5**, proceed directly to Step 4
@@ -251,7 +251,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    - Verify the version (`:vX.X.XXX`) matches the repository
 
 3. **Fix** any version mismatches before proceeding:
-   - If YAML specifies `v1.0.153` but repository has `v1.0.130`, edit the YAML to use `v1.0.130`
+   - If YAML specifies a different version than what's in the repository, edit the YAML to match
    - This prevents "Image not found" errors during service creation
 
 **Output:** All service YAMLs validated against repository contents
