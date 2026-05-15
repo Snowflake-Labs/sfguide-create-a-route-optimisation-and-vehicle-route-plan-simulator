@@ -290,27 +290,27 @@ export async function loadPOIs(
   const countryCodes = await fetchRegionCountryCodes(config.region, snowSql);
   const countryFilter = countryCodes && countryCodes.length
     ? `
-      AND ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
+      AND p.ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
     : '';
   const sql = `
-    SELECT ID AS LOCATION_ID, NAMES::VARIANT:primary AS NAME,
-           BASIC_CATEGORY AS CATEGORY,
-           ST_Y(GEOMETRY) AS LAT, ST_X(GEOMETRY) AS LNG
-    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-    WHERE ST_Y(GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
-      AND ST_X(GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
-      AND BASIC_CATEGORY IN (${catFilter})${countryFilter}
-      -- Polygon refine: drop POIs outside the region's actual boundary.
-      -- Falls through (TRUE) when REGION_CATALOG has no boundary row for
-      -- this region, preserving previous behaviour.
-      AND COALESCE(
-        (SELECT ST_INTERSECTS(GEOMETRY, rc.BOUNDARY)
-         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-         WHERE rc.BOUNDARY IS NOT NULL
-           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${config.region.replace(/'/g, "''")}')
-                OR UPPER(rc.REGION_KEY) = UPPER('${config.region.replace(/'/g, "''")}'))
-         ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1),
-        TRUE)
+    WITH region_boundary AS (
+      SELECT BOUNDARY
+      FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+      WHERE rc.BOUNDARY IS NOT NULL
+        AND (UPPER(rc.LOOKUP_NAME) = UPPER('${config.region.replace(/'/g, "''")}')
+             OR UPPER(rc.REGION_KEY) = UPPER('${config.region.replace(/'/g, "''")}'))
+      ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+      LIMIT 1
+    )
+    SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,
+           p.BASIC_CATEGORY AS CATEGORY,
+           ST_Y(p.GEOMETRY) AS LAT, ST_X(p.GEOMETRY) AS LNG
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+      LEFT JOIN region_boundary rb ON TRUE
+    WHERE ST_Y(p.GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
+      AND ST_X(p.GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
+      AND p.BASIC_CATEGORY IN (${catFilter})${countryFilter}
+      AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
     LIMIT 5000`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
     detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, sql: sql.trim().replace(/\s+/g, ' ') },
