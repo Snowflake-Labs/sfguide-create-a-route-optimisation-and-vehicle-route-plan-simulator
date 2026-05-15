@@ -117,6 +117,7 @@ export default function MatrixBuilder() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildWarning, setBuildWarning] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
   const [roadFilterEnabled, setRoadFilterEnabled] = useState(true);
@@ -252,6 +253,7 @@ export default function MatrixBuilder() {
     if (!selectedRegion) return;
     setIsLaunching(true);
     setBuildError(null);
+    setBuildWarning(null);
     const { ok, data, error } = await safeFetchJson<{ status: string; error?: string; warning?: string }>('/api/matrix/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -264,7 +266,7 @@ export default function MatrixBuilder() {
     });
     if (ok && data) {
       if (data.error) setBuildError(data.error);
-      else if (data.warning) setBuildError(data.warning);
+      if (data.warning) setBuildWarning(data.warning);
     } else {
       setBuildError(error || 'Failed to launch build');
     }
@@ -523,6 +525,11 @@ export default function MatrixBuilder() {
           {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
+      {buildWarning && (
+        <div className="warning-banner" style={{ marginTop: 8 }}>
+          <strong>Heads up:</strong> {buildWarning}
+        </div>
+      )}
       {buildError && (
         <div className="error-banner" style={{ marginTop: 8 }}>
           <strong>Build failed:</strong> {buildError}
