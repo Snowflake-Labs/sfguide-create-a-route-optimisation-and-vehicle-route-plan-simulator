@@ -14,6 +14,7 @@ export default function VehicleTypeSwitcher() {
   const { vehicleType, availableTypes, switchVehicleType, regionsForType, typesForRegion, datasetPairs } = useVehicleType();
   const { regionName, switchRegion } = useRegion();
   const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,18 +37,23 @@ export default function VehicleTypeSwitcher() {
   // one for that vehicle type. Breaks the cross-filter deadlock.
   const handleTypeClick = async (target: string) => {
     setOpen(false);
-    const validRegionsForTarget = regionsForType(target);
-    if (validRegionsForTarget.length > 0 && !validRegionsForTarget.includes(regionName)) {
-      await switchRegion(validRegionsForTarget[0]);
+    setSwitching(true);
+    try {
+      const validRegionsForTarget = regionsForType(target);
+      if (validRegionsForTarget.length > 0 && !validRegionsForTarget.includes(regionName)) {
+        await switchRegion(validRegionsForTarget[0]);
+      }
+      await switchVehicleType(target);
+    } finally {
+      setSwitching(false);
     }
-    await switchVehicleType(target);
   };
 
   return (
     <div className="region-switcher" ref={ref}>
-      <button className="region-trigger" onClick={() => setOpen(!open)}>
+      <button className={`region-trigger ${switching ? 'pulsing' : ''}`} onClick={() => setOpen(!open)}>
         <Truck size={14} />
-        <span>{TYPE_LABELS[vehicleType] || vehicleType}</span>
+        <span>{TYPE_LABELS[vehicleType] || vehicleType}{switching ? '…' : ''}</span>
         <ChevronDown size={12} className={open ? 'rotated' : ''} />
       </button>
       {open && (

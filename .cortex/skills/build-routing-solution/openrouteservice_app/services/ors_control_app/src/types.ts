@@ -70,6 +70,7 @@ export interface RegionInfo {
   region: string;
   label: string;
   bounds: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+  boundaryAreaKm2?: number | null;
   serviceStatus: string;
   serviceExists: boolean;
   matrixFunctionExists: boolean;
@@ -162,6 +163,13 @@ export const RES_CUTOFFS: Record<number, number> = {
 
 export const RES_HEX_PER_SQDEG: Record<number, number> = {
   5: 45, 6: 300, 7: 2000, 8: 13500, 9: 90000, 10: 630000,
+};
+
+// Average H3 hexagon area in km^2 per resolution. Used by the matrix
+// builder fast-estimate to compute hex count from REGION_CATALOG
+// BOUNDARY_AREA_KM2 (polygon-aware) instead of the bbox rectangle.
+export const RES_HEX_AREA_KM2: Record<number, number> = {
+  5: 252.9, 6: 36.13, 7: 5.16, 8: 0.737, 9: 0.105, 10: 0.015,
 };
 
 export interface MatrixEstimate {

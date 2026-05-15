@@ -14,6 +14,7 @@ export default function RegionSwitcher() {
   const { regionName, displayName, regions, switchRegion } = useRegion();
   const { vehicleType, switchVehicleType, regionsForType, typesForRegion, datasetPairs } = useVehicleType();
   const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -37,18 +38,23 @@ export default function RegionSwitcher() {
   // (ebike, SF) is the only valid pair but the user wants (hgv, Germany).
   const handleRegionClick = async (target: string) => {
     setOpen(false);
-    const validTypes = typesForRegion(target);
-    if (validTypes.length > 0 && !validTypes.includes(vehicleType)) {
-      await switchVehicleType(validTypes[0]);
+    setSwitching(true);
+    try {
+      const validTypes = typesForRegion(target);
+      if (validTypes.length > 0 && !validTypes.includes(vehicleType)) {
+        await switchVehicleType(validTypes[0]);
+      }
+      await switchRegion(target);
+    } finally {
+      setSwitching(false);
     }
-    await switchRegion(target);
   };
 
   return (
     <div className="region-switcher" ref={ref}>
-      <button className="region-trigger" onClick={() => setOpen(!open)}>
+      <button className={`region-trigger ${switching ? 'pulsing' : ''}`} onClick={() => setOpen(!open)}>
         <Globe size={14} />
-        <span>{displayName}</span>
+        <span>{displayName}{switching ? '…' : ''}</span>
         <ChevronDown size={12} className={open ? 'rotated' : ''} />
       </button>
       {open && (

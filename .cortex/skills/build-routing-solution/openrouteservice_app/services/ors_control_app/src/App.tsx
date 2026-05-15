@@ -199,6 +199,22 @@ export default function App() {
           <header className="app-header">
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {(typeof window !== 'undefined' && window.location.search.includes('debug=1')) && (
+                <span
+                  title="Live React context state - useful for diagnosing 'page didn't update' bugs"
+                  style={{
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    padding: '3px 8px',
+                    background: 'rgba(255,165,0,0.12)',
+                    color: '#c97800',
+                    borderRadius: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  {region.value.regionName} / {vehicleTypeCtx.value.vehicleType} @ ({region.value.center.lat.toFixed(2)},{region.value.center.lng.toFixed(2)})
+                </span>
+              )}
               <VehicleTypeSwitcher />
               <RegionSwitcher />
               <button
@@ -214,6 +230,17 @@ export default function App() {
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
+            {/*
+              `dataKey` force-remounts demo components whenever the active
+              region or vehicle type changes. Without this, subtle React
+              context-update edge cases (stale closures inside useMemo
+              layers, throttled deck.gl re-renders, useEffect deps that
+              don't fire because referential identity didn't change) can
+              leave a panel showing stale data after a header switch.
+              Remount is cheap for these pages and guarantees a clean
+              fetch + map reset on every (region, vehicleType) change.
+            */}
+            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}`; return (<>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
             {activeTab === 'intro' && <Intro />}
@@ -224,14 +251,15 @@ export default function App() {
             {activeTab === 'matrix:builder' && <MatrixBuilder />}
             {activeTab === 'matrix:viewer' && <MatrixViewer />}
             {activeTab === 'studio' && <FleetDataStudio />}
-            {activeTab === 'route-opt' && <RouteOptimization />}
-            {activeCategory === 'fleet-taxis' && <FleetTaxis subTab={activeSubTab} />}
-            {activeCategory === 'fleet-delivery' && <FleetDelivery subTab={activeSubTab} />}
-            {activeCategory === 'dwell' && <DwellAnalysis subTab={activeSubTab} />}
-            {activeCategory === 'route-deviation' && <RouteDeviation subTab={activeSubTab} />}
-            {activeTab === 'retail' && <RetailCatchment />}
+            {activeTab === 'route-opt' && <RouteOptimization key={dataKey} />}
+            {activeCategory === 'fleet-taxis' && <FleetTaxis key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'fleet-delivery' && <FleetDelivery key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'route-deviation' && <RouteDeviation key={dataKey} subTab={activeSubTab} />}
+            {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
             {activeTab === 'agent' && <AgentPlayground />}
             {activeTab === 'diagnostics' && <Diagnostics />}
+            </>); })()}
           </main>
         </div>
       </div>
