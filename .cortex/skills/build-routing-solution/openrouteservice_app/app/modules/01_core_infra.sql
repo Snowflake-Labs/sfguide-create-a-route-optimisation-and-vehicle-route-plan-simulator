@@ -65,14 +65,14 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    SPECIFICATION_FILE = 'openrouteservice.yaml'
    MIN_INSTANCES = 3
    MAX_INSTANCES = 3
-   AUTO_SUSPEND_SECS = 600
+   AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
    FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader
    SPECIFICATION_FILE = 'downloader_spec.yaml'
-   AUTO_SUSPEND_SECS = 300
+   AUTO_SUSPEND_SECS = 14400
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
@@ -82,7 +82,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.vroom_service
    SPECIFICATION_FILE = 'vroom-service.yaml'
    MIN_INSTANCES = 1
    MAX_INSTANCES = 1
-   AUTO_SUSPEND_SECS = 600
+   AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
@@ -91,7 +91,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    SPECIFICATION_FILE = 'routing-gateway-service.yaml'
    MIN_INSTANCES = 3
    MAX_INSTANCES = 3
-   AUTO_SUSPEND_SECS = 600
+   AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 -- ors_control_app has public endpoints, which are incompatible with AUTO_SUSPEND_SECS.
