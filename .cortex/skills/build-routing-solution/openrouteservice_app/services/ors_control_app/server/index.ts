@@ -2517,6 +2517,7 @@ app.get('/api/datasets', async (_req, res) => {
         j.TRIPS_GENERATED AS TRIP_COUNT,
         j.POINTS_GENERATED AS POINT_COUNT,
         j.COMPLETED_AT,
+        j.CONFIG:vehicleType::STRING AS CFG_VEHICLE_TYPE,
         COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY
       FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
       LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
@@ -2526,7 +2527,7 @@ app.get('/api/datasets', async (_req, res) => {
     `, 'FLEET_INTELLIGENCE', 'CORE');
 
     const datasets = (rows || []).map((r: any) => {
-      const vehicleType = ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
+      const vehicleType = r.CFG_VEHICLE_TYPE || ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
       return {
         jobId: r.JOB_ID,
         presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
