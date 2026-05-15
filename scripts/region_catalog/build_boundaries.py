@@ -376,16 +376,23 @@ def process_geofabrik_row(row: dict) -> dict:
         simp = geom
     if simp.geom_type == "Polygon":
         simp = MultiPolygon([simp])
+    minx, miny, maxx, maxy = simp.bounds
     return {
         "BOUNDARY_WKB": simp.wkb_hex,
         "BOUNDARY_SOURCE": "geofabrik-poly",
         "BOUNDARY_VERTICES": vertex_count(simp),
         "BOUNDARY_AREA_KM2": geographic_area_km2(simp),
+        "MIN_LON_DERIVED": minx,
+        "MIN_LAT_DERIVED": miny,
+        "MAX_LON_DERIVED": maxx,
+        "MAX_LAT_DERIVED": maxy,
     }
 
 
 def _bbox_result(row: dict, src: str) -> dict:
     try:
+        if row.get("MIN_LON") is None or row.get("MAX_LON") is None or row.get("MIN_LAT") is None or row.get("MAX_LAT") is None:
+            return {"BOUNDARY_WKB": None, "BOUNDARY_SOURCE": "missing", "BOUNDARY_VERTICES": 0, "BOUNDARY_AREA_KM2": 0.0}
         b = box(row["MIN_LON"], row["MIN_LAT"], row["MAX_LON"], row["MAX_LAT"])
         mp = MultiPolygon([b])
         return {
@@ -474,6 +481,18 @@ def main() -> int:
     df["BOUNDARY_VERTICES"] = [r["BOUNDARY_VERTICES"] for r in boundary_results]
     df["BOUNDARY_AREA_KM2"] = [r["BOUNDARY_AREA_KM2"] for r in boundary_results]
     df["BOUNDARY_BAKED_AT"] = pd.to_datetime(date.today())
+
+    # Backfill MIN/MAX_LAT/LON for rows where they were missing, using
+    # the derived bbox from the successful polygon parse.
+    for i, r in enumerate(boundary_results):
+        if not r:
+            continue
+        if "MIN_LON_DERIVED" in r and r["MIN_LON_DERIVED"] is not None:
+            if pd.isna(df.at[i, "MIN_LON"]) or df.at[i, "MIN_LON"] is None:
+                df.at[i, "MIN_LON"] = r["MIN_LON_DERIVED"]
+                df.at[i, "MAX_LON"] = r["MAX_LON_DERIVED"]
+                df.at[i, "MIN_LAT"] = r["MIN_LAT_DERIVED"]
+                df.at[i, "MAX_LAT"] = r["MAX_LAT_DERIVED"]
 
     # Reorder columns.
     new_cols = [

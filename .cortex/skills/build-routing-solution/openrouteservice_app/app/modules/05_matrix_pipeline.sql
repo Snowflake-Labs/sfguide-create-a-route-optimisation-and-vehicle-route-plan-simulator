@@ -102,6 +102,26 @@ $$;
 -- TRAVEL TIME MATRIX: Pipeline procedures
 -- =============================================================================
 
+-- Warning ledger: rows are inserted whenever BUILD_HEXAGONS or
+-- BUILD_HEXAGONS_ROAD_AWARE cannot resolve P_REGION to a REGION_CATALOG
+-- polygon and falls back to the rectangular bbox. The rectangle nearly
+-- always over-covers (e.g. California bbox spans Nevada/Oregon/Mexico/Pacific)
+-- so any row here means the matrix for that region is built on a fallback
+-- that will silently leak hexes outside the intended boundary.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS (
+    LOGGED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
+    REGION VARCHAR,
+    PROFILE VARCHAR,
+    RESOLUTION VARCHAR,
+    PROC_NAME VARCHAR,
+    BBOX_MIN_LAT FLOAT,
+    BBOX_MAX_LAT FLOAT,
+    BBOX_MIN_LON FLOAT,
+    BBOX_MAX_LON FLOAT,
+    MESSAGE VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix","feature":"bbox-fallback-warning"}}';
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -114,6 +134,7 @@ DECLARE
     hex_table VARCHAR;
     safe_profile VARCHAR;
     row_count INTEGER;
+    catalog_match INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -131,6 +152,21 @@ BEGIN
         resolution := 9;
     ELSE
         resolution := 10;
+    END IF;
+
+    -- Detect catalog match BEFORE the COALESCE so we can warn loudly
+    -- when no row exists and we are about to silently fall back to bbox.
+    SELECT COUNT(*) INTO :catalog_match
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+
+    IF (catalog_match = 0) THEN
+        INSERT INTO OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+            (REGION, PROFILE, RESOLUTION, PROC_NAME, BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON, MESSAGE)
+        VALUES
+            (:P_REGION, :P_PROFILE, :P_RES, 'BUILD_HEXAGONS', :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON,
+             'No REGION_CATALOG row matched LOOKUP_NAME / REGION_KEY = ' || :P_REGION || '. Falling back to rectangular bbox; hexes outside the intended polygon will be tessellated.');
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
@@ -183,6 +219,7 @@ DECLARE
     hex_table VARCHAR;
     safe_profile VARCHAR;
     row_count INTEGER;
+    catalog_match INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -200,6 +237,21 @@ BEGIN
         resolution := 9;
     ELSE
         resolution := 10;
+    END IF;
+
+    -- Detect catalog match BEFORE the COALESCE so we can warn loudly
+    -- when no row exists and we are about to silently fall back to bbox.
+    SELECT COUNT(*) INTO :catalog_match
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+
+    IF (catalog_match = 0) THEN
+        INSERT INTO OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+            (REGION, PROFILE, RESOLUTION, PROC_NAME, BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON, MESSAGE)
+        VALUES
+            (:P_REGION, :P_PROFILE, :P_RES, 'BUILD_HEXAGONS_ROAD_AWARE', :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON,
+             'No REGION_CATALOG row matched LOOKUP_NAME / REGION_KEY = ' || :P_REGION || '. Falling back to rectangular bbox; road-aware hexes outside the intended polygon will be tessellated.');
     END IF;
 
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;

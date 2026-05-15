@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
     ISO_COUNTRY_A3     VARCHAR(3),               -- ISO 3166-1 alpha-3 (e.g. 'USA', 'DEU')
     ISO_SUBDIVISION    VARCHAR,                  -- ISO 3166-2 (e.g. 'US-CA', 'DE-BY')
     UN_M49             INT,                      -- UN M49 numeric country code
-    PBF_URL            VARCHAR NOT NULL,
+    PBF_URL            VARCHAR,                  -- nullable: natural-earth supplemental rows have no PBF
     PBF_SIZE_MB        FLOAT,
     LEVEL              VARCHAR NOT NULL,
     MIN_LAT            FLOAT,

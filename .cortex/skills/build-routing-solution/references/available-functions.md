@@ -56,10 +56,59 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 ## Region Boundary Helpers
 
 `REGION_CATALOG.BOUNDARY` is a `GEOGRAPHY` column populated at install time
-from a shipped snapshot of Geofabrik `.poly` files (real admin polygons,
-simplified to ~100m). Use it to filter sample points / POIs / hexagons
-to the region's actual shape instead of bbox rectangles. See the seed
-parquet at `datasets/region_catalog/data_0_0_0.snappy.parquet`.
+from a shipped snapshot. Coverage (5,194 rows total):
+
+| SOURCE          | LEVEL          | rows  | provenance                                              |
+| --------------- | -------------- | ----- | ------------------------------------------------------- |
+| `geofabrik`     | continent      | 8     | Geofabrik `.poly` files (real admin polygons)           |
+| `geofabrik`     | country        | 257   | Geofabrik `.poly` files                                 |
+| `geofabrik`     | sub-region     | 217   | Geofabrik (DE Lander, FR regions, AU/CA states, etc.)   |
+| `geofabrik`     | sub-sub-region | 72    | Geofabrik (German Regbez, UK counties, ...)             |
+| `geofabrik`     | depth-4        | 1     | Deeply-nested Geofabrik leaf                            |
+| `bbbike`        | city           | 238   | BBBike rectangles (true clip mask)                      |
+| `natural-earth` | sub-region     | 4,401 | Natural Earth admin-1 (US states, BR/IN/MX states, etc.)|
+
+All boundaries simplified to ~100m tolerance. ISO_3166-2 subdivision codes
+filled for ~4,500 sub-regions via Natural Earth. Use `BOUNDARY` to filter
+sample points / POIs / hexagons to the region's actual shape instead of
+bbox rectangles. See the seed parquet at
+`datasets/region_catalog/data_0_0_0.snappy.parquet`.
+
+### Adding new regions
+
+1. Geofabrik publishes a new sub-region: re-run
+   `python3 scripts/region_catalog/expand_geofabrik_subregions.py` then
+   `python3 scripts/region_catalog/build_boundaries.py`.
+2. A state/province Geofabrik does not split (e.g. a new US state — never
+   happens, but illustrative): the Natural Earth supplement already covers
+   all admin-1 globally. Re-run
+   `python3 scripts/region_catalog/supplement_natural_earth.py` only when
+   Natural Earth releases a new edition.
+3. Custom polygon (org-specific service area): insert directly into
+   `REGION_CATALOG` with a unique `REGION_KEY`, valid `BOUNDARY`, and
+   `BOUNDARY_SOURCE='manual'`. The matrix builders match on
+   `LOOKUP_NAME` or `REGION_KEY` (case-insensitive).
+
+After updating the seed parquet, redeploy:
+
+```sql
+TRUNCATE TABLE OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
+CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
+```
+
+### bbox-fallback warnings
+
+`BUILD_HEXAGONS` and `BUILD_HEXAGONS_ROAD_AWARE` log a row to
+`OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS` whenever
+they cannot resolve `P_REGION` to a catalog polygon. Any matrix tessellated
+after a warning will leak hexes outside the intended boundary (the bbox
+rectangle nearly always over-covers — California's bbox spans NV/OR/Pacific,
+NSW's bbox spans Lord Howe Island, etc.). Inspect with:
+
+```sql
+SELECT * FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+ORDER BY LOGGED_AT DESC;
+```
 
 ```sql
 -- Reverse-region lookup: which region does a coordinate fall in?
