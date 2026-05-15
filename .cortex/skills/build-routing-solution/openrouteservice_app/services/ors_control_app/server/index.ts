@@ -9,6 +9,7 @@ import { createStudioRouter } from './studio/routes.js';
 import { reconcileStaleJobs } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
+import { parseOrsBuildLogs } from './logParser.js';
 
 config();
 
@@ -1150,10 +1151,20 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
     const safeRegion = sanitizeIdentifier(req.params.region);
     const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
 
-    // Fast path: ORS_STATUS is the source of truth. If the service reports ready
-    // with profiles loaded, return 'ready' immediately. Avoids unreliable log
-    // tail scraping for long-running builds where start/finish markers have
-    // rolled out of the 1000-line window (Issue: UI stuck on "ORS starting up...").
+    // Pull the log tail and let parseOrsBuildLogs() turn it into a structured
+    // BuildSummary (phase, LM step, ETA, CH progress, memory, warnings).
+    // Issue #40 — replaces the previous ad-hoc scrape that produced opaque
+    // 95% pins for long region builds.
+    const rows = await runSql(
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
+    );
+    const logs: string = rows?.[0]?.LOGS || '';
+    const summary = parseOrsBuildLogs(logs);
+
+    // ORS_STATUS is the source of truth for "is the service answering /health
+    // with profiles loaded?". Fold it into the summary so the UI can flip to
+    // ready as soon as the service is healthy, even if the start/finish
+    // markers have rolled out of the 1000-line log window.
     try {
       const statusRows = await runSql(
         `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}')::VARCHAR AS S`
@@ -1161,110 +1172,67 @@ app.get('/api/regions/:region/build-progress', async (req, res) => {
       const statusRaw = statusRows?.[0]?.S;
       if (statusRaw) {
         const parsed = JSON.parse(statusRaw);
-        if (parsed?.service_ready === true && parsed?.profiles) {
+        summary.serviceReady = !!parsed?.service_ready;
+        summary.healthReady = !!parsed?.health_ready;
+        if (summary.serviceReady && parsed?.profiles) {
           const loaded = Object.keys(parsed.profiles);
           if (loaded.length > 0) {
-            res.json({
-              phase: 'ready',
-              progress: 100,
-              completedProfiles: loaded,
-              totalProfiles: loaded.length,
-              currentProfile: null,
-            });
-            return;
+            summary.completedProfiles = loaded;
+            summary.totalProfiles = loaded.length;
+            summary.phase = 'ready';
+            summary.progress = 100;
+            summary.currentProfile = null;
           }
         }
       }
     } catch {
-      // fall through to log-based scraping
+      // fall through with log-only summary
     }
 
-    const rows = await runSql(
-      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', 1000) AS LOGS`
-    );
-    const logs: string = rows?.[0]?.LOGS || '';
-
-    // ORS v9 logs profile completion as "[N] Profiles: 'name', location: ..." (plural).
-    const finishedProfiles = [...logs.matchAll(/\[\d+\] Profiles?: '([\w-]+)'/g)].map(m => m[1]);
-    const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
-    const uniqueStarted = [...new Set(startedProfiles)];
-    const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
-    const lastStarted = uniqueStarted.length > 0 ? uniqueStarted[uniqueStarted.length - 1] : null;
-    const currentProfile = lastStarted && !finishedProfiles.includes(lastStarted) ? lastStarted : null;
-
-    if (finishedProfiles.length === totalProfiles && totalProfiles > 0 && !currentProfile) {
-      const healthOk = logs.includes('Started Application');
-      res.json({
-        phase: healthOk ? 'ready' : 'finalizing',
-        progress: healthOk ? 100 : 99,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        currentProfile: null,
-      });
-      return;
-    }
-
-    const nodeLines = [...logs.matchAll(/edge,\s*nodes:\s*([\d\s]+\d),\s*shortcuts:\s*([\d\s]+\d)/g)];
-
-    const profileTagEsc = currentProfile ? `ORS-pl-${currentProfile}`.replace(/[-/]/g, '\\$&') : null;
-    const hasImport = profileTagEsc ? new RegExp(`${profileTagEsc}.*?start creating graph`).test(logs) : false;
-    const hasCH = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating CH preparations`).test(logs) : false;
-    const hasLM = profileTagEsc ? new RegExp(`${profileTagEsc}.*?Creating LM preparations`).test(logs) : false;
-
-    if (nodeLines.length === 0 || !hasCH) {
-      const started = logs.includes('Starting Application') || logs.includes('Spring Boot');
-      let phase = 'waiting';
-      if (started) {
-        if (hasImport) phase = 'importing';
-        else if (currentProfile) phase = 'initializing';
-        else phase = 'initializing';
+    // Backward-compat alias so older UI code that switches on
+    // phase === 'building' still works while the BuildSummaryCard rolls in.
+    const legacyPhase = (() => {
+      switch (summary.phase) {
+        case 'ch_preparing':
+        case 'ch_contracting':
+        case 'lm_preparing':
+          return 'building';
+        case 'ready':
+          return 'ready';
+        case 'importing':
+          return 'importing';
+        case 'initializing':
+          return 'initializing';
+        case 'waiting':
+          return 'waiting';
+        default:
+          return 'unknown';
       }
-      res.json({
-        phase,
-        progress: totalProfiles > 0 ? Math.round((finishedProfiles.length / totalProfiles) * 100) : 0,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        currentProfile,
-      });
-      return;
-    }
+    })();
 
-    if (hasLM) {
-      const overallProgress = totalProfiles > 0
-        ? Math.round(((finishedProfiles.length + 0.95) / totalProfiles) * 100)
-        : 95;
-      res.json({
-        phase: 'building',
-        progress: Math.min(overallProgress, 99),
-        profileProgress: 95,
-        currentProfile,
-        completedProfiles: finishedProfiles,
-        totalProfiles,
-        detail: 'Landmark preparation',
-      });
-      return;
-    }
-
-    const parseNum = (s: string) => parseInt(s.replace(/\s/g, ''), 10);
-    const firstNodes = parseNum(nodeLines[0][1]);
-    const lastNodes = parseNum(nodeLines[nodeLines.length - 1][1]);
-    const profileProgress = firstNodes > 0 ? (1 - lastNodes / firstNodes) : 0;
-    const overallProgress = totalProfiles > 0
-      ? Math.round(((finishedProfiles.length + profileProgress * 0.9) / totalProfiles) * 100)
-      : Math.round(profileProgress * 90);
-
-    res.json({
-      phase: 'building',
-      progress: Math.min(overallProgress, 99),
-      profileProgress: Math.min(Math.round(profileProgress * 100), 99),
-      nodesRemaining: lastNodes,
-      nodesTotal: firstNodes,
-      currentProfile,
-      completedProfiles: finishedProfiles,
-      totalProfiles,
-    });
+    res.json({ ...summary, phaseLegacy: legacyPhase });
   } catch (err: any) {
     res.json({ phase: 'unknown', progress: 0, error: err.message });
+  }
+});
+
+// On-demand log tail for the BuildSummaryCard "Show recent logs" disclosure.
+// Issue #40 — kept separate from the 5s build-progress poller so the cheap
+// poll path stays cheap; this endpoint is only hit when the user expands.
+app.get('/api/regions/:region/logs', async (req, res) => {
+  try {
+    const safeRegion = sanitizeIdentifier(req.params.region);
+    const requested = parseInt(String(req.query.tail || '100'), 10);
+    const tail = Math.min(Math.max(Number.isFinite(requested) ? requested : 100, 1), 500);
+    const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+    const rows = await runSql(
+      `SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', ${tail}) AS LOGS`
+    );
+    const raw: string = rows?.[0]?.LOGS || '';
+    const lines = raw.replace(/\x1b\[[0-9;]*m/g, '').split('\n').slice(-tail);
+    res.json({ lines });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1583,6 +1551,55 @@ app.post('/api/matrix/cost-estimate', async (req, res) => {
         ? 'Road-aware estimate uses actual Overture road segments. Res 9-10 use 20% sampling scaled 5x.'
         : 'Estimates based on 30K pairs/sec throughput with 10-node compute pool. Actual costs depend on ORS graph complexity, network conditions, and retry rates.',
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+// Issue #39: Calibration-backed cost estimator (proc-driven, returns dual road_filter ON/OFF)
+app.post('/api/matrix/estimate', async (req, res) => {
+  try {
+    const { region, resolution, profile, road_filter } = req.body;
+    if (!region || resolution === undefined || resolution === null) {
+      return res.status(400).json({ error: 'region and resolution required' });
+    }
+
+    let safeRegion: string;
+    try { safeRegion = sanitizeIdentifier(region); }
+    catch { return res.status(400).json({ error: 'Invalid region' }); }
+
+    const safeProfile = (profile || 'driving-car').replace(/[^a-z\-]/gi, '');
+    const safeRes = parseInt(resolution);
+    if (!Number.isFinite(safeRes) || safeRes < 5 || safeRes > 10) {
+      return res.status(400).json({ error: 'resolution must be 5-10' });
+    }
+
+    let bbox: any = { MIN_LAT: 37.71, MAX_LAT: 37.81, MIN_LON: -122.51, MAX_LON: -122.37 };
+    try {
+      const cityRow = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(safeRegion)}'`);
+      if (cityRow?.[0]) bbox = cityRow[0];
+    } catch {}
+
+    const rfArg = road_filter === true ? 'TRUE' : road_filter === false ? 'FALSE' : 'NULL';
+
+    const callSql = `CALL ${SF_DATABASE}.CORE.ESTIMATE_MATRIX_COST(
+      '${escapeString(safeRegion)}',
+      ${safeRes},
+      '${escapeString(safeProfile)}',
+      ${sanitizeFloat(bbox.MIN_LAT)},
+      ${sanitizeFloat(bbox.MAX_LAT)},
+      ${sanitizeFloat(bbox.MIN_LON)},
+      ${sanitizeFloat(bbox.MAX_LON)},
+      ${rfArg}
+    )`;
+
+    const rows = await runSql(callSql);
+    const raw = rows?.[0]?.ESTIMATE_MATRIX_COST ?? rows?.[0]?.[Object.keys(rows?.[0] || {})[0]];
+    let payload: any = raw;
+    if (typeof raw === 'string') {
+      try { payload = JSON.parse(raw); } catch {}
+    }
+    res.json({ region: safeRegion, profile: safeProfile, resolution: safeRes, payload });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
@@ -2323,6 +2340,37 @@ app.post('/api/fleet-config/vehicle-type', async (req, res) => {
       }
     }
     res.json({ ok: true, vehicleType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/fleet-config/thresholds - returns per-vehicle thresholds for the active vehicle.
+// Reads from FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS as the canonical copy
+// (all 6 skill schemas hold an identical seed). Issue #33.
+app.get('/api/fleet-config/thresholds', async (_req, res) => {
+  try {
+    let vehicleType = 'ebike';
+    try {
+      const cfgRows = await runSql('SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
+      if (cfgRows?.[0]?.VEHICLE_TYPE) vehicleType = cfgRows[0].VEHICLE_TYPE;
+    } catch {}
+    let perLocation: any[] = [];
+    let globals: any = null;
+    try {
+      const safe = escapeString(vehicleType);
+      const rows = await runSql(
+        `SELECT LOCATION_TYPE, SLA_WARNING_MIN, SLA_CRITICAL_MIN, GEOFENCE_RADIUS_M, DEVIATION_PCT, SPEED_LIMIT_FACTOR, H3_RESOLUTION
+         FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS
+         WHERE VEHICLE_TYPE = '${safe}'
+         ORDER BY LOCATION_TYPE`
+      );
+      perLocation = rows.filter((r: any) => r.LOCATION_TYPE !== '*');
+      globals = rows.find((r: any) => r.LOCATION_TYPE === '*') || null;
+    } catch (e: any) {
+      log('WARN', 'CONFIG', `Failed to read VEHICLE_THRESHOLDS: ${e.message}`);
+    }
+    res.json({ vehicleType, globals, perLocation });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -414,6 +414,18 @@
       .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 1s ease; }
       .build-progress.inline .progress-stats { font-size: 11px; }
 
+      .build-summary-card { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated, rgba(0,0,0,0.02)); margin: 6px 0; }
+      .build-summary-card.empty { opacity: 0.7; }
+      .build-summary-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .build-summary-header { font-size: 13px; }
+      .build-summary-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: var(--border); color: var(--text-primary, inherit); }
+      .build-summary-badge.accent { background: rgba(46, 134, 171, 0.18); color: var(--accent, #2e86ab); }
+      .build-summary-badge.ok { background: rgba(34, 139, 34, 0.16); color: #228b22; }
+      .build-summary-badge.warn { background: rgba(229, 57, 53, 0.14); color: #b71c1c; }
+      .build-summary-badge.soft { background: rgba(0,0,0,0.05); color: var(--text-secondary, inherit); }
+      .build-summary-logs { margin-top: 6px; }
+      .build-summary-logs pre { font-family: 'SFMono-Regular', Menlo, Consolas, monospace; font-size: 12px; line-height: 1.4; max-height: 220px; overflow: auto; padding: 8px 10px; background: rgba(0,0,0,0.04); border-radius: 6px; margin: 0; white-space: pre; }
+
       .seg-control { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
       .seg-btn { padding: 4px 12px; font-size: 12px; font-weight: 500; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s, color 0.15s; font-family: inherit; }
       .seg-btn:not(:last-child) { border-right: 1px solid var(--border); }

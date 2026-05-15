@@ -26,6 +26,59 @@ USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
+-- Vehicle-aware threshold reference table (Issue #33)
+-- Drives SLA, geofence, and deviation behaviour based on the active VEHICLE_TYPE.
+-- LOCATION_TYPE = '*' holds vehicle-level globals (deviation %, speed factor, H3 resolution).
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VEHICLE_THRESHOLDS (
+    VEHICLE_TYPE        VARCHAR NOT NULL,
+    LOCATION_TYPE       VARCHAR NOT NULL,
+    SLA_WARNING_MIN     NUMBER,
+    SLA_CRITICAL_MIN    NUMBER,
+    GEOFENCE_RADIUS_M   NUMBER,
+    DEVIATION_PCT       NUMBER(5,2),
+    SPEED_LIMIT_FACTOR  NUMBER(3,2),
+    H3_RESOLUTION       NUMBER(2),
+    PRIMARY KEY (VEHICLE_TYPE, LOCATION_TYPE)
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+MERGE INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.VEHICLE_THRESHOLDS tgt
+USING (
+    SELECT column1 AS VEHICLE_TYPE, column2 AS LOCATION_TYPE,
+           column3 AS SLA_WARNING_MIN, column4 AS SLA_CRITICAL_MIN,
+           column5 AS GEOFENCE_RADIUS_M, column6 AS DEVIATION_PCT,
+           column7 AS SPEED_LIMIT_FACTOR, column8 AS H3_RESOLUTION
+    FROM VALUES
+      ('car',      'WAREHOUSE',    8, 20, 150, NULL, NULL, NULL),
+      ('car',      'DESTINATION',  5, 15,  80, NULL, NULL, NULL),
+      ('car',      'REST_STOP',   10, 25, 120, NULL, NULL, NULL),
+      ('car',      'STORE',        3, 10,  80, NULL, NULL, NULL),
+      ('car',      'DETOUR',       3,  8,  80, NULL, NULL, NULL),
+      ('car',      '*',         NULL, NULL, NULL, 15.00, 1.10, 8),
+      ('ebike',    'WAREHOUSE',    5, 12,  80, NULL, NULL, NULL),
+      ('ebike',    'DESTINATION',  3,  8,  50, NULL, NULL, NULL),
+      ('ebike',    'REST_STOP',    5, 15,  60, NULL, NULL, NULL),
+      ('ebike',    'STORE',        2,  6,  40, NULL, NULL, NULL),
+      ('ebike',    'DETOUR',       2,  5,  50, NULL, NULL, NULL),
+      ('ebike',    '*',         NULL, NULL, NULL, 25.00, 1.05, 9),
+      ('hgv',      'WAREHOUSE',   30, 90, 300, NULL, NULL, NULL),
+      ('hgv',      'DESTINATION', 20, 60, 200, NULL, NULL, NULL),
+      ('hgv',      'REST_STOP',   45, 90, 250, NULL, NULL, NULL),
+      ('hgv',      'STORE',       15, 45, 200, NULL, NULL, NULL),
+      ('hgv',      'DETOUR',       5, 15, 200, NULL, NULL, NULL),
+      ('hgv',      '*',         NULL, NULL, NULL, 10.00, 1.05, 7),
+      ('escooter', 'WAREHOUSE',    4, 10,  60, NULL, NULL, NULL),
+      ('escooter', 'DESTINATION',  2,  6,  40, NULL, NULL, NULL),
+      ('escooter', 'REST_STOP',    4, 12,  50, NULL, NULL, NULL),
+      ('escooter', 'STORE',        2,  5,  30, NULL, NULL, NULL),
+      ('escooter', 'DETOUR',       2,  4,  40, NULL, NULL, NULL),
+      ('escooter', '*',         NULL, NULL, NULL, 30.00, 1.05, 10)
+) src
+ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE AND tgt.LOCATION_TYPE = src.LOCATION_TYPE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, LOCATION_TYPE, SLA_WARNING_MIN, SLA_CRITICAL_MIN, GEOFENCE_RADIUS_M, DEVIATION_PCT, SPEED_LIMIT_FACTOR, H3_RESOLUTION)
+    VALUES (src.VEHICLE_TYPE, src.LOCATION_TYPE, src.SLA_WARNING_MIN, src.SLA_CRITICAL_MIN, src.GEOFENCE_RADIUS_M, src.DEVIATION_PCT, src.SPEED_LIMIT_FACTOR, src.H3_RESOLUTION);
+
+
+
 --------------------------------------------------------------------
 -- PROJECTION VIEWS
 --------------------------------------------------------------------
@@ -106,11 +159,20 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 
 --------------------------------------------------------------------
 -- ETL: TRIP_DEVIATION_ANALYSIS
+-- Deviation threshold is vehicle-aware (Issue #33): looked up from
+-- VEHICLE_THRESHOLDS.DEVIATION_PCT for the active CONFIG.VEHICLE_TYPE.
+-- Falls back to 20% if no row exists.
 --------------------------------------------------------------------
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-WITH trip_points AS (
+WITH dev_threshold AS (
+    SELECT COALESCE(MAX(DEVIATION_PCT) / 100.0, 0.20) AS DEV_FRAC
+    FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VEHICLE_THRESHOLDS
+    WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+      AND LOCATION_TYPE = '*'
+),
+trip_points AS (
     SELECT TRIP_ID, COUNT(*) AS POINT_COUNT
     FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY
     GROUP BY TRIP_ID
@@ -153,11 +215,11 @@ SELECT
     ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
                THEN ((t.ACTUAL_DISTANCE_KM / NULLIF(t.EXPECTED_DISTANCE_KM, 0)) - 1) * 100
                ELSE 0 END, 2) AS DURATION_DEVIATION_PCT,
-    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEV_FRAC FROM dev_threshold)
          THEN TRUE ELSE FALSE END AS IS_DISTANCE_DEVIATION,
     CASE WHEN t.IS_DETOUR THEN TRUE ELSE FALSE END AS IS_DURATION_DEVIATION,
     CASE WHEN t.IS_DETOUR
-           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > (SELECT DEV_FRAC FROM dev_threshold)
          THEN TRUE ELSE FALSE END AS IS_ROUTE_DEVIATION,
     t.ACTUAL_PATH,
     t.EXPECTED_PATH

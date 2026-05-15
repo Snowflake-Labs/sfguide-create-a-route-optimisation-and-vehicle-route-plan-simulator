@@ -119,6 +119,17 @@ SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start, end, 'berlin'))
 
 All other profiles (cycling-regular, cycling-road, cycling-mountain, foot-walking, foot-hiking, wheelchair) are disabled by default. When provisioning new cities via the Cities tab, users can select which routing profiles to install using the profile checkboxes. Use the `routing-customization` skill to change profiles on the default (San Francisco) instance.
 
+## Matrix Cost Estimator (Issue #39)
+
+Calibration-backed pre-flight cost prediction.
+
+| Procedure | Returns | Purpose |
+|---|---|---|
+| `OPENROUTESERVICE_APP.CORE.ESTIMATE_MATRIX_COST(region, resolution, profile, min_lat, max_lat, min_lon, max_lon, road_filter)` | `VARIANT` JSON | Predict cell count, matrix rows, WH credits, SPCS credits, duration, confidence — always returns BOTH road-filter ON and OFF variants |
+| `OPENROUTESERVICE_APP.CORE.REFRESH_MATRIX_COST_CALIBRATION()` | `VARIANT` | Re-fits coefficients from `MATRIX_BUILD_JOBS` history (last 90 days). Run by `REFRESH_MATRIX_COST_CALIBRATION_TASK` daily at 06:00 UTC |
+
+Backed by `OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_COST_CALIBRATION` (seed values + history-fit coefficients per `(resolution, profile, road_filter, region_size_bucket)`). See `references/matrix-cost-estimator.md`.
+
 ## Default Service Limits
 
 All configurable ORS service limits are set to `Integer.MAX_VALUE` (**2,147,483,647**) — i.e. effectively unlimited. ORS does not enforce a hard ceiling on these fields; the value is the practical Java `int` upper bound. This applies to:

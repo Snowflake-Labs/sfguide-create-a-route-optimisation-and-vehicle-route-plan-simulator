@@ -235,7 +235,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql" -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql"   -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> && \
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/07_matrix_cost_estimator.sql" -c <connection> 
    ```
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
@@ -529,6 +530,10 @@ ORS services in `OPENROUTESERVICE_APP.CORE` MUST never auto-suspend while a regi
 - All other times: services have `AUTO_SUSPEND_SECS=14400` (4 hours).
 
 Every procedure that flips these values to 0 must restore 14400 on ALL exit paths (success, timeout, early return, exception). A safety-net procedure `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is idempotent and self-heals drift (e.g. from a killed session); it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
+
+## Matrix Cost Estimation (Issue #39)
+
+`ESTIMATE_MATRIX_COST(region, resolution, profile, min_lat, max_lat, min_lon, max_lon, road_filter)` returns a JSON cost breakdown — cell count, matrix rows, warehouse credits, SPCS credits, duration, and confidence — always for BOTH `road_filter` ON and OFF so the UI can render side-by-side comparisons. Backed by `MATRIX_COST_CALIBRATION` (formula-derived seeds, refit nightly from `MATRIX_BUILD_JOBS` history via `REFRESH_MATRIX_COST_CALIBRATION_TASK`). The Matrix Builder UI surfaces this through the "Estimate cost" button and gates the Build button when total credits exceed 25 or pair count exceeds 100M. Full reference: `references/matrix-cost-estimator.md`.
 
 ## Cleanup
 

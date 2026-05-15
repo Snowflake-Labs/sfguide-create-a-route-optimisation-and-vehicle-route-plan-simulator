@@ -13,24 +13,66 @@ const STATE_COLORS: Record<string, [number, number, number, number]> = {
   STOPPED: [239, 68, 68, 200],
 };
 
+type ThresholdRow = {
+  LOCATION_TYPE: string;
+  SLA_WARNING_MIN: number | null;
+  SLA_CRITICAL_MIN: number | null;
+  GEOFENCE_RADIUS_M: number | null;
+  DEVIATION_PCT: number | null;
+  SPEED_LIMIT_FACTOR: number | null;
+  H3_RESOLUTION: number | null;
+};
+
+type ThresholdsResponse = {
+  vehicleType: string;
+  globals: ThresholdRow | null;
+  perLocation: ThresholdRow[];
+};
+
+const DEFAULT_SLA_FALLBACK_MIN = 30;
+
 export default function LiveOperations() {
   const { regionName, center, zoom } = useRegion();
   const { vehicleType } = useVehicleType();
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [openDwells, setOpenDwells] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [thresholds, setThresholds] = useState<ThresholdsResponse | null>(null);
   const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
+
+  // Fetch per-vehicle thresholds whenever vehicleType changes (Issue #33).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/fleet-config/thresholds')
+      .then(r => r.ok ? r.json() : null)
+      .then((data: ThresholdsResponse | null) => { if (!cancelled && data) setThresholds(data); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [vehicleType]);
+
+  // Use the WAREHOUSE warning as the primary "open dwell" SLA, falling back to DESTINATION then 30 min.
+  const slaThresholdMin = useMemo<number>(() => {
+    if (!thresholds?.perLocation?.length) return DEFAULT_SLA_FALLBACK_MIN;
+    const byLoc: Record<string, ThresholdRow> = {};
+    thresholds.perLocation.forEach(r => { byLoc[r.LOCATION_TYPE] = r; });
+    return (
+      byLoc.WAREHOUSE?.SLA_WARNING_MIN ??
+      byLoc.DESTINATION?.SLA_WARNING_MIN ??
+      DEFAULT_SLA_FALLBACK_MIN
+    );
+  }, [thresholds]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    const sla = slaThresholdMin;
     const [v, d] = await Promise.all([
       sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, STATUS AS CURRENT_STATE, ST_X(POINT_GEOM) AS LNG, ST_Y(POINT_GEOM) AS LAT, TS AS LAST_UPDATE, SPEED_KMH AS CURRENT_SPEED_KMH FROM DT_STATE_CHANGES WHERE IS_STATE_CHANGE = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1 LIMIT 500`),
-      sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SESSION_START AS DWELL_START, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, 30 AS SLA_THRESHOLD_MIN, ROUND(30 - DWELL_MINUTES, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE SESSION_END IS NULL ORDER BY DWELL_MINUTES DESC LIMIT 50`),
+      sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SESSION_START AS DWELL_START, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, ${sla} AS SLA_THRESHOLD_MIN, ROUND(${sla} - DWELL_MINUTES, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE SESSION_END IS NULL ORDER BY DWELL_MINUTES DESC LIMIT 50`),
     ]);
     setVehicles(v);
     setOpenDwells(d);
     setLoading(false);
-  }, [regionName, vehicleType]);
+  }, [regionName, vehicleType, slaThresholdMin]);
 
   useEffect(() => {
     refresh();
@@ -79,9 +121,26 @@ export default function LiveOperations() {
     <div>
       <h3>Live Operations</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
-        {loading ? 'Refreshing...' : `${vehicles.length} vehicles tracked`} · Auto-refresh 30s
+        {loading ? 'Refreshing...' : `${vehicles.length} vehicles tracked`} · Auto-refresh 30s · SLA {slaThresholdMin} min ({thresholds?.vehicleType ?? vehicleType})
       </p>
       <button className="btn-primary" onClick={refresh} style={{ marginBottom: 12 }}>Refresh Now</button>
+      {thresholds && (
+        <div style={{ marginBottom: 12, padding: 8, border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Thresholds in use ({thresholds.vehicleType})</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-secondary)' }}>
+            {thresholds.perLocation.map(r => (
+              <span key={r.LOCATION_TYPE}>
+                <b>{r.LOCATION_TYPE}</b>: SLA {r.SLA_WARNING_MIN}/{r.SLA_CRITICAL_MIN} min · geofence {r.GEOFENCE_RADIUS_M}m
+              </span>
+            ))}
+            {thresholds.globals && (
+              <span>
+                <b>Global</b>: deviation {thresholds.globals.DEVIATION_PCT}% · speed×{thresholds.globals.SPEED_LIMIT_FACTOR} · H3 r{thresholds.globals.H3_RESOLUTION}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         {Object.entries(STATE_COLORS).map(([state, color]) => (
           <div key={state} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>

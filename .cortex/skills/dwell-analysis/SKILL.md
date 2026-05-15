@@ -197,6 +197,40 @@ Result: Dwell analysis pipeline processing London HGV telemetry with region-spec
 | DT_DWELL_ENRICHED has more rows than DT_DWELL_SESSIONS | Duplicate LOCATION_IDs in DIM_POIS cause fan-out in the enrichment join; the sql-pipeline uses deduplication CTEs to prevent this |
 | DIM_TRIP_SCHEDULE has 0 rows | Data Studio may not have populated this table yet; VW_TRIP_SCHEDULE will return 0 rows until data exists |
 
+## Thresholds
+
+Vehicle-aware demo thresholds live in `FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS` (Issue #33). The active row set is selected by joining on `(SELECT VEHICLE_TYPE FROM CONFIG LIMIT 1)`. Per-`LOCATION_TYPE` rows control SLA + geofence; `LOCATION_TYPE='*'` rows hold vehicle globals (deviation %, speed factor, H3 resolution).
+
+### SLA (warning / critical, minutes)
+
+| Location | car | ebike | hgv | escooter |
+|---|---|---|---|---|
+| WAREHOUSE | 8 / 20 | 5 / 12 | 30 / 90 | 4 / 10 |
+| DESTINATION | 5 / 15 | 3 / 8 | 20 / 60 | 2 / 6 |
+| REST_STOP | 10 / 25 | 5 / 15 | 45 / 90 | 4 / 12 |
+| STORE | 3 / 10 | 2 / 6 | 15 / 45 | 2 / 5 |
+| DETOUR | 3 / 8 | 2 / 5 | 5 / 15 | 2 / 4 |
+
+### Geofence radii (meters)
+
+| Location | car | ebike | hgv | escooter |
+|---|---|---|---|---|
+| WAREHOUSE | 150 | 80 | 300 | 60 |
+| DESTINATION | 80 | 50 | 200 | 40 |
+| REST_STOP | 120 | 60 | 250 | 50 |
+| STORE | 80 | 40 | 200 | 30 |
+| DETOUR | 80 | 50 | 200 | 40 |
+
+### Vehicle globals (LOCATION_TYPE='*')
+
+| Parameter | car | ebike | hgv | escooter |
+|---|---|---|---|---|
+| Deviation % | 15 | 25 | 10 | 30 |
+| Speed limit factor | 1.10 | 1.05 | 1.05 | 1.05 |
+| H3 resolution | 8 | 9 | 7 | 10 |
+
+> The `H3_RESOLUTION` column is informational; current DTs use a fixed R7/R8 (deferred per Issue #33 out-of-scope).
+
 ## Cleanup
 
 To remove all objects created by this skill:
@@ -215,6 +249,7 @@ DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_SESSIONS;
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.SLA_THRESHOLDS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VEHICLE_THRESHOLDS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.GEOFENCE_POLYGONS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.VW_VEHICLE_TELEMETRY;
