@@ -81,44 +81,102 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Commit Discipline
 
-**MANDATORY:** After each logical change is completed and verified, create a new git commit on the user's single shared branch AND push it immediately. Do not batch unrelated changes into a single commit, and do not leave commits unpushed at the end of a turn.
+**MANDATORY:** After each logical change is completed and verified, create a new git commit on the branch this clone is pinned to AND push it immediately. Do not batch unrelated changes into a single commit, and do not leave commits unpushed at the end of a turn.
 
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected — changes only land via merged PRs from `dev`.
 - **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from per-user branches.
-- **All work happens on ONE per-user long-lived branch named `feat/<GITHUB_LOGIN>-feat`.** The GitHub login MUST be detected dynamically at the start of every session — never hardcoded.
+- **TWO per-user long-lived branches**, both following the `feat/<GITHUB_LOGIN>-*` convention:
+  - `feat/<GITHUB_LOGIN>-feat` — **dev branch** (rapid iteration, agent-driven work).
+  - `feat/<GITHUB_LOGIN>-test` — **verification branch** (small fixes, pre-PR validation against a separate Snowflake account).
+  GitHub login MUST be detected dynamically at session start — never hardcoded:
   ```bash
   GITHUB_LOGIN=$(gh api user --jq .login)
-  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  DEV_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  TEST_BRANCH="feat/${GITHUB_LOGIN}-test"
   ```
-  Example: for login `sfc-gh-preszke` the branch is `feat/sfc-gh-preszke-feat`.
-  This single branch is shared by all parallel Cortex Code chats on the user's machine, so no branch switching is ever needed mid-session.
-- **Do NOT create additional branches.** No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. One user, one branch. Multiple parallel chats sharing one working tree cannot each own their own branch — that causes constant `git checkout` thrashing and lost work. Commit straight onto the user's branch instead.
-- **All PRs target `dev`** (not `main`). Only release/promotion PRs go from `dev` → `main`, and those are opened by humans, not assistants.
-- Before starting work, detect the user branch and verify you are on it:
+- **TWO clones on disk**, each permanently checked out on one branch:
+  - Dev clone: `<repo>/` — pinned to `feat/<GITHUB_LOGIN>-feat`.
+  - Test clone: `<repo>-test/` — pinned to `feat/<GITHUB_LOGIN>-test`.
+  Each clone is opened in its own SnowWork IDE instance. **Never `git checkout` to the other branch inside a clone.** If you find yourself wanting to switch, open the other clone instead.
+- **Do NOT create additional branches.** No `<username>/work`, no `<username>/<topic>`, no per-change `feat/*` / `fix/*` / `docs/*` branches. Two long-lived branches per user, period.
+- **All PRs target `dev`** (not `main`) and originate from `feat/<GITHUB_LOGIN>-test` (not from `feat/<GITHUB_LOGIN>-feat`). Dev work is promoted to test first, verified there, then PR'd to `dev`. Only release/promotion PRs go from `dev` → `main`, and those are opened by humans.
+- Before starting work, verify the current clone is on the expected branch (do NOT `git checkout` to switch — open the right clone):
   ```bash
   GITHUB_LOGIN=$(gh api user --jq .login)
-  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  EXPECTED="feat/${GITHUB_LOGIN}-feat"   # or -test, depending on clone
   CURRENT=$(git branch --show-current)
-  if [ "$CURRENT" != "$USER_BRANCH" ]; then
-    git checkout "$USER_BRANCH" 2>/dev/null || git checkout -b "$USER_BRANCH"
+  if [ "$CURRENT" != "$EXPECTED" ]; then
+    echo "ERROR: clone is on $CURRENT, expected $EXPECTED. Open the correct clone instead of switching branches." >&2
+    exit 1
   fi
   ```
   If `gh` is not authenticated, stop and ask the user to run `gh auth login` — never fall back to a hardcoded branch name.
 - After EVERY commit, push the branch immediately. Do not leave local commits unpushed:
   ```bash
-  git push -u origin "$USER_BRANCH"
+  git push -u origin "$CURRENT"
   ```
-- Open / update a single PR into `dev` for the branch when there is reviewable work:
+- Open / update a single PR into `dev` from the **test branch** when there is reviewable work:
   ```bash
-  gh pr create --base dev --head "$USER_BRANCH" --title "..." --body "..."
+  gh pr create --base dev --head "feat/${GITHUB_LOGIN}-test" --title "..." --body "..."
   ```
 - A PR may include several commits from the branch. Keep PRs scoped to one logical theme — open a new PR rather than piling unrelated commits into one.
 
+### Sync Between Branches (ON-DEMAND ONLY)
+
+**The agent NEVER initiates sync on its own.** Sync only happens when the user explicitly issues one of these named operations:
+
+1. **"Promote dev → test"** (full merge) — re-test everything currently on dev:
+   ```bash
+   # Run from the TEST clone
+   git fetch origin
+   git merge origin/feat/${GITHUB_LOGIN}-feat
+   git push origin feat/${GITHUB_LOGIN}-test
+   ```
+2. **"Promote test → dev"** (full merge) — fold accumulated test-side fixes back into dev:
+   ```bash
+   # Run from the DEV clone
+   git fetch origin
+   git merge origin/feat/${GITHUB_LOGIN}-test
+   git push origin feat/${GITHUB_LOGIN}-feat
+   ```
+3. **"Cherry-pick <SHA-or-range> from dev to test"** (selective):
+   ```bash
+   # Run from the TEST clone
+   git fetch origin
+   git cherry-pick -x <sha1> [<sha2> ...]   # or <base>..<tip>
+   git push origin feat/${GITHUB_LOGIN}-test
+   ```
+4. **"Cherry-pick <SHA-or-range> from test to dev"** (selective): mirror of #3, run from the DEV clone.
+5. **"Status check"** (no changes, just visibility):
+   ```bash
+   git fetch origin
+   git log --oneline origin/feat/${GITHUB_LOGIN}-feat ^origin/feat/${GITHUB_LOGIN}-test
+   git log --oneline origin/feat/${GITHUB_LOGIN}-test ^origin/feat/${GITHUB_LOGIN}-feat
+   ```
+
+Always use `git cherry-pick -x` so the cherry-picked commit's message includes a `(cherry picked from commit <sha>)` trailer for traceability.
+
+### Connection Binding (per-clone Snowflake account)
+
+- **Layer 1 — connection definitions (shared, machine-wide):** `~/.snowflake/connections.toml` defines named connections. Both clones see the same set; do not duplicate.
+- **Layer 2 — which connection a clone uses (per-clone):** each clone has a gitignored `.env` file at the repo root that exports `SNOWFLAKE_CONNECTION_NAME` and `CORTEX_BRANCH_ROLE`:
+  ```
+  # <repo>/.env  (dev clone, gitignored)
+  SNOWFLAKE_CONNECTION_NAME=<dev-conn-name>
+  CORTEX_BRANCH_ROLE=dev
+
+  # <repo>-test/.env  (test clone, gitignored)
+  SNOWFLAKE_CONNECTION_NAME=<test-conn-name>
+  CORTEX_BRANCH_ROLE=test
+  ```
+- The agent MUST respect `SNOWFLAKE_CONNECTION_NAME` from the environment and never hardcode a connection name. The existing `os.getenv("SNOWFLAKE_CONNECTION_NAME") or "<placeholder>"` pattern in Python remains correct.
+- The agent MUST NOT edit `~/.snowflake/connections.toml` without explicit user instruction — that file is owned by the user.
+
 ### Commit Rules
 - One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
-- Commits land on `$USER_BRANCH` (i.e. `feat/<GITHUB_LOGIN>-feat`). Never on a fresh per-change branch.
-- After every commit, run `git push origin "$USER_BRANCH"` immediately. A change is not "done" until it is pushed to remote.
+- Commits land on whichever branch the current clone is pinned to (`feat/<GITHUB_LOGIN>-feat` in the dev clone, `feat/<GITHUB_LOGIN>-test` in the test clone). Never on a fresh per-change branch.
+- After every commit, run `git push origin "$(git branch --show-current)"` immediately. A change is not "done" until it is pushed to remote.
   - **CRITICAL: Plain `git push` will fail with SSH permission denied.** Before your first push in a session, ALWAYS read `/memories/git-push-method.md` for the working command (uses `gh auth token` + `GIT_CONFIG_GLOBAL=/dev/null` to bypass the global SSH `insteadOf` rule). Do NOT attempt `git push origin <branch>` directly — it always fails for this repo.
 - Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
 - Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
@@ -129,7 +187,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
     - `docs(AGENTS.md): add commit discipline rule`
 - If a change spans multiple skills, prefer multiple smaller commits over one large one
 - Never amend or force-push commits the user has not explicitly authorized
-- Never push directly to `main` or `dev` — push only to `$USER_BRANCH` (`feat/<GITHUB_LOGIN>-feat`)
+- Never push directly to `main` or `dev` — push only to the current clone's pinned branch
 
 ## Friction Logging
 
@@ -172,10 +230,15 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
-- **Skip committing AND pushing after a completed change** — every verified change must result in a commit AND a push to `feat/<GITHUB_LOGIN>-feat` before the turn ends (see `## Commit Discipline`)
-- **Commit directly to `main` or `dev`** — both are protected. All work goes on `feat/<GITHUB_LOGIN>-feat` with PRs targeting `dev`. Only humans promote `dev` → `main`.
+- **Skip committing AND pushing after a completed change** — every verified change must result in a commit AND a push to the current clone's pinned branch before the turn ends (see `## Commit Discipline`)
+- **Commit directly to `main` or `dev`** — both are protected. All work goes on `feat/<GITHUB_LOGIN>-feat` (dev clone) or `feat/<GITHUB_LOGIN>-test` (test clone), with PRs targeting `dev` from the test branch. Only humans promote `dev` → `main`.
 - **Hardcode the user branch name** — always derive it from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-preszke-feat` into AGENTS.md, skill files, or scripts.
-- **Create a new branch per change or per topic** — there is exactly one branch per user (`feat/<GITHUB_LOGIN>-feat`). No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same branch.
+- **Create a new branch per change or per topic** — there are exactly two long-lived branches per user (`feat/<GITHUB_LOGIN>-feat` and `feat/<GITHUB_LOGIN>-test`). No `<username>/work`, no `<username>/<topic>`, no per-change `feat/*` / `fix/*` / `docs/*` branches.
+- **Switch branches inside a clone** — each clone is permanently pinned to one branch. To work on the other branch, open the other clone instead of running `git checkout`.
+- **Initiate cross-branch sync without explicit user instruction** — sync (full merge or cherry-pick, in either direction) only happens when the user explicitly asks. See `### Sync Between Branches`.
+- **Open a PR from `feat/<GITHUB_LOGIN>-feat`** — PRs into `dev` originate from `feat/<GITHUB_LOGIN>-test` only. Dev work is promoted to test (full merge or cherry-pick) and verified there before any PR is opened.
+- **Edit `~/.snowflake/connections.toml` without explicit user instruction** — that file is owned by the user. Reference connection names from each clone's `.env` instead.
+- **Hardcode a Snowflake connection name** — always read `SNOWFLAKE_CONNECTION_NAME` from the environment (set per-clone in `.env`).
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
 ## Control App Image Deployment (ors_control_app)

@@ -27,6 +27,7 @@ Example: `fleet-intelligence-taxis_2026-03-19_14-30.md`
 - **Date:** {YYYY-MM-DD HH:MM}
 - **Skill:** {skill-name}
 - **Connection:** {snowflake connection name}
+- **Account / Env:** {account locator} / {dev | test} (from `CORTEX_BRANCH_ROLE`)
 - **Role:** {current role}
 - **Warehouse:** {current warehouse}
 - **Outcome:** {COMPLETED_WITH_ISSUES | FAILED | COMPLETED_WITH_WORKAROUNDS}
@@ -100,6 +101,7 @@ A friction log is generated after EVERY `build-routing-solution` execution, rega
 
 - **Date:** {YYYY-MM-DD HH:MM}
 - **Connection:** {snowflake connection name}
+- **Account / Env:** {account locator} / {dev | test} (from `CORTEX_BRANCH_ROLE`)
 - **Role:** {current role}
 - **Warehouse:** {current warehouse}
 - **Container Runtime:** {Docker/Podman version}
