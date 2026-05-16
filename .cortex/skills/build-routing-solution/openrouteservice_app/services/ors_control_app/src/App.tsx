@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -12,6 +12,7 @@ import FleetDelivery from './components/FleetDelivery';
 import FleetTaxis from './components/FleetTaxis';
 import RouteDeviation from './components/RouteDeviation';
 import RouteOptimization from './components/RouteOptimization';
+import AssetVelocity from './components/AssetVelocity';
 import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
@@ -75,6 +76,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
     { key: 'route-deviation:comparison', label: 'Route Comparison' },
     { key: 'route-deviation:inspector', label: 'Route Inspector' },
   ]},
+  { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];
@@ -126,7 +128,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'asset-velocity'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -252,6 +254,7 @@ export default function App() {
             {activeTab === 'matrix:viewer' && <MatrixViewer />}
             {activeTab === 'studio' && <FleetDataStudio />}
             {activeTab === 'route-opt' && <RouteOptimization key={dataKey} />}
+            {activeTab === 'asset-velocity' && <AssetVelocity key={dataKey} />}
             {activeCategory === 'fleet-taxis' && <FleetTaxis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'fleet-delivery' && <FleetDelivery key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
