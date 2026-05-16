@@ -781,6 +781,24 @@ export default function FleetDataStudio() {
                 </div>
               ))}
 
+              {editProfile === 'driving-hgv' && renderSection('ghost', 'Ghost Trailers (HGV)', (
+                <div>
+                  <div style={{ fontSize: 11, color: '#6E7681', marginBottom: 8, lineHeight: 1.5 }}>
+                    Marks a share of HGV vehicles as &quot;ghost trailers&quot; that sit idle at their home warehouse for several days. Set Probability to 0 to disable.
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    {renderField('Probability (0-1)', 'ghost_trailer.probability')}
+                    {renderField('Start Day Min', 'ghost_trailer.start_day_min')}
+                    {renderField('Start Day Max', 'ghost_trailer.start_day_max')}
+                    {renderField('Duration Days Min', 'ghost_trailer.duration_days_min')}
+                    {renderField('Duration Days Max', 'ghost_trailer.duration_days_max')}
+                    <div />
+                    {renderField('Ping Min (sec)', 'ghost_trailer.ping_interval_min_sec')}
+                    {renderField('Ping Max (sec)', 'ghost_trailer.ping_interval_max_sec')}
+                  </div>
+                </div>
+              ))}
+
               {renderSection('routing', 'Routing & Detours', (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   {renderField('Optimal Route %', 'routing.optimal_route_probability')}
