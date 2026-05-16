@@ -89,6 +89,8 @@ export interface FleetMember {
   base_speed_kmh: number;
   vehicle_type: string;
   battery_pct: number;
+  ghost_start_day?: number;
+  ghost_end_day?: number;
 }
 
 type VehicleState = 'MOVING' | 'DWELL_ORIGIN' | 'DWELL_DESTINATION' | 'DWELL_REST' | 'DWELL_RECHARGE' | 'IDLE' | 'OVERNIGHT';
@@ -451,6 +453,20 @@ export function buildFleet(config: GenerationConfig, pois: POI[], rng: () => num
       battery_pct: vt === 'ebike' ? 100 : -1,
     });
   }
+
+  // Tag a configurable share of the fleet as "ghost" - they will sit idle at
+  // their home POI for several days, replicating the non-moving-trailer pattern.
+  const ghostCfg = config.ghost_trailer;
+  if (ghostCfg && ghostCfg.probability > 0) {
+    for (const member of fleet) {
+      if (rng() < ghostCfg.probability) {
+        const startDay = rngInt(rng, ghostCfg.start_day_min, ghostCfg.start_day_max);
+        const duration = rngInt(rng, ghostCfg.duration_days_min, ghostCfg.duration_days_max);
+        member.ghost_start_day = startDay;
+        member.ghost_end_day = startDay + duration - 1;
+      }
+    }
+  }
   return fleet;
 }
 
@@ -771,6 +787,53 @@ function emitDwell(
   return points;
 }
 
+// Emit a single multi-day IDLE dwell session for "ghost trailers". Pings are
+// sparse (default 5-15 min) so the row volume stays modest even over a 7-day
+// window. The dwell sessionizer (CONDITIONAL_CHANGE_EVENT on STATUS) will roll
+// these contiguous IDLE pings into one DT_DWELL_SESSIONS row.
+function emitLongIdleDwell(
+  lifecycle: VehicleLifecycle, config: GenerationConfig, poi: POI | null,
+  durationSec: number, pingMinSec: number, pingMaxSec: number, rng: () => number,
+): TelemetryPoint[] {
+  const points: TelemetryPoint[] = [];
+  const vt = resolveVehicleType(config);
+  let elapsed = 0;
+  while (elapsed < durationSec) {
+    const [jLat, jLng] = addGpsJitter(lifecycle.lat, lifecycle.lng, 2, rng);
+    const ts = new Date(lifecycle.currentTime.getTime() + elapsed * 1000);
+    points.push({
+      telemetry_id: uuid(rng),
+      region: config.region,
+      vehicle_type: vt,
+      vehicle_id: lifecycle.vehicle.vehicle_id,
+      trip_id: null,
+      ts,
+      latitude: jLat,
+      longitude: jLng,
+      speed_kmh: 0,
+      heading_deg: 0,
+      posted_speed_kmh: 0,
+      status: 'IDLE',
+      is_speeding: false,
+      is_hos_violation: false,
+      is_detour: false,
+      gps_accuracy_m: 3,
+      location_id: poi?.location_id || null,
+      location_type: poi?.location_type || null,
+      ors_profile: config.ors_profile,
+      battery_pct: lifecycle.vehicle.battery_pct > 0 ? lifecycle.vehicle.battery_pct : null,
+      odometer_km: Math.round(lifecycle.odometerKm * 100) / 100,
+      point_index: lifecycle.pointIndex++,
+    });
+    elapsed += rngFloat(rng, pingMinSec, pingMaxSec);
+  }
+  lifecycle.currentTime = new Date(lifecycle.currentTime.getTime() + durationSec * 1000);
+  lifecycle.state = 'IDLE';
+  lifecycle.location_id = poi?.location_id || null;
+  lifecycle.location_type = poi?.location_type || null;
+  return points;
+}
+
 export async function* generateTelemetry(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
@@ -848,6 +911,40 @@ export async function* generateTelemetry(
 
     for (const member of fleet) {
       if (abortSignal?.aborted) return;
+
+      // Ghost trailer handling - vehicle is parked at home for several days.
+      const inGhostWindow = member.ghost_start_day !== undefined
+        && member.ghost_end_day !== undefined
+        && dayOffset >= member.ghost_start_day
+        && dayOffset <= member.ghost_end_day;
+      if (inGhostWindow) {
+        // On any ghost day other than the first, the long-idle pings were
+        // already emitted on the start day - skip silently.
+        if (dayOffset !== member.ghost_start_day) continue;
+        const ghostCfg = config.ghost_trailer!;
+        const totalGhostDays = (member.ghost_end_day! - member.ghost_start_day!) + 1;
+        const ghostStartTime = new Date(Date.UTC(currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(), 0, rngInt(rng, 0, 30)));
+        const ghostLifecycle: VehicleLifecycle = {
+          vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
+          lat: member.home_poi.lat,
+          lng: member.home_poi.lng,
+          currentTime: ghostStartTime,
+          state: 'IDLE',
+          location_id: member.home_poi.location_id,
+          location_type: member.home_poi.location_type,
+          dailyDrivingMin: 0,
+          minSinceBreak: 0,
+          tripSeq: 0,
+          odometerKm: 0,
+          pointIndex: 0,
+        };
+        const durationSec = totalGhostDays * 86400;
+        dayBatch.push(...emitLongIdleDwell(
+          ghostLifecycle, config, member.home_poi,
+          durationSec, ghostCfg.ping_interval_min_sec, ghostCfg.ping_interval_max_sec, rng,
+        ));
+        continue;
+      }
 
       const operatingRate = config.fleet.daily_operating_rate
         || (isWeekend ? (config.fleet.weekend_operating_rate || 0.4) : (config.fleet.weekday_operating_rate || 0.85));

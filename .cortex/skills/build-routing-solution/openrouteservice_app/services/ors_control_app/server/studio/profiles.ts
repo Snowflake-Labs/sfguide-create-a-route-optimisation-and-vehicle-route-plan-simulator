@@ -103,6 +103,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       breaks: { driving_hours_between_breaks: 4.5, mandatory_break_duration_min: 45, max_daily_driving_hours: 9 },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
       poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
+      ghost_trailer: {
+        probability: 0.10,
+        start_day_min: 0,
+        start_day_max: 1,
+        duration_days_min: 5,
+        duration_days_max: 7,
+        ping_interval_min_sec: 300,
+        ping_interval_max_sec: 900,
+      },
     },
   },
 ];
@@ -164,6 +173,15 @@ export interface GenerationConfig {
   delivery_sla?: { target_minutes: number; warning_minutes: number };
   detour?: { probability: number; max_detour_factor: number };
   poi_categories?: string[];
+  ghost_trailer?: {
+    probability: number;
+    start_day_min: number;
+    start_day_max: number;
+    duration_days_min: number;
+    duration_days_max: number;
+    ping_interval_min_sec: number;
+    ping_interval_max_sec: number;
+  };
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {
