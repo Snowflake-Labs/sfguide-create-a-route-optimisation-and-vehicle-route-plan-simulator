@@ -83,6 +83,15 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Best-effort warehouse-size drift repair: if no matrix job is active,
+    -- shrink ROUTING_ANALYTICS back to the SMALL steady-state. This catches
+    -- the case where a matrix build bumped the warehouse to LARGE / X-LARGE
+    -- and the in-procedure restore was skipped (e.g. session killed).
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
@@ -481,6 +490,68 @@ BEGIN
         'reconciled_to_default', reconciled,
         'left_at_zero_due_to_active_job', left_zero
     )::STRING;
+END;
+$$;
+
+
+-- =============================================================================
+-- ROUTING_ANALYTICS warehouse size invariant / reconciliation
+-- ---------------------------------------------------------------------------
+-- Invariant: while a matrix build is running, the matrix pipeline may bump
+-- ROUTING_ANALYTICS to LARGE (>5k hex) or X-LARGE (>25k hex) and is expected
+-- to restore the original size when the BUILD_WORK_QUEUE step finishes. If
+-- the session is killed or an unhandled error path is hit, the warehouse can
+-- get stranded at the bumped size.
+--
+-- RECONCILE_WAREHOUSE_SIZE() is an idempotent safety-net that shrinks
+-- ROUTING_ANALYTICS back to the 'SMALL' steady-state when no matrix job is
+-- active. It is auto-called from SUSPEND_ALL_SERVICES.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+AS
+$$
+DECLARE
+    active_jobs INTEGER DEFAULT 0;
+    current_size VARCHAR DEFAULT NULL;
+BEGIN
+    BEGIN
+        SELECT COUNT(*) INTO :active_jobs
+        FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING')
+          AND STAGE NOT IN ('COMPLETE','ERROR');
+    EXCEPTION WHEN OTHER THEN active_jobs := 0;
+    END;
+
+    IF (active_jobs > 0) THEN
+        RETURN 'skipped: ' || active_jobs || ' active matrix job(s)';
+    END IF;
+
+    BEGIN
+        SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
+        SELECT "size" INTO :current_size
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN current_size := NULL;
+    END;
+
+    -- Already at or below steady-state: nothing to do.
+    IF (current_size IS NOT NULL
+        AND UPPER(current_size) IN ('X-SMALL','XSMALL','SMALL'))
+    THEN
+        RETURN 'already at steady-state: ' || current_size;
+    END IF;
+
+    BEGIN
+        ALTER WAREHOUSE ROUTING_ANALYTICS SET WAREHOUSE_SIZE = 'SMALL';
+    EXCEPTION WHEN OTHER THEN
+        RETURN 'reconcile_failed: could not resize from ' || COALESCE(current_size, 'unknown');
+    END;
+
+    RETURN 'reconciled: ' || COALESCE(current_size, 'unknown') || ' -> SMALL';
 END;
 $$;
 
