@@ -258,14 +258,14 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   // randomly picking jobs from the full set produces a depot in NYC and jobs across the USA.
   // Keep the route plan locally meaningful by drawing all jobs from the road points nearest
   // to the depot. This still gives a varied but routable plan.
-  if (roadPoints && roadPoints.length >= 5) {
+  if (roadPoints && roadPoints.length >= 11) {
     const sorted = roadPoints
       .map(rp => ({ rp, d: haversineKm(depot, rp) }))
       .filter(x => x.d > 0.01)
       .sort((a, b) => a.d - b.d)
-      .slice(0, Math.min(roadPoints.length - 1, 12));
-    if (sorted.length >= 4) {
-      const shuffled = [...sorted].sort(() => rand() - 0.5).slice(0, 4);
+      .slice(0, Math.min(roadPoints.length - 1, 24));
+    if (sorted.length >= 10) {
+      const shuffled = [...sorted].sort(() => rand() - 0.5).slice(0, 10);
       const jobs = shuffled.map(x => [+x.rp[0].toFixed(5), +x.rp[1].toFixed(5)] as [number, number]);
       return { points: [depot, ...jobs] };
     }
@@ -274,7 +274,7 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   const jobs: [number, number][] = [];
   for (let attempt = 0; attempt < 5; attempt++) {
     jobs.length = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 10; i++) {
       jobs.push(sampleOne(bbox, rand, roadPoints, 0, boundary));
     }
     const allWithinMax = jobs.every(j => haversineKm(depot, j) <= constraints.maxKm);
