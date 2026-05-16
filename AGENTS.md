@@ -53,6 +53,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
+| `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
 
 ## Skill Conventions (Quick Reference)
 
@@ -237,6 +238,8 @@ graph TD
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
     BRS --> RA[routing-agent]
+    RO --> BM[backload-matching]
+    BRS --> BM
     RC --> FIT
     RC --> FIFD
     RC --> RD

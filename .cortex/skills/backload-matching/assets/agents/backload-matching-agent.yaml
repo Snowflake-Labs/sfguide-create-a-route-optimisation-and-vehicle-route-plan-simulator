@@ -1,0 +1,98 @@
+name: BACKLOAD_MATCHING_AGENT
+comment: '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"agent"}}'
+description: |
+  A Cortex Agent for the Backload Matching Engine. Wraps the SP_SOLVE_REGION_BACKLOAD
+  procedure and the audit views. Lets dispatchers ask in natural language:
+    - "Solve backloads for Germany now."
+    - "How many EUR did we reclaim today?"
+    - "Show idle trailers in NRW with no assignment."
+    - "Why did trailer TR-0007 get assigned offer OFF-000005?"
+
+instructions: |
+  You are a fleet dispatcher assistant for DHL Freight NTBO.
+  Use SP_SOLVE_REGION_BACKLOAD to compute new plans. Use VW_BACKLOAD_CANDIDATES to
+  inspect candidates without committing. Use PROPOSAL_DECISIONS to look up history.
+  Always cite empty km saved and direction-to-home when justifying a match.
+
+orchestration:
+  model: claude-sonnet-4-5
+
+tools:
+  - tool_spec:
+      name: solve_backload
+      type: generic
+      description: Run the OPTIMIZATION solver for a given region. Returns ranked assignments.
+      input_schema:
+        type: object
+        properties:
+          region:
+            type: string
+            description: Provisioned ORS region (e.g. Germany, California, UnitedStatesOfAmerica).
+          max_vehicles:
+            type: number
+            description: Cap of trailers per solve (default 30).
+        required: [region]
+    sql:
+      template: |
+        SELECT * FROM TABLE(FLEET_INTELLIGENCE.BACKLOAD_MATCHING.SP_SOLVE_REGION_BACKLOAD(
+          {{region}}::VARCHAR,
+          {{max_vehicles | default(30)}}::NUMBER
+        ));
+
+  - tool_spec:
+      name: list_candidates
+      type: generic
+      description: List candidate trailer<->offer pairs that satisfy MAX_EMPTY_KM, capacity, ADR.
+      input_schema:
+        type: object
+        properties:
+          trailer_id:
+            type: string
+        required: []
+    sql:
+      template: |
+        SELECT TRAILER_ID, SOURCE, OFFER_ID, PICKUP_CITY, PROPOSAL_DROPOFF_CITY,
+               EMPTY_KM, LOADED_KM, WEIGHT_KG, PRODUCT
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_BACKLOAD_CANDIDATES
+        {% if trailer_id %}WHERE TRAILER_ID = {{trailer_id}}::VARCHAR{% endif %}
+        ORDER BY EMPTY_KM
+        LIMIT 50;
+
+  - tool_spec:
+      name: savings_report
+      type: generic
+      description: Daily EUR reclaimed and assignment count.
+      input_schema:
+        type: object
+        properties:
+          n_days:
+            type: number
+            description: Trailing window (default 7).
+    sql:
+      template: |
+        SELECT DATE_TRUNC('day', DECIDED_AT) AS DAY,
+               COUNT(*) AS ASSIGNMENTS,
+               ROUND(SUM(EMPTY_KM), 1) AS TOTAL_EMPTY_KM,
+               ROUND(SUM(EMPTY_KM * (SELECT VALUE::FLOAT FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG WHERE KEY='EUR_PER_EMPTY_KM')), 0) AS EUR_RECLAIMED
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+        WHERE DECIDED_AT > DATEADD(day, -{{n_days | default(7)}}, CURRENT_TIMESTAMP())
+        GROUP BY 1 ORDER BY 1 DESC;
+
+  - tool_spec:
+      name: explain_decision
+      type: generic
+      description: Cortex Complete generates a 2-sentence rationale for a stored decision.
+      input_schema:
+        type: object
+        properties:
+          decision_id:
+            type: string
+        required: [decision_id]
+    sql:
+      template: |
+        SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5',
+          'Trailer ' || TRAILER_ID || ' was assigned ' || SOURCE || ' offer ' || OFFER_ID
+          || ' with empty leg ' || ROUND(EMPTY_KM,0) || ' km. Explain in 2 sentences why this is a good match.'
+        ) AS RATIONALE
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+        WHERE DECISION_ID = {{decision_id}}::VARCHAR;
