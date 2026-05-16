@@ -1125,28 +1125,49 @@ BEGIN
         FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, SYSDATE())
     WHERE JOB_ID = :P_JOB_ID;
 
-    LET original_wh_size VARCHAR := NULL;
+    -- Default the restore target to the steady-state size ('SMALL') so the
+    -- restore is ALWAYS a no-op-or-shrink, never a no-op leaving the warehouse
+    -- bumped. If the SHOW WAREHOUSES capture below succeeds with a "small"
+    -- size (XSMALL/SMALL/MEDIUM) we honour it; if it fails or returns a
+    -- bumped size (LARGE/X-LARGE/...) we treat that as drift from a previous
+    -- un-restored run and fall back to the steady-state default.
+    LET original_wh_size VARCHAR := 'SMALL';
+    LET did_bump BOOLEAN := FALSE;
     IF (hex_count > 5000) THEN
         BEGIN
             LET wh_name VARCHAR := CURRENT_WAREHOUSE();
             EXECUTE IMMEDIATE 'SHOW WAREHOUSES LIKE ''' || wh_name || '''';
             LET wh_rs RESULTSET := (SELECT "size" AS SZ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
             LET wh_c CURSOR FOR wh_rs;
-            FOR r IN wh_c DO original_wh_size := r.SZ; END FOR;
+            LET captured_sz VARCHAR := NULL;
+            FOR r IN wh_c DO captured_sz := r.SZ; END FOR;
+            -- Only honour the captured size if it is at or below the
+            -- steady-state band. Anything LARGE+ is treated as drift from a
+            -- prior un-restored run and replaced with the steady-state default.
+            IF (captured_sz IS NOT NULL
+                AND UPPER(captured_sz) IN ('X-SMALL','XSMALL','SMALL','MEDIUM'))
+            THEN
+                original_wh_size := captured_sz;
+            END IF;
             IF (hex_count > 25000) THEN
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''X-LARGE''';
             ELSE
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''LARGE''';
             END IF;
+            did_bump := TRUE;
         EXCEPTION WHEN OTHER THEN
-            original_wh_size := NULL;
+            -- Capture or bump failed. Leave original_wh_size at its default
+            -- ('SMALL') so any subsequent restore still runs and shrinks the
+            -- warehouse if it somehow got bumped. did_bump stays FALSE so we
+            -- only restore when we actually changed something.
+            NULL;
         END;
     END IF;
 
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE, :P_JOB_ID);
     EXCEPTION WHEN OTHER THEN
-        IF (original_wh_size IS NOT NULL) THEN
+        IF (did_bump) THEN
             BEGIN
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
             EXCEPTION WHEN OTHER THEN NULL;
@@ -1155,7 +1176,7 @@ BEGIN
         RAISE;
     END;
 
-    IF (original_wh_size IS NOT NULL) THEN
+    IF (did_bump) THEN
         BEGIN
             EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
         EXCEPTION WHEN OTHER THEN NULL;
