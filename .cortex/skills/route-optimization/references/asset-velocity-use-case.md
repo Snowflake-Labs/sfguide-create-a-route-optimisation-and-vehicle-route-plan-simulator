@@ -2,6 +2,8 @@
 
 A reusable Snowflake-native pattern for asset-heavy logistics operators. Turns the "ghost trailer" problem (owned assets idle so long they get forgotten while the network rents external capacity) into a real-time action engine driven entirely by SQL views, Cortex AI, and the bundled VROOM optimizer.
 
+> Note: the Asset Velocity demo dashboard is HGV-tuned via `VW_IDLE_TRAILERS` (`OPERATING_MODE='trucking'`). The underlying long-idle generator works for **any** vehicle type - configure it from Fleet Data Studio's *Long Idle Vehicles* section on any preset (HGV up to 7-day, car/ebike 1-2 day defaults). For a generic dashboard across vehicle types, mirror the views without the HGV filter.
+
 ## Business problem
 
 A measurable share of every owned/leased trailer fleet is idle for extended periods (>7 days is the canonical industry threshold). Status quo:

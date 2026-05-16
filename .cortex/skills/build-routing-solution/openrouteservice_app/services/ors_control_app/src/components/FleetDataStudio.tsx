@@ -781,10 +781,10 @@ export default function FleetDataStudio() {
                 </div>
               ))}
 
-              {editProfile === 'driving-hgv' && renderSection('ghost', 'Ghost Trailers (HGV)', (
+              {renderSection('ghost', 'Long Idle Vehicles', (
                 <div>
                   <div style={{ fontSize: 11, color: '#6E7681', marginBottom: 8, lineHeight: 1.5 }}>
-                    Marks a share of HGV vehicles as &quot;ghost trailers&quot; that sit idle at their home warehouse for several days. Set Probability to 0 to disable.
+                    Marks a share of vehicles as long-idle (parked at home for several days). Useful for ghost-trailer / off-rotation / dead-battery scenarios. Set Probability to 0 to disable.
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                     {renderField('Probability (0-1)', 'ghost_trailer.probability')}

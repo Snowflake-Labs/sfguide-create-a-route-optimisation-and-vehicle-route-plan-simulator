@@ -41,6 +41,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12 }, destination: { median_min: 2, sigma: 0.4, max_min: 8 }, idle: { median_min: 5, sigma: 0.5, max_min: 20 } },
       detour: { probability: 0.05, max_detour_factor: 1.4 },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
+      ghost_trailer: {
+        probability: 0.05,
+        start_day_min: 0,
+        start_day_max: 2,
+        duration_days_min: 1,
+        duration_days_max: 2,
+        ping_interval_min_sec: 120,
+        ping_interval_max_sec: 600,
+      },
     },
   },
   {
@@ -73,6 +82,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       delivery_sla: { target_minutes: 30, warning_minutes: 25 },
       detour: { probability: 0.03, max_detour_factor: 1.3 },
       poi_categories: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
+      ghost_trailer: {
+        probability: 0.08,
+        start_day_min: 0,
+        start_day_max: 3,
+        duration_days_min: 1,
+        duration_days_max: 1,
+        ping_interval_min_sec: 180,
+        ping_interval_max_sec: 600,
+      },
     },
   },
   {
