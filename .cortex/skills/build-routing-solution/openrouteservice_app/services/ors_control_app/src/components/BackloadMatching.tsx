@@ -4,13 +4,14 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, IconLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { PathStyleExtension } from '@deck.gl/extensions';
 import { useRegion } from '../hooks/useRegion';
 
 const BM_DB = 'FLEET_INTELLIGENCE';
 const BM_SCHEMA = 'BACKLOAD_MATCHING';
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
-const USE_MOCK = false;
+const EUR_PER_EMPTY_KM = 1.20;
 
 const ROUTE_COLORS: [number, number, number][] = [
   [41, 181, 232], [34, 197, 94], [245, 158, 11], [239, 68, 68],
@@ -49,96 +50,6 @@ interface Assignment {
   TRAILER_DROPOFF_LON: number; TRAILER_DROPOFF_LAT: number;
   ROUTE_GEOJSON?: any;
   EMPTY_GEOJSON?: any;
-}
-
-const MOCK_TRAILERS: Trailer[] = [
-  { TRAILER_ID:'TR-0001', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Copenhagen', HOME_LON:12.5655, HOME_LAT:55.6759, CURRENT_LOAD:'Furniture parts', DROPOFF_CITY:'Cologne',   DROPOFF_LON:6.9603, DROPOFF_LAT:50.9375, ETA_TS:'2026-05-16T18:00:00', ETA_MIN:120, STATUS:'IN_TRANSIT', HAZMAT_CERT:true,  MAX_PAYLOAD_KG:24000 },
-  { TRAILER_ID:'TR-0002', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Stockholm',  HOME_LON:18.0686, HOME_LAT:59.3293, CURRENT_LOAD:'Auto components', DROPOFF_CITY:'Frankfurt', DROPOFF_LON:8.6821, DROPOFF_LAT:50.1109, ETA_TS:'2026-05-16T17:30:00', ETA_MIN: 90, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:22000 },
-  { TRAILER_ID:'TR-0003', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Helsinki',   HOME_LON:24.9384, HOME_LAT:60.1699, CURRENT_LOAD:'Pharma pallets',  DROPOFF_CITY:'Munich',    DROPOFF_LON:11.5820,DROPOFF_LAT:48.1351, ETA_TS:'2026-05-16T19:15:00', ETA_MIN:195, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:18000 },
-  { TRAILER_ID:'TR-0004', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Copenhagen', HOME_LON:12.5655, HOME_LAT:55.6759, CURRENT_LOAD:'Frozen food',     DROPOFF_CITY:'Hamburg',   DROPOFF_LON:9.9937, DROPOFF_LAT:53.5511, ETA_TS:'2026-05-16T16:45:00', ETA_MIN: 45, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:20000 },
-  { TRAILER_ID:'TR-0005', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Oslo',       HOME_LON:10.7522, HOME_LAT:59.9139, CURRENT_LOAD:'Industrial machinery', DROPOFF_CITY:'Dortmund', DROPOFF_LON:7.4653, DROPOFF_LAT:51.5136, ETA_TS:'2026-05-16T18:30:00', ETA_MIN:150, STATUS:'IN_TRANSIT', HAZMAT_CERT:true,  MAX_PAYLOAD_KG:26000 },
-  { TRAILER_ID:'TR-0006', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Stockholm',  HOME_LON:18.0686, HOME_LAT:59.3293, CURRENT_LOAD:'Furniture parts', DROPOFF_CITY:'Berlin',    DROPOFF_LON:13.4050,DROPOFF_LAT:52.5200, ETA_TS:'2026-05-16T17:00:00', ETA_MIN: 60, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:24000 },
-  { TRAILER_ID:'TR-0007', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Copenhagen', HOME_LON:12.5655, HOME_LAT:55.6759, CURRENT_LOAD:'Auto components', DROPOFF_CITY:'Hannover',  DROPOFF_LON:9.7320, DROPOFF_LAT:52.3759, ETA_TS:'2026-05-16T18:15:00', ETA_MIN:135, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:22000 },
-  { TRAILER_ID:'TR-0008', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Helsinki',   HOME_LON:24.9384, HOME_LAT:60.1699, CURRENT_LOAD:'Frozen food',     DROPOFF_CITY:'Bremen',    DROPOFF_LON:8.8017, DROPOFF_LAT:53.0793, ETA_TS:'2026-05-16T17:45:00', ETA_MIN:105, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:20000 },
-  { TRAILER_ID:'TR-0009', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Oslo',       HOME_LON:10.7522, HOME_LAT:59.9139, CURRENT_LOAD:'Pharma pallets',  DROPOFF_CITY:'Stuttgart', DROPOFF_LON:9.1829, DROPOFF_LAT:48.7758, ETA_TS:'2026-05-16T19:30:00', ETA_MIN:210, STATUS:'IN_TRANSIT', HAZMAT_CERT:true,  MAX_PAYLOAD_KG:18000 },
-  { TRAILER_ID:'TR-0010', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Copenhagen', HOME_LON:12.5655, HOME_LAT:55.6759, CURRENT_LOAD:'Industrial machinery', DROPOFF_CITY:'Leipzig', DROPOFF_LON:12.3731,DROPOFF_LAT:51.3397, ETA_TS:'2026-05-16T18:00:00', ETA_MIN:120, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:26000 },
-  { TRAILER_ID:'TR-0011', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Stockholm',  HOME_LON:18.0686, HOME_LAT:59.3293, CURRENT_LOAD:'Furniture parts', DROPOFF_CITY:'Nuremberg', DROPOFF_LON:11.0767,DROPOFF_LAT:49.4521, ETA_TS:'2026-05-16T19:00:00', ETA_MIN:180, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:24000 },
-  { TRAILER_ID:'TR-0012', OPERATING_COUNTRY:'DE', HOME_DEPOT:'Copenhagen', HOME_LON:12.5655, HOME_LAT:55.6759, CURRENT_LOAD:'Auto components', DROPOFF_CITY:'Dresden',   DROPOFF_LON:13.7373,DROPOFF_LAT:51.0504, ETA_TS:'2026-05-16T18:45:00', ETA_MIN:165, STATUS:'IN_TRANSIT', HAZMAT_CERT:false, MAX_PAYLOAD_KG:22000 },
-];
-
-const DE_CITIES: { city: string; lon: number; lat: number }[] = [
-  { city:'Hamburg',   lon:9.9937,  lat:53.5511 },
-  { city:'Bremen',    lon:8.8017,  lat:53.0793 },
-  { city:'Berlin',    lon:13.4050, lat:52.5200 },
-  { city:'Hannover',  lon:9.7320,  lat:52.3759 },
-  { city:'Dortmund',  lon:7.4653,  lat:51.5136 },
-  { city:'Cologne',   lon:6.9603,  lat:50.9375 },
-  { city:'Frankfurt', lon:8.6821,  lat:50.1109 },
-  { city:'Leipzig',   lon:12.3731, lat:51.3397 },
-  { city:'Dresden',   lon:13.7373, lat:51.0504 },
-  { city:'Stuttgart', lon:9.1829,  lat:48.7758 },
-  { city:'Nuremberg', lon:11.0767, lat:49.4521 },
-  { city:'Munich',    lon:11.5820, lat:48.1351 },
-];
-
-function jitter(v: number, scale = 0.05): number { return v + (Math.random() - 0.5) * scale; }
-
-function buildMockInternal(): Volume[] {
-  const out: Volume[] = [];
-  const products = ['DHL Express parcels','B2B pallets','Automotive parts','Pharma cold-chain','Retail e-commerce'];
-  for (let i = 0; i < 18; i++) {
-    const p = DE_CITIES[i % DE_CITIES.length];
-    const d = DE_CITIES[(i * 7 + 3) % DE_CITIES.length];
-    if (p.city === d.city) continue;
-    const winStart = 60 + (i * 47) % 600;
-    out.push({
-      ID: `INT-${String(i + 1).padStart(5, '0')}`,
-      PICKUP_CITY: p.city,
-      PICKUP_LON: jitter(p.lon, 0.02), PICKUP_LAT: jitter(p.lat, 0.02),
-      DROPOFF_CITY: d.city,
-      DROPOFF_LON: jitter(d.lon, 0.02), DROPOFF_LAT: jitter(d.lat, 0.02),
-      PICKUP_FROM_TS: new Date(Date.now() + winStart * 60_000).toISOString(),
-      PICKUP_TO_TS: new Date(Date.now() + (winStart + 240) * 60_000).toISOString(),
-      WEIGHT_KG: 5000 + (i * 1100) % 18000,
-      PRODUCT: products[i % products.length],
-      HAZMAT: false,
-    });
-  }
-  return out;
-}
-
-function buildMockExternal(): Offer[] {
-  const out: Offer[] = [];
-  const sources = ['TIMOCOM','WTRANSNET','TELEROUTE','B2P'];
-  const products = ['Pallets (general)','Steel coils','Plastic granulate','Beverages','Furniture','Bulk paper'];
-  for (let i = 0; i < 30; i++) {
-    const p = DE_CITIES[(i * 5 + 1) % DE_CITIES.length];
-    const d = DE_CITIES[(i * 11 + 7) % DE_CITIES.length];
-    if (p.city === d.city) continue;
-    const src = sources[i % sources.length];
-    const prod = products[i % products.length];
-    const wt = 800 + (i * 691) % 24000;
-    const price = 400 + (i * 137) % 4000;
-    const winStart = 60 + (i * 73) % 1100;
-    const haz = i % 13 === 0;
-    out.push({
-      ID: '',
-      OFFER_ID: `OFF-${String(i + 1).padStart(6, '0')}`,
-      SOURCE: src,
-      PICKUP_CITY: p.city, PICKUP_COUNTRY: 'DE',
-      PICKUP_LON: jitter(p.lon, 0.04), PICKUP_LAT: jitter(p.lat, 0.04),
-      DROPOFF_CITY: d.city, DROPOFF_COUNTRY: 'DE',
-      DROPOFF_LON: jitter(d.lon, 0.04), DROPOFF_LAT: jitter(d.lat, 0.04),
-      PICKUP_FROM_TS: new Date(Date.now() + winStart * 60_000).toISOString(),
-      PICKUP_TO_TS: new Date(Date.now() + (winStart + 240) * 60_000).toISOString(),
-      WEIGHT_KG: wt,
-      PRODUCT: prod,
-      PRICE_EUR: price,
-      HAZMAT: haz,
-      LISTING_TEXT: `${src} - ${p.city} -> ${d.city} - ${wt} kg - ${prod} - EUR ${price}${haz ? ' - ADR' : ''}`,
-    });
-  }
-  return out;
 }
 
 async function sfQuery(sql: string, database = BM_DB, schema = BM_SCHEMA): Promise<any[]> {
@@ -207,9 +118,10 @@ export default function BackloadMatching() {
   // ORS service status + wake-up
   interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
   const requiredServices = useMemo(
-    () => ['VROOM_SERVICE', 'ROUTING_GATEWAY_SERVICE', 'ORS_SERVICE', `ORS_SERVICE_${(regionName || '').toUpperCase()}`],
+    () => ['VROOM_SERVICE', 'ROUTING_GATEWAY_SERVICE', `ORS_SERVICE_${(regionName || '').toUpperCase()}`],
     [regionName]
   );
+  const [orsProfile, setOrsProfile] = useState<string>('driving-car');
   const [svcStatus, setSvcStatus] = useState<SvcStatus[]>([]);
   const [wakingUp, setWakingUp] = useState(false);
 
@@ -280,34 +192,26 @@ export default function BackloadMatching() {
   }, [center.lng, center.lat, zoom]);
 
   const refetch = useCallback(async () => {
-    if (USE_MOCK) {
-      setTrailers(MOCK_TRAILERS);
-      setInternal(buildMockInternal());
-      setExternal(buildMockExternal());
-      setSeedHint('Mock data mode (USE_MOCK=true). Run seed-data.sql and flip the toggle to read live tables.');
-      return;
-    }
-    const [tRows, iRows, eRows, cRows] = await Promise.all([
+    const [tRows, iRows, eRows, cRows, profRows] = await Promise.all([
       sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
       sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
       sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
       sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
+      sfQuery(`SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS='COMPLETE' AND REGION='${regionName?.replace(/'/g, "''") || ''}' ORDER BY COMPLETED_AT DESC LIMIT 1`, 'OPENROUTESERVICE_APP', 'CORE'),
     ]);
     setTrailers(tRows as Trailer[]);
     setInternal(iRows as Volume[]);
     setExternal(eRows as Offer[]);
     const cfg: Record<string, any> = (cRows[0] as any) || {};
-    if (cfg.INTERNAL_PRIORITY != null) setInternalPriority(Number(cfg.INTERNAL_PRIORITY));
-    if (cfg.EXTERNAL_PRIORITY != null) setExternalPriority(Number(cfg.EXTERNAL_PRIORITY));
-    if (cfg.TIME_WINDOW_TOLERANCE_HRS != null) setWindowToleranceHrs(Number(cfg.TIME_WINDOW_TOLERANCE_HRS));
-    if (cfg.MAX_EMPTY_KM != null) setMaxEmptyKm(Number(cfg.MAX_EMPTY_KM));
     if (cfg.VEHICLE_TYPE != null) setVehicleType(String(cfg.VEHICLE_TYPE));
+    const provProfile = (profRows[0] as any)?.PROFILES;
+    if (provProfile) setOrsProfile(provProfile.split(',')[0].trim());
     if (!tRows.length || !iRows.length || !eRows.length) {
       setSeedHint('Tables are empty for this region. Run .cortex/skills/backload-matching/references/backfill-freight-offers.sql, then refresh.');
     } else {
       setSeedHint(null);
     }
-  }, []);
+  }, [regionName]);
 
   // Option B: app region picker is the source of truth.
   // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG.REGION then refetch.
@@ -339,7 +243,7 @@ export default function BackloadMatching() {
       await wakeUp();
     }
 
-    const profile = profileForVehicleType(vehicleType);
+    const profile = orsProfile || profileForVehicleType(vehicleType);
     const trailerById = new Map<number, Trailer>();
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
@@ -424,7 +328,7 @@ export default function BackloadMatching() {
         TRAILER_DROPOFF_LON: t.DROPOFF_LON, TRAILER_DROPOFF_LAT: t.DROPOFF_LAT,
         HOME_LON: t.HOME_LON, HOME_LAT: t.HOME_LAT,
         EMPTY_KM: empty, LOADED_KM: loaded,
-        SCORE: Number(r.COST) || 0,
+        SCORE: Number(r.DURATION) || 0,
         PRODUCT: row.PRODUCT,
         PICKUP_CITY: row.PICKUP_CITY,
         PROPOSAL_DROPOFF_CITY: row.DROPOFF_CITY,
@@ -446,8 +350,7 @@ export default function BackloadMatching() {
       const key = `${a.TRAILER_ID}|${a.OFFER_ID}`;
       const cached = emptyLegCacheRef.current.get(key);
       if (cached) { a.EMPTY_GEOJSON = cached; return; }
-      const dirProfile = profileForVehicleType(vehicleType);
-      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${dirProfile}', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT), '${regionName}'))`;
+      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${profile}', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT), '${regionName}'))`;
       const dirRows = await sfQuery(dirSql, 'OPENROUTESERVICE_APP', 'CORE');
       try {
         const geo = dirRows[0]?.GEOJSON ? (typeof dirRows[0].GEOJSON === 'string' ? JSON.parse(dirRows[0].GEOJSON) : dirRows[0].GEOJSON) : null;
@@ -456,7 +359,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, fetchSvcStatus, wakeUp]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, fetchSvcStatus, wakeUp]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -495,7 +398,7 @@ export default function BackloadMatching() {
 
   const [auditRows, setAuditRows] = useState<any[]>([]);
   const loadAudit = useCallback(async () => {
-    const sql = `SELECT TO_VARCHAR(DECIDED_AT, 'YYYY-MM-DD HH24:MI') AS DECIDED_AT, TRAILER_ID, OFFER_ID, SOURCE, ROUND(EMPTY_KM,1) AS EMPTY_KM, ROUND(EMPTY_KM * (SELECT VALUE::FLOAT FROM ${BM_DB}.${BM_SCHEMA}.CONFIG WHERE KEY='EUR_PER_EMPTY_KM'), 0) AS EUR_RECLAIMED FROM ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS ORDER BY DECIDED_AT DESC LIMIT 25`;
+    const sql = `SELECT TO_VARCHAR(DECIDED_AT, 'YYYY-MM-DD HH24:MI') AS DECIDED_AT, TRAILER_ID, OFFER_ID, SOURCE, ROUND(EMPTY_KM,1) AS EMPTY_KM, ROUND(EMPTY_KM * ${EUR_PER_EMPTY_KM}, 0) AS EUR_RECLAIMED FROM ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS ORDER BY DECIDED_AT DESC LIMIT 25`;
     const rows = await sfQuery(sql);
     setAuditRows(rows);
   }, []);
@@ -548,6 +451,7 @@ export default function BackloadMatching() {
         id: `empty-${i}`,
         data: (a.EMPTY_GEOJSON ? a.EMPTY_GEOJSON : { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.TRAILER_DROPOFF_LON,a.TRAILER_DROPOFF_LAT],[a.PICKUP_LON,a.PICKUP_LAT]] } }) as any,
         stroked: true, getLineColor: [128, 128, 128, 180], getDashArray: [4, 4], lineWidthMinPixels: 2,
+        extensions: [new PathStyleExtension({ dash: true })],
       }));
     });
     if (selectedTrailer) {
@@ -708,7 +612,7 @@ export default function BackloadMatching() {
 
       {selected && (
         <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-secondary)' }}>
-          Selected trailer: <b>{selected.TRAILER_ID}</b> - score {selected.SCORE.toFixed(0)} - empty {Math.round(selected.EMPTY_KM)} km
+          Selected trailer: <b>{selected.TRAILER_ID}</b> - duration {selected.SCORE.toFixed(0)}s - empty {Math.round(selected.EMPTY_KM)} km
         </div>
       )}
 
