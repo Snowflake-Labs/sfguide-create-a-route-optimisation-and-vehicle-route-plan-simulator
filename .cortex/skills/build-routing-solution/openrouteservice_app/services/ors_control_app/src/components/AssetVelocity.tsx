@@ -69,7 +69,7 @@ interface Terminal {
 
 export default function AssetVelocity() {
   const { regionName, center, zoom } = useRegion();
-  const [idleHourThreshold, setIdleHourThreshold] = useState(1);
+  const [idleHourThreshold, setIdleHourThreshold] = useState(72);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [terminals, setTerminals] = useState<Terminal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -318,7 +318,7 @@ export default function AssetVelocity() {
         <div style={{ minWidth: 240 }}>
           <label className="range-label">Idle threshold: {idleHourThreshold}h ({(idleHourThreshold / 24).toFixed(2)}d)</label>
           <input type="range" min={0.25} max={336} step={0.25} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Production target: 168h (7d). Demo data spans only 7d so use a smaller threshold to populate.</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 72h (3d) surfaces ghost trailers. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
         </div>
         <button className="btn-primary" onClick={loadData} disabled={loading} style={{ fontSize: 12 }}>{loading ? 'Loading...' : 'Refresh'}</button>
         <button className="btn-primary" onClick={optimizeRepositioning} disabled={solving || !trailers.length || !terminals.length} style={{ fontSize: 12, background: '#0DB048' }}>
