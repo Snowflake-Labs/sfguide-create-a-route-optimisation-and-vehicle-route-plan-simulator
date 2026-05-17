@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, IconLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { useRegion } from '../hooks/useRegion';
 
 const BM_DB = 'FLEET_INTELLIGENCE';
 const BM_SCHEMA = 'BACKLOAD_MATCHING';
@@ -169,7 +170,15 @@ function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+function regionToCountry(regionName: string): string | null {
+  const r = regionName.toLowerCase();
+  if (r.includes('california') || r.includes('united') || r.includes('america')) return 'US';
+  if (r.includes('germany')) return 'DE';
+  return null;
+}
+
 export default function BackloadMatching() {
+  const { regionName, center, zoom } = useRegion();
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [internal, setInternal] = useState<Volume[]>([]);
   const [external, setExternal] = useState<Offer[]>([]);
@@ -189,8 +198,9 @@ export default function BackloadMatching() {
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [seedHint, setSeedHint] = useState<string | null>(null);
+  const [solverLog, setSolverLog] = useState<string | null>(null);
 
-  const [viewState, setViewState] = useState({ longitude: 10.5, latitude: 51.0, zoom: 5.5, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
   const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
@@ -207,6 +217,10 @@ export default function BackloadMatching() {
   }, []);
 
   useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
+
+  useEffect(() => {
     (async () => {
       if (USE_MOCK) {
         setTrailers(MOCK_TRAILERS);
@@ -215,8 +229,10 @@ export default function BackloadMatching() {
         setSeedHint('Mock data mode (USE_MOCK=true). Run seed-data.sql and flip the toggle to read live tables.');
         return;
       }
+      const countryCode = regionToCountry(regionName);
+      const countryFilter = countryCode ? ` WHERE OPERATING_COUNTRY = '${countryCode}'` : '';
       const [tRows, iRows, eRows, cRows] = await Promise.all([
-        sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
+        sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS${countryFilter} LIMIT 100`),
         sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
         sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
         sfQuery(`SELECT KEY, VALUE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
@@ -238,14 +254,12 @@ export default function BackloadMatching() {
 
   const solve = useCallback(async () => {
     if (!trailers.length) return;
-    setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null);
+    setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null);
 
-    const nowSec = Math.floor(Date.now() / 1000);
     const trailerById = new Map<number, Trailer>();
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
-      const start = nowSec + Math.max(0, t.ETA_MIN || 0) * 60;
       return {
         id,
         profile: 'driving-hgv',
@@ -253,7 +267,6 @@ export default function BackloadMatching() {
         end:   [Number(t.HOME_LON),    Number(t.HOME_LAT)],
         capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
-        time_window: [start, start + 12 * 3600],
       };
     });
 
@@ -264,37 +277,32 @@ export default function BackloadMatching() {
     for (const v of internal) {
       const id = nextId++;
       offerById.set(id, { kind: 'INTERNAL', row: v });
-      const ws = Math.floor(new Date(v.PICKUP_FROM_TS).getTime() / 1000);
-      const we = Math.floor(new Date(v.PICKUP_TO_TS).getTime()   / 1000);
       vrpJobs.push({
         id,
         location: [Number(v.PICKUP_LON), Number(v.PICKUP_LAT)],
         service: 1800,
-        amount: [Number(v.WEIGHT_KG)],
+        amount: [Math.min(Number(v.WEIGHT_KG), 24000)],
         skills: v.HAZMAT ? [1, 3] : [1],
         priority: internalPriority,
-        time_windows: [[ws - windowToleranceHrs * 3600, we + windowToleranceHrs * 3600]],
       });
     }
     for (const o of external) {
       const id = nextId++;
       offerById.set(id, { kind: o.SOURCE, row: o });
-      const ws = Math.floor(new Date(o.PICKUP_FROM_TS).getTime() / 1000);
-      const we = Math.floor(new Date(o.PICKUP_TO_TS).getTime()   / 1000);
       vrpJobs.push({
         id,
         location: [Number(o.PICKUP_LON), Number(o.PICKUP_LAT)],
         service: 1800,
-        amount: [Number(o.WEIGHT_KG)],
+        amount: [Math.min(Number(o.WEIGHT_KG), 24000)],
         skills: o.HAZMAT ? [2, 3] : [2],
         priority: externalPriority,
-        time_windows: [[ws - windowToleranceHrs * 3600, we + windowToleranceHrs * 3600]],
       });
     }
 
     const challenge = { vehicles: vrpVehicles, jobs: vrpJobs, options: { g: true } };
-    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(challenge).replace(/'/g, "''")}')))`;
-    console.log('[BM] OPTIMIZATION challenge: vehicles=', vrpVehicles.length, 'jobs=', vrpJobs.length);
+    const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
+    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
+    console.log('[BM] OPTIMIZATION challenge: vehicles=', vrpVehicles.length, 'jobs=', vrpJobs.length, 'region=', regionName);
     const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
 
     const newAssignments: Assignment[] = [];
@@ -341,13 +349,13 @@ export default function BackloadMatching() {
     }
     setAssignments(newAssignments);
     setUnassigned(newUnassigned);
+    setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpJobs.length} jobs (region=${regionName}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned.`);
 
-    // Phase 4: fire DIRECTIONS('driving-hgv') for each empty leg with cache.
     Promise.all(newAssignments.map(async (a) => {
       const key = `${a.TRAILER_ID}|${a.OFFER_ID}`;
       const cached = emptyLegCacheRef.current.get(key);
       if (cached) { a.EMPTY_GEOJSON = cached; return; }
-      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('driving-hgv', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT)))`;
+      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('driving-hgv', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT), '${regionName}'))`;
       const dirRows = await sfQuery(dirSql, 'OPENROUTESERVICE_APP', 'CORE');
       try {
         const geo = dirRows[0]?.GEOJSON ? (typeof dirRows[0].GEOJSON === 'string' ? JSON.parse(dirRows[0].GEOJSON) : dirRows[0].GEOJSON) : null;
@@ -356,7 +364,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -520,6 +528,11 @@ export default function BackloadMatching() {
 
       {confirmMsg && (
         <div className="info-box success" style={{ marginBottom: 12 }}>{confirmMsg}</div>
+      )}
+      {solverLog && (
+        <div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary)' }}>
+          {solverLog}
+        </div>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 12 }}>

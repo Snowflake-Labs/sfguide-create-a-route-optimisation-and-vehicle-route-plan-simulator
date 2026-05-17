@@ -102,3 +102,11 @@ The whole skill is **vendor-neutral by construction**. To onboard another carrie
 4. Adjust `CONFIG.HOME_LAT/LON` to the customer's home depot anchor.
 
 The page, OPTIMIZATION call, AISQL notebook, audit view, and Cortex agent definition are unchanged.
+
+## 9. Known issue: OPTIMIZATION + Germany region returns 0 rows
+
+In testing (May 2026), `OPENROUTESERVICE_APP.CORE.OPTIMIZATION` returns 0 rows for any payload containing Germany-region coordinates, even though `DIRECTIONS` with the same coordinates and `'Germany'` region works perfectly. The issue is server-side in the VROOM -> ORS_SERVICE_GERMANY routing path.
+
+USA coordinates (any profile, with or without explicit region) work correctly.
+
+The demo is shipped with US/California data to work around this. Once the Germany OPTIMIZATION path is fixed in `build-routing-solution`, swap the seed to German cities by editing `tools/gen_demo_data.py` and re-running.

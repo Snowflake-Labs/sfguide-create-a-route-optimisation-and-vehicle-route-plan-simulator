@@ -15,34 +15,35 @@ import sys
 
 random.seed(42)
 
-# Cities inside the Germany ORS bbox (5.86E..15.05E, 47.27N..55.15N)
+# Cities inside the California / USA-West ORS region
 CITIES = [
-    ('Hamburg',    9.9937,  53.5511),
-    ('Bremen',     8.8017,  53.0793),
-    ('Berlin',    13.4050,  52.5200),
-    ('Hannover',   9.7320,  52.3759),
-    ('Dortmund',   7.4653,  51.5136),
-    ('Cologne',    6.9603,  50.9375),
-    ('Frankfurt',  8.6821,  50.1109),
-    ('Leipzig',   12.3731,  51.3397),
-    ('Dresden',   13.7373,  51.0504),
-    ('Stuttgart',  9.1829,  48.7758),
-    ('Nuremberg', 11.0767,  49.4521),
-    ('Munich',    11.5820,  48.1351),
+    ('Los Angeles',   -118.2437, 34.0522),
+    ('San Francisco', -122.4194, 37.7749),
+    ('San Diego',     -117.1611, 32.7157),
+    ('Sacramento',    -121.4944, 38.5816),
+    ('San Jose',      -121.8863, 37.3382),
+    ('Fresno',        -119.7871, 36.7378),
+    ('Long Beach',    -118.1937, 33.7701),
+    ('Oakland',       -122.2712, 37.8044),
+    ('Bakersfield',   -119.0187, 35.3733),
+    ('Riverside',     -117.3961, 33.9533),
+    ('Stockton',      -121.2908, 37.9577),
+    ('Anaheim',       -117.9145, 33.8366),
 ]
 
-# Nordic home depots
+# West-Coast home depots (vehicle end points - direction-to-home bias)
 HOMES = [
-    ('Copenhagen', 12.5655, 55.6759),
-    ('Stockholm',  18.0686, 59.3293),
-    ('Oslo',       10.7522, 59.9139),
-    ('Helsinki',   24.9384, 60.1699),
+    ('Seattle',    -122.3321, 47.6062),
+    ('Portland',   -122.6765, 45.5152),
+    ('Las Vegas',  -115.1398, 36.1699),
+    ('Phoenix',    -112.0740, 33.4484),
 ]
 
+COUNTRY = 'US'
 LOADS = ['Furniture parts', 'Auto components', 'Pharma pallets', 'Frozen food', 'Industrial machinery']
-PRODUCTS_INTERNAL = ['DHL Express parcels', 'B2B pallets', 'Automotive parts', 'Pharma cold-chain', 'Retail e-commerce']
+PRODUCTS_INTERNAL = ['FedEx parcels', 'B2B pallets', 'Automotive parts', 'Pharma cold-chain', 'Retail e-commerce']
 PRODUCTS_EXTERNAL = ['Pallets (general)', 'Steel coils', 'Plastic granulate', 'Beverages', 'Furniture', 'Bulk paper']
-SOURCES = ['TIMOCOM', 'WTRANSNET', 'TELEROUTE', 'B2P']
+SOURCES = ['DAT', 'TRUCKSTOP', 'CONVOY', 'UBER_FREIGHT']
 
 
 def jitter(v, scale=0.04):
@@ -106,7 +107,8 @@ INSERT INTO TRAILERS VALUES"""]
         haz = random.random() < 0.4
         cap = random.choice([18000, 20000, 22000, 24000, 26000])
         status = 'IN_TRANSIT' if eta_min < 240 else 'STAGED'
-        row = "  ({tid}, 'DE', {h0}, {h1:.4f}, {h2:.4f}, {l}, {c0}, {c1:.4f}, {c2:.4f}, {eta}, {st}, {hz}, {cap})".format(
+        row = "  ({tid}, '{cty}', {h0}, {h1:.4f}, {h2:.4f}, {l}, {c0}, {c1:.4f}, {c2:.4f}, {eta}, {st}, {hz}, {cap})".format(
+            cty=COUNTRY,
             tid=sql_str(f'TR-{i+1:04d}'),
             h0=sql_str(h[0]), h1=h[1], h2=h[2],
             l=sql_str(load),
@@ -208,7 +210,8 @@ INSERT INTO EXTERNAL_OFFERS VALUES"""]
         win_start = random.randint(60, 1200)
         win_len = random.randint(60, 480)
         listing = f"{src} {p[0]} -> {d[0]} {wt} kg {prod} EUR {price}{' ADR' if haz else ''}"
-        row = "  ({oid}, {src}, 'DE', 'DE', {p0}, {p1:.4f}, {p2:.4f}, {d0}, {d1:.4f}, {d2:.4f}, {ws}, {we}, {w}, {pr}, {pc}, {hz}, {lt})".format(
+        row = "  ({oid}, {src}, '{cty}', '{cty}', {p0}, {p1:.4f}, {p2:.4f}, {d0}, {d1:.4f}, {d2:.4f}, {ws}, {we}, {w}, {pr}, {pc}, {hz}, {lt})".format(
+            cty=COUNTRY,
             oid=sql_str(f'OFF-{n:06d}'), src=sql_str(src),
             p0=sql_str(p[0]), p1=jitter(p[1], 0.04), p2=jitter(p[2], 0.04),
             d0=sql_str(d[0]), d1=jitter(d[1], 0.04), d2=jitter(d[2], 0.04),
