@@ -33,9 +33,9 @@ WHERE TS > DATEADD(hour, -24, CURRENT_TIMESTAMP())
 QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1;
 ```
 
-## 3. Scheduled rescan task (~5-min cadence)
+## 3. Scheduled rescan task (~5-min cadence) - future enhancement
 
-A Snowflake TASK calls the solver every 5 minutes and snapshots the plan. Lets dispatchers see proposals refreshed automatically.
+A natural next step is a Snowflake TASK that re-solves backloads on a schedule and snapshots the plan, letting dispatchers see refreshed proposals without clicking Solve. Sketch:
 
 ```sql
 CREATE OR REPLACE TABLE BACKLOAD_PLAN_HISTORY (
@@ -46,17 +46,27 @@ CREATE OR REPLACE TABLE BACKLOAD_PLAN_HISTORY (
   DURATION NUMBER
 );
 
+CREATE OR REPLACE PROCEDURE SP_SOLVE_REGION_BACKLOAD(P_REGION VARCHAR, P_MAX_VEHICLES NUMBER)
+  RETURNS TABLE(VEHICLE NUMBER, DURATION NUMBER, STEPS VARIANT, GEOJSON VARCHAR)
+  LANGUAGE SQL
+AS $$
+  -- Build VROOM challenge from VW_TRAILERS + VW_INTERNAL_VOLUMES + VW_EXTERNAL_OFFERS
+  -- Call OPENROUTESERVICE_APP.CORE.OPTIMIZATION
+  -- Return the assignment rows
+$$;
+
 CREATE OR REPLACE TASK TASK_BACKLOAD_RESCAN
   WAREHOUSE = ROUTING_ANALYTICS
   SCHEDULE = '5 MINUTE'
-  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching",...}'
 AS
 INSERT INTO BACKLOAD_PLAN_HISTORY (REGION, VEHICLE, STEPS, DURATION)
-SELECT 'Germany', VEHICLE, STEPS, DURATION
-FROM TABLE(SP_SOLVE_REGION_BACKLOAD('Germany', 30));
+SELECT 'California', VEHICLE, STEPS, DURATION
+FROM TABLE(SP_SOLVE_REGION_BACKLOAD('California', 30));
 
 ALTER TASK TASK_BACKLOAD_RESCAN RESUME;
 ```
+
+Not shipped because the React component already builds the VROOM challenge inline; a stored proc + task adds value only when the app needs background snapshots for an audit dashboard or alerting trigger. Wire it in once the customer requests scheduled refresh.
 
 ## 4. Cortex Agent natural-language wrapper
 

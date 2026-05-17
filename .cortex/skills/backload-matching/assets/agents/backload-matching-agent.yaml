@@ -1,67 +1,90 @@
 name: BACKLOAD_MATCHING_AGENT
 comment: '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"agent"}}'
 description: |
-  A Cortex Agent for the Backload Matching Engine. Wraps the SP_SOLVE_REGION_BACKLOAD
-  procedure and the audit views. Lets dispatchers ask in natural language:
-    - "Solve backloads for Germany now."
+  A Cortex Agent for the Backload Matching Engine. Reads from the projection
+  views over SYNTHETIC_DATASETS.UNIFIED.* (filtered by BACKLOAD_MATCHING.CONFIG)
+  and the audit table. Lets dispatchers ask in natural language:
+    - "How many trailers are idle right now?"
+    - "Show me the 10 shortest empty-leg matches for the active region."
     - "How many EUR did we reclaim today?"
-    - "Show idle trailers in NRW with no assignment."
-    - "Why did trailer TR-0007 get assigned offer OFF-000005?"
+    - "Why was offer OFF-000005 a good choice for trailer TR-0007?"
+
+  To compute a fresh plan, the dispatcher uses the React UI's "Solve Backloads"
+  button (which calls OPENROUTESERVICE_APP.CORE.OPTIMIZATION inline). This agent
+  only inspects existing data and answers questions.
 
 instructions: |
-  You are a fleet dispatcher assistant for DHL Freight NTBO.
-  Use SP_SOLVE_REGION_BACKLOAD to compute new plans. Use VW_BACKLOAD_CANDIDATES to
-  inspect candidates without committing. Use PROPOSAL_DECISIONS to look up history.
-  Always cite empty km saved and direction-to-home when justifying a match.
+  You are a fleet dispatcher assistant. Use list_idle_trailers, list_offers,
+  list_internal_volumes, savings_report, and explain_decision to answer
+  questions. The active region/vehicle_type is in BACKLOAD_MATCHING.CONFIG and
+  filters every view automatically. Always cite empty-km or EUR-saved figures
+  when justifying a match.
 
 orchestration:
   model: claude-sonnet-4-5
 
 tools:
   - tool_spec:
-      name: solve_backload
+      name: list_idle_trailers
       type: generic
-      description: Run the OPTIMIZATION solver for a given region. Returns ranked assignments.
+      description: List idle-bound trailers for the active preset (region + vehicle_type from CONFIG).
       input_schema:
         type: object
         properties:
-          region:
-            type: string
-            description: Provisioned ORS region (e.g. Germany, California, UnitedStatesOfAmerica).
-          max_vehicles:
+          limit:
             type: number
-            description: Cap of trailers per solve (default 30).
-        required: [region]
+            description: Max rows to return (default 30).
     sql:
       template: |
-        SELECT * FROM TABLE(FLEET_INTELLIGENCE.BACKLOAD_MATCHING.SP_SOLVE_REGION_BACKLOAD(
-          {{region}}::VARCHAR,
-          {{max_vehicles | default(30)}}::NUMBER
-        ));
+        SELECT TRAILER_ID, HOME_DEPOT, DROPOFF_CITY,
+               ROUND(DROPOFF_LON, 4) AS DROPOFF_LON, ROUND(DROPOFF_LAT, 4) AS DROPOFF_LAT,
+               STATUS, MAX_PAYLOAD_KG, ETA_TS
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS
+        ORDER BY ETA_TS NULLS LAST
+        LIMIT {{limit | default(30)}};
 
   - tool_spec:
-      name: list_candidates
+      name: list_internal_volumes
       type: generic
-      description: List candidate trailer<->offer pairs that satisfy MAX_EMPTY_KM, capacity, ADR.
+      description: List internal waiting volumes for the active preset.
       input_schema:
         type: object
         properties:
-          trailer_id:
-            type: string
-        required: []
+          limit:
+            type: number
+            description: Max rows to return (default 50).
     sql:
       template: |
-        SELECT TRAILER_ID, SOURCE, OFFER_ID, PICKUP_CITY, PROPOSAL_DROPOFF_CITY,
-               EMPTY_KM, LOADED_KM, WEIGHT_KG, PRODUCT
-        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_BACKLOAD_CANDIDATES
-        {% if trailer_id %}WHERE TRAILER_ID = {{trailer_id}}::VARCHAR{% endif %}
-        ORDER BY EMPTY_KM
-        LIMIT 50;
+        SELECT ID, PICKUP_CITY, DROPOFF_CITY, WEIGHT_KG, PRODUCT, PICKUP_FROM_TS, PICKUP_TO_TS
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
+        ORDER BY PICKUP_FROM_TS
+        LIMIT {{limit | default(50)}};
+
+  - tool_spec:
+      name: list_offers
+      type: generic
+      description: List external freight-exchange offers for the active preset, optionally filtered by source.
+      input_schema:
+        type: object
+        properties:
+          source:
+            type: string
+            description: Optional source label (DAT, TRUCKSTOP, CONVOY, UBER_FREIGHT, TIMOCOM, WTRANSNET, TELEROUTE, B2P).
+          limit:
+            type: number
+            description: Max rows to return (default 50).
+    sql:
+      template: |
+        SELECT OFFER_ID, SOURCE, PICKUP_CITY, DROPOFF_CITY, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT
+        FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+        {% if source %}WHERE SOURCE = {{source}}::VARCHAR{% endif %}
+        ORDER BY PICKUP_FROM_TS
+        LIMIT {{limit | default(50)}};
 
   - tool_spec:
       name: savings_report
       type: generic
-      description: Daily EUR reclaimed and assignment count.
+      description: Daily empty-km saved and EUR reclaimed from PROPOSAL_DECISIONS.
       input_schema:
         type: object
         properties:
@@ -73,7 +96,7 @@ tools:
         SELECT DATE_TRUNC('day', DECIDED_AT) AS DAY,
                COUNT(*) AS ASSIGNMENTS,
                ROUND(SUM(EMPTY_KM), 1) AS TOTAL_EMPTY_KM,
-               ROUND(SUM(EMPTY_KM * (SELECT VALUE::FLOAT FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG WHERE KEY='EUR_PER_EMPTY_KM')), 0) AS EUR_RECLAIMED
+               ROUND(SUM(EMPTY_KM * 1.20), 0) AS EUR_RECLAIMED
         FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
         WHERE DECIDED_AT > DATEADD(day, -{{n_days | default(7)}}, CURRENT_TIMESTAMP())
         GROUP BY 1 ORDER BY 1 DESC;
