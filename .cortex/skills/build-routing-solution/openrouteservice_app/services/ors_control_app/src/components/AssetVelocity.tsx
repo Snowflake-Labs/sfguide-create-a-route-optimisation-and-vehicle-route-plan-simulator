@@ -81,6 +81,7 @@ export default function AssetVelocity() {
   const [vrpResult, setVrpResult] = useState<any>(null);
   const [sortBy, setSortBy] = useState<keyof Trailer>('COST_OF_IDLENESS_USD');
   const [viewState, setViewState] = useState({ longitude: center.lng || -122.4194, latitude: center.lat || 37.7749, zoom: zoom || 11, pitch: 0, bearing: 0 });
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +107,7 @@ export default function AssetVelocity() {
     setRoutePaths([]);
     setVrpResult(null);
     setRationale(null);
+    setSelectedVehicleId(null);
   }, [center.lng, center.lat, zoom, regionName]);
 
   const loadData = useCallback(async () => {
@@ -164,6 +166,16 @@ export default function AssetVelocity() {
       .sort((a, b) => (a as any)._d - (b as any)._d)
       .slice(0, n);
   }, [terminals]);
+
+  const focusTrailer = useCallback((tr: Trailer) => {
+    setSelectedVehicleId(tr.VEHICLE_ID);
+    const lng = Number(tr.LAST_LNG);
+    const lat = Number(tr.LAST_LAT);
+    if (Number.isFinite(lng) && Number.isFinite(lat)) {
+      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: 14 }));
+      mapContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
 
   const generateRationale = useCallback(async (tr: Trailer) => {
     setRationaleLoading(true);
@@ -252,9 +264,10 @@ export default function AssetVelocity() {
         data: trailers,
         getPosition: (d: any) => [Number(d.LAST_LNG), Number(d.LAT) || Number(d.LAST_LAT)],
         getFillColor: (d: any) => [...(SEVERITY_COLOR[d.IDLE_SEVERITY] || [220, 38, 38]), 200] as any,
-        getLineColor: [255, 255, 255, 240],
+        getLineColor: (d: any) => d.VEHICLE_ID === selectedVehicleId ? [41, 181, 232, 255] : [255, 255, 255, 240],
         stroked: true,
         lineWidthMinPixels: 1,
+        getLineWidth: (d: any) => d.VEHICLE_ID === selectedVehicleId ? 4 : 1,
         getRadius: (d: any) => 60 + Math.min(Number(d.IDLE_HOURS) * 8, 240),
         radiusMinPixels: 5,
         radiusMaxPixels: 26,
@@ -272,7 +285,7 @@ export default function AssetVelocity() {
       }));
     });
     return result;
-  }, [terminals, trailers, routePaths]);
+  }, [terminals, trailers, routePaths, selectedVehicleId]);
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
@@ -380,7 +393,7 @@ export default function AssetVelocity() {
               {sortedTrailers.map(tr => {
                 const sev = SEVERITY_COLOR[tr.IDLE_SEVERITY] || [128, 128, 128];
                 return (
-                  <tr key={tr.VEHICLE_ID} style={{ borderTop: '1px solid var(--border)' }}>
+                  <tr key={tr.VEHICLE_ID} onClick={() => focusTrailer(tr)} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer', background: tr.VEHICLE_ID === selectedVehicleId ? 'rgba(41,181,232,0.10)' : 'transparent' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{tr.VEHICLE_ID}</td>
                     <td style={{ padding: '6px 8px' }}>{tr.LAST_LOCATION_NAME} <span style={{ color: 'var(--text-secondary)', fontSize: 10 }}>({tr.LAST_LOCATION_TYPE})</span></td>
                     <td style={{ padding: '6px 8px' }}>{Number(tr.IDLE_HOURS).toFixed(1)}h / {Number(tr.IDLE_DAYS).toFixed(2)}d</td>
@@ -390,7 +403,7 @@ export default function AssetVelocity() {
                     <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{tr.ASSIGNED_DISPATCHER}</td>
                     <td style={{ padding: '6px 8px', textAlign: 'right' }}>${Number(tr.COST_OF_IDLENESS_USD).toFixed(0)}</td>
                     <td style={{ padding: '6px 8px' }}>
-                      <button onClick={() => generateRationale(tr)} disabled={rationaleLoading} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer' }}>AI Rationale</button>
+                      <button onClick={(e) => { e.stopPropagation(); generateRationale(tr); }} disabled={rationaleLoading} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer' }}>AI Rationale</button>
                     </td>
                   </tr>
                 );
