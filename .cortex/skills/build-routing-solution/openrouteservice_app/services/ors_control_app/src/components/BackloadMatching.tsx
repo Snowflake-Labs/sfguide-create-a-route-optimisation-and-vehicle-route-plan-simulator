@@ -170,11 +170,22 @@ function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+function profileForVehicleType(vt: string): string {
+  switch ((vt || '').toLowerCase()) {
+    case 'ebike': case 'bicycle': case 'bike': return 'cycling-electric';
+    case 'car':                                return 'driving-car';
+    case 'hgv': case 'truck':                  return 'driving-hgv';
+    default:                                   return 'driving-hgv';
+  }
+}
+
 export default function BackloadMatching() {
   const { regionName, center, zoom } = useRegion();
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [internal, setInternal] = useState<Volume[]>([]);
   const [external, setExternal] = useState<Offer[]>([]);
+  const [vehicleType, setVehicleType] = useState<string>('hgv');
+  const [solveError, setSolveError] = useState<string | null>(null);
 
   const [internalPriority, setInternalPriority] = useState(100);
   const [externalPriority, setExternalPriority] = useState(10);
@@ -268,39 +279,57 @@ export default function BackloadMatching() {
     setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
   }, [center.lng, center.lat, zoom]);
 
-  useEffect(() => {
-    (async () => {
-      if (USE_MOCK) {
-        setTrailers(MOCK_TRAILERS);
-        setInternal(buildMockInternal());
-        setExternal(buildMockExternal());
-        setSeedHint('Mock data mode (USE_MOCK=true). Run seed-data.sql and flip the toggle to read live tables.');
-        return;
-      }
-      const [tRows, iRows, eRows, cRows] = await Promise.all([
-        sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
-        sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
-        sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
-        sfQuery(`SELECT KEY, VALUE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
-      ]);
-      setTrailers(tRows as Trailer[]);
-      setInternal(iRows as Volume[]);
-      setExternal(eRows as Offer[]);
-      const cfg: Record<string, any> = {};
-      for (const r of cRows) cfg[(r as any).KEY] = (r as any).VALUE;
-      if (cfg.INTERNAL_PRIORITY != null) setInternalPriority(Number(cfg.INTERNAL_PRIORITY));
-      if (cfg.EXTERNAL_PRIORITY != null) setExternalPriority(Number(cfg.EXTERNAL_PRIORITY));
-      if (cfg.TIME_WINDOW_TOLERANCE_HRS != null) setWindowToleranceHrs(Number(cfg.TIME_WINDOW_TOLERANCE_HRS));
-      if (cfg.MAX_EMPTY_KM != null) setMaxEmptyKm(Number(cfg.MAX_EMPTY_KM));
-      if (!tRows.length || !iRows.length || !eRows.length) {
-        setSeedHint('Tables are empty. Run .cortex/skills/backload-matching/references/load-demo-data.sql, then refresh.');
-      }
-    })();
+  const refetch = useCallback(async () => {
+    if (USE_MOCK) {
+      setTrailers(MOCK_TRAILERS);
+      setInternal(buildMockInternal());
+      setExternal(buildMockExternal());
+      setSeedHint('Mock data mode (USE_MOCK=true). Run seed-data.sql and flip the toggle to read live tables.');
+      return;
+    }
+    const [tRows, iRows, eRows, cRows] = await Promise.all([
+      sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
+      sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
+      sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
+      sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
+    ]);
+    setTrailers(tRows as Trailer[]);
+    setInternal(iRows as Volume[]);
+    setExternal(eRows as Offer[]);
+    const cfg: Record<string, any> = (cRows[0] as any) || {};
+    if (cfg.INTERNAL_PRIORITY != null) setInternalPriority(Number(cfg.INTERNAL_PRIORITY));
+    if (cfg.EXTERNAL_PRIORITY != null) setExternalPriority(Number(cfg.EXTERNAL_PRIORITY));
+    if (cfg.TIME_WINDOW_TOLERANCE_HRS != null) setWindowToleranceHrs(Number(cfg.TIME_WINDOW_TOLERANCE_HRS));
+    if (cfg.MAX_EMPTY_KM != null) setMaxEmptyKm(Number(cfg.MAX_EMPTY_KM));
+    if (cfg.VEHICLE_TYPE != null) setVehicleType(String(cfg.VEHICLE_TYPE));
+    if (!tRows.length || !iRows.length || !eRows.length) {
+      setSeedHint('Tables are empty for this region. Run .cortex/skills/backload-matching/references/backfill-freight-offers.sql, then refresh.');
+    } else {
+      setSeedHint(null);
+    }
   }, []);
+
+  // Option B: app region picker is the source of truth.
+  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG.REGION then refetch.
+  useEffect(() => {
+    if (!regionName) return;
+    (async () => {
+      try {
+        const cfg = await sfQuery(`SELECT REGION FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
+        const cur = (cfg[0] as any)?.REGION;
+        if (cur !== regionName) {
+          await sfQuery(`UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${regionName.replace(/'/g, "''")}'`);
+        }
+      } catch (e) {
+        console.warn('[BM] CONFIG region sync failed', e);
+      }
+      await refetch();
+    })();
+  }, [regionName, refetch]);
 
   const solve = useCallback(async () => {
     if (!trailers.length) return;
-    setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null);
+    setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null); setSolveError(null);
 
     // Auto-warm: if any required ORS service is suspended/warming, resume + wait before issuing OPTIMIZATION.
     const probe = await fetchSvcStatus();
@@ -310,13 +339,14 @@ export default function BackloadMatching() {
       await wakeUp();
     }
 
+    const profile = profileForVehicleType(vehicleType);
     const trailerById = new Map<number, Trailer>();
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
       return {
         id,
-        profile: 'driving-hgv',
+        profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
         end:   [Number(t.HOME_LON),    Number(t.HOME_LAT)],
         capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
@@ -403,13 +433,21 @@ export default function BackloadMatching() {
     }
     setAssignments(newAssignments);
     setUnassigned(newUnassigned);
-    setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpJobs.length} jobs (region=${regionName}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned.`);
+    setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpJobs.length} jobs (region=${regionName}, profile=${profile}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned.`);
+    if (rows.length === 0 && vrpJobs.length > 0) {
+      setSolveError(
+        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING (use Wake up ORS), ` +
+        `(2) region='${regionName}' covers your data bbox, ` +
+        `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}.`
+      );
+    }
 
     Promise.all(newAssignments.map(async (a) => {
       const key = `${a.TRAILER_ID}|${a.OFFER_ID}`;
       const cached = emptyLegCacheRef.current.get(key);
       if (cached) { a.EMPTY_GEOJSON = cached; return; }
-      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('driving-hgv', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT), '${regionName}'))`;
+      const dirProfile = profileForVehicleType(vehicleType);
+      const dirSql = `SELECT ST_ASGEOJSON(GEOJSON)::VARCHAR AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('${dirProfile}', ARRAY_CONSTRUCT(${a.TRAILER_DROPOFF_LON}::FLOAT, ${a.TRAILER_DROPOFF_LAT}::FLOAT), ARRAY_CONSTRUCT(${a.PICKUP_LON}::FLOAT, ${a.PICKUP_LAT}::FLOAT), '${regionName}'))`;
       const dirRows = await sfQuery(dirSql, 'OPENROUTESERVICE_APP', 'CORE');
       try {
         const geo = dirRows[0]?.GEOJSON ? (typeof dirRows[0].GEOJSON === 'string' ? JSON.parse(dirRows[0].GEOJSON) : dirRows[0].GEOJSON) : null;
@@ -418,7 +456,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, fetchSvcStatus, wakeUp]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, fetchSvcStatus, wakeUp]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -476,21 +514,21 @@ export default function BackloadMatching() {
     if (external.length) {
       result.push(new ScatterplotLayer({
         id: 'ext-offers', data: external, getPosition: (d: Offer) => [Number(d.PICKUP_LON), Number(d.PICKUP_LAT)],
-        getFillColor: [200, 200, 200, 120], getLineColor: [120, 120, 120, 200],
-        stroked: true, lineWidthMinPixels: 1, getRadius: 1500, radiusMinPixels: 4, pickable: true,
+        getFillColor: [200, 200, 200, 160], getLineColor: [120, 120, 120, 220],
+        stroked: true, lineWidthMinPixels: 1, getRadius: 600, radiusMinPixels: 3, radiusMaxPixels: 5, pickable: true,
       }));
     }
     if (internal.length) {
       result.push(new ScatterplotLayer({
         id: 'int-vols', data: internal, getPosition: (d: Volume) => [Number(d.PICKUP_LON), Number(d.PICKUP_LAT)],
-        getFillColor: [41, 181, 232, 200], getRadius: 1800, radiusMinPixels: 5, pickable: true,
+        getFillColor: [41, 181, 232, 220], getRadius: 800, radiusMinPixels: 4, radiusMaxPixels: 6, pickable: true,
       }));
     }
     if (trailers.length) {
       result.push(new ScatterplotLayer({
         id: 'trailers', data: trailers, getPosition: (d: Trailer) => [Number(d.DROPOFF_LON), Number(d.DROPOFF_LAT)],
-        getFillColor: [13, 176, 72, 230], getLineColor: [255, 255, 255, 255],
-        stroked: true, lineWidthMinPixels: 2, getRadius: 3000, radiusMinPixels: 7, pickable: true,
+        getFillColor: [13, 176, 72, 240], getLineColor: [255, 255, 255, 255],
+        stroked: true, lineWidthMinPixels: 1, getRadius: 1200, radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
       }));
     }
     assignments.forEach((a, i) => {
@@ -594,6 +632,11 @@ export default function BackloadMatching() {
       {solverLog && (
         <div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary)' }}>
           {solverLog}
+        </div>
+      )}
+      {solveError && (
+        <div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}>
+          <b>Solve returned no assignments.</b> {solveError}
         </div>
       )}
 
