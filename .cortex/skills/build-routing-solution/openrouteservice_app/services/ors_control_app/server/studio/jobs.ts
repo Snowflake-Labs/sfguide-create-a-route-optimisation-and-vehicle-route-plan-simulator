@@ -132,7 +132,7 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
 
 export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
   const tables = [
-    'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE',
+    'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_FREIGHT_OFFERS',
   ];
   const deleted: Record<string, number> = {};
   for (const tbl of tables) {
@@ -427,6 +427,7 @@ const FLEET_CONFIG_SCHEMAS = [
   'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
   'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
   'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
+  'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
 ];
 
 async function syncRegionRegistryAndConfig(
@@ -600,6 +601,16 @@ async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS (
+      OFFER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
+      SOURCE VARCHAR(30),
+      PICKUP_POI_ID VARCHAR, PICKUP_LAT FLOAT, PICKUP_LON FLOAT, PICKUP_GEOM GEOGRAPHY,
+      DROPOFF_POI_ID VARCHAR, DROPOFF_LAT FLOAT, DROPOFF_LON FLOAT, DROPOFF_GEOM GEOGRAPHY,
+      PICKUP_FROM_TS TIMESTAMP_NTZ, PICKUP_TO_TS TIMESTAMP_NTZ,
+      WEIGHT_KG NUMBER, PRODUCT VARCHAR, PRICE_USD NUMBER, HAZMAT BOOLEAN,
+      LISTING_TEXT VARCHAR, POSTED_AT TIMESTAMP_NTZ,
+      JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
       JOB_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
       ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,
@@ -758,6 +769,41 @@ async function insertDimPois(pois: any[], config: GenerationConfig, snowSql: Sno
   }
 }
 
+async function insertFactFreightOffers(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+  if (offers.length === 0) return 0;
+  const vt = resolveVehicleType(config);
+  const batchSize = 500;
+  let inserted = 0;
+  for (let i = 0; i < offers.length; i += batchSize) {
+    const chunk = offers.slice(i, i + batchSize);
+    const selects = chunk.map((o: any) =>
+      `SELECT ${escVal(o.offer_id)},${escVal(config.region)},${escVal(vt)},${escVal(o.source)},` +
+      `${escVal(o.pickup_poi_id)},${o.pickup_lat},${o.pickup_lon},ST_MAKEPOINT(${o.pickup_lon},${o.pickup_lat}),` +
+      `${escVal(o.dropoff_poi_id)},${o.dropoff_lat},${o.dropoff_lon},ST_MAKEPOINT(${o.dropoff_lon},${o.dropoff_lat}),` +
+      `DATEADD(MINUTE, ${o.pickup_from_offset_min}, CURRENT_TIMESTAMP()),` +
+      `DATEADD(MINUTE, ${o.pickup_to_offset_min}, CURRENT_TIMESTAMP()),` +
+      `${o.weight_kg},${escVal(o.product)},${o.price_usd},${o.hazmat ? 'TRUE' : 'FALSE'},` +
+      `${escVal(o.listing_text)},CURRENT_TIMESTAMP(),${escVal(jobId)}`
+    ).join(' UNION ALL\n');
+    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS
+      (OFFER_ID,REGION,VEHICLE_TYPE,SOURCE,
+       PICKUP_POI_ID,PICKUP_LAT,PICKUP_LON,PICKUP_GEOM,
+       DROPOFF_POI_ID,DROPOFF_LAT,DROPOFF_LON,DROPOFF_GEOM,
+       PICKUP_FROM_TS,PICKUP_TO_TS,WEIGHT_KG,PRODUCT,PRICE_USD,HAZMAT,
+       LISTING_TEXT,POSTED_AT,JOB_ID)
+      ${selects}`;
+    try {
+      await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
+      inserted += chunk.length;
+    } catch (e: any) {
+      const msg = `FACT_FREIGHT_OFFERS insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+      log('ERROR', 'Studio', msg);
+      throw new Error(msg);
+    }
+  }
+  return inserted;
+}
+
 // Optional callback the server can register to be notified when a generation
 // job has been promoted to the active region. Used to refresh the in-memory
 // activeRegionOverride so the next /api/regions response immediately reflects
@@ -852,9 +898,10 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, buildFleet } = await import('./engine.js');
+      const { loadPOIs, buildFleet, generateFreightOffers } = await import('./engine.js');
       const pois = await loadPOIs(config, snowSql);
       const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
+      const offers = generateFreightOffers(pois, config, 300);
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);
@@ -867,6 +914,14 @@ export async function startGeneration(
       } catch (e: any) {
         log('WARN', 'Studio', `DIM_FLEET insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });
+      }
+      try {
+        const n = await insertFactFreightOffers(offers, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} freight offers`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} freight offers` });
+      } catch (e: any) {
+        log('WARN', 'Studio', `FACT_FREIGHT_OFFERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `FACT_FREIGHT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
       }
 
       const catCounts: Record<string, number> = {};

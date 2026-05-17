@@ -2352,6 +2352,7 @@ app.post('/api/regions/active', async (req, res) => {
       'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
       'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
       'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
+      'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
     ];
     for (const schema of CONFIG_SCHEMAS) {
       try {

@@ -170,13 +170,6 @@ function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-function regionToCountry(regionName: string): string | null {
-  const r = regionName.toLowerCase();
-  if (r.includes('california') || r.includes('united') || r.includes('america')) return 'US';
-  if (r.includes('germany')) return 'DE';
-  return null;
-}
-
 export default function BackloadMatching() {
   const { regionName, center, zoom } = useRegion();
   const [trailers, setTrailers] = useState<Trailer[]>([]);
@@ -229,10 +222,8 @@ export default function BackloadMatching() {
         setSeedHint('Mock data mode (USE_MOCK=true). Run seed-data.sql and flip the toggle to read live tables.');
         return;
       }
-      const countryCode = regionToCountry(regionName);
-      const countryFilter = countryCode ? ` WHERE OPERATING_COUNTRY = '${countryCode}'` : '';
       const [tRows, iRows, eRows, cRows] = await Promise.all([
-        sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS${countryFilter} LIMIT 100`),
+        sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
         sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
         sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
         sfQuery(`SELECT KEY, VALUE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
