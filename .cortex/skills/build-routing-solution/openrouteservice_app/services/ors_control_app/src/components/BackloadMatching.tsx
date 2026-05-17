@@ -193,6 +193,61 @@ export default function BackloadMatching() {
   const [seedHint, setSeedHint] = useState<string | null>(null);
   const [solverLog, setSolverLog] = useState<string | null>(null);
 
+  // ORS service status + wake-up
+  interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
+  const requiredServices = useMemo(
+    () => ['VROOM_SERVICE', 'ROUTING_GATEWAY_SERVICE', 'ORS_SERVICE', `ORS_SERVICE_${(regionName || '').toUpperCase()}`],
+    [regionName]
+  );
+  const [svcStatus, setSvcStatus] = useState<SvcStatus[]>([]);
+  const [wakingUp, setWakingUp] = useState(false);
+
+  const fetchSvcStatus = useCallback(async (): Promise<SvcStatus[]> => {
+    await sfQuery(`SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`, 'OPENROUTESERVICE_APP', 'CORE');
+    const filterList = requiredServices.map(s => `'${s}'`).join(',');
+    const rows = await sfQuery(
+      `SELECT "name" AS NAME, "status" AS STATUS, "current_instances"::INT AS CUR, "target_instances"::INT AS TGT
+       FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+       WHERE "name" IN (${filterList})`,
+      'OPENROUTESERVICE_APP', 'CORE'
+    );
+    return rows.map((r: any) => ({ name: r.NAME, status: r.STATUS, cur: Number(r.CUR) || 0, tgt: Number(r.TGT) || 0 }));
+  }, [requiredServices]);
+
+  useEffect(() => {
+    let active = true;
+    const tick = async () => { try { const s = await fetchSvcStatus(); if (active) setSvcStatus(s); } catch {} };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => { active = false; clearInterval(id); };
+  }, [fetchSvcStatus]);
+
+  const allReady = svcStatus.length > 0 && svcStatus.every(s => s.status === 'RUNNING' && s.cur >= s.tgt);
+  const readyCount = svcStatus.filter(s => s.status === 'RUNNING' && s.cur >= s.tgt).length;
+  const anySuspended = svcStatus.some(s => s.status === 'SUSPENDED');
+
+  const wakeUp = useCallback(async () => {
+    setWakingUp(true);
+    try {
+      const initial = await fetchSvcStatus();
+      setSvcStatus(initial);
+      const suspended = initial.filter(s => s.status === 'SUSPENDED').map(s => s.name);
+      if (suspended.length) {
+        await Promise.all(suspended.map(n =>
+          sfQuery(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${n} RESUME`, 'OPENROUTESERVICE_APP', 'CORE')
+        ));
+      }
+      for (let i = 0; i < 18; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const next = await fetchSvcStatus();
+        setSvcStatus(next);
+        if (next.every(r => r.status === 'RUNNING' && r.cur >= r.tgt)) break;
+      }
+    } finally {
+      setWakingUp(false);
+    }
+  }, [fetchSvcStatus]);
+
   const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
   const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -246,6 +301,14 @@ export default function BackloadMatching() {
   const solve = useCallback(async () => {
     if (!trailers.length) return;
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null);
+
+    // Auto-warm: if any required ORS service is suspended/warming, resume + wait before issuing OPTIMIZATION.
+    const probe = await fetchSvcStatus();
+    setSvcStatus(probe);
+    if (!probe.every(s => s.status === 'RUNNING' && s.cur >= s.tgt)) {
+      setSolverLog('Routing services are suspended/warming. Resuming before solve...');
+      await wakeUp();
+    }
 
     const trailerById = new Map<number, Trailer>();
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
@@ -355,7 +418,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, fetchSvcStatus, wakeUp]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -512,6 +575,14 @@ export default function BackloadMatching() {
         <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
           {solving ? 'Solving...' : 'Solve Backloads'}
         </button>
+        <button className="btn-primary" onClick={wakeUp} disabled={wakingUp} title="Resume suspended ORS routing services" style={{ background: anySuspended ? '#E5484D' : '#6B7280', minWidth: 130 }}>
+          {wakingUp ? 'Resuming...' : 'Wake up ORS'}
+        </button>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '3px 8px', borderRadius: 12, border: '1px solid var(--border)' }}
+              title={svcStatus.map(s => `${s.name}: ${s.status} ${s.cur}/${s.tgt}`).join('\n')}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: allReady ? '#10b981' : (anySuspended ? '#ef4444' : '#f59e0b') }} />
+          {svcStatus.length ? `${readyCount}/${svcStatus.length} ${allReady ? 'ready' : (anySuspended ? 'suspended' : 'warming')}` : 'checking...'}
+        </span>
         <button className="btn-primary" onClick={confirmPlan} disabled={confirming || !assignments.length} style={{ minWidth: 140 }}>
           {confirming ? 'Saving...' : 'Confirm Plan'}
         </button>
