@@ -82,6 +82,7 @@ export default function AssetVelocity() {
   const [sortBy, setSortBy] = useState<keyof Trailer>('COST_OF_IDLENESS_USD');
   const [viewState, setViewState] = useState({ longitude: center.lng || -122.4194, latitude: center.lat || 37.7749, zoom: zoom || 11, pitch: 0, bearing: 0 });
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [orsProfile, setOrsProfile] = useState<string>('driving-car');
   const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
@@ -136,9 +137,17 @@ export default function AssetVelocity() {
       WHERE REGION = '${regionName}'
       ORDER BY DEMAND_SCORE DESC
       LIMIT 50`;
-    const [t, tm] = await Promise.all([sfQuery(trailerSql), sfQuery(terminalSql)]);
+    const profileSql = `
+      SELECT ORS_PROFILE
+      FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+      WHERE REGION = '${regionName}'
+        AND STATUS IN ('COMPLETED','STOPPED')
+      ORDER BY STARTED_AT DESC
+      LIMIT 1`;
+    const [t, tm, pr] = await Promise.all([sfQuery(trailerSql), sfQuery(terminalSql), sfQuery(profileSql, 'FLEET_INTELLIGENCE', 'CORE')]);
     setTrailers(t as Trailer[]);
     setTerminals(tm as Terminal[]);
+    setOrsProfile((pr[0]?.ORS_PROFILE as string) || 'driving-car');
     setLoading(false);
   }, [regionName, idleHourThreshold]);
 
@@ -213,7 +222,7 @@ export default function AssetVelocity() {
     }));
     const vrpVehicles = topTrailers.map((tr, i) => ({
       id: i + 1,
-      profile: 'driving-hgv',
+      profile: orsProfile,
       start: [Number(tr.LAST_LNG), Number(tr.LAST_LAT)],
       capacity: [1],
     }));
@@ -236,9 +245,14 @@ export default function AssetVelocity() {
         }
       }
       setRoutePaths(paths);
+      if (paths.length === 0) {
+        setVrpResult({ warning: `Solver returned no routable paths. Profile '${orsProfile}' may not be available for region '${regionName}'.` });
+      }
+    } else {
+      setVrpResult({ warning: `Solver returned no rows. Profile '${orsProfile}' may not be available for region '${regionName}'.` });
     }
     setSolving(false);
-  }, [trailers, terminals, sortedTrailers]);
+  }, [trailers, terminals, sortedTrailers, orsProfile, regionName]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -337,6 +351,7 @@ export default function AssetVelocity() {
         <button className="btn-primary" onClick={optimizeRepositioning} disabled={solving || !trailers.length || !terminals.length} style={{ fontSize: 12, background: '#0DB048' }}>
           {solving ? 'Solving...' : 'Optimize Repositioning'}
         </button>
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)', alignSelf: 'center' }}>profile: {orsProfile}</span>
       </div>
 
       <div className="metric-grid">
@@ -347,8 +362,10 @@ export default function AssetVelocity() {
       </div>
 
       {vrpResult && (
-        <div className="info-box success" style={{ marginTop: 8 }}>
-          Repositioning solution: {routePaths.length} reposition routes generated for top {Math.min(8, trailers.length)} idle trailers.
+        <div className={`info-box ${vrpResult.warning ? 'warning' : 'success'}`} style={{ marginTop: 8, background: vrpResult.warning ? 'rgba(245,158,11,0.1)' : undefined, border: vrpResult.warning ? '1px solid #F59E0B' : undefined, padding: vrpResult.warning ? 12 : undefined, borderRadius: vrpResult.warning ? 8 : undefined }}>
+          {vrpResult.warning
+            ? vrpResult.warning
+            : `Repositioning solution: ${routePaths.length} reposition routes generated for top ${Math.min(8, trailers.length)} idle trailers.`}
         </div>
       )}
 
