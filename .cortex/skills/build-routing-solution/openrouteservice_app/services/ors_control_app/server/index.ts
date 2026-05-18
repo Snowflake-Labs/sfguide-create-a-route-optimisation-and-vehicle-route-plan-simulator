@@ -1813,13 +1813,21 @@ app.get('/api/matrix/inventory', async (_req, res) => {
     let inventory: any[] = [];
     try {
       const rows = await runSql(
-        `SELECT TABLE_NAME, ROW_COUNT, BYTES,
-                TO_VARCHAR(CREATED::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED
-         FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES
-         WHERE TABLE_SCHEMA = 'TRAVEL_MATRIX'
-           AND TABLE_NAME LIKE '%_MATRIX_RES%'
-           AND ROW_COUNT > 0
-         ORDER BY CREATED DESC`
+        `SELECT t.TABLE_NAME, t.ROW_COUNT, t.BYTES,
+                TO_VARCHAR(t.CREATED::TIMESTAMP_LTZ, 'YYYY-MM-DD"T"HH24:MI:SS.FF3TZH:TZM') AS CREATED,
+                COALESCE(DATEDIFF('SECOND', j.STARTED_AT, j.COMPLETED_AT), 0) AS EXECUTION_TIME_SECS
+         FROM ${SF_DATABASE}.INFORMATION_SCHEMA.TABLES t
+         LEFT JOIN (
+           SELECT REGION, PROFILE, RESOLUTION, STARTED_AT, COMPLETED_AT,
+                  ROW_NUMBER() OVER (PARTITION BY REGION, PROFILE, RESOLUTION ORDER BY COMPLETED_AT DESC) AS RN
+           FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+           WHERE STATUS = 'COMPLETE'
+         ) j ON j.RN = 1
+            AND t.TABLE_NAME = UPPER(j.REGION) || '_' || REPLACE(UPPER(j.PROFILE), '-', '_') || '_MATRIX_' || j.RESOLUTION
+         WHERE t.TABLE_SCHEMA = 'TRAVEL_MATRIX'
+           AND t.TABLE_NAME LIKE '%_MATRIX_RES%'
+           AND t.ROW_COUNT > 0
+         ORDER BY t.CREATED DESC`
       );
       inventory = (rows || []).map((t: any) => {
         const name = (t.TABLE_NAME || '').toUpperCase();
@@ -1830,7 +1838,7 @@ app.get('/api/matrix/inventory', async (_req, res) => {
         const profileName = parts[2].toLowerCase().replace(/_/g, '-');
         const resolution = parts[3];
         const lookupKey = `${tableRegion}_${parts[2]}_${resolution}`;
-        return { region, table_region: tableRegion, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: 0, road_filter: roadFilterMap[lookupKey] === true };
+        return { region, table_region: tableRegion, profile: profileName, resolution, row_count: parseInt(t.ROW_COUNT || '0'), bytes: parseInt(t.BYTES || '0'), created: t.CREATED || '', table_name: name, execution_time_secs: parseInt(t.EXECUTION_TIME_SECS || '0'), road_filter: roadFilterMap[lookupKey] === true };
       }).filter(Boolean);
     } catch {}
     res.json({ inventory });
