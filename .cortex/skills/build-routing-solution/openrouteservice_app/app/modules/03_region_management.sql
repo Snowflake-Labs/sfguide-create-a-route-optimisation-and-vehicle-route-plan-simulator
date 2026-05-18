@@ -1273,7 +1273,7 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"vroom","image":"/openrouteservice_app/core/image_repository/vroom-docker:v1.0.3","env":{"VROOM_ROUTER":"ors","ORS_HOST":"ors-service-' ||
+    '{"spec":{"containers":[{"name":"vroom","image":"/openrouteservice_app/core/image_repository/vroom-docker:v1.0.4","env":{"VROOM_ROUTER":"ors","ORS_HOST":"ors-service-' ||
     LOWER(REPLACE(P_REGION, ' ', '')) ||
     '"},"resources":{"requests":{"cpu":"0.25","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}],"endpoints":[{"name":"vroom","port":3000,"public":false}]}}'
 $$;
