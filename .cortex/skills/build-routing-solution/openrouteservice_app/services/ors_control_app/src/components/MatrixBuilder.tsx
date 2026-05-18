@@ -69,8 +69,10 @@ function formatBytes(bytes: number): string {
 function timeAgo(dateStr: string): string {
   if (!dateStr) return '';
   const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '\u2014';
   const now = new Date();
   const secs = Math.floor((now.getTime() - d.getTime()) / 1000);
+  if (secs < 0) return '\u2014';
   if (secs < 60) return 'just now';
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
