@@ -240,6 +240,12 @@ export default function RouteOptimization() {
         </div>
       </div>
 
+      {centerCoords && !loading && places.length === 0 && (
+        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. The Route Optimization page is currently seeded for SanFrancisco only. Switch the region picker to <b>SanFrancisco</b>, or seed PLACES/LOOKUP/JOB_TEMPLATE for <b>{regionName}</b>.
+        </div>
+      )}
+
       <div className="metric-grid">
         <MetricCard label="Places" value={places.length} />
         <MetricCard label="Job Templates" value={jobs.length} />
@@ -252,7 +258,20 @@ export default function RouteOptimization() {
         <div style={{ minWidth: 120 }}>
           <input type="range" min={5} max={60} step={5} value={isoMinutes} onChange={e => setIsoMinutes(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
-        <button className="btn-primary" onClick={optimizeRoutes} disabled={solving || !places.length} style={{ fontSize: 12, background: '#0DB048' }}>{solving ? 'Solving...' : 'Optimize Routes'}</button>
+        <button
+          className="btn-primary"
+          onClick={optimizeRoutes}
+          disabled={solving || !places.length}
+          title={
+            solving ? 'Solving...'
+            : !centerCoords ? 'Search a location first (enter an address and click Go)'
+            : !places.length ? `No places found for region '${regionName}' near this location. Try a different region or address.`
+            : 'Optimize delivery routes'
+          }
+          style={{ fontSize: 12, background: '#0DB048' }}
+        >
+          {solving ? 'Solving...' : 'Optimize Routes'}
+        </button>
       </div>
 
       {showVehicles && (
