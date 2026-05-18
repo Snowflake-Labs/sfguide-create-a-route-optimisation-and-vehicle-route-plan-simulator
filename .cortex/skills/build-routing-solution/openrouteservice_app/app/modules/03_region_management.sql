@@ -413,6 +413,14 @@ BEGIN
                         CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
+                    -- Deploy a per-region VROOM service alongside the ORS service so
+                    -- OPTIMIZATION calls for this region route to a VROOM that has
+                    -- ORS_HOST=ors-service-<region>. Best-effort: a missing VROOM falls
+                    -- back to the global service in the gateway.
+                    BEGIN
+                        CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     -- Write success marker so create_region_ors_service can
                     -- safely reuse persisted graphs on the next deploy.
                     BEGIN
@@ -1047,6 +1055,13 @@ BEGIN
 
     CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
 
+    -- Ensure a per-region VROOM service exists alongside the rebuilt ORS.
+    -- Idempotent (CREATE SERVICE IF NOT EXISTS) so safe to call on rebuilds.
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     -- Restore normal auto-suspend now that the rebuild is complete (success or timeout).
     BEGIN
         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
@@ -1235,10 +1250,76 @@ $$
 BEGIN
     LET svc_name VARCHAR := 'ORS_SERVICE_' || UPPER(:P_REGION);
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
+    -- Region's VROOM service shares the same lifecycle as ORS - drop alongside.
+    LET vroom_name VARCHAR := 'VROOM_SERVICE_' || UPPER(:P_REGION);
+    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || vroom_name;
     DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
     RETURN 'Dropped region ORS for ' || :P_REGION;
 END;
 $$;
+
+-- =============================================================================
+-- Per-region VROOM service (multi-region OPTIMIZATION support)
+-- -----------------------------------------------------------------------------
+-- Each provisioned region gets its own VROOM service co-located in the region's
+-- compute pool, with ORS_HOST baked in to the templated config.yml at startup.
+-- This makes OPTIMIZATION region-agnostic: any region with a running ORS can
+-- run VRP without the gateway having to fall back to a single shared VROOM.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_VROOM_SERVICE_SPEC(P_REGION VARCHAR)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+AS
+$$
+    '{"spec":{"containers":[{"name":"vroom","image":"/openrouteservice_app/core/image_repository/vroom-docker:v1.0.3","env":{"VROOM_ROUTER":"ors","ORS_HOST":"ors-service-' ||
+    LOWER(REPLACE(P_REGION, ' ', '')) ||
+    '"},"resources":{"requests":{"cpu":"0.25","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}],"endpoints":[{"name":"vroom","port":3000,"public":false}]}}'
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_vroom_service(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    svc_name VARCHAR;
+    pool_name VARCHAR;
+    vroom_spec VARCHAR;
+    create_sql VARCHAR;
+BEGIN
+    svc_name := 'VROOM_SERVICE_' || UPPER(:P_REGION);
+    pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+    vroom_spec := OPENROUTESERVICE_APP.CORE.BUILD_VROOM_SERVICE_SPEC(:P_REGION);
+    -- VROOM is light (CPU-only) and co-locates safely with ORS in the same pool.
+    -- AUTO_SUSPEND_SECS mirrors the region ORS lifecycle so they suspend / resume together.
+    create_sql := 'CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name ||
+                  ' IN COMPUTE POOL ' || :pool_name ||
+                  ' FROM SPECIFICATION ''' || :vroom_spec ||
+                  ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 14400' ||
+                  ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
+    EXECUTE IMMEDIATE :create_sql;
+    RETURN 'VROOM service ' || :svc_name || ' created in pool ' || :pool_name;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.drop_region_vroom(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    LET svc_name VARCHAR := 'VROOM_SERVICE_' || UPPER(:P_REGION);
+    EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
+    RETURN 'Dropped region VROOM for ' || :P_REGION;
+END;
+$$;
+
 
 -- =============================================================================
 -- SOFT_SUSPEND_REGION
@@ -2079,6 +2160,11 @@ BEGIN
     END;
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    -- Ensure region VROOM exists (rescue path: ORS came up via async job).
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
     EXCEPTION WHEN OTHER THEN NULL;
     END;
     BEGIN

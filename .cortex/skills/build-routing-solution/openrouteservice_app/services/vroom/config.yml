@@ -27,26 +27,26 @@ routingServers:
       port: '5002'
   ors:
     driving-car:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     driving-hgv:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     cycling-regular:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     cycling-mountain:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     cycling-road:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     cycling-electric:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     foot-walking:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'
     foot-hiking:
-      host: 'ors-service/ors/v2'
+      host: '__ORS_HOST__/ors/v2'
       port: '8082'

@@ -22,7 +22,7 @@ MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
 # because fastisochrones is not enabled — see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.0.2'
+GATEWAY_VERSION = 'v1.0.5'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -45,6 +45,15 @@ def resolve_ors_host(region=None):
         return ORS_HOST
     normalized = region.strip().lower().replace(' ', '')
     return f'ors-service-{normalized}'
+
+
+def resolve_vroom_host(region=None):
+    """Per-region VROOM service co-located with the region's ORS.
+    Falls back to the global VROOM_HOST when no region is provided."""
+    if not region:
+        return VROOM_HOST
+    normalized = region.strip().lower().replace(' ', '')
+    return f'vroom-service-{normalized}'
 
 
 def _make_response(output_rows):
@@ -236,12 +245,15 @@ def _collect_locations(jobs, vehicles):
 
 
 def _remap_indices(jobs, vehicles, indices):
+    # Keep both 'location'/'start'/'end' AND the new *_index keys.
+    # Indices let VROOM use the pre-computed matrix (no ORS call for routing math).
+    # Coords let vroom-express enrich the response with geometry by calling its
+    # configured ORS host (which is the per-region service, so it has the coords).
     for item in (jobs or []):
         if isinstance(item, dict) and 'location' in item:
             t = tuple(item['location'])
             if t in indices:
                 item['location_index'] = indices[t]
-                del item['location']
     for item in (vehicles or []):
         if not isinstance(item, dict):
             continue
@@ -250,10 +262,9 @@ def _remap_indices(jobs, vehicles, indices):
                 t = tuple(item[key])
                 if t in indices:
                     item[idx_key] = indices[t]
-                    del item[key]
 
 
-def _handle_optimization_tabular(input_rows, ors_host_override=None):
+def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None):
     _collected_locs = []
 
     def build_vroom_payload(row):
@@ -294,7 +305,7 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None):
 
     results = []
     for row in input_rows:
-        resp = get_vroom_response(build_vroom_payload(row))
+        resp = get_vroom_response(build_vroom_payload(row), vroom_host=vroom_host_override)
         if ors_host_override and 'routes' in resp:
             needs_geo = any('geometry' not in r for r in resp['routes'])
             if needs_geo:
@@ -357,10 +368,11 @@ def post_optimization_tabular():
         return {}
     region = _extract_region(input_rows[0], -1)
     ors_host = resolve_ors_host(region) if region else None
+    vroom_host = resolve_vroom_host(region) if region else None
     stripped_rows = []
     for row in input_rows:
         stripped_rows.append(row[:-1])
-    output_rows = _handle_optimization_tabular(stripped_rows, ors_host_override=ors_host)
+    output_rows = _handle_optimization_tabular(stripped_rows, ors_host_override=ors_host, vroom_host_override=vroom_host)
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
@@ -380,11 +392,13 @@ def post_optimization():
     for row in input_rows:
         region = _extract_region(row, -1)
         ors_host = resolve_ors_host(region) if region else None
+        vroom_host = resolve_vroom_host(region) if region else None
         if ors_host:
             shifted = [row[0], row[1]]
             tabular_rows = _handle_optimization_tabular(
                 [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', [])]],
-                ors_host_override=ors_host
+                ors_host_override=ors_host,
+                vroom_host_override=vroom_host
             )
             output_rows.append(tabular_rows[0])
         else:
@@ -626,20 +640,32 @@ def post_matrix(format="json"):
     return _make_response(output_rows)
 
 
-def get_vroom_response(payload):
+def get_vroom_response(payload, vroom_host=None):
     logger.info(payload)
-    downstream_url = f'http://{VROOM_HOST}:{VROOM_PORT}'
+    host = vroom_host or VROOM_HOST
+    downstream_url = f'http://{host}:{VROOM_PORT}'
     downstream_headers = {"Content-Type": "application/json"}
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
         vroom_r = r.json()
     except requests.exceptions.ConnectionError:
-        logger.error(f'Cannot connect to VROOM at {VROOM_HOST}:{VROOM_PORT}')
-        return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {VROOM_HOST}:{VROOM_PORT}'}
+        # Per-region VROOM unreachable. Fall back to the global VROOM service.
+        if host != VROOM_HOST:
+            logger.warning(f'Per-region VROOM at {host} unreachable; falling back to global {VROOM_HOST}')
+            try:
+                r = requests.post(url=f'http://{VROOM_HOST}:{VROOM_PORT}',
+                                  headers=downstream_headers, json=payload, timeout=300)
+                vroom_r = r.json()
+            except requests.exceptions.ConnectionError:
+                logger.error(f'Cannot connect to VROOM at {VROOM_HOST}:{VROOM_PORT} (fallback)')
+                return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {VROOM_HOST}:{VROOM_PORT}'}
+        else:
+            logger.error(f'Cannot connect to VROOM at {host}:{VROOM_PORT}')
+            return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host}:{VROOM_PORT}'}
     except requests.exceptions.Timeout:
-        logger.error(f'VROOM request timed out')
+        logger.error(f'VROOM request timed out at {host}')
         return {'error': 'timeout', 'message': 'VROOM optimization request timed out'}
-    logger.debug(f'VROOM response: {vroom_r}')
+    logger.debug(f'VROOM response from {host}: {vroom_r}')
     if 'routes' in vroom_r:
         for route in vroom_r['routes']:
             if 'geometry' in route:

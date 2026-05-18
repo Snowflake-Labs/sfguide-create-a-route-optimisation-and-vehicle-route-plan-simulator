@@ -118,7 +118,9 @@ export default function BackloadMatching() {
   // ORS service status + wake-up
   interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
   const requiredServices = useMemo(
-    () => ['VROOM_SERVICE', 'ROUTING_GATEWAY_SERVICE', `ORS_SERVICE_${(regionName || '').toUpperCase()}`],
+    () => ['ROUTING_GATEWAY_SERVICE',
+           `ORS_SERVICE_${(regionName || '').toUpperCase()}`,
+           `VROOM_SERVICE_${(regionName || '').toUpperCase()}`],
     [regionName]
   );
   const [orsProfile, setOrsProfile] = useState<string>('driving-car');
