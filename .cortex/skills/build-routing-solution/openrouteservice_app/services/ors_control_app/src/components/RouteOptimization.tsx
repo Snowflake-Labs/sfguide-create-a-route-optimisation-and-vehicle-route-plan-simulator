@@ -129,14 +129,27 @@ export default function RouteOptimization() {
   useEffect(() => { if (centerCoords) loadPlaces(); }, [centerCoords, radius, selectedIndustry]);
 
   const previewCatchment = useCallback(async () => {
-    console.log('[Catchment] centerCoords:', centerCoords, 'profile:', vehicles[0]?.profile, 'isoMinutes:', isoMinutes);
+    console.log('[Catchment] centerCoords:', centerCoords, 'profile:', vehicles[0]?.profile, 'isoMinutes:', isoMinutes, 'region:', regionName);
     if (!centerCoords) { console.warn('[Catchment] No centerCoords — search for a location first'); return; }
-    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}::FLOAT, ${centerCoords[1]}::FLOAT, ${isoMinutes}::INT, NULL::VARCHAR))`, 'OPENROUTESERVICE_APP', 'CORE');
-    console.log('[Catchment] rows returned:', rows.length, rows[0]);
-    if (rows[0]?.GEO) {
+    try {
+      const rows = await sfQuery(`SELECT GEOJSON AS GEO, RESPONSE::VARCHAR AS RESP FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}::FLOAT, ${centerCoords[1]}::FLOAT, ${isoMinutes}::INT, '${regionName}'))`, 'OPENROUTESERVICE_APP', 'CORE');
+      console.log('[Catchment] rows returned:', rows.length, rows[0]);
+      if (!rows[0]?.GEO) {
+        let msg = 'No isochrone returned';
+        try {
+          const respObj = rows[0]?.RESP ? JSON.parse(rows[0].RESP) : {};
+          msg = respObj.message || respObj.error || msg;
+        } catch {}
+        console.error('[Catchment] failed:', msg);
+        alert(`Catchment preview failed for ${regionName}: ${msg}`);
+        return;
+      }
       try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch (e) { console.error('[Catchment] JSON parse error:', e); }
+    } catch (e: any) {
+      console.error('[Catchment] error:', e);
+      alert(`Catchment preview error: ${e?.message || e}`);
     }
-  }, [centerCoords, vehicles, isoMinutes]);
+  }, [centerCoords, vehicles, isoMinutes, regionName]);
 
   const optimizeRoutes = useCallback(async () => {
     if (!places.length) return;
