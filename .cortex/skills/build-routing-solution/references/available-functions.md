@@ -19,6 +19,8 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
 
+**IMPORTANT for OPTIMIZATION**: Always pass `region` (e.g. `'California'`, `'Germany'`) as the last argument when running for a specific region. The gateway uses it to route the VRP to the per-region `VROOM_SERVICE_<REGION>` (which talks to `ors-service-<region>`). Omitting `region` (or passing `NULL`) falls through to the legacy global VROOM that uses the SF-only base ORS graph and will fail for any non-SF data.
+
 ## Matrix / Status Scalar Functions
 
 Return VARIANT:

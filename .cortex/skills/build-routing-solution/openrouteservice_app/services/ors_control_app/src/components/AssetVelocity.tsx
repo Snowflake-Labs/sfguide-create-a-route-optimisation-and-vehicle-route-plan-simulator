@@ -228,7 +228,7 @@ export default function AssetVelocity() {
     }));
     const challenge = { jobs: vrpJobs, vehicles: vrpVehicles };
     const rows = await sfQuery(
-      `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(challenge).replace(/'/g, "''")}')))`,
+      `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(challenge).replace(/'/g, "''")}'), '${regionName}'))`,
       'OPENROUTESERVICE_APP', 'CORE',
     );
     if (rows.length) {

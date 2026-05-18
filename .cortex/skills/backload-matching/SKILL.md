@@ -42,7 +42,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | CREATE VIEW | Schema (FLEET_INTELLIGENCE.BACKLOAD_MATCHING) | VW_TRAILERS, VW_BACKLOAD_CANDIDATES |
 | USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls OPTIMIZATION + DIRECTIONS + ISOCHRONES (driving-hgv) |
 | USAGE ON SCHEMA OPENROUTESERVICE_APP.CORE | Schema | Same |
-| USAGE ON FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT) | Function | Solver entry point |
+| USAGE ON FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT, VARCHAR) | Function | Solver entry point (challenge, region) |
 | USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Powers the page queries |
 | USAGE ON DATABASE SNOWFLAKE | Database | Calls SNOWFLAKE.CORTEX.COMPLETE for "Why this assignment?" |
 
@@ -86,7 +86,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-
 ```sql
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;            -- 4 services RUNNING
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;  -- > 0
-DESC FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT);     -- exists
+DESC FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT, VARCHAR);     -- exists
 ```
 
 If any step fails, deploy the upstream skill first.

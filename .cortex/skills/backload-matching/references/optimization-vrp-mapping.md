@@ -60,7 +60,7 @@ const challenge = {
 };
 
 const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
-  PARSE_JSON('${JSON.stringify(challenge)}')))`;
+  PARSE_JSON('${JSON.stringify(challenge)}'), '${regionName}'))`;
 ```
 
 VROOM returns one row per vehicle with:
