@@ -179,9 +179,23 @@ export default function RouteOptimization() {
     console.log('[VRP] vrpJobs count:', vrpJobs.length);
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}'))`, 'OPENROUTESERVICE_APP', 'CORE');
-    console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
-    if (rows.length > 0) {
+    try {
+      const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}'))`, 'OPENROUTESERVICE_APP', 'CORE');
+      console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
+      if (rows.length === 0) {
+        let msg = 'No routes returned from solver';
+        try {
+          const errRows = await sfQuery(`SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}')::VARCHAR AS RESP`, 'OPENROUTESERVICE_APP', 'CORE');
+          const respObj = errRows[0]?.RESP ? JSON.parse(errRows[0].RESP) : {};
+          if (respObj.error) {
+            msg = `${respObj.error}: ${respObj.message || ''}`;
+          }
+        } catch (probeErr) {
+          console.error('[VRP] error probe failed:', probeErr);
+        }
+        alert(`Route optimization failed for ${regionName}: ${msg}\n\nThe VROOM service may be warming up. Try again in 10-30 seconds.`);
+        return;
+      }
       setVrpResult(rows[0]);
       const paths: any[] = [];
       for (const row of rows) {
@@ -196,9 +210,13 @@ export default function RouteOptimization() {
       }
       console.log('[VRP] Parsed', paths.length, 'route geometries');
       setRoutePaths(paths);
+    } catch (e: any) {
+      console.error('[VRP] error:', e);
+      alert(`Optimize Routes error: ${e?.message || e}`);
+    } finally {
+      setSolving(false);
     }
-    setSolving(false);
-  }, [places, jobs, vehicles]);
+  }, [places, jobs, vehicles, regionName]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
