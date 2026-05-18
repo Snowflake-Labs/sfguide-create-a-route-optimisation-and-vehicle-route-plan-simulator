@@ -2361,6 +2361,14 @@ app.post('/api/regions/active', async (req, res) => {
         log('WARN', 'CONFIG', `Failed to update ${schema}.CONFIG region: ${e.message}`);
       }
     }
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
+      );
+    } catch (e: any) {
+      log('WARN', 'RouteOpt', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
+    }
     res.json({ ok: true, region });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -242,7 +242,7 @@ export default function RouteOptimization() {
 
       {centerCoords && !loading && places.length === 0 && (
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. The Route Optimization page is currently seeded for SanFrancisco only. Switch the region picker to <b>SanFrancisco</b>, or seed PLACES/LOOKUP/JOB_TEMPLATE for <b>{regionName}</b>.
+          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. Data is auto-seeded from Overture Maps when you switch regions. Try increasing the radius, moving the map center, or if the region was just activated, wait a moment and refresh.
         </div>
       )}
 
