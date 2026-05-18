@@ -1894,7 +1894,35 @@ app.post('/api/matrix/cancel', async (req, res) => {
     if (parsed.statement_handle) {
       await cancelStatement(parsed.statement_handle);
     }
-    res.json({ status: 'cancelled', result: parsed });
+
+    // Drop orphan sibling tables AFTER cancelStatement has resolved so the
+    // DROP cannot race the in-flight async INSERT. The MATRIX_BUILD_JOBS row
+    // is preserved (status CANCELLED) so the user can see history; only the
+    // four data tables are removed.
+    const dropped: string[] = [];
+    try {
+      const jobRows = await runSql(
+        `SELECT REGION, PROFILE, RESOLUTION FROM ${SF_DATABASE}.TRAVEL_MATRIX.MATRIX_BUILD_JOBS WHERE JOB_ID = '${escapeString(job_id)}'`
+      );
+      const job = jobRows?.[0];
+      if (job) {
+        const safeRegion = sanitizeIdentifier((job.REGION || '').toUpperCase());
+        const safeProfile = (job.PROFILE || '').replace(/-/g, '_').toUpperCase();
+        const safeRes = sanitizeIdentifier(job.RESOLUTION || '');
+        const prefix = `${SF_DATABASE}.TRAVEL_MATRIX.${safeRegion}_${safeProfile}_`;
+        const tables = [
+          `${prefix}LIST_${safeRes}`,
+          `${prefix}WORK_QUEUE_${safeRes}`,
+          `${prefix}MATRIX_RAW_${safeRes}`,
+          `${prefix}MATRIX_${safeRes}`,
+        ];
+        for (const t of tables) {
+          try { await runSql(`DROP TABLE IF EXISTS ${t}`); dropped.push(t); } catch {}
+        }
+      }
+    } catch {}
+
+    res.json({ status: 'cancelled', result: parsed, dropped });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
