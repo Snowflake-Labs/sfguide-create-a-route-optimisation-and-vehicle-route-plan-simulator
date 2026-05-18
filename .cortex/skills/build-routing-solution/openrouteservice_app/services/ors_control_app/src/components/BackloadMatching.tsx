@@ -128,15 +128,16 @@ export default function BackloadMatching() {
   const [wakingUp, setWakingUp] = useState(false);
 
   const fetchSvcStatus = useCallback(async (): Promise<SvcStatus[]> => {
-    await sfQuery(`SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`, 'OPENROUTESERVICE_APP', 'CORE');
-    const filterList = requiredServices.map(s => `'${s}'`).join(',');
-    const rows = await sfQuery(
-      `SELECT "name" AS NAME, "status" AS STATUS, "current_instances"::INT AS CUR, "target_instances"::INT AS TGT
-       FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-       WHERE "name" IN (${filterList})`,
-      'OPENROUTESERVICE_APP', 'CORE'
-    );
-    return rows.map((r: any) => ({ name: r.NAME, status: r.STATUS, cur: Number(r.CUR) || 0, tgt: Number(r.TGT) || 0 }));
+    const rows = await sfQuery(`SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`, 'OPENROUTESERVICE_APP', 'CORE');
+    const wanted = new Set(requiredServices);
+    return rows
+      .filter((r: any) => wanted.has(r.name || r.NAME))
+      .map((r: any) => ({
+        name: r.name || r.NAME,
+        status: r.status || r.STATUS,
+        cur: Number(r.current_instances ?? r.CURRENT_INSTANCES) || 0,
+        tgt: Number(r.target_instances ?? r.TARGET_INSTANCES) || 0,
+      }));
   }, [requiredServices]);
 
   useEffect(() => {
@@ -156,7 +157,7 @@ export default function BackloadMatching() {
       const suspended = initial.filter(s => s.status === 'SUSPENDED').map(s => s.name);
       if (suspended.length) {
         await Promise.all(suspended.map(n =>
-          sfQuery(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${n} RESUME`, 'OPENROUTESERVICE_APP', 'CORE')
+          fetch(`/api/services/${n}/resume`, { method: 'POST' })
         ));
       }
       for (let i = 0; i < 18; i++) {

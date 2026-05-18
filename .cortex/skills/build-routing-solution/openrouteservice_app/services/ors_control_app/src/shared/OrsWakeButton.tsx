@@ -15,6 +15,7 @@ async function sfQuery(sql: string, database = 'OPENROUTESERVICE_APP', schema = 
 export default function OrsWakeButton() {
   const { regionName } = useRegion();
   const [svcStatus, setSvcStatus] = useState<SvcStatus[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [wakingUp, setWakingUp] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -25,21 +26,24 @@ export default function OrsWakeButton() {
   ];
 
   const fetchSvcStatus = useCallback(async (): Promise<SvcStatus[]> => {
-    await sfQuery(`SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`);
-    const filterList = requiredServices.map(s => `'${s}'`).join(',');
-    const rows = await sfQuery(
-      `SELECT "name" AS NAME, "status" AS STATUS, "current_instances"::INT AS CUR, "target_instances"::INT AS TGT
-       FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-       WHERE "name" IN (${filterList})`
-    );
-    const result = rows.map((r: any) => ({ name: r.NAME, status: r.STATUS, cur: Number(r.CUR) || 0, tgt: Number(r.TGT) || 0 }));
+    const rows = await sfQuery(`SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`);
+    const wanted = new Set(requiredServices);
+    const result: SvcStatus[] = rows
+      .filter((r: any) => wanted.has((r.name || r.NAME)))
+      .map((r: any) => ({
+        name: r.name || r.NAME,
+        status: r.status || r.STATUS,
+        cur: Number(r.current_instances ?? r.CURRENT_INSTANCES) || 0,
+        tgt: Number(r.target_instances ?? r.TARGET_INSTANCES) || 0,
+      }));
     setSvcStatus(result);
+    setLoaded(true);
     return result;
   }, [regionName]);
 
   useEffect(() => {
     let active = true;
-    const tick = async () => { try { const s = await fetchSvcStatus(); if (active) setSvcStatus(s); } catch {} };
+    const tick = async () => { try { await fetchSvcStatus(); } catch { if (active) setLoaded(true); } };
     tick();
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(tick, 30000);
@@ -63,24 +67,36 @@ export default function OrsWakeButton() {
       const suspended = initial.filter(s => s.status === 'SUSPENDED').map(s => s.name);
       if (suspended.length) {
         await Promise.all(suspended.map(n =>
-          sfQuery(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${n} RESUME`)
+          fetch(`/api/services/${n}/resume`, { method: 'POST' })
         ));
       }
       for (let i = 0; i < 18; i++) {
         await new Promise(r => setTimeout(r, 5000));
         const next = await fetchSvcStatus();
-        if (next.every(r => r.status === 'RUNNING' && r.cur >= r.tgt)) break;
+        if (next.length > 0 && next.every(r => r.status === 'RUNNING' && r.cur >= r.tgt)) break;
       }
     } finally {
       setWakingUp(false);
     }
   }, [fetchSvcStatus]);
 
-  if (!svcStatus.length) {
+  if (!loaded) {
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 8px', borderRadius: 12, border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#9ca3af' }} />
         ORS checking...
+      </span>
+    );
+  }
+
+  if (svcStatus.length === 0) {
+    return (
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 8px', borderRadius: 12, background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)', color: '#b45309' }}
+        title={`No services found matching ${requiredServices.join(', ')}`}
+      >
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b' }} />
+        ORS not provisioned for {regionName}
       </span>
     );
   }
@@ -124,7 +140,7 @@ export default function OrsWakeButton() {
       style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 8px', borderRadius: 12, background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)', color: '#b45309', fontWeight: 500 }}
       title={svcStatus.map(s => `${s.name}: ${s.status} ${s.cur}/${s.tgt}`).join('\n')}
     >
-      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 1.5s infinite' }} />
+      <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b' }} />
       {wakingUp ? 'Resuming...' : `Starting ${regionName}... (${readyCount}/${svcStatus.length})`}
     </span>
   );
