@@ -147,9 +147,6 @@ export default function BackloadMatching() {
     return () => { active = false; clearInterval(id); };
   }, [fetchSvcStatus]);
 
-  const allReady = svcStatus.length > 0 && svcStatus.every(s => s.status === 'RUNNING' && s.cur >= s.tgt);
-  const readyCount = svcStatus.filter(s => s.status === 'RUNNING' && s.cur >= s.tgt).length;
-  const anySuspended = svcStatus.some(s => s.status === 'SUSPENDED');
 
   const wakeUp = useCallback(async () => {
     setWakingUp(true);
@@ -342,7 +339,7 @@ export default function BackloadMatching() {
     setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpJobs.length} jobs (region=${regionName}, profile=${profile}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned.`);
     if (rows.length === 0 && vrpJobs.length > 0) {
       setSolveError(
-        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING (use Wake up ORS), ` +
+        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING (check ORS status in the header), ` +
         `(2) region='${regionName}' covers your data bbox, ` +
         `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}.`
       );
@@ -519,14 +516,6 @@ export default function BackloadMatching() {
         <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
           {solving ? 'Solving...' : 'Solve Backloads'}
         </button>
-        <button className="btn-primary" onClick={wakeUp} disabled={wakingUp} title="Resume suspended ORS routing services" style={{ background: anySuspended ? '#E5484D' : '#6B7280', minWidth: 130 }}>
-          {wakingUp ? 'Resuming...' : 'Wake up ORS'}
-        </button>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '3px 8px', borderRadius: 12, border: '1px solid var(--border)' }}
-              title={svcStatus.map(s => `${s.name}: ${s.status} ${s.cur}/${s.tgt}`).join('\n')}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: allReady ? '#10b981' : (anySuspended ? '#ef4444' : '#f59e0b') }} />
-          {svcStatus.length ? `${readyCount}/${svcStatus.length} ${allReady ? 'ready' : (anySuspended ? 'suspended' : 'warming')}` : 'checking...'}
-        </span>
         <button className="btn-primary" onClick={confirmPlan} disabled={confirming || !assignments.length} style={{ minWidth: 140 }}>
           {confirming ? 'Saving...' : 'Confirm Plan'}
         </button>

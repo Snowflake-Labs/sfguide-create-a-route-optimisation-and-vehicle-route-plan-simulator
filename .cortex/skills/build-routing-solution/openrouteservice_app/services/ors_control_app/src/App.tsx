@@ -24,6 +24,7 @@ import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
 import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
 import DatasetPicker from './shared/DatasetPicker';
+import OrsWakeButton from './shared/OrsWakeButton';
 
 interface SubPage { key: string; label: string; }
 
@@ -221,6 +222,7 @@ export default function App() {
                 </span>
               )}
               <DatasetPicker />
+              <OrsWakeButton />
               <button
                 onClick={() => {
                   document.cookie.split(';').forEach(c => {

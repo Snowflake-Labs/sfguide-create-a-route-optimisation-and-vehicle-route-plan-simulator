@@ -65,6 +65,7 @@ export default function DatasetPicker() {
       await switchVehicleType(ds.vehicleType);
       await switchRegion(ds.region);
       setActiveLabel(ds.presetName);
+      window.dispatchEvent(new CustomEvent('ors-region-switched'));
       await fetchDatasets();
     } finally {
       setSwitching(false);
