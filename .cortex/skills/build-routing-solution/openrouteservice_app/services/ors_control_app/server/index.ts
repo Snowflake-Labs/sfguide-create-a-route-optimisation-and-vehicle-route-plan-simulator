@@ -949,7 +949,13 @@ app.get('/api/regions/:region/build-history', async (req, res) => {
 app.get('/api/regions/provisioned', async (_req, res) => {
   try {
     const result = await callProcedure('LIST_REGIONS()');
-    const regions = JSON.parse(result || '[]');
+    const allRegions = JSON.parse(result || '[]');
+    // Issue #45: LIST_REGIONS now seeds the default SanFrancisco row in
+    // REGION_ORS_MAP. Filter it out here so the existing `region: 'default'`
+    // synthetic entry below (which clients depend on for the isDefault key
+    // and the ORS_SERVICE service-name resolution) remains the single source
+    // of truth for the built-in region in this API.
+    const regions = allRegions.filter((c: any) => !c.is_default && (c.region || '').toUpperCase() !== 'SANFRANCISCO');
     const enriched = await Promise.all(regions.map(async (c: any) => {
       let serviceStatus = 'UNKNOWN';
       try {
@@ -1289,7 +1295,11 @@ app.post('/api/regions/:region/diagnose', async (req, res) => {
 
 app.get('/api/matrix/regions', async (_req, res) => {
   try {
-    const orsRegions = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
+    // Issue #45: REGION_ORS_MAP now contains a seeded SanFrancisco row for the
+    // built-in default service. Exclude it from the per-region loop so the
+    // existing default-region synthetic entry (added below via unshift) stays
+    // the single source of truth for the built-in region in this endpoint.
+    const orsRegions = await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE UPPER(REGION) <> 'SANFRANCISCO'`);
     const regions: any[] = [];
 
     for (const c of orsRegions) {
@@ -2089,7 +2099,9 @@ app.get('/api/regions', async (_req, res) => {
     } catch {}
     const knownNames = new Set(regions.map((r: any) => r.REGION_NAME));
     try {
-      const orsMapRows = await runSql(`SELECT REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP`);
+      // Issue #45: Skip the seeded default SanFrancisco row from REGION_ORS_MAP
+      // here so the stage-scan block below can still add it with IS_DEFAULT=true.
+      const orsMapRows = await runSql(`SELECT REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE UPPER(REGION) <> 'SANFRANCISCO'`);
       for (const row of orsMapRows || []) {
         if (row.REGION && !knownNames.has(row.REGION)) {
           const centerLat = ((row.MIN_LAT || 0) + (row.MAX_LAT || 0)) / 2;

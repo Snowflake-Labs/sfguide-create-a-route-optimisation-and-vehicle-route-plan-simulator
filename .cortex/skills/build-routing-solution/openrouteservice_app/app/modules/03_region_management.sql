@@ -660,6 +660,21 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
+-- Seed the default SanFrancisco region row so LIST_REGIONS() includes the
+-- built-in ORS service that ships with the app (issue #45). The default
+-- service is created from openrouteservice.yaml at install time and never
+-- flows through PROVISION_REGION_WRAPPER, so it would otherwise be hidden
+-- from the API. MERGE keeps this idempotent across module re-runs and
+-- preserves any user-modified status. PBF_URL/COMPUTE_SIZE/INSTANCE_FAMILY
+-- intentionally left NULL: the default PBF ships pre-staged (no download URL)
+-- and compute is configured via openrouteservice.yaml, not via this table.
+MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t
+USING (SELECT 'SanFrancisco' AS REGION) s ON t.REGION = s.REGION
+WHEN NOT MATCHED THEN INSERT
+    (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
+    VALUES ('SanFrancisco', 'San Francisco',
+            37.71, 37.81, -122.51, -122.37, 'DEPLOYED');
+
 -- =============================================================================
 -- COST_GUARD_LOG
 -- Audit trail for cost-guard actions taken by the wrapper EXCEPTION block.
@@ -1305,6 +1320,7 @@ BEGIN
         'region', REGION,
         'display_name', DISPLAY_NAME,
         'status', STATUS,
+        'is_default', (REGION = 'SanFrancisco'),
         'bbox', OBJECT_CONSTRUCT('min_lat', MIN_LAT, 'max_lat', MAX_LAT, 'min_lon', MIN_LON, 'max_lon', MAX_LON)
     ))::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;

@@ -37,7 +37,7 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 | Function | Returns | Description |
 |----------|---------|-------------|
 | `CHECK_HEALTH()` | BOOLEAN | True if ORS gateway responds |
-| `LIST_REGIONS()` | TABLE (REGION, DISPLAY_NAME, STATUS, ...) | All provisioned regions |
+| `LIST_REGIONS()` | JSON array (region, display_name, status, is_default, bbox) | All known regions, including the built-in default `SanFrancisco` (`is_default=true`) |
 
 ## Lifecycle Management Procedures
 
@@ -50,7 +50,7 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 
 - `SETUP_REGION_ORS(region)` — Provisions a new region with its own ORS service
 - `DROP_REGION_ORS(region)` — Removes a region's service and metadata
-- `LIST_REGIONS()` — Returns JSON array of all provisioned regions
+- `LIST_REGIONS()` — Returns JSON array of all known regions (including the built-in default `SanFrancisco`, marked with `is_default=true`)
 - `REFRESH_REGION_CATALOG()` — Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
 
 Note: Per-region function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
