@@ -10,7 +10,19 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    USE SCHEMA OPENROUTESERVICE_APP.CORE;   
-   
+
+   -- Component version registry consumed by ors_control_app /api/health endpoint.
+   -- Created here (before any CREATE SERVICE) so the health-poll never compiles
+   -- against a missing object. Seeded by Step 6 of build-routing-solution SKILL.md
+   -- using values from openrouteservice_app/image-versions.env.
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VERSION_INFO (
+     COMPONENT  VARCHAR NOT NULL,
+     VERSION    VARCHAR NOT NULL,
+     UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+     CONSTRAINT PK_VERSION_INFO PRIMARY KEY (COMPONENT)
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"core"}}';
+
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
      VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')

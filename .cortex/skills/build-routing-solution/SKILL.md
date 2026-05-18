@@ -241,7 +241,51 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
 
-2. **Verify** all services are running:
+3. **Seed `VERSION_INFO`** from `image-versions.env` (single source of truth for SPCS image tags). The table itself was created by `01_core_infra.sql`; this step populates the four rows consumed by `ors_control_app` `/api/health`:
+   ```bash
+   source .cortex/skills/build-routing-solution/openrouteservice_app/image-versions.env
+
+   snow sql -c <connection> -q "$(cat <<EOF
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+MERGE INTO OPENROUTESERVICE_APP.CORE.VERSION_INFO t
+USING (
+  SELECT 'openrouteservice' AS COMPONENT, '${OPENROUTESERVICE_TAG}'      AS VERSION UNION ALL
+  SELECT 'vroom',                          '${VROOM_DOCKER_TAG}'                    UNION ALL
+  SELECT 'routing_gateway',                '${ROUTING_REVERSE_PROXY_TAG}'           UNION ALL
+  SELECT 'ors_control_app',                '${ORS_CONTROL_APP_TAG}'
+) s
+ON t.COMPONENT = s.COMPONENT
+WHEN MATCHED AND t.VERSION <> s.VERSION THEN UPDATE SET VERSION = s.VERSION, UPDATED_AT = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN INSERT (COMPONENT, VERSION) VALUES (s.COMPONENT, s.VERSION);
+EOF
+)"
+   ```
+
+   > **Backfill for already-deployed environments** (where `01_core_infra.sql` ran before this fix and `VERSION_INFO` was never created): run the same DDL + MERGE against the existing install. The DDL is idempotent. Replace the literal version values with the current contents of `image-versions.env` if running standalone:
+   > ```sql
+   > ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+   >
+   > CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VERSION_INFO (
+   >   COMPONENT  VARCHAR NOT NULL,
+   >   VERSION    VARCHAR NOT NULL,
+   >   UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+   >   CONSTRAINT PK_VERSION_INFO PRIMARY KEY (COMPONENT)
+   > )
+   > COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"core"}}';
+   >
+   > MERGE INTO OPENROUTESERVICE_APP.CORE.VERSION_INFO t
+   > USING (
+   >   SELECT 'openrouteservice' AS COMPONENT, '<OPENROUTESERVICE_TAG>'      AS VERSION UNION ALL
+   >   SELECT 'vroom',                          '<VROOM_DOCKER_TAG>'                    UNION ALL
+   >   SELECT 'routing_gateway',                '<ROUTING_REVERSE_PROXY_TAG>'           UNION ALL
+   >   SELECT 'ors_control_app',                '<ORS_CONTROL_APP_TAG>'
+   > ) s
+   > ON t.COMPONENT = s.COMPONENT
+   > WHEN MATCHED AND t.VERSION <> s.VERSION THEN UPDATE SET VERSION = s.VERSION, UPDATED_AT = CURRENT_TIMESTAMP()
+   > WHEN NOT MATCHED THEN INSERT (COMPONENT, VERSION) VALUES (s.COMPONENT, s.VERSION);
+   > ```
+
+4. **Verify** all services are running:
    ```sql
    SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
