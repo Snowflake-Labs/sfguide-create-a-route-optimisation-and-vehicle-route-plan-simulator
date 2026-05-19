@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
@@ -8,6 +7,27 @@ import { useRegion } from '../hooks/useRegion';
 
 const RC_DB = 'FLEET_INTELLIGENCE';
 const RC_SCHEMA = 'RETAIL_CATCHMENT';
+
+const PROFILE_LABELS: Record<string, string> = {
+  'driving-car': 'Car',
+  'driving-hgv': 'Truck',
+  'cycling-regular': 'Bicycle',
+  'cycling-electric': 'E-Bike',
+  'cycling-mountain': 'Mountain Bike',
+  'cycling-road': 'Road Bike',
+  'foot-walking': 'Walking',
+  'foot-hiking': 'Hiking',
+  'wheelchair': 'Wheelchair',
+};
+
+interface ProvisionedRegion {
+  region: string;
+  display_name: string;
+  profiles_loaded: string[];
+  center_lat: number;
+  center_lon: number;
+  zoom: number;
+}
 
 async function sfQuery(sql: string, database = RC_DB, schema = RC_SCHEMA): Promise<any[]> {
   try {
@@ -25,9 +45,10 @@ function cartoBasemap() {
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 
 export default function RetailCatchment() {
-  const { regionName, center, zoom } = useRegion();
-  const [cities, setCities] = useState<any[]>([]);
-  const [selectedCity, setSelectedCity] = useState('');
+  const { regions: globalRegions, center: globalCenter, zoom: globalZoom } = useRegion();
+  const [provisionedRegions, setProvisionedRegions] = useState<ProvisionedRegion[]>([]);
+  const [selectedRegion, setSelectedRegion] = useState('');
+  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [pois, setPois] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState<any>(null);
   const [travelMode, setTravelMode] = useState('driving-car');
@@ -36,37 +57,81 @@ export default function RetailCatchment() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [competitors, setCompetitors] = useState<any[]>([]);
   const [densityHexes, setDensityHexes] = useState<any[]>([]);
-  const [cityBbox, setCityBbox] = useState<{ minLon: number; maxLon: number; minLat: number; maxLat: number } | null>(null);
+  const [regionBbox, setRegionBbox] = useState<{ minLon: number; maxLon: number; minLat: number; maxLat: number } | null>(null);
   const [showCompetitors, setShowCompetitors] = useState(true);
   const [showDensity, setShowDensity] = useState(true);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
+  // Fetch the list of provisioned regions (with their built profiles) once on mount.
+  // Local-only: this dropdown does NOT call switchRegion(). The header switcher
+  // remains the sole driver of the global active region.
   useEffect(() => {
-    if (center.lng !== 0 && center.lat !== 0) {
-      setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-    }
-  }, [center.lng, center.lat, zoom]);
+    setLoading(true);
+    fetch('/api/regions/provisioned')
+      .then(r => r.json())
+      .then((data: any[]) => {
+        const ready: ProvisionedRegion[] = (data || [])
+          .filter(d => d && (d.serviceStatus === 'RUNNING' || d.serviceStatus === 'READY'))
+          .map(d => {
+            const profiles: string[] = d.graphReadiness?.profiles_loaded || [];
+            const matching = globalRegions.find(g => g.REGION_NAME === d.region);
+            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? d.bbox?.min_lat != null && d.bbox?.max_lat != null ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : 0) || 0;
+            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? d.bbox?.min_lon != null && d.bbox?.max_lon != null ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : 0) || 0;
+            const zoomLvl = Number(matching?.ZOOM_LEVEL ?? 11);
+            return {
+              region: d.region,
+              display_name: d.display_name || matching?.DISPLAY_NAME || d.region,
+              profiles_loaded: profiles,
+              center_lat: centerLat,
+              center_lon: centerLon,
+              zoom: zoomLvl,
+            };
+          })
+          .filter(d => d.profiles_loaded.length > 0);
+        setProvisionedRegions(ready);
+      })
+      .catch(() => setProvisionedRegions([]))
+      .finally(() => setLoading(false));
+  }, [globalRegions]);
 
+  // Initial map view follows the global region until the user picks one locally.
   useEffect(() => {
-    setSelectedCity('');
-    setPois([]);
+    if (!selectedRegion && globalCenter.lng !== 0 && globalCenter.lat !== 0) {
+      setViewState(prev => ({ ...prev, longitude: globalCenter.lng, latitude: globalCenter.lat, zoom: globalZoom }));
+    }
+  }, [globalCenter.lng, globalCenter.lat, globalZoom, selectedRegion]);
+
+  // When the local region selection changes: refresh available profiles, reset
+  // travel mode if needed, recenter the map, and load POIs for that region.
+  useEffect(() => {
     setSelectedStore(null);
     setCatchmentZones([]);
     setCompetitors([]);
     setDensityHexes([]);
-    setCityBbox(null);
-    setLoading(true);
-    sfQuery(`SELECT DISTINCT CITY, STATE FROM CITIES_BY_STATE WHERE REGION = '${regionName}' ORDER BY STATE, CITY`)
-      .then(setCities)
-      .finally(() => setLoading(false));
-  }, [regionName]);
+    setPois([]);
+    setRegionBbox(null);
 
-  useEffect(() => {
-    if (!selectedCity) return;
+    if (!selectedRegion) {
+      setAvailableProfiles([]);
+      return;
+    }
+
+    const region = provisionedRegions.find(r => r.region === selectedRegion);
+    if (!region) return;
+
+    setAvailableProfiles(region.profiles_loaded);
+    if (!region.profiles_loaded.includes(travelMode)) {
+      setTravelMode(region.profiles_loaded[0]);
+    }
+
+    if (region.center_lat && region.center_lon) {
+      setViewState(prev => ({ ...prev, longitude: region.center_lon, latitude: region.center_lat, zoom: region.zoom }));
+    }
+
     setLoading(true);
-    sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' LIMIT 200`)
+    sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${selectedRegion}' LIMIT 200`)
       .then(r => {
         setPois(r);
         if (r.length > 0) {
@@ -74,24 +139,25 @@ export default function RetailCatchment() {
           const lats = r.map((p: any) => Number(p.LAT));
           const avgLng = lngs.reduce((s: number, v: number) => s + v, 0) / lngs.length;
           const avgLat = lats.reduce((s: number, v: number) => s + v, 0) / lats.length;
-          setCityBbox({ minLon: Math.min(...lngs) - 0.1, maxLon: Math.max(...lngs) + 0.1, minLat: Math.min(...lats) - 0.08, maxLat: Math.max(...lats) + 0.08 });
+          setRegionBbox({ minLon: Math.min(...lngs) - 0.1, maxLon: Math.max(...lngs) + 0.1, minLat: Math.min(...lats) - 0.08, maxLat: Math.max(...lats) + 0.08 });
           setViewState(prev => ({ ...prev, longitude: avgLng, latitude: avgLat, zoom: 12 }));
         }
       })
       .finally(() => setLoading(false));
-  }, [selectedCity]);
+  }, [selectedRegion, provisionedRegions]);
 
-  const fetchDensity = useCallback(async (poi: any, res: number, bbox: { minLon: number; maxLon: number; minLat: number; maxLat: number } | null) => {
+  const fetchDensity = useCallback(async (_poi: any, res: number, bbox: { minLon: number; maxLon: number; minLat: number; maxLat: number } | null) => {
+    if (!selectedRegion) return;
     const bboxFilter = bbox
       ? `LONGITUDE BETWEEN ${bbox.minLon} AND ${bbox.maxLon} AND LATITUDE BETWEEN ${bbox.minLat} AND ${bbox.maxLat}`
-      : `REGION = '${regionName}'`;
-    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
+      : `REGION = '${selectedRegion}'`;
+    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${selectedRegion}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
     setDensityHexes(density);
-  }, [regionName]);
+  }, [selectedRegion]);
 
   useEffect(() => {
-    if (selectedStore && cityBbox) fetchDensity(selectedStore, h3Res, cityBbox);
-  }, [h3Res, fetchDensity, cityBbox]);
+    if (selectedStore && regionBbox) fetchDensity(selectedStore, h3Res, regionBbox);
+  }, [h3Res, fetchDensity, regionBbox]);
 
   const selectStore = useCallback(async (poi: any) => {
     setSelectedStore(poi);
@@ -115,16 +181,16 @@ export default function RetailCatchment() {
     }
     setCatchmentZones(zones.reverse());
 
-    const bboxFilter = cityBbox
-      ? `LONGITUDE BETWEEN ${cityBbox.minLon} AND ${cityBbox.maxLon} AND LATITUDE BETWEEN ${cityBbox.minLat} AND ${cityBbox.maxLat}`
-      : `REGION = '${regionName}'`;
+    const bboxFilter = regionBbox
+      ? `LONGITUDE BETWEEN ${regionBbox.minLon} AND ${regionBbox.maxLon} AND LATITUDE BETWEEN ${regionBbox.minLat} AND ${regionBbox.maxLat}`
+      : `REGION = '${selectedRegion}'`;
     const [comp, density] = await Promise.all([
-      sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${regionName}' AND CITY = '${selectedCity}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
-      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${regionName}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
+      sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${selectedRegion}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
+      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${selectedRegion}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
     ]);
     setCompetitors(comp);
     setDensityHexes(density);
-  }, [selectedCity, travelMode, numZones, maxMinutes, h3Res, cityBbox, regionName]);
+  }, [selectedRegion, travelMode, numZones, maxMinutes, h3Res, regionBbox]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -160,19 +226,18 @@ export default function RetailCatchment() {
       <p className="subtitle">Multi-zone isochrone catchment analysis</p>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div className="form-group" style={{ minWidth: 160 }}>
-          <label>City</label>
-          <select className="form-select" value={selectedCity} onChange={e => setSelectedCity(e.target.value)}>
-            <option value="">Select city...</option>
-            {cities.map(c => <option key={`${c.CITY}-${c.STATE}`} value={c.CITY}>{c.CITY}, {c.STATE}</option>)}
+        <div className="form-group" style={{ minWidth: 200 }}>
+          <label>Region</label>
+          <select className="form-select" value={selectedRegion} onChange={e => setSelectedRegion(e.target.value)}>
+            <option value="">Select region...</option>
+            {provisionedRegions.map(r => <option key={r.region} value={r.region}>{r.display_name}</option>)}
           </select>
         </div>
-        <div className="form-group" style={{ minWidth: 120 }}>
+        <div className="form-group" style={{ minWidth: 140 }}>
           <label>Travel Mode</label>
-          <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)}>
-            <option value="driving-car">Car</option>
-            <option value="cycling-regular">Bicycle</option>
-            <option value="foot-walking">Walking</option>
+          <select className="form-select" value={travelMode} onChange={e => setTravelMode(e.target.value)} disabled={!availableProfiles.length}>
+            {availableProfiles.length === 0 && <option value="">—</option>}
+            {availableProfiles.map(p => <option key={p} value={p}>{PROFILE_LABELS[p] ?? p}</option>)}
           </select>
         </div>
         <div style={{ minWidth: 100 }}>
