@@ -38,7 +38,32 @@ CREATE TABLE IF NOT EXISTS CONFIG (
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 MERGE INTO CONFIG tgt
-USING (SELECT 'hgv' AS VEHICLE_TYPE, 'California' AS REGION) src
+USING (
+  -- Data-driven default: pick the (region, vehicle_type) tuple with the most
+  -- synthetic rows so the views populate against whatever preset is loaded.
+  -- No hardcoded city/vehicle. Rank by FACT_TRIPS first, fall back to DIM_FLEET.
+  -- This MERGE only fires WHEN NOT MATCHED, so once Data Studio's
+  -- syncRegionRegistryAndConfig (or /api/regions/active) has set the row, it is
+  -- never overwritten.
+  WITH counts AS (
+    SELECT t.VEHICLE_TYPE, t.REGION, COUNT(*) AS n
+    FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+    WHERE t.VEHICLE_TYPE IS NOT NULL AND t.REGION IS NOT NULL
+    GROUP BY 1, 2
+    UNION ALL
+    SELECT f.VEHICLE_TYPE, f.REGION, COUNT(*) AS n
+    FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+    WHERE f.VEHICLE_TYPE IS NOT NULL AND f.REGION IS NOT NULL
+    GROUP BY 1, 2
+  ),
+  ranked AS (
+    SELECT VEHICLE_TYPE, REGION, SUM(n) AS total_rows
+    FROM counts
+    GROUP BY 1, 2
+    QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(n) DESC) = 1
+  )
+  SELECT VEHICLE_TYPE, REGION FROM ranked
+) src
 ON TRUE
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
@@ -123,6 +148,107 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120;
+
+-- ----------------------------------------------------------------------------
+-- 4b. Ensure FACT_FREIGHT_OFFERS exists and is populated for the active region.
+--     Inlined from references/backfill-freight-offers.sql so any preset (default
+--     SanFrancisco included) gets offers without a separate manual step. Both
+--     the CREATE TABLE and the INSERT are idempotent — the INSERT skips regions
+--     that already have offers, so re-running this script is safe.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
+  OFFER_ID         VARCHAR,
+  REGION           VARCHAR(100),
+  VEHICLE_TYPE     VARCHAR(20),
+  SOURCE           VARCHAR(30),
+  PICKUP_POI_ID    VARCHAR,
+  PICKUP_LAT       FLOAT,
+  PICKUP_LON       FLOAT,
+  PICKUP_GEOM      GEOGRAPHY,
+  DROPOFF_POI_ID   VARCHAR,
+  DROPOFF_LAT      FLOAT,
+  DROPOFF_LON      FLOAT,
+  DROPOFF_GEOM     GEOGRAPHY,
+  PICKUP_FROM_TS   TIMESTAMP_NTZ,
+  PICKUP_TO_TS     TIMESTAMP_NTZ,
+  WEIGHT_KG        NUMBER,
+  PRODUCT          VARCHAR,
+  PRICE_USD        NUMBER,
+  HAZMAT           BOOLEAN,
+  LISTING_TEXT     VARCHAR,
+  POSTED_AT        TIMESTAMP_NTZ,
+  JOB_ID           VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
+  OFFER_ID, REGION, VEHICLE_TYPE, SOURCE,
+  PICKUP_POI_ID, PICKUP_LAT, PICKUP_LON, PICKUP_GEOM,
+  DROPOFF_POI_ID, DROPOFF_LAT, DROPOFF_LON, DROPOFF_GEOM,
+  PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_USD,
+  HAZMAT, LISTING_TEXT, POSTED_AT, JOB_ID
+)
+WITH targets AS (
+  SELECT DISTINCT
+    p.REGION,
+    COALESCE(t.VEHICLE_TYPE, 'hgv') AS VEHICLE_TYPE,
+    p.JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+  LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+    ON t.JOB_ID = p.JOB_ID
+  WHERE p.REGION NOT IN (SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS WHERE REGION IS NOT NULL)
+),
+pois_numbered AS (
+  SELECT p.REGION, p.JOB_ID, p.LOCATION_ID, p.NAME, p.LAT, p.LNG, p.POINT_GEOM,
+         ROW_NUMBER() OVER (PARTITION BY p.REGION ORDER BY p.LOCATION_ID) AS RN,
+         COUNT(*)   OVER (PARTITION BY p.REGION) AS C
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+  JOIN targets t ON t.REGION = p.REGION
+),
+seq AS (
+  SELECT t.REGION, t.VEHICLE_TYPE, t.JOB_ID, g.S
+  FROM targets t
+  CROSS JOIN (SELECT SEQ4()+1 AS S FROM TABLE(GENERATOR(ROWCOUNT => 300))) g
+),
+pairs AS (
+  SELECT s.REGION, s.VEHICLE_TYPE, s.JOB_ID, s.S,
+         p.LOCATION_ID AS P_ID, p.LNG AS P_LON, p.LAT AS P_LAT, p.POINT_GEOM AS P_GEOM, p.NAME AS P_NAME, p.C AS C,
+         q.LOCATION_ID AS Q_ID, q.LNG AS Q_LON, q.LAT AS Q_LAT, q.POINT_GEOM AS Q_GEOM, q.NAME AS Q_NAME
+  FROM seq s
+  JOIN pois_numbered p ON p.REGION = s.REGION AND p.RN = MOD(s.S * 7,  p.C) + 1
+  JOIN pois_numbered q ON q.REGION = s.REGION AND q.RN = MOD(s.S * 13 + 5, q.C) + 1
+  WHERE p.LOCATION_ID <> q.LOCATION_ID
+)
+SELECT
+  'OFF-' || LPAD(S::VARCHAR, 6, '0')                                                            AS OFFER_ID,
+  REGION,
+  VEHICLE_TYPE,
+  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
+       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
+       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
+  END                                                                                            AS SOURCE,
+  P_ID                                                                                           AS PICKUP_POI_ID,
+  P_LAT                                                                                          AS PICKUP_LAT,
+  P_LON                                                                                          AS PICKUP_LON,
+  P_GEOM                                                                                         AS PICKUP_GEOM,
+  Q_ID                                                                                           AS DROPOFF_POI_ID,
+  Q_LAT                                                                                          AS DROPOFF_LAT,
+  Q_LON                                                                                          AS DROPOFF_LON,
+  Q_GEOM                                                                                         AS DROPOFF_GEOM,
+  DATEADD(MINUTE, MOD(S * 73,  1100) + 60,  CURRENT_TIMESTAMP())                                  AS PICKUP_FROM_TS,
+  DATEADD(MINUTE, MOD(S * 73,  1100) + 360, CURRENT_TIMESTAMP())                                  AS PICKUP_TO_TS,
+  (800 + MOD(ABS(HASH(P_ID || Q_ID)), 24000))::NUMBER                                             AS WEIGHT_KG,
+  DECODE(MOD(S, 6), 0,'Pallets (general)', 1,'Steel coils', 2,'Plastic granulate',
+                    3,'Beverages', 4,'Furniture', 5,'Bulk paper')                                 AS PRODUCT,
+  (400 + MOD(ABS(HASH(Q_ID || P_ID)), 4000))::NUMBER                                              AS PRICE_USD,
+  MOD(S, 13) = 0                                                                                  AS HAZMAT,
+  CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
+       THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
+       ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
+  END || ' ' || P_NAME || ' -> ' || Q_NAME                                                        AS LISTING_TEXT,
+  CURRENT_TIMESTAMP()                                                                             AS POSTED_AT,
+  JOB_ID
+FROM pairs;
 
 -- ----------------------------------------------------------------------------
 -- 5. VW_EXTERNAL_OFFERS - FACT_FREIGHT_OFFERS filtered by CONFIG

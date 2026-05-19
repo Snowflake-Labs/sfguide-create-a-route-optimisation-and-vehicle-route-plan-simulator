@@ -428,6 +428,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Route Optimization (seed + VRP page)** | Seeds PLACES/LOOKUP/JOB_TEMPLATE; powers the VRP page in the Control App | ~5 min | Overture Maps (Step 8b) |
    | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
+   | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers; runs against whatever region/vehicle preset is active (no region hardcoded) | ~3 min | Seed data (Step 8) + Route Optimization deployed |
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
@@ -447,6 +448,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - Retail Catchment -> Read and follow `.cortex/skills/retail-catchment/SKILL.md`
    - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
    - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
+   - Backload Matching -> Read and follow `.cortex/skills/backload-matching/SKILL.md`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 
