@@ -716,10 +716,18 @@ instructions:
     - Multi-stop optimization: Use tool_optimization
     - POI / amenity questions ("what cafes / restaurants / shops / pharmacies can I reach",
       "places to eat near", "closest X within Y minutes"): Use tool_poi_in_isochrone.
-      Map the user's mode of travel to the profile arg:
-        - "cycle" / "bike" / "biking" -> profile=cycling-regular
-        - "walk" / "walking" / "on foot" -> profile=foot-walking
+      Map the user's mode of travel to the profile arg using the profiles loaded in the
+      default ORS_SERVICE (driving-car, driving-hgv, cycling-electric):
+        - "cycle" / "bike" / "biking" / "cycling" / "ebike" / "e-bike" -> profile=cycling-electric
+        - "truck" / "lorry" / "HGV" / "freight" / "heavy goods" -> profile=driving-hgv
         - "drive" / "driving" / "by car" (or unspecified) -> profile=driving-car
+      If the user explicitly asks for a profile that is NOT in
+      {driving-car, driving-hgv, cycling-electric} (e.g. "walking", "cycling-regular",
+      "foot-walking", "cycling-mountain"), still attempt the call but expect the tool
+      to return an error like "Parameter 'profile' has incorrect value of 'unknown'".
+      When that happens, explain that this OpenRouteService instance only has
+      driving-car, driving-hgv, and cycling-electric loaded, and offer to retry with
+      one of those.
       Pass a single lowercase category keyword for poi_category (e.g. "cafe", "restaurant",
       "bar", "pharmacy", "park", "supermarket", "hotel").
     - ALWAYS use a tool for routing/POI questions. NEVER answer from general knowledge.
@@ -736,7 +744,7 @@ tools:
             description: "Locations to route between, e.g. 'from Times Square to Central Park'"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
         required: [locations_description]
   - tool_spec:
       type: generic
@@ -753,7 +761,7 @@ tools:
             description: "Minutes of travel time (1-60)"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
         required: [location_description, range_minutes]
   - tool_spec:
       type: generic
@@ -773,7 +781,7 @@ tools:
             description: "POI category keyword, e.g. 'cafe', 'restaurant', 'bar', 'pharmacy', 'park', 'supermarket', 'hotel'. Lowercase, single word preferred."
           profile:
             type: string
-            description: "Transport mode. Use cycling-regular for cycle/bike, foot-walking for walking, driving-car otherwise. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Map cycle/bike/ebike to cycling-electric, truck/HGV to driving-hgv, otherwise driving-car. Default: driving-car."
           max_results:
             type: number
             description: "Max POIs to return. Default 25."
@@ -796,7 +804,7 @@ tools:
             description: "Number of vehicles available"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
           region:
             type: string
             description: "Provisioned ORS region for routing (e.g. California, Germany, UnitedStatesOfAmerica). Default: California"

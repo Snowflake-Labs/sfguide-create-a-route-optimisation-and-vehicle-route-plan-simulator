@@ -155,7 +155,7 @@ Before testing, verify all services are RUNNING (see Step 2b).
 
 | Region | Directions | Isochrone | Optimization | POIs in isochrone |
 |--------|-----------|-----------|--------------|-------------------|
-| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square — 2 vehicles from Union Square" | "What cafes can I reach within a 15 minute cycle from Civic Center, San Francisco" |
+| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square — 2 vehicles from Union Square" | "What cafes can I reach within a 15 minute ebike ride from Civic Center, San Francisco" |
 | New York | "Driving directions from Times Square to Central Park" | "Areas reachable within 15 min by car from Grand Central" | "Optimize deliveries to Empire State, Rockefeller Center, Times Square — 2 vehicles from Grand Central" | "Pharmacies within 10 minutes walk of Grand Central" |
 | London | "Driving directions from Tower Bridge to Buckingham Palace" | "Areas reachable within 15 min by car from King's Cross" | "Optimize deliveries to British Museum, Tower of London, Westminster Abbey — 2 vehicles from Trafalgar Square" | "Restaurants within 20 minutes walk of King's Cross" |
 | Berlin | "Driving directions from Brandenburg Gate to Alexanderplatz" | "Areas reachable within 15 min by car from Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, East Side Gallery — 2 vehicles from Alexanderplatz" | "Bars within 15 minutes cycle from Alexanderplatz" |
@@ -217,6 +217,7 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
 | Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;` and resume suspended services |
+| Tool returns `Parameter 'profile' has incorrect value of 'unknown'` | The requested profile is not loaded in this ORS install. The default `build-routing-solution` install loads `driving-car`, `driving-hgv`, `cycling-electric` only. Other ORS profile names (e.g. `cycling-regular`, `cycling-mountain`, `foot-walking`) are valid identifiers but require a different `p_profiles` value when calling `build-routing-solution`. See `.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql` (the `all_profiles` list) for the full set of selectable profile names. |
 | Agent says "OpenRouteService is currently unreachable" for POI questions (e.g. "what cafes can I reach") | This is the agent confabulating because it had no POI search tool. Re-run `deploy-agent.sql` to install `TOOL_POI_IN_ISOCHRONE` and ensure `OVERTURE_MAPS__PLACES` is acquired from Marketplace. |
 | `TOOL_POI_IN_ISOCHRONE` returns count=0 | Try a broader category (e.g. `restaurant` instead of `specialty bistro`) or a longer travel range. Confirm `SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE` returns rows. |
 
