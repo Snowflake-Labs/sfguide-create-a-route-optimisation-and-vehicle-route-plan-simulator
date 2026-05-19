@@ -2,11 +2,15 @@
 
 import { Router } from 'express';
 import { createRegionsLifecycleRouter } from './lifecycle.js';
-import { createRegionsManagementRouter } from './management.js';
+import { createRegionsCatalogRouter } from './catalog.js';
+import { createRegionsRegistryRouter } from './registry.js';
+import { createRegionsProvisioningRouter } from './provisioning.js';
 
 export function createRegionsRouter(): Router {
   const router = Router();
   router.use(createRegionsLifecycleRouter());
-  router.use(createRegionsManagementRouter());
+  router.use(createRegionsCatalogRouter());
+  router.use(createRegionsRegistryRouter());
+  router.use(createRegionsProvisioningRouter());
   return router;
 }
