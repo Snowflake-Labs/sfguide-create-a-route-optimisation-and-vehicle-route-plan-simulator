@@ -2100,6 +2100,19 @@ function sendSseEvent(res: any, event: string, data: any) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+app.get('/api/agent/config', async (_req, res) => {
+  try {
+    const rows = await runSql(`SELECT $1 AS CONFIG FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT')`);
+    if (rows.length > 0 && rows[0].CONFIG) {
+      const config = typeof rows[0].CONFIG === 'string' ? JSON.parse(rows[0].CONFIG) : rows[0].CONFIG;
+      return res.json(config);
+    }
+  } catch (e: any) {
+    console.log(`[agent/config] Stage load failed: ${e.message}, using fallback`);
+  }
+  res.json({ version: '1.0', default_scenario: 'pharma', max_token_limit: 8000, scenarios: [{ id: 'pharma', label: 'Pharma Supply Chain', icon: '💊', description: 'Pharmaceutical delivery planning', prompts: [{ label: '1. Catchment', icon: '🏥', prompt: 'Show me the health profile within 10 min drive of 498 Castro St, SF' }] }] });
+});
+
 app.post('/api/agent/chat', async (req, res) => {
   const { message, thread_id, parent_message_id } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
