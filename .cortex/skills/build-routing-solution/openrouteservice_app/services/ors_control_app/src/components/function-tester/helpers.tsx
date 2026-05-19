@@ -167,7 +167,7 @@ export function generateSql(fnName: string, region: RegionOption | null, profile
       const numVehicles = 3;
       const maxTasks = Math.ceil(jobs.length / numVehicles);
       const vehicleEntries = [1, 2, 3].map(vid =>
-        `    OBJECT_CONSTRUCT('id', ${vid}, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'max_tasks', ${maxTasks})`
+        `    OBJECT_CONSTRUCT('id', ${vid}, 'profile', '${profile}', 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'max_tasks', ${maxTasks})`
       ).join(',\n');
       return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n${vehicleEntries}\n  ),\n  [], ${rg}\n))`;
     }
