@@ -64,6 +64,14 @@ for image in $IMAGE_NAMES; do
     error "service YAMLs missing $pair"
   fi
 
+  # SQL modules may embed image tags in FROM SPECIFICATION strings (e.g. BUILD_VROOM_SERVICE_SPEC).
+  # Only flag a mismatch if the image name IS referenced but with the wrong tag.
+  if grep -rqF "image_repository/${image}:" "$OPENROUTESERVICE_APP_DIR/app/modules/" 2>/dev/null; then
+    if ! grep -rqF "$pair" "$OPENROUTESERVICE_APP_DIR/app/modules/" 2>/dev/null; then
+      error "SQL modules reference ${image} but not with tag ${tag}"
+    fi
+  fi
+
   # Docs may reference either the literal pair or the shell-variable form (preferred).
   if ! grep -qF "$pair" "$BUILD_MD" 2>/dev/null && ! grep -qF "$var_pair" "$BUILD_MD" 2>/dev/null; then
     error "build-images.md missing $pair (or \$$var reference)"
