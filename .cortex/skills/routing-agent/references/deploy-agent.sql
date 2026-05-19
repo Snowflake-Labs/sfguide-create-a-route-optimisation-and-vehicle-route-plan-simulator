@@ -30,6 +30,7 @@ DECLARE
     v_sql VARCHAR;
     res RESULTSET;
     v_locations VARIANT;
+    v_coords VARIANT;
     v_profile VARCHAR;
     v_distance_raw FLOAT;
     v_duration_raw FLOAT;
@@ -55,6 +56,10 @@ BEGIN
         ELSE 'driving-car'
     END;
 
+    -- Step 1: Geocode. Pull locations + coords array out as bound variables
+    -- so step 2 can pass them to DIRECTIONS without inlining a CTE-derived
+    -- expression into the table function (Snowflake rejects that with
+    -- "Unsupported subquery type cannot be evaluated inside Function object").
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -62,55 +67,68 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 2000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
             ) AS geocoded_result
-        ),
-        coordinates AS (
-            SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT)) AS coords,
-                   geocoded_result AS geo
-            FROM geocoded, TABLE(FLATTEN(geocoded.geocoded_result, ''locations''))
-            GROUP BY geocoded_result
-        ),
-        validated AS (
-            -- Cross-check each LLM-extracted coord against REGION_CATALOG
-            -- boundaries. detected_region is the smallest containing region;
-            -- mismatched_regions captures coords that resolve to different
-            -- regions (e.g. user asked for Cambridge UK but LLM returned
-            -- Cambridge MA). out_of_region_count is the number of coords
-            -- that don''t match any boundary at all.
-            SELECT geo, coords,
-                ARRAY_AGG(DISTINCT region_obj:lookup_name::STRING) WITHIN GROUP (ORDER BY region_obj:lookup_name::STRING) AS detected_regions,
-                COUNT_IF(region_obj IS NULL) AS out_of_region_count,
-                COUNT(*) AS total_coords
-            FROM coordinates,
-                 LATERAL (
-                   SELECT OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(c.value[0]::FLOAT, c.value[1]::FLOAT) AS region_obj
-                   FROM TABLE(FLATTEN(coords)) c
-                 )
-            GROUP BY geo, coords
-        ),
-        directions AS (
-            SELECT v.geo, v.coords, v.detected_regions, v.out_of_region_count, v.total_coords,
-                   d.RESPONSE AS dir_result
-            FROM validated v,
-                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(''' || v_safe_profile || ''', OBJECT_CONSTRUCT(''coordinates'', v.coords)::VARIANT)) d
         )
         SELECT
-            geo:locations AS locations,
-            ''' || v_safe_profile || ''' AS profile,
-            dir_result:features[0]:properties:summary:distance::FLOAT AS distance_raw,
-            dir_result:features[0]:properties:summary:duration::FLOAT AS duration_raw,
-            dir_result:features[0]:properties:segments AS segments,
-            dir_result:features[0]:geometry AS geometry,
-            dir_result:error AS ors_error,
-            detected_regions,
-            out_of_region_count,
-            total_coords
-        FROM directions';
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
 
     res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error, v_detected_regions, v_out_of_region_count, v_total_coords;
+    FETCH c INTO v_locations, v_coords;
     CLOSE c;
+    v_profile := v_safe_profile;
+
+    IF (v_locations IS NULL OR v_coords IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 1b: Region validation (best-effort; non-fatal). Done as a
+    -- separate, simple FLATTEN that calls REGION_FOR_POINT per coord.
+    -- Failures here just leave the region info NULL.
+    BEGIN
+        LET val_sql VARCHAR := 'WITH pts AS (
+            SELECT
+                OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(c.value[0]::FLOAT, c.value[1]::FLOAT):lookup_name::STRING AS region_name
+            FROM TABLE(FLATTEN(PARSE_JSON(?))) c
+        )
+        SELECT
+            ARRAY_AGG(DISTINCT region_name) WITHIN GROUP (ORDER BY region_name),
+            COUNT_IF(region_name IS NULL),
+            COUNT(*)
+        FROM pts';
+        LET v_coords_str VARCHAR := v_coords::STRING;
+        res := (EXECUTE IMMEDIATE :val_sql USING (v_coords_str));
+        LET cv CURSOR FOR res;
+        OPEN cv;
+        FETCH cv INTO v_detected_regions, v_out_of_region_count, v_total_coords;
+        CLOSE cv;
+    EXCEPTION
+        WHEN OTHER THEN
+            v_detected_regions := NULL;
+            v_out_of_region_count := 0;
+            v_total_coords := 0;
+    END;
+
+    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter.
+    LET dir_sql VARCHAR := 'SELECT
+            d.RESPONSE:features[0]:properties:summary:distance::FLOAT,
+            d.RESPONSE:features[0]:properties:summary:duration::FLOAT,
+            d.RESPONSE:features[0]:properties:segments,
+            d.RESPONSE:features[0]:geometry,
+            d.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+            ''' || v_safe_profile || ''',
+            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT)) d';
+
+    LET v_coords_str2 VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :dir_sql USING (v_coords_str2));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
+    CLOSE c2;
 
     IF (v_locations IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
