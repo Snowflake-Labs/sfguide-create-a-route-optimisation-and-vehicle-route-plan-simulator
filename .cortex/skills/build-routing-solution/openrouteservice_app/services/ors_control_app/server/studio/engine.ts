@@ -5,7 +5,7 @@ import {
 } from './profiles.js';
 import { log } from '../diagnostics.js';
 
-export {
+export type {
   TelemetryPoint, TripRecord, GenerationEvent, POI, RouteGeometry,
   FleetMember, GenerationProgress, RouteFetchResult, FreightOffer,
 } from './engine/types.js';
