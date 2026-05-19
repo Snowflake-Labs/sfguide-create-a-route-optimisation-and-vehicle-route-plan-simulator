@@ -208,6 +208,29 @@ docker build --platform linux/amd64 \
 # 3. Push:
 docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
 
+# 3b. If `docker push` hangs (single layer stuck at "Waiting" forever):
+#     This is a known SPCS registry token-refresh bug — the bearer token
+#     issued by `snow spcs image-registry login` expires mid-PUT and the
+#     registry rejects the upload with 401. Docker daemon retries auth
+#     silently → re-queues the blob → the layer "Waits" indefinitely.
+#     Symptoms: 8 of 9 layers report "Layer already exists", 1 sits on
+#     "Waiting". Podman shows the explicit error
+#     "unable to retrieve auth token: invalid username/password".
+#
+#     Workaround: use `crane` (from go-containerregistry), which handles
+#     registry token refresh correctly:
+brew install crane
+snow spcs image-registry login -c <connection>   # refreshes ~/.docker/config.json + keychain
+docker save $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z -o /tmp/img.tar
+crane push /tmp/img.tar $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
+#     Expected output: `pushed blob: sha256:<hash>` followed by
+#     `<image>:<tag>: digest: sha256:... size: 1729`. Total ~5 minutes
+#     for a typical 139 MB image with one new layer.
+#
+#     `docker save | podman load | podman push` does NOT help here —
+#     both daemons hit the same registry-side bug. Restarting Docker
+#     Desktop and re-logging in does not help either. Only crane works.
+
 # 4. Update version:
 #    - $APP_DIR/ors_control_app_service.yaml (image tag)
 
