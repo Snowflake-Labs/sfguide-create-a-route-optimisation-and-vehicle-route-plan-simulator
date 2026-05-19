@@ -6,6 +6,10 @@ import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './
 
 export interface RegionOption {
   region: string;
+  // When present, the resolved real region name to thread into multi-region
+  // SQL calls (e.g. 'SanFrancisco' for the legacy default whose region key is
+  // 'default'). Falls back to `region` if absent.
+  effectiveRegion?: string;
   display_name?: string;
   isDefault?: boolean;
   bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
@@ -90,13 +94,21 @@ export function isoRangeFor(profile: string): number {
   return 30;
 }
 
+export function resolveRegionKey(r: RegionOption | null): string | null {
+  if (!r) return null;
+  const key = r.effectiveRegion || r.region;
+  if (!key || key === 'default') return null;
+  return key;
+}
+
 export function isProvisionedRegion(r: RegionOption | null): boolean {
-  return !!(r && r.region && r.region !== 'default');
+  return resolveRegionKey(r) !== null;
 }
 
 export function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): string {
   const bbox = region?.bbox;
-  const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
+  const resolved = resolveRegionKey(region);
+  const rg = resolved ? `'${resolved}'` : 'NULL::VARCHAR';
   const p = db ? `${db}.CORE` : 'CORE';
 
   let start: [number, number], end: [number, number], job1: [number, number], job2: [number, number], depot: [number, number], dest2: [number, number];

@@ -8,7 +8,7 @@ import { Router } from 'express';
 import { SF_DATABASE } from '../../constants.js';
 import { runSql, callProcedure, submitSqlAsync, cancelStatement } from '../../lib/sql.js';
 import { sanitizeIdentifier, sanitizeFloat, escapeString, toIso } from '../../lib/sanitize.js';
-import { safeRegionIdent, orsServiceName, orsServiceFqn } from '../../lib/region.js';
+import { safeRegionIdent, orsServiceName, orsServiceFqn, DEFAULT_REGION_NAME } from '../../lib/region.js';
 import { waitForOrsGraphReady, getExpectedProfiles } from '../../lib/ors.js';
 import { log } from '../../diagnostics.js';
 
@@ -534,6 +534,7 @@ export function createRegionsManagementRouter(): Router {
         } catch {}
         enriched.unshift({
           region: 'default',
+          effectiveRegion: DEFAULT_REGION_NAME,
           display_name: 'San Francisco (Default)',
           status: 'DEPLOYED',
           serviceStatus: defaultStatus,

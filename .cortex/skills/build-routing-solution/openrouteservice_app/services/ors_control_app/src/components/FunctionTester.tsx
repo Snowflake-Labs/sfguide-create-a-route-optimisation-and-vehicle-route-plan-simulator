@@ -7,7 +7,7 @@ import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './
 import {
   RegionOption, GeoData, OptimizationStop, OptimizationVehicle, OptimizationParsed,
   CARTO_LIGHT, OPTIMIZATION_PALETTE, PROFILE_LABELS, FUNCTIONS,
-  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion,
+  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion, resolveRegionKey,
   generateSql, tryParseJson, decodePolyline, extractGeoData,
   parseMatrixResult, parseOptimizationResult, travelTimeColor, parseIsochroneOrigin,
 } from './function-tester/helpers';
@@ -151,7 +151,8 @@ export default function FunctionTester() {
     setProfilesLoading(true);
     try {
       const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const rg = isProvisionedRegion(region) ? `'${region!.region}'` : 'NULL::VARCHAR';
+      const resolved = resolveRegionKey(region);
+      const rg = resolved ? `'${resolved}'` : 'NULL::VARCHAR';
       const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
       const resp = await fetch('/api/query', {
         method: 'POST',
