@@ -92,7 +92,10 @@ ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
 
 --------------------------------------------------------------------
--- JOB_TEMPLATE (29 sample jobs for VRP simulation)
+-- JOB_TEMPLATE (jobs per industry for VRP simulation)
+-- v1.0.172+ requires INDUSTRY column and SLOT_START/END in SECONDS (not hours).
+-- App queries: WHERE REGION = ? AND STATUS = 'active' AND INDUSTRY = ?
+-- UI renders SLOT_START/3600 as hour display (e.g. 32400 = 09:00)
 --------------------------------------------------------------------
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (
     ID INT AUTOINCREMENT PRIMARY KEY,
@@ -101,41 +104,62 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (
     SKILLS INT,
     PRODUCT STRING,
     STATUS STRING DEFAULT 'active',
-    REGION STRING
+    REGION STRING,
+    INDUSTRY STRING
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION)
-SELECT column1, column2, column3, column4, 'active', $REGION_NAME FROM VALUES
-(9,  10, 1, 'pa'),
-(11, 15, 2, 'pb'),
-(16, 18, 2, 'pb'),
-(11, 13, 3, 'pc'),
-(7,  16, 3, 'pc'),
-(10, 15, 2, 'pa'),
-(10, 15, 2, 'pa'),
-(7,  16, 1, 'pa'),
-(9,  18, 2, 'pb'),
-(13, 18, 2, 'pb'),
-(13, 18, 2, 'pb'),
-(13, 18, 1, 'pa'),
-(13, 18, 1, 'pa'),
-(13, 18, 1, 'pa'),
-(13, 18, 3, 'pc'),
-(11, 15, 2, 'pb'),
-(16, 18, 2, 'pb'),
-(11, 13, 1, 'pa'),
-(7,  16, 1, 'pa'),
-(10, 15, 2, 'pb'),
-(10, 15, 2, 'pb'),
-(7,  16, 1, 'pa'),
-(9,  18, 2, 'pb'),
-(13, 18, 2, 'pb'),
-(13, 18, 2, 'pb'),
-(13, 18, 1, 'pa'),
-(13, 18, 1, 'pa'),
-(13, 18, 1, 'pa'),
-(13, 18, 3, 'pc');
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION, INDUSTRY)
+SELECT column1, column2, column3, column4, 'active', $REGION_NAME, column5 FROM VALUES
+(32400, 36000, 1, 'pa', 'healthcare'),
+(39600, 54000, 2, 'pb', 'healthcare'),
+(57600, 64800, 2, 'pb', 'healthcare'),
+(39600, 46800, 3, 'pc', 'healthcare'),
+(25200, 57600, 3, 'pc', 'healthcare'),
+(36000, 54000, 2, 'pa', 'healthcare'),
+(46800, 64800, 1, 'pa', 'healthcare'),
+(39600, 54000, 2, 'pb', 'Food'),
+(57600, 64800, 2, 'pb', 'Food'),
+(39600, 46800, 1, 'pa', 'Food'),
+(25200, 57600, 1, 'pa', 'Food'),
+(36000, 54000, 2, 'pb', 'Food'),
+(36000, 54000, 2, 'pb', 'Food'),
+(25200, 57600, 1, 'pa', 'Food'),
+(32400, 64800, 2, 'pb', 'Food'),
+(46800, 64800, 2, 'pb', 'Cosmetics'),
+(46800, 64800, 2, 'pb', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 3, 'pc', 'Cosmetics'),
+(32400, 64800, 2, 'pb', 'Cosmetics'),
+(32400, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 3, 'pc', 'Beverages'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport');
 
 --------------------------------------------------------------------
 -- LOOKUP (industry configuration for VRP simulation)
@@ -176,7 +200,13 @@ SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'S
        ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
        ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
-       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity');
+       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity')
+UNION ALL
+SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
+       ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
+       ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
+       ARRAY_CONSTRUCT('school', 'community_center', 'nursery', 'college'),
+       ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus');
 
 --------------------------------------------------------------------
 -- DROP STAGING TABLE

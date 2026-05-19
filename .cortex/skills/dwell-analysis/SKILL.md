@@ -159,7 +159,26 @@ Execute `references/sql-pipeline.sql` — the single source of truth for this sk
 | 10 | DT_DRIVER_DWELL_SUMMARY | Dynamic Table | Per-driver breach counts (DriverPerformance) |
 | 11 | DT_DAILY_TRENDS | Dynamic Table | Fleet-wide daily aggregates (DwellOverview) |
 
-### Step 2: Verify Pipeline
+### Step 2: Force Refresh All Dynamic Tables
+
+**CRITICAL:** Dynamic Tables with `TARGET_LAG = DOWNSTREAM` or `TARGET_LAG = '10 minutes'` may not populate immediately after creation. You MUST explicitly refresh them in dependency order to ensure the dashboard has data.
+
+```sql
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_EVENTS REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY REFRESH;
+ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS REFRESH;
+```
+
+Execute each in order. Each takes 5-30 seconds. If any returns 0 `insertedRows`, check:
+- DT_DWELL_EVENTS = 0: STATUS values in telemetry don't match the filter. The sql-pipeline.sql uses `STATUS IN ('DWELL_ORIGIN', 'DWELL_DESTINATION', 'IDLE')`. Verify with: `SELECT STATUS, COUNT(*) FROM VW_VEHICLE_TELEMETRY GROUP BY STATUS`
+- DT_DWELL_ENRICHED = 0: DT_DWELL_EVENTS must be refreshed first
+
+### Step 3: Verify Pipeline
 
 ```sql
 SELECT 'DT_STATE_CHANGES' AS DT, COUNT(*) AS ROW_CNT FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_STATE_CHANGES
