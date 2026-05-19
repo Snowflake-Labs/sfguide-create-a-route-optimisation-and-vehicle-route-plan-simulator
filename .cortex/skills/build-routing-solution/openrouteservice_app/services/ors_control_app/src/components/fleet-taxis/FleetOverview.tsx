@@ -26,11 +26,11 @@ export default function FleetOverview() {
     ]).then(([k, t, h]) => {
       setKpis(k[0] || {});
       setTrips(t);
-      if (t.length) {
-        const lngs = t.filter((r: any) => r.P_LNG).map((r: any) => Number(r.P_LNG));
-        const lats = t.filter((r: any) => r.P_LAT).map((r: any) => Number(r.P_LAT));
-        if (lngs.length) setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2 }));
-      }
+      // Don't auto-pan to data centroid - the second useEffect already
+      // sets viewState from useRegion's boundary-derived center, which is
+      // authoritative for the active region. Auto-panning here would mask
+      // region mismatches (e.g. mistagged points landing in a different
+      // city than the selected region's actual boundary).
       setHourly(h);
       setLoading(false);
     });

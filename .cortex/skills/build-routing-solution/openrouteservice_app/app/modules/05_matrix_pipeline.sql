@@ -17,18 +17,54 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS 
     STATEMENT_HANDLE VARCHAR,
     CREATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
     STARTED_AT TIMESTAMP_NTZ,
-    COMPLETED_AT TIMESTAMP_NTZ
+    COMPLETED_AT TIMESTAMP_NTZ,
+    -- Filter-related columns: previously added via post-hoc
+    -- ALTER TABLE ... ADD COLUMN IF NOT EXISTS statements which triggered a
+    -- Snowflake compile-time bug (ambiguous column name 'ROAD_FILTER') on
+    -- re-runs against accounts where the columns already existed. Folding
+    -- them into the canonical CREATE TABLE eliminates that path for fresh
+    -- installs; the EXCEPTION-wrapped ALTERs below cover legacy tables.
+    ROAD_FILTER BOOLEAN DEFAULT FALSE,
+    HEXAGONS_BEFORE_FILTER NUMBER DEFAULT 0,
+    HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0,
+    FILTER_DURATION_SECONDS FLOAT DEFAULT 0
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}';
 
-ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    ADD COLUMN IF NOT EXISTS ROAD_FILTER BOOLEAN DEFAULT FALSE;
-ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    ADD COLUMN IF NOT EXISTS HEXAGONS_BEFORE_FILTER NUMBER DEFAULT 0;
-ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    ADD COLUMN IF NOT EXISTS HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0;
-ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
-    ADD COLUMN IF NOT EXISTS FILTER_DURATION_SECONDS FLOAT DEFAULT 0;
+-- Legacy backfill for accounts that created MATRIX_BUILD_JOBS before the
+-- four filter columns were folded into the canonical CREATE TABLE above.
+-- Wrapped in anonymous blocks because Snowflake's ADD COLUMN IF NOT EXISTS
+-- can throw "ambiguous column name" at compile time when the column already
+-- exists with a DEFAULT clause. We swallow that error so the script keeps
+-- running.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        ADD COLUMN IF NOT EXISTS ROAD_FILTER BOOLEAN DEFAULT FALSE;
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        ADD COLUMN IF NOT EXISTS HEXAGONS_BEFORE_FILTER NUMBER DEFAULT 0;
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        ADD COLUMN IF NOT EXISTS HEXAGONS_AFTER_FILTER NUMBER DEFAULT 0;
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        ADD COLUMN IF NOT EXISTS FILTER_DURATION_SECONDS FLOAT DEFAULT 0;
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ENSURE_MATRIX_TABLES(P_REGION VARCHAR, P_PROFILE VARCHAR, P_RES VARCHAR)
 RETURNS VARCHAR
@@ -66,6 +102,26 @@ $$;
 -- TRAVEL TIME MATRIX: Pipeline procedures
 -- =============================================================================
 
+-- Warning ledger: rows are inserted whenever BUILD_HEXAGONS or
+-- BUILD_HEXAGONS_ROAD_AWARE cannot resolve P_REGION to a REGION_CATALOG
+-- polygon and falls back to the rectangular bbox. The rectangle nearly
+-- always over-covers (e.g. California bbox spans Nevada/Oregon/Mexico/Pacific)
+-- so any row here means the matrix for that region is built on a fallback
+-- that will silently leak hexes outside the intended boundary.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS (
+    LOGGED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
+    REGION VARCHAR,
+    PROFILE VARCHAR,
+    RESOLUTION VARCHAR,
+    PROC_NAME VARCHAR,
+    BBOX_MIN_LAT FLOAT,
+    BBOX_MAX_LAT FLOAT,
+    BBOX_MIN_LON FLOAT,
+    BBOX_MAX_LON FLOAT,
+    MESSAGE VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix","feature":"bbox-fallback-warning"}}';
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BUILD_HEXAGONS(P_RES VARCHAR, P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT, P_REGION VARCHAR, P_PROFILE VARCHAR)
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -78,6 +134,7 @@ DECLARE
     hex_table VARCHAR;
     safe_profile VARCHAR;
     row_count INTEGER;
+    catalog_match INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -97,24 +154,48 @@ BEGIN
         resolution := 10;
     END IF;
 
+    -- Detect catalog match BEFORE the COALESCE so we can warn loudly
+    -- when no row exists and we are about to silently fall back to bbox.
+    SELECT COUNT(*) INTO :catalog_match
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+
+    IF (catalog_match = 0) THEN
+        INSERT INTO OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+            (REGION, PROFILE, RESOLUTION, PROC_NAME, BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON, MESSAGE)
+        VALUES
+            (:P_REGION, :P_PROFILE, :P_RES, 'BUILD_HEXAGONS', :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON,
+             'No REGION_CATALOG row matched LOOKUP_NAME / REGION_KEY = ' || :P_REGION || '. Falling back to rectangular bbox; hexes outside the intended polygon will be tessellated.');
+    END IF;
+
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
+    -- Boundary-aware: enumerate H3 cells inside the region's actual polygon
+    -- (from REGION_CATALOG) when available, otherwise fall back to bbox.
+    -- This drops water cells and out-of-region cells before any ORS Matrix call.
     EXECUTE IMMEDIATE '
     INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
-    SELECT
-        h.VALUE::VARCHAR AS h3_index,
-        H3_CELL_TO_POINT(h.VALUE::VARCHAR) AS center_point
-    FROM TABLE(FLATTEN(
-        H3_POLYGON_TO_CELLS_STRINGS(
+    WITH region_geom AS (
+        SELECT COALESCE(
+            (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(''' || P_REGION || ''')
+                    OR UPPER(REGION_KEY) = UPPER(''' || P_REGION || '''))
+             ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1),
             TO_GEOGRAPHY(''POLYGON((' ||
                 P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
                 P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
                 P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
                 P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
-                P_MIN_LON || ' ' || P_MIN_LAT || '))''),
-            ' || resolution || '
-        )
-    )) h';
+                P_MIN_LON || ' ' || P_MIN_LAT || '))'')
+        ) AS geom
+    )
+    SELECT
+        h.VALUE::VARCHAR AS h3_index,
+        H3_CELL_TO_POINT(h.VALUE::VARCHAR) AS center_point
+    FROM region_geom r,
+         TABLE(FLATTEN(H3_POLYGON_TO_CELLS_STRINGS(r.geom, ' || resolution || '))) h';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
@@ -138,6 +219,7 @@ DECLARE
     hex_table VARCHAR;
     safe_profile VARCHAR;
     row_count INTEGER;
+    catalog_match INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
     safe_profile := REPLACE(UPPER(P_PROFILE), '-', '_');
@@ -157,38 +239,71 @@ BEGIN
         resolution := 10;
     END IF;
 
+    -- Detect catalog match BEFORE the COALESCE so we can warn loudly
+    -- when no row exists and we are about to silently fall back to bbox.
+    SELECT COUNT(*) INTO :catalog_match
+    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE BOUNDARY IS NOT NULL
+      AND (UPPER(LOOKUP_NAME) = UPPER(:P_REGION) OR UPPER(REGION_KEY) = UPPER(:P_REGION));
+
+    IF (catalog_match = 0) THEN
+        INSERT INTO OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+            (REGION, PROFILE, RESOLUTION, PROC_NAME, BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON, MESSAGE)
+        VALUES
+            (:P_REGION, :P_PROFILE, :P_RES, 'BUILD_HEXAGONS_ROAD_AWARE', :P_MIN_LAT, :P_MAX_LAT, :P_MIN_LON, :P_MAX_LON,
+             'No REGION_CATALOG row matched LOOKUP_NAME / REGION_KEY = ' || :P_REGION || '. Falling back to rectangular bbox; road-aware hexes outside the intended polygon will be tessellated.');
+    END IF;
+
     EXECUTE IMMEDIATE 'TRUNCATE TABLE ' || hex_table;
 
-    -- H3_COVERAGE_STRINGS is a table function; invoke via TABLE(...) with lateral join.
-    -- Returns every hexagon intersecting the geometry (complete coverage with no edge gaps).
+    -- Boundary-aware road-aware tessellation:
+    --   * Keep Overture native bbox prefilter (partition prune; without it the
+    --     query scans the global transportation table).
+    --   * Refine road segments via ST_INTERSECTS against the region's actual
+    --     polygon (REGION_CATALOG.BOUNDARY) instead of the bbox rectangle.
+    --     Drops foreign-country segments that bleed across the bbox - a
+    --     single foreign road would otherwise spawn dozens of out-of-graph
+    --     hex candidates via H3_COVERAGE_STRINGS.
+    --   * Final clip uses ST_WITHIN(centroid, BOUNDARY) instead of bbox
+    --     BETWEEN, catching stray hexes whose centroid sits in foreign
+    --     territory but inside the bbox.
+    --   * Falls back to bbox polygon if no catalog row exists.
     EXECUTE IMMEDIATE '
     INSERT INTO ' || hex_table || ' (H3_INDEX, CENTER_POINT)
-    WITH bbox_poly AS (
-        SELECT TO_GEOGRAPHY(''POLYGON((' ||
-            P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
-            P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
-            P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
-            P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
-            P_MIN_LON || ' ' || P_MIN_LAT || '))'') AS poly
+    WITH region_geom AS (
+        SELECT COALESCE(
+            (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(''' || P_REGION || ''')
+                    OR UPPER(REGION_KEY) = UPPER(''' || P_REGION || '''))
+             ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1),
+            TO_GEOGRAPHY(''POLYGON((' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MIN_LAT || ',' ||
+                P_MAX_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MAX_LAT || ',' ||
+                P_MIN_LON || ' ' || P_MIN_LAT || '))'')
+        ) AS poly
     ),
     road_segments AS (
         SELECT s.geometry
-        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s, bbox_poly b
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s, region_geom r
         WHERE s.subtype = ''road''
+          -- Overture native bbox prefilter (UNCHANGED - partition prune):
           AND s.bbox:xmin::FLOAT <= ' || P_MAX_LON || '
           AND s.bbox:xmax::FLOAT >= ' || P_MIN_LON || '
           AND s.bbox:ymin::FLOAT <= ' || P_MAX_LAT || '
           AND s.bbox:ymax::FLOAT >= ' || P_MIN_LAT || '
-          AND ST_INTERSECTS(s.geometry, b.poly)
+          -- Polygon refine (replaces ST_INTERSECTS against bbox polygon):
+          AND ST_INTERSECTS(s.geometry, r.poly)
     ),
     road_hexes AS (
         SELECT DISTINCT c.value::VARCHAR AS h3_index
         FROM road_segments r, TABLE(FLATTEN(H3_COVERAGE_STRINGS(r.geometry, ' || resolution || '))) c
     )
     SELECT h3_index, H3_CELL_TO_POINT(h3_index) AS center_point
-    FROM road_hexes
-    WHERE ST_Y(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LAT || ' AND ' || P_MAX_LAT || '
-      AND ST_X(H3_CELL_TO_POINT(h3_index)) BETWEEN ' || P_MIN_LON || ' AND ' || P_MAX_LON || '';
+    FROM road_hexes h, region_geom r
+    WHERE ST_WITHIN(H3_CELL_TO_POINT(h.h3_index), r.poly)';
 
     rs := (EXECUTE IMMEDIATE 'SELECT COUNT(*) AS CNT FROM ' || hex_table);
     LET c CURSOR FOR rs;
@@ -1010,28 +1125,49 @@ BEGIN
         FILTER_DURATION_SECONDS = DATEDIFF('SECOND', :filter_start, SYSDATE())
     WHERE JOB_ID = :P_JOB_ID;
 
-    LET original_wh_size VARCHAR := NULL;
+    -- Default the restore target to the steady-state size ('SMALL') so the
+    -- restore is ALWAYS a no-op-or-shrink, never a no-op leaving the warehouse
+    -- bumped. If the SHOW WAREHOUSES capture below succeeds with a "small"
+    -- size (XSMALL/SMALL/MEDIUM) we honour it; if it fails or returns a
+    -- bumped size (LARGE/X-LARGE/...) we treat that as drift from a previous
+    -- un-restored run and fall back to the steady-state default.
+    LET original_wh_size VARCHAR := 'SMALL';
+    LET did_bump BOOLEAN := FALSE;
     IF (hex_count > 5000) THEN
         BEGIN
             LET wh_name VARCHAR := CURRENT_WAREHOUSE();
             EXECUTE IMMEDIATE 'SHOW WAREHOUSES LIKE ''' || wh_name || '''';
             LET wh_rs RESULTSET := (SELECT "size" AS SZ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
             LET wh_c CURSOR FOR wh_rs;
-            FOR r IN wh_c DO original_wh_size := r.SZ; END FOR;
+            LET captured_sz VARCHAR := NULL;
+            FOR r IN wh_c DO captured_sz := r.SZ; END FOR;
+            -- Only honour the captured size if it is at or below the
+            -- steady-state band. Anything LARGE+ is treated as drift from a
+            -- prior un-restored run and replaced with the steady-state default.
+            IF (captured_sz IS NOT NULL
+                AND UPPER(captured_sz) IN ('X-SMALL','XSMALL','SMALL','MEDIUM'))
+            THEN
+                original_wh_size := captured_sz;
+            END IF;
             IF (hex_count > 25000) THEN
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''X-LARGE''';
             ELSE
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || wh_name || ' SET WAREHOUSE_SIZE = ''LARGE''';
             END IF;
+            did_bump := TRUE;
         EXCEPTION WHEN OTHER THEN
-            original_wh_size := NULL;
+            -- Capture or bump failed. Leave original_wh_size at its default
+            -- ('SMALL') so any subsequent restore still runs and shrinks the
+            -- warehouse if it somehow got bumped. did_bump stays FALSE so we
+            -- only restore when we actually changed something.
+            NULL;
         END;
     END IF;
 
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.BUILD_WORK_QUEUE(:P_RES, :P_REGION, :P_PROFILE, :P_JOB_ID);
     EXCEPTION WHEN OTHER THEN
-        IF (original_wh_size IS NOT NULL) THEN
+        IF (did_bump) THEN
             BEGIN
                 EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
             EXCEPTION WHEN OTHER THEN NULL;
@@ -1040,7 +1176,7 @@ BEGIN
         RAISE;
     END;
 
-    IF (original_wh_size IS NOT NULL) THEN
+    IF (did_bump) THEN
         BEGIN
             EXECUTE IMMEDIATE 'ALTER WAREHOUSE ' || CURRENT_WAREHOUSE() || ' SET WAREHOUSE_SIZE = ''' || original_wh_size || '''';
         EXCEPTION WHEN OTHER THEN NULL;

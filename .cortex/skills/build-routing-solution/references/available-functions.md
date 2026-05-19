@@ -19,6 +19,8 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
 
+**IMPORTANT for OPTIMIZATION**: Always pass `region` (e.g. `'California'`, `'Germany'`) as the last argument when running for a specific region. The gateway uses it to route the VRP to the per-region `VROOM_SERVICE_<REGION>` (which talks to `ors-service-<region>`). Omitting `region` (or passing `NULL`) falls through to the legacy global VROOM that uses the SF-only base ORS graph and will fail for any non-SF data.
+
 ## Matrix / Status Scalar Functions
 
 Return VARIANT:
@@ -52,6 +54,93 @@ Usage: `SELECT CORE.MATRIX_TABULAR('driving-car', origin_arr, dests_arr)`
 - `DROP_REGION_ORS(region)` — Removes a region's service and metadata
 - `LIST_REGIONS()` — Returns JSON array of all provisioned regions
 - `REFRESH_REGION_CATALOG()` — Fetches available regions from Geofabrik + BBBike into REGION_CATALOG table
+
+## Region Boundary Helpers
+
+`REGION_CATALOG.BOUNDARY` is a `GEOGRAPHY` column populated at install time
+from a shipped snapshot. Coverage (5,194 rows total):
+
+| SOURCE          | LEVEL          | rows  | provenance                                              |
+| --------------- | -------------- | ----- | ------------------------------------------------------- |
+| `geofabrik`     | continent      | 8     | Geofabrik `.poly` files (real admin polygons)           |
+| `geofabrik`     | country        | 257   | Geofabrik `.poly` files                                 |
+| `geofabrik`     | sub-region     | 217   | Geofabrik (DE Lander, FR regions, AU/CA states, etc.)   |
+| `geofabrik`     | sub-sub-region | 72    | Geofabrik (German Regbez, UK counties, ...)             |
+| `geofabrik`     | depth-4        | 1     | Deeply-nested Geofabrik leaf                            |
+| `bbbike`        | city           | 238   | BBBike rectangles (true clip mask)                      |
+| `natural-earth` | sub-region     | 4,401 | Natural Earth admin-1 (US states, BR/IN/MX states, etc.)|
+
+All boundaries simplified to ~100m tolerance. ISO_3166-2 subdivision codes
+filled for ~4,500 sub-regions via Natural Earth. Use `BOUNDARY` to filter
+sample points / POIs / hexagons to the region's actual shape instead of
+bbox rectangles. See the seed parquet at
+`datasets/region_catalog/data_0_0_0.snappy.parquet`.
+
+### Adding new regions
+
+1. Geofabrik publishes a new sub-region: re-run
+   `python3 scripts/region_catalog/expand_geofabrik_subregions.py` then
+   `python3 scripts/region_catalog/build_boundaries.py`.
+2. A state/province Geofabrik does not split (e.g. a new US state — never
+   happens, but illustrative): the Natural Earth supplement already covers
+   all admin-1 globally. Re-run
+   `python3 scripts/region_catalog/supplement_natural_earth.py` only when
+   Natural Earth releases a new edition.
+3. Custom polygon (org-specific service area): insert directly into
+   `REGION_CATALOG` with a unique `REGION_KEY`, valid `BOUNDARY`, and
+   `BOUNDARY_SOURCE='manual'`. The matrix builders match on
+   `LOOKUP_NAME` or `REGION_KEY` (case-insensitive).
+
+After updating the seed parquet, redeploy:
+
+```sql
+TRUNCATE TABLE OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
+CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
+```
+
+### bbox-fallback warnings
+
+`BUILD_HEXAGONS` and `BUILD_HEXAGONS_ROAD_AWARE` log a row to
+`OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS` whenever
+they cannot resolve `P_REGION` to a catalog polygon. Any matrix tessellated
+after a warning will leak hexes outside the intended boundary (the bbox
+rectangle nearly always over-covers — California's bbox spans NV/OR/Pacific,
+NSW's bbox spans Lord Howe Island, etc.). Inspect with:
+
+```sql
+SELECT * FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BBOX_FALLBACK_WARNINGS
+ORDER BY LOGGED_AT DESC;
+```
+
+```sql
+-- Reverse-region lookup: which region does a coordinate fall in?
+SELECT OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(-122.42, 37.77);
+
+-- Boolean variant: is a coordinate inside a named region?
+SELECT OPENROUTESERVICE_APP.CORE.POINT_IN_REGION(-122.42, 37.77, 'SanFrancisco');
+
+-- Filter Overture POIs to a region's actual shape (not bbox):
+SELECT p.* FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  ON UPPER(rc.LOOKUP_NAME) = 'BAYERN'
+WHERE rc.BOUNDARY IS NOT NULL
+  AND ST_INTERSECTS(p.GEOMETRY, rc.BOUNDARY);
+
+-- Isochrone clipped to region boundary (no foreign-territory bleed):
+SELECT GEOJSON FROM TABLE(
+  OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+    'driving-car', -122.42, 37.77, 600, 'SanFrancisco'));
+
+-- H3 hexagon coverage over actual region (drops water cells):
+SELECT h.VALUE::VARCHAR AS h3_index
+FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc,
+     TABLE(FLATTEN(H3_POLYGON_TO_CELLS_STRINGS(rc.BOUNDARY, 8))) h
+WHERE UPPER(rc.LOOKUP_NAME) = 'SANFRANCISCO';
+```
+
+Prefer these patterns over `WHERE ST_X/Y BETWEEN bbox` for cleaner POI sets,
+fewer null ORS responses, and faster matrix builds (water cells dropped
+upstream).
 
 Note: Per-region function aliases (e.g. `DIRECTIONS_BERLIN`) have been removed. Use the `region` parameter instead:
 ```sql

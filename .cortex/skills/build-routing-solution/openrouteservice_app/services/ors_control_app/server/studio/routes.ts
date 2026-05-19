@@ -5,28 +5,89 @@ import { log } from '../diagnostics.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
+type Bbox = { min_lat: number; max_lat: number; min_lng: number; max_lng: number };
+
+// Single source of truth for the bbox passed to the synthetic data engine.
+// ALWAYS resolves bbox from REGION_REGISTRY (preferred) or REGION_CATALOG
+// (fallback) by region name. Throws if neither exists. Any client-supplied
+// bbox is intentionally ignored to avoid hardcoded SF/Germany fallbacks
+// silently leaking into other regions (issue: California data generated
+// inside SF bbox because the React client hardcoded SF as the catch-all).
+async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bbox> {
+  const safeRegion = region.replace(/'/g, "''");
+  const regionRows = await snowSql(
+    `SELECT
+       COALESCE(rr.BBOX_MIN_LAT, rc.MIN_LAT) AS BBOX_MIN_LAT,
+       COALESCE(rr.BBOX_MAX_LAT, rc.MAX_LAT) AS BBOX_MAX_LAT,
+       COALESCE(rr.BBOX_MIN_LON, rc.MIN_LON) AS BBOX_MIN_LON,
+       COALESCE(rr.BBOX_MAX_LON, rc.MAX_LON) AS BBOX_MAX_LON
+     FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
+     LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+       ON UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY)
+       OR UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY)
+     WHERE rr.REGION_NAME='${safeRegion}'
+     QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+    'FLEET_INTELLIGENCE', 'CORE'
+  ).catch(() => [] as any[]);
+  let bbox: Bbox | null = regionRows.length ? {
+    min_lat: Number(regionRows[0].BBOX_MIN_LAT),
+    max_lat: Number(regionRows[0].BBOX_MAX_LAT),
+    min_lng: Number(regionRows[0].BBOX_MIN_LON),
+    max_lng: Number(regionRows[0].BBOX_MAX_LON),
+  } : null;
+  if (!bbox || [bbox.min_lat, bbox.max_lat, bbox.min_lng, bbox.max_lng].some(v => v == null || Number.isNaN(v))) {
+    const catalogOnly = await snowSql(
+      `SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON
+       FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+       WHERE UPPER(LOOKUP_NAME)=UPPER('${safeRegion}')
+          OR UPPER(REGION_KEY)=UPPER('${safeRegion}')
+       QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+      'OPENROUTESERVICE_APP', 'CORE'
+    ).catch(() => [] as any[]);
+    if (catalogOnly.length) {
+      bbox = {
+        min_lat: Number(catalogOnly[0].MIN_LAT),
+        max_lat: Number(catalogOnly[0].MAX_LAT),
+        min_lng: Number(catalogOnly[0].MIN_LON),
+        max_lng: Number(catalogOnly[0].MAX_LON),
+      };
+    }
+  }
+  if (!bbox || [bbox.min_lat, bbox.max_lat, bbox.min_lng, bbox.max_lng].some(v => v == null || Number.isNaN(v))) {
+    throw new Error(`No bbox registered for region '${region}'. Add it to FLEET_INTELLIGENCE.CORE.REGION_REGISTRY (or OPENROUTESERVICE_APP.CORE.REGION_CATALOG) before generating data.`);
+  }
+  return bbox;
+}
+
 async function checkOrsReadiness(
   snowSql: SnowSqlFn,
   orsProfile: string,
+  region: string,
 ): Promise<{ ready: boolean; error?: string }> {
   try {
-    const rows = await snowSql(
-      `SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS() AS STATUS`
-    );
+    // Use the 1-arg ORS_STATUS(region) overload so the gateway routes the
+    // status check to the per-region ORS service (e.g. ors-service-california).
+    // The 0-arg form always hits the default `ors-service`, which may be
+    // suspended even when the user's selected region's service is running.
+    const isDefault = !region || region.toUpperCase() === 'DEFAULT';
+    const sql = isDefault
+      ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS STATUS`
+      : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${region.replace(/'/g, "''")}')) AS STATUS`;
+    const rows = await snowSql(sql);
     const raw = rows[0]?.STATUS;
     const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!status?.service_ready) {
-      log('WARN', 'ORS', `ORS readiness check failed: service not ready (profile: ${orsProfile})`);
-      return { ready: false, error: 'ORS service is not running (suspended or starting up). Resume the service from the Service Lifecycle page before generating.' };
+      log('WARN', 'ORS', `ORS readiness check failed for region "${region}": service not ready (profile: ${orsProfile})`);
+      return { ready: false, error: `ORS service for region "${region}" is not running (suspended or starting up). Resume it from the Service Lifecycle page or the Region Builder before generating.` };
     }
     const profiles = Object.keys(status.profiles || {});
     if (!profiles.includes(orsProfile)) {
-      log('WARN', 'ORS', `ORS profile "${orsProfile}" not built. Available: ${profiles.join(', ')}`);
-      return { ready: false, error: `ORS profile "${orsProfile}" is not built. Available profiles: ${profiles.join(', ') || 'none'}. Build the graph for this profile first.` };
+      log('WARN', 'ORS', `ORS profile "${orsProfile}" not built for region "${region}". Available: ${profiles.join(', ')}`);
+      return { ready: false, error: `ORS profile "${orsProfile}" is not built for region "${region}". Available profiles: ${profiles.join(', ') || 'none'}. Build the graph for this profile first.` };
     }
   } catch (e: any) {
-    log('ERROR', 'ORS', `ORS readiness check exception: ${e.message?.slice(0, 200)}`);
-    return { ready: false, error: `Cannot reach ORS service: ${e.message?.slice(0, 120)}. The app may not be installed.` };
+    log('ERROR', 'ORS', `ORS readiness check exception for region "${region}": ${e.message?.slice(0, 200)}`);
+    return { ready: false, error: `Cannot reach ORS service for region "${region}": ${e.message?.slice(0, 120)}. The app may not be installed.` };
   }
   return { ready: true };
 }
@@ -181,23 +242,10 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         const preset = rows[0];
         const presetConfig = typeof preset.CONFIG === 'string' ? JSON.parse(preset.CONFIG) : preset.CONFIG;
         name = preset.NAME;
-
-        const regionRows = await snowSql(
-          `SELECT BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE REGION_NAME='${preset.REGION}'`,
-          'FLEET_INTELLIGENCE', 'CORE'
-        );
-        const bbox = regionRows.length ? {
-          min_lat: Number(regionRows[0].BBOX_MIN_LAT),
-          max_lat: Number(regionRows[0].BBOX_MAX_LAT),
-          min_lng: Number(regionRows[0].BBOX_MIN_LON),
-          max_lng: Number(regionRows[0].BBOX_MAX_LON),
-        } : { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 };
-
         config = {
           ...presetConfig,
           region: preset.REGION,
           ors_profile: preset.ORS_PROFILE,
-          bbox,
         };
       } else if (rawConfig) {
         config = rawConfig;
@@ -206,7 +254,17 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         return res.status(400).json({ error: 'preset_id or config required' });
       }
 
-      const health = await checkOrsReadiness(snowSql, config.ors_profile);
+      // Single source of truth: bbox is ALWAYS resolved from REGION_REGISTRY
+      // by region name, regardless of code path. This prevents stale or
+      // hardcoded client bboxes (e.g. SF default) from being used for other
+      // regions like California, France, Spain, etc.
+      try {
+        config.bbox = await resolveRegionBbox(config.region, snowSql);
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message, code: 'REGION_NOT_REGISTERED' });
+      }
+
+      const health = await checkOrsReadiness(snowSql, config.ors_profile, config.region);
       if (!health.ready) {
         return res.status(409).json({ error: health.error, code: 'ORS_NOT_READY' });
       }

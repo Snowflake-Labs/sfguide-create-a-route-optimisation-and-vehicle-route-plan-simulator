@@ -89,6 +89,8 @@ export interface FleetMember {
   base_speed_kmh: number;
   vehicle_type: string;
   battery_pct: number;
+  ghost_start_day?: number;
+  ghost_end_day?: number;
 }
 
 type VehicleState = 'MOVING' | 'DWELL_ORIGIN' | 'DWELL_DESTINATION' | 'DWELL_REST' | 'DWELL_RECHARGE' | 'IDLE' | 'OVERNIGHT';
@@ -290,16 +292,27 @@ export async function loadPOIs(
   const countryCodes = await fetchRegionCountryCodes(config.region, snowSql);
   const countryFilter = countryCodes && countryCodes.length
     ? `
-      AND ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
+      AND p.ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
     : '';
   const sql = `
-    SELECT ID AS LOCATION_ID, NAMES::VARIANT:primary AS NAME,
-           BASIC_CATEGORY AS CATEGORY,
-           ST_Y(GEOMETRY) AS LAT, ST_X(GEOMETRY) AS LNG
-    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-    WHERE ST_Y(GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
-      AND ST_X(GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
-      AND BASIC_CATEGORY IN (${catFilter})${countryFilter}
+    WITH region_boundary AS (
+      SELECT BOUNDARY
+      FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+      WHERE rc.BOUNDARY IS NOT NULL
+        AND (UPPER(rc.LOOKUP_NAME) = UPPER('${config.region.replace(/'/g, "''")}')
+             OR UPPER(rc.REGION_KEY) = UPPER('${config.region.replace(/'/g, "''")}'))
+      ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+      LIMIT 1
+    )
+    SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,
+           p.BASIC_CATEGORY AS CATEGORY,
+           ST_Y(p.GEOMETRY) AS LAT, ST_X(p.GEOMETRY) AS LNG
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+      LEFT JOIN region_boundary rb ON TRUE
+    WHERE ST_Y(p.GEOMETRY) BETWEEN ${bbox.min_lat} AND ${bbox.max_lat}
+      AND ST_X(p.GEOMETRY) BETWEEN ${bbox.min_lng} AND ${bbox.max_lng}
+      AND p.BASIC_CATEGORY IN (${catFilter})${countryFilter}
+      AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
     LIMIT 5000`;
   log('INFO', 'Studio', `Loading POIs from Overture Maps`, {
     detail: { categories: cats, bbox, mode: config.mode, region: config.region, countryCodes, sql: sql.trim().replace(/\s+/g, ' ') },
@@ -440,7 +453,93 @@ export function buildFleet(config: GenerationConfig, pois: POI[], rng: () => num
       battery_pct: vt === 'ebike' ? 100 : -1,
     });
   }
+
+  // Tag a configurable share of the fleet as "ghost" - they will sit idle at
+  // their home POI for several days, replicating the non-moving-trailer pattern.
+  const ghostCfg = config.ghost_trailer;
+  if (ghostCfg && ghostCfg.probability > 0) {
+    for (const member of fleet) {
+      if (rng() < ghostCfg.probability) {
+        const startDay = rngInt(rng, ghostCfg.start_day_min, ghostCfg.start_day_max);
+        const duration = rngInt(rng, ghostCfg.duration_days_min, ghostCfg.duration_days_max);
+        member.ghost_start_day = startDay;
+        member.ghost_end_day = startDay + duration - 1;
+      }
+    }
+  }
   return fleet;
+}
+
+export interface FreightOffer {
+  offer_id: string;
+  source: string;
+  product: string;
+  pickup_poi_id: string;
+  pickup_lat: number;
+  pickup_lon: number;
+  dropoff_poi_id: string;
+  dropoff_lat: number;
+  dropoff_lon: number;
+  weight_kg: number;
+  price_usd: number;
+  hazmat: boolean;
+  pickup_from_offset_min: number;
+  pickup_to_offset_min: number;
+  listing_text: string;
+}
+
+function sourceLabelsForRegion(region: string): string[] {
+  const r = (region || '').toLowerCase();
+  if (r.includes('germany') || r.includes('europe') || r.includes('netherlands') || r.includes('france') || r.includes('italy') || r.includes('spain')) {
+    return ['TIMOCOM', 'WTRANSNET', 'TELEROUTE', 'B2P'];
+  }
+  return ['DAT', 'TRUCKSTOP', 'CONVOY', 'UBER_FREIGHT'];
+}
+
+const FREIGHT_PRODUCTS = [
+  'Pallets (general)', 'Steel coils', 'Plastic granulate',
+  'Beverages', 'Furniture', 'Bulk paper',
+];
+
+export function generateFreightOffers(pois: POI[], config: GenerationConfig, n = 300): FreightOffer[] {
+  if (!pois || pois.length < 2) return [];
+  const rng = createRng((config.region || '').length * 1009 + (config.ors_profile || '').length * 17);
+  const sources = sourceLabelsForRegion(config.region);
+  const offers: FreightOffer[] = [];
+  let safety = 0;
+  while (offers.length < n && safety < n * 5) {
+    safety++;
+    const pIdx = Math.floor(rng() * pois.length);
+    const dIdx = Math.floor(rng() * pois.length);
+    if (pIdx === dIdx) continue;
+    const p = pois[pIdx];
+    const d = pois[dIdx];
+    const wt = 800 + Math.floor(rng() * 24200);
+    const price = 400 + Math.floor(rng() * 4100);
+    const haz = rng() < 0.08;
+    const winStart = 60 + Math.floor(rng() * 1140);
+    const winLen = 60 + Math.floor(rng() * 420);
+    const src = sources[offers.length % sources.length];
+    const product = FREIGHT_PRODUCTS[offers.length % FREIGHT_PRODUCTS.length];
+    offers.push({
+      offer_id: `OFF-${String(offers.length + 1).padStart(6, '0')}`,
+      source: src,
+      product,
+      pickup_poi_id: p.location_id,
+      pickup_lat: p.lat,
+      pickup_lon: p.lng,
+      dropoff_poi_id: d.location_id,
+      dropoff_lat: d.lat,
+      dropoff_lon: d.lng,
+      weight_kg: wt,
+      price_usd: price,
+      hazmat: haz,
+      pickup_from_offset_min: winStart,
+      pickup_to_offset_min: winStart + winLen,
+      listing_text: `${src} ${p.name} -> ${d.name} ${wt} kg ${product} ${price}${haz ? ' ADR' : ''}`,
+    });
+  }
+  return offers;
 }
 
 async function fetchRoute(
@@ -760,6 +859,53 @@ function emitDwell(
   return points;
 }
 
+// Emit a single multi-day IDLE dwell session for "ghost trailers". Pings are
+// sparse (default 5-15 min) so the row volume stays modest even over a 7-day
+// window. The dwell sessionizer (CONDITIONAL_CHANGE_EVENT on STATUS) will roll
+// these contiguous IDLE pings into one DT_DWELL_SESSIONS row.
+function emitLongIdleDwell(
+  lifecycle: VehicleLifecycle, config: GenerationConfig, poi: POI | null,
+  durationSec: number, pingMinSec: number, pingMaxSec: number, rng: () => number,
+): TelemetryPoint[] {
+  const points: TelemetryPoint[] = [];
+  const vt = resolveVehicleType(config);
+  let elapsed = 0;
+  while (elapsed < durationSec) {
+    const [jLat, jLng] = addGpsJitter(lifecycle.lat, lifecycle.lng, 2, rng);
+    const ts = new Date(lifecycle.currentTime.getTime() + elapsed * 1000);
+    points.push({
+      telemetry_id: uuid(rng),
+      region: config.region,
+      vehicle_type: vt,
+      vehicle_id: lifecycle.vehicle.vehicle_id,
+      trip_id: null,
+      ts,
+      latitude: jLat,
+      longitude: jLng,
+      speed_kmh: 0,
+      heading_deg: 0,
+      posted_speed_kmh: 0,
+      status: 'IDLE',
+      is_speeding: false,
+      is_hos_violation: false,
+      is_detour: false,
+      gps_accuracy_m: 3,
+      location_id: poi?.location_id || null,
+      location_type: poi?.location_type || null,
+      ors_profile: config.ors_profile,
+      battery_pct: lifecycle.vehicle.battery_pct > 0 ? lifecycle.vehicle.battery_pct : null,
+      odometer_km: Math.round(lifecycle.odometerKm * 100) / 100,
+      point_index: lifecycle.pointIndex++,
+    });
+    elapsed += rngFloat(rng, pingMinSec, pingMaxSec);
+  }
+  lifecycle.currentTime = new Date(lifecycle.currentTime.getTime() + durationSec * 1000);
+  lifecycle.state = 'IDLE';
+  lifecycle.location_id = poi?.location_id || null;
+  lifecycle.location_type = poi?.location_type || null;
+  return points;
+}
+
 export async function* generateTelemetry(
   config: GenerationConfig,
   snowSql: SnowSqlFn,
@@ -837,6 +983,40 @@ export async function* generateTelemetry(
 
     for (const member of fleet) {
       if (abortSignal?.aborted) return;
+
+      // Ghost trailer handling - vehicle is parked at home for several days.
+      const inGhostWindow = member.ghost_start_day !== undefined
+        && member.ghost_end_day !== undefined
+        && dayOffset >= member.ghost_start_day
+        && dayOffset <= member.ghost_end_day;
+      if (inGhostWindow) {
+        // On any ghost day other than the first, the long-idle pings were
+        // already emitted on the start day - skip silently.
+        if (dayOffset !== member.ghost_start_day) continue;
+        const ghostCfg = config.ghost_trailer!;
+        const totalGhostDays = (member.ghost_end_day! - member.ghost_start_day!) + 1;
+        const ghostStartTime = new Date(Date.UTC(currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(), 0, rngInt(rng, 0, 30)));
+        const ghostLifecycle: VehicleLifecycle = {
+          vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
+          lat: member.home_poi.lat,
+          lng: member.home_poi.lng,
+          currentTime: ghostStartTime,
+          state: 'IDLE',
+          location_id: member.home_poi.location_id,
+          location_type: member.home_poi.location_type,
+          dailyDrivingMin: 0,
+          minSinceBreak: 0,
+          tripSeq: 0,
+          odometerKm: 0,
+          pointIndex: 0,
+        };
+        const durationSec = totalGhostDays * 86400;
+        dayBatch.push(...emitLongIdleDwell(
+          ghostLifecycle, config, member.home_poi,
+          durationSec, ghostCfg.ping_interval_min_sec, ghostCfg.ping_interval_max_sec, rng,
+        ));
+        continue;
+      }
 
       const operatingRate = config.fleet.daily_operating_rate
         || (isWeekend ? (config.fleet.weekend_operating_rate || 0.4) : (config.fleet.weekday_operating_rate || 0.85));

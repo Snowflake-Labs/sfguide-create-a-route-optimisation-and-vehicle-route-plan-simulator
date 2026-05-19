@@ -1,15 +1,34 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
-import { RES_LABELS, RES_CUTOFFS, RES_HEX_PER_SQDEG, ROUTING_PROFILES } from '../types';
+import { RES_LABELS, RES_CUTOFFS, RES_HEX_PER_SQDEG, RES_HEX_AREA_KM2, ROUTING_PROFILES } from '../types';
 import { safeFetchJson } from '../utils/safeFetch';
 
 const RATE_PAIRS_PER_SEC = 31500;
 const CREDIT_PER_HOUR_SMALL = 2;
 const ALL_RESOLUTIONS = [5, 6, 7, 8, 9, 10];
 
-function estimateHexCount(bounds: RegionInfo['bounds'], res: number): number {
-  const area = (bounds.maxLat - bounds.minLat) * (bounds.maxLon - bounds.minLon);
-  return Math.round(area * (RES_HEX_PER_SQDEG[res] || 2000));
+// Polygon-aware fast estimator. Prefers REGION_CATALOG.BOUNDARY_AREA_KM2
+// (set by the server in /api/matrix/regions) so the pre-server-response
+// preview matches what BUILD_HEXAGONS will actually produce. Falls back to
+// the bbox rectangle area when no catalog row matched. The bbox area is
+// computed in km^2 (not deg^2) using cos(lat) so it remains comparable to
+// the polygon area.
+function estimateHexCount(region: RegionInfo, res: number): number {
+  const hexAreaKm2 = RES_HEX_AREA_KM2[res] ?? 1;
+  if (region.boundaryAreaKm2 != null && region.boundaryAreaKm2 > 0) {
+    return Math.ceil(region.boundaryAreaKm2 / hexAreaKm2);
+  }
+  const b = region.bounds;
+  const latSpanKm = (b.maxLat - b.minLat) * 111;
+  const midLat = (b.maxLat + b.minLat) / 2;
+  const lonSpanKm = (b.maxLon - b.minLon) * 111 * Math.cos((midLat * Math.PI) / 180);
+  const bboxAreaKm2 = Math.max(0, latSpanKm * lonSpanKm);
+  if (bboxAreaKm2 > 0) {
+    return Math.ceil(bboxAreaKm2 / hexAreaKm2);
+  }
+  // Last-ditch legacy degree-area heuristic
+  const areaDeg2 = (b.maxLat - b.minLat) * (b.maxLon - b.minLon);
+  return Math.round(areaDeg2 * (RES_HEX_PER_SQDEG[res] || 2000));
 }
 
 function estimatePairs(hexCount: number): number {
@@ -98,6 +117,7 @@ export default function MatrixBuilder() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildWarning, setBuildWarning] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
   const [roadFilterEnabled, setRoadFilterEnabled] = useState(true);
@@ -208,7 +228,7 @@ export default function MatrixBuilder() {
   const hexEstimates = React.useMemo(() => {
     if (!region) return [];
     return ALL_RESOLUTIONS.map((res) => {
-      const bboxHexagons = estimateHexCount(region.bounds, res);
+      const bboxHexagons = estimateHexCount(region, res);
       const hexagons = serverHexEstimate[res] ?? bboxHexagons;
       return { res, hexagons, bboxHexagons, pairs: estimatePairs(hexagons), filtered: serverHexEstimate[res] !== undefined };
     });
@@ -233,6 +253,7 @@ export default function MatrixBuilder() {
     if (!selectedRegion) return;
     setIsLaunching(true);
     setBuildError(null);
+    setBuildWarning(null);
     const { ok, data, error } = await safeFetchJson<{ status: string; error?: string; warning?: string }>('/api/matrix/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -245,7 +266,7 @@ export default function MatrixBuilder() {
     });
     if (ok && data) {
       if (data.error) setBuildError(data.error);
-      else if (data.warning) setBuildError(data.warning);
+      if (data.warning) setBuildWarning(data.warning);
     } else {
       setBuildError(error || 'Failed to launch build');
     }
@@ -504,6 +525,11 @@ export default function MatrixBuilder() {
           {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
+      {buildWarning && (
+        <div className="warning-banner" style={{ marginTop: 8 }}>
+          <strong>Heads up:</strong> {buildWarning}
+        </div>
+      )}
       {buildError && (
         <div className="error-banner" style={{ marginTop: 8 }}>
           <strong>Build failed:</strong> {buildError}

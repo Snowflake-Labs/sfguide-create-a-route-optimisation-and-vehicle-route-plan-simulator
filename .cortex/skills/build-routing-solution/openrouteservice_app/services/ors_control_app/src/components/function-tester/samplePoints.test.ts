@@ -31,10 +31,10 @@ describe('samplePoints', () => {
       expect(result!.points).toHaveLength(4);
     });
 
-    it('OPTIMIZATION returns 5 points (1 depot + 4 jobs)', () => {
+    it('OPTIMIZATION returns 11 points (1 depot + 10 jobs)', () => {
       const result = samplePoints({ fnName: 'OPTIMIZATION', bbox: NYC_BBOX, profile: 'driving-car', seed: 42 });
       expect(result).not.toBeNull();
-      expect(result!.points).toHaveLength(5);
+      expect(result!.points).toHaveLength(11);
     });
   });
 

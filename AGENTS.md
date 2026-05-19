@@ -53,6 +53,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
+| `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
 
 ## Skill Conventions (Quick Reference)
 
@@ -249,6 +250,8 @@ graph TD
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
     BRS --> RA[routing-agent]
+    RO --> BM[backload-matching]
+    BRS --> BM
     RC --> FIT
     RC --> FIFD
     RC --> RD
@@ -270,6 +273,7 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 - **REBUILD_GRAPHS management (Issue #59)**: Routing graphs are persisted on `@ORS_GRAPHS_SPCS_STAGE/<region>/` and MUST be reused across suspend/resume cycles. The `create_region_ors_service` proc probes the stage and sets `REBUILD_GRAPHS="false"` if graphs already exist. After first-time provisioning completes (`service_ready=true`), `PROVISION_REGION_WRAPPER` auto-calls `SET_REBUILD_GRAPHS_FLAG(region, 'false')` so the next resume is instant (~1–2 min). For forced rebuilds (PBF update / corruption), call `REBUILD_REGION_GRAPHS(region)`.
+- **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed — the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **IMPORTANT**: every `OPTIMIZATION(...)` SQL call MUST pass `region` as the second argument — otherwise the gateway falls through to the legacy global `VROOM_SERVICE`+`ORS_SERVICE` (SF-only graph) and statewide / multi-region payloads will fail. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
 - **AUTO_SUSPEND_SECS invariant**: While a region is being provisioned (`REGION_PROVISION_JOBS.STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')`) or an H3 matrix job is running (`MATRIX_BUILD_JOBS.STATUS IN ('PENDING','RUNNING')`) the relevant services (`ORS_SERVICE_<REGION>`, `routing_gateway_service`, `downloader`) MUST have `AUTO_SUSPEND_SECS=0` so automatic time-based suspension cannot interrupt the long-running work. At all other times they MUST be `AUTO_SUSPEND_SECS=14400` (4h). Every procedure that flips these values to `0` is responsible for restoring `14400` on ALL exits (happy path, timeout, early return, exception). The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` detects drift and can be called at any time; it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
 
 ## Geospatial Conventions

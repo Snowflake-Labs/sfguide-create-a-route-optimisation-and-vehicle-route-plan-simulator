@@ -481,9 +481,11 @@ export default function FleetDataStudio() {
               region: editRegion,
               ors_profile: editProfile,
               vehicleType: selectedTemplate?.vehicleType || (editProfile === 'cycling-electric' ? 'ebike' : editProfile === 'driving-hgv' ? 'hgv' : 'car'),
-              bbox: editRegion === 'Germany'
-                ? { min_lat: 47.27, max_lat: 55.06, min_lng: 5.87, max_lng: 15.04 }
-                : { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 },
+              // bbox intentionally omitted: the server resolves it from
+              // REGION_REGISTRY/REGION_CATALOG by region name. Hardcoding
+              // Germany/SF defaults here previously caused every other
+              // region (California, France, etc.) to silently get the SF
+              // bbox.
             },
             preset_name: editName,
           };
@@ -776,6 +778,24 @@ export default function FleetDataStudio() {
                   {renderField('Dest Median (min)', 'dwell.destination.median_min')}
                   {renderField('Dest Sigma', 'dwell.destination.sigma')}
                   {renderField('Dest Max (min)', 'dwell.destination.max_min')}
+                </div>
+              ))}
+
+              {renderSection('ghost', 'Long Idle Vehicles', (
+                <div>
+                  <div style={{ fontSize: 11, color: '#6E7681', marginBottom: 8, lineHeight: 1.5 }}>
+                    Marks a share of vehicles as long-idle (parked at home for several days). Useful for ghost-trailer / off-rotation / dead-battery scenarios. Set Probability to 0 to disable.
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    {renderField('Probability (0-1)', 'ghost_trailer.probability')}
+                    {renderField('Start Day Min', 'ghost_trailer.start_day_min')}
+                    {renderField('Start Day Max', 'ghost_trailer.start_day_max')}
+                    {renderField('Duration Days Min', 'ghost_trailer.duration_days_min')}
+                    {renderField('Duration Days Max', 'ghost_trailer.duration_days_max')}
+                    <div />
+                    {renderField('Ping Min (sec)', 'ghost_trailer.ping_interval_min_sec')}
+                    {renderField('Ping Max (sec)', 'ghost_trailer.ping_interval_max_sec')}
+                  </div>
                 </div>
               ))}
 

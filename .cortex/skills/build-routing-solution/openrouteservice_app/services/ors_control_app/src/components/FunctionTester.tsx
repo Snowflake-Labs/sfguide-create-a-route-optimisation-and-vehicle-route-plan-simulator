@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer, BitmapLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './function-tester/samplePoints';
 
@@ -9,9 +9,20 @@ interface RegionOption {
   display_name?: string;
   isDefault?: boolean;
   bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
+  // Boundary GeoJSON parsed from REGION_CATALOG.BOUNDARY (via /api/regions).
+  // When present, samplePoints uses rejection sampling against the polygon
+  // instead of bbox - dramatically reduces ORS PointNotFound for water-bordered
+  // regions and shows the real region shape on the map.
+  boundaryGeoJson?: any | null;
 }
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
+
+const OPTIMIZATION_PALETTE: [number, number, number, number][] = [
+  [59, 130, 246, 230],
+  [16, 185, 129, 230],
+  [244, 114, 182, 230],
+];
 
 function cartoBasemap() {
   return new TileLayer({
@@ -144,13 +155,21 @@ function generateSql(fnName: string, region: RegionOption | null, profile: strin
     case 'MATRIX_TABULAR':
       return `SELECT ${p}.MATRIX_TABULAR('${profile}', ARRAY_CONSTRUCT(${start![0]}, ${start![1]}), ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${end![0]}, ${end![1]}), ARRAY_CONSTRUCT(${dest2![0]}, ${dest2![1]})), ${rg})`;
     case 'OPTIMIZATION': {
-      const jobs = sampledPoints && sampledPoints.points.length >= 5
-        ? sampledPoints.points.slice(1)
-        : [job1!, job2!];
+      const hasSampled = !!(sampledPoints && sampledPoints.points.length >= 2);
+      const rawJobs = hasSampled ? sampledPoints!.points.slice(1) : [job1!, job2!];
+      const jobs: [number, number][] = [];
+      for (let i = 0; i < 10; i++) {
+        jobs.push(rawJobs[i] || rawJobs[rawJobs.length - 1] || depot!);
+      }
       const jobEntries = jobs.map((j, i) =>
         `    OBJECT_CONSTRUCT('id', ${i + 1}, 'location', ARRAY_CONSTRUCT(${j[0]}, ${j[1]}))`
       ).join(',\n');
-      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n    OBJECT_CONSTRUCT('id', 1, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}))\n  ),\n  [], ${rg}\n))`;
+      const numVehicles = 3;
+      const maxTasks = Math.ceil(jobs.length / numVehicles);
+      const vehicleEntries = [1, 2, 3].map(vid =>
+        `    OBJECT_CONSTRUCT('id', ${vid}, 'start', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'end', ARRAY_CONSTRUCT(${depot![0]}, ${depot![1]}), 'max_tasks', ${maxTasks})`
+      ).join(',\n');
+      return `SELECT * FROM TABLE(${p}.OPTIMIZATION(\n  ARRAY_CONSTRUCT(\n${jobEntries}\n  ),\n  ARRAY_CONSTRUCT(\n${vehicleEntries}\n  ),\n  [], ${rg}\n))`;
     }
     default:
       return '';
@@ -292,6 +311,72 @@ function parseMatrixResult(result: any): { sources: any[]; destinations: any[]; 
   return { sources: parsed.sources || [], destinations: parsed.destinations || [], durations: parsed.durations || [], distances: parsed.distances || [] };
 }
 
+interface OptimizationStop {
+  position: [number, number];
+  type: string;
+  jobId?: number;
+  order: number;
+}
+interface OptimizationVehicle {
+  vehicleId: number;
+  path: [number, number][];
+  stops: OptimizationStop[];
+}
+interface OptimizationParsed {
+  vehicles: OptimizationVehicle[];
+  depot: [number, number] | null;
+}
+
+function parseOptimizationResult(result: any): OptimizationParsed | null {
+  if (!result || !Array.isArray(result) || result.length === 0) return null;
+  const vehicles: OptimizationVehicle[] = [];
+  let depot: [number, number] | null = null;
+  for (const row of result) {
+    const vehicleId = typeof row.VEHICLE === 'number' ? row.VEHICLE : (typeof row.vehicle === 'number' ? row.vehicle : vehicles.length + 1);
+    let path: [number, number][] = [];
+    const geo = tryParseJson(row.GEOJSON ?? row.geojson ?? row.GEO ?? row.geo);
+    if (geo?.coordinates && Array.isArray(geo.coordinates)) {
+      path = geo.coordinates as [number, number][];
+    } else if (geo?.geometry?.coordinates) {
+      path = geo.geometry.coordinates as [number, number][];
+    }
+    if (path.length === 0) {
+      const resp = tryParseJson(row.RESPONSE ?? row.response);
+      if (resp?.routes?.[0]?.geometry) {
+        const g = resp.routes[0].geometry;
+        if (typeof g === 'string') {
+          path = decodePolyline(g);
+        } else if (Array.isArray(g)) {
+          path = g as [number, number][];
+        }
+      } else if (resp?.geometry) {
+        const g = resp.geometry;
+        if (typeof g === 'string') {
+          path = decodePolyline(g);
+        } else if (Array.isArray(g)) {
+          path = g as [number, number][];
+        }
+      }
+    }
+    const stepsRaw = row.STEPS ?? row.steps;
+    const stepsArr: any[] = Array.isArray(stepsRaw) ? stepsRaw : (() => { const p = tryParseJson(stepsRaw); return Array.isArray(p) ? p : []; })();
+    const stops: OptimizationStop[] = [];
+    stepsArr.forEach((step: any, idx: number) => {
+      const loc = step.location;
+      if (!Array.isArray(loc) || loc.length < 2) return;
+      const position: [number, number] = [loc[0], loc[1]];
+      if (step.type === 'start' || step.type === 'end') {
+        if (!depot) depot = position;
+        return;
+      }
+      stops.push({ position, type: step.type, jobId: step.job ?? step.id, order: idx });
+    });
+    vehicles.push({ vehicleId, path, stops });
+  }
+  if (vehicles.length === 0) return null;
+  return { vehicles, depot };
+}
+
 function travelTimeColor(t: number, maxT: number): [number, number, number, number] {
   const ratio = Math.min(t / maxT, 1);
   const r = Math.round(34 + (239 - 34) * ratio);
@@ -300,12 +385,44 @@ function travelTimeColor(t: number, maxT: number): [number, number, number, numb
   return [r, g, b, 230];
 }
 
-function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: string; regionCenter: [number, number] }) {
+function parseIsochroneOrigin(sql: string): [number, number] | null {
+  const m = sql.match(/ISOCHRONES\s*\(\s*'[^']+'\s*,\s*(-?\d+(?:\.\d+)?)\s*::\s*FLOAT\s*,\s*(-?\d+(?:\.\d+)?)\s*::\s*FLOAT/i);
+  if (!m) return null;
+  const lon = parseFloat(m[1]);
+  const lat = parseFloat(m[2]);
+  if (!isFinite(lon) || !isFinite(lat)) return null;
+  return [lon, lat];
+}
+
+function ResultMap({ result, fnName, regionCenter, executedSql }: { result: any; fnName: string; regionCenter: [number, number]; executedSql: string }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
+  const optimization = useMemo(() => fnName === 'OPTIMIZATION' ? parseOptimizationResult(result) : null, [result, fnName]);
   const [viewState, setViewState] = useState({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 });
 
   useEffect(() => {
+    if (optimization) {
+      const allPts: [number, number][] = [];
+      for (const v of optimization.vehicles) {
+        allPts.push(...v.path);
+        allPts.push(...v.stops.map(s => s.position));
+      }
+      if (optimization.depot) allPts.push(optimization.depot);
+      if (allPts.length > 0) {
+        const lons = allPts.map(p => p[0]);
+        const lats = allPts.map(p => p[1]);
+        const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+        const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+        const span = Math.max(maxLon - minLon, maxLat - minLat);
+        let zoom = 12;
+        if (span > 1) zoom = 8;
+        else if (span > 0.5) zoom = 9;
+        else if (span > 0.1) zoom = 11;
+        else if (span > 0.02) zoom = 13;
+        setViewState(prev => ({ ...prev, longitude: (minLon + maxLon) / 2, latitude: (minLat + maxLat) / 2, zoom }));
+      }
+      return;
+    }
     if (matrix && matrix.sources.length > 0) {
       const allPts = [...matrix.sources, ...matrix.destinations].filter(p => p.location);
       if (allPts.length > 0) {
@@ -316,7 +433,7 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     } else if (geo.center) {
       setViewState((prev) => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
     }
-  }, [geo, matrix]);
+  }, [geo, matrix, optimization]);
 
   const geojsonLayer = useMemo(() => {
     if (!geo.geojson) return null;
@@ -380,6 +497,28 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     });
   }, [geo.points]);
 
+  const isoOrigin = useMemo(
+    () => fnName === 'ISOCHRONES' ? parseIsochroneOrigin(executedSql) : null,
+    [fnName, executedSql],
+  );
+
+  const isoOriginLayer = useMemo(() => {
+    if (!isoOrigin) return null;
+    return new ScatterplotLayer({
+      id: 'iso-origin',
+      data: [{ position: isoOrigin, label: 'Origin' }],
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: [245, 158, 11, 255],
+      getLineColor: [255, 255, 255, 255],
+      getRadius: 120,
+      radiusMinPixels: 9,
+      radiusMaxPixels: 14,
+      stroked: true,
+      lineWidthMinPixels: 3,
+    });
+  }, [isoOrigin]);
+
   const matrixLayers = useMemo(() => {
     if (!matrix) return [];
     const layers: any[] = [];
@@ -423,22 +562,88 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
     return layers;
   }, [matrix]);
 
-  const basemap = useMemo(() => cartoBasemap(), []);
-  const layers = useMemo(() => matrix
-    ? [basemap, ...matrixLayers]
-    : [basemap, geojsonLayer, startEndLayer, pointsLayer].filter(Boolean),
-    [basemap, matrix, matrixLayers, geojsonLayer, startEndLayer, pointsLayer]);
+  const optimizationLayers = useMemo(() => {
+    if (!optimization) return [];
+    const layers: any[] = [];
+    const stopData: { position: [number, number]; vehicleId: number; jobId?: number; color: [number, number, number, number] }[] = [];
+    for (const v of optimization.vehicles) {
+      const color = OPTIMIZATION_PALETTE[(v.vehicleId - 1) % OPTIMIZATION_PALETTE.length];
+      for (const s of v.stops) {
+        stopData.push({ position: s.position, vehicleId: v.vehicleId, jobId: s.jobId, color });
+      }
+    }
+    layers.push(new PathLayer({
+      id: 'optimization-paths',
+      data: optimization.vehicles.filter(v => v.path.length > 1),
+      pickable: true,
+      getPath: (v: any) => v.path,
+      getColor: (v: any) => OPTIMIZATION_PALETTE[(v.vehicleId - 1) % OPTIMIZATION_PALETTE.length],
+      getWidth: 5,
+      widthMinPixels: 4,
+      widthMaxPixels: 8,
+      capRounded: true,
+      jointRounded: true,
+    }));
+    layers.push(new ScatterplotLayer({
+      id: 'optimization-stops',
+      data: stopData,
+      pickable: true,
+      getPosition: (d: any) => d.position,
+      getFillColor: (d: any) => d.color,
+      getLineColor: [255, 255, 255, 230],
+      getRadius: 90,
+      radiusMinPixels: 7,
+      radiusMaxPixels: 12,
+      stroked: true,
+      lineWidthMinPixels: 2,
+    }));
+    if (optimization.depot) {
+      layers.push(new ScatterplotLayer({
+        id: 'optimization-depot',
+        data: [{ position: optimization.depot }],
+        pickable: true,
+        getPosition: (d: any) => d.position,
+        getFillColor: [255, 255, 255, 255],
+        getLineColor: [20, 20, 31, 255],
+        getRadius: 140,
+        radiusMinPixels: 10,
+        radiusMaxPixels: 16,
+        stroked: true,
+        lineWidthMinPixels: 3,
+      }));
+    }
+    return layers;
+  }, [optimization]);
 
-  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix);
+  const basemap = useMemo(() => cartoBasemap(), []);
+  const layers = useMemo(() => optimization
+    ? [basemap, ...optimizationLayers]
+    : matrix
+      ? [basemap, ...matrixLayers]
+      : [basemap, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer].filter(Boolean),
+    [basemap, optimization, optimizationLayers, matrix, matrixLayers, geojsonLayer, isoOriginLayer, startEndLayer, pointsLayer]);
+
+  const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization);
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
     if (layer?.id === 'matrix-origins') return { text: object.name, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    if (layer?.id === 'iso-origin') return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     if (layer?.id === 'matrix-destinations') {
       return { text: `${object.name}\n${(object.duration / 60).toFixed(1)} min · ${(object.distance / 1000).toFixed(2)} km`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '6px 10px', borderRadius: '4px', whiteSpace: 'pre-line' } };
     }
     if (layer?.id === 'start-end-markers') {
       return { text: object.label, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
+    if (layer?.id === 'optimization-paths') {
+      return { text: `Vehicle ${object.vehicleId}`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
+    if (layer?.id === 'optimization-stops') {
+      const job = object.jobId != null ? ` · Job ${object.jobId}` : '';
+      return { text: `Vehicle ${object.vehicleId}${job}`, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
+    }
+    if (layer?.id === 'optimization-depot') {
+      return { text: 'Depot', style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
     }
     if (layer?.id === 'result-geojson' && object.properties) {
       const props = object.properties;
@@ -461,6 +666,29 @@ function ResultMap({ result, fnName, regionCenter }: { result: any; fnName: stri
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(245,158,11)', display: 'inline-block' }} /> Origin</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(34,197,94)', display: 'inline-block' }} /> Fast</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Slow</span>
+        </div>
+      )}
+      {!matrix && fnName === 'ISOCHRONES' && isoOrigin && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgb(245,158,11)', display: 'inline-block' }} /> Origin</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 12, height: 12, background: 'rgba(255,107,53,0.4)', border: '2px solid rgb(255,107,53)', display: 'inline-block' }} /> Reachable area</span>
+        </div>
+      )}
+      {optimization && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {optimization.vehicles.map(v => {
+            const c = OPTIMIZATION_PALETTE[(v.vehicleId - 1) % OPTIMIZATION_PALETTE.length];
+            return (
+              <span key={v.vehicleId} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', background: `rgb(${c[0]},${c[1]},${c[2]})`, display: 'inline-block' }} /> Vehicle {v.vehicleId} ({v.stops.length} stops)
+              </span>
+            );
+          })}
+          {optimization.depot && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', border: '2px solid #14141f', display: 'inline-block' }} /> Depot
+            </span>
+          )}
         </div>
       )}
       <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
@@ -524,6 +752,7 @@ export default function FunctionTester() {
   const [roadPointsReason, setRoadPointsReason] = useState<string | null>(null);
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
+  const [lastExecutedSql, setLastExecutedSql] = useState('');
   const userEditedRef = useRef(false);
 
   const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
@@ -538,7 +767,11 @@ export default function FunctionTester() {
       setSqlInput(generateSql(fnName, region, profile, db, null));
       return;
     }
-    const sampled = samplePoints({ fnName, bbox, profile, roadPoints: roads || undefined });
+    const sampled = samplePoints({
+      fnName, bbox, profile,
+      roadPoints: roads || undefined,
+      boundary: region?.boundaryGeoJson || undefined,
+    });
     setSampleHint(sampled?.hint || null);
     setSqlInput(generateSql(fnName, region, profile, db, sampled));
     userEditedRef.current = false;
@@ -683,6 +916,7 @@ export default function FunctionTester() {
     setRunning(true);
     setResult(null);
     setError(null);
+    setLastExecutedSql(sqlInput);
     const start = Date.now();
     try {
       const resp = await fetch('/api/query', {
@@ -805,7 +1039,7 @@ export default function FunctionTester() {
         </div>
       )}
 
-      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} />}
+      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} executedSql={lastExecutedSql} />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {
         const raw = result?.[0] ? Object.values(result[0])[0] : null;

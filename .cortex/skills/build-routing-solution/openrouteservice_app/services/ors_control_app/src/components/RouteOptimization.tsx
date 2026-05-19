@@ -129,14 +129,27 @@ export default function RouteOptimization() {
   useEffect(() => { if (centerCoords) loadPlaces(); }, [centerCoords, radius, selectedIndustry]);
 
   const previewCatchment = useCallback(async () => {
-    console.log('[Catchment] centerCoords:', centerCoords, 'profile:', vehicles[0]?.profile, 'isoMinutes:', isoMinutes);
+    console.log('[Catchment] centerCoords:', centerCoords, 'profile:', vehicles[0]?.profile, 'isoMinutes:', isoMinutes, 'region:', regionName);
     if (!centerCoords) { console.warn('[Catchment] No centerCoords — search for a location first'); return; }
-    const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}::FLOAT, ${centerCoords[1]}::FLOAT, ${isoMinutes}::INT, NULL::VARCHAR))`, 'OPENROUTESERVICE_APP', 'CORE');
-    console.log('[Catchment] rows returned:', rows.length, rows[0]);
-    if (rows[0]?.GEO) {
+    try {
+      const rows = await sfQuery(`SELECT GEOJSON AS GEO, RESPONSE::VARCHAR AS RESP FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${vehicles[0].profile}', ${centerCoords[0]}::FLOAT, ${centerCoords[1]}::FLOAT, ${isoMinutes}::INT, '${regionName}'))`, 'OPENROUTESERVICE_APP', 'CORE');
+      console.log('[Catchment] rows returned:', rows.length, rows[0]);
+      if (!rows[0]?.GEO) {
+        let msg = 'No isochrone returned';
+        try {
+          const respObj = rows[0]?.RESP ? JSON.parse(rows[0].RESP) : {};
+          msg = respObj.message || respObj.error || msg;
+        } catch {}
+        console.error('[Catchment] failed:', msg);
+        alert(`Catchment preview failed for ${regionName}: ${msg}`);
+        return;
+      }
       try { setCatchmentGeoJson(JSON.parse(rows[0].GEO)); } catch (e) { console.error('[Catchment] JSON parse error:', e); }
+    } catch (e: any) {
+      console.error('[Catchment] error:', e);
+      alert(`Catchment preview error: ${e?.message || e}`);
     }
-  }, [centerCoords, vehicles, isoMinutes]);
+  }, [centerCoords, vehicles, isoMinutes, regionName]);
 
   const optimizeRoutes = useCallback(async () => {
     if (!places.length) return;
@@ -166,9 +179,23 @@ export default function RouteOptimization() {
     console.log('[VRP] vrpJobs count:', vrpJobs.length);
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`, 'OPENROUTESERVICE_APP', 'CORE');
-    console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
-    if (rows.length > 0) {
+    try {
+      const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}'))`, 'OPENROUTESERVICE_APP', 'CORE');
+      console.log('[VRP] Received', rows.length, 'rows from OPTIMIZATION');
+      if (rows.length === 0) {
+        let msg = 'No routes returned from solver';
+        try {
+          const errRows = await sfQuery(`SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}')::VARCHAR AS RESP`, 'OPENROUTESERVICE_APP', 'CORE');
+          const respObj = errRows[0]?.RESP ? JSON.parse(errRows[0].RESP) : {};
+          if (respObj.error) {
+            msg = `${respObj.error}: ${respObj.message || ''}`;
+          }
+        } catch (probeErr) {
+          console.error('[VRP] error probe failed:', probeErr);
+        }
+        alert(`Route optimization failed for ${regionName}: ${msg}\n\nThe VROOM service may be warming up. Try again in 10-30 seconds.`);
+        return;
+      }
       setVrpResult(rows[0]);
       const paths: any[] = [];
       for (const row of rows) {
@@ -183,9 +210,13 @@ export default function RouteOptimization() {
       }
       console.log('[VRP] Parsed', paths.length, 'route geometries');
       setRoutePaths(paths);
+    } catch (e: any) {
+      console.error('[VRP] error:', e);
+      alert(`Optimize Routes error: ${e?.message || e}`);
+    } finally {
+      setSolving(false);
     }
-    setSolving(false);
-  }, [places, jobs, vehicles]);
+  }, [places, jobs, vehicles, regionName]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -240,6 +271,12 @@ export default function RouteOptimization() {
         </div>
       </div>
 
+      {centerCoords && !loading && places.length === 0 && (
+        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. Data is auto-seeded from Overture Maps when you switch regions. Try increasing the radius, moving the map center, or if the region was just activated, wait a moment and refresh.
+        </div>
+      )}
+
       <div className="metric-grid">
         <MetricCard label="Places" value={places.length} />
         <MetricCard label="Job Templates" value={jobs.length} />
@@ -252,7 +289,20 @@ export default function RouteOptimization() {
         <div style={{ minWidth: 120 }}>
           <input type="range" min={5} max={60} step={5} value={isoMinutes} onChange={e => setIsoMinutes(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
-        <button className="btn-primary" onClick={optimizeRoutes} disabled={solving || !places.length} style={{ fontSize: 12, background: '#0DB048' }}>{solving ? 'Solving...' : 'Optimize Routes'}</button>
+        <button
+          className="btn-primary"
+          onClick={optimizeRoutes}
+          disabled={solving || !places.length}
+          title={
+            solving ? 'Solving...'
+            : !centerCoords ? 'Search a location first (enter an address and click Go)'
+            : !places.length ? `No places found for region '${regionName}' near this location. Try a different region or address.`
+            : 'Optimize delivery routes'
+          }
+          style={{ fontSize: 12, background: '#0DB048' }}
+        >
+          {solving ? 'Solving...' : 'Optimize Routes'}
+        </button>
       </div>
 
       {showVehicles && (
