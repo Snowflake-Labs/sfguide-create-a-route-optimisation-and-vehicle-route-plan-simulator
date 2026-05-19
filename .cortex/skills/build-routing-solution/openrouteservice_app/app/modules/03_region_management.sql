@@ -2283,3 +2283,38 @@ AS
 -- failed parsing with "unexpected EOF" and left the task suspended after
 -- every deploy).
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+
+-- ===========================================================================
+-- v1.1.0 — Bootstrap default region (SanFrancisco) using the same code path
+-- as every other region. Replaces the legacy global ORS_SERVICE/VROOM_SERVICE
+-- create-statements that lived in 01_core_infra.sql.
+--
+-- Idempotent: PROVISION_REGION_WRAPPER reuses graphs already staged at
+-- @ORS_GRAPHS_SPCS_STAGE/SanFrancisco/ when present, and create_region_*
+-- procedures are CREATE … IF NOT EXISTS-guarded.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"bootstrap"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    bootstrap_job_id VARCHAR DEFAULT UUID_STRING();
+BEGIN
+    CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
+        :bootstrap_job_id,
+        'SanFrancisco',
+        'San Francisco',
+        'https://download.geofabrik.de/north-america/us/california/norcal-latest.osm.pbf',
+        37.4, 38.0, -123.2, -122.0,
+        'driving-car,driving-hgv,cycling-regular,foot-walking',
+        'S',
+        FALSE
+    );
+    RETURN 'BOOTSTRAP_DEFAULT_REGION: queued provisioning for SanFrancisco (job_id=' || :bootstrap_job_id || ')';
+END;
+$$;
+
+CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();

@@ -68,7 +68,16 @@
 
    -- ===== PUBLIC TABLE FUNCTIONS (granted to app_user) =====
    -- These wrap _RAW internals and parse GEOGRAPHY columns.
-   -- Region uses DEFAULT NULL so callers can omit it for default routing.
+   --
+   -- v1.1.0 — Region semantics:
+   --   * Pass an explicit region name (e.g. 'SanFrancisco', 'Berlin') to route
+   --     the call to ORS_SERVICE_<REGION> / VROOM_SERVICE_<REGION>.
+   --   * Pass NULL or omit the argument to route to the default region. The
+   --     gateway resolves it via DEFAULT_REGION_NAME (configured at the gateway
+   --     service spec level). After the v1.1.0 unification there is no global
+   --     ORS_SERVICE — every region (including the default) is per-region.
+   -- DEFAULT NULL is preserved for backward-compat with notebooks / agents that
+   -- pre-date the unified model.
 
    -- DIRECTIONS (tabular: start/end arrays)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DIRECTIONS(method VARCHAR, jstart ARRAY, jend ARRAY, region VARCHAR DEFAULT NULL)
