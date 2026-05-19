@@ -4,3 +4,5 @@
 export * from './client';
 export * from './regions';
 export * from './studio';
+export * from './matrix';
+export * from './fleet';
