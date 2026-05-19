@@ -244,25 +244,17 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```bash
    # NOTE: `snow sql -f` returns exit 0 on per-statement compile errors. Plain
    # `&&` chaining lets a regression like the 2026-05-19 friction-log F1
-   # ("REGION_CATALOG does not exist") leak through. We tee stdout/stderr per
-   # module and grep for SQL error markers (`002xxx (4xxxx)` or lines starting
+   # ("REGION_CATALOG does not exist") leak through. We use the reusable
+   # `scripts/run_sql_module.sh` wrapper which tees stdout/stderr per module
+   # and greps for SQL error markers (`002xxx (4xxxx)` or lines starting
    # with `Error`) so any failure aborts the chain immediately.
-   run_module() {
-     local module="$1"
-     local log="/tmp/$(basename "$module").log"
-     snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/$module" -c <connection> 2>&1 | tee "$log"
-     if grep -Eq "^(Error|[0-9]{6} \()" "$log"; then
-       echo "FAIL: $module emitted SQL errors (see $log)" >&2
-       return 1
-     fi
-   }
+   RUN_SQL=".cortex/skills/build-routing-solution/scripts/run_sql_module.sh"
+   MODULES_DIR=".cortex/skills/build-routing-solution/openrouteservice_app/app/modules"
 
-   run_module 01_core_infra.sql       && \
-   run_module 02_routing_functions.sql && \
-   run_module 03_region_management.sql && \
-   run_module 04_service_lifecycle.sql && \
-   run_module 05_matrix_pipeline.sql   && \
-   run_module 06_matrix_ops.sql
+   for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
+            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql; do
+     bash "$RUN_SQL" <connection> "$MODULES_DIR/$m" || exit 1
+   done
    ```
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
