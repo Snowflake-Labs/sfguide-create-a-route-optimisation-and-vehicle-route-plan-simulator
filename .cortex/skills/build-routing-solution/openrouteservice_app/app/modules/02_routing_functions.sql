@@ -1,5 +1,42 @@
    USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
+   -- =============================================================================
+   -- REGION_CATALOG bootstrap (Mirror of REGION_CATALOG DDL in 03_region_management.sql; keep in sync.)
+   -- Some functions below (DIRECTIONS, ISOCHRONES_CLIPPED, REGION_FOR_POINT,
+   -- POINT_IN_REGION, SAMPLE_ADDRESSES_FOR_REGION) reference REGION_CATALOG. We
+   -- create it here idempotently so module 02 compiles standalone — do not rely on
+   -- 03 having run first. The DDL is duplicated verbatim from 03; both use
+   -- CREATE TABLE IF NOT EXISTS so re-running 03 is a no-op.
+   -- =============================================================================
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
+       CATALOG_ID         VARCHAR NOT NULL,
+       SOURCE             VARCHAR NOT NULL,
+       REGION_NAME        VARCHAR NOT NULL,
+       REGION_KEY         VARCHAR NOT NULL,
+       LOOKUP_NAME        VARCHAR,
+       HIERARCHY          VARCHAR,
+       CONTINENT          VARCHAR,
+       COUNTRY            VARCHAR,
+       ISO_COUNTRY_A2     VARCHAR(2),
+       ISO_COUNTRY_A3     VARCHAR(3),
+       ISO_SUBDIVISION    VARCHAR,
+       UN_M49             INT,
+       PBF_URL            VARCHAR,
+       PBF_SIZE_MB        FLOAT,
+       LEVEL              VARCHAR NOT NULL,
+       MIN_LAT            FLOAT,
+       MAX_LAT            FLOAT,
+       MIN_LON            FLOAT,
+       MAX_LON            FLOAT,
+       BOUNDARY           GEOGRAPHY,
+       BOUNDARY_SOURCE    VARCHAR,
+       BOUNDARY_VERTICES  INT,
+       BOUNDARY_AREA_KM2  FLOAT,
+       BOUNDARY_BAKED_AT  DATE,
+       UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
+
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD (folder VARCHAR, filename VARCHAR, URL VARCHAR)
       RETURNS varchar
       SERVICE=OPENROUTESERVICE_APP.CORE.downloader
