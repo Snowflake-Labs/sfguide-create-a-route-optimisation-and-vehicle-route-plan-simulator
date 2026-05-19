@@ -26,7 +26,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 # because fastisochrones is not enabled — see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.0'
+GATEWAY_VERSION = 'v1.1.5'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -64,11 +64,11 @@ def resolve_vroom_host(region=None):
     return f'vroom-service-{_normalize_region(region)}'
 
 
-# Backward-compat aliases. Pre-v1.1.0 code referenced ORS_HOST / VROOM_HOST as
-# the "global" service hostname; we keep the names for minimal call-site churn,
-# but they now resolve to the per-region default (e.g. ors-service-sanfrancisco).
-ORS_HOST = resolve_ors_host(None)
-VROOM_HOST = resolve_vroom_host(None)
+# Backward-compat aliases were retired in v1.1.5. Pre-v1.1.0 code referenced
+# ORS_HOST / VROOM_HOST as the "global" service hostname; that model is gone.
+# Every call site now resolves the host explicitly via resolve_ors_host(region)
+# / resolve_vroom_host(region). Empty / None region falls back to
+# DEFAULT_REGION_NAME via _normalize_region.
 
 
 def _make_response(output_rows):
@@ -93,11 +93,11 @@ def _extract_region(row, region_index):
 
 @app.get("/health")
 def readiness_probe():
-    return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': ORS_HOST, 'vroom_host': VROOM_HOST}
+    return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': resolve_ors_host(None), 'vroom_host': resolve_vroom_host(None)}
 
 
 def _get_ors_health(ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     try:
         health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
         r = requests.get(url=health_url, timeout=5)
@@ -110,7 +110,7 @@ def _probe_ors_state(ors_host=None):
     """Distinguish 'warming_up' (process up, /health returns non-200, e.g. 503)
     from 'unreachable' (TCP refused / DNS fails, i.e. service suspended or not provisioned).
     Returns one of: 'ready' | 'warming_up' | 'unreachable' | 'unknown'."""
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     try:
         health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
         r = requests.get(url=health_url, timeout=5)
@@ -125,7 +125,7 @@ def _probe_ors_state(ors_host=None):
 
 
 def _get_ors_status(ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     try:
         status_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/status'
         logger.info(f'Querying ORS status: {status_url}')
@@ -297,7 +297,7 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             elif isinstance(matrices, list) and len(matrices) > 0:
                 payload['matrices'] = matrices[0] if len(matrices) == 1 and isinstance(matrices[0], dict) else matrices
                 payload['options'] = {'g': False}
-        if ors_host_override and ors_host_override != ORS_HOST and 'matrices' not in payload:
+        if ors_host_override and ors_host_override != resolve_ors_host(None) and 'matrices' not in payload:
             jobs = payload.get('jobs', [])
             vehs = payload.get('vehicles', [])
             profile = 'driving-car'
@@ -423,7 +423,7 @@ def post_optimization():
 
 
 def _handle_directions_tabular(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     output_rows = []
     for row in input_rows:
         output_rows.append([row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format, host)])
@@ -451,7 +451,7 @@ def post_directions_tabular_with_format(format="geojson"):
 
 
 def _handle_directions(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
 
 
@@ -476,7 +476,7 @@ def post_directions_with_format(format="geojson"):
 
 
 def _handle_isochrones_tabular(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     output_rows = []
     for row in input_rows:
         output_rows.append([row[0], get_ors_response('isochrones', row[1], {
@@ -657,23 +657,24 @@ def post_matrix(format="json"):
 
 def get_vroom_response(payload, vroom_host=None):
     logger.info(payload)
-    host = vroom_host or VROOM_HOST
+    default_vroom_host = resolve_vroom_host(None)
+    host = vroom_host or default_vroom_host
     downstream_url = f'http://{host}:{VROOM_PORT}'
     downstream_headers = {"Content-Type": "application/json"}
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
         vroom_r = r.json()
     except requests.exceptions.ConnectionError:
-        # Per-region VROOM unreachable. Fall back to the global VROOM service.
-        if host != VROOM_HOST:
-            logger.warning(f'Per-region VROOM at {host} unreachable; falling back to global {VROOM_HOST}')
+        # Per-region VROOM unreachable. Fall back to the default-region VROOM service.
+        if host != default_vroom_host:
+            logger.warning(f'Per-region VROOM at {host} unreachable; falling back to default {default_vroom_host}')
             try:
-                r = requests.post(url=f'http://{VROOM_HOST}:{VROOM_PORT}',
+                r = requests.post(url=f'http://{default_vroom_host}:{VROOM_PORT}',
                                   headers=downstream_headers, json=payload, timeout=300)
                 vroom_r = r.json()
             except requests.exceptions.ConnectionError:
-                logger.error(f'Cannot connect to VROOM at {VROOM_HOST}:{VROOM_PORT} (fallback)')
-                return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {VROOM_HOST}:{VROOM_PORT}'}
+                logger.error(f'Cannot connect to VROOM at {default_vroom_host}:{VROOM_PORT} (fallback)')
+                return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {default_vroom_host}:{VROOM_PORT}'}
         else:
             logger.error(f'Cannot connect to VROOM at {host}:{VROOM_PORT}')
             return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host}:{VROOM_PORT}'}
@@ -753,7 +754,7 @@ def _annotate_engine_error(resp, host, payload):
 
 
 def get_ors_response(function, profile, payload, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
@@ -773,7 +774,7 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
         logger.debug(resp)
         return _annotate_engine_error(resp, host, payload)
     except requests.exceptions.ConnectionError:
-        region_hint = f' (host: {host})' if host != ORS_HOST else ''
+        region_hint = f' (host: {host})' if host != resolve_ors_host(None) else ''
         # Differentiate warming-up vs suspended/unknown by probing /health separately.
         state = _probe_ors_state(host)
         if state == 'warming_up':
