@@ -1,7 +1,9 @@
+# Image tag MUST match openrouteservice_app/image-versions.env ($ROUTING_REVERSE_PROXY_TAG).
+# Run scripts/check_image_versions.sh to verify before uploading this spec to the stage.
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.0.5
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.0.0
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000

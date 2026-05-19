@@ -157,6 +157,13 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
+0. **Verify image-tag consistency** (prevents F1-style failures during `01_core_infra.sql`).
+   Service YAMLs reference image tags that MUST match `openrouteservice_app/image-versions.env`. Run the validator from the skill directory:
+   ```bash
+   bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+   ```
+   The script must print `PASSED`. If it reports `MISMATCH`, fix the offending YAML or doc to match `image-versions.env` BEFORE uploading the spec files in step 1 below — otherwise `CREATE SERVICE FROM @stage` in Step 6 will fail with `Image not found`.
+
 1. **Upload** map, config, and script files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
@@ -264,11 +271,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Actions:**
 
+> **Sequencing (CRITICAL):** Sub-step 1 (CREATE STAGE) MUST complete and return before sub-step 2 (uploads) starts. Do NOT parallelize them — kicking off `snow stage copy` while the CREATE STAGE call is still in flight produces `Stage SEED_DATA_STAGE does not exist or not authorized` errors (F2 in the friction log).
+
 1. **Create the seed data stage** (not created in Step 3):
    ```sql
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
+
+   **Verify the stage exists before continuing:**
+   ```sql
+   LIST @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE;
+   ```
+   The query must return successfully (zero rows is fine — stage is empty until sub-step 2 uploads files). If it errors with "does not exist", retry the CREATE STAGE.
 
 2. **Upload Parquet files to stage:**
 
@@ -312,7 +327,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    UNION ALL SELECT 'REGION_CATALOG', COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
    ```
 
-   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, FREIGHT_OFFERS=300, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG=460
+   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, FREIGHT_OFFERS=300, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG ≥ 460 (current parquet ships ~5,200 rows; the count is a floor, not an exact match — the catalog is periodically expanded with more world regions).
 
    **If any count is 0 or lower than expected:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the full loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent. If a single table still shows a low count after re-run, execute its TRUNCATE + COPY INTO as a standalone `snow sql -q` command (not inside the multi-statement file) to bypass metadata caching.
 
@@ -325,6 +340,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```sql
    CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
    ```
+
+   **If REGION_CATALOG is much larger than 460 (e.g. ~5,200):** That's expected — the parquet snapshot is periodically expanded with more world regions and the original 460 figure was the count at the time the SKILL.md spec was written. The Region Builder treats catalog rows as additive, so a higher count just means more pre-populated regions in the dropdown. Treat 460 as a floor, not an exact match.
 
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs), Region Builder shows 460 pre-populated catalog entries (no remote API scrape needed)
 
@@ -386,11 +403,14 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Dwell Analysis** | 12-step Dynamic Table pipeline for dwell/congestion/SLA alerts | ~10 min | Seed data (Step 8) |
    | **Fleet Intelligence: Taxis** | Taxi GPS telemetry with Overture Maps POIs + driver routes | ~5 min | Overture Maps (auto-installed in Step 8b) |
    | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps (auto-installed in Step 8b) |
-   | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps (Step 8b) + Cortex AI access |
+   | **Route Optimization (seed + VRP page)** | Seeds PLACES/LOOKUP/JOB_TEMPLATE; powers the VRP page in the Control App | ~5 min | Overture Maps (Step 8b) |
+   | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
+
+   > **Explicit AISQL prompt:** When deploying Route Optimization, ALWAYS ask the user whether to also deploy the AISQL notebook (default: yes for first-install). Do NOT silently skip it — the friction log F-AISQL item documents that the notebook is easy to miss otherwise. If the user opts in, follow `.cortex/skills/route-optimization/references/notebook-deployment.md` (and use the SanFrancisco fast-path described there when `<NOTEBOOK_CITY>` already matches).
 
 2. **Deploy selected demos in dependency order:**
    - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
@@ -433,7 +453,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 - Step 2: After detecting container runtime — confirm user's choice if both available
 - Step 5: After starting container build — monitor for authentication errors
 - Step 6: After deployment — verify application created successfully
-- Step 8: After presenting demo list — wait for user selection before deploying
+- Step 8: After presenting demo list — wait for user selection before deploying. When deploying Route Optimization, EXPLICITLY ASK whether to also deploy the AISQL notebook (default: yes for first install). Do not silently skip it.
 
 ## Redeploys (`scripts/deploy.sh`)
 

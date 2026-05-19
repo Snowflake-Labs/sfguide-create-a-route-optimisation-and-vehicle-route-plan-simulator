@@ -24,6 +24,15 @@ SET BBOX_MAX_LON = -121.5;
 SET BBOX_MAX_LAT = 38.5;
 SET REGION_NAME = 'San Francisco Bay Area';
 
+-- Resolve the region polygon into a temp table inside the demo schema.
+-- Snowflake rejects correlated subqueries inside INSERT WHERE clauses
+-- (`Unsupported subquery type cannot be evaluated`), AND it rejects
+-- `SET var = (SELECT ...)` (`assignment from non-constant source expression`).
+-- A schema-qualified temp table that we LEFT JOIN against avoids both restrictions
+-- while keeping the polygon-refine NULL-safe (if no boundary, refine becomes a no-op).
+-- The CREATE statement runs AFTER the FLEET_INTELLIGENCE.RETAIL_CATCHMENT schema below,
+-- so it must be repeated immediately before each INSERT that needs it.
+
 --------------------------------------------------------------------
 -- DATABASE, SCHEMA, WAREHOUSE
 --------------------------------------------------------------------
@@ -71,6 +80,17 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS (
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-retail-catchment","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS WHERE REGION = $REGION_KEY;
+-- Materialize the region polygon into a schema-qualified temp table immediately before the INSERT.
+-- (Cannot be created at the top of the file because the demo schema is created above; cannot be
+-- created via SET because Snowflake disallows non-constant variable assignment.)
+CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.RETAIL_CATCHMENT._RC_REGION_BOUNDARY AS
+SELECT TO_GEOGRAPHY(ST_ASWKT(BOUNDARY)) AS BOUNDARY
+FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+WHERE BOUNDARY IS NOT NULL
+  AND (UPPER(LOOKUP_NAME) = UPPER($REGION_KEY)
+       OR UPPER(REGION_KEY) = UPPER($REGION_KEY))
+ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC
+LIMIT 1;
 INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
 SELECT
     $REGION_KEY AS REGION,
@@ -84,28 +104,21 @@ SELECT
     ADDRESSES[0]:locality::VARCHAR AS CITY,
     ADDRESSES[0]:region::VARCHAR AS STATE,
     ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
-FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-WHERE BASIC_CATEGORY IN (
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+LEFT JOIN FLEET_INTELLIGENCE.RETAIL_CATCHMENT._RC_REGION_BOUNDARY b ON TRUE  -- single-row table; NULL boundary => refine skipped
+WHERE p.BASIC_CATEGORY IN (
     'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
     'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
     'clothing_store', 'electronics_store', 'specialty_store', 'gym',
     'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
 )
-AND GEOMETRY IS NOT NULL
-AND ADDRESSES[0]:region IS NOT NULL
+AND p.GEOMETRY IS NOT NULL
+AND p.ADDRESSES[0]:region IS NOT NULL
 -- Bbox prefilter (fast partition prune)
-AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
-AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
--- Polygon refine (drops POIs in foreign country / water; falls through if
--- catalog has no boundary for this region):
-AND COALESCE(
-  (SELECT ST_INTERSECTS(GEOMETRY, rc.BOUNDARY)
-   FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-   WHERE rc.BOUNDARY IS NOT NULL
-     AND (UPPER(rc.LOOKUP_NAME) = UPPER($REGION_KEY)
-          OR UPPER(rc.REGION_KEY) = UPPER($REGION_KEY))
-   ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1),
-  TRUE);
+AND ST_X(p.GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
+AND ST_Y(p.GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
+-- Polygon refine via temp boundary table (NULL-safe — if no boundary loaded, refine is skipped):
+AND (b.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, b.BOUNDARY));
 
 --------------------------------------------------------------------
 -- CITIES_BY_STATE
@@ -149,27 +162,21 @@ DELETE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES WHERE REGION 
 INSERT INTO FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
 SELECT
     $REGION_KEY AS REGION,
-    ID,
-    GEOMETRY,
-    ST_X(GEOMETRY) AS LONGITUDE,
-    ST_Y(GEOMETRY) AS LATITUDE,
-    ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
-    POSTCODE
-FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
-WHERE COUNTRY = 'US'
-AND GEOMETRY IS NOT NULL
+    a.ID,
+    a.GEOMETRY,
+    ST_X(a.GEOMETRY) AS LONGITUDE,
+    ST_Y(a.GEOMETRY) AS LATITUDE,
+    a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
+    a.POSTCODE
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
+LEFT JOIN FLEET_INTELLIGENCE.RETAIL_CATCHMENT._RC_REGION_BOUNDARY b ON TRUE  -- single-row table; NULL boundary => refine skipped
+WHERE a.COUNTRY = 'US'
+AND a.GEOMETRY IS NOT NULL
 -- Bbox prefilter (fast partition prune)
-AND ST_X(GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
-AND ST_Y(GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
--- Polygon refine (drops addresses outside the region's actual boundary):
-AND COALESCE(
-  (SELECT ST_INTERSECTS(GEOMETRY, rc.BOUNDARY)
-   FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-   WHERE rc.BOUNDARY IS NOT NULL
-     AND (UPPER(rc.LOOKUP_NAME) = UPPER($REGION_KEY)
-          OR UPPER(rc.REGION_KEY) = UPPER($REGION_KEY))
-   ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1),
-  TRUE);
+AND ST_X(a.GEOMETRY) BETWEEN $BBOX_MIN_LON AND $BBOX_MAX_LON
+AND ST_Y(a.GEOMETRY) BETWEEN $BBOX_MIN_LAT AND $BBOX_MAX_LAT
+-- Polygon refine via temp boundary table (NULL-safe — if no boundary loaded, refine is skipped):
+AND (b.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, b.BOUNDARY));
 
 --------------------------------------------------------------------
 -- REGION_CONFIG

@@ -15,9 +15,11 @@ if [ ! -f "$VERSION_FILE" ]; then
   echo "ERROR: image-versions.env not found at $VERSION_FILE"
   exit 1
 fi
-if [ ! -f "$MANIFEST" ]; then
-  echo "ERROR: manifest.yml not found at $MANIFEST"
-  exit 1
+# manifest.yml is only present when this skill is packaged as a Snowflake Native App.
+# In the SPCS-only deployment path it is absent — that's expected, skip its checks.
+HAS_MANIFEST=0
+if [ -f "$MANIFEST" ]; then
+  HAS_MANIFEST=1
 fi
 
 source "$VERSION_FILE"
@@ -25,6 +27,9 @@ source "$VERSION_FILE"
 # Build parallel arrays (bash 3.x compatible — no declare -A)
 IMAGE_NAMES="openrouteservice downloader routing_reverse_proxy vroom-docker ors_control_app"
 IMAGE_TAGS="$OPENROUTESERVICE_TAG $DOWNLOADER_TAG $ROUTING_REVERSE_PROXY_TAG $VROOM_DOCKER_TAG $ORS_CONTROL_APP_TAG"
+# Variable references that build-images.md / guidelines may use instead of literal tags.
+# These are acceptable because the variables are sourced from image-versions.env at build time.
+IMAGE_VARS="OPENROUTESERVICE_TAG DOWNLOADER_TAG ROUTING_REVERSE_PROXY_TAG VROOM_DOCKER_TAG ORS_CONTROL_APP_TAG"
 
 errors=0
 
@@ -47,9 +52,11 @@ echo ""
 i=1
 for image in $IMAGE_NAMES; do
   tag=$(echo "$IMAGE_TAGS" | cut -d' ' -f$i)
+  var=$(echo "$IMAGE_VARS" | cut -d' ' -f$i)
   pair="${image}:${tag}"
+  var_pair="${image}:\$${var}"
 
-  if ! grep -qF "$pair" "$MANIFEST" 2>/dev/null; then
+  if [ "$HAS_MANIFEST" -eq 1 ] && ! grep -qF "$pair" "$MANIFEST" 2>/dev/null; then
     error "manifest.yml missing $pair"
   fi
 
@@ -57,12 +64,15 @@ for image in $IMAGE_NAMES; do
     error "service YAMLs missing $pair"
   fi
 
-  if ! grep -qF "$pair" "$BUILD_MD" 2>/dev/null; then
-    error "build-images.md missing $pair"
+  # Docs may reference either the literal pair or the shell-variable form (preferred).
+  if ! grep -qF "$pair" "$BUILD_MD" 2>/dev/null && ! grep -qF "$var_pair" "$BUILD_MD" 2>/dev/null; then
+    error "build-images.md missing $pair (or \$$var reference)"
   fi
 
   if [ -f "$GUIDELINES_MD" ]; then
-    if ! grep -qF "$pair" "$GUIDELINES_MD" 2>/dev/null && ! grep -qF "| ${tag} |" "$GUIDELINES_MD" 2>/dev/null; then
+    if ! grep -qF "$pair"     "$GUIDELINES_MD" 2>/dev/null && \
+       ! grep -qF "$var_pair" "$GUIDELINES_MD" 2>/dev/null && \
+       ! grep -qF "| ${tag} |" "$GUIDELINES_MD" 2>/dev/null; then
       error "snowflake-scripting-guidelines.md missing $pair"
     fi
   fi
@@ -70,10 +80,13 @@ for image in $IMAGE_NAMES; do
   i=$((i + 1))
 done
 
-EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1)
+EXPECTED_REPO=""
+if [ "$HAS_MANIFEST" -eq 1 ]; then
+  EXPECTED_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$MANIFEST" | head -1)
+fi
 if [ -n "$EXPECTED_REPO" ]; then
   echo "Expected repository path: $EXPECTED_REPO"
-  for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+  for yaml_file in "$OPENROUTESERVICE_APP_DIR"/services/*/*.yaml; do
     [ -f "$yaml_file" ] || continue
     ACTUAL_REPO=$(grep -oE '/[a-z_]+/public/[a-z_]+/' "$yaml_file" 2>/dev/null | head -1 || true)
     if [ -n "$ACTUAL_REPO" ] && [ "$ACTUAL_REPO" != "$EXPECTED_REPO" ]; then
@@ -84,7 +97,7 @@ if [ -n "$EXPECTED_REPO" ]; then
 fi
 
 EXPECTED_SCHEMA="CORE"
-for yaml_file in "$NATIVE_APP_DIR"/services/*/*.yaml; do
+for yaml_file in "$OPENROUTESERVICE_APP_DIR"/services/*/*.yaml; do
   [ -f "$yaml_file" ] || continue
   BAD_SCHEMAS=$(grep -oE '@[A-Z_]+\.' "$yaml_file" 2>/dev/null | grep -v "@${EXPECTED_SCHEMA}\." | sort -u || true)
   if [ -n "$BAD_SCHEMAS" ]; then
