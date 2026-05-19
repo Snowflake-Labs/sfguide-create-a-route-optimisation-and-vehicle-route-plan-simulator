@@ -690,7 +690,9 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
 
 -- Idempotent migration for installs created before IS_DEFAULT existed.
-ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS IS_DEFAULT BOOLEAN DEFAULT FALSE;
+-- Disabled 2026-05-19: triggers "ambiguous column name 'IS_DEFAULT'" on
+-- fresh installs where the CREATE TABLE above already includes IS_DEFAULT.
+-- ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS IS_DEFAULT BOOLEAN DEFAULT FALSE;
 
 -- Seed the canonical default region (SanFrancisco) so LIST_REGIONS() returns
 -- it alongside user-provisioned regions. Pre-v1.1.0 the legacy global
