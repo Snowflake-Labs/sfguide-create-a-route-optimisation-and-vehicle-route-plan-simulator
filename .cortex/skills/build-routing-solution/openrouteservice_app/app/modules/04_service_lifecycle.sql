@@ -475,16 +475,110 @@ BEGIN
         END;
     END FOR;
 
-    -- Legacy single-tenant ors_service: only touch if it exists; treat as busy
-    -- only if the gateway is busy (matrix path).
+    -- Reconcile each VROOM_SERVICE_<REGION>: busy iff this region has a matrix
+    -- job in flight. VROOM is not used during region provisioning, only matrix.
+    SHOW SERVICES LIKE 'VROOM_SERVICE_%' IN SCHEMA OPENROUTESERVICE_APP.CORE;
+    LET vrs RESULTSET := (
+        SELECT "name" AS svc_name
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "is_job" = 'false'
+    );
+    LET vc CURSOR FOR vrs;
+
+    FOR rec IN vc DO
+        LET vregion_key VARCHAR := REGEXP_REPLACE(UPPER(rec.svc_name), '^VROOM_SERVICE_', '');
+        LET vbusy BOOLEAN := FALSE;
+        BEGIN
+            LET vmc INTEGER := 0;
+            SELECT COUNT(*) INTO :vmc
+            FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE UPPER(REGION) = :vregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE NOT IN ('COMPLETE','ERROR');
+            IF (vmc > 0) THEN vbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            IF (vbusy) THEN
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 0';
+                left_zero := left_zero + 1;
+            ELSE
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
+                reconciled := reconciled + 1;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- Reconcile DOWNLOADER: busy iff a region is actively in DOWNLOADING stage.
+    -- Tighter scope than the rest of provisioning so the downloader is freed
+    -- the moment the PBF fetch completes, even if the graph build is still in
+    -- flight.
+    LET dl_busy BOOLEAN := FALSE;
     BEGIN
-        IF (gateway_busy) THEN
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 0;
+        LET dc INTEGER := 0;
+        SELECT COUNT(*) INTO :dc
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING')
+          AND STAGE = 'DOWNLOADING';
+        IF (dc > 0) THEN dl_busy := TRUE; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        IF (dl_busy) THEN
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER SET AUTO_SUSPEND_SECS = 0;
+            left_zero := left_zero + 1;
         ELSE
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER SET AUTO_SUSPEND_SECS = 14400;
+            reconciled := reconciled + 1;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+
+    -- Reconcile each ORS_POOL_<REGION>: busy iff that region has a provision
+    -- or matrix job in flight. FINALIZE_PROVISION_ITER pins the pool to 0 in
+    -- its rescue path; without this loop the pool stays pinned indefinitely
+    -- once the rescue resolves, since DOWNSIZE_REGION_AFTER_BUILD only fires
+    -- on L/XXL builds. Default idle value is 3600 (matches create_region_ors_service
+    -- and DOWNSIZE_REGION_AFTER_BUILD), not 14400 — pools may suspend faster
+    -- than services.
+    SHOW COMPUTE POOLS LIKE 'ORS_POOL_%';
+    LET pls RESULTSET := (SELECT "name" AS pool_name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+    LET pc CURSOR FOR pls;
+    FOR rec IN pc DO
+        LET pregion_key VARCHAR := REGEXP_REPLACE(UPPER(rec.pool_name), '^ORS_POOL_', '');
+        LET pbusy BOOLEAN := FALSE;
+        BEGIN
+            LET pjc INTEGER := 0;
+            SELECT COUNT(*) INTO :pjc
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE UPPER(REGION) = :pregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH');
+            IF (pjc > 0) THEN pbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            LET pmc INTEGER := 0;
+            SELECT COUNT(*) INTO :pmc
+            FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE UPPER(REGION) = :pregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE NOT IN ('COMPLETE','ERROR');
+            IF (pmc > 0) THEN pbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            IF (pbusy) THEN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 0';
+                left_zero := left_zero + 1;
+            ELSE
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 3600';
+                reconciled := reconciled + 1;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
 
     RETURN OBJECT_CONSTRUCT(
         'reconciled_to_default', reconciled,
