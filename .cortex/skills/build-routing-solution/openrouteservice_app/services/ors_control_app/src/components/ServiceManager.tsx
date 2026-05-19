@@ -84,6 +84,22 @@ export default function ServiceManager() {
     setServiceAction(null);
   };
 
+  // Normalize readiness keys to UPPERCASE for case-insensitive lookup. The API
+  // keys readiness by the CamelCase region name from LIST_REGIONS() (e.g.
+  // 'SanFrancisco'), but the row-level lookup derives keys from the service
+  // name (e.g. 'ORS_SERVICE_SANFRANCISCO' -> 'SANFRANCISCO'). Without this
+  // normalization, multi-word region names fall through to "Unknown".
+  // NOTE: this useMemo MUST sit above any early return so the hook order is
+  // identical between the loading=true and loading=false renders. Otherwise
+  // React throws "Rendered more hooks than during the previous render" and
+  // the Status & Health panel renders blank.
+  const readinessByUpper = useMemo(() => {
+    if (!orsReadiness) return null;
+    const m: Record<string, OrsRegionReadiness> = {};
+    for (const [k, v] of Object.entries(orsReadiness)) m[k.toUpperCase()] = v;
+    return m;
+  }, [orsReadiness]);
+
   if (loading) return <div className="panel loading">Loading service status...</div>;
 
   const poolState = status?.compute_pool || 'UNKNOWN';
@@ -101,18 +117,6 @@ export default function ServiceManager() {
   const allGraphsReady = orsReadiness
     ? Object.entries(orsReadiness).filter(([region]) => !isRegionSuspended(region)).every(([, r]) => r.service_ready)
     : null;
-
-  // Normalize readiness keys to UPPERCASE for case-insensitive lookup. The API
-  // keys readiness by the CamelCase region name from LIST_REGIONS() (e.g.
-  // 'SanFrancisco'), but the row-level lookup derives keys from the service
-  // name (e.g. 'ORS_SERVICE_SANFRANCISCO' -> 'SANFRANCISCO'). Without this
-  // normalization, multi-word region names fall through to "Unknown".
-  const readinessByUpper = useMemo(() => {
-    if (!orsReadiness) return null;
-    const m: Record<string, OrsRegionReadiness> = {};
-    for (const [k, v] of Object.entries(orsReadiness)) m[k.toUpperCase()] = v;
-    return m;
-  }, [orsReadiness]);
 
   const totalExpected = orsReadiness
     ? Object.entries(orsReadiness).filter(([region]) => !isRegionSuspended(region)).reduce((sum, [, r]) => sum + (r.expected_profiles?.length || r.graphs?.length || 0), 0)
