@@ -11,6 +11,8 @@ import { safeRegionIdent, orsServiceName, orsServiceFqn, isDefaultRegion, curren
 import { sanitizeIdentifier, sanitizeFloat, sanitizeInt, escapeString, getSpcsToken, toIso } from './lib/sanitize.js';
 import { snowSqlLocal, snowSqlSpcs, runSql, callProcedure, submitSqlAsync, cancelStatement } from './lib/sql.js';
 import { detectWarehouse } from './lib/warehouse.js';
+import { waitForOrsGraphReady, getExpectedProfiles, DEFAULT_PROFILES } from './lib/ors.js';
+import { roadPointsCacheKey, roadPointsCacheGet, roadPointsCacheSet, formatUptime } from './lib/cache.js';
 
 config();
 
@@ -19,43 +21,6 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 
-
-async function waitForOrsGraphReady(region: string, maxWaitSecs: number = 600): Promise<{ ready: boolean; elapsed: number; profiles: string[] }> {
-  const start = Date.now();
-  const interval = 15000;
-  const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
-  const safeRegion = safeRegionIdent(region);
-  let isDefault = isDefaultRegion(region);
-  if (!isDefault) {
-    try {
-      const svcRows = await runSql(
-        `SHOW SERVICES LIKE '${orsServiceName(safeRegion)}' IN SCHEMA ${SF_DATABASE}.CORE`
-      );
-      isDefault = !svcRows || svcRows.length === 0;
-    } catch { isDefault = true; }
-  }
-  const statusSql = isDefault
-    ? `SELECT ${SF_DATABASE}.CORE.ORS_STATUS() AS S`
-    : `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;
-
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const rows = await runSql(statusSql);
-      const raw = rows?.[0]?.S;
-      if (raw) {
-        const status = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (status.service_ready === true && status.profiles) {
-          const profileNames = Object.keys(status.profiles);
-          if (profileNames.length > 0) {
-            return { ready: true, elapsed: Math.round((Date.now() - start) / 1000), profiles: profileNames };
-          }
-        }
-      }
-    } catch {}
-    await new Promise((r) => setTimeout(r, interval));
-  }
-  return { ready: false, elapsed: Math.round((Date.now() - start) / 1000), profiles: [] };
-}
 
 // Idempotent boot-time init for Backload Matching (BACKLOAD_MATCHING schema +
 // projection views over UNIFIED) and Asset Velocity (ROUTE_OPTIMIZATION views
@@ -375,55 +340,7 @@ app.get('/api/config', (_req, res) => {
 
 const APP_VERSION = process.env.APP_VERSION || '0.0.0';
 
-const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
-let cachedDefaultExpectedProfiles: string[] | null = null;
 let activeRegionOverride: string | null = null;
-
-async function getExpectedProfiles(region: string): Promise<string[]> {
-  if (region === 'default') {
-    if (cachedDefaultExpectedProfiles) return cachedDefaultExpectedProfiles;
-    try {
-      const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))`);
-      const content = rows?.[0]?.CONTENT;
-      if (content && typeof content === 'string') {
-        const profileMatches = content.match(/profiles:\s*([\s\S]*?)(?:^\S|$)/m);
-        if (profileMatches) {
-          const profiles: string[] = [];
-          const enabledPattern = /([\w-]+):\s*\n[\s\S]*?enabled:\s*true/gm;
-          const block = profileMatches[1];
-          let m;
-          while ((m = enabledPattern.exec(block)) !== null) {
-            profiles.push(m[1]);
-          }
-          if (profiles.length > 0) {
-            cachedDefaultExpectedProfiles = profiles;
-            return profiles;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.log(`[getExpectedProfiles] Could not parse config from stage: ${e.message}`);
-    }
-    cachedDefaultExpectedProfiles = DEFAULT_PROFILES;
-    return DEFAULT_PROFILES;
-  }
-  try {
-    const safeRegion = sanitizeIdentifier(region);
-    // Prefer the most recent non-failed job record for this region so that an
-    // in-flight RUNNING job's requested profiles drive the UI. If only FAILED
-    // rows exist, fall back to the most recent of those (still better than
-    // DEFAULT_PROFILES, which would surface phantom profiles like 'driving-car'
-    // for a job that only requested 'driving-hgv').
-    const rows = await runSql(`SELECT PROFILES FROM ${SF_DATABASE}.CORE.REGION_PROVISION_JOBS WHERE REGION='${escapeString(safeRegion)}' AND PROFILES IS NOT NULL ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END, COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1`);
-    const profileStr = rows?.[0]?.PROFILES;
-    if (profileStr && typeof profileStr === 'string') {
-      return profileStr.split(',').map((p: string) => p.trim()).filter(Boolean);
-    }
-  } catch (e: any) {
-    console.log(`[getExpectedProfiles] Could not get profiles for ${region}: ${e.message}`);
-  }
-  return DEFAULT_PROFILES;
-}
 
 app.get('/api/health', async (_req, res) => {
   const result: Record<string, any> = { healthy: false, version: APP_VERSION, services: {} };
@@ -3230,33 +3147,6 @@ app.post('/api/diagnostics/logs/clear', (_req, res) => {
 
 // In-process LRU cache for /api/sample-road-points results, keyed by (region bbox + profile).
 // TTL avoids hammering Overture on rapid UI reshuffles. Reshuffle button bypasses via ?nocache=1.
-const ROAD_POINTS_CACHE_TTL_MS = 5 * 60 * 1000;
-const ROAD_POINTS_CACHE_MAX = 64;
-const roadPointsCache = new Map<string, { ts: number; points: [number, number][] }>();
-
-function roadPointsCacheKey(minLat: number, maxLat: number, minLon: number, maxLon: number, profile: string): string {
-  const r = (n: number) => n.toFixed(4);
-  return `${r(minLat)}|${r(maxLat)}|${r(minLon)}|${r(maxLon)}|${profile}`;
-}
-
-function roadPointsCacheGet(key: string): [number, number][] | null {
-  const hit = roadPointsCache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.ts > ROAD_POINTS_CACHE_TTL_MS) {
-    roadPointsCache.delete(key);
-    return null;
-  }
-  return hit.points;
-}
-
-function roadPointsCacheSet(key: string, points: [number, number][]): void {
-  if (roadPointsCache.size >= ROAD_POINTS_CACHE_MAX) {
-    const oldest = [...roadPointsCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 16);
-    for (const [k] of oldest) roadPointsCache.delete(k);
-  }
-  roadPointsCache.set(key, { ts: Date.now(), points });
-}
-
 app.get('/api/sample-road-points', async (req, res) => {
   const minLat = parseFloat(req.query.min_lat as string);
   const maxLat = parseFloat(req.query.max_lat as string);
@@ -3371,13 +3261,6 @@ app.get('/api/sample-road-points', async (req, res) => {
     res.json({ ok: false, reason });
   }
 });
-
-function formatUptime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
-}
 
 app.use('/api/studio', createStudioRouter(runSql));
 
