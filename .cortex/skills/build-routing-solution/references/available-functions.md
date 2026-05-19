@@ -2,7 +2,11 @@
 
 The app registers the following SQL functions in the `CORE` schema.
 All routing functions accept an optional `region` as the **last** parameter (DEFAULT NULL).
-When omitted, the default ORS instance is used. When provided, routes to the named city ORS instance.
+When omitted or NULL, the gateway resolves to `DEFAULT_REGION_NAME` (configured at the
+gateway service spec, default: `SanFrancisco`). When provided, the call routes to the
+named city's per-region service (`ORS_SERVICE_<REGION>` / `VROOM_SERVICE_<REGION>`).
+v1.1.0 — there is no longer a separate global `ORS_SERVICE`; even the default region
+follows the per-region naming convention.
 
 ## Routing Table Functions
 
@@ -19,7 +23,7 @@ Return structured TABLE results with parsed GEOGRAPHY columns:
 Usage: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr))`
 With region: `SELECT * FROM TABLE(CORE.DIRECTIONS('driving-car', start_arr, end_arr, 'berlin'))`
 
-**IMPORTANT for OPTIMIZATION**: Always pass `region` (e.g. `'California'`, `'Germany'`) as the last argument when running for a specific region. The gateway uses it to route the VRP to the per-region `VROOM_SERVICE_<REGION>` (which talks to `ors-service-<region>`). Omitting `region` (or passing `NULL`) falls through to the legacy global VROOM that uses the SF-only base ORS graph and will fail for any non-SF data.
+**IMPORTANT for OPTIMIZATION**: Always pass `region` (e.g. `'California'`, `'Germany'`) as the last argument when running for a specific region. The gateway uses it to route the VRP to the per-region `VROOM_SERVICE_<REGION>` (which talks to `ors-service-<region>`). Omitting `region` falls back to `DEFAULT_REGION_NAME` (SanFrancisco), which will fail for any non-SF data.
 
 ## Matrix / Status Scalar Functions
 
