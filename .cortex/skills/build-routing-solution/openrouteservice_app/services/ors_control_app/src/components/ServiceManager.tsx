@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { StatusResponse, ServiceInfo, OrsRegionReadiness, ComputePoolInfo, OrsGraphInfo } from '../types';
 import PhasePips from '../shared/PhasePips';
 
@@ -93,16 +93,26 @@ export default function ServiceManager() {
   const runningCount = services.filter((s: ServiceInfo) => s.status === 'RUNNING' || s.status === 'READY').length;
 
   const isRegionSuspended = (region: string): boolean => {
-    // v1.1.0: every region (including the default) maps to ORS_SERVICE_<REGION>.
-    // Legacy 'default' regionKey is treated as the configured default region name.
-    const regionKey = region === 'default' ? 'SANFRANCISCO' : region.toUpperCase();
-    const name = `ORS_SERVICE_${regionKey}`;
+    // v1.1.0+: every region (including the default) maps to ORS_SERVICE_<REGION>.
+    const name = `ORS_SERVICE_${region.toUpperCase()}`;
     return services.some(s => s.name.toUpperCase() === name && s.status === 'SUSPENDED');
   };
 
   const allGraphsReady = orsReadiness
     ? Object.entries(orsReadiness).filter(([region]) => !isRegionSuspended(region)).every(([, r]) => r.service_ready)
     : null;
+
+  // Normalize readiness keys to UPPERCASE for case-insensitive lookup. The API
+  // keys readiness by the CamelCase region name from LIST_REGIONS() (e.g.
+  // 'SanFrancisco'), but the row-level lookup derives keys from the service
+  // name (e.g. 'ORS_SERVICE_SANFRANCISCO' -> 'SANFRANCISCO'). Without this
+  // normalization, multi-word region names fall through to "Unknown".
+  const readinessByUpper = useMemo(() => {
+    if (!orsReadiness) return null;
+    const m: Record<string, OrsRegionReadiness> = {};
+    for (const [k, v] of Object.entries(orsReadiness)) m[k.toUpperCase()] = v;
+    return m;
+  }, [orsReadiness]);
 
   const totalExpected = orsReadiness
     ? Object.entries(orsReadiness).filter(([region]) => !isRegionSuspended(region)).reduce((sum, [, r]) => sum + (r.expected_profiles?.length || r.graphs?.length || 0), 0)
@@ -223,7 +233,11 @@ export default function ServiceManager() {
                     // in showServices output during a migration window, treat it as the
                     // pre-unification default-region service.
                     const regionKey = svc.name === 'ORS_SERVICE' ? 'SANFRANCISCO' : svc.name.replace('ORS_SERVICE_', '');
-                    const readiness = isOrs && orsReadiness ? orsReadiness[regionKey] || orsReadiness[regionKey.charAt(0) + regionKey.slice(1).toLowerCase()] : null;
+                    const readiness = isOrs && readinessByUpper
+                      ? readinessByUpper[regionKey.toUpperCase()]
+                        ?? (svc.name === 'ORS_SERVICE' ? readinessByUpper['DEFAULT'] : undefined)
+                        ?? null
+                      : null;
                     const isRunning = svc.status === 'RUNNING' || svc.status === 'READY';
                     const isSuspended = svc.status === 'SUSPENDED';
                     const isControlApp = svc.name.toUpperCase() === 'ORS_CONTROL_APP';
@@ -314,7 +328,7 @@ export default function ServiceManager() {
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             {Object.entries(orsReadiness).filter(([region, r]) => !!r.error && !isRegionSuspended(region)).map(([region, r]) => (
               <li key={region}>
-                <strong>{region === 'default' ? 'Default (San Francisco)' : region}</strong>: {r.error}
+                <strong>{region}</strong>: {r.error}
               </li>
             ))}
           </ul>
@@ -330,7 +344,7 @@ export default function ServiceManager() {
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             {Object.entries(orsReadiness).filter(([region, r]) => !r.service_ready && !r.error && !isRegionSuspended(region)).map(([region, r]: [string, any]) => (
               <li key={region}>
-                <strong>{region === 'default' ? 'Default (San Francisco)' : region}</strong>
+                <strong>{region}</strong>
                 {' '}
                 <span style={{ fontSize: 11, opacity: 0.8 }}>{r.graphs_persisted ? '(loading from stage)' : '(building from OSM)'}</span>
                 {` \u2014 ${r.graphs?.filter((g: any) => g.ready).length || 0}/${r.expected_profiles?.length || r.graphs?.length || '?'} profiles ready`}
