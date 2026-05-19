@@ -93,7 +93,10 @@ export default function ServiceManager() {
   const runningCount = services.filter((s: ServiceInfo) => s.status === 'RUNNING' || s.status === 'READY').length;
 
   const isRegionSuspended = (region: string): boolean => {
-    const name = region === 'default' ? 'ORS_SERVICE' : `ORS_SERVICE_${region.toUpperCase()}`;
+    // v1.1.0: every region (including the default) maps to ORS_SERVICE_<REGION>.
+    // Legacy 'default' regionKey is treated as the configured default region name.
+    const regionKey = region === 'default' ? 'SANFRANCISCO' : region.toUpperCase();
+    const name = `ORS_SERVICE_${regionKey}`;
     return services.some(s => s.name.toUpperCase() === name && s.status === 'SUSPENDED');
   };
 
@@ -215,7 +218,11 @@ export default function ServiceManager() {
                 <tbody>
                   {poolSvcs.map((svc: ServiceInfo) => {
                     const isOrs = svc.name.startsWith('ORS_SERVICE');
-                    const regionKey = svc.name === 'ORS_SERVICE' ? 'default' : svc.name.replace('ORS_SERVICE_', '');
+                    // v1.1.0: every ORS service has the form ORS_SERVICE_<REGION>.
+                    // The legacy bare ORS_SERVICE has been removed; if it still appears
+                    // in showServices output during a migration window, treat it as the
+                    // pre-unification default-region service.
+                    const regionKey = svc.name === 'ORS_SERVICE' ? 'SANFRANCISCO' : svc.name.replace('ORS_SERVICE_', '');
                     const readiness = isOrs && orsReadiness ? orsReadiness[regionKey] || orsReadiness[regionKey.charAt(0) + regionKey.slice(1).toLowerCase()] : null;
                     const isRunning = svc.status === 'RUNNING' || svc.status === 'READY';
                     const isSuspended = svc.status === 'SUSPENDED';

@@ -216,7 +216,11 @@ const UNIFIED_SCHEMA = 'UNIFIED';
 async function disableOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
   const stmts = [
     'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 0',
+    // v1.1.0: bare ORS_SERVICE has been removed; the per-region default is
+    // ORS_SERVICE_SANFRANCISCO. Both lines here are best-effort and survive a
+    // mid-migration window where either name might still be present.
     'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 0',
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 0',
   ];
   for (const sql of stmts) {
     try { await snowSql(sql); } catch (_) { /* best-effort */ }
@@ -228,6 +232,7 @@ async function restoreOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
   const stmts = [
     'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 14400',
     'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 14400',
+    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 14400',
   ];
   for (const sql of stmts) {
     try { await snowSql(sql); } catch (_) { /* best-effort */ }

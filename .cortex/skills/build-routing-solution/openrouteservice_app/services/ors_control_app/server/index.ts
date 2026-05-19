@@ -578,7 +578,7 @@ async function getExpectedProfiles(region: string): Promise<string[]> {
 app.get('/api/health', async (_req, res) => {
   const result: Record<string, any> = { healthy: false, version: APP_VERSION, services: {} };
   try {
-    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.ORS_SERVICE')) AS S`);
+    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.ORS_SERVICE_SANFRANCISCO')) AS S`);
     const raw = statusRows?.[0]?.S;
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (Array.isArray(parsed)) {
@@ -596,7 +596,7 @@ app.get('/api/health', async (_req, res) => {
   } catch { result.services.gateway = 'ERROR'; }
 
   try {
-    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.VROOM_SERVICE')) AS S`);
+    const statusRows = await runSql(`SELECT PARSE_JSON(SYSTEM$GET_SERVICE_STATUS('${SF_DATABASE}.CORE.VROOM_SERVICE_SANFRANCISCO')) AS S`);
     const raw = statusRows?.[0]?.S;
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (Array.isArray(parsed)) {
@@ -1415,7 +1415,9 @@ app.get('/api/regions/provisioned', async (_req, res) => {
 
     let defaultStatus = 'NOT_FOUND';
     try {
-      const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA ${SF_DATABASE}.CORE`);
+      // v1.1.0: legacy bare ORS_SERVICE was renamed to ORS_SERVICE_SANFRANCISCO
+      // (the per-region default). Probe both for migration robustness.
+      const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_SANFRANCISCO' IN SCHEMA ${SF_DATABASE}.CORE`);
       defaultStatus = rows?.[0]?.status || 'NOT_FOUND';
     } catch {}
     let defaultGraphReadiness: any = null;
@@ -1782,7 +1784,8 @@ app.get('/api/matrix/regions', async (_req, res) => {
 
     let mainStatus = 'NOT_FOUND';
     try {
-      const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE' IN SCHEMA ${SF_DATABASE}.CORE`);
+      // v1.1.0: legacy bare ORS_SERVICE was renamed to ORS_SERVICE_SANFRANCISCO.
+      const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_SANFRANCISCO' IN SCHEMA ${SF_DATABASE}.CORE`);
       mainStatus = rows?.[0]?.status || 'NOT_FOUND';
     } catch {}
     if (mainStatus !== 'NOT_FOUND') {

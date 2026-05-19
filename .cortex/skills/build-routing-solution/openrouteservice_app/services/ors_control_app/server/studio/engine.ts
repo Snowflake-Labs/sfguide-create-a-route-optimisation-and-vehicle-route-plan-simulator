@@ -1129,7 +1129,10 @@ export async function* generateTelemetry(
             });
             try {
               await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE RESUME');
-              await snowSql('ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE RESUME');
+              // v1.1.0: bare ORS_SERVICE removed; resume per-region service for the
+              // active region (defaults to SANFRANCISCO when region is missing).
+              const recoveryRegion = (config.region || 'SanFrancisco').replace(/\s+/g, '').toUpperCase();
+              await snowSql(`ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_${recoveryRegion} RESUME`);
               await new Promise(resolve => setTimeout(resolve, 30000));
               log('INFO', 'Studio', 'ORS recovery attempt complete, resuming generation');
             } catch (e: any) {
