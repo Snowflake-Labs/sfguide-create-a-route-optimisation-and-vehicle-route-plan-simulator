@@ -3,3 +3,4 @@
 
 export * from './client';
 export * from './regions';
+export * from './studio';
