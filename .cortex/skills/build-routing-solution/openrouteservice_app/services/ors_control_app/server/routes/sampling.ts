@@ -70,28 +70,60 @@ export function createSamplingRouter(): Router {
     const latSpan = maxLat - minLat;
     const tileDeg = Math.max(Math.min(lonSpan, latSpan) / 8, 0.05);
 
-    // Optional polygon clip — only added when the region has a non-bbox boundary
-    // to avoid extra cost on rectangular regions where bbox already matches.
-    const polygonClip = safeRegionForBoundary
-      ? `AND ST_WITHIN(ST_STARTPOINT(GEOMETRY), (SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE (UPPER(REGION_KEY) = UPPER('${safeRegionForBoundary}') OR UPPER(REGION_NAME) = UPPER('${safeRegionForBoundary}')) AND BOUNDARY IS NOT NULL AND COALESCE(BOUNDARY_SOURCE, '') NOT IN ('bbox-fallback','bbbike-bbox') LIMIT 1))`
+    // Polygon clip via CTE + LEFT JOIN + COALESCE.
+    //
+    // Two correctness invariants:
+    //   1. NULL-safe: if the catalog has no row matching this region, rb.BOUNDARY
+    //      is NULL on every row and COALESCE(ST_INTERSECTS(..., NULL), TRUE)
+    //      preserves the rows (degrades to bbox-only sampling). The previous
+    //      scalar-subquery + ST_WITHIN(point, NULL) expression returned NULL
+    //      and silently filtered out 100% of road points.
+    //   2. LOOKUP_NAME-aware: every other endpoint that joins REGION_CATALOG
+    //      uses LOOKUP_NAME as the canonical column. We check it here too so
+    //      provisioned regions whose REGION_KEY/REGION_NAME differ from the
+    //      ORS_MAP key (e.g. NewYork vs NewYorkUS) still resolve their polygon.
+    //
+    // bbbike-bbox sources are intentionally INCLUDED — those rows store a valid
+    // 5-vertex rectangle BOUNDARY equal to the bbox, so ST_INTERSECTS becomes
+    // a no-op for points already inside the bbox. No need to special-case.
+    const regionBoundaryCte = safeRegionForBoundary
+      ? `, region_boundary AS (
+          SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG
+          WHERE (UPPER(LOOKUP_NAME) = UPPER('${safeRegionForBoundary}')
+                 OR UPPER(REGION_KEY) = UPPER('${safeRegionForBoundary}')
+                 OR UPPER(REGION_NAME) = UPPER('${safeRegionForBoundary}'))
+            AND BOUNDARY IS NOT NULL
+          ORDER BY BOUNDARY_AREA_KM2 ASC
+          LIMIT 1
+        )`
+      : '';
+    const polygonJoin = safeRegionForBoundary ? 'LEFT JOIN region_boundary rb ON TRUE' : '';
+    const polygonFilter = safeRegionForBoundary
+      ? 'AND COALESCE(ST_INTERSECTS(ST_STARTPOINT(s.GEOMETRY), rb.BOUNDARY), TRUE)'
       : '';
 
     // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
     // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
     // without an expensive ORDER BY RANDOM() over the full filtered set.
     const sql = `
+      WITH segments AS (
+        SELECT s.GEOMETRY, s.BBOX
+        FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT s
+        WHERE s.SUBTYPE = 'road'
+          AND s.${classFilter}
+          AND s.BBOX:xmin <= ${maxLon} AND s.BBOX:xmax >= ${minLon}
+          AND s.BBOX:ymin <= ${maxLat} AND s.BBOX:ymax >= ${minLat}
+      )${regionBoundaryCte}
       SELECT
-        ANY_VALUE(ST_X(ST_STARTPOINT(GEOMETRY))) AS LON,
-        ANY_VALUE(ST_Y(ST_STARTPOINT(GEOMETRY))) AS LAT
-      FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
-      WHERE SUBTYPE = 'road'
-        AND ${classFilter}
-        AND BBOX:xmin <= ${maxLon} AND BBOX:xmax >= ${minLon}
-        AND BBOX:ymin <= ${maxLat} AND BBOX:ymax >= ${minLat}
-        ${polygonClip}
+        ANY_VALUE(ST_X(ST_STARTPOINT(s.GEOMETRY))) AS LON,
+        ANY_VALUE(ST_Y(ST_STARTPOINT(s.GEOMETRY))) AS LAT
+      FROM segments s
+      ${polygonJoin}
+      WHERE 1=1
+        ${polygonFilter}
       GROUP BY
-        FLOOR((BBOX:xmin::FLOAT + BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
-        FLOOR((BBOX:ymin::FLOAT + BBOX:ymax::FLOAT) / 2 / ${tileDeg})
+        FLOOR((s.BBOX:xmin::FLOAT + s.BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
+        FLOOR((s.BBOX:ymin::FLOAT + s.BBOX:ymax::FLOAT) / 2 / ${tileDeg})
       LIMIT ${limit}`;
 
     const TIMEOUT_MS = 10_000;

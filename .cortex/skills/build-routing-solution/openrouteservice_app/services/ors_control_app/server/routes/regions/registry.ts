@@ -119,11 +119,21 @@ export function createRegionsRegistryRouter(): Router {
           || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0);
         try {
           const safeRegion = sanitizeIdentifier(c.region);
-          const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') LIMIT 1`);
+          const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(LOOKUP_NAME) = UPPER('${safeRegion}') OR UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') ORDER BY CASE WHEN UPPER(LOOKUP_NAME) = UPPER('${safeRegion}') THEN 0 WHEN UPPER(REGION_KEY) = UPPER('${safeRegion}') THEN 1 ELSE 2 END LIMIT 1`);
           const cat = catRows?.[0];
           if (cat) {
-            if (bboxInvalid && cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
-                && !(cat.MIN_LAT === 0 && cat.MAX_LAT === 0 && cat.MIN_LON === 0 && cat.MAX_LON === 0)) {
+            const catBboxOk = cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
+              && !(cat.MIN_LAT === 0 && cat.MAX_LAT === 0 && cat.MIN_LON === 0 && cat.MAX_LON === 0);
+            if (bboxInvalid && catBboxOk) {
+              bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
+            } else if (catBboxOk && bbox && cat.MIN_LAT <= bbox.min_lat && cat.MAX_LAT >= bbox.max_lat
+                       && cat.MIN_LON <= bbox.min_lon && cat.MAX_LON >= bbox.max_lon) {
+              // Catalog bbox is a superset of REGION_ORS_MAP bbox — prefer it so
+              // road-point sampling covers the full PBF/graph extent. SF case:
+              // ORS_MAP stores a narrow city-center bbox (37.71-37.81) but the
+              // BBBike PBF + graph cover 37.54-37.93. Without this override,
+              // road points only land in the inner bbox while the graph routes
+              // a 4x larger area.
               bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
             }
             if (cat.BOUNDARY_GEOJSON) boundaryGeoJson = cat.BOUNDARY_GEOJSON;
