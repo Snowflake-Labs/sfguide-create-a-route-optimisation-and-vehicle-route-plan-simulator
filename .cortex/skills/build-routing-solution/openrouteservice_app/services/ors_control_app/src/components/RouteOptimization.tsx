@@ -28,7 +28,7 @@ function cartoBasemap() {
 
 const ROUTE_COLORS: [number, number, number][] = [[41, 181, 232], [34, 197, 94], [245, 158, 11], [239, 68, 68], [128, 0, 255], [255, 105, 180], [0, 191, 255], [50, 205, 50]];
 const PROFILE_LABELS: Record<string, string> = { 'driving-car': 'Car', 'driving-hgv': 'HGV', 'cycling-regular': 'Bicycle' };
-const SKILL_LABELS: Record<number, string> = { 1: 'Refrigerated Vehicle', 2: 'Temperature Controlled', 3: 'Heavy Lift / Pallet Jack', 4: 'Solo Taxi (Behavioural)', 5: 'Wheelchair Accessible', 6: 'Chaperoned', 7: 'Standard Minibus' };
+const DEFAULT_skillLabels: Record<number, string> = { 1: 'Refrigerated Vehicle', 2: 'Temperature Controlled', 3: 'Heavy Lift / Pallet Jack', 4: 'Solo Taxi (Behavioural)', 5: 'Wheelchair Accessible', 6: 'Chaperoned', 7: 'Standard Minibus' };
 const SKILL_CAPACITY: Record<number, number> = { 1: 10, 2: 10, 3: 10, 4: 1, 5: 2, 6: 3, 7: 8 };
 const SKILL_SERVICE_MINS: Record<number, number> = { 1: 5, 2: 5, 3: 5, 4: 10, 5: 10, 6: 8, 7: 3 };
 
@@ -44,6 +44,7 @@ export default function RouteOptimization() {
   const [radius, setRadius] = useState(5);
   const [industries, setIndustries] = useState<any[]>([]);
   const [selectedIndustry, setSelectedIndustry] = useState('');
+  const [skillLabels, setSkillLabels] = useState<Record<number, string>>(DEFAULT_skillLabels);
   const [places, setPlaces] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [jobTemplates, setJobTemplates] = useState<JobTemplateLocal[]>([]);
@@ -100,6 +101,24 @@ export default function RouteOptimization() {
   useEffect(() => {
     sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`).then(r => setIndustries(r));
   }, [regionName]);
+
+  useEffect(() => {
+    if (!selectedIndustry) { setSkillLabels(DEFAULT_skillLabels); return; }
+    sfQuery(`SELECT STYPE FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`).then(r => {
+      if (r.length > 0 && r[0].STYPE) {
+        try {
+          const stypes = typeof r[0].STYPE === 'string' ? JSON.parse(r[0].STYPE) : r[0].STYPE;
+          if (Array.isArray(stypes) && stypes.length > 0) {
+            const labels: Record<number, string> = {};
+            stypes.forEach((s: string, i: number) => { labels[i + 1] = s; });
+            setSkillLabels(labels);
+            return;
+          }
+        } catch {}
+      }
+      setSkillLabels(DEFAULT_skillLabels);
+    });
+  }, [selectedIndustry, regionName]);
 
   const geocode = useCallback(async () => {
     if (!searchText.trim()) return;
@@ -285,7 +304,7 @@ export default function RouteOptimization() {
               if (place) {
                 let addr = '';
                 try { if (place.ADDRESS) { const a = typeof place.ADDRESS === 'string' ? JSON.parse(place.ADDRESS) : place.ADDRESS; addr = a?.freeform || ''; if (a?.locality) addr += `, ${a.locality}`; } } catch {}
-                const skillsStr = jt?.skills?.length ? jt.skills.map((n: number) => SKILL_LABELS[n] || `Skill ${n}`).join(', ') : '';
+                const skillsStr = jt?.skills?.length ? jt.skills.map((n: number) => skillLabels[n] || `Skill ${n}`).join(', ') : '';
                 assignments.push({ jobIdx, vehicleIdx: vIdx, placeName: place.NAME || '', category: place.CATEGORY || '', lng: Number(place.LNG), lat: Number(place.LAT), arrival: step.arrival, address: addr, timeWindow: jt ? `${jt.slotStart} - ${jt.slotEnd}` : '', skills: skillsStr, sequence: seq, totalStops: jobSteps.length });
               }
             }
@@ -305,9 +324,9 @@ export default function RouteOptimization() {
       if (unassigned.size > 0) {
         const unassignedSkills = Array.from(unassigned).map(id => {
           const jt = jobTemplates[(id - 1) % (jobTemplates.length || 1)];
-          return jt?.skills?.map((s: number) => SKILL_LABELS[s] || `Skill ${s}`).join(', ') || 'unknown';
+          return jt?.skills?.map((s: number) => skillLabels[s] || `Skill ${s}`).join(', ') || 'unknown';
         });
-        const vehicleSkills = vehicles.map((v, i) => `Vehicle ${i+1}: ${v.skills.map(s => SKILL_LABELS[s] || `Skill ${s}`).join(', ')}`).join('; ');
+        const vehicleSkills = vehicles.map((v, i) => `Vehicle ${i+1}: ${v.skills.map(s => skillLabels[s] || `Skill ${s}`).join(', ')}`).join('; ');
         const prompt = `${unassigned.size} of ${vrpJobs.length} delivery jobs could not be assigned. Unassigned jobs require these skills: ${[...new Set(unassignedSkills)].join(', ')}. Available fleet: ${vehicleSkills}. In 1-2 sentences explain why jobs are unassigned and what vehicles to add.`;
         sfQuery(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt.replace(/'/g, "''")}') AS RESULT`).then(r => {
           try { setUnassignedExplanation((r[0]?.RESULT || '').replace(/```/g, '').trim()); } catch {}
@@ -394,7 +413,7 @@ export default function RouteOptimization() {
     if (isUnassigned) {
       const idx = places.findIndex((p: any) => `${Number(p.LNG).toFixed(6)},${Number(p.LAT).toFixed(6)}` === key);
       const jt = jobTemplates[idx % (jobTemplates.length || 1)];
-      const reqSkills = jt?.skills?.map((s: number) => SKILL_LABELS[s] || `Skill ${s}`).join(', ') || 'Unknown';
+      const reqSkills = jt?.skills?.map((s: number) => skillLabels[s] || `Skill ${s}`).join(', ') || 'Unknown';
       html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,60,60,0.4)">`;
       html += `<div style="color:#ff6b6b;font-weight:600;margin-bottom:3px">\u{26A0}\u{FE0F} Unassigned</div>`;
       html += `<div style="opacity:0.8">Requires: ${reqSkills}</div>`;
@@ -502,7 +521,7 @@ export default function RouteOptimization() {
               <input type="number" value={v.capacity} onChange={e => setVehicles(prev => prev.map((vv, ii) => ii === i ? { ...vv, capacity: Number(e.target.value) } : vv))} style={{ width: 45 }} />
               <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>Skills:</span>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {Object.entries(SKILL_LABELS).map(([numStr, label]) => {
+                {Object.entries(skillLabels).map(([numStr, label]) => {
                   const num = Number(numStr);
                   const active = v.skills.includes(num);
                   return (
@@ -535,7 +554,7 @@ export default function RouteOptimization() {
                 <input type="number" value={jt.serviceDuration} onChange={e => setJobTemplates(prev => prev.map((t, ii) => ii === i ? { ...t, serviceDuration: Number(e.target.value) } : t))} style={{ width: 40, fontSize: 11 }} min={1} max={120} />
                 <span style={{ fontSize: 10, opacity: 0.6 }}>min</span>
                 <select value={jt.skills[0] || 1} onChange={e => setJobTemplates(prev => prev.map((t, ii) => ii === i ? { ...t, skills: [Number(e.target.value)] } : t))} style={{ fontSize: 11, width: 90 }}>
-                  {Object.entries(SKILL_LABELS).map(([n, l]) => <option key={n} value={n}>{l.split('/')[0].trim()}</option>)}
+                  {Object.entries(skillLabels).map(([n, l]) => <option key={n} value={n}>{l.split('/')[0].trim()}</option>)}
                 </select>
               </div>
             ))}
@@ -558,7 +577,7 @@ export default function RouteOptimization() {
             {(() => {
               const counts: Record<string, number> = {};
               fleetRecommendation.forEach(v => {
-                const label = v.skills.map(s => SKILL_LABELS[s] || `Skill ${s}`).join(' + ');
+                const label = v.skills.map(s => skillLabels[s] || `Skill ${s}`).join(' + ');
                 counts[label] = (counts[label] || 0) + 1;
               });
               return Object.entries(counts).map(([label, count]) => `${count}x ${label}`).join(', ');
