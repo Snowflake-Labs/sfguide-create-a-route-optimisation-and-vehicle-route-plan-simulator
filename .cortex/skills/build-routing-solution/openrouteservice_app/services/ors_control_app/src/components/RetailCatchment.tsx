@@ -69,20 +69,29 @@ export default function RetailCatchment() {
   // remains the sole driver of the global active region.
   useEffect(() => {
     setLoading(true);
+    // /api/regions/provisioned returns { regions: [...] }, NOT a bare array.
+    // Also: the legacy default ORS service is reported as region:"default";
+    // map that to the IS_DEFAULT row in REGION_REGISTRY (e.g. "SanFrancisco")
+    // so it matches RETAIL_POIS.REGION values.
+    const defaultRegistryName = globalRegions[0]?.REGION_NAME ?? 'SanFrancisco';
     fetch('/api/regions/provisioned')
       .then(r => r.json())
-      .then((data: any[]) => {
-        const ready: ProvisionedRegion[] = (data || [])
+      .then((body: any) => {
+        const data: any[] = Array.isArray(body) ? body : (body?.regions ?? []);
+        const ready: ProvisionedRegion[] = data
           .filter(d => d && (d.serviceStatus === 'RUNNING' || d.serviceStatus === 'READY'))
           .map(d => {
             const profiles: string[] = d.graphReadiness?.profiles_loaded || [];
-            const matching = globalRegions.find(g => g.REGION_NAME === d.region);
-            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? ((d.bbox?.min_lat != null && d.bbox?.max_lat != null) ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : 0)) || 0;
-            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? ((d.bbox?.min_lon != null && d.bbox?.max_lon != null) ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : 0)) || 0;
+            const regionKey = (d.isDefault || d.region === 'default') ? defaultRegistryName : d.region;
+            const matching = globalRegions.find(g => g.REGION_NAME === regionKey);
+            const bboxLat = (d.bbox?.min_lat != null && d.bbox?.max_lat != null) ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : null;
+            const bboxLon = (d.bbox?.min_lon != null && d.bbox?.max_lon != null) ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : null;
+            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? bboxLat ?? 0) || 0;
+            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? bboxLon ?? 0) || 0;
             const zoomLvl = Number(matching?.ZOOM_LEVEL ?? 11);
             return {
-              region: d.region,
-              display_name: d.display_name || matching?.DISPLAY_NAME || d.region,
+              region: regionKey,
+              display_name: matching?.DISPLAY_NAME || d.display_name || regionKey,
               profiles_loaded: profiles,
               center_lat: centerLat,
               center_lon: centerLon,
@@ -90,7 +99,13 @@ export default function RetailCatchment() {
             };
           })
           .filter(d => d.profiles_loaded.length > 0);
-        setProvisionedRegions(ready);
+        // Dedupe by resolved region key; prefer the entry with the most loaded profiles.
+        const byKey = new Map<string, ProvisionedRegion>();
+        for (const r of ready) {
+          const existing = byKey.get(r.region);
+          if (!existing || r.profiles_loaded.length > existing.profiles_loaded.length) byKey.set(r.region, r);
+        }
+        setProvisionedRegions(Array.from(byKey.values()));
       })
       .catch(() => setProvisionedRegions([]))
       .finally(() => setLoading(false));
