@@ -139,8 +139,37 @@ function pickFromRoad(roadPoints: [number, number][], rand: () => number): [numb
   return [+p[0].toFixed(5), +p[1].toFixed(5)];
 }
 
+// Defense-in-depth: even when /api/sample-road-points returns clipped points
+// for a region, an upstream miss (boundary missing, bbox-fallback source) can
+// reintroduce out-of-region picks. When a boundary is supplied alongside road
+// points, retry pickFromRoad until a point lies inside the polygon, then fall
+// back to bbox-rejection sampling.
+const ROAD_BOUNDARY_RETRY = 20;
+function pickFromRoadInBoundary(
+  roadPoints: [number, number][],
+  boundary: BoundaryGeoJson,
+  rand: () => number,
+): [number, number] | null {
+  for (let i = 0; i < ROAD_BOUNDARY_RETRY; i++) {
+    const pt = pickFromRoad(roadPoints, rand);
+    if (pointInBoundary(pt[0], pt[1], boundary)) return pt;
+  }
+  // Linear scan: if any road points are inside, return one at random.
+  const inside = roadPoints.filter(p => pointInBoundary(p[0], p[1], boundary));
+  if (inside.length > 0) {
+    return pickFromRoad(inside, rand);
+  }
+  return null;
+}
+
 function sampleOne(bbox: BBox, rand: () => number, roadPoints?: [number, number][], shrink = 0, boundary?: BoundaryGeoJson | null): [number, number] {
   if (roadPoints && roadPoints.length > 0) {
+    if (boundary) {
+      const pt = pickFromRoadInBoundary(roadPoints, boundary, rand);
+      if (pt) return pt;
+      // No road point inside polygon — fall back to polygon-rejection sampling.
+      return randomPointInBoundary(boundary, bbox, rand, shrink);
+    }
     return pickFromRoad(roadPoints, rand);
   }
   if (boundary) {
@@ -159,11 +188,14 @@ function meetsSepConstraints(points: [number, number][], minKm: number, maxKm: n
   return true;
 }
 
-function samplePointNear(anchor: [number, number], minKm: number, maxKm: number, bbox: BBox, rand: () => number, roadPoints?: [number, number][]): [number, number] {
+function samplePointNear(anchor: [number, number], minKm: number, maxKm: number, bbox: BBox, rand: () => number, roadPoints?: [number, number][], boundary?: BoundaryGeoJson | null): [number, number] {
   if (roadPoints && roadPoints.length > 0) {
     const candidates = roadPoints.filter(rp => {
       const d = haversineKm(anchor, rp);
-      return d >= minKm && d <= maxKm;
+      const inDistRing = d >= minKm && d <= maxKm;
+      if (!inDistRing) return false;
+      if (boundary) return pointInBoundary(rp[0], rp[1], boundary);
+      return true;
     });
     if (candidates.length > 0) {
       const idx = Math.floor(rand() * candidates.length);
@@ -173,28 +205,42 @@ function samplePointNear(anchor: [number, number], minKm: number, maxKm: number,
     // road points are spread by tile (~degrees apart), so target ranges of a few km will
     // never match. Fall back to the nearest road points to the anchor — keeps both ends
     // on real roads (avoids angular offsets into ocean/wilderness) and stays geographically
-    // local instead of coast-to-coast.
-    const sorted = roadPoints
+    // local instead of coast-to-coast. When a polygon boundary is known, restrict the
+    // pool to in-polygon roads first.
+    const filtered = boundary
+      ? roadPoints.filter(rp => pointInBoundary(rp[0], rp[1], boundary))
+      : roadPoints;
+    const pool = (filtered.length > 0 ? filtered : roadPoints);
+    const sorted = pool
       .map(rp => ({ rp, d: haversineKm(anchor, rp) }))
       .filter(x => x.d > 0.01)
       .sort((a, b) => a.d - b.d);
     if (sorted.length > 0) {
-      const pool = sorted.slice(0, Math.min(5, sorted.length));
-      const choice = pool[Math.floor(rand() * pool.length)];
+      const top = sorted.slice(0, Math.min(5, sorted.length));
+      const choice = top[Math.floor(rand() * top.length)];
       return [+choice.rp[0].toFixed(5), +choice.rp[1].toFixed(5)];
     }
   }
   const midLat = (bbox.min_lat + bbox.max_lat) / 2;
-  const targetKm = minKm + rand() * (maxKm - minKm);
-  const angle = rand() * 2 * Math.PI;
-  const dLat = (targetKm * Math.cos(angle)) / DEG_TO_KM_LAT;
-  const dLon = (targetKm * Math.sin(angle)) / degToKmLon(midLat);
-  let lat = anchor[1] + dLat;
-  let lon = anchor[0] + dLon;
   const latRange = bbox.max_lat - bbox.min_lat;
   const lonRange = bbox.max_lon - bbox.min_lon;
-  lat = Math.max(bbox.min_lat + latRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lat - latRange * MIN_EDGE_MARGIN, lat));
-  lon = Math.max(bbox.min_lon + lonRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lon - lonRange * MIN_EDGE_MARGIN, lon));
+  // When a boundary polygon is known, retry the angular offset until the
+  // resulting point falls inside the polygon. Each iteration redraws a fresh
+  // angle and target distance so clusters of bad rolls are rare.
+  const maxAttempts = boundary ? 25 : 1;
+  let lat = anchor[1];
+  let lon = anchor[0];
+  for (let i = 0; i < maxAttempts; i++) {
+    const targetKm = minKm + rand() * (maxKm - minKm);
+    const angle = rand() * 2 * Math.PI;
+    const dLat = (targetKm * Math.cos(angle)) / DEG_TO_KM_LAT;
+    const dLon = (targetKm * Math.sin(angle)) / degToKmLon(midLat);
+    lat = anchor[1] + dLat;
+    lon = anchor[0] + dLon;
+    lat = Math.max(bbox.min_lat + latRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lat - latRange * MIN_EDGE_MARGIN, lat));
+    lon = Math.max(bbox.min_lon + lonRange * MIN_EDGE_MARGIN, Math.min(bbox.max_lon - lonRange * MIN_EDGE_MARGIN, lon));
+    if (!boundary || pointInBoundary(lon, lat, boundary)) break;
+  }
   return [+lon.toFixed(5), +lat.toFixed(5)];
 }
 
@@ -211,7 +257,7 @@ function sampleWithSeparation(
     const first = sampleOne(bbox, rand, roadPoints, shrink, boundary);
     const pts: [number, number][] = [first];
     for (let i = 1; i < count; i++) {
-      pts.push(samplePointNear(first, constraints.minKm, constraints.maxKm, bbox, rand, roadPoints));
+      pts.push(samplePointNear(first, constraints.minKm, constraints.maxKm, bbox, rand, roadPoints, boundary));
     }
     if (meetsSepConstraints(pts, constraints.minKm, constraints.maxKm)) {
       return { points: pts };
@@ -220,7 +266,7 @@ function sampleWithSeparation(
   const first = sampleOne(bbox, rand, roadPoints, shrink, boundary);
   const pts: [number, number][] = [first];
   for (let i = 1; i < count; i++) {
-    pts.push(samplePointNear(first, constraints.minKm * 0.5, constraints.maxKm, bbox, rand, roadPoints));
+    pts.push(samplePointNear(first, constraints.minKm * 0.5, constraints.maxKm, bbox, rand, roadPoints, boundary));
   }
   return { points: pts, hint: 'Region is small — using reduced sample distances.' };
 }
@@ -257,13 +303,18 @@ function sampleOptimization(bbox: BBox, constraints: ProfileConstraints, rand: (
   // Continent-scale regions: the road-point seed is spread by tile (~degrees apart), so
   // randomly picking jobs from the full set produces a depot in NYC and jobs across the USA.
   // Keep the route plan locally meaningful by drawing all jobs from the road points nearest
-  // to the depot. This still gives a varied but routable plan.
-  if (roadPoints && roadPoints.length >= 11) {
-    const sorted = roadPoints
+  // to the depot. This still gives a varied but routable plan. When a polygon boundary is
+  // known, restrict to road points inside the polygon first.
+  const roadPool = (roadPoints && boundary)
+    ? roadPoints.filter(rp => pointInBoundary(rp[0], rp[1], boundary))
+    : roadPoints;
+  const effectivePool = (roadPool && roadPool.length >= 11) ? roadPool : roadPoints;
+  if (effectivePool && effectivePool.length >= 11) {
+    const sorted = effectivePool
       .map(rp => ({ rp, d: haversineKm(depot, rp) }))
       .filter(x => x.d > 0.01)
       .sort((a, b) => a.d - b.d)
-      .slice(0, Math.min(roadPoints.length - 1, 24));
+      .slice(0, Math.min(effectivePool.length - 1, 24));
     if (sorted.length >= 10) {
       const shuffled = [...sorted].sort(() => rand() - 0.5).slice(0, 10);
       const jobs = shuffled.map(x => [+x.rp[0].toFixed(5), +x.rp[1].toFixed(5)] as [number, number]);
@@ -314,4 +365,4 @@ export function samplePoints(input: SamplePointsInput): SampledPoints | null {
 
 export const COORD_FUNCTIONS = ['DIRECTIONS', 'ISOCHRONES', 'MATRIX', 'MATRIX_TABULAR', 'OPTIMIZATION'];
 
-export { haversineKm, isBBoxValid, mulberry32, getProfileConstraints };
+export { haversineKm, isBBoxValid, mulberry32, getProfileConstraints, pointInBoundary };
