@@ -89,15 +89,21 @@ export function useRegionProvider() {
   useEffect(() => { fetchRegions(); }, [fetchRegions]);
 
   const switchRegion = useCallback(async (regionName: string) => {
-    const target = regions.find(r => r.REGION_NAME === regionName);
-    if (target) setActive(target);
-
+    // IMPORTANT: await the server-side CONFIG.REGION update BEFORE flipping
+    // React state. Otherwise `setActive` causes the App.tsx `dataKey` to
+    // change synchronously, which remounts every demo component. Those
+    // remounted components fire `useEffect` SQL queries against projection
+    // views (e.g. VW_TRIP_SUMMARY) that read REGION via `(SELECT REGION
+    // FROM CONFIG LIMIT 1)`. If the POST hasn't completed yet, CONFIG
+    // still holds the OLD region and demos render stale data.
     try {
       await fetch('/api/regions/active', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region: regionName }),
       });
+      const target = regions.find(r => r.REGION_NAME === regionName);
+      if (target) setActive(target);
       await fetchRegions();
     } catch {
       await fetchRegions();

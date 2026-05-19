@@ -10,6 +10,7 @@ interface VehicleTypeContextValue {
   switchVehicleType: (type: string) => Promise<void>;
   regionsForType: (type: string) => string[];
   typesForRegion: (region: string) => string[];
+  refresh: () => Promise<void>;
 }
 
 const defaults: VehicleTypeContextValue = {
@@ -20,6 +21,7 @@ const defaults: VehicleTypeContextValue = {
   switchVehicleType: async () => {},
   regionsForType: () => [],
   typesForRegion: () => [],
+  refresh: async () => {},
 };
 
 const VehicleTypeContext = createContext<VehicleTypeContextValue>(defaults);
@@ -78,6 +80,7 @@ export function useVehicleTypeProvider() {
     switchVehicleType,
     regionsForType,
     typesForRegion,
+    refresh: fetchConfig,
   };
 
   return { value, VehicleTypeContext };

@@ -2565,6 +2565,75 @@ app.get('/api/datasets', async (_req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/datasets/activate — atomically activate a (region, vehicleType)
+// pair selected from the DatasetPicker. Updates VEHICLE_TYPE and REGION on
+// all 6 demo CONFIG tables in ONE server round-trip BEFORE returning, so
+// that when the React UI subsequently flips its state and remounts demo
+// components, the projection views (which read REGION/VEHICLE_TYPE via
+// `(SELECT ... FROM CONFIG LIMIT 1)`) already reflect the new selection.
+// This eliminates the race condition where demo components remount and
+// query CONFIG before /api/regions/active had time to write the new region.
+// ---------------------------------------------------------------------------
+app.post('/api/datasets/activate', async (req, res) => {
+  try {
+    const { region, vehicleType } = req.body || {};
+    if (!region || !vehicleType) {
+      return res.status(400).json({ error: 'region and vehicleType required' });
+    }
+    const safeRegion = escapeString(region);
+    const safeVehicleType = escapeString(vehicleType);
+
+    // 1. Flip IS_DEFAULT in REGION_REGISTRY (best-effort).
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+    } catch (e: any) {
+      log('WARN', 'Datasets', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
+    }
+    activeRegionOverride = region;
+
+    // 2. Update VEHICLE_TYPE + REGION on every demo CONFIG. We use the
+    // union of the two schema lists (BACKLOAD_MATCHING is in CONFIG_SCHEMAS
+    // but not FLEET_CONFIG_SCHEMAS).
+    const ALL_CONFIG_SCHEMAS = [
+      'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
+      'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
+      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
+      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
+      'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
+      'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
+      'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
+    ];
+    for (const schema of ALL_CONFIG_SCHEMAS) {
+      try {
+        await runSql(
+          `UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeVehicleType}', REGION = '${safeRegion}'`
+        );
+      } catch (e: any) {
+        log('WARN', 'Datasets', `Failed to update ${schema}.CONFIG: ${e.message?.slice(0, 200)}`);
+      }
+    }
+
+    // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, mirrors
+    // /api/regions/active behaviour).
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
+      );
+    } catch (e: any) {
+      log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
+    }
+
+    res.json({ ok: true, region, vehicleType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
 1. Driving/cycling/walking directions between locations
 2. Reachability analysis (isochrones) - areas reachable within X minutes
