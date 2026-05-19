@@ -64,50 +64,34 @@ export default function RetailCatchment() {
   const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
-  // Fetch the list of provisioned regions (with their built profiles) once on mount.
-  // Local-only: this dropdown does NOT call switchRegion(). The header switcher
-  // remains the sole driver of the global active region.
   useEffect(() => {
+    if (!globalRegions.length) return;
     setLoading(true);
-    // /api/regions/provisioned returns { regions: [...] }, NOT a bare array.
-    // Also: the legacy default ORS service is reported as region:"default";
-    // map that to the IS_DEFAULT row in REGION_REGISTRY (e.g. "SanFrancisco")
-    // so it matches RETAIL_POIS.REGION values.
-    const defaultRegistryName = globalRegions[0]?.REGION_NAME ?? 'SanFrancisco';
-    fetch('/api/regions/provisioned')
-      .then(r => r.json())
-      .then((body: any) => {
-        const data: any[] = Array.isArray(body) ? body : (body?.regions ?? []);
-        const ready: ProvisionedRegion[] = data
-          .filter(d => d && (d.serviceStatus === 'RUNNING' || d.serviceStatus === 'READY'))
-          .map(d => {
-            const profiles: string[] = d.graphReadiness?.profiles_loaded || [];
-            const regionKey = (d.isDefault || d.region === 'default') ? defaultRegistryName : d.region;
-            const matching = globalRegions.find(g => g.REGION_NAME === regionKey);
-            const bboxLat = (d.bbox?.min_lat != null && d.bbox?.max_lat != null) ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : null;
-            const bboxLon = (d.bbox?.min_lon != null && d.bbox?.max_lon != null) ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : null;
-            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? bboxLat ?? 0) || 0;
-            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? bboxLon ?? 0) || 0;
-            const zoomLvl = Number(matching?.ZOOM_LEVEL ?? 11);
-            return {
-              region: regionKey,
-              display_name: matching?.DISPLAY_NAME || d.display_name || regionKey,
-              profiles_loaded: profiles,
-              center_lat: centerLat,
-              center_lon: centerLon,
-              zoom: zoomLvl,
-            };
-          })
-          .filter(d => d.profiles_loaded.length > 0);
-        // Dedupe by resolved region key; prefer the entry with the most loaded profiles.
-        const byKey = new Map<string, ProvisionedRegion>();
-        for (const r of ready) {
-          const existing = byKey.get(r.region);
-          if (!existing || r.profiles_loaded.length > existing.profiles_loaded.length) byKey.set(r.region, r);
-        }
-        setProvisionedRegions(Array.from(byKey.values()));
-      })
-      .catch(() => setProvisionedRegions([]))
+    const regionChecks = globalRegions.map(async (r, idx) => {
+      const isDefault = idx === 0;
+      const orsCall = isDefault
+        ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS S`
+        : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${r.ORS_REGION_KEY || r.REGION_NAME}')) AS S`;
+      try {
+        const rows = await sfQuery(orsCall, 'OPENROUTESERVICE_APP', 'CORE');
+        const raw = rows?.[0]?.S;
+        if (!raw) return null;
+        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!data.service_ready) return null;
+        const profiles = Object.keys(data.profiles || {});
+        if (!profiles.length) return null;
+        return {
+          region: r.REGION_NAME,
+          display_name: r.DISPLAY_NAME || r.REGION_NAME,
+          profiles_loaded: profiles,
+          center_lat: Number(r.BOUNDARY_CENTROID_LAT ?? r.CENTER_LAT ?? 0) || 0,
+          center_lon: Number(r.BOUNDARY_CENTROID_LON ?? r.CENTER_LON ?? 0) || 0,
+          zoom: Number(r.ZOOM_LEVEL ?? 11),
+        } as ProvisionedRegion;
+      } catch { return null; }
+    });
+    Promise.all(regionChecks)
+      .then(results => setProvisionedRegions(results.filter((r): r is ProvisionedRegion => r !== null)))
       .finally(() => setLoading(false));
   }, [globalRegions]);
 
