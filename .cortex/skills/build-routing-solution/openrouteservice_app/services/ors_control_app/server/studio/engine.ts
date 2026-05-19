@@ -5,93 +5,12 @@ import {
 } from './profiles.js';
 import { log } from '../diagnostics.js';
 
-export interface TelemetryPoint {
-  telemetry_id: string;
-  region: string;
-  vehicle_type: string;
-  vehicle_id: string;
-  trip_id: string | null;
-  ts: Date;
-  latitude: number;
-  longitude: number;
-  speed_kmh: number;
-  heading_deg: number;
-  posted_speed_kmh: number;
-  status: string;
-  is_speeding: boolean;
-  is_hos_violation: boolean;
-  is_detour: boolean;
-  gps_accuracy_m: number;
-  location_id: string | null;
-  location_type: string | null;
-  ors_profile: string;
-  battery_pct: number | null;
-  odometer_km: number | null;
-  point_index: number | null;
-}
-
-export interface TripRecord {
-  trip_id: string;
-  vehicle_id: string;
-  driver_id: string;
-  vehicle_type: string;
-  region: string;
-  origin_poi_id: string;
-  destination_poi_id: string;
-  origin_lat: number;
-  origin_lon: number;
-  destination_lat: number;
-  destination_lon: number;
-  route_coordinates: [number, number][];
-  distance_km: number;
-  duration_minutes: number;
-  planned_route_coordinates: [number, number][] | null;
-  planned_distance_km: number | null;
-  is_detour: boolean;
-  detour_distance_km: number | null;
-  trip_start: Date;
-  trip_end: Date;
-  status: string;
-  ors_profile: string;
-}
-
-export type GenerationEvent =
-  | { type: 'telemetry'; points: TelemetryPoint[] }
-  | { type: 'trip'; record: TripRecord }
-  | { type: 'stopped'; reason: string; completedDays: number; totalDays: number; routeSuccesses: number; routeFailures: number };
-
-export interface POI {
-  location_id: string;
-  name: string;
-  location_type: string;
-  lat: number;
-  lng: number;
-  category: string;
-}
-
-export interface RouteGeometry {
-  coordinates: [number, number][];
-  distance_m: number;
-  duration_sec: number;
-}
-
-export interface FleetMember {
-  vehicle_id: string;
-  driver_id: string;
-  home_poi: POI;
-  shift_start: number;
-  shift_end: number;
-  profile_type: string;
-  detour_prob: number;
-  speeding_prob: number;
-  hos_violation_prob: number;
-  speed_variance: number;
-  base_speed_kmh: number;
-  vehicle_type: string;
-  battery_pct: number;
-  ghost_start_day?: number;
-  ghost_end_day?: number;
-}
+export {
+  TelemetryPoint, TripRecord, GenerationEvent, POI, RouteGeometry,
+  FleetMember, GenerationProgress, RouteFetchResult, FreightOffer,
+} from './engine/types.js';
+import type { POI, RouteGeometry, FleetMember, GenerationProgress, RouteFetchResult, FreightOffer, TelemetryPoint, TripRecord, GenerationEvent, SnowSqlFn } from './engine/types.js';
+export { generateFreightOffers } from './engine/freight.js';
 
 type VehicleState = 'MOVING' | 'DWELL_ORIGIN' | 'DWELL_DESTINATION' | 'DWELL_REST' | 'DWELL_RECHARGE' | 'IDLE' | 'OVERNIGHT';
 
@@ -109,24 +28,6 @@ interface VehicleLifecycle {
   odometerKm: number;
   pointIndex: number;
 }
-
-type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
-
-export interface GenerationProgress {
-  day: number;
-  totalDays: number;
-  vehicleId?: string;
-  pointsToday: number;
-  totalPoints: number;
-  totalTrips: number;
-  routeSuccesses: number;
-  routeFailures: number;
-  unroutableSkips?: number;
-  unroutablePois?: number;
-  status: string;
-}
-
-export type RouteFetchResult = RouteGeometry | null | 'UNROUTABLE';
 
 const UNROUTABLE_PATTERNS: RegExp[] = [
   /Could not find routable point/i,
@@ -470,77 +371,6 @@ export function buildFleet(config: GenerationConfig, pois: POI[], rng: () => num
   return fleet;
 }
 
-export interface FreightOffer {
-  offer_id: string;
-  source: string;
-  product: string;
-  pickup_poi_id: string;
-  pickup_lat: number;
-  pickup_lon: number;
-  dropoff_poi_id: string;
-  dropoff_lat: number;
-  dropoff_lon: number;
-  weight_kg: number;
-  price_usd: number;
-  hazmat: boolean;
-  pickup_from_offset_min: number;
-  pickup_to_offset_min: number;
-  listing_text: string;
-}
-
-function sourceLabelsForRegion(region: string): string[] {
-  const r = (region || '').toLowerCase();
-  if (r.includes('germany') || r.includes('europe') || r.includes('netherlands') || r.includes('france') || r.includes('italy') || r.includes('spain')) {
-    return ['TIMOCOM', 'WTRANSNET', 'TELEROUTE', 'B2P'];
-  }
-  return ['DAT', 'TRUCKSTOP', 'CONVOY', 'UBER_FREIGHT'];
-}
-
-const FREIGHT_PRODUCTS = [
-  'Pallets (general)', 'Steel coils', 'Plastic granulate',
-  'Beverages', 'Furniture', 'Bulk paper',
-];
-
-export function generateFreightOffers(pois: POI[], config: GenerationConfig, n = 300): FreightOffer[] {
-  if (!pois || pois.length < 2) return [];
-  const rng = createRng((config.region || '').length * 1009 + (config.ors_profile || '').length * 17);
-  const sources = sourceLabelsForRegion(config.region);
-  const offers: FreightOffer[] = [];
-  let safety = 0;
-  while (offers.length < n && safety < n * 5) {
-    safety++;
-    const pIdx = Math.floor(rng() * pois.length);
-    const dIdx = Math.floor(rng() * pois.length);
-    if (pIdx === dIdx) continue;
-    const p = pois[pIdx];
-    const d = pois[dIdx];
-    const wt = 800 + Math.floor(rng() * 24200);
-    const price = 400 + Math.floor(rng() * 4100);
-    const haz = rng() < 0.08;
-    const winStart = 60 + Math.floor(rng() * 1140);
-    const winLen = 60 + Math.floor(rng() * 420);
-    const src = sources[offers.length % sources.length];
-    const product = FREIGHT_PRODUCTS[offers.length % FREIGHT_PRODUCTS.length];
-    offers.push({
-      offer_id: `OFF-${String(offers.length + 1).padStart(6, '0')}`,
-      source: src,
-      product,
-      pickup_poi_id: p.location_id,
-      pickup_lat: p.lat,
-      pickup_lon: p.lng,
-      dropoff_poi_id: d.location_id,
-      dropoff_lat: d.lat,
-      dropoff_lon: d.lng,
-      weight_kg: wt,
-      price_usd: price,
-      hazmat: haz,
-      pickup_from_offset_min: winStart,
-      pickup_to_offset_min: winStart + winLen,
-      listing_text: `${src} ${p.name} -> ${d.name} ${wt} kg ${product} ${price}${haz ? ' ADR' : ''}`,
-    });
-  }
-  return offers;
-}
 
 async function fetchRoute(
   originLat: number, originLng: number,
