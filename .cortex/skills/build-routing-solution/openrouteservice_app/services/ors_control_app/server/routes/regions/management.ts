@@ -8,7 +8,7 @@ import { Router } from 'express';
 import { SF_DATABASE } from '../../constants.js';
 import { runSql, callProcedure, submitSqlAsync, cancelStatement } from '../../lib/sql.js';
 import { sanitizeIdentifier, sanitizeFloat, escapeString, toIso } from '../../lib/sanitize.js';
-import { safeRegionIdent, orsServiceName, orsServiceFqn, DEFAULT_REGION_NAME } from '../../lib/region.js';
+import { safeRegionIdent, orsServiceName, orsServiceFqn } from '../../lib/region.js';
 import { waitForOrsGraphReady, getExpectedProfiles } from '../../lib/ors.js';
 import { log } from '../../diagnostics.js';
 
@@ -491,60 +491,8 @@ export function createRegionsManagementRouter(): Router {
           }
         }
 
-        return { ...c, bbox, boundaryGeoJson, serviceStatus, functionExists: true, graphReadiness };
+        return { ...c, isDefault: c.is_default === true, bbox, boundaryGeoJson, serviceStatus, functionExists: true, graphReadiness };
       }));
-
-      let defaultStatus = 'NOT_FOUND';
-      try {
-        // v1.1.0: legacy bare ORS_SERVICE was renamed to ORS_SERVICE_SANFRANCISCO
-        // (the per-region default). Probe both for migration robustness.
-        const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_SANFRANCISCO' IN SCHEMA ${SF_DATABASE}.CORE`);
-        defaultStatus = rows?.[0]?.status || 'NOT_FOUND';
-      } catch {}
-      let defaultGraphReadiness: any = null;
-      if (defaultStatus === 'RUNNING' || defaultStatus === 'READY') {
-        try {
-          const orsRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
-          const raw = orsRows?.[0]?.S;
-          if (raw) {
-            const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            const builtProfiles = Object.keys(data.profiles || {});
-            const expectedProfiles = await getExpectedProfiles('default');
-            const allProfiles = [...new Set([...expectedProfiles, ...builtProfiles])];
-            defaultGraphReadiness = {
-              service_ready: data.service_ready ?? false,
-              profiles_loaded: builtProfiles,
-              expected_profiles: expectedProfiles,
-              graphs: allProfiles.map((p: string) => ({
-                profile: p,
-                ready: builtProfiles.includes(p),
-                build_date: (data.bounds_info || {})[p]?.graph_build_date || null,
-              })),
-            };
-          }
-        } catch (e: any) {
-          defaultGraphReadiness = { service_ready: false, error: e.message, profiles_loaded: [], expected_profiles: [], graphs: [] };
-        }
-      }
-      if (defaultStatus !== 'NOT_FOUND') {
-        let defaultBoundaryGeoJson: string | null = null;
-        try {
-          const catRows = await runSql(`SELECT CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = 'SAN_FRANCISCO' OR UPPER(REGION_KEY) = 'DEFAULT' OR UPPER(REGION_NAME) = 'SAN FRANCISCO' LIMIT 1`);
-          defaultBoundaryGeoJson = catRows?.[0]?.BOUNDARY_GEOJSON ?? null;
-        } catch {}
-        enriched.unshift({
-          region: 'default',
-          effectiveRegion: DEFAULT_REGION_NAME,
-          display_name: 'San Francisco (Default)',
-          status: 'DEPLOYED',
-          serviceStatus: defaultStatus,
-          functionExists: true,
-          isDefault: true,
-          bbox: { min_lat: 37.71, max_lat: 37.81, min_lon: -122.51, max_lon: -122.37 },
-          boundaryGeoJson: defaultBoundaryGeoJson,
-          graphReadiness: defaultGraphReadiness,
-        });
-      }
 
       res.json({ regions: enriched });
     } catch (err: any) {

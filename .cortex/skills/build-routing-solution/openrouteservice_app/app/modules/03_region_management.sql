@@ -683,10 +683,27 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
     COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
     INSTANCE_FAMILY VARCHAR,
+    IS_DEFAULT BOOLEAN DEFAULT FALSE,
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- Idempotent migration for installs created before IS_DEFAULT existed.
+ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS IS_DEFAULT BOOLEAN DEFAULT FALSE;
+
+-- Seed the canonical default region (SanFrancisco) so LIST_REGIONS() returns
+-- it alongside user-provisioned regions. Pre-v1.1.0 the legacy global
+-- ORS_SERVICE was surfaced as a synthetic region:'default' entry by the
+-- control app server. v1.1.0 unification gives every region its own
+-- ORS_SERVICE_<REGION> -- including SanFrancisco -- so the default is no
+-- longer special and lives in the registry like any other region.
+MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t USING (
+    SELECT 'SanFrancisco' AS REGION
+) s ON t.REGION = s.REGION
+WHEN NOT MATCHED THEN INSERT (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS, IS_DEFAULT)
+    VALUES ('SanFrancisco', 'San Francisco', 37.71, 37.81, -122.51, -122.37, 'DEPLOYED', TRUE)
+WHEN MATCHED THEN UPDATE SET t.IS_DEFAULT = TRUE;
 
 -- =============================================================================
 -- COST_GUARD_LOG
@@ -1406,6 +1423,7 @@ BEGIN
         'region', REGION,
         'display_name', DISPLAY_NAME,
         'status', STATUS,
+        'is_default', COALESCE(IS_DEFAULT, FALSE),
         'bbox', OBJECT_CONSTRUCT('min_lat', MIN_LAT, 'max_lat', MAX_LAT, 'min_lon', MIN_LON, 'max_lon', MAX_LON)
     ))::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;

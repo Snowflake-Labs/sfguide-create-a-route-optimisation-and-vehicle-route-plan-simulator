@@ -67,11 +67,8 @@ export default function RetailCatchment() {
   useEffect(() => {
     if (!globalRegions.length) return;
     setLoading(true);
-    const regionChecks = globalRegions.map(async (r, idx) => {
-      const isDefault = idx === 0;
-      const orsCall = isDefault
-        ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS S`
-        : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${r.ORS_REGION_KEY || r.REGION_NAME}')) AS S`;
+    const regionChecks = globalRegions.map(async (r, _idx) => {
+      const orsCall = `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${r.ORS_REGION_KEY || r.REGION_NAME}')) AS S`;
       try {
         const rows = await sfQuery(orsCall, 'OPENROUTESERVICE_APP', 'CORE');
         const raw = rows?.[0]?.S;

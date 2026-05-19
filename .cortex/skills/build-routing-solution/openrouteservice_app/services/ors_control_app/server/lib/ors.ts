@@ -3,7 +3,7 @@
 import { SF_DATABASE } from '../constants.js';
 import { runSql } from './sql.js';
 import { sanitizeIdentifier, escapeString } from './sanitize.js';
-import { safeRegionIdent, isDefaultRegion, orsServiceName } from './region.js';
+import { safeRegionIdent, normalizeRegion, isDefaultRegion } from './region.js';
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
@@ -19,19 +19,8 @@ export async function waitForOrsGraphReady(
   const start = Date.now();
   const interval = 15000;
   const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
-  const safeRegion = safeRegionIdent(region);
-  let isDefault = isDefaultRegion(region);
-  if (!isDefault) {
-    try {
-      const svcRows = await runSql(
-        `SHOW SERVICES LIKE '${orsServiceName(safeRegion)}' IN SCHEMA ${SF_DATABASE}.CORE`,
-      );
-      isDefault = !svcRows || svcRows.length === 0;
-    } catch { isDefault = true; }
-  }
-  const statusSql = isDefault
-    ? `SELECT ${SF_DATABASE}.CORE.ORS_STATUS() AS S`
-    : `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;
+  const safeRegion = safeRegionIdent(normalizeRegion(region));
+  const statusSql = `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;
 
   for (let i = 0; i < maxAttempts; i++) {
     try {
@@ -57,7 +46,7 @@ export async function waitForOrsGraphReady(
 // stage. For other regions, we look at the most recent provision job.
 // Falls back to DEFAULT_PROFILES.
 export async function getExpectedProfiles(region: string): Promise<string[]> {
-  if (region === 'default') {
+  if (isDefaultRegion(region)) {
     if (cachedDefaultExpectedProfiles) return cachedDefaultExpectedProfiles;
     try {
       const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))`);

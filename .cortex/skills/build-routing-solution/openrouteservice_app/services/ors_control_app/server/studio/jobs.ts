@@ -1,6 +1,7 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles.js';
 import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress } from './engine.js';
 import { log } from '../diagnostics.js';
+import { normalizeRegion } from '../lib/region.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -297,32 +298,30 @@ async function captureAndScaleUp(snowSql: SnowSqlFn, region: string): Promise<Sc
     origGatewaySvcMax: null,
   };
 
-  const isDefault = !region || region.toUpperCase() === 'DEFAULT';
-  if (!isDefault) {
-    const upperRegion = region.toUpperCase();
-    state.regionPoolName = `ORS_POOL_${upperRegion}`;
-    state.regionSvcName = `ORS_SERVICE_${upperRegion}`;
+  const resolvedRegion = normalizeRegion(region);
+  const upperRegion = resolvedRegion.toUpperCase();
+  state.regionPoolName = `ORS_POOL_${upperRegion}`;
+  state.regionSvcName = `ORS_SERVICE_${upperRegion}`;
 
-    try {
-      await snowSql(`SHOW COMPUTE POOLS LIKE '${state.regionPoolName}'`);
-      const rows = await snowSql(`SELECT "max_nodes" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
-      state.origRegionPoolMaxNodes = pickFirstNumber(rows, ['max_nodes', 'MAX_NODES']);
-    } catch (_) { /* best-effort */ }
+  try {
+    await snowSql(`SHOW COMPUTE POOLS LIKE '${state.regionPoolName}'`);
+    const rows = await snowSql(`SELECT "max_nodes" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+    state.origRegionPoolMaxNodes = pickFirstNumber(rows, ['max_nodes', 'MAX_NODES']);
+  } catch (_) { /* best-effort */ }
 
-    try {
-      await snowSql(`SHOW SERVICES LIKE '${state.regionSvcName}' IN SCHEMA OPENROUTESERVICE_APP.CORE`);
-      const rows = await snowSql(`SELECT "min_instances", "max_instances" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
-      state.origRegionSvcMin = pickFirstNumber(rows, ['min_instances', 'MIN_INSTANCES']);
-      state.origRegionSvcMax = pickFirstNumber(rows, ['max_instances', 'MAX_INSTANCES']);
-    } catch (_) { /* best-effort */ }
+  try {
+    await snowSql(`SHOW SERVICES LIKE '${state.regionSvcName}' IN SCHEMA OPENROUTESERVICE_APP.CORE`);
+    const rows = await snowSql(`SELECT "min_instances", "max_instances" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1`);
+    state.origRegionSvcMin = pickFirstNumber(rows, ['min_instances', 'MIN_INSTANCES']);
+    state.origRegionSvcMax = pickFirstNumber(rows, ['max_instances', 'MAX_INSTANCES']);
+  } catch (_) { /* best-effort */ }
 
-    try {
-      await snowSql(`ALTER COMPUTE POOL ${state.regionPoolName} SET MAX_NODES = ${TARGET_REGION_NODES}`);
-    } catch (_) { /* best-effort */ }
-    try {
-      await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${state.regionSvcName} SET MIN_INSTANCES = ${TARGET_REGION_INSTANCES} MAX_INSTANCES = ${TARGET_REGION_INSTANCES}`);
-    } catch (_) { /* best-effort */ }
-  }
+  try {
+    await snowSql(`ALTER COMPUTE POOL ${state.regionPoolName} SET MAX_NODES = ${TARGET_REGION_NODES}`);
+  } catch (_) { /* best-effort */ }
+  try {
+    await snowSql(`ALTER SERVICE OPENROUTESERVICE_APP.CORE.${state.regionSvcName} SET MIN_INSTANCES = ${TARGET_REGION_INSTANCES} MAX_INSTANCES = ${TARGET_REGION_INSTANCES}`);
+  } catch (_) { /* best-effort */ }
 
   try {
     await snowSql(`SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL'`);
@@ -380,12 +379,10 @@ async function scaleDown(snowSql: SnowSqlFn, state: ScalingState | null): Promis
 }
 
 async function waitForOrsReady(snowSql: SnowSqlFn, region: string, profile: string): Promise<void> {
-  const isDefault = !region || region.toUpperCase() === 'DEFAULT';
+  const resolvedRegion = normalizeRegion(region);
   for (let attempt = 0; attempt < ORS_READY_MAX_ATTEMPTS; attempt++) {
     try {
-      const sql = isDefault
-        ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS S`
-        : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${region}')) AS S`;
+      const sql = `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${resolvedRegion}')) AS S`;
       const rows = await snowSql(sql);
       const raw = rows?.[0]?.S || rows?.[0]?.s || '';
       if (raw) {

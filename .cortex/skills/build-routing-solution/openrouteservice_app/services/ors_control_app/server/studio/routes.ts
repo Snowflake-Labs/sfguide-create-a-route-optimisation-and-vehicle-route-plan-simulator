@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents } from './jobs.js';
 import { GenerationConfig, PROFILE_TEMPLATES } from './profiles.js';
 import { log } from '../diagnostics.js';
+import { normalizeRegion } from '../lib/region.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
@@ -67,12 +68,10 @@ async function checkOrsReadiness(
   try {
     // Use the 1-arg ORS_STATUS(region) overload so the gateway routes the
     // status check to the per-region ORS service (e.g. ors-service-california).
-    // The 0-arg form always hits the default `ors-service`, which may be
-    // suspended even when the user's selected region's service is running.
-    const isDefault = !region || region.toUpperCase() === 'DEFAULT';
-    const sql = isDefault
-      ? `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS()) AS STATUS`
-      : `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${region.replace(/'/g, "''")}')) AS STATUS`;
+    // Default region is normalized to DEFAULT_REGION_NAME (SanFrancisco) so it
+    // hits ors-service-sanfrancisco the same as any other region.
+    const resolvedRegion = normalizeRegion(region);
+    const sql = `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${resolvedRegion.replace(/'/g, "''")}')) AS STATUS`;
     const rows = await snowSql(sql);
     const raw = rows[0]?.STATUS;
     const status = typeof raw === 'string' ? JSON.parse(raw) : raw;

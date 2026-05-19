@@ -55,9 +55,7 @@ export default function FleetDataStudio() {
       const data = await res.json();
       const regions: {key: string; label: string}[] = [];
       for (const [key, val] of Object.entries(data as Record<string, any>)) {
-        const label = key === 'default' ? 'San Francisco' : key;
-        const regionKey = key === 'default' ? 'SanFrancisco' : key;
-        regions.push({ key: regionKey, label });
+        regions.push({ key, label: key });
       }
       if (regions.length > 0) setAvailableRegions(regions);
     } catch {}

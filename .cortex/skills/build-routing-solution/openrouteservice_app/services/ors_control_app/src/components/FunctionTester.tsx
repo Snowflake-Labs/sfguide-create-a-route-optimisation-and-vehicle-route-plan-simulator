@@ -7,7 +7,7 @@ import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './
 import {
   RegionOption, GeoData, OptimizationStop, OptimizationVehicle, OptimizationParsed,
   CARTO_LIGHT, OPTIMIZATION_PALETTE, PROFILE_LABELS, FUNCTIONS,
-  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion, resolveRegionKey,
+  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion,
   generateSql, tryParseJson, decodePolyline, extractGeoData,
   parseMatrixResult, parseOptimizationResult, travelTimeColor, parseIsochroneOrigin,
 } from './function-tester/helpers';
@@ -30,7 +30,7 @@ async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: b
       profile,
     });
     if (opts?.nocache) params.set('nocache', '1');
-    if (opts?.region && opts.region !== 'default') params.set('region', opts.region);
+    if (opts?.region) params.set('region', opts.region);
     const resp = await fetch(`/api/sample-road-points?${params}`);
     const data = await resp.json();
     if (data.ok && data.points?.length > 0) {
@@ -151,7 +151,7 @@ export default function FunctionTester() {
     setProfilesLoading(true);
     try {
       const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const resolved = resolveRegionKey(region);
+      const resolved = region?.region ?? null;
       const rg = resolved ? `'${resolved}'` : 'NULL::VARCHAR';
       const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
       const resp = await fetch('/api/query', {

@@ -95,8 +95,7 @@ export function createStatusRouter(appVersion: string): Router {
       };
 
       try {
-        const stageRegion = regionKey === 'default' ? 'SanFrancisco' : regionKey;
-        const rows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_GRAPHS_SPCS_STAGE/${stageRegion}/`);
+        const rows = await runSql(`LIST @${SF_DATABASE}.CORE.ORS_GRAPHS_SPCS_STAGE/${regionKey}/`);
         if (!rows || rows.length === 0) {
           stageProbeCache.set(regionKey, { ts: Date.now(), probe: empty });
           return empty;
@@ -111,7 +110,7 @@ export function createStatusRouter(appVersion: string): Router {
           profile_artifacts: {},
         };
         const profileSet = new Set<string>();
-        const trimRegion = stageRegion.toLowerCase();
+        const trimRegion = regionKey.toLowerCase();
         for (const name of names) {
           const lower = name.toLowerCase();
           const idx = lower.indexOf(`/${trimRegion}/`);
@@ -193,17 +192,6 @@ export function createStatusRouter(appVersion: string): Router {
           build_ok: probe.build_ok,
         },
       };
-    }
-
-    try {
-      const defaultRows = await runSql(`SELECT TO_VARCHAR(${SF_DATABASE}.CORE.ORS_STATUS()) AS S`);
-      const raw = defaultRows?.[0]?.S;
-      if (raw) {
-        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        readiness['default'] = await buildReadiness('default', data);
-      }
-    } catch (e: any) {
-      readiness['default'] = { service_ready: false, health_ready: false, error: e.message };
     }
 
     try {
