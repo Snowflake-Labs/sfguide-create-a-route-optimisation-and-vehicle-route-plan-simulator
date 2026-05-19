@@ -124,3 +124,20 @@ export interface FreightOffer {
 }
 
 export type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
+
+export type VehicleState = 'MOVING' | 'DWELL_ORIGIN' | 'DWELL_DESTINATION' | 'DWELL_REST' | 'DWELL_RECHARGE' | 'IDLE' | 'OVERNIGHT';
+
+export interface VehicleLifecycle {
+  vehicle: FleetMember;
+  lat: number;
+  lng: number;
+  currentTime: Date;
+  state: VehicleState;
+  location_id: string | null;
+  location_type: string | null;
+  dailyDrivingMin: number;
+  minSinceBreak: number;
+  tripSeq: number;
+  odometerKm: number;
+  pointIndex: number;
+}
