@@ -144,7 +144,7 @@ BEGIN
     IF (min_lat IS NULL) THEN
         SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON INTO :min_lat, :max_lat, :min_lon, :max_lon
         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
-        WHERE UPPER(REGION_KEY) = UPPER(:REGION_KEY) OR UPPER(REGION_NAME) = UPPER(:REGION_KEY)
+        WHERE UPPER(LOOKUP_NAME) = UPPER(:REGION_KEY) OR UPPER(REGION_KEY) = UPPER(:REGION_KEY) OR UPPER(REGION_NAME) = UPPER(:REGION_KEY)
         LIMIT 1;
     END IF;
 
@@ -155,18 +155,33 @@ BEGIN
 
     IF (seed_places) THEN
         INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (REGION, GEOMETRY, PHONES, CATEGORY, NAME, ADDRESS, ALTERNATE)
+        WITH region_boundary AS (
+            -- Polygon refinement so non-rectangular regions (California, Italy,
+            -- Chile) don't pull in POIs from neighboring states / oceans / countries.
+            -- COALESCE-with-TRUE pattern: if the region has no catalog row or
+            -- BOUNDARY is NULL, gracefully degrade to bbox-only filtering.
+            SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE (UPPER(LOOKUP_NAME) = UPPER(:REGION_KEY)
+                   OR UPPER(REGION_KEY) = UPPER(:REGION_KEY)
+                   OR UPPER(REGION_NAME) = UPPER(:REGION_KEY))
+              AND BOUNDARY IS NOT NULL
+            ORDER BY BOUNDARY_AREA_KM2 ASC
+            LIMIT 1
+        )
         SELECT
             :REGION_KEY,
-            GEOMETRY,
-            PHONES[0]::TEXT,
-            CATEGORIES:primary::TEXT,
-            NAMES:primary::TEXT,
-            ADDRESSES[0],
-            COALESCE(CATEGORIES:alternate:list, ARRAY_CONSTRUCT())
-        FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-        WHERE ST_X(GEOMETRY) BETWEEN :min_lon AND :max_lon
-          AND ST_Y(GEOMETRY) BETWEEN :min_lat AND :max_lat
-          AND CATEGORIES:primary IS NOT NULL;
+            p.GEOMETRY,
+            p.PHONES[0]::TEXT,
+            p.CATEGORIES:primary::TEXT,
+            p.NAMES:primary::TEXT,
+            p.ADDRESSES[0],
+            COALESCE(p.CATEGORIES:alternate:list, ARRAY_CONSTRUCT())
+        FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+        LEFT JOIN region_boundary rb ON TRUE
+        WHERE ST_X(p.GEOMETRY) BETWEEN :min_lon AND :max_lon
+          AND ST_Y(p.GEOMETRY) BETWEEN :min_lat AND :max_lat
+          AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
+          AND p.CATEGORIES:primary IS NOT NULL;
     END IF;
 
     DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE REGION = :REGION_KEY;
