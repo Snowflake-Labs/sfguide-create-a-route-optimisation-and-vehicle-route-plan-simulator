@@ -711,7 +711,7 @@ interface RoadPointsResult {
   cached?: boolean;
 }
 
-async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean }): Promise<RoadPointsResult> {
+async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean; region?: string }): Promise<RoadPointsResult> {
   try {
     const params = new URLSearchParams({
       min_lat: bbox.min_lat.toString(),
@@ -722,6 +722,7 @@ async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: b
       profile,
     });
     if (opts?.nocache) params.set('nocache', '1');
+    if (opts?.region && opts.region !== 'default') params.set('region', opts.region);
     const resp = await fetch(`/api/sample-road-points?${params}`);
     const data = await resp.json();
     if (data.ok && data.points?.length > 0) {
@@ -801,14 +802,30 @@ export default function FunctionTester() {
         const r = await fetch('/api/regions/provisioned');
         const data = await r.json();
         if (data.error) setRegionsError(data.error);
-        const regionList: RegionOption[] = data.regions || [];
+        const regionList: RegionOption[] = (data.regions || []).map((reg: any) => {
+          // Parse boundary GeoJSON string from REGION_CATALOG.BOUNDARY into an
+          // object so samplePoints can run polygon rejection sampling. Skip
+          // silently on parse error — falls back to bbox-only sampling.
+          if (reg && typeof reg.boundaryGeoJson === 'string') {
+            try {
+              const parsed = JSON.parse(reg.boundaryGeoJson);
+              if (parsed && (parsed.type === 'Polygon' || parsed.type === 'MultiPolygon')) {
+                return { ...reg, boundaryGeoJson: parsed };
+              }
+              return { ...reg, boundaryGeoJson: null };
+            } catch {
+              return { ...reg, boundaryGeoJson: null };
+            }
+          }
+          return reg;
+        });
         setRegions(regionList);
         const def = regionList.find((c) => c.isDefault) || regionList[0];
         if (def) {
           setSelectedRegion(def);
           let roads: [number, number][] | null = null;
           if (probeOvertureOk && def.bbox) {
-            const r = await fetchRoadPoints(def.bbox, 'driving-car');
+            const r = await fetchRoadPoints(def.bbox, 'driving-car', { region: def.region });
             roads = r.points;
             setRoadPoints(roads);
             setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
@@ -865,7 +882,7 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads: [number, number][] | null = null;
     if (overtureAvailable && r?.bbox) {
-      const rp = await fetchRoadPoints(r.bbox, selectedProfile);
+      const rp = await fetchRoadPoints(r.bbox, selectedProfile, { region: r.region });
       roads = rp.points;
       setRoadPoints(roads);
       setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
@@ -887,7 +904,7 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads: [number, number][] | null = roadPoints;
     if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, profile);
+      const rp = await fetchRoadPoints(selectedRegion.bbox, profile, { region: selectedRegion.region });
       roads = rp.points;
       setRoadPoints(roads);
       setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
@@ -899,7 +916,7 @@ export default function FunctionTester() {
     userEditedRef.current = false;
     let roads = roadPoints;
     if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, selectedProfile, { nocache: true });
+      const rp = await fetchRoadPoints(selectedRegion.bbox, selectedProfile, { nocache: true, region: selectedRegion.region });
       roads = rp.points;
       setRoadPoints(roads);
       setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));

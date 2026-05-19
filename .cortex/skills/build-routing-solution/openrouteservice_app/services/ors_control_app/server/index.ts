@@ -967,20 +967,22 @@ app.get('/api/regions/provisioned', async (_req, res) => {
       } catch { serviceStatus = 'NOT_FOUND'; }
 
       let bbox = c.bbox;
+      let boundaryGeoJson: string | null = null;
       const bboxInvalid = !bbox
         || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null
         || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0);
-      if (bboxInvalid) {
-        try {
-          const safeRegion = sanitizeIdentifier(c.region);
-          const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') LIMIT 1`);
-          const cat = catRows?.[0];
-          if (cat && cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
+      try {
+        const safeRegion = sanitizeIdentifier(c.region);
+        const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') LIMIT 1`);
+        const cat = catRows?.[0];
+        if (cat) {
+          if (bboxInvalid && cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null
               && !(cat.MIN_LAT === 0 && cat.MAX_LAT === 0 && cat.MIN_LON === 0 && cat.MAX_LON === 0)) {
             bbox = { min_lat: cat.MIN_LAT, max_lat: cat.MAX_LAT, min_lon: cat.MIN_LON, max_lon: cat.MAX_LON };
           }
-        } catch {}
-      }
+          if (cat.BOUNDARY_GEOJSON) boundaryGeoJson = cat.BOUNDARY_GEOJSON;
+        }
+      } catch {}
 
       let graphReadiness: any = null;
       if (serviceStatus === 'RUNNING' || serviceStatus === 'READY') {
@@ -1009,7 +1011,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         }
       }
 
-      return { ...c, bbox, serviceStatus, functionExists: true, graphReadiness };
+      return { ...c, bbox, boundaryGeoJson, serviceStatus, functionExists: true, graphReadiness };
     }));
 
     let defaultStatus = 'NOT_FOUND';
@@ -1043,6 +1045,11 @@ app.get('/api/regions/provisioned', async (_req, res) => {
       }
     }
     if (defaultStatus !== 'NOT_FOUND') {
+      let defaultBoundaryGeoJson: string | null = null;
+      try {
+        const catRows = await runSql(`SELECT CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(REGION_KEY) = 'SAN_FRANCISCO' OR UPPER(REGION_KEY) = 'DEFAULT' OR UPPER(REGION_NAME) = 'SAN FRANCISCO' LIMIT 1`);
+        defaultBoundaryGeoJson = catRows?.[0]?.BOUNDARY_GEOJSON ?? null;
+      } catch {}
       enriched.unshift({
         region: 'default',
         display_name: 'San Francisco (Default)',
@@ -1051,6 +1058,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
         functionExists: true,
         isDefault: true,
         bbox: { min_lat: 37.71, max_lat: 37.81, min_lon: -122.51, max_lon: -122.37 },
+        boundaryGeoJson: defaultBoundaryGeoJson,
         graphReadiness: defaultGraphReadiness,
       });
     }
@@ -2557,6 +2565,75 @@ app.get('/api/datasets', async (_req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/datasets/activate — atomically activate a (region, vehicleType)
+// pair selected from the DatasetPicker. Updates VEHICLE_TYPE and REGION on
+// all 6 demo CONFIG tables in ONE server round-trip BEFORE returning, so
+// that when the React UI subsequently flips its state and remounts demo
+// components, the projection views (which read REGION/VEHICLE_TYPE via
+// `(SELECT ... FROM CONFIG LIMIT 1)`) already reflect the new selection.
+// This eliminates the race condition where demo components remount and
+// query CONFIG before /api/regions/active had time to write the new region.
+// ---------------------------------------------------------------------------
+app.post('/api/datasets/activate', async (req, res) => {
+  try {
+    const { region, vehicleType } = req.body || {};
+    if (!region || !vehicleType) {
+      return res.status(400).json({ error: 'region and vehicleType required' });
+    }
+    const safeRegion = escapeString(region);
+    const safeVehicleType = escapeString(vehicleType);
+
+    // 1. Flip IS_DEFAULT in REGION_REGISTRY (best-effort).
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'CORE'
+      );
+    } catch (e: any) {
+      log('WARN', 'Datasets', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
+    }
+    activeRegionOverride = region;
+
+    // 2. Update VEHICLE_TYPE + REGION on every demo CONFIG. We use the
+    // union of the two schema lists (BACKLOAD_MATCHING is in CONFIG_SCHEMAS
+    // but not FLEET_CONFIG_SCHEMAS).
+    const ALL_CONFIG_SCHEMAS = [
+      'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
+      'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
+      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
+      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
+      'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
+      'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
+      'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
+    ];
+    for (const schema of ALL_CONFIG_SCHEMAS) {
+      try {
+        await runSql(
+          `UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeVehicleType}', REGION = '${safeRegion}'`
+        );
+      } catch (e: any) {
+        log('WARN', 'Datasets', `Failed to update ${schema}.CONFIG: ${e.message?.slice(0, 200)}`);
+      }
+    }
+
+    // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, mirrors
+    // /api/regions/active behaviour).
+    try {
+      await runSql(
+        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
+      );
+    } catch (e: any) {
+      log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
+    }
+
+    res.json({ ok: true, region, vehicleType });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
 1. Driving/cycling/walking directions between locations
 2. Reachability analysis (isochrones) - areas reachable within X minutes
@@ -2967,6 +3044,7 @@ app.get('/api/sample-road-points', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
   const profile = (req.query.profile as string) || 'driving-car';
   const noCache = req.query.nocache === '1';
+  const regionParam = (req.query.region as string) || '';
 
   if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
     return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
@@ -2975,7 +3053,19 @@ app.get('/api/sample-road-points', async (req, res) => {
     return res.status(400).json({ ok: false, reason: 'invalid bbox: min must be < max' });
   }
 
-  const cacheKey = roadPointsCacheKey(minLat, maxLat, minLon, maxLon, profile);
+  // Resolve the region's BOUNDARY polygon (if any) so we can clip road points
+  // server-side. For non-rectangular regions like California or Italy, the
+  // bbox alone leaks points into Nevada / Adriatic / ocean — ST_WITHIN against
+  // REGION_CATALOG.BOUNDARY removes them at the source.
+  let safeRegionForBoundary: string | null = null;
+  if (regionParam && regionParam !== 'default') {
+    try {
+      safeRegionForBoundary = sanitizeIdentifier(regionParam);
+    } catch {
+      safeRegionForBoundary = null;
+    }
+  }
+  const cacheKey = roadPointsCacheKey(minLat, maxLat, minLon, maxLon, profile) + (safeRegionForBoundary ? `|${safeRegionForBoundary}` : '');
   if (!noCache) {
     const cached = roadPointsCacheGet(cacheKey);
     if (cached) {
@@ -3003,6 +3093,12 @@ app.get('/api/sample-road-points', async (req, res) => {
   const latSpan = maxLat - minLat;
   const tileDeg = Math.max(Math.min(lonSpan, latSpan) / 8, 0.05);
 
+  // Optional polygon clip — only added when the region has a non-bbox boundary
+  // to avoid extra cost on rectangular regions where bbox already matches.
+  const polygonClip = safeRegionForBoundary
+    ? `AND ST_WITHIN(ST_STARTPOINT(GEOMETRY), (SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE (UPPER(REGION_KEY) = UPPER('${safeRegionForBoundary}') OR UPPER(REGION_NAME) = UPPER('${safeRegionForBoundary}')) AND BOUNDARY IS NOT NULL AND COALESCE(BOUNDARY_SOURCE, '') NOT IN ('bbox-fallback','bbbike-bbox') LIMIT 1))`
+    : '';
+
   // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
   // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
   // without an expensive ORDER BY RANDOM() over the full filtered set.
@@ -3015,6 +3111,7 @@ app.get('/api/sample-road-points', async (req, res) => {
       AND ${classFilter}
       AND BBOX:xmin <= ${maxLon} AND BBOX:xmax >= ${minLon}
       AND BBOX:ymin <= ${maxLat} AND BBOX:ymax >= ${minLat}
+      ${polygonClip}
     GROUP BY
       FLOOR((BBOX:xmin::FLOAT + BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
       FLOOR((BBOX:ymin::FLOAT + BBOX:ymax::FLOAT) / 2 / ${tileDeg})

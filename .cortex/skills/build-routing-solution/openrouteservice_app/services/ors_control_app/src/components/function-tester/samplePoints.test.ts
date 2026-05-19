@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { samplePoints, COORD_FUNCTIONS, haversineKm, isBBoxValid, mulberry32, getProfileConstraints, type BBox } from './samplePoints';
+import { samplePoints, COORD_FUNCTIONS, haversineKm, isBBoxValid, mulberry32, getProfileConstraints, pointInBoundary, type BBox, type BoundaryGeoJson } from './samplePoints';
 
 const NYC_BBOX: BBox = { min_lat: 40.4774, max_lat: 40.9176, min_lon: -74.2591, max_lon: -73.7004 };
 const SMALL_BBOX: BBox = { min_lat: 51.5, max_lat: 51.505, min_lon: -0.1, max_lon: -0.095 };
@@ -204,5 +204,166 @@ describe('utility functions', () => {
     const foot = getProfileConstraints('foot-walking', 20);
     expect(foot.minKm).toBe(0.3);
     expect(foot.maxKm).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Polygon-aware sampling: California / Italy fixtures
+// ---------------------------------------------------------------------------
+//
+// The bbox of California (and Italy) overlaps neighbouring regions and large
+// bodies of water. Without polygon rejection sampling the Function Tester
+// generates points in Nevada / the Pacific / the Adriatic, causing ORS to
+// return PointNotFound errors. The fixtures below are coarse hand-drawn
+// polygons that capture the dominant shape of each region; tests assert that
+// every sampled point falls inside the polygon (with and without seeded road
+// points).
+
+const CALIFORNIA_BBOX: BBox = { min_lat: 32.5, max_lat: 42.0, min_lon: -124.5, max_lon: -114.0 };
+const CALIFORNIA_BOUNDARY: BoundaryGeoJson = {
+  type: 'Polygon',
+  coordinates: [[
+    // Coarse outline (lon, lat) clockwise starting NW
+    [-124.4, 42.0],
+    [-120.0, 42.0],
+    [-120.0, 39.0],
+    [-114.6, 35.0],
+    [-114.5, 32.7],
+    [-117.1, 32.5],
+    [-118.5, 33.7],
+    [-120.6, 34.5],
+    [-122.0, 36.9],
+    [-123.7, 39.3],
+    [-124.4, 40.4],
+    [-124.4, 42.0],
+  ]],
+};
+
+const ITALY_BBOX: BBox = { min_lat: 36.6, max_lat: 47.1, min_lon: 6.6, max_lon: 18.5 };
+const ITALY_BOUNDARY: BoundaryGeoJson = {
+  type: 'Polygon',
+  coordinates: [[
+    // Boot-shaped coarse outline; deliberately omits Sardinia so the polygon
+    // diverges meaningfully from the bbox rectangle.
+    [7.0, 45.9],
+    [10.5, 46.9],
+    [13.7, 46.5],
+    [13.6, 45.7],
+    [13.0, 45.7],
+    [13.5, 44.0],
+    [15.0, 41.9],
+    [18.4, 40.0],
+    [17.9, 39.9],
+    [16.5, 39.5],
+    [17.0, 38.9],
+    [15.7, 38.0],
+    [13.5, 37.1],
+    [12.4, 37.6],
+    [13.0, 38.7],
+    [14.0, 40.8],
+    [13.5, 41.2],
+    [11.5, 42.4],
+    [10.0, 44.0],
+    [8.0, 44.4],
+    [7.5, 43.8],
+    [6.7, 45.1],
+    [7.0, 45.9],
+  ]],
+};
+
+function fractionInside(points: [number, number][], boundary: BoundaryGeoJson): number {
+  let inside = 0;
+  for (const [lon, lat] of points) {
+    if (pointInBoundary(lon, lat, boundary)) inside++;
+  }
+  return inside / points.length;
+}
+
+describe('polygon-aware sampling — California', () => {
+  for (const fnName of COORD_FUNCTIONS) {
+    it(`${fnName} 100% of points inside California polygon (no road points)`, () => {
+      const all: [number, number][] = [];
+      for (let seed = 1; seed <= 25; seed++) {
+        const r = samplePoints({
+          fnName,
+          bbox: CALIFORNIA_BBOX,
+          profile: 'driving-car',
+          seed,
+          boundary: CALIFORNIA_BOUNDARY,
+        });
+        if (r) all.push(...r.points);
+      }
+      expect(all.length).toBeGreaterThan(0);
+      expect(fractionInside(all, CALIFORNIA_BOUNDARY)).toBe(1);
+    });
+  }
+
+  it('DIRECTIONS rejects out-of-polygon road points (Nevada/Pacific) when boundary supplied', () => {
+    // Mix of California-valid and out-of-state road points (Las Vegas, Reno,
+    // and a coastal Pacific point well off the coast).
+    const roadPoints: [number, number][] = [
+      [-122.42, 37.77], [-118.24, 34.05], [-121.49, 38.58],   // SF, LA, Sacramento
+      [-115.14, 36.17], [-119.81, 39.53], [-124.95, 38.50],   // Las Vegas, Reno, Pacific
+    ];
+    const all: [number, number][] = [];
+    for (let seed = 1; seed <= 15; seed++) {
+      const r = samplePoints({
+        fnName: 'DIRECTIONS',
+        bbox: CALIFORNIA_BBOX,
+        profile: 'driving-car',
+        seed,
+        roadPoints,
+        boundary: CALIFORNIA_BOUNDARY,
+      });
+      if (r) all.push(...r.points);
+    }
+    expect(all.length).toBeGreaterThan(0);
+    expect(fractionInside(all, CALIFORNIA_BOUNDARY)).toBe(1);
+  });
+});
+
+describe('polygon-aware sampling — Italy', () => {
+  for (const fnName of COORD_FUNCTIONS) {
+    it(`${fnName} 100% of points inside Italy polygon`, () => {
+      const all: [number, number][] = [];
+      for (let seed = 1; seed <= 25; seed++) {
+        const r = samplePoints({
+          fnName,
+          bbox: ITALY_BBOX,
+          profile: 'driving-car',
+          seed,
+          boundary: ITALY_BOUNDARY,
+        });
+        if (r) all.push(...r.points);
+      }
+      expect(all.length).toBeGreaterThan(0);
+      expect(fractionInside(all, ITALY_BOUNDARY)).toBe(1);
+    });
+  }
+});
+
+describe('polygon-aware sampling — fallback safety', () => {
+  it('falls back to bbox sampling when boundary has no inside-bbox area', () => {
+    // Degenerate boundary that does not intersect the bbox at all — the code
+    // should still return points (within the bbox) instead of hanging.
+    const empty: BoundaryGeoJson = {
+      type: 'Polygon',
+      coordinates: [[[100, 1], [100, 2], [101, 2], [101, 1], [100, 1]]],
+    };
+    const r = samplePoints({
+      fnName: 'DIRECTIONS',
+      bbox: CALIFORNIA_BBOX,
+      profile: 'driving-car',
+      seed: 7,
+      boundary: empty,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.points).toHaveLength(2);
+    for (const [lon, lat] of r!.points) {
+      expect(lon).toBeGreaterThanOrEqual(CALIFORNIA_BBOX.min_lon);
+      expect(lon).toBeLessThanOrEqual(CALIFORNIA_BBOX.max_lon);
+      expect(lat).toBeGreaterThanOrEqual(CALIFORNIA_BBOX.min_lat);
+      expect(lat).toBeLessThanOrEqual(CALIFORNIA_BBOX.max_lat);
+    }
   });
 });

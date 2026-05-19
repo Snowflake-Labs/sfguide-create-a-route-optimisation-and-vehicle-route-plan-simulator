@@ -24,8 +24,8 @@ const PROFILE_LABELS: Record<string, string> = {
 };
 
 export default function DatasetPicker() {
-  const { switchRegion } = useRegion();
-  const { switchVehicleType } = useVehicleType();
+  const region = useRegion();
+  const vehicleTypeCtx = useVehicleType();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [activeLabel, setActiveLabel] = useState('Loading...');
   const [open, setOpen] = useState(false);
@@ -62,8 +62,22 @@ export default function DatasetPicker() {
     setOpen(false);
     setSwitching(true);
     try {
-      await switchVehicleType(ds.vehicleType);
-      await switchRegion(ds.region);
+      // Atomic server-side activation: updates VEHICLE_TYPE + REGION on all
+      // demo CONFIG tables in one round-trip BEFORE we touch React state.
+      // This guarantees that when contexts refresh and the App.tsx dataKey
+      // flips, every projection view (e.g. VW_TRIP_SUMMARY) already reads
+      // the new (region, vehicleType) from CONFIG.
+      await fetch('/api/datasets/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: ds.region, vehicleType: ds.vehicleType }),
+      });
+      // Re-sync React state from server (single dataKey change -> single
+      // remount of demos, with CONFIG already consistent).
+      await Promise.all([
+        vehicleTypeCtx.refresh(),
+        region.refresh(),
+      ]);
       setActiveLabel(ds.presetName);
       window.dispatchEvent(new CustomEvent('ors-region-switched'));
       await fetchDatasets();
