@@ -328,4 +328,5 @@ t.DESTINATION   -- trip destination
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
+- `docs/dev/server-architecture.md` — One-page map of `ors_control_app` server modules (`server/{lib,routes,studio}/`) and decision tree for "where do I add X?"
 - `docs/README.md` — Full index
