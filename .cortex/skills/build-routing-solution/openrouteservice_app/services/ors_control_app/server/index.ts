@@ -19,7 +19,7 @@ import { createServicesRouter } from './routes/services.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
 import { createSamplingRouter } from './routes/sampling.js';
 import { createFleetRouter } from './routes/fleet.js';
-import { createMatrixRouter } from './routes/matrix.js';
+import { createMatrixRouter } from './routes/matrix/index.js';
 import { createAgentRouter } from './routes/agent.js';
 import { createRegionsRouter } from './routes/regions/index.js';
 import { createQueryRouter } from './routes/query.js';
