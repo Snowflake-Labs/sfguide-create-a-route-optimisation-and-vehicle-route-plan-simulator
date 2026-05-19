@@ -54,6 +54,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
+| `fleet-explorer-app` | demo | Deploys Fleet Explorer Streamlit app (pydeck maps, directions, isochrones, VRP, H3 matrix) |
 
 ## Skill Conventions (Quick Reference)
 
