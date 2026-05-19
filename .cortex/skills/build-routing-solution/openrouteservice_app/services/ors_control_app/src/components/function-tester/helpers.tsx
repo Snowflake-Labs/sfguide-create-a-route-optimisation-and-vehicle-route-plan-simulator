@@ -91,7 +91,7 @@ export function isoRangeFor(profile: string): number {
 }
 
 export function isProvisionedRegion(r: RegionOption | null): boolean {
-  return !!(r && !r.isDefault && r.region !== 'default');
+  return !!(r && r.region && r.region !== 'default');
 }
 
 export function generateSql(fnName: string, region: RegionOption | null, profile: string = 'driving-car', db: string = '', sampledPoints?: SampledPoints | null): string {
