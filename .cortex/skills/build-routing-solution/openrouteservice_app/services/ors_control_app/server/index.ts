@@ -9,6 +9,7 @@ import { createStudioRouter } from './studio/routes.js';
 import { reconcileStaleJobs, setRegionActivatedHandler } from './studio/jobs.js';
 import { log, getEntries, clearEntries, getUptimeMs } from './diagnostics.js';
 import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST, DEFAULT_WAREHOUSE } from './constants.js';
+import { safeRegionIdent, orsServiceName, orsServiceFqn, isDefaultRegion, currentRegionScalar, DEFAULT_REGION_NAME } from './lib/region.js';
 
 config();
 
@@ -66,12 +67,12 @@ async function waitForOrsGraphReady(region: string, maxWaitSecs: number = 600): 
   const start = Date.now();
   const interval = 15000;
   const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
-  const safeRegion = region.replace(/[^A-Za-z0-9_]/g, '');
-  let isDefault = !safeRegion || safeRegion.toUpperCase() === 'DEFAULT';
+  const safeRegion = safeRegionIdent(region);
+  let isDefault = isDefaultRegion(region);
   if (!isDefault) {
     try {
       const svcRows = await runSql(
-        `SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion.toUpperCase()}' IN SCHEMA ${SF_DATABASE}.CORE`
+        `SHOW SERVICES LIKE '${orsServiceName(safeRegion)}' IN SCHEMA ${SF_DATABASE}.CORE`
       );
       isDefault = !svcRows || svcRows.length === 0;
     } catch { isDefault = true; }
@@ -263,14 +264,14 @@ async function ensureBackloadAndAssetVelocityObjects(
                  MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
                  MAX(TRIP_END) AS LAST_TRIP_END
           FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
-          WHERE REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
         ),
         home_anchor AS (
           SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
-          WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -291,7 +292,7 @@ async function ensureBackloadAndAssetVelocityObjects(
         JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS h ON h.LOCATION_ID = f.HOME_LOCATION_ID
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
-        WHERE f.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        WHERE f.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
           AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -315,7 +316,7 @@ async function ensureBackloadAndAssetVelocityObjects(
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
           AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
@@ -358,7 +359,7 @@ async function ensureBackloadAndAssetVelocityObjects(
         FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-        WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)`,
+        WHERE f.REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // Asset Velocity views (ROUTE_OPTIMIZATION) — ensure CONFIG has the
@@ -1360,8 +1361,7 @@ app.get('/api/regions/provisioned', async (_req, res) => {
     const enriched = await Promise.all(regions.map(async (c: any) => {
       let serviceStatus = 'UNKNOWN';
       try {
-        const safeRegion = sanitizeIdentifier(c.region);
-        const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion}' IN SCHEMA ${SF_DATABASE}.CORE`);
+        const rows = await runSql(`SHOW SERVICES LIKE '${orsServiceName(c.region)}' IN SCHEMA ${SF_DATABASE}.CORE`);
         serviceStatus = rows?.[0]?.status || 'NOT_FOUND';
       } catch { serviceStatus = 'NOT_FOUND'; }
 
@@ -1566,7 +1566,7 @@ app.get('/api/regions/:region/progress', async (req, res) => {
 app.get('/api/regions/:region/build-progress', async (req, res) => {
   try {
     const safeRegion = sanitizeIdentifier(req.params.region);
-    const svcName = `${SF_DATABASE}.CORE.ORS_SERVICE_${safeRegion.toUpperCase()}`;
+    const svcName = orsServiceFqn(req.params.region);
 
     // Fast path: ORS_STATUS is the source of truth. If the service reports ready
     // with profiles loaded, return 'ready' immediately. Avoids unreliable log
@@ -1762,7 +1762,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
       const safeRegion = sanitizeIdentifier(c.REGION || '');
       let serviceStatus = 'NOT_FOUND';
       try {
-        const rows = await runSql(`SHOW SERVICES LIKE 'ORS_SERVICE_${safeRegion}' IN SCHEMA ${SF_DATABASE}.CORE`);
+        const rows = await runSql(`SHOW SERVICES LIKE '${orsServiceName(safeRegion)}' IN SCHEMA ${SF_DATABASE}.CORE`);
         serviceStatus = rows?.[0]?.status || 'NOT_FOUND';
       } catch {}
 
