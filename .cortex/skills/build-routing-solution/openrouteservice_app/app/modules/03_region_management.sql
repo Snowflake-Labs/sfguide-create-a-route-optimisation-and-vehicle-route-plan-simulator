@@ -2285,13 +2285,24 @@ AS
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
 
 -- ===========================================================================
--- v1.1.0 — Bootstrap default region (SanFrancisco) using the same code path
--- as every other region. Replaces the legacy global ORS_SERVICE/VROOM_SERVICE
--- create-statements that lived in 01_core_infra.sql.
+-- v1.1.0 — Bootstrap default region (SanFrancisco) using the same per-region
+-- service-creation procs used for every other region. Replaces the legacy
+-- global ORS_SERVICE/VROOM_SERVICE create-statements that lived in
+-- 01_core_infra.sql.
 --
--- Idempotent: PROVISION_REGION_WRAPPER reuses graphs already staged at
--- @ORS_GRAPHS_SPCS_STAGE/SanFrancisco/ when present, and create_region_*
--- procedures are CREATE … IF NOT EXISTS-guarded.
+-- The SanFrancisco PBF + ors-config are shipped in the repo and pre-staged at
+-- @ORS_SPCS_STAGE/SanFrancisco/ by the deploy script (SKILL.md Step 4), so we
+-- deliberately skip PROVISION_REGION_WRAPPER's downloader flow.
+--
+-- create_region_ors_service probes @ORS_GRAPHS_SPCS_STAGE/SanFrancisco/ for
+-- graph build markers; on first install no markers are present so it sets
+-- REBUILD_GRAPHS=true. ORS then builds graphs from the staged PBF on first
+-- boot. After a successful build the proc auto-flips REBUILD_GRAPHS back to
+-- false for fast resume on subsequent suspend/resume cycles.
+--
+-- Idempotent: CREATE COMPUTE POOL IF NOT EXISTS + CREATE SERVICE IF NOT EXISTS
+-- everywhere downstream. Re-running on an already-provisioned default region
+-- is a no-op.
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
 RETURNS STRING
@@ -2300,20 +2311,10 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 EXECUTE AS OWNER
 AS
 $$
-DECLARE
-    bootstrap_job_id VARCHAR DEFAULT UUID_STRING();
 BEGIN
-    CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
-        :bootstrap_job_id,
-        'SanFrancisco',
-        'San Francisco',
-        'https://download.geofabrik.de/north-america/us/california/norcal-latest.osm.pbf',
-        37.4, 38.0, -123.2, -122.0,
-        'driving-car,driving-hgv,cycling-regular,foot-walking',
-        'S',
-        FALSE
-    );
-    RETURN 'BOOTSTRAP_DEFAULT_REGION: queued provisioning for SanFrancisco (job_id=' || :bootstrap_job_id || ')';
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service('SanFrancisco', 'S');
+    CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service('SanFrancisco');
+    RETURN 'BOOTSTRAP_DEFAULT_REGION: created ORS_SERVICE_SANFRANCISCO + VROOM_SERVICE_SANFRANCISCO in ORS_POOL_SANFRANCISCO. Graphs build from staged PBF on first boot.';
 END;
 $$;
 

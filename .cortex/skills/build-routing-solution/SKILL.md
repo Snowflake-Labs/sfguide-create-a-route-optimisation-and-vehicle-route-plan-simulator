@@ -176,17 +176,22 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 2. **Upload** SPCS service specification files (required by `01_core_infra.sql` CREATE SERVICE statements):
    ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/downloader_spec.yaml" \
       @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite  && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite 
    ```
+
+   Note: the legacy `openrouteservice.yaml` and `vroom-service.yaml` specs are no
+   longer uploaded — they were only consumed by the bare `ORS_SERVICE` /
+   `VROOM_SERVICE` CREATE blocks that have been removed from `01_core_infra.sql`
+   in v1.1.0. The default region (SanFrancisco) is now provisioned by the
+   tail of `03_region_management.sql` via the same per-region procs used for
+   every other city; those procs build their service spec dynamically from
+   `BUILD_ORS_SERVICE_SPEC` / `BUILD_VROOM_SERVICE_SPEC` and do not read the
+   bundled YAMLs.
 
 **Output:** Configuration files and service specs uploaded to Snowflake stage
 
@@ -247,17 +252,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
 
+   > **v1.1.0 unified default-region bootstrap:** After `03_region_management.sql` runs, its tail invokes `BOOTSTRAP_DEFAULT_REGION`, which calls `create_region_ors_service('SanFrancisco', 'S')` + `create_region_vroom_service('SanFrancisco')` — the same per-region creation path used for every other city you'd add later via the UI Region Builder. The default region is no longer special: it lives in `ORS_POOL_SANFRANCISCO`, the service is `ORS_SERVICE_SANFRANCISCO`, the VROOM is `VROOM_SERVICE_SANFRANCISCO`. Expect `ORS_SERVICE_SANFRANCISCO` to spend a few minutes on first boot building graphs from the staged `SanFrancisco.osm.pbf`; subsequent resumes are seconds (REBUILD_GRAPHS auto-flips to false after the build marker is written).
+
 2. **Verify** all services are running:
    ```sql
    SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
-   Expected: 5 services (ors_service, downloader, vroom_service, routing_gateway_service, ors_control_app). Most services reach RUNNING within 1-3 minutes.
+   Expected: 5 services (`ors_service_sanfrancisco`, `vroom_service_sanfrancisco`, `downloader`, `routing_gateway_service`, `ors_control_app`). Most services reach RUNNING within 1-3 minutes.
 
-   > **Note:** `ORS_SERVICE` typically takes 5-15 minutes to reach RUNNING status on first deploy because it builds its routing graph from the uploaded `.osm.pbf` map file. This is expected. All other deployment steps (seed data loading, demo deployment) can proceed while ORS_SERVICE starts. Routing function calls will fail until ORS_SERVICE reaches RUNNING.
+   > **Note:** `ORS_SERVICE_SANFRANCISCO` typically takes 5-15 minutes to reach RUNNING status on first deploy because it builds its routing graph from the staged `.osm.pbf` map file. This is expected. All other deployment steps (seed data loading, demo deployment) can proceed while it starts. Routing function calls will fail until it reaches RUNNING and the build marker is written.
 
    If services show SUSPENDED or PENDING after 5 minutes:
    ```sql
-   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE');
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO');
    SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP');
    ```
 
