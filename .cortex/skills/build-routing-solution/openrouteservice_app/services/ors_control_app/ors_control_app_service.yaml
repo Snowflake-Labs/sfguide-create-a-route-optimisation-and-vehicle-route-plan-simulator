@@ -3,11 +3,11 @@
 spec:
   containers:
     - name: ors-control-app
-      image: /openrouteservice_app/core/image_repository/ors_control_app:v1.1.4
+      image: /openrouteservice_app/core/image_repository/ors_control_app:v1.1.5
       env:
         SNOWFLAKE_DATABASE: "OPENROUTESERVICE_APP"
         SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"
-        APP_VERSION: "1.1.4"
+        APP_VERSION: "1.1.5"
       resources:
         requests:
           cpu: "0.5"
