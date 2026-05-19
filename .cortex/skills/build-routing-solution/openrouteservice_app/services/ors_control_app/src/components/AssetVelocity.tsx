@@ -69,7 +69,7 @@ interface Terminal {
 
 export default function AssetVelocity() {
   const { regionName, center, zoom } = useRegion();
-  const [idleHourThreshold, setIdleHourThreshold] = useState(72);
+  const [idleHourThreshold, setIdleHourThreshold] = useState(4);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [terminals, setTerminals] = useState<Terminal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -119,6 +119,28 @@ export default function AssetVelocity() {
       setPipelineMissing(true);
       setLoading(false);
       return;
+    }
+    // Sync ROUTE_OPTIMIZATION.CONFIG to the active (region, vehicle_type) so that
+    // VW_IDLE_TRAILERS / VW_LANE_DEMAND / VW_TRAILER_COST_OF_IDLENESS filter
+    // correctly for any preset (hgv, ebike, taxi, scooter, ...).
+    try {
+      const safeRegion = (regionName || '').replace(/'/g, "''");
+      const vtRows = await sfQuery(
+        `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+         WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
+        'SYNTHETIC_DATASETS', 'UNIFIED',
+      );
+      const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
+      if (detectedVt) {
+        await sfQuery(
+          `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+             SET REGION = '${safeRegion}',
+                 VEHICLE_TYPE = '${String(detectedVt).replace(/'/g, "''")}'`,
+          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+        );
+      }
+    } catch (e) {
+      console.warn('[AV] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
     }
     const trailerSql = `
       SELECT VEHICLE_ID, REGION, LAST_LOCATION_NAME, LAST_LOCATION_TYPE,
@@ -343,8 +365,10 @@ export default function AssetVelocity() {
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div style={{ minWidth: 240 }}>
-          <label className="range-label">Idle threshold: {idleHourThreshold}h ({(idleHourThreshold / 24).toFixed(2)}d)</label>
-          <input type="range" min={0.25} max={336} step={0.25} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
+          <label className="range-label">Idle threshold: {idleHourThreshold < 1
+            ? `${Math.round(idleHourThreshold * 60)} min`
+            : `${idleHourThreshold.toFixed(2)}h (${(idleHourThreshold / 24).toFixed(2)}d)`}</label>
+          <input type="range" min={0.0833} max={336} step={0.0833} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 72h (3d) surfaces ghost trailers. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
         </div>
         <button className="btn-primary" onClick={loadData} disabled={loading} style={{ fontSize: 12 }}>{loading ? 'Loading...' : 'Refresh'}</button>
@@ -355,7 +379,7 @@ export default function AssetVelocity() {
       </div>
 
       <div className="metric-grid">
-        <MetricCard label="Ghost Trailers" value={totals.ghost} subtitle={`>= ${idleHourThreshold}h idle`} />
+        <MetricCard label="Ghost Trailers" value={totals.ghost} subtitle={`>= ${idleHourThreshold < 1 ? `${Math.round(idleHourThreshold * 60)} min` : `${idleHourThreshold}h`} idle`} />
         <MetricCard label="Cost of Idleness" value={`$${totals.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} subtitle="cumulative across fleet" />
         <MetricCard label="Avg Idle Days" value={totals.avgDays.toFixed(2)} subtitle="mean duration" />
         <MetricCard label="Projected Savings" value={`$${totals.projected.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} subtitle="capture rate applied" />

@@ -113,6 +113,7 @@ export default function BackloadMatching() {
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [seedHint, setSeedHint] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
   const [solverLog, setSolverLog] = useState<string | null>(null);
 
   // ORS service status + wake-up
@@ -207,30 +208,72 @@ export default function BackloadMatching() {
     const provProfile = (profRows[0] as any)?.PROFILES;
     if (provProfile) setOrsProfile(provProfile.split(',')[0].trim());
     if (!tRows.length || !iRows.length || !eRows.length) {
-      setSeedHint('Tables are empty for this region. Run .cortex/skills/backload-matching/references/backfill-freight-offers.sql, then refresh.');
+      setSeedHint(`Tables are empty for region "${regionName}". Click "Generate seed data" to populate them, or run a Data Studio job for this region.`);
     } else {
       setSeedHint(null);
     }
   }, [regionName]);
 
   // Option B: app region picker is the source of truth.
-  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG.REGION then refetch.
+  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG (REGION + VEHICLE_TYPE)
+  // then refetch. VEHICLE_TYPE is resolved from DIM_FLEET so the views match the
+  // active preset (e.g. ebike for San Francisco, hgv for Germany).
   useEffect(() => {
     if (!regionName) return;
     (async () => {
       try {
-        const cfg = await sfQuery(`SELECT REGION FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
-        const cur = (cfg[0] as any)?.REGION;
-        if (cur !== regionName) {
-          await sfQuery(`UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${regionName.replace(/'/g, "''")}'`);
+        const safeRegion = regionName.replace(/'/g, "''");
+        const cfg = await sfQuery(`SELECT REGION, VEHICLE_TYPE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
+        const cur = (cfg[0] as any) || {};
+        const vtRows = await sfQuery(
+          `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+           WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
+          'SYNTHETIC_DATASETS', 'UNIFIED',
+        );
+        const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
+        const safeVt = (detectedVt && String(detectedVt).replace(/'/g, "''")) || cur.VEHICLE_TYPE || 'hgv';
+        if (cur.REGION !== regionName || (detectedVt && cur.VEHICLE_TYPE !== detectedVt)) {
+          await sfQuery(
+            `UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
+          );
+        }
+        // Mirror the same (region, vehicle_type) into ROUTE_OPTIMIZATION.CONFIG so
+        // Asset Velocity views (VW_IDLE_TRAILERS, VW_LANE_DEMAND,
+        // VW_TRAILER_COST_OF_IDLENESS) line up with the active preset.
+        try {
+          await sfQuery(
+            `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
+            'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+          );
+        } catch (e) {
+          console.warn('[BM] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
         }
       } catch (e) {
-        console.warn('[BM] CONFIG region sync failed', e);
+        console.warn('[BM] CONFIG sync failed', e);
       }
       await refetch();
     })();
   }, [regionName, refetch]);
 
+  const seedData = useCallback(async () => {
+    if (!regionName || seeding) return;
+    setSeeding(true);
+    setSeedHint('Generating seed data...');
+    try {
+      const r = await fetch('/api/backload/seed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: regionName }),
+      });
+      const j = await r.json();
+      if (j.status !== 'ok') throw new Error(j.error || 'seed failed');
+      await refetch();
+    } catch (e: any) {
+      setSeedHint(`Seed failed: ${e.message?.slice(0, 200)}`);
+    } finally {
+      setSeeding(false);
+    }
+  }, [regionName, seeding, refetch]);
   const solve = useCallback(async () => {
     if (!trailers.length) return;
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null); setSolveError(null);
@@ -483,8 +526,26 @@ export default function BackloadMatching() {
       <p className="subtitle">Fleet-wide VRP solve over idle-bound trailers, internal volumes, and external freight-exchange offers.</p>
 
       {seedHint && (
-        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          {seedHint}
+        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{seedHint}</span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={seeding}
+              onClick={seedData}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.6)', background: '#fff', color: '#a16207', cursor: seeding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+            >
+              {seeding ? 'Generating...' : 'Generate seed data'}
+            </button>
+            <button
+              type="button"
+              disabled={seeding}
+              onClick={() => refetch()}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >
+              Refresh
+            </button>
+          </span>
         </div>
       )}
 

@@ -77,8 +77,8 @@ export default function RetailCatchment() {
           .map(d => {
             const profiles: string[] = d.graphReadiness?.profiles_loaded || [];
             const matching = globalRegions.find(g => g.REGION_NAME === d.region);
-            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? d.bbox?.min_lat != null && d.bbox?.max_lat != null ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : 0) || 0;
-            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? d.bbox?.min_lon != null && d.bbox?.max_lon != null ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : 0) || 0;
+            const centerLat = Number(matching?.BOUNDARY_CENTROID_LAT ?? matching?.CENTER_LAT ?? ((d.bbox?.min_lat != null && d.bbox?.max_lat != null) ? ((d.bbox.min_lat + d.bbox.max_lat) / 2) : 0)) || 0;
+            const centerLon = Number(matching?.BOUNDARY_CENTROID_LON ?? matching?.CENTER_LON ?? ((d.bbox?.min_lon != null && d.bbox?.max_lon != null) ? ((d.bbox.min_lon + d.bbox.max_lon) / 2) : 0)) || 0;
             const zoomLvl = Number(matching?.ZOOM_LEVEL ?? 11);
             return {
               region: d.region,

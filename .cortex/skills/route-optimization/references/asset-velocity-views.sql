@@ -12,12 +12,17 @@ UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
        RENTAL_CAPTURE_RATE          = COALESCE(RENTAL_CAPTURE_RATE, 0.600);
 
 -- 1. VW_IDLE_TRAILERS
--- Latest dwell session per HGV vehicle, with idle-duration metrics and dispatcher mapping.
+-- Latest dwell session per vehicle (vehicle type pulled from CONFIG so the view
+-- works for any preset: hgv, ebike, taxi, scooter, etc.), with idle-duration
+-- metrics and dispatcher mapping.
 -- Maintenance/damage exception filter: drops sessions where DRIVER_PROFILE = 'OUTLIER' and excludes any STATUS containing MAINTENANCE.
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-WITH last_session AS (
+WITH cfg AS (
+  SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
+),
+last_session AS (
   SELECT
     e.VEHICLE_ID,
     e.SESSION_ID,
@@ -37,14 +42,14 @@ WITH last_session AS (
     ROW_NUMBER() OVER (PARTITION BY e.VEHICLE_ID ORDER BY e.SESSION_END DESC) AS RN
   FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED e
   WHERE (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
-    AND e.OPERATING_MODE = 'trucking'
     AND COALESCE(UPPER(e.STATUS), '') NOT LIKE '%MAINTENANCE%'
     AND COALESCE(UPPER(e.DRIVER_PROFILE), 'COMPLIANT') <> 'OUTLIER'
 ),
 fleet AS (
-  SELECT VEHICLE_ID, REGION, HOME_LOCATION_ID, DRIVER_PROFILE
-  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-  WHERE VEHICLE_TYPE = 'hgv'
+  SELECT f.VEHICLE_ID, f.REGION, f.HOME_LOCATION_ID, f.DRIVER_PROFILE
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f, cfg
+  WHERE f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+    AND f.REGION       = cfg.REGION
 )
 SELECT
   ls.VEHICLE_ID,
@@ -69,19 +74,27 @@ WHERE ls.RN = 1;
 
 -- 2. VW_LANE_DEMAND
 -- Net outbound trips per origin terminal over the most recent 30 days of trips found in FACT_TRIPS.
--- A high NET_OUTBOUND_TRIPS value means the terminal is currently *short* on trailers - exactly the place
--- to reposition a ghost trailer to.
+-- A high NET_OUTBOUND_TRIPS value means the terminal is currently *short* on vehicles - exactly the place
+-- to reposition an idle vehicle to. Vehicle type and region pulled from CONFIG
+-- so the view adapts to any active preset (hgv, ebike, taxi, etc.).
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-WITH window_bounds AS (
-  SELECT MAX(TRIP_START) AS MAX_TS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS WHERE VEHICLE_TYPE = 'hgv'
+WITH cfg AS (
+  SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
+),
+window_bounds AS (
+  SELECT MAX(t.TRIP_START) AS MAX_TS
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, cfg
+  WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+    AND t.REGION       = cfg.REGION
 ),
 recent_trips AS (
   SELECT t.*
-  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, window_bounds w
-  WHERE t.VEHICLE_TYPE = 'hgv'
-    AND t.TRIP_START >= DATEADD('day', -30, w.MAX_TS)
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, window_bounds w, cfg
+  WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+    AND t.REGION       = cfg.REGION
+    AND t.TRIP_START   >= DATEADD('day', -30, w.MAX_TS)
 ),
 flows AS (
   SELECT ORIGIN_POI_ID      AS POI_ID, COUNT(*) AS OUT_CNT, 0 AS IN_CNT FROM recent_trips GROUP BY 1
