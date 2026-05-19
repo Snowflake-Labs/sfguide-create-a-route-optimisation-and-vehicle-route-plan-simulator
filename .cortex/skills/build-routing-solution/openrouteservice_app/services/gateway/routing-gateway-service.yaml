@@ -3,15 +3,16 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.0.0
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.0
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000
-        VROOM_HOST: vroom-service
         VROOM_PORT: 3000
-        ORS_HOST: ors-service
         ORS_PORT: 8082
         ORS_API_PATH: /ors/v2
+        # v1.1.0 — no global ORS_SERVICE / VROOM_SERVICE. Every region (including
+        # the default) is per-region; missing region resolves to this name.
+        DEFAULT_REGION_NAME: SanFrancisco
   endpoints:
     - name: gateway
       port: 8000

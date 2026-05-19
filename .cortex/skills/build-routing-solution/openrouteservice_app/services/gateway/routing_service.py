@@ -11,18 +11,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 SERVICE_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVICE_PORT = os.getenv('SERVER_PORT', 8080)
-VROOM_HOST = os.getenv('VROOM_HOST', 'vroom-service')
 VROOM_PORT = os.getenv('VROOM_PORT', 3000)
-ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
+# v1.1.0 — Unified region model. There is NO global ORS_SERVICE or VROOM_SERVICE
+# anymore; every region (including the default) is served by a per-region pair
+# named ORS_SERVICE_<REGION> / VROOM_SERVICE_<REGION>. When a caller does not
+# supply a region, we resolve it to DEFAULT_REGION_NAME so we still produce a
+# valid per-region hostname. ORS_HOST / VROOM_HOST env vars are no longer read.
+DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 # Per-endpoint downstream timeouts (seconds). Isochrones on continental graphs
 # (e.g. USA driving-hgv) routinely take longer than the legacy 120 s default
 # because fastisochrones is not enabled — see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.0.5'
+GATEWAY_VERSION = 'v1.1.0'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -40,20 +44,31 @@ logger = get_logger('routing-service')
 app = Flask(__name__)
 
 
-def resolve_ors_host(region=None):
+def _normalize_region(region):
+    """Lowercase and strip spaces. Falls back to DEFAULT_REGION_NAME when empty."""
     if not region:
-        return ORS_HOST
-    normalized = region.strip().lower().replace(' ', '')
-    return f'ors-service-{normalized}'
+        region = DEFAULT_REGION_NAME
+    return str(region).strip().lower().replace(' ', '')
+
+
+def resolve_ors_host(region=None):
+    """Per-region ORS service. After the v1.1.0 unification there is no global
+    ORS_SERVICE — even the default region resolves to ors-service-<default>."""
+    return f'ors-service-{_normalize_region(region)}'
 
 
 def resolve_vroom_host(region=None):
-    """Per-region VROOM service co-located with the region's ORS.
-    Falls back to the global VROOM_HOST when no region is provided."""
-    if not region:
-        return VROOM_HOST
-    normalized = region.strip().lower().replace(' ', '')
-    return f'vroom-service-{normalized}'
+    """Per-region VROOM service co-located with the region's ORS. After v1.1.0
+    there is no global VROOM_SERVICE — the default region maps to
+    vroom-service-<default>."""
+    return f'vroom-service-{_normalize_region(region)}'
+
+
+# Backward-compat aliases. Pre-v1.1.0 code referenced ORS_HOST / VROOM_HOST as
+# the "global" service hostname; we keep the names for minimal call-site churn,
+# but they now resolve to the per-region default (e.g. ors-service-sanfrancisco).
+ORS_HOST = resolve_ors_host(None)
+VROOM_HOST = resolve_vroom_host(None)
 
 
 def _make_response(output_rows):
