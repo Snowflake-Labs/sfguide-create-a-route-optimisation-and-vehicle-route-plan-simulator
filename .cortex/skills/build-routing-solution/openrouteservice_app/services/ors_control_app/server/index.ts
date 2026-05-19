@@ -16,8 +16,11 @@ import { roadPointsCacheKey, roadPointsCacheGet, roadPointsCacheSet, formatUptim
 import { createStatusRouter } from './routes/status.js';
 import { createServicesRouter } from './routes/services.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
+import { createSamplingRouter } from './routes/sampling.js';
+import { createFleetRouter } from './routes/fleet.js';
 import { createQueryRouter } from './routes/query.js';
 import { createStaticRouter } from './routes/static.js';
+import { getActiveRegionOverride, setActiveRegionOverride } from './lib/state.js';
 
 config();
 
@@ -333,11 +336,11 @@ async function ensureBackloadAndAssetVelocityObjects(
 
 const APP_VERSION = process.env.APP_VERSION || '0.0.0';
 
-let activeRegionOverride: string | null = null;
-
 app.use(createStatusRouter(APP_VERSION));
 app.use(createServicesRouter());
 app.use(createDiagnosticsRouter(APP_VERSION));
+app.use(createSamplingRouter());
+app.use(createFleetRouter());
 
 app.post('/api/backload/seed', async (req, res) => {
   try {
@@ -2178,7 +2181,7 @@ app.get('/api/regions', async (_req, res) => {
       }];
     }
     const defaultActive = regions.find((r: any) => r.IS_DEFAULT === true || r.IS_DEFAULT === 'true')?.REGION_NAME || regions[0]?.REGION_NAME || 'SanFrancisco';
-    const active = activeRegionOverride && regions.find((r: any) => r.REGION_NAME === activeRegionOverride) ? activeRegionOverride : defaultActive;
+    const active = getActiveRegionOverride() && regions.find((r: any) => r.REGION_NAME === getActiveRegionOverride()) ? getActiveRegionOverride() : defaultActive;
     res.json({ regions, active });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2225,7 +2228,7 @@ app.post('/api/regions/active', async (req, res) => {
     } catch (e: any) {
       log('WARN', 'Region', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
     }
-    activeRegionOverride = region;
+    setActiveRegionOverride(region);
     const safeRegion = escapeString(region);
     const CONFIG_SCHEMAS = [
       'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
@@ -2320,193 +2323,6 @@ async function executeToolPoi(input: Record<string, any>): Promise<any> {
     return { ...isoResult, poi_list: [], poi_count: 0, poi_error: e.message?.slice(0, 200) };
   }
 }
-
-const FLEET_CONFIG_SCHEMAS = [
-  'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
-  'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
-  'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
-  'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
-  'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
-  'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
-];
-
-app.get('/api/fleet-config', async (_req, res) => {
-  try {
-    let vehicleType = 'ebike';
-    let region = 'SanFrancisco';
-    try {
-      const rows = await runSql('SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
-      if (rows?.[0]) {
-        vehicleType = rows[0].VEHICLE_TYPE || vehicleType;
-        region = rows[0].REGION || region;
-      }
-    } catch {}
-    let availableTypes: string[] = [];
-    let datasetPairs: { vehicleType: string; region: string }[] = [];
-    try {
-      const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ORDER BY VEHICLE_TYPE, REGION');
-      datasetPairs = rows.map((r: any) => ({ vehicleType: r.VEHICLE_TYPE, region: r.REGION })).filter((p: any) => p.vehicleType && p.region);
-      availableTypes = [...new Set(datasetPairs.map(p => p.vehicleType))];
-    } catch {}
-    if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
-    if (availableTypes.length === 0) availableTypes = [vehicleType];
-    res.json({ vehicleType, region, availableTypes, datasetPairs });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/fleet-config/vehicle-type', async (req, res) => {
-  try {
-    const { vehicleType } = req.body;
-    if (!vehicleType) return res.status(400).json({ error: 'vehicleType required' });
-    const safeType = escapeString(vehicleType);
-    for (const schema of FLEET_CONFIG_SCHEMAS) {
-      try {
-        await runSql(`UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeType}'`);
-      } catch (e: any) {
-        log('WARN', 'CONFIG', `Failed to update ${schema}.CONFIG vehicleType: ${e.message}`);
-      }
-    }
-    res.json({ ok: true, vehicleType });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/datasets — list completed Data Studio generation jobs as a single
-// unified dataset list. Used by the DatasetPicker header dropdown to replace
-// the separate region + vehicle-type switchers.
-// ---------------------------------------------------------------------------
-const ORS_PROFILE_TO_VEHICLE_TYPE: Record<string, string> = {
-  'cycling-electric': 'ebike',
-  'driving-hgv': 'hgv',
-  'driving-car': 'car',
-  'cycling-road': 'ebike',
-};
-
-app.get('/api/datasets', async (_req, res) => {
-  try {
-    let currentRegion = 'SanFrancisco';
-    let currentVehicleType = 'ebike';
-    try {
-      const cfgRows = await runSql('SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG LIMIT 1');
-      if (cfgRows?.[0]) {
-        currentRegion = cfgRows[0].REGION || currentRegion;
-        currentVehicleType = cfgRows[0].VEHICLE_TYPE || currentVehicleType;
-      }
-    } catch {}
-
-    const rows = await runSql(`
-      SELECT
-        j.JOB_ID,
-        j.PRESET_NAME,
-        j.REGION,
-        j.ORS_PROFILE,
-        j.STATUS,
-        j.TRIPS_GENERATED AS TRIP_COUNT,
-        j.POINTS_GENERATED AS POINT_COUNT,
-        j.COMPLETED_AT,
-        j.CONFIG:vehicleType::STRING AS CFG_VEHICLE_TYPE,
-        COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY
-      FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
-      LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
-      WHERE j.STATUS IN ('COMPLETED', 'STOPPED')
-        AND j.TRIPS_GENERATED > 0
-      ORDER BY j.COMPLETED_AT DESC
-    `, 'FLEET_INTELLIGENCE', 'CORE');
-
-    const datasets = (rows || []).map((r: any) => {
-      const vehicleType = r.CFG_VEHICLE_TYPE || ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
-      return {
-        jobId: r.JOB_ID,
-        presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
-        region: r.REGION,
-        regionDisplay: r.REGION_DISPLAY || r.REGION,
-        orsProfile: r.ORS_PROFILE,
-        vehicleType,
-        tripCount: r.TRIP_COUNT ?? 0,
-        pointCount: r.POINT_COUNT ?? 0,
-        completedAt: r.COMPLETED_AT,
-        isActive: r.REGION === currentRegion && vehicleType === currentVehicleType,
-      };
-    });
-
-    res.json({ datasets, currentRegion, currentVehicleType });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message, datasets: [] });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/datasets/activate — atomically activate a (region, vehicleType)
-// pair selected from the DatasetPicker. Updates VEHICLE_TYPE and REGION on
-// all 6 demo CONFIG tables in ONE server round-trip BEFORE returning, so
-// that when the React UI subsequently flips its state and remounts demo
-// components, the projection views (which read REGION/VEHICLE_TYPE via
-// `(SELECT ... FROM CONFIG LIMIT 1)`) already reflect the new selection.
-// This eliminates the race condition where demo components remount and
-// query CONFIG before /api/regions/active had time to write the new region.
-// ---------------------------------------------------------------------------
-app.post('/api/datasets/activate', async (req, res) => {
-  try {
-    const { region, vehicleType } = req.body || {};
-    if (!region || !vehicleType) {
-      return res.status(400).json({ error: 'region and vehicleType required' });
-    }
-    const safeRegion = escapeString(region);
-    const safeVehicleType = escapeString(vehicleType);
-
-    // 1. Flip IS_DEFAULT in REGION_REGISTRY (best-effort).
-    try {
-      await runSql(
-        `CALL FLEET_INTELLIGENCE.CORE.SET_ACTIVE_REGION('${safeRegion}')`,
-        'FLEET_INTELLIGENCE', 'CORE'
-      );
-    } catch (e: any) {
-      log('WARN', 'Datasets', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
-    }
-    activeRegionOverride = region;
-
-    // 2. Update VEHICLE_TYPE + REGION on every demo CONFIG. We use the
-    // union of the two schema lists (BACKLOAD_MATCHING is in CONFIG_SCHEMAS
-    // but not FLEET_CONFIG_SCHEMAS).
-    const ALL_CONFIG_SCHEMAS = [
-      'FLEET_INTELLIGENCE.DWELL_ANALYSIS',
-      'FLEET_INTELLIGENCE.ROUTE_DEVIATION',
-      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS',
-      'FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY',
-      'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
-      'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
-      'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
-    ];
-    for (const schema of ALL_CONFIG_SCHEMAS) {
-      try {
-        await runSql(
-          `UPDATE ${schema}.CONFIG SET VEHICLE_TYPE = '${safeVehicleType}', REGION = '${safeRegion}'`
-        );
-      } catch (e: any) {
-        log('WARN', 'Datasets', `Failed to update ${schema}.CONFIG: ${e.message?.slice(0, 200)}`);
-      }
-    }
-
-    // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, mirrors
-    // /api/regions/active behaviour).
-    try {
-      await runSql(
-        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
-        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
-      );
-    } catch (e: any) {
-      log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
-    }
-
-    res.json({ ok: true, region, vehicleType });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
 1. Driving/cycling/walking directions between locations
@@ -2804,123 +2620,6 @@ app.post('/api/agent/chat', async (req, res) => {
   }
 });
 
-// In-process LRU cache for /api/sample-road-points results, keyed by (region bbox + profile).
-// TTL avoids hammering Overture on rapid UI reshuffles. Reshuffle button bypasses via ?nocache=1.
-app.get('/api/sample-road-points', async (req, res) => {
-  const minLat = parseFloat(req.query.min_lat as string);
-  const maxLat = parseFloat(req.query.max_lat as string);
-  const minLon = parseFloat(req.query.min_lon as string);
-  const maxLon = parseFloat(req.query.max_lon as string);
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-  const profile = (req.query.profile as string) || 'driving-car';
-  const noCache = req.query.nocache === '1';
-  const regionParam = (req.query.region as string) || '';
-
-  if ([minLat, maxLat, minLon, maxLon].some(v => isNaN(v))) {
-    return res.status(400).json({ ok: false, reason: 'min_lat, max_lat, min_lon, max_lon required' });
-  }
-  if (minLat >= maxLat || minLon >= maxLon) {
-    return res.status(400).json({ ok: false, reason: 'invalid bbox: min must be < max' });
-  }
-
-  // Resolve the region's BOUNDARY polygon (if any) so we can clip road points
-  // server-side. For non-rectangular regions like California or Italy, the
-  // bbox alone leaks points into Nevada / Adriatic / ocean — ST_WITHIN against
-  // REGION_CATALOG.BOUNDARY removes them at the source.
-  let safeRegionForBoundary: string | null = null;
-  if (regionParam && regionParam !== 'default') {
-    try {
-      safeRegionForBoundary = sanitizeIdentifier(regionParam);
-    } catch {
-      safeRegionForBoundary = null;
-    }
-  }
-  const cacheKey = roadPointsCacheKey(minLat, maxLat, minLon, maxLon, profile) + (safeRegionForBoundary ? `|${safeRegionForBoundary}` : '');
-  if (!noCache) {
-    const cached = roadPointsCacheGet(cacheKey);
-    if (cached) {
-      return res.json({ ok: true, points: cached, cached: true });
-    }
-  }
-
-  let classFilter: string;
-  if (profile === 'driving-hgv') {
-    // HGV is forbidden on residential / living_street / service / track / unclassified
-    // by default ORS profile config. Restrict to truck-eligible road classes so
-    // ANY_VALUE per tile reliably lands on a routable HGV point (otherwise ORS returns
-    // engine error 2010 "Could not find routable point ..." or 3099 for isochrones).
-    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary')`;
-  } else if (profile.startsWith('driving')) {
-    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service')`;
-  } else if (profile.startsWith('cycling')) {
-    classFilter = `CLASS IN ('motorway','trunk','primary','secondary','tertiary','unclassified','residential','living_street','service','cycleway','path','track')`;
-  } else {
-    classFilter = `CLASS IN ('primary','secondary','tertiary','unclassified','residential','living_street','service','footway','path','pedestrian','steps','track','cycleway')`;
-  }
-
-  // tileDeg: aim for ~50-100 tiles across the bbox; floor at 0.05 deg so small regions still get spread.
-  const lonSpan = maxLon - minLon;
-  const latSpan = maxLat - minLat;
-  const tileDeg = Math.max(Math.min(lonSpan, latSpan) / 8, 0.05);
-
-  // Optional polygon clip — only added when the region has a non-bbox boundary
-  // to avoid extra cost on rectangular regions where bbox already matches.
-  const polygonClip = safeRegionForBoundary
-    ? `AND ST_WITHIN(ST_STARTPOINT(GEOMETRY), (SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE (UPPER(REGION_KEY) = UPPER('${safeRegionForBoundary}') OR UPPER(REGION_NAME) = UPPER('${safeRegionForBoundary}')) AND BOUNDARY IS NOT NULL AND COALESCE(BOUNDARY_SOURCE, '') NOT IN ('bbox-fallback','bbbike-bbox') LIMIT 1))`
-    : '';
-
-  // Filter on numeric BBOX:* scalars (prunable via micro-partitions on the Carto-clustered table)
-  // and pick one representative road start point per coarse tile via ANY_VALUE — geographic spread
-  // without an expensive ORDER BY RANDOM() over the full filtered set.
-  const sql = `
-    SELECT
-      ANY_VALUE(ST_X(ST_STARTPOINT(GEOMETRY))) AS LON,
-      ANY_VALUE(ST_Y(ST_STARTPOINT(GEOMETRY))) AS LAT
-    FROM OVERTURE_MAPS__TRANSPORTATION.CARTO.SEGMENT
-    WHERE SUBTYPE = 'road'
-      AND ${classFilter}
-      AND BBOX:xmin <= ${maxLon} AND BBOX:xmax >= ${minLon}
-      AND BBOX:ymin <= ${maxLat} AND BBOX:ymax >= ${minLat}
-      ${polygonClip}
-    GROUP BY
-      FLOOR((BBOX:xmin::FLOAT + BBOX:xmax::FLOAT) / 2 / ${tileDeg}),
-      FLOOR((BBOX:ymin::FLOAT + BBOX:ymax::FLOAT) / 2 / ${tileDeg})
-    LIMIT ${limit}`;
-
-  const TIMEOUT_MS = 10_000;
-  let timer: NodeJS.Timeout | null = null;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('sample-road-points query timed out')), TIMEOUT_MS);
-  });
-
-  try {
-    const rows = await Promise.race([
-      runSql(sql, 'OVERTURE_MAPS__TRANSPORTATION', 'CARTO'),
-      timeoutPromise,
-    ]) as any[];
-    if (timer) clearTimeout(timer);
-    const points: [number, number][] = (rows || [])
-      .filter((r: any) => r.LON != null && r.LAT != null)
-      // Defensive: keep only points actually inside the requested bbox (Overture indexes
-      // are based on segment bbox overlap, so a segment can poke outside the requested box).
-      .filter((r: any) => {
-        const lon = parseFloat(r.LON), lat = parseFloat(r.LAT);
-        return lon >= minLon && lon <= maxLon && lat >= minLat && lat <= maxLat;
-      })
-      .map((r: any) => [+parseFloat(r.LON).toFixed(5), +parseFloat(r.LAT).toFixed(5)] as [number, number]);
-    if (points.length > 0) roadPointsCacheSet(cacheKey, points);
-    res.json({ ok: true, points });
-  } catch (e: any) {
-    if (timer) clearTimeout(timer);
-    const msg = e?.message || '';
-    const reason = /timed out/i.test(msg)
-      ? 'timeout'
-      : msg.slice(0, 200) || 'Overture Transportation unavailable';
-    log('WARN', 'SampleRoadPoints', `Failed for bbox=[${minLon},${minLat},${maxLon},${maxLat}] profile=${profile}: ${reason}`);
-    res.json({ ok: false, reason });
-  }
-});
-
 app.use('/api/studio', createStudioRouter(runSql));
 
 app.use(createQueryRouter());
@@ -2955,7 +2654,7 @@ detectWarehouse().then(verifySessionUtc).then(() => {
     log('WARN', 'Studio', `Boot reconcile failed: ${e?.message?.slice(0, 200)}`);
   });
 
-  // Hydrate activeRegionOverride from REGION_REGISTRY so the user's last
+  // Hydrate getActiveRegionOverride() from REGION_REGISTRY so the user's last
   // region selection survives SPCS container restarts. POST /api/regions/active
   // already persists the choice to REGION_REGISTRY.IS_DEFAULT (via the
   // SET_ACTIVE_REGION procedure), but the in-memory override resets to null
@@ -2970,11 +2669,11 @@ detectWarehouse().then(verifySessionUtc).then(() => {
       );
       const persisted = rows?.[0]?.REGION_NAME;
       if (persisted) {
-        activeRegionOverride = persisted;
-        log('INFO', 'Region', `Hydrated activeRegionOverride from REGION_REGISTRY: ${persisted}`);
+        setActiveRegionOverride(persisted);
+        log('INFO', 'Region', `Hydrated getActiveRegionOverride() from REGION_REGISTRY: ${persisted}`);
       }
     } catch (e: any) {
-      log('WARN', 'Region', `activeRegionOverride hydrate failed: ${e?.message?.slice(0, 150)}`);
+      log('WARN', 'Region', `getActiveRegionOverride() hydrate failed: ${e?.message?.slice(0, 150)}`);
     }
   })();
 
@@ -2983,7 +2682,7 @@ detectWarehouse().then(verifySessionUtc).then(() => {
   // user to click the switcher (or for a container restart to re-hydrate).
   setRegionActivatedHandler((region: string) => {
     if (!region) return;
-    activeRegionOverride = region;
+    setActiveRegionOverride(region);
     log('INFO', 'Region', `Active region updated by Data Studio: ${region}`);
   });
 
