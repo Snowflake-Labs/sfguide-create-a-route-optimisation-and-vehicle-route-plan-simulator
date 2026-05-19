@@ -4,73 +4,10 @@ import { CarTaxiFront, Bike, Truck, Play, Square, Save, ChevronDown, ChevronRigh
 import MetricCard from '../shared/MetricCard';
 
 
-interface Preset {
-  preset_id: string;
-  name: string;
-  ors_profile: string;
-  region: string;
-  config: any;
-  is_builtin: boolean;
-}
-
-interface ProfileTemplate {
-  id: string;
-  name: string;
-  description: string;
-  vehicleType: string;
-  orsProfile: string;
-  regionScale: string;
-  feeds: string[];
-  defaultConfig: any;
-}
-
-interface JobInfo {
-  jobId: string;
-  presetName: string;
-  region: string;
-  orsProfile: string;
-  vehicleType: string;
-  status: string;
-  pointsGenerated: number;
-  tripsGenerated: number;
-  startedAt: string;
-}
-
-interface CoverageEntry {
-  VEHICLE_TYPE: string;
-  REGION: string;
-  ORS_PROFILE: string;
-  TELEMETRY_ROWS: number;
-  TRIP_ROWS: number;
-  VEHICLES: number;
-}
-
-const VEHICLE_ICONS: Record<string, any> = {
-  car: CarTaxiFront,
-  ebike: Bike,
-  hgv: Truck,
-};
-
-const VEHICLE_COLORS: Record<string, string> = {
-  car: '#29B5E8',
-  ebike: '#4CAF50',
-  hgv: '#FF9800',
-};
-
-const VEHICLE_LABELS: Record<string, string> = {
-  car: 'City Taxis',
-  ebike: 'E-Bike Couriers',
-  hgv: 'HGV Logistics',
-};
-
-const SKILL_MAP: Record<string, string> = {
-  'dwell-analysis': 'Dwell Analysis',
-  'fleet-intelligence-taxis': 'Fleet Taxis',
-  'fleet-intelligence-food-delivery': 'Food Delivery',
-  'route-deviation': 'Route Deviation',
-};
-
-const PIE_COLORS = ['#29B5E8', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0'];
+import {
+  Preset, ProfileTemplate, JobInfo, CoverageEntry,
+  VEHICLE_ICONS, VEHICLE_COLORS, VEHICLE_LABELS, SKILL_MAP, PIE_COLORS,
+} from './fleet-data-studio/helpers';
 
 export default function FleetDataStudio() {
   const [templates, setTemplates] = useState<ProfileTemplate[]>([]);
