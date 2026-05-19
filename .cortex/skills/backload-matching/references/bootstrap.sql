@@ -42,9 +42,14 @@ USING (
   -- Data-driven default: pick the (region, vehicle_type) tuple with the most
   -- synthetic rows so the views populate against whatever preset is loaded.
   -- No hardcoded city/vehicle. Rank by FACT_TRIPS first, fall back to DIM_FLEET.
-  -- This MERGE only fires WHEN NOT MATCHED, so once Data Studio's
-  -- syncRegionRegistryAndConfig (or /api/regions/active) has set the row, it is
-  -- never overwritten.
+  --
+  -- Update semantics:
+  --   * WHEN NOT MATCHED -> seed CONFIG (greenfield install).
+  --   * WHEN MATCHED AND the existing tuple has 0 matching FACT_TRIPS rows ->
+  --     reconcile (heals stale installs where the old hardcoded `hgv`/`California`
+  --     default was previously seeded, or where Data Studio sync hasn't caught up).
+  --   * Otherwise leave CONFIG alone, so user picks via /api/regions/active and
+  --     syncRegionRegistryAndConfig are never overwritten.
   WITH counts AS (
     SELECT t.VEHICLE_TYPE, t.REGION, COUNT(*) AS n
     FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
@@ -65,6 +70,11 @@ USING (
   SELECT VEHICLE_TYPE, REGION FROM ranked
 ) src
 ON TRUE
+WHEN MATCHED AND NOT EXISTS (
+  SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ft
+  WHERE ft.VEHICLE_TYPE = tgt.VEHICLE_TYPE AND ft.REGION = tgt.REGION
+)
+  THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
 -- ----------------------------------------------------------------------------
