@@ -428,7 +428,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Route Optimization (seed + VRP page)** | Seeds PLACES/LOOKUP/JOB_TEMPLATE; powers the VRP page in the Control App | ~5 min | Overture Maps (Step 8b) |
    | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
-   | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers; runs against whatever region/vehicle preset is active (no region hardcoded) | ~3 min | Seed data (Step 8) + Route Optimization deployed |
+   | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers. **Best with HGV preset** (typically `region=Germany`, `vehicle_type=hgv`); on default SanFrancisco/ebike presets the trailer + internal-volume views render empty (the bootstrap prints a `STATUS` warning row in that case). | ~3 min | Seed data (Step 8) + Route Optimization deployed; ideally Germany/HGV preset generated via Data Studio |
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.

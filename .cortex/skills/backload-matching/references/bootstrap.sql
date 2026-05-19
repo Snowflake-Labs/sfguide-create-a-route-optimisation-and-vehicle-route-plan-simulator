@@ -288,10 +288,42 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI
 WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1);
 
 -- ----------------------------------------------------------------------------
--- 6. Sanity
+-- 6. Sanity + active-preset notice
 -- ----------------------------------------------------------------------------
+-- The first result-set is the per-object row count. The second result-set is a
+-- single-row "STATUS" notice that surfaces when the active preset produces an
+-- empty trailer or internal-volume projection (friction-log F2: greenfield SF
+-- /ebike installs return 0 trailers because the bootstrap CONFIG resolves to
+-- whatever the highest-row preset is, even if it has no DIM_FLEET rows). The
+-- notice tells the operator how to switch presets so the demo populates.
 SELECT 'CONFIG'              AS object, COUNT(*) AS n FROM CONFIG
 UNION ALL SELECT 'VW_TRAILERS',         COUNT(*) FROM VW_TRAILERS
 UNION ALL SELECT 'VW_INTERNAL_VOLUMES', COUNT(*) FROM VW_INTERNAL_VOLUMES
 UNION ALL SELECT 'VW_EXTERNAL_OFFERS',  COUNT(*) FROM VW_EXTERNAL_OFFERS
 ORDER BY 1;
+
+WITH cfg AS (
+  SELECT VEHICLE_TYPE, REGION FROM CONFIG LIMIT 1
+), counts AS (
+  SELECT
+    (SELECT COUNT(*) FROM VW_TRAILERS)         AS trailers,
+    (SELECT COUNT(*) FROM VW_INTERNAL_VOLUMES) AS internal_volumes,
+    (SELECT COUNT(*) FROM VW_EXTERNAL_OFFERS)  AS external_offers
+)
+SELECT
+  CASE
+    WHEN c.trailers = 0 OR c.internal_volumes = 0
+      THEN 'WARNING: backload-matching trailer/internal-volume views are EMPTY '
+        || 'for the active preset (VEHICLE_TYPE=' || cfg.VEHICLE_TYPE
+        || ', REGION=' || cfg.REGION || '). The demo expects HGV trips '
+        || '(typically REGION=Germany, VEHICLE_TYPE=hgv). Either: (a) generate '
+        || 'an HGV preset via Data Studio in the ORS Control App; or (b) run '
+        || 'POST /api/regions/active to switch the active region. The page will '
+        || 'render an empty state until trailer rows appear.'
+    ELSE 'OK: backload-matching populated for VEHICLE_TYPE=' || cfg.VEHICLE_TYPE
+        || ', REGION=' || cfg.REGION
+        || ' (trailers=' || c.trailers
+        || ', internal=' || c.internal_volumes
+        || ', external=' || c.external_offers || ')'
+  END AS STATUS
+FROM cfg, counts c;
