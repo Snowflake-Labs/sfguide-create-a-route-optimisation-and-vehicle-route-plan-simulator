@@ -67,15 +67,22 @@ export function createQueryRouter(): Router {
   });
 
   router.get('/logout', (req, res) => {
-    // Redirect to Snowflake account logout which clears the session and shows login screen
-    const appUrl = encodeURIComponent(`https://${req.headers.host || ''}/`);
+    const appUrl = `https://${req.headers.host || ''}/`;
     const accountHost = SNOWFLAKE_HOST || '';
-    if (accountHost) {
-      res.redirect(302, `https://${accountHost}/session/v1/logout-from-application?redirect_url=${appUrl}`);
-    } else {
+    if (!accountHost) {
       res.clearCookie('session');
-      res.redirect(302, '/');
+      return res.redirect(302, '/');
     }
+    const action = `https://${accountHost}/session/v1/logout-from-application`;
+    const esc = (s: string) => s.replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.send(`<!doctype html><html><body onload="document.forms[0].submit()">
+<form method="POST" action="${esc(action)}">
+  <input type="hidden" name="redirect_url" value="${esc(appUrl)}" />
+  <noscript><button type="submit">Continue logout</button></noscript>
+</form>
+</body></html>`);
   });
 
   return router;
