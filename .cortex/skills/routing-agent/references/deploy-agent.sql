@@ -304,11 +304,11 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARC
 -- ROUTING_AGENT: Cortex Agent with tool bindings
 ----------------------------------------------------------------------
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, and optimization within the loaded map region.'
+COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, optimization, and pharmaceutical supply chain planning.'
 PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
-  orchestration: claude-sonnet-4-5
+  orchestration: auto
 orchestration:
   budget:
     seconds: 120
@@ -319,6 +319,8 @@ instructions:
     1. Driving/cycling/walking directions between locations
     2. Reachability analysis (isochrones) - areas reachable within X minutes
     3. Multi-stop delivery route optimization
+    4. Pharmaceutical supply chain planning with pre-loaded SF pharmacy data
+    5. Population health catchment analysis around pharmacies
 
     CRITICAL RULES - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
 
@@ -330,62 +332,63 @@ instructions:
 
     3. After calling a tool, check the result for a "status" field:
        - If status is "FAILED" or the result contains an "error" field: Report the EXACT error
-         message to the user. Do NOT attempt to answer the question yourself. Do NOT provide
-         alternative routes, estimated distances, or travel tips from your own knowledge.
+         message to the user. Do NOT attempt to answer the question yourself.
        - If status is "SUCCESS": Use ONLY the data returned by the tool to answer.
 
     4. If a tool fails because locations are outside the map region, tell the user:
-       "The requested locations are outside the map region loaded in OpenRouteService.
-       This routing engine only has map data for a specific geographic area.
-       I cannot provide routing information for locations outside that area."
+       "The requested locations are outside the map region loaded in OpenRouteService."
        Do NOT follow up with general travel advice or estimated distances.
 
     5. NEVER claim you used a tool if you did not. NEVER fabricate tool results.
 
-    6. If the user asks about locations you suspect may be outside the coverage area,
-       still call the tool - let the tool determine if routing is possible. Report whatever
-       the tool returns.
+    6. For pharmaceutical supply chain questions (deliver to pharmacies, fleet demo, supply chain plan),
+       use tool_supply_chain. This tool has ALL data pre-loaded: 6 SF pharmacies, health demographics,
+       drug formulary, and 3 specialist vehicles. Do NOT ask the user for pharmacy addresses or depot info.
 
-    OpenRouteService only has map data for a specific region (the OSM file loaded during setup).
+    7. For catchment/population health analysis around a pharmacy, use tool_pharma_catchment.
 
-    Transport profiles: driving-car, driving-hgv, cycling-regular, cycling-mountain, cycling-road, cycling-electric, foot-walking, foot-hiking, wheelchair
+    8. For the pharma fleet delivery demo with 30 stops, use tool_pharma_optimization.
+
+    Transport profiles: driving-car, driving-hgv, cycling-electric
   response: |
     Be concise. Format results clearly:
     - Distances in km, durations in minutes
-    - For optimization, summarize vehicle assignments
-    - If a tool returns an "error" field or "status": "FAILED", report the error clearly and
-      do NOT supplement with your own knowledge. Simply state that routing failed and why.
-    - NEVER provide estimated distances, durations, or travel advice when a tool has failed.
+    - For optimization, summarize vehicle assignments and total distance/duration
+    - For supply chain, summarize by vehicle type (cold chain, controlled, standard)
+    - If a tool returns an error, report it clearly without supplementing from your knowledge.
   orchestration: |
     - Directions between locations: Use tool_directions
-    - Reachability questions: Use tool_isochrone
-    - Multi-stop optimization: Use tool_optimization
+    - Reachability/isochrone questions: Use tool_isochrone
+    - Multi-stop optimization with user-provided locations: Use tool_optimization
+    - Full pharmaceutical supply chain plan (all SF pharmacies): Use tool_supply_chain
+    - Pharma fleet delivery demo (30 pre-geocoded stops): Use tool_pharma_optimization
+    - Population health / catchment analysis around a pharmacy: Use tool_pharma_catchment
     - ALWAYS use a tool for routing questions. NEVER answer from general knowledge.
 tools:
   - tool_spec:
       type: generic
       name: tool_directions
-      description: "Get directions between locations with distance, duration, turn-by-turn instructions. Returns status SUCCESS with route data, or status FAILED with error message if locations are outside the map region."
+      description: "Get directions between locations with distance, duration, turn-by-turn instructions."
       input_schema:
         type: object
         properties:
           locations_description:
             type: string
-            description: "Locations to route between, e.g. 'from Times Square to Central Park'"
+            description: "Locations to route between, e.g. 'from 498 Castro Street to Union Square, San Francisco'"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode: driving-car, cycling-electric, or driving-hgv. Default: driving-car"
         required: [locations_description]
   - tool_spec:
       type: generic
       name: tool_isochrone
-      description: "Get area reachable within specified minutes from a location. Returns status SUCCESS with isochrone data, or status FAILED with error message if the location is outside the map region."
+      description: "Get area reachable within specified minutes from a location. Returns an isochrone polygon."
       input_schema:
         type: object
         properties:
           location_description:
             type: string
-            description: "Center location, e.g. 'Tokyo Station'"
+            description: "Center location, e.g. '498 Castro Street, San Francisco'"
           range_minutes:
             type: number
             description: "Minutes of travel time (1-60)"
@@ -396,7 +399,7 @@ tools:
   - tool_spec:
       type: generic
       name: tool_optimization
-      description: "Optimize delivery routes for multiple stops with multiple vehicles. Returns status SUCCESS with optimized routes, or status FAILED with error message if locations are outside the map region."
+      description: "Optimize delivery routes for multiple stops with multiple vehicles. User must provide delivery locations and depot address."
       input_schema:
         type: object
         properties:
@@ -405,7 +408,7 @@ tools:
             description: "All delivery locations to visit"
           depot_location:
             type: string
-            description: "Start/end location for vehicles"
+            description: "Start/end location for vehicles (the depot/warehouse)"
           num_vehicles:
             type: number
             description: "Number of vehicles available"
@@ -413,6 +416,43 @@ tools:
             type: string
             description: "Transport mode. Default: driving-car"
         required: [delivery_locations, depot_location, num_vehicles]
+  - tool_spec:
+      type: generic
+      name: tool_supply_chain
+      description: "Run the FULL pre-configured pharmaceutical supply chain delivery plan. Uses ALL pre-loaded data: 6 SF pharmacies, SF health demographics, drug formulary (25 drugs across 5 conditions), and 3 specialist vehicles (cold chain, controlled substances, standard medicines). The depot is at 1 Market Street. Do NOT ask the user for any data - everything is pre-configured."
+      input_schema:
+        type: object
+        properties:
+          profile:
+            type: string
+            description: "Transport mode. Default: driving-car"
+  - tool_spec:
+      type: generic
+      name: tool_pharma_optimization
+      description: "Run pre-configured multi-vehicle pharmaceutical delivery optimization using 30 pre-geocoded SF delivery stops and 3 specialist vehicles (cold chain van, controlled substances van, standard delivery van). Do NOT ask the user for addresses."
+      input_schema:
+        type: object
+        properties:
+          profile:
+            type: string
+            description: "Transport mode. Default: driving-car"
+  - tool_spec:
+      type: generic
+      name: tool_pharma_catchment
+      description: "Analyse population health demographics within a drive-time catchment of a pharmacy. Returns morbidity rates (diabetes, hypertension, cardiovascular, respiratory, mobility issues), population counts, and drug demand estimates for the area."
+      input_schema:
+        type: object
+        properties:
+          pharmacy_description:
+            type: string
+            description: "Description of the pharmacy location, e.g. 'Walgreens at 498 Castro Street, San Francisco'"
+          range_minutes:
+            type: number
+            description: "Drive time in minutes for catchment area. Default: 10"
+          profile:
+            type: string
+            description: "Transport mode. Default: driving-car"
+        required: [pharmacy_description]
 tool_resources:
   tool_directions:
     type: procedure
@@ -429,10 +469,27 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
+  tool_supply_chain:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
+  tool_pharma_optimization:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
+  tool_pharma_catchment:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
 $$;
 
 ----------------------------------------------------------------------
--- Register with Snowflake Intelligence (optional)
+-- Grant access and register with Snowflake Intelligence
 ----------------------------------------------------------------------
+GRANT USAGE ON AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT TO ROLE ALL_AGENTS_ROLE;
+
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
 ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;

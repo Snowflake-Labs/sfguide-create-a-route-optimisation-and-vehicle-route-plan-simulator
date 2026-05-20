@@ -1738,6 +1738,18 @@ const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] 
     identifier: '__local__',
     params: ['location_description', 'category', 'range_minutes', 'profile'],
   },
+  tool_supply_chain: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
+    params: ['profile'],
+  },
+  tool_pharma_optimization: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
+    params: ['profile'],
+  },
+  tool_pharma_catchment: {
+    identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
+    params: ['pharmacy_description', 'range_minutes', 'profile'],
+  },
 };
 
 const POI_CATEGORY_MAP: Record<string, string[]> = {
@@ -1854,6 +1866,12 @@ Available tools:
    Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
 4. tool_poi - Find points of interest within a reachable area from a location. Use when user asks to show/find specific place types within a travel time (e.g. "restaurants within 10 min drive").
    Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
+5. tool_supply_chain - Run the FULL pre-configured pharmaceutical supply chain delivery plan. This uses pre-loaded data: 6 SF pharmacies, health demographics, drug formulary, and 3 specialist vehicles (cold chain, controlled substances, standard). Use when user asks to plan supply chain delivery, run the pharma fleet demo, or deliver to all pharmacies.
+   Input: {"profile": "string (default: driving-car)"}
+6. tool_pharma_optimization - Run pre-configured multi-vehicle pharma delivery optimisation using 30 pre-geocoded SF delivery stops and 3 specialist vehicles. Use for pharma fleet demo or multi-vehicle pharma delivery.
+   Input: {"profile": "string (default: driving-car)"}
+7. tool_pharma_catchment - Analyse population health demographics within a drive-time catchment of a pharmacy. Returns morbidity rates, drug demand estimates.
+   Input: {"pharmacy_description": "string describing the pharmacy location (required)", "range_minutes": number (default: 10), "profile": "string (default: driving-car)"}
 
 Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)
 
@@ -1922,210 +1940,6 @@ function escAgentSqlStr(s: string): string {
 const AGENT_MODELS = ['claude-sonnet-4-5', 'mistral-large2'];
 let agentModel = AGENT_MODELS[0];
 
-async function callCortexCompleteStreaming(
-  messages: Array<{role: string; content: string}>,
-  onToken: (text: string) => void,
-): Promise<string> {
-  const token = getSpcsToken();
-  const headers: Record<string, string> = {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Accept': 'text/event-stream',
-    'X-Snowflake-Authorization-Token-Type': 'OAUTH',
-  };
-  const body = JSON.stringify({
-    model: agentModel,
-    messages,
-    stream: true,
-    max_tokens: 4096,
-    temperature: 0,
-  });
-  const url = `https://${SNOWFLAKE_HOST}/api/v2/cortex/inference:complete`;
-  console.log(`[Agent] Streaming CORTEX.COMPLETE model=${agentModel}, msgCount=${messages.length}`);
-  const startMs = Date.now();
-  const res = await fetch(url, { method: 'POST', headers, body });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Cortex streaming API ${res.status}: ${errText.slice(0, 300)}`);
-  }
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error('No readable body from Cortex streaming response');
-  const decoder = new TextDecoder();
-  let fullText = '';
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6).trim();
-      if (data === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(data);
-        const text = parsed.choices?.[0]?.delta?.content || '';
-        if (text) { fullText += text; onToken(text); }
-      } catch {}
-    }
-  }
-  console.log(`[Agent] Streaming completed in ${Date.now() - startMs}ms, length=${fullText.length}`);
-  if (!fullText) throw new Error('Cortex streaming returned empty response');
-  return fullText;
-}
-
-async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
-  const msgArray = messages.map(m => {
-    return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
-  }).join(',');
-  const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
-  console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
-  const startMs = Date.now();
-  let rows: any[];
-  try {
-    rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
-  } catch (err: any) {
-    console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
-    if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
-      console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
-      agentModel = AGENT_MODELS[1];
-      const retrySql = sql.replace(AGENT_MODELS[0], agentModel);
-      rows = await runSql(retrySql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
-    } else {
-      throw err;
-    }
-  }
-  console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
-  if (!rows || rows.length === 0) throw new Error('No response from CORTEX.COMPLETE');
-  const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
-  let content = '';
-  try {
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
-  } catch {
-    content = String(raw);
-  }
-  if (!content) {
-    console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
-    throw new Error('Empty response from LLM');
-  }
-  return content.trim();
-}
-
-function findMatchingBrace(s: string): number {
-  let depth = 0; let inStr = false; let esc = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (esc) { esc = false; continue; }
-    if (c === '\\') { esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === '{') depth++;
-    if (c === '}') { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
-
-function parseToolCall(text: string): { name: string; input: Record<string, any> } | null {
-  try {
-    const match = text.match(/\{\s*"tool_call"\s*:/s);
-    if (!match) return null;
-    const jsonStr = text.slice(text.indexOf('{'));
-    const braceEnd = findMatchingBrace(jsonStr);
-    if (braceEnd < 0) return null;
-    const parsed = JSON.parse(jsonStr.slice(0, braceEnd + 1));
-    if (parsed.tool_call?.name && TOOL_PROCEDURE_MAP[parsed.tool_call.name]) {
-      return { name: parsed.tool_call.name, input: parsed.tool_call.input || {} };
-    }
-  } catch {}
-  return null;
-}
-
-async function callCortexAgentWithToolLoop(
-  message: string, threadId?: string, parentMessageId?: string,
-  onProgress?: (data: { step: string; detail?: string }) => void,
-  onToken?: (text: string) => void,
-  onWorkflow?: (step: any) => void,
-  history?: Array<{role: string; content: string}>,
-): Promise<any> {
-  if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
-  console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
-  const messages: Array<{role: string; content: string}> = [
-    { role: 'system', content: ROUTING_SYSTEM_PROMPT },
-  ];
-  if (history && history.length > 0) {
-    for (const h of history) {
-      if (h.role === 'user' || h.role === 'assistant') {
-        const content = typeof h.content === 'string' ? h.content : '';
-        if (content) messages.push({ role: h.role, content });
-      }
-    }
-  }
-  messages.push({ role: 'user', content: message });
-  const maxIterations = 5;
-  const allToolResults: any[] = [];
-  const workflowSteps: any[] = [];
-  let toolsExecuted = false;
-
-  onWorkflow?.({ type: 'start', label: 'Agent started', ts: Date.now() });
-  workflowSteps.push({ type: 'start', label: 'Agent started', ts: Date.now() });
-
-  for (let iter = 0; iter < maxIterations; iter++) {
-    onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
-    onWorkflow?.({ type: 'llm', label: iter === 0 ? 'Reasoning' : `Reasoning (step ${iter + 1})`, ts: Date.now() });
-    workflowSteps.push({ type: 'llm', label: iter === 0 ? 'Reasoning' : `Reasoning (step ${iter + 1})`, ts: Date.now() });
-
-    if (toolsExecuted && onToken) {
-      onProgress?.({ step: 'formatting', detail: 'Generating response...' });
-      onWorkflow?.({ type: 'formatting', label: 'Generating response', ts: Date.now() });
-      workflowSteps.push({ type: 'formatting', label: 'Generating response', ts: Date.now() });
-      try {
-        const streamedText = await callCortexCompleteStreaming(messages, onToken);
-        onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
-        workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
-      } catch (streamErr: any) {
-        console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
-        const fallback = await callCortexComplete(messages);
-        onToken(fallback);
-        onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
-        workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
-      }
-    }
-
-    const response = await callCortexComplete(messages);
-    console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
-    const toolCall = parseToolCall(response);
-
-    if (!toolCall) {
-      console.log(`[Agent] No tool call found, returning text response`);
-      if (onToken) onToken(response);
-      onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
-      workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
-    }
-
-    const toolLabel = toolCall.name.replace('tool_', '');
-    onProgress?.({ step: 'executing_tool', detail: toolLabel });
-    onWorkflow?.({ type: 'tool_start', label: `Calling ${toolLabel}`, tool: toolCall.name, input: toolCall.input, ts: Date.now() });
-    workflowSteps.push({ type: 'tool_start', label: `Calling ${toolLabel}`, tool: toolCall.name, input: toolCall.input, ts: Date.now() });
-    console.log(`[Agent] Executing tool: ${toolCall.name}`);
-    messages.push({ role: 'assistant', content: response });
-    const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
-    allToolResults.push(toolResult);
-    toolsExecuted = true;
-    onWorkflow?.({ type: 'tool_done', label: `${toolLabel} complete`, tool: toolCall.name, ts: Date.now() });
-    workflowSteps.push({ type: 'tool_done', label: `${toolLabel} complete`, tool: toolCall.name, ts: Date.now() });
-    const resultStr = JSON.stringify(toolResult).slice(0, 30000);
-    messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
-  }
-  onWorkflow?.({ type: 'done', label: 'Max iterations reached', ts: Date.now() });
-  workflowSteps.push({ type: 'done', label: 'Max iterations reached', ts: Date.now() });
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
-}
-
 function sendSseEvent(res: any, event: string, data: any) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -2144,32 +1958,337 @@ app.get('/api/agent/config', async (_req, res) => {
 });
 
 app.post('/api/agent/chat', async (req, res) => {
-  const { message, thread_id, parent_message_id, history, max_tokens } = req.body;
+  const { message, thread_id, parent_message_id, history } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+
   try {
-    const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
-    const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-    const onWorkflow = (step: any) => { sendSseEvent(res, 'workflow', step); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, onWorkflow, history);
-    const content = agentResult?.content || [];
-    let msg = '';
+    if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
+    const token = getSpcsToken();
+    const agentUrl = `https://${SNOWFLAKE_HOST}/api/v2/databases/FLEET_INTELLIGENCE/schemas/ROUTING_AGENT/agents/ROUTING_AGENT:run`;
+
+    const messages: Array<{role: string; content: Array<{type: string; text: string}>}> = [];
+    if (history && history.length > 0) {
+      for (const h of history) {
+        if ((h.role === 'user' || h.role === 'assistant') && h.content) {
+          const text = typeof h.content === 'string' ? h.content : '';
+          if (text) messages.push({ role: h.role, content: [{ type: 'text', text }] });
+        }
+      }
+    }
+    messages.push({ role: 'user', content: [{ type: 'text', text: message }] });
+
+    const body: any = { messages, stream: true };
+    if (thread_id) {
+      body.thread_id = Number(thread_id);
+      body.parent_message_id = parent_message_id ? Number(parent_message_id) : 0;
+    }
+
+    console.log(`[Agent] Calling Cortex Agent API: "${message.slice(0, 100)}" thread=${thread_id || 'new'}`);
+    sendSseEvent(res, 'workflow', { type: 'start', label: 'Agent started', ts: Date.now() });
+
+    const agentRes = await fetch(agentUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!agentRes.ok) {
+      const errText = await agentRes.text();
+      throw new Error(`Cortex Agent API ${agentRes.status}: ${errText.slice(0, 500)}`);
+    }
+
+    const reader = agentRes.body?.getReader();
+    if (!reader) throw new Error('No readable body from Cortex Agent');
+    const decoder = new TextDecoder();
+
+    let fullText = '';
     let geometry: any = null;
-    const toolResults: any[] = agentResult?._toolResults || [];
-    const workflowSteps: any[] = agentResult?._workflowSteps || [];
-    for (const item of content) { if (item.type === 'text') msg += (msg ? '\n' : '') + item.text; }
-    for (const tr of toolResults) { if (tr && typeof tr === 'object' && tr.geometry && !geometry) geometry = tr.geometry; }
-    if (!msg) msg = agentResult?.message || 'No response from agent';
-    const response: any = { message: msg, tool_results: toolResults, token_usage: { workflow_steps: workflowSteps } };
+    let toolResults: any[] = [];
+    let toolsCalled: Array<{name: string; input: any}> = [];
+    let workflowSteps: any[] = [{ type: 'start', label: 'Agent started', ts: Date.now() }];
+    let responseThreadId: number | undefined;
+    let responseMessageId: number | undefined;
+    let tokenUsage: any = null;
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let currentEvent = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+          continue;
+        }
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (!data) continue;
+
+        try {
+          const parsed = JSON.parse(data);
+
+          switch (currentEvent) {
+            case 'response.text.delta': {
+              const text = parsed.text || '';
+              if (text) {
+                fullText += text;
+                res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`);
+              }
+              break;
+            }
+            case 'response.thinking.delta': {
+              break;
+            }
+            case 'response.status': {
+              const step = { type: 'status', label: parsed.message || parsed.status || 'Processing', ts: Date.now() };
+              workflowSteps.push(step);
+              sendSseEvent(res, 'workflow', step);
+              break;
+            }
+            case 'response.tool_use': {
+              const toolName = parsed.name || 'unknown';
+              toolsCalled.push({ name: toolName, input: parsed.input });
+              const step = { type: 'tool_start', label: `Calling ${toolName.replace('tool_', '')}`, tool: toolName, input: parsed.input, ts: Date.now() };
+              workflowSteps.push(step);
+              sendSseEvent(res, 'workflow', step);
+              break;
+            }
+            case 'response.tool_result': {
+              const toolName = parsed.name || 'unknown';
+              const step = { type: 'tool_done', label: `${toolName.replace('tool_', '')} complete`, tool: toolName, ts: Date.now() };
+              workflowSteps.push(step);
+              sendSseEvent(res, 'workflow', step);
+              if (parsed.content) {
+                for (const c of parsed.content) {
+                  let resultObj: any = null;
+                  if (c.type === 'json' && c.json) {
+                    const raw = c.json;
+                    if (raw.result != null) {
+                      if (typeof raw.result === 'object') resultObj = raw.result;
+                      else if (typeof raw.result === 'string') { try { resultObj = JSON.parse(raw.result); } catch { resultObj = raw; } }
+                      else resultObj = raw;
+                    } else {
+                      resultObj = raw;
+                    }
+                  } else if (c.type === 'text' && c.text) {
+                    try {
+                      const pt = JSON.parse(c.text);
+                      if (pt && typeof pt === 'object') {
+                        if (pt.result != null) {
+                          if (typeof pt.result === 'object') resultObj = pt.result;
+                          else if (typeof pt.result === 'string') { try { resultObj = JSON.parse(pt.result); } catch { resultObj = pt; } }
+                          else resultObj = pt;
+                        } else {
+                          resultObj = pt;
+                        }
+                      }
+                    } catch {}
+                  }
+                  if (resultObj) {
+                    toolResults.push(resultObj);
+                    if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                  }
+                }
+              }
+              console.log(`[Agent] Tool result for ${toolName}: has_geometry=${!!geometry}, results=${toolResults.length}`);
+              break;
+            }
+            case 'response.tool_result.status': {
+              const step = { type: 'status', label: parsed.message || parsed.status || 'Tool executing', ts: Date.now() };
+              workflowSteps.push(step);
+              sendSseEvent(res, 'workflow', step);
+              break;
+            }
+            case 'metadata': {
+              if (parsed.metadata) {
+                if (parsed.metadata.message_id) responseMessageId = parsed.metadata.message_id;
+                if (parsed.metadata.run_id) {
+                  const parts = String(parsed.metadata.run_id).split('-');
+                  if (parts.length >= 1) responseThreadId = Number(parts[0]) || undefined;
+                }
+              }
+              break;
+            }
+            case 'response': {
+              if (parsed.metadata) {
+                responseThreadId = parsed.metadata.thread_id;
+                responseMessageId = parsed.metadata.assistant_message_id;
+                tokenUsage = parsed.metadata.usage;
+              }
+              if (parsed.content) {
+                for (const item of parsed.content) {
+                  if (item.type === 'text' && !fullText) fullText += (fullText ? '\n' : '') + item.text;
+                  if (item.type === 'tool_result' && item.tool_result?.content) {
+                    for (const c of item.tool_result.content) {
+                      let resultObj: any = null;
+                      if (c.type === 'json' && c.json) {
+                        const raw = c.json;
+                        if (raw.result != null) {
+                          if (typeof raw.result === 'object') resultObj = raw.result;
+                          else if (typeof raw.result === 'string') { try { resultObj = JSON.parse(raw.result); } catch { resultObj = raw; } }
+                          else resultObj = raw;
+                        } else {
+                          resultObj = raw;
+                        }
+                      } else if (c.type === 'text' && c.text) {
+                        try {
+                          const pt = JSON.parse(c.text);
+                          if (pt && typeof pt === 'object') {
+                            if (pt.result != null) {
+                              if (typeof pt.result === 'object') resultObj = pt.result;
+                              else if (typeof pt.result === 'string') { try { resultObj = JSON.parse(pt.result); } catch { resultObj = pt; } }
+                              else resultObj = pt;
+                            } else {
+                              resultObj = pt;
+                            }
+                          }
+                        } catch {}
+                      }
+                      if (resultObj) {
+                        toolResults.push(resultObj);
+                        if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                      }
+                    }
+                  }
+                }
+              }
+              break;
+            }
+            case 'error': {
+              throw new Error(parsed.message || 'Agent error');
+            }
+            default: {
+              if (!currentEvent.startsWith('response.thinking')) {
+                const keys = Object.keys(parsed).join(',');
+                console.log(`[Agent] Event: '${currentEvent}' keys=${keys}`);
+                if (!currentEvent && parsed.role === 'assistant' && parsed.content) {
+                  for (const item of parsed.content) {
+                    if (item.type === 'tool_result' && item.tool_result?.content) {
+                      for (const c of item.tool_result.content) {
+                        let resultObj: any = null;
+                        if (c.type === 'json' && c.json) {
+                          const raw = c.json;
+                          if (raw.result != null) {
+                            if (typeof raw.result === 'object') resultObj = raw.result;
+                            else if (typeof raw.result === 'string') { try { resultObj = JSON.parse(raw.result); } catch { resultObj = raw; } }
+                            else resultObj = raw;
+                          } else {
+                            resultObj = raw;
+                          }
+                        } else if (c.type === 'text' && c.text) {
+                          try {
+                            const pt = JSON.parse(c.text);
+                            if (pt && typeof pt === 'object') {
+                              if (pt.result != null) {
+                                if (typeof pt.result === 'object') resultObj = pt.result;
+                                else if (typeof pt.result === 'string') { try { resultObj = JSON.parse(pt.result); } catch { resultObj = pt; } }
+                                else resultObj = pt;
+                              } else {
+                                resultObj = pt;
+                              }
+                            }
+                          } catch {}
+                        }
+                        if (resultObj) {
+                          toolResults.push(resultObj);
+                          if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                          console.log(`[Agent] tool_result extracted: keys=${Object.keys(resultObj).slice(0, 8).join(',')}, has_geometry=${!!resultObj.geometry}, has_routes=${!!resultObj.routes}, status=${resultObj.status || 'n/a'}`);
+                        } else {
+                          console.log(`[Agent] tool_result: could not extract resultObj from type=${c.type}, result_typeof=${typeof c.json?.result}`);
+                        }
+                      }
+                    }
+                  }
+                  if (parsed.metadata) {
+                    responseThreadId = parsed.metadata.thread_id;
+                    responseMessageId = parsed.metadata.assistant_message_id;
+                    tokenUsage = parsed.metadata.usage;
+                  }
+                  console.log(`[Agent] Parsed final (no event name): content_types=${parsed.content.map((i: any) => i.type).join(',')}, toolResults=${toolResults.length}`);
+                }
+              }
+              break;
+            }
+          }
+        } catch (parseErr: any) {
+          if (currentEvent === 'error') throw parseErr;
+        }
+        currentEvent = '';
+      }
+    }
+
+    if (!geometry && toolsCalled.length > 0) {
+      console.log(`[Agent] No geometry from agent stream, re-executing ${toolsCalled.length} tool(s) locally for map data`);
+      const TOOL_PROC_MAP: Record<string, { proc: string; params: string[]; defaults?: Record<string, string> }> = {
+        tool_supply_chain: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN', params: ['profile'], defaults: { profile: 'driving-car' } },
+        tool_directions: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS', params: ['origin', 'destination', 'profile'], defaults: { profile: 'driving-car' } },
+        tool_isochrone: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE', params: ['location', 'range_minutes', 'profile'], defaults: { profile: 'driving-car', range_minutes: '10' } },
+        tool_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION', params: ['jobs_json', 'vehicles_json', 'profile'], defaults: { profile: 'driving-car' } },
+        tool_route_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION', params: ['jobs_json', 'vehicles_json', 'profile'], defaults: { profile: 'driving-car' } },
+        tool_pharma_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION', params: ['profile'], defaults: { profile: 'driving-car' } },
+        tool_pharma_catchment: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT', params: ['pharmacy_description', 'range_minutes', 'profile'], defaults: { profile: 'driving-car', range_minutes: '10' } },
+      };
+      for (const tc of toolsCalled) {
+        const toolDef = TOOL_PROC_MAP[tc.name];
+        if (!toolDef) continue;
+        try {
+          const args = tc.input || {};
+          const sqlArgs = toolDef.params.map(p => {
+            const val = args[p] ?? toolDef.defaults?.[p] ?? null;
+            if (val == null) return 'NULL';
+            if (typeof val === 'number') return String(val);
+            return `'${escapeString(String(val))}'`;
+          }).join(', ');
+          const callSql = `CALL ${toolDef.proc}(${sqlArgs})`;
+          console.log(`[Agent] Re-executing: ${callSql.slice(0, 200)}`);
+          const rows = await runSql(callSql);
+          if (rows && rows.length > 0) {
+            const firstCol = Object.keys(rows[0])[0];
+            let rawResult = rows[0][firstCol];
+            if (typeof rawResult === 'string') { try { rawResult = JSON.parse(rawResult); } catch {} }
+            if (rawResult && typeof rawResult === 'object') {
+              toolResults.push(rawResult);
+              if (rawResult.geometry && !geometry) geometry = rawResult.geometry;
+              console.log(`[Agent] Re-exec OK: keys=${Object.keys(rawResult).slice(0, 6).join(',')}, has_geometry=${!!rawResult.geometry}`);
+            }
+          }
+        } catch (e: any) {
+          console.error(`[Agent] Re-exec ${tc.name} failed: ${e.message}`);
+        }
+      }
+    }
+
+    const doneStep = { type: 'done', label: 'Complete', ts: Date.now() };
+    workflowSteps.push(doneStep);
+    sendSseEvent(res, 'workflow', doneStep);
+
+    if (!fullText) fullText = 'No response from agent';
+    const response: any = {
+      message: fullText,
+      tool_results: toolResults,
+      token_usage: { workflow_steps: workflowSteps, ...(tokenUsage || {}) },
+    };
     if (geometry) response.geometry = geometry;
-    if (agentResult?.metadata?.thread_id) response.thread_id = agentResult.metadata.thread_id;
-    if (agentResult?.metadata?.message_id) response.message_id = agentResult.metadata.message_id;
+    if (responseThreadId) response.thread_id = responseThreadId;
+    if (responseMessageId) response.message_id = responseMessageId;
+
     sendSseEvent(res, 'result', response);
     res.end();
+    console.log(`[Agent] Completed. Text=${fullText.length}chars, tools=${toolResults.length}, has_geometry=${!!geometry}, thread=${responseThreadId}`);
   } catch (err: any) {
     console.error(`[Agent] Chat endpoint error: ${err.message}`);
     sendSseEvent(res, 'error', { error: err.message || 'Unknown agent error' });
