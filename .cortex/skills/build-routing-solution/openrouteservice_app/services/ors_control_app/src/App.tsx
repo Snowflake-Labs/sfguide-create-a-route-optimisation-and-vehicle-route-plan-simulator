@@ -95,6 +95,25 @@ const ALL_SECTIONS = [
   { label: 'Admin', items: ADMIN_NAV },
 ];
 
+const VALID_TABS: Set<string> = new Set([
+  'home',
+  ...ALL_SECTIONS.flatMap(s => s.items.flatMap(g =>
+    g.subPages ? [g.key, ...g.subPages.map(sp => sp.key)] : [g.key]
+  )),
+]);
+
+function tabToPath(tab: string): string {
+  if (!tab || tab === 'home') return '/';
+  return '/' + tab.replace(/:/g, '/');
+}
+
+function pathToTab(pathname: string): string {
+  const trimmed = pathname.replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return 'home';
+  const candidate = trimmed.replace(/\//g, ':');
+  return VALID_TABS.has(candidate) ? candidate : 'home';
+}
+
 function getHeaderLabel(tab: string): string {
   if (tab === 'home') return 'Home';
   for (const section of ALL_SECTIONS) {
@@ -110,7 +129,9 @@ function getHeaderLabel(tab: string): string {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('home');
+  const [activeTab, setActiveTab] = useState<string>(() =>
+    typeof window !== 'undefined' ? pathToTab(window.location.pathname) : 'home'
+  );
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [appVersion, setAppVersion] = useState('');
   const region = useRegionProvider();
@@ -120,12 +141,29 @@ export default function App() {
     fetch('/api/health').then(r => r.json()).then(d => setAppVersion(d.version || '')).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const expected = tabToPath(activeTab);
+    if (window.location.pathname !== expected) {
+      window.history.replaceState({}, '', expected);
+    }
+    const onPop = () => setActiveTab(pathToTab(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const toggleExpand = (groupKey: string) => {
     setExpanded(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
 
   const navigateTo = (tab: string) => {
     setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      const next = tabToPath(tab);
+      if (window.location.pathname !== next) {
+        window.history.pushState({ tab }, '', next);
+      }
+    }
   };
 
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
