@@ -20,7 +20,12 @@ export default function FleetDataStudio() {
   const catalog = useStudioCatalog();
   const jobsHook = useStudioJobs();
   const stream = useStudioStream(
-    { fetchJobs: jobsHook.fetchJobs, fetchStats: catalog.fetchStats, fetchCoverage: catalog.fetchCoverage },
+    {
+      fetchJobs: jobsHook.fetchJobs,
+      fetchStats: catalog.fetchStats,
+      fetchCoverage: catalog.fetchCoverage,
+      fetchAvailableRegions: catalog.fetchAvailableRegions,
+    },
     jobsHook.setActiveJobs,
   );
   const detail = useJobDetail();

@@ -10,13 +10,14 @@ type Refreshers = {
   fetchJobs: () => Promise<JobInfo[]>;
   fetchStats: () => void;
   fetchCoverage: () => void;
+  fetchAvailableRegions: () => void;
 };
 
 export function useStudioStream(
   refreshers: Refreshers,
   setActiveJobs: (updater: (prev: JobInfo[]) => JobInfo[]) => void,
 ) {
-  const { fetchJobs, fetchStats, fetchCoverage } = refreshers;
+  const { fetchJobs, fetchStats, fetchCoverage, fetchAvailableRegions } = refreshers;
   const [generating, setGenerating] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
   const evtSourceRef = useRef<EventSource | null>(null);
@@ -62,7 +63,7 @@ export function useStudioStream(
       setLogLines((prev) => [...prev, `Complete: ${data.pointsGenerated?.toLocaleString()} points, ${data.tripsGenerated?.toLocaleString()} trips`]);
       setGenerating(false);
       evtSource.close();
-      fetchJobs(); fetchStats(); fetchCoverage();
+      fetchJobs(); fetchStats(); fetchCoverage(); fetchAvailableRegions();
     });
     evtSource.addEventListener('stopped', (e) => {
       if (!e.data) return;
@@ -80,7 +81,7 @@ export function useStudioStream(
       ]);
       setGenerating(false);
       evtSource.close();
-      fetchJobs(); fetchStats(); fetchCoverage();
+      fetchJobs(); fetchStats(); fetchCoverage(); fetchAvailableRegions();
     });
     evtSource.addEventListener('error', (e: any) => {
       evtSource.close();
@@ -126,7 +127,7 @@ export function useStudioStream(
       evtSource.close();
       fetchJobs();
     });
-  }, [fetchJobs, fetchStats, fetchCoverage, setActiveJobs]);
+  }, [fetchJobs, fetchStats, fetchCoverage, fetchAvailableRegions, setActiveJobs]);
 
   // Cleanup on unmount.
   useEffect(() => {
