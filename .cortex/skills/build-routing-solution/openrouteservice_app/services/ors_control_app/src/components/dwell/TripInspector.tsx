@@ -6,6 +6,7 @@ import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
 import type { LngLat } from '../../shared/mapFit';
 
 export default function TripInspector() {
@@ -70,7 +71,7 @@ export default function TripInspector() {
     return out;
   }, [tripPoints, dwellPoints]);
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
@@ -111,6 +112,7 @@ export default function TripInspector() {
 
       <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 12, fontSize: 12, background: 'rgba(0,0,0,0.6)', padding: '6px 12px', borderRadius: 6, color: '#fff' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'rgb(34,197,94)', display: 'inline-block' }} /> SLA OK</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Breach</span>

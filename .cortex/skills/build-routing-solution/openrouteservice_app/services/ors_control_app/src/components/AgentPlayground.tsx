@@ -10,11 +10,14 @@ import {
   SAMPLE_PROMPTS, EMPTY_GEO,
 } from './agent-playground/helpers';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
+import { useRegion } from '../hooks/useRegion';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 injectCursorBlinkCss();
 
 export default function AgentPlayground() {
+  const { regionName } = useRegion();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
@@ -28,7 +31,7 @@ export default function AgentPlayground() {
     for (const p of geoData.poiPoints) if (p.position) out.push([p.position[0], p.position[1]]);
     return out;
   }, [geoData]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback: SF_FALLBACK });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback: SF_FALLBACK, regionKey: regionName });
   const streamingTextRef = useRef('');
 
   const clearConversation = useCallback(() => {
@@ -346,6 +349,7 @@ export default function AgentPlayground() {
         <div style={{ flex: 1, minWidth: 300 }}>
           <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
             <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+            <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
           </div>
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>

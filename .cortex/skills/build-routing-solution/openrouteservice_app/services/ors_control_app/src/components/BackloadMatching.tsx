@@ -7,6 +7,7 @@ import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import { useRegion } from '../hooks/useRegion';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, fitBoundsToData, type LngLat } from '../shared/mapFit';
 import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
@@ -455,7 +456,7 @@ export default function BackloadMatching() {
   }, [trailers, internal, external, assignments]);
 
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef: mapContainerRef, dims: mapDims, viewState, setViewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, setViewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   useEffect(() => {
     if (!selectedTrailer || !mapDims) return;
@@ -619,6 +620,7 @@ export default function BackloadMatching() {
               style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }}
             />
           )}
+          <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         </div>
 
         <AssignmentList

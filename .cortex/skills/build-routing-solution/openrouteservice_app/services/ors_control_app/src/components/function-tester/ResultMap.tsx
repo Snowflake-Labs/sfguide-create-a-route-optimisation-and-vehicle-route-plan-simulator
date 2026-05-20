@@ -9,6 +9,8 @@ import {
   parseIsochroneOrigin,
 } from './helpers';
 import { useFitMap, isFiniteVS } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
+import { useRegion } from '../../hooks/useRegion';
 import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 interface RegionBbox { min_lat: number; max_lat: number; min_lon: number; max_lon: number }
@@ -275,7 +277,8 @@ export function ResultMap({
     const hasCenter = Number.isFinite(regionCenter?.[0]) && Number.isFinite(regionCenter?.[1]) && !(regionCenter[0] === 0 && regionCenter[1] === 0);
     return { longitude: lon, latitude: lat, zoom: hasCenter ? 12 : 2, pitch: 0, bearing: 0 };
   }, [regionCenter]);
-  const { containerRef, dims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { regionName } = useRegion();
+  const { containerRef, dims, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
@@ -354,6 +357,7 @@ export function ResultMap({
             style={{ width: '100%', height: '100%' }}
           />
         ) : null}
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
   );

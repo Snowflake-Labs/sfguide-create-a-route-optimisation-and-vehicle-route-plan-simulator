@@ -3,6 +3,8 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, BitmapLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { TileLayer, H3HexagonLayer } from '@deck.gl/geo-layers';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
+import { useRegion } from '../hooks/useRegion';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 const SF_VIEW = { longitude: -122.44, latitude: 37.76, zoom: 12, pitch: 0, bearing: 0 };
@@ -38,6 +40,7 @@ function cartoBasemap() {
 }
 
 export default function Intro() {
+  const { regionName } = useRegion();
   const [showGrid, setShowGrid] = useState(true);
   const [showTrips, setShowTrips] = useState(true);
   const [showPings, setShowPings] = useState(false);
@@ -122,7 +125,7 @@ export default function Intro() {
     return pts;
   }, [visibleTrips]);
 
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback: SF_VIEW });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback: SF_VIEW, regionKey: regionName });
 
   const hexLayer = useMemo(() => {
     if (!showGrid || !hexData.length) return null;
@@ -336,6 +339,7 @@ export default function Intro() {
           getTooltip={getTooltip}
           style={{ width: '100%', height: '100%' }}
         />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
   );

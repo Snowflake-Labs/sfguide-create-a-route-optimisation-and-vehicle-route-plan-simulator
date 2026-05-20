@@ -7,6 +7,7 @@ import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 export default function FleetMap() {
@@ -93,7 +94,7 @@ export default function FleetMap() {
     return out;
   }, [couriers, routeGeo]);
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.COURIER_ID) return null;
@@ -130,6 +131,7 @@ export default function FleetMap() {
       <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
   );

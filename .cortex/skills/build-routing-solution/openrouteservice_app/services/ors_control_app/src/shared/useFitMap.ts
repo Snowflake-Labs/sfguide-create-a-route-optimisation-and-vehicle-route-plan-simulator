@@ -14,6 +14,13 @@ export interface UseFitMapOptions {
   minZoom?: number;
   maxZoom?: number;
   pitch?: number;
+  /**
+   * Identifier for the active region/area. The map will auto-fit on the
+   * first non-empty data load, and will re-fit again only when this key
+   * changes (e.g. user switches region). Subsequent data updates that
+   * keep the same regionKey will NOT move the camera.
+   */
+  regionKey?: string;
 }
 
 export interface UseFitMapResult {
@@ -22,6 +29,8 @@ export interface UseFitMapResult {
   viewState: ViewState;
   setViewState: (vs: ViewState) => void;
   onViewStateChange: (e: { viewState: any }) => void;
+  /** Manually re-fit the camera to the current coords. */
+  recenter: () => void;
 }
 
 const DEFAULT_FALLBACK: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
@@ -45,7 +54,7 @@ export function useFitMap(
   coords: LngLat[] | null | undefined,
   options: UseFitMapOptions = {}
 ): UseFitMapResult {
-  const { fallback, padding = DEFAULT_PADDING, minZoom, maxZoom, pitch } = options;
+  const { fallback, padding = DEFAULT_PADDING, minZoom, maxZoom, pitch, regionKey } = options;
   const initial: ViewState = {
     ...DEFAULT_FALLBACK,
     ...sanitizeVS(fallback),
@@ -55,8 +64,16 @@ export function useFitMap(
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const [viewState, setViewState] = useState<ViewState>(initial);
-  const lastFitSigRef = useRef<string>('');
-  const lastDimsKeyRef = useRef<string>('');
+  const [recenterTick, setRecenterTick] = useState(0);
+  const hasFittedRef = useRef(false);
+  const lastRegionRef = useRef<string | undefined>(regionKey);
+  const forceFitRef = useRef(false);
+
+  // Reset the fit-once gate when the active region changes.
+  if (lastRegionRef.current !== regionKey) {
+    lastRegionRef.current = regionKey;
+    hasFittedRef.current = false;
+  }
 
   useEffect(() => {
     const el = containerRef.current;
@@ -81,8 +98,7 @@ export function useFitMap(
   useEffect(() => {
     if (!dims) return;
     if (!coords || coords.length === 0) return;
-    const dimsKey = `${dims.width}x${dims.height}`;
-    if (lastFitSigRef.current === sig && lastDimsKeyRef.current === dimsKey) return;
+    if (hasFittedRef.current && !forceFitRef.current) return;
     const next = fitBoundsToData({
       width: dims.width,
       height: dims.height,
@@ -93,8 +109,8 @@ export function useFitMap(
       fallback: initial,
     });
     if (next && isFiniteVS(next)) {
-      lastFitSigRef.current = sig;
-      lastDimsKeyRef.current = dimsKey;
+      hasFittedRef.current = true;
+      forceFitRef.current = false;
       setViewState(prev => ({
         ...prev,
         longitude: next.longitude,
@@ -103,12 +119,18 @@ export function useFitMap(
       }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dims, sig]);
+  }, [dims, sig, regionKey, recenterTick]);
 
   const onViewStateChange = useCallback((e: { viewState: any }) => {
     const vs = e.viewState;
     if (isFiniteVS(vs)) setViewState(vs);
   }, []);
 
-  return { containerRef, dims, viewState, setViewState, onViewStateChange };
+  const recenter = useCallback(() => {
+    forceFitRef.current = true;
+    hasFittedRef.current = false;
+    setRecenterTick(t => t + 1);
+  }, []);
+
+  return { containerRef, dims, viewState, setViewState, onViewStateChange, recenter };
 }

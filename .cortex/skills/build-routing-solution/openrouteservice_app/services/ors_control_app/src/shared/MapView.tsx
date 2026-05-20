@@ -17,6 +17,12 @@ interface FitToOptions {
   padding?: Padding | number;
   minZoom?: number;
   maxZoom?: number;
+  /**
+   * When this key changes, the camera is allowed to re-fit once. Otherwise
+   * the first non-empty fit wins and subsequent data updates won't move
+   * the camera.
+   */
+  regionKey?: string;
 }
 
 interface MapViewProps {
@@ -27,6 +33,8 @@ interface MapViewProps {
   onClick?: (info: any) => void;
   onViewStateChange?: (viewState: any) => void;
   getTooltip?: (info: any) => any;
+  /** Called once on mount with a recenter() function the parent can call. */
+  onRecenterReady?: (recenter: () => void) => void;
   children?: React.ReactNode;
 }
 
@@ -66,6 +74,7 @@ export default function MapView({
   onClick,
   onViewStateChange,
   getTooltip,
+  onRecenterReady,
   children,
 }: MapViewProps) {
   const [viewState, setViewState] = useState<ViewState>({
@@ -74,10 +83,12 @@ export default function MapView({
     ...(initialViewState || {}),
   });
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
+  const [recenterTick, setRecenterTick] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevInitRef = useRef(initialViewState);
-  const lastFitSigRef = useRef<string>('');
-  const lastDimsRef = useRef<string>('');
+  const hasFittedRef = useRef(false);
+  const lastRegionRef = useRef<string | undefined>(fitTo?.regionKey);
+  const forceFitRef = useRef(false);
   const basemap = useMemo(() => cartoBasemap(), []);
 
   useEffect(() => {
@@ -110,13 +121,19 @@ export default function MapView({
   const fitPadding = fitTo?.padding;
   const fitMinZoom = fitTo?.minZoom;
   const fitMaxZoom = fitTo?.maxZoom;
+  const fitRegionKey = fitTo?.regionKey;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
+
+  // Reset the fit-once gate when the active region changes.
+  if (lastRegionRef.current !== fitRegionKey) {
+    lastRegionRef.current = fitRegionKey;
+    hasFittedRef.current = false;
+  }
 
   useEffect(() => {
     if (!dims) return;
     if (!fitTo || !fitCoords || fitCoords.length === 0) return;
-    const dimsKey = `${dims.width}x${dims.height}`;
-    if (lastFitSigRef.current === fitSig && lastDimsRef.current === dimsKey) return;
+    if (hasFittedRef.current && !forceFitRef.current) return;
 
     const next = fitBoundsToData({
       width: dims.width,
@@ -128,11 +145,11 @@ export default function MapView({
       fallback: fallbackViewState,
     });
     if (next && isValidViewState(next)) {
-      lastFitSigRef.current = fitSig;
-      lastDimsRef.current = dimsKey;
+      hasFittedRef.current = true;
+      forceFitRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fallbackViewState, fitTo]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fallbackViewState, fitTo, recenterTick]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||
@@ -150,6 +167,16 @@ export default function MapView({
     setViewState(vs);
     onViewStateChange?.(vs);
   }, [onViewStateChange]);
+
+  const recenter = useCallback(() => {
+    forceFitRef.current = true;
+    hasFittedRef.current = false;
+    setRecenterTick(t => t + 1);
+  }, []);
+
+  useEffect(() => {
+    if (onRecenterReady) onRecenterReady(recenter);
+  }, [onRecenterReady, recenter]);
 
   const allLayers = useMemo(() => [basemap, ...layers], [basemap, layers]);
 

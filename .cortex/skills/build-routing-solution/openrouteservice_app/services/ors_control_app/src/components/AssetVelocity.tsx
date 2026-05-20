@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 import {
   RO_DB, RO_SCHEMA,
@@ -257,7 +258,7 @@ export default function AssetVelocity() {
     return out;
   }, [terminals, trailers, routePaths]);
   const fallback = useMemo(() => ({ longitude: center.lng || -122.4194, latitude: center.lat || 37.7749, zoom: zoom || 11, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
@@ -330,6 +331,7 @@ export default function AssetVelocity() {
       <div ref={mapContainerRef} style={{ height: 420, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginTop: 12 }}>
         {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving repositioning VRP...' : 'Loading...'}</div>}
         {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 11, color: 'var(--text-secondary)' }}>

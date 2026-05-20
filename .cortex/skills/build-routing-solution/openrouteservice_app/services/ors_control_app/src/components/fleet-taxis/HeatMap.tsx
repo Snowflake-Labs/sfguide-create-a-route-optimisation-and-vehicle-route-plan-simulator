@@ -6,6 +6,7 @@ import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
 import type { LngLat } from '../../shared/mapFit';
 import { cellToLatLng } from 'h3-js';
 
@@ -71,7 +72,7 @@ export default function HeatMap() {
   }, [hexData]);
 
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback, pitch: 45 });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, pitch: 45, regionKey: regionName });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.H3_INDEX) return null;
@@ -102,6 +103,7 @@ export default function HeatMap() {
       <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden', width: 120 }}>
             {COLOR_RANGE.map((c, i) => <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />)}

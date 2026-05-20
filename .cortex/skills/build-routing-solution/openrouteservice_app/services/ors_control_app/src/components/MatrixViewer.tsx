@@ -12,12 +12,15 @@ import {
 } from './matrix-viewer/helpers';
 import { getOdPair, getHexLatLon } from '../api/matrix';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
+import { useRegion } from '../hooks/useRegion';
 import { cellToLatLng } from 'h3-js';
 import type { LngLat } from '../shared/mapFit';
 
 type ViewerMode = 'area' | 'pair';
 
 export default function MatrixViewer() {
+  const { regionName } = useRegion();
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
@@ -430,8 +433,9 @@ export default function MatrixViewer() {
     return out;
   }, [mode, originLat, originLon, destHex, destLat, destLon, destinations]);
 
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, {
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, {
     fallback: { longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 },
+    regionKey: regionName,
   });
 
   const getTooltip = useCallback(({ object }: any) => {
@@ -645,6 +649,7 @@ export default function MatrixViewer() {
               getTooltip={getTooltip}
               style={{ width: '100%', height: '100%' }}
             />
+            <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
             {mode === 'area'

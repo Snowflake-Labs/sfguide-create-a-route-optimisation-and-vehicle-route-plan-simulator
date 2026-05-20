@@ -5,6 +5,7 @@ import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 const RC_DB = 'FLEET_INTELLIGENCE';
@@ -314,7 +315,7 @@ export default function RetailCatchment() {
     const z = region?.zoom ?? globalZoom ?? 11;
     return { longitude: lng, latitude: lat, zoom: z, pitch: 0, bearing: 0 };
   }, [region, globalCenter.lng, globalCenter.lat, globalZoom]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: selectedRegion });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.NAME) return null;
@@ -373,6 +374,7 @@ export default function RetailCatchment() {
       <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         {catchmentZones.length > 0 && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 8, background: 'rgba(0,0,0,0.6)', borderRadius: 6, padding: '4px 8px' }}>
             {catchmentZones.map((z, i) => <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#fff' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${ZONE_COLORS[z.zoneIdx % ZONE_COLORS.length].join(',')})` }} />{z.minutes} min</span>)}

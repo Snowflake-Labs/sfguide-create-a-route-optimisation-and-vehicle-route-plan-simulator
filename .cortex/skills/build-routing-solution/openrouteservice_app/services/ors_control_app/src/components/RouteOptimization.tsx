@@ -6,6 +6,7 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { useRegion } from '../hooks/useRegion';
 import { useFitMap } from '../shared/useFitMap';
+import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 const RO_DB = 'FLEET_INTELLIGENCE';
@@ -243,7 +244,7 @@ export default function RouteOptimization() {
     pitch: 0, bearing: 0,
   }), [center.lng, center.lat, zoom]);
 
-  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.NAME) return null;
@@ -341,6 +342,7 @@ export default function RouteOptimization() {
       <div ref={mapContainerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving VRP...' : 'Loading...'}</div>}
         {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
   );
