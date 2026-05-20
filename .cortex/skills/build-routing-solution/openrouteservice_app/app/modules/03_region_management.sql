@@ -683,10 +683,29 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
     COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
     INSTANCE_FAMILY VARCHAR,
+    IS_DEFAULT BOOLEAN DEFAULT FALSE,
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- Idempotent migration for installs created before IS_DEFAULT existed.
+-- Disabled 2026-05-19: triggers "ambiguous column name 'IS_DEFAULT'" on
+-- fresh installs where the CREATE TABLE above already includes IS_DEFAULT.
+-- ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP ADD COLUMN IF NOT EXISTS IS_DEFAULT BOOLEAN DEFAULT FALSE;
+
+-- Seed the canonical default region (SanFrancisco) so LIST_REGIONS() returns
+-- it alongside user-provisioned regions. Pre-v1.1.0 the legacy global
+-- ORS_SERVICE was surfaced as a synthetic region:'default' entry by the
+-- control app server. v1.1.0 unification gives every region its own
+-- ORS_SERVICE_<REGION> -- including SanFrancisco -- so the default is no
+-- longer special and lives in the registry like any other region.
+MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t USING (
+    SELECT 'SanFrancisco' AS REGION
+) s ON t.REGION = s.REGION
+WHEN NOT MATCHED THEN INSERT (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS, IS_DEFAULT)
+    VALUES ('SanFrancisco', 'San Francisco', 37.71, 37.81, -122.51, -122.37, 'DEPLOYED', TRUE)
+WHEN MATCHED THEN UPDATE SET t.IS_DEFAULT = TRUE;
 
 -- =============================================================================
 -- COST_GUARD_LOG
@@ -1406,6 +1425,7 @@ BEGIN
         'region', REGION,
         'display_name', DISPLAY_NAME,
         'status', STATUS,
+        'is_default', COALESCE(IS_DEFAULT, FALSE),
         'bbox', OBJECT_CONSTRUCT('min_lat', MIN_LAT, 'max_lat', MAX_LAT, 'min_lon', MIN_LON, 'max_lon', MAX_LON)
     ))::VARCHAR INTO result
     FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP;
@@ -2283,3 +2303,39 @@ AS
 -- failed parsing with "unexpected EOF" and left the task suspended after
 -- every deploy).
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
+
+-- ===========================================================================
+-- v1.1.0 — Bootstrap default region (SanFrancisco) using the same per-region
+-- service-creation procs used for every other region. Replaces the legacy
+-- global ORS_SERVICE/VROOM_SERVICE create-statements that lived in
+-- 01_core_infra.sql.
+--
+-- The SanFrancisco PBF + ors-config are shipped in the repo and pre-staged at
+-- @ORS_SPCS_STAGE/SanFrancisco/ by the deploy script (SKILL.md Step 4), so we
+-- deliberately skip PROVISION_REGION_WRAPPER's downloader flow.
+--
+-- create_region_ors_service probes @ORS_GRAPHS_SPCS_STAGE/SanFrancisco/ for
+-- graph build markers; on first install no markers are present so it sets
+-- REBUILD_GRAPHS=true. ORS then builds graphs from the staged PBF on first
+-- boot. After a successful build the proc auto-flips REBUILD_GRAPHS back to
+-- false for fast resume on subsequent suspend/resume cycles.
+--
+-- Idempotent: CREATE COMPUTE POOL IF NOT EXISTS + CREATE SERVICE IF NOT EXISTS
+-- everywhere downstream. Re-running on an already-provisioned default region
+-- is a no-op.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"bootstrap"}}'
+EXECUTE AS OWNER
+AS
+$$
+BEGIN
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service('SanFrancisco', 'S');
+    CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service('SanFrancisco');
+    RETURN 'BOOTSTRAP_DEFAULT_REGION: created ORS_SERVICE_SANFRANCISCO + VROOM_SERVICE_SANFRANCISCO in ORS_POOL_SANFRANCISCO. Graphs build from staged PBF on first boot.';
+END;
+$$;
+
+CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();

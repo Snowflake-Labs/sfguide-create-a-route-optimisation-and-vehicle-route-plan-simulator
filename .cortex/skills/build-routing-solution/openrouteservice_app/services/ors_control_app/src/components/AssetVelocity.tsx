@@ -2,74 +2,16 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
-import { BitmapLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
 import { useRegion } from '../hooks/useRegion';
-
-const RO_DB = 'FLEET_INTELLIGENCE';
-const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
-const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
-
-async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
-}
-
-function cartoBasemap() {
-  return new TileLayer({
-    id: 'carto-basemap', data: CARTO_LIGHT, minZoom: 0, maxZoom: 19, tileSize: 256,
-    renderSubLayers: (props: any) => {
-      const { boundingBox } = props.tile;
-      return new BitmapLayer(props, { data: undefined, image: props.data, bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]] });
-    },
-  });
-}
-
-const SEVERITY_COLOR: Record<string, [number, number, number]> = {
-  CRITICAL: [220, 38, 38],
-  WARNING: [245, 158, 11],
-  WATCH: [251, 191, 36],
-  OK: [34, 197, 94],
-};
-
-interface Trailer {
-  VEHICLE_ID: string;
-  REGION: string;
-  LAST_LOCATION_NAME: string;
-  LAST_LOCATION_TYPE: string;
-  LAST_LNG: number;
-  LAST_LAT: number;
-  IDLE_SINCE: string;
-  IDLE_HOURS: number;
-  IDLE_DAYS: number;
-  ASSIGNED_DISPATCHER: string;
-  COST_OF_IDLENESS_USD: number;
-  PROJECTED_SAVINGS_USD: number;
-  IDLE_SEVERITY: string;
-}
-
-interface Terminal {
-  TERMINAL_ID: string;
-  TERMINAL_NAME: string;
-  LOCATION_TYPE: string;
-  TERMINAL_LAT: number;
-  TERMINAL_LNG: number;
-  OUTBOUND: number;
-  INBOUND: number;
-  NET_OUTBOUND_TRIPS: number;
-  DEMAND_SCORE: number;
-}
+import {
+  RO_DB, RO_SCHEMA,
+  sfQuery, cartoBasemap, SEVERITY_COLOR,
+  Trailer, Terminal,
+} from './asset-velocity/helpers';
 
 export default function AssetVelocity() {
   const { regionName, center, zoom } = useRegion();
-  const [idleHourThreshold, setIdleHourThreshold] = useState(72);
+  const [idleHourThreshold, setIdleHourThreshold] = useState(4);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [terminals, setTerminals] = useState<Terminal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -119,6 +61,28 @@ export default function AssetVelocity() {
       setPipelineMissing(true);
       setLoading(false);
       return;
+    }
+    // Sync ROUTE_OPTIMIZATION.CONFIG to the active (region, vehicle_type) so that
+    // VW_IDLE_TRAILERS / VW_LANE_DEMAND / VW_TRAILER_COST_OF_IDLENESS filter
+    // correctly for any preset (hgv, ebike, taxi, scooter, ...).
+    try {
+      const safeRegion = (regionName || '').replace(/'/g, "''");
+      const vtRows = await sfQuery(
+        `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+         WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
+        'SYNTHETIC_DATASETS', 'UNIFIED',
+      );
+      const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
+      if (detectedVt) {
+        await sfQuery(
+          `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+             SET REGION = '${safeRegion}',
+                 VEHICLE_TYPE = '${String(detectedVt).replace(/'/g, "''")}'`,
+          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+        );
+      }
+    } catch (e) {
+      console.warn('[AV] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
     }
     const trailerSql = `
       SELECT VEHICLE_ID, REGION, LAST_LOCATION_NAME, LAST_LOCATION_TYPE,
@@ -343,8 +307,10 @@ export default function AssetVelocity() {
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div style={{ minWidth: 240 }}>
-          <label className="range-label">Idle threshold: {idleHourThreshold}h ({(idleHourThreshold / 24).toFixed(2)}d)</label>
-          <input type="range" min={0.25} max={336} step={0.25} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
+          <label className="range-label">Idle threshold: {idleHourThreshold < 1
+            ? `${Math.round(idleHourThreshold * 60)} min`
+            : `${idleHourThreshold.toFixed(2)}h (${(idleHourThreshold / 24).toFixed(2)}d)`}</label>
+          <input type="range" min={0.0833} max={336} step={0.0833} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 72h (3d) surfaces ghost trailers. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
         </div>
         <button className="btn-primary" onClick={loadData} disabled={loading} style={{ fontSize: 12 }}>{loading ? 'Loading...' : 'Refresh'}</button>
@@ -355,7 +321,7 @@ export default function AssetVelocity() {
       </div>
 
       <div className="metric-grid">
-        <MetricCard label="Ghost Trailers" value={totals.ghost} subtitle={`>= ${idleHourThreshold}h idle`} />
+        <MetricCard label="Ghost Trailers" value={totals.ghost} subtitle={`>= ${idleHourThreshold < 1 ? `${Math.round(idleHourThreshold * 60)} min` : `${idleHourThreshold}h`} idle`} />
         <MetricCard label="Cost of Idleness" value={`$${totals.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} subtitle="cumulative across fleet" />
         <MetricCard label="Avg Idle Days" value={totals.avgDays.toFixed(2)} subtitle="mean duration" />
         <MetricCard label="Projected Savings" value={`$${totals.projected.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} subtitle="capture rate applied" />

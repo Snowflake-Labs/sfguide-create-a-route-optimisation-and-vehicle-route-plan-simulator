@@ -28,7 +28,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 
 ## Prerequisites
 
-- `build-routing-solution` deployed (OPENROUTESERVICE_APP database with all 4 ORS services running, `Germany` region provisioned).
+- `build-routing-solution` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
 - `route-optimization` deployed (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES seeded — only used to confirm the OPTIMIZATION function is callable).
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) — not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
 
@@ -40,7 +40,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates BACKLOAD_MATCHING schema |
 | CREATE TABLE | Schema (FLEET_INTELLIGENCE.BACKLOAD_MATCHING) | CONFIG, TRAILERS, INTERNAL_VOLUMES, EXTERNAL_OFFERS, PROPOSAL_DECISIONS |
 | CREATE VIEW | Schema (FLEET_INTELLIGENCE.BACKLOAD_MATCHING) | VW_TRAILERS, VW_BACKLOAD_CANDIDATES |
-| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls OPTIMIZATION + DIRECTIONS + ISOCHRONES (driving-hgv) |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls OPTIMIZATION + DIRECTIONS + ISOCHRONES for the active region's routing profile |
 | USAGE ON SCHEMA OPENROUTESERVICE_APP.CORE | Schema | Same |
 | USAGE ON FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT, VARCHAR) | Function | Solver entry point (challenge, region) |
 | USAGE ON WAREHOUSE ROUTING_ANALYTICS | Warehouse | Powers the page queries |
@@ -55,7 +55,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | DATABASE | `FLEET_INTELLIGENCE` | Database for demo objects |
 | SCHEMA | `BACKLOAD_MATCHING` | Schema for backload tables and views |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
-| REGION | `Germany` | Provisioned ORS region the demo runs against |
+| REGION | (active preset) | Auto-derived from `BACKLOAD_MATCHING.CONFIG`, which mirrors the active Control App region/vehicle. No hardcoded city. |
 | HOME_REGION | `Nordics` | Country group counted as "back-to-home" |
 | HOME_LAT / HOME_LON | `55.6759 / 12.5655` | Anchor (Copenhagen) used as vehicle `end` |
 | TRAILER_COUNT | `80` | Idle-bound trailers seeded |
@@ -128,7 +128,7 @@ The new page lives inside the existing `ors_control_app` SPCS service. Follow th
 
 In the app:
 
-1. Switch the region picker to **Germany**.
+1. Confirm the region picker is on whatever region/vehicle preset you want to demo (default: SanFrancisco/ebike on a fresh install). The page reads from `BACKLOAD_MATCHING.CONFIG`, which is auto-synced to the active preset.
 2. Click **Backload Matching** in the sidebar (under Solution Accelerators).
 3. Verify the map shows ~80 trailer markers + ~120 internal volume circles + ~300 external offer circles.
 4. Adjust `Internal Priority` slider if desired (default 100). Click **Solve Backloads**.

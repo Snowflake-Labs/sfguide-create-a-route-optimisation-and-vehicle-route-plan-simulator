@@ -208,6 +208,29 @@ docker build --platform linux/amd64 \
 # 3. Push:
 docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
 
+# 3b. If `docker push` hangs (single layer stuck at "Waiting" forever):
+#     This is a known SPCS registry token-refresh bug — the bearer token
+#     issued by `snow spcs image-registry login` expires mid-PUT and the
+#     registry rejects the upload with 401. Docker daemon retries auth
+#     silently → re-queues the blob → the layer "Waits" indefinitely.
+#     Symptoms: 8 of 9 layers report "Layer already exists", 1 sits on
+#     "Waiting". Podman shows the explicit error
+#     "unable to retrieve auth token: invalid username/password".
+#
+#     Workaround: use `crane` (from go-containerregistry), which handles
+#     registry token refresh correctly:
+brew install crane
+snow spcs image-registry login -c <connection>   # refreshes ~/.docker/config.json + keychain
+docker save $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z -o /tmp/img.tar
+crane push /tmp/img.tar $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
+#     Expected output: `pushed blob: sha256:<hash>` followed by
+#     `<image>:<tag>: digest: sha256:... size: 1729`. Total ~5 minutes
+#     for a typical 139 MB image with one new layer.
+#
+#     `docker save | podman load | podman push` does NOT help here —
+#     both daemons hit the same registry-side bug. Restarting Docker
+#     Desktop and re-logging in does not help either. Only crane works.
+
 # 4. Update version:
 #    - $APP_DIR/ors_control_app_service.yaml (image tag)
 
@@ -273,8 +296,16 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 - **REBUILD_GRAPHS management (Issue #59)**: Routing graphs are persisted on `@ORS_GRAPHS_SPCS_STAGE/<region>/` and MUST be reused across suspend/resume cycles. The `create_region_ors_service` proc probes the stage and sets `REBUILD_GRAPHS="false"` if graphs already exist. After first-time provisioning completes (`service_ready=true`), `PROVISION_REGION_WRAPPER` auto-calls `SET_REBUILD_GRAPHS_FLAG(region, 'false')` so the next resume is instant (~1–2 min). For forced rebuilds (PBF update / corruption), call `REBUILD_REGION_GRAPHS(region)`.
-- **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed — the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **IMPORTANT**: every `OPTIMIZATION(...)` SQL call MUST pass `region` as the second argument — otherwise the gateway falls through to the legacy global `VROOM_SERVICE`+`ORS_SERVICE` (SF-only graph) and statewide / multi-region payloads will fail. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
-- **AUTO_SUSPEND_SECS invariant**: While a region is being provisioned (`REGION_PROVISION_JOBS.STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')`) or an H3 matrix job is running (`MATRIX_BUILD_JOBS.STATUS IN ('PENDING','RUNNING')`) the relevant services (`ORS_SERVICE_<REGION>`, `routing_gateway_service`, `downloader`) MUST have `AUTO_SUSPEND_SECS=0` so automatic time-based suspension cannot interrupt the long-running work. At all other times they MUST be `AUTO_SUSPEND_SECS=14400` (4h). Every procedure that flips these values to `0` is responsible for restoring `14400` on ALL exits (happy path, timeout, early return, exception). The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` detects drift and can be called at any time; it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
+- **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed — the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **v1.1.0 unification**: there is NO global `ORS_SERVICE`/`VROOM_SERVICE` anymore — even the default region (`SanFrancisco`) is served by `ORS_SERVICE_SANFRANCISCO` + `VROOM_SERVICE_SANFRANCISCO` in `ORS_POOL_SANFRANCISCO`. The gateway resolves a missing/NULL `region` to the env var `DEFAULT_REGION_NAME` (default: `SanFrancisco`) so callers may still omit the argument; both omitted and explicit-region paths land on the same per-region service. Passing `region` is recommended in all multi-region payloads to be self-documenting and to avoid relying on the DEFAULT_REGION_NAME setting. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
+- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Only services *strictly involved in the active build* are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`. The contract:
+  - `STAGE = 'DOWNLOADING'` → pin `DOWNLOADER`, `ORS_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
+  - `STAGE IN ('CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')` → pin `ORS_SERVICE_<REGION>` and `ORS_POOL_<REGION>` to 0; `DOWNLOADER` returns to 14400 (the PBF is already on stage).
+  - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
+  - All other times → services = `14400` (4h), per-region pools = `3600` (1h). `OPENROUTERSERVICE_APP_COMPUTE_POOL` is unrelated to this invariant (its default is `600`).
+  - `ors_control_app` has public endpoints and therefore no `AUTO_SUSPEND_SECS` — it is excluded.
+  - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
+  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
+- **v1.1.4 default-sentinel retirement**: The legacy `region:'default'` sentinel returned by `/api/regions/provisioned` was retired. `LIST_REGIONS()` now returns SanFrancisco as a regular row in `REGION_ORS_MAP` (with new `IS_DEFAULT BOOLEAN` column, seeded `TRUE` for the canonical default). The control-app server no longer synthesizes a `region:'default'` entry, no longer makes 0-arg `ORS_STATUS()` calls, and no longer special-cases `'default'` in studio job pool scaling, ors-readiness, or stage probing. The `isDefault` boolean is preserved as a pure UI hint (dropdown auto-selection + "(Default)" badge) but is decoupled from SQL routing. Inbound API requests passing `'default'` or empty region are still resolved at the gateway boundary via `normalizeRegion()` -> `DEFAULT_REGION_NAME`, but internal contracts assume real region keys.
 
 ## Geospatial Conventions
 
@@ -327,4 +358,5 @@ t.DESTINATION   -- trip destination
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
+- `docs/dev/server-architecture.md` — One-page map of `ors_control_app` server modules (`server/{lib,routes,studio}/`) and decision tree for "where do I add X?"
 - `docs/README.md` — Full index

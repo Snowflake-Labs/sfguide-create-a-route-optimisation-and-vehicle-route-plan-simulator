@@ -24,8 +24,9 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 
 ## Prerequisites
 
-- OpenRouteService Native App installed with functions: `DIRECTIONS`, `ISOCHRONES`, `OPTIMIZATION`
+- OpenRouteService Native App installed with functions: `DIRECTIONS`, `ISOCHRONES`, `ISOCHRONES_CLIPPED`, `OPTIMIZATION`
 - Cortex AI access (claude-sonnet-4-5 for geocoding)
+- Overture Maps Places share acquired (`OVERTURE_MAPS__PLACES` from Snowflake Marketplace listing `GZT0Z4CM1E9KR`) — used by `TOOL_POI_IN_ISOCHRONE`
 - A role with privileges listed in the Required Privileges section below
 
 ## Required Privileges
@@ -36,9 +37,11 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_AGENT schema |
-| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION |
+| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_POI_IN_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION |
 | CREATE CORTEX AGENT | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates ROUTING_AGENT |
-| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, OPTIMIZATION functions |
+| USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, ISOCHRONES_CLIPPED, OPTIMIZATION functions |
+| IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES from Marketplace (one-time) |
+| USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Overture POI data for TOOL_POI_IN_ISOCHRONE |
 | SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -114,8 +117,9 @@ snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connect
 This creates:
 - **TOOL_DIRECTIONS**: Wraps ORS DIRECTIONS with AI geocoding (claude-sonnet-4-5) for natural language location input
 - **TOOL_ISOCHRONE**: Wraps ORS ISOCHRONES with AI geocoding for reachability analysis
+- **TOOL_POI_IN_ISOCHRONE**: Joins an isochrone polygon with Overture Maps POIs (cafes, restaurants, shops, etc.) via `ST_WITHIN`
 - **TOOL_ROUTE_OPTIMIZATION**: Python procedure wrapping ORS OPTIMIZATION for multi-stop delivery routing
-- **ROUTING_AGENT**: Cortex Agent with tool bindings to all 3 procedures
+- **ROUTING_AGENT**: Cortex Agent with tool bindings to all 4 procedures
 
 > **Reference:** For annotated explanations of each procedure, see [references/agent-definitions.md](references/agent-definitions.md).
 
@@ -149,12 +153,12 @@ Before testing, verify all services are RUNNING (see Step 2b).
 
 **Sample queries by region:**
 
-| Region | Directions | Isochrone | Optimization |
-|--------|-----------|-----------|--------------|
-| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square — 2 vehicles from Union Square" |
-| New York | "Driving directions from Times Square to Central Park" | "Areas reachable within 15 min by car from Grand Central" | "Optimize deliveries to Empire State, Rockefeller Center, Times Square — 2 vehicles from Grand Central" |
-| London | "Driving directions from Tower Bridge to Buckingham Palace" | "Areas reachable within 15 min by car from King's Cross" | "Optimize deliveries to British Museum, Tower of London, Westminster Abbey — 2 vehicles from Trafalgar Square" |
-| Berlin | "Driving directions from Brandenburg Gate to Alexanderplatz" | "Areas reachable within 15 min by car from Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, East Side Gallery — 2 vehicles from Alexanderplatz" |
+| Region | Directions | Isochrone | Optimization | POIs in isochrone |
+|--------|-----------|-----------|--------------|-------------------|
+| San Francisco | "Driving directions from Union Square to Fisherman's Wharf" | "Areas reachable within 15 min by car from Union Square" | "Optimize deliveries to Ferry Building, Pier 39, Ghirardelli Square — 2 vehicles from Union Square" | "What cafes can I reach within a 15 minute ebike ride from Civic Center, San Francisco" |
+| New York | "Driving directions from Times Square to Central Park" | "Areas reachable within 15 min by car from Grand Central" | "Optimize deliveries to Empire State, Rockefeller Center, Times Square — 2 vehicles from Grand Central" | "Pharmacies within 10 minutes walk of Grand Central" |
+| London | "Driving directions from Tower Bridge to Buckingham Palace" | "Areas reachable within 15 min by car from King's Cross" | "Optimize deliveries to British Museum, Tower of London, Westminster Abbey — 2 vehicles from Trafalgar Square" | "Restaurants within 20 minutes walk of King's Cross" |
+| Berlin | "Driving directions from Brandenburg Gate to Alexanderplatz" | "Areas reachable within 15 min by car from Hauptbahnhof" | "Optimize deliveries to Reichstag, Checkpoint Charlie, East Side Gallery — 2 vehicles from Alexanderplatz" | "Bars within 15 minutes cycle from Alexanderplatz" |
 
 Use central city locations as depots.
 
@@ -201,7 +205,7 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 - 1 database: `FLEET_INTELLIGENCE`
 - 1 schema: `FLEET_INTELLIGENCE.ROUTING_AGENT`
 - 1 warehouse: `ROUTING_ANALYTICS`
-- 3 stored procedures with AI geocoding and error handling
+- 4 stored procedures with AI geocoding and error handling
 - 1 Cortex Agent registered in Snowflake Intelligence
 - Agent accessible via Snowsight UI and REST API
 
@@ -213,6 +217,9 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
 | Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;` and resume suspended services |
+| Tool returns `Parameter 'profile' has incorrect value of 'unknown'` | The requested profile is not loaded in this ORS install. The default `build-routing-solution` install loads `driving-car`, `driving-hgv`, `cycling-electric` only. Other ORS profile names (e.g. `cycling-regular`, `cycling-mountain`, `foot-walking`) are valid identifiers but require a different `p_profiles` value when calling `build-routing-solution`. See `.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql` (the `all_profiles` list) for the full set of selectable profile names. |
+| Agent says "OpenRouteService is currently unreachable" for POI questions (e.g. "what cafes can I reach") | This is the agent confabulating because it had no POI search tool. Re-run `deploy-agent.sql` to install `TOOL_POI_IN_ISOCHRONE` and ensure `OVERTURE_MAPS__PLACES` is acquired from Marketplace. |
+| `TOOL_POI_IN_ISOCHRONE` returns count=0 | Try a broader category (e.g. `restaurant` instead of `specialty bistro`) or a longer travel range. Confirm `SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE` returns rows. |
 
 ## Cleanup
 
@@ -222,6 +229,7 @@ To remove all objects created by this skill:
 -- Reverse dependency order: agent first, then procedures, schema, warehouse, database
 DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
 DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT;

@@ -157,6 +157,13 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Actions:**
 
+0. **Verify image-tag consistency** (prevents F1-style failures during `01_core_infra.sql`).
+   Service YAMLs reference image tags that MUST match `openrouteservice_app/image-versions.env`. Run the validator from the skill directory:
+   ```bash
+   bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+   ```
+   The script must print `PASSED`. If it reports `MISMATCH`, fix the offending YAML or doc to match `image-versions.env` BEFORE uploading the spec files in step 1 below — otherwise `CREATE SERVICE FROM @stage` in Step 6 will fail with `Image not found`.
+
 1. **Upload** map, config, and script files to stage (paths are relative to the **repo root**). Run as a single chained command:
    ```bash
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf" \
@@ -169,17 +176,22 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 2. **Upload** SPCS service specification files (required by `01_core_infra.sql` CREATE SERVICE statements):
    ```bash
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/openrouteservice.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/downloader_spec.yaml" \
       @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/ --connection <connection> --overwrite && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/routing-gateway-service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/ --connection <connection> --overwrite && \
-   snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/vroom-service.yaml" \
-     @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/ --connection <connection> --overwrite  && \
    snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml" \
      @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ --connection <connection> --overwrite 
    ```
+
+   Note: the legacy `openrouteservice.yaml` and `vroom-service.yaml` specs are no
+   longer uploaded — they were only consumed by the bare `ORS_SERVICE` /
+   `VROOM_SERVICE` CREATE blocks that have been removed from `01_core_infra.sql`
+   in v1.1.0. The default region (SanFrancisco) is now provisioned by the
+   tail of `03_region_management.sql` via the same per-region procs used for
+   every other city; those procs build their service spec dynamically from
+   `BUILD_ORS_SERVICE_SPEC` / `BUILD_VROOM_SERVICE_SPEC` and do not read the
+   bundled YAMLs.
 
 **Output:** Configuration files and service specs uploaded to Snowflake stage
 
@@ -230,27 +242,36 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    > **Prerequisite:** Step 4 must have uploaded service YAML specs to `@ORS_SPCS_STAGE/services/`. Module `01_core_infra.sql` creates services using `FROM @stage SPECIFICATION_FILE=` which will fail if the spec files are missing.
 
    ```bash
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql"       -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql" -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql" -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql"   -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
+   # NOTE: `snow sql -f` returns exit 0 on per-statement compile errors. Plain
+   # `&&` chaining lets a regression like the 2026-05-19 friction-log F1
+   # ("REGION_CATALOG does not exist") leak through. We use the reusable
+   # `scripts/run_sql_module.sh` wrapper which tees stdout/stderr per module
+   # and greps for SQL error markers (`002xxx (4xxxx)` or lines starting
+   # with `Error`) so any failure aborts the chain immediately.
+   RUN_SQL=".cortex/skills/build-routing-solution/scripts/run_sql_module.sh"
+   MODULES_DIR=".cortex/skills/build-routing-solution/openrouteservice_app/app/modules"
+
+   for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
+            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql; do
+     bash "$RUN_SQL" <connection> "$MODULES_DIR/$m" || exit 1
+   done
    ```
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
+
+   > **v1.1.0 unified default-region bootstrap:** After `03_region_management.sql` runs, its tail invokes `BOOTSTRAP_DEFAULT_REGION`, which calls `create_region_ors_service('SanFrancisco', 'S')` + `create_region_vroom_service('SanFrancisco')` — the same per-region creation path used for every other city you'd add later via the UI Region Builder. The default region is no longer special: it lives in `ORS_POOL_SANFRANCISCO`, the service is `ORS_SERVICE_SANFRANCISCO`, the VROOM is `VROOM_SERVICE_SANFRANCISCO`. Expect `ORS_SERVICE_SANFRANCISCO` to spend a few minutes on first boot building graphs from the staged `SanFrancisco.osm.pbf`; subsequent resumes are seconds (REBUILD_GRAPHS auto-flips to false after the build marker is written).
 
 2. **Verify** all services are running:
    ```sql
    SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
    ```
-   Expected: 5 services (ors_service, downloader, vroom_service, routing_gateway_service, ors_control_app). Most services reach RUNNING within 1-3 minutes.
+   Expected: 5 services (`ors_service_sanfrancisco`, `vroom_service_sanfrancisco`, `downloader`, `routing_gateway_service`, `ors_control_app`). Most services reach RUNNING within 1-3 minutes.
 
-   > **Note:** `ORS_SERVICE` typically takes 5-15 minutes to reach RUNNING status on first deploy because it builds its routing graph from the uploaded `.osm.pbf` map file. This is expected. All other deployment steps (seed data loading, demo deployment) can proceed while ORS_SERVICE starts. Routing function calls will fail until ORS_SERVICE reaches RUNNING.
+   > **Note:** `ORS_SERVICE_SANFRANCISCO` typically takes 5-15 minutes to reach RUNNING status on first deploy because it builds its routing graph from the staged `.osm.pbf` map file. This is expected. All other deployment steps (seed data loading, demo deployment) can proceed while it starts. Routing function calls will fail until it reaches RUNNING and the build marker is written.
 
    If services show SUSPENDED or PENDING after 5 minutes:
    ```sql
-   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE');
+   SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO');
    SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP');
    ```
 
@@ -264,11 +285,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
 **Actions:**
 
+> **Sequencing (CRITICAL):** Sub-step 1 (CREATE STAGE) MUST complete and return before sub-step 2 (uploads) starts. Do NOT parallelize them — kicking off `snow stage copy` while the CREATE STAGE call is still in flight produces `Stage SEED_DATA_STAGE does not exist or not authorized` errors (F2 in the friction log).
+
 1. **Create the seed data stage** (not created in Step 3):
    ```sql
    CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
    ```
+
+   **Verify the stage exists before continuing:**
+   ```sql
+   LIST @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE;
+   ```
+   The query must return successfully (zero rows is fine — stage is empty until sub-step 2 uploads files). If it errors with "does not exist", retry the CREATE STAGE.
 
 2. **Upload Parquet files to stage:**
 
@@ -312,7 +341,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    UNION ALL SELECT 'REGION_CATALOG', COUNT(*) FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;
    ```
 
-   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, FREIGHT_OFFERS=300, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG=460
+   Expected: INTRO_TRIPS=500, TELEMETRY=472869, TRIPS=6008, FLEET=50, POIS=5000, FREIGHT_OFFERS=300, JOBS=1, REGIONS=1, MATRIX=29402, REGION_CATALOG ≥ 460 (current parquet ships ~5,200 rows; the count is a floor, not an exact match — the catalog is periodically expanded with more world regions).
 
    **If any count is 0 or lower than expected:** The COPY INTO may have skipped files due to metadata caching when run via `snow sql -f`. Re-run the full loader: `snow sql -f datasets/load-seed-data.sql -c <connection>`. The script uses `TRUNCATE` + `COPY INTO ... FORCE = TRUE`, so re-runs are safe and idempotent. If a single table still shows a low count after re-run, execute its TRUNCATE + COPY INTO as a standalone `snow sql -q` command (not inside the multi-statement file) to bypass metadata caching.
 
@@ -325,6 +354,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    ```sql
    CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE');
    ```
+
+   **If REGION_CATALOG is much larger than 460 (e.g. ~5,200):** That's expected — the parquet snapshot is periodically expanded with more world regions and the original 460 figure was the count at the time the SKILL.md spec was written. The Region Builder treats catalog rows as additive, so a higher count just means more pre-populated regions in the dropdown. Treat 460 as a floor, not an exact match.
 
 **Output:** Intro page shows 500 animated SF routes, Data Studio shows 1 completed E-Bike Couriers job, Matrix Viewer has a pre-computed SanFrancisco cycling-electric RES8 matrix (178 hexagons, 29K travel-time pairs), Region Builder shows 460 pre-populated catalog entries (no remote API scrape needed)
 
@@ -386,11 +417,15 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Dwell Analysis** | 12-step Dynamic Table pipeline for dwell/congestion/SLA alerts | ~10 min | Seed data (Step 8) |
    | **Fleet Intelligence: Taxis** | Taxi GPS telemetry with Overture Maps POIs + driver routes | ~5 min | Overture Maps (auto-installed in Step 8b) |
    | **Retail Catchment** | Isochrone retail location analysis + competitor mapping | ~5 min | Overture Maps (auto-installed in Step 8b) |
-   | **Route Optimization** | VRP simulator with notebook + AISQL + Cortex AI | ~15 min | Overture Maps (Step 8b) + Cortex AI access |
+   | **Route Optimization (seed + VRP page)** | Seeds PLACES/LOOKUP/JOB_TEMPLATE; powers the VRP page in the Control App | ~5 min | Overture Maps (Step 8b) |
+   | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
+   | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers. **Best with HGV preset** (typically `region=Germany`, `vehicle_type=hgv`); on default SanFrancisco/ebike presets the trailer + internal-volume views render empty (the bootstrap prints a `STATUS` warning row in that case). | ~3 min | Seed data (Step 8) + Route Optimization deployed; ideally Germany/HGV preset generated via Data Studio |
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
+
+   > **Explicit AISQL prompt:** When deploying Route Optimization, ALWAYS ask the user whether to also deploy the AISQL notebook (default: yes for first-install). Do NOT silently skip it — the friction log F-AISQL item documents that the notebook is easy to miss otherwise. If the user opts in, follow `.cortex/skills/route-optimization/references/notebook-deployment.md` (and use the SanFrancisco fast-path described there when `<NOTEBOOK_CITY>` already matches).
 
 2. **Deploy selected demos in dependency order:**
    - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
@@ -405,6 +440,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - Retail Catchment -> Read and follow `.cortex/skills/retail-catchment/SKILL.md`
    - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
    - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
+   - Backload Matching -> Read and follow `.cortex/skills/backload-matching/SKILL.md`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 
@@ -433,7 +469,7 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 - Step 2: After detecting container runtime — confirm user's choice if both available
 - Step 5: After starting container build — monitor for authentication errors
 - Step 6: After deployment — verify application created successfully
-- Step 8: After presenting demo list — wait for user selection before deploying
+- Step 8: After presenting demo list — wait for user selection before deploying. When deploying Route Optimization, EXPLICITLY ASK whether to also deploy the AISQL notebook (default: yes for first install). Do not silently skip it.
 
 ## Redeploys (`scripts/deploy.sh`)
 

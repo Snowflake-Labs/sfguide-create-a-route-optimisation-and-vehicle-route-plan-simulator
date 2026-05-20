@@ -52,14 +52,27 @@ SELECT
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'OPENROUTESERVICE_APP_COMPUTE_POOL';
 
-CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
-   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice
-   SPECIFICATION_FILE = 'openrouteservice.yaml'
-   MIN_INSTANCES = 3
-   MAX_INSTANCES = 3
-   AUTO_SUSPEND_SECS = 14400
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
+-- ===========================================================================
+-- v1.1.0 — Unified region model
+--
+-- The legacy global services ORS_SERVICE and VROOM_SERVICE have been removed.
+-- After this module finishes, the install flow continues with module
+-- 03_region_management.sql (which defines PROVISION_REGION_WRAPPER) and is
+-- followed by a one-shot bootstrap call:
+--
+--   CALL OPENROUTESERVICE_APP.CORE.PROVISION_REGION_WRAPPER(
+--     UUID_STRING(), 'SanFrancisco', 'San Francisco',
+--     'https://download.geofabrik.de/north-america/us/california/norcal-latest.osm.pbf',
+--     37.4, 38.0, -123.2, -122.0,
+--     'driving-car,driving-hgv,cycling-regular,foot-walking',
+--     'S', FALSE
+--   );
+--
+-- This creates ORS_POOL_SANFRANCISCO + ORS_SERVICE_SANFRANCISCO +
+-- VROOM_SERVICE_SANFRANCISCO using the same code path as every other region.
+-- The gateway (v1.1.0+) resolves missing region to DEFAULT_REGION_NAME
+-- (SanFrancisco), so callers that omit region also land on this service.
+-- ===========================================================================
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
@@ -68,15 +81,6 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    AUTO_SUSPEND_SECS = 14400
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
-
-CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.vroom_service
-   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom
-   SPECIFICATION_FILE = 'vroom-service.yaml'
-   MIN_INSTANCES = 1
-   MAX_INSTANCES = 1
-   AUTO_SUSPEND_SECS = 14400
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL

@@ -6,63 +6,13 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import { useRegion } from '../hooks/useRegion';
-
-const BM_DB = 'FLEET_INTELLIGENCE';
-const BM_SCHEMA = 'BACKLOAD_MATCHING';
-const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
-
-const EUR_PER_EMPTY_KM = 1.20;
-
-const ROUTE_COLORS: [number, number, number][] = [
-  [41, 181, 232], [34, 197, 94], [245, 158, 11], [239, 68, 68],
-  [128, 0, 255], [255, 105, 180], [0, 191, 255], [50, 205, 50],
-  [255, 165, 0], [220, 38, 38], [99, 102, 241], [16, 185, 129],
-];
-
-interface Trailer {
-  TRAILER_ID: string; OPERATING_COUNTRY: string; HOME_DEPOT: string;
-  HOME_LON: number; HOME_LAT: number; CURRENT_LOAD: string;
-  DROPOFF_CITY: string; DROPOFF_LON: number; DROPOFF_LAT: number;
-  ETA_TS: string; ETA_MIN: number; STATUS: string;
-  HAZMAT_CERT: boolean; MAX_PAYLOAD_KG: number;
-}
-
-interface Volume {
-  ID: string; PICKUP_CITY: string; PICKUP_LON: number; PICKUP_LAT: number;
-  DROPOFF_CITY: string; DROPOFF_LON: number; DROPOFF_LAT: number;
-  PICKUP_FROM_TS: string; PICKUP_TO_TS: string;
-  WEIGHT_KG: number; PRODUCT: string; HAZMAT: boolean;
-}
-
-interface Offer extends Volume {
-  OFFER_ID: string; SOURCE: string; PRICE_EUR: number;
-  PICKUP_COUNTRY: string; DROPOFF_COUNTRY: string;
-  LISTING_TEXT: string;
-}
-
-interface Assignment {
-  TRAILER_ID: string; OFFER_ID: string; SOURCE: string;
-  PICKUP_LON: number; PICKUP_LAT: number;
-  DROPOFF_LON: number; DROPOFF_LAT: number;
-  EMPTY_KM: number; LOADED_KM: number; SCORE: number;
-  PRODUCT: string; PICKUP_CITY: string; PROPOSAL_DROPOFF_CITY: string;
-  HOME_LON: number; HOME_LAT: number;
-  TRAILER_DROPOFF_LON: number; TRAILER_DROPOFF_LAT: number;
-  ROUTE_GEOJSON?: any;
-  EMPTY_GEOJSON?: any;
-}
-
-async function sfQuery(sql: string, database = BM_DB, schema = BM_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[BM/sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
-}
+import AssignmentList from './backload-matching/AssignmentList';
+import DecisionsAudit from './backload-matching/DecisionsAudit';
+import {
+  BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_EMPTY_KM, ROUTE_COLORS,
+  Trailer, Volume, Offer, Assignment, SvcStatus,
+  sfQuery, haversineKm, profileForVehicleType,
+} from './backload-matching/helpers';
 
 function cartoBasemap() {
   return new TileLayer({
@@ -72,22 +22,6 @@ function cartoBasemap() {
       return new BitmapLayer(props, { data: undefined, image: props.data, bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]] });
     },
   });
-}
-
-function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
-  const R = 6371, toRad = (x: number) => x * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-function profileForVehicleType(vt: string): string {
-  switch ((vt || '').toLowerCase()) {
-    case 'ebike': case 'bicycle': case 'bike': return 'cycling-electric';
-    case 'car':                                return 'driving-car';
-    case 'hgv': case 'truck':                  return 'driving-hgv';
-    default:                                   return 'driving-hgv';
-  }
 }
 
 export default function BackloadMatching() {
@@ -113,10 +47,10 @@ export default function BackloadMatching() {
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [seedHint, setSeedHint] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
   const [solverLog, setSolverLog] = useState<string | null>(null);
 
   // ORS service status + wake-up
-  interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
   const requiredServices = useMemo(
     () => ['ROUTING_GATEWAY_SERVICE',
            `ORS_SERVICE_${(regionName || '').toUpperCase()}`,
@@ -207,30 +141,72 @@ export default function BackloadMatching() {
     const provProfile = (profRows[0] as any)?.PROFILES;
     if (provProfile) setOrsProfile(provProfile.split(',')[0].trim());
     if (!tRows.length || !iRows.length || !eRows.length) {
-      setSeedHint('Tables are empty for this region. Run .cortex/skills/backload-matching/references/backfill-freight-offers.sql, then refresh.');
+      setSeedHint(`Tables are empty for region "${regionName}". Click "Generate seed data" to populate them, or run a Data Studio job for this region.`);
     } else {
       setSeedHint(null);
     }
   }, [regionName]);
 
   // Option B: app region picker is the source of truth.
-  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG.REGION then refetch.
+  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG (REGION + VEHICLE_TYPE)
+  // then refetch. VEHICLE_TYPE is resolved from DIM_FLEET so the views match the
+  // active preset (e.g. ebike for San Francisco, hgv for Germany).
   useEffect(() => {
     if (!regionName) return;
     (async () => {
       try {
-        const cfg = await sfQuery(`SELECT REGION FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
-        const cur = (cfg[0] as any)?.REGION;
-        if (cur !== regionName) {
-          await sfQuery(`UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${regionName.replace(/'/g, "''")}'`);
+        const safeRegion = regionName.replace(/'/g, "''");
+        const cfg = await sfQuery(`SELECT REGION, VEHICLE_TYPE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
+        const cur = (cfg[0] as any) || {};
+        const vtRows = await sfQuery(
+          `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+           WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
+          'SYNTHETIC_DATASETS', 'UNIFIED',
+        );
+        const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
+        const safeVt = (detectedVt && String(detectedVt).replace(/'/g, "''")) || cur.VEHICLE_TYPE || 'hgv';
+        if (cur.REGION !== regionName || (detectedVt && cur.VEHICLE_TYPE !== detectedVt)) {
+          await sfQuery(
+            `UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
+          );
+        }
+        // Mirror the same (region, vehicle_type) into ROUTE_OPTIMIZATION.CONFIG so
+        // Asset Velocity views (VW_IDLE_TRAILERS, VW_LANE_DEMAND,
+        // VW_TRAILER_COST_OF_IDLENESS) line up with the active preset.
+        try {
+          await sfQuery(
+            `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
+            'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+          );
+        } catch (e) {
+          console.warn('[BM] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
         }
       } catch (e) {
-        console.warn('[BM] CONFIG region sync failed', e);
+        console.warn('[BM] CONFIG sync failed', e);
       }
       await refetch();
     })();
   }, [regionName, refetch]);
 
+  const seedData = useCallback(async () => {
+    if (!regionName || seeding) return;
+    setSeeding(true);
+    setSeedHint('Generating seed data...');
+    try {
+      const r = await fetch('/api/backload/seed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: regionName }),
+      });
+      const j = await r.json();
+      if (j.status !== 'ok') throw new Error(j.error || 'seed failed');
+      await refetch();
+    } catch (e: any) {
+      setSeedHint(`Seed failed: ${e.message?.slice(0, 200)}`);
+    } finally {
+      setSeeding(false);
+    }
+  }, [regionName, seeding, refetch]);
   const solve = useCallback(async () => {
     if (!trailers.length) return;
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null); setSolveError(null);
@@ -483,8 +459,26 @@ export default function BackloadMatching() {
       <p className="subtitle">Fleet-wide VRP solve over idle-bound trailers, internal volumes, and external freight-exchange offers.</p>
 
       {seedHint && (
-        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          {seedHint}
+        <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>{seedHint}</span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={seeding}
+              onClick={seedData}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.6)', background: '#fff', color: '#a16207', cursor: seeding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+            >
+              {seeding ? 'Generating...' : 'Generate seed data'}
+            </button>
+            <button
+              type="button"
+              disabled={seeding}
+              onClick={() => refetch()}
+              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >
+              Refresh
+            </button>
+          </span>
         </div>
       )}
 
@@ -554,52 +548,15 @@ export default function BackloadMatching() {
           )}
         </div>
 
-        <div style={{ height: 560, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
-          <h3 style={{ fontSize: 13, marginTop: 0 }}>Assignments ({assignments.length})</h3>
-          {!assignments.length && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Click <b>Solve Backloads</b> to compute the optimal plan.</div>}
-          {assignments.map((a, i) => {
-            const c = ROUTE_COLORS[i % ROUTE_COLORS.length];
-            const isSel = selectedTrailer === a.TRAILER_ID;
-            return (
-              <div key={a.TRAILER_ID} onClick={() => setSelectedTrailer(a.TRAILER_ID)}
-                   style={{ padding: 8, borderRadius: 6, marginBottom: 6, cursor: 'pointer',
-                            border: isSel ? '1px solid #0DB048' : '1px solid var(--border)',
-                            background: isSel ? 'rgba(13,176,72,0.06)' : 'transparent' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c.join(',')})`, flexShrink: 0 }} />
-                  <b style={{ fontSize: 12 }}>{a.TRAILER_ID}</b>
-                  <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: a.SOURCE === 'INTERNAL' ? 'rgba(41,181,232,0.18)' : 'rgba(200,200,200,0.4)' }}>
-                    {a.SOURCE}
-                  </span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                  {a.PICKUP_CITY} -&gt; {a.PROPOSAL_DROPOFF_CITY}
-                </div>
-                <div style={{ fontSize: 11, marginTop: 2 }}>
-                  empty {Math.round(a.EMPTY_KM)} km - loaded {Math.round(a.LOADED_KM)} km - {a.PRODUCT}
-                </div>
-                {isSel && (
-                  <div style={{ marginTop: 6 }}>
-                    <button onClick={(e) => { e.stopPropagation(); askRationale(a); }} disabled={rationaleLoading}
-                            style={{ fontSize: 11, padding: '3px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>
-                      {rationaleLoading ? 'Asking Cortex...' : 'Why this assignment?'}
-                    </button>
-                    {rationale[a.TRAILER_ID] && (
-                      <div style={{ marginTop: 6, padding: 6, fontSize: 11, background: 'rgba(0,0,0,0.04)', borderRadius: 4 }}>
-                        {rationale[a.TRAILER_ID]}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {unassigned.length > 0 && (
-            <div style={{ fontSize: 11, marginTop: 8, color: 'var(--text-secondary)' }}>
-              {unassigned.length} jobs unassigned (capacity / time / skill mismatch).
-            </div>
-          )}
-        </div>
+        <AssignmentList
+          assignments={assignments}
+          unassigned={unassigned}
+          selectedTrailer={selectedTrailer}
+          onSelect={setSelectedTrailer}
+          rationale={rationale}
+          rationaleLoading={rationaleLoading}
+          onAskRationale={askRationale}
+        />
       </div>
 
       {selected && (
@@ -608,42 +565,7 @@ export default function BackloadMatching() {
         </div>
       )}
 
-      <div style={{ marginTop: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <h3 style={{ fontSize: 14, margin: 0 }}>Decisions Audit (last 25)</h3>
-          <button onClick={loadAudit} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>Refresh</button>
-          <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-            Total reclaimed: EUR {auditRows.reduce((s, r) => s + Number(r.EUR_RECLAIMED || 0), 0).toLocaleString()}
-          </span>
-        </div>
-        {!auditRows.length && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>No decisions yet. Solve + Confirm Plan to populate.</div>}
-        {auditRows.length > 0 && (
-          <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                <th style={{ textAlign: 'left', padding: '4px 6px' }}>Decided</th>
-                <th style={{ textAlign: 'left', padding: '4px 6px' }}>Trailer</th>
-                <th style={{ textAlign: 'left', padding: '4px 6px' }}>Offer</th>
-                <th style={{ textAlign: 'left', padding: '4px 6px' }}>Source</th>
-                <th style={{ textAlign: 'right', padding: '4px 6px' }}>Empty km</th>
-                <th style={{ textAlign: 'right', padding: '4px 6px' }}>EUR reclaimed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {auditRows.map((r, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid rgba(0,0,0,0.04)' }}>
-                  <td style={{ padding: '3px 6px' }}>{r.DECIDED_AT}</td>
-                  <td style={{ padding: '3px 6px' }}>{r.TRAILER_ID}</td>
-                  <td style={{ padding: '3px 6px' }}>{r.OFFER_ID}</td>
-                  <td style={{ padding: '3px 6px' }}>{r.SOURCE}</td>
-                  <td style={{ padding: '3px 6px', textAlign: 'right' }}>{r.EMPTY_KM}</td>
-                  <td style={{ padding: '3px 6px', textAlign: 'right' }}>{r.EUR_RECLAIMED}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <DecisionsAudit rows={auditRows} onRefresh={loadAudit} />
     </div>
   );
 }

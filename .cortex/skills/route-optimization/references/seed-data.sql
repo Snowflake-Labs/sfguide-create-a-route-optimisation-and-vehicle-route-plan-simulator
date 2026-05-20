@@ -66,8 +66,11 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION IF NOT EXISTS ON EQUALITY(ALTERNATE);
-ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION IF NOT EXISTS ON GEO(GEOMETRY);
+-- ALTER TABLE ... ADD SEARCH OPTIMIZATION does NOT support IF NOT EXISTS in Snowflake.
+-- These statements are idempotent: re-running on a table that already has the optimization
+-- is a no-op (returns "Statement executed successfully" without error).
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION ON EQUALITY(ALTERNATE);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION ON GEO(GEOMETRY);
 
 --------------------------------------------------------------------
 -- JOB_TEMPLATE (29 sample jobs per region)
@@ -115,14 +118,18 @@ EXECUTE AS CALLER
 AS
 $$
 BEGIN
-    LET row_count INT;
-    SELECT COUNT(*) INTO :row_count
-    FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
-    WHERE REGION = :REGION_KEY;
+    -- Per-table idempotency: only the (large) PLACES insert is skipped when already populated.
+    -- LOOKUP and JOB_TEMPLATE are tiny + deterministic and use DELETE+INSERT, so they're
+    -- always reseeded. This prevents the F6 failure mode where a partial earlier run left
+    -- PLACES populated but LOOKUP/JOB_TEMPLATE empty and the proc short-circuited.
+    LET places_count INT;
+    LET lookup_count INT;
+    LET jobs_count INT;
+    SELECT COUNT(*) INTO :places_count FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES       WHERE REGION = :REGION_KEY;
+    SELECT COUNT(*) INTO :lookup_count FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP        WHERE REGION = :REGION_KEY;
+    SELECT COUNT(*) INTO :jobs_count   FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE WHERE REGION = :REGION_KEY;
 
-    IF (row_count > 0) THEN
-        RETURN 'Already seeded: ' || row_count || ' places for ' || REGION_KEY;
-    END IF;
+    LET seed_places BOOLEAN := (places_count = 0);
 
     LET min_lat FLOAT;
     LET max_lat FLOAT;
@@ -137,27 +144,45 @@ BEGIN
     IF (min_lat IS NULL) THEN
         SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON INTO :min_lat, :max_lat, :min_lon, :max_lon
         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
-        WHERE UPPER(REGION_KEY) = UPPER(:REGION_KEY) OR UPPER(REGION_NAME) = UPPER(:REGION_KEY)
+        WHERE UPPER(LOOKUP_NAME) = UPPER(:REGION_KEY) OR UPPER(REGION_KEY) = UPPER(:REGION_KEY) OR UPPER(REGION_NAME) = UPPER(:REGION_KEY)
         LIMIT 1;
     END IF;
 
-    IF (min_lat IS NULL) THEN
+    -- bbox is required only when we actually need to (re)seed PLACES.
+    IF (seed_places AND min_lat IS NULL) THEN
         RETURN 'ERROR: No bbox found for region ' || REGION_KEY || '. Register it in REGION_REGISTRY or REGION_CATALOG first.';
     END IF;
 
-    INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (REGION, GEOMETRY, PHONES, CATEGORY, NAME, ADDRESS, ALTERNATE)
-    SELECT
-        :REGION_KEY,
-        GEOMETRY,
-        PHONES[0]::TEXT,
-        CATEGORIES:primary::TEXT,
-        NAMES:primary::TEXT,
-        ADDRESSES[0],
-        COALESCE(CATEGORIES:alternate:list, ARRAY_CONSTRUCT())
-    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-    WHERE ST_X(GEOMETRY) BETWEEN :min_lon AND :max_lon
-      AND ST_Y(GEOMETRY) BETWEEN :min_lat AND :max_lat
-      AND CATEGORIES:primary IS NOT NULL;
+    IF (seed_places) THEN
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (REGION, GEOMETRY, PHONES, CATEGORY, NAME, ADDRESS, ALTERNATE)
+        WITH region_boundary AS (
+            -- Polygon refinement so non-rectangular regions (California, Italy,
+            -- Chile) don't pull in POIs from neighboring states / oceans / countries.
+            -- COALESCE-with-TRUE pattern: if the region has no catalog row or
+            -- BOUNDARY is NULL, gracefully degrade to bbox-only filtering.
+            SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE (UPPER(LOOKUP_NAME) = UPPER(:REGION_KEY)
+                   OR UPPER(REGION_KEY) = UPPER(:REGION_KEY)
+                   OR UPPER(REGION_NAME) = UPPER(:REGION_KEY))
+              AND BOUNDARY IS NOT NULL
+            ORDER BY BOUNDARY_AREA_KM2 ASC
+            LIMIT 1
+        )
+        SELECT
+            :REGION_KEY,
+            p.GEOMETRY,
+            p.PHONES[0]::TEXT,
+            p.CATEGORIES:primary::TEXT,
+            p.NAMES:primary::TEXT,
+            p.ADDRESSES[0],
+            COALESCE(p.CATEGORIES:alternate:list, ARRAY_CONSTRUCT())
+        FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+        LEFT JOIN region_boundary rb ON TRUE
+        WHERE ST_X(p.GEOMETRY) BETWEEN :min_lon AND :max_lon
+          AND ST_Y(p.GEOMETRY) BETWEEN :min_lat AND :max_lat
+          AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
+          AND p.CATEGORIES:primary IS NOT NULL;
+    END IF;
 
     DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE REGION = :REGION_KEY;
 
@@ -178,28 +203,34 @@ BEGIN
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
         WHERE REGION = :source_region;
     ELSE
+        -- NOTE: Snowflake disallows ARRAY_CONSTRUCT() inside a VALUES (...) row constructor
+        -- (`Invalid expression [ARRAY_CONSTRUCT(...)] in VALUES clause`). Use SELECT ... UNION ALL
+        -- to construct array columns inline. See AGENTS.md > "Loading GEOGRAPHY Data" for the same
+        -- restriction on ST_MAKEPOINT in VALUES.
         INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
-        SELECT :REGION_KEY, column1, column2, column3, column4, column5, column6, column7, column8 FROM VALUES
-        ('Healthcare', 'flammable', 'sharps', 'temperature-controlled',
-         ARRAY_CONSTRUCT('hospital health pharmaceutical drug'),
-         ARRAY_CONSTRUCT('supplies warehouse depot'),
-         ARRAY_CONSTRUCT('hospital', 'pharmacy', 'dentist'),
-         ARRAY_CONSTRUCT('Explosive goods', 'Sharp instruments', 'Fridge')),
-        ('Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
-         ARRAY_CONSTRUCT('food vegetables meat'),
-         ARRAY_CONSTRUCT('wholesaler warehouse factory'),
-         ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
-         ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')),
-        ('Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
-         ARRAY_CONSTRUCT('hair cosmetics beauty'),
-         ARRAY_CONSTRUCT('wholesaler warehouse factory'),
-         ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
-         ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')),
-        ('Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
-         ARRAY_CONSTRUCT('beverage drink brewery'),
-         ARRAY_CONSTRUCT('warehouse distribution depot'),
-         ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
-         ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'));
+        SELECT :REGION_KEY, 'Healthcare', 'flammable', 'sharps', 'temperature-controlled',
+            ARRAY_CONSTRUCT('hospital health pharmaceutical drug'),
+            ARRAY_CONSTRUCT('supplies warehouse depot'),
+            ARRAY_CONSTRUCT('hospital', 'pharmacy', 'dentist'),
+            ARRAY_CONSTRUCT('Explosive goods', 'Sharp instruments', 'Fridge')
+        UNION ALL
+        SELECT :REGION_KEY, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
+            ARRAY_CONSTRUCT('food vegetables meat'),
+            ARRAY_CONSTRUCT('wholesaler warehouse factory'),
+            ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
+            ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')
+        UNION ALL
+        SELECT :REGION_KEY, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
+            ARRAY_CONSTRUCT('hair cosmetics beauty'),
+            ARRAY_CONSTRUCT('wholesaler warehouse factory'),
+            ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
+            ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')
+        UNION ALL
+        SELECT :REGION_KEY, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
+            ARRAY_CONSTRUCT('beverage drink brewery'),
+            ARRAY_CONSTRUCT('warehouse distribution depot'),
+            ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
+            ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity');
     END IF;
 
     DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE WHERE REGION = :REGION_KEY;
@@ -231,11 +262,15 @@ BEGIN
         (13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc');
     END IF;
 
-    SELECT COUNT(*) INTO :row_count
-    FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
-    WHERE REGION = :REGION_KEY;
+    -- Refresh counts to report what was actually persisted.
+    SELECT COUNT(*) INTO :places_count FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES       WHERE REGION = :REGION_KEY;
+    SELECT COUNT(*) INTO :lookup_count FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP        WHERE REGION = :REGION_KEY;
+    SELECT COUNT(*) INTO :jobs_count   FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE WHERE REGION = :REGION_KEY;
 
-    RETURN 'Seeded ' || row_count || ' places for ' || REGION_KEY;
+    RETURN 'Seeded for ' || REGION_KEY || ': places=' || places_count
+        || ', lookup=' || lookup_count
+        || ', job_template=' || jobs_count
+        || (CASE WHEN seed_places THEN ' (places freshly inserted)' ELSE ' (places preserved from prior run)' END);
 END;
 $$;
 
