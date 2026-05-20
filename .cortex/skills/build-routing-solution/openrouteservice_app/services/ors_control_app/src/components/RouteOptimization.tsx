@@ -68,6 +68,7 @@ export default function RouteOptimization() {
   const [loading, setLoading] = useState(false);
   const [nearbySchools, setNearbySchools] = useState<any[]>([]);
   const [selectedSchools, setSelectedSchools] = useState<any[]>([]);
+  const [depotLabel, setDepotLabel] = useState('Depot');
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
   const [activeResultTab, setActiveResultTab] = useState<'map' | 'assignments'>('map');
   const [jobAssignments, setJobAssignments] = useState<JobAssignment[]>([]);
@@ -146,8 +147,11 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords || !selectedIndustry) return;
     setLoading(true);
-    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
+    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
     const sourceTable = lookupRows?.[0]?.SOURCE_TABLE || null;
+    const depotCtype = lookupRows?.[0]?.DEPOT_CTYPE;
+    const dLabel = lookupRows?.[0]?.DEPOT_LABEL || 'Depot';
+    setDepotLabel(dLabel);
     let placesQuery: string;
     if (sourceTable) {
       placesQuery = `SELECT NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS
@@ -172,14 +176,15 @@ export default function RouteOptimization() {
     ]);
     setPlaces(p);
     setJobs(j);
-    if (selectedIndustry === 'SEN Transport') {
-      const schools = await sfQuery(`SELECT NAME, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND CATEGORY IN ('school','elementary_school','middle_school','high_school','public_school','private_school','charter_school') AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) ORDER BY RANDOM() LIMIT 10`);
-      setNearbySchools(schools);
-      if (schools.length > 0 && selectedSchools.length === 0) {
-        const first = schools[0];
+    if (depotCtype) {
+      const cats = (typeof depotCtype === 'string' ? JSON.parse(depotCtype) : depotCtype) as string[];
+      const catStr = cats.map((c: string) => `'${c}'`).join(',');
+      const depots = await sfQuery(`SELECT NAME, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND CATEGORY IN (${catStr}) AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) ORDER BY NAME LIMIT 10`);
+      setNearbySchools(depots);
+      if (depots.length > 0 && selectedSchools.length === 0) {
+        const first = depots[0];
         setSelectedSchools([first]);
         setVehicles(prev => prev.map(v => ({ ...v, startLng: Number(first.LNG), startLat: Number(first.LAT), endLng: Number(first.LNG), endLat: Number(first.LAT) })));
-        setCenterCoords([Number(first.LNG), Number(first.LAT)]);
       }
     } else {
       setNearbySchools([]);
@@ -421,7 +426,11 @@ export default function RouteOptimization() {
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
   const getTooltip = useCallback(({ object }: any) => {
-    if (!object?.NAME) return null;
+    if (!object) return null;
+    if (object.name && !object.NAME) {
+      return { html: `<div style="margin-bottom:4px"><b style="font-size:13px">${object.name}</b></div><div style="opacity:0.7">${depotLabel}</div>`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '12px 14px', borderRadius: '8px', fontSize: '12px', lineHeight: '1.6', maxWidth: '280px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' } };
+    }
+    if (!object.NAME) return null;
     const key = `${Number(object.LNG).toFixed(6)},${Number(object.LAT).toFixed(6)}`;
     const assignment = assignmentMap.get(key);
     const isUnassigned = unassignedCoords.has(key);
@@ -453,7 +462,7 @@ export default function RouteOptimization() {
       html += `</div>`;
     }
     return { html, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '12px 14px', borderRadius: '8px', fontSize: '12px', lineHeight: '1.6', maxWidth: '280px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' } };
-  }, [assignmentMap, unassignedCoords, vehicles, places, jobTemplates]);
+  }, [assignmentMap, unassignedCoords, vehicles, places, jobTemplates, depotLabel]);
 
   const formatDist = (m: number) => m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
   const formatTime = (s: number) => { const min = Math.round(s / 60); return min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min} min`; };
@@ -493,7 +502,7 @@ export default function RouteOptimization() {
 
       {nearbySchools.length > 0 && (
         <div style={{ marginBottom: 12, padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
-          <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'block' }}>Schools (Destinations) — select one or more:</label>
+          <label style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'block' }}>{depotLabel} — select one or more:</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {nearbySchools.map((s: any) => {
               const isSelected = selectedSchools.some((ss: any) => ss.NAME === s.NAME);
@@ -505,7 +514,6 @@ export default function RouteOptimization() {
                     if (updated.length > 0) {
                       const primary = updated[0];
                       setVehicles(prev => prev.map(v => ({ ...v, startLng: Number(primary.LNG), startLat: Number(primary.LAT), endLng: Number(primary.LNG), endLat: Number(primary.LAT) })));
-                      setCenterCoords([Number(primary.LNG), Number(primary.LAT)]);
                     }
                   }} style={{ width: 12, height: 12 }} />
                   {s.NAME}
@@ -637,7 +645,7 @@ export default function RouteOptimization() {
               { label: 'POI Locations', checked: showPOIs, set: setShowPOIs, color: '#29B5E8' },
               { label: 'Route Lines', checked: showRoutes, set: setShowRoutes, color: '#22C55E' },
               { label: 'Catchment', checked: showCatchment, set: setShowCatchment, color: '#29B5E8' },
-              { label: selectedIndustry === 'SEN Transport' ? 'Schools' : 'Depot', checked: showDepot, set: setShowDepot, color: '#F59E0B' },
+              { label: depotLabel, checked: showDepot, set: setShowDepot, color: '#F59E0B' },
             ].map(layer => (
               <label key={layer.label} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '2px 0' }}>
                 <input type="checkbox" checked={layer.checked} onChange={e => layer.set(e.target.checked)} style={{ accentColor: layer.color, width: 12, height: 12 }} />
