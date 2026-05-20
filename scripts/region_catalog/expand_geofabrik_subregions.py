@@ -104,10 +104,29 @@ def main() -> int:
     for fid, p in feats.items():
         path_ids = build_path(feats, fid)
         depth = len(path_ids) - 1  # 0=continent, 1=country, 2=sub, 3=sub-sub
+
+        # Geofabrik tree anomaly: some sub-region features (e.g. US states)
+        # have id="<country>/<region>" but parent is the *continent*, not the
+        # country. They also publish their literal id as the `name` property
+        # (e.g. name="us/california"). Detect that pattern here so we promote
+        # them to LEVEL=sub-region with a synthetic parent and a clean
+        # display name derived from the slug.
+        synthetic_parent_id: str | None = None
+        if (
+            "/" in fid
+            and depth == 1
+            and p.get("name") == fid
+        ):
+            country_slug, _, region_slug = fid.partition("/")
+            if country_slug in feats:
+                synthetic_parent_id = country_slug
+
         # Skip continents that already exist in seed and aren't gef "russia"
         # since both are roots in geofabrik tree.
         # Determine LEVEL
-        if depth == 0:
+        if synthetic_parent_id is not None:
+            level = "sub-region"
+        elif depth == 0:
             level = "continent"
         elif depth == 1:
             # russia tree's root is itself; treat country-level
@@ -124,14 +143,33 @@ def main() -> int:
         continent_name = cont_label.get(root, canonicalize(root))
 
         # Country label: if depth>=1, country = path_ids[1]
-        if depth == 0:
+        if synthetic_parent_id is not None:
+            country_name = feats.get(synthetic_parent_id, {}).get("name")
+        elif depth == 0:
             country_name = None
         elif depth == 1:
             country_name = p["name"]
         else:
             country_name = feats.get(path_ids[1], {}).get("name")
 
-        region_name = p["name"]
+        if synthetic_parent_id is not None:
+            region_slug = fid.partition("/")[2]
+            # Title-case the slug, preserving "of"/"the"/"and" lowercase and
+            # normalizing the country abbreviation prefix when it appears as
+            # a token (e.g. "us-virgin-islands" -> "US Virgin Islands").
+            small = {"of", "the", "and"}
+            tokens = [t for t in re.split(r"[-_]+", region_slug) if t]
+            words: list[str] = []
+            for i, tok in enumerate(tokens):
+                if tok.lower() == synthetic_parent_id.lower():
+                    words.append(tok.upper())
+                elif i > 0 and tok.lower() in small:
+                    words.append(tok.lower())
+                else:
+                    words.append(tok.capitalize())
+            region_name = " ".join(words)
+        else:
+            region_name = p["name"]
         region_key = canonicalize(fid)
         # Avoid collisions: country-level fids that match existing keys keep
         # the existing key. For sub-regions, suffix with country code if the
@@ -160,7 +198,12 @@ def main() -> int:
             continue
 
         # HIERARCHY: lowercase id path joined with /
-        hierarchy = "/".join(path_ids[:-1]) if len(path_ids) > 1 else (path_ids[0] if path_ids else "")
+        if synthetic_parent_id is not None:
+            # path_ids = [continent, "<country>/<region>"]; rewrite as
+            # [continent, country, region] for HIERARCHY purposes.
+            hierarchy = f"{path_ids[0]}/{synthetic_parent_id}"
+        else:
+            hierarchy = "/".join(path_ids[:-1]) if len(path_ids) > 1 else (path_ids[0] if path_ids else "")
         if depth == 0:
             hierarchy = ""
 
