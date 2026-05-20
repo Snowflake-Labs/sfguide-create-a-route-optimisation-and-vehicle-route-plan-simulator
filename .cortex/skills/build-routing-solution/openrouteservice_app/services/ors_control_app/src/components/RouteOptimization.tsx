@@ -31,6 +31,18 @@ function cartoBasemap() {
 
 const ROUTE_COLORS: [number, number, number][] = [[41, 181, 232], [34, 197, 94], [245, 158, 11], [239, 68, 68], [128, 0, 255], [255, 105, 180], [0, 191, 255], [50, 205, 50]];
 
+const PROFILE_LABELS: Record<string, string> = {
+  'driving-car': 'Car',
+  'driving-hgv': 'HGV',
+  'cycling-regular': 'Bicycle',
+  'cycling-electric': 'E-Bike',
+  'cycling-mountain': 'Mountain Bike',
+  'cycling-road': 'Road Bike',
+  'foot-walking': 'Walking',
+  'foot-hiking': 'Hiking',
+  'wheelchair': 'Wheelchair',
+};
+
 interface VehicleConfig { id: number; profile: string; startLng: number; startLat: number; endLng: number; endLat: number; capacity: number; }
 
 export default function RouteOptimization() {
@@ -43,6 +55,7 @@ export default function RouteOptimization() {
   const [places, setPlaces] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<VehicleConfig[]>([{ id: 1, profile: 'driving-car', startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat, capacity: 10 }]);
+  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [isoMinutes, setIsoMinutes] = useState(15);
   const [catchmentGeoJson, setCatchmentGeoJson] = useState<any>(null);
   const [vrpResult, setVrpResult] = useState<any>(null);
@@ -68,6 +81,40 @@ export default function RouteOptimization() {
 
   useEffect(() => {
     sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`).then(r => setIndustries(r));
+  }, [regionName]);
+
+  // Load profiles available on the active region's ORS service. The dropdown is
+  // populated from this list so users can never pick a profile (e.g. driving-car
+  // when only driving-hgv is loaded) that ORS would reject with
+  // "Parameter 'profile' has incorrect value of 'unknown'".
+  useEffect(() => {
+    if (!regionName) { setAvailableProfiles([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await sfQuery(
+          `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${regionName.replace(/'/g, "''")}')) AS S`,
+          'OPENROUTESERVICE_APP', 'CORE'
+        );
+        if (cancelled) return;
+        const raw = rows?.[0]?.S;
+        if (!raw) { setAvailableProfiles([]); return; }
+        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const profiles: string[] = Object.keys(data?.profiles || {});
+        setAvailableProfiles(profiles);
+        // Reconcile existing vehicles: if a vehicle's profile isn't loaded for
+        // this region, swap it for the first available one so Optimize works.
+        if (profiles.length) {
+          setVehicles(prev => prev.map(v =>
+            profiles.includes(v.profile) ? v : { ...v, profile: profiles[0] }
+          ));
+        }
+      } catch (e) {
+        if (!cancelled) setAvailableProfiles([]);
+        console.warn('[RouteOpt] ORS_STATUS failed for', regionName, e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [regionName]);
 
   const geocode = useCallback(async () => {
@@ -298,11 +345,12 @@ export default function RouteOptimization() {
         <button
           className="btn-primary"
           onClick={optimizeRoutes}
-          disabled={solving || !places.length}
+          disabled={solving || !places.length || !availableProfiles.length}
           title={
             solving ? 'Solving...'
             : !centerCoords ? 'Search a location first (enter an address and click Go)'
             : !places.length ? `No places found for region '${regionName}' near this location. Try a different region or address.`
+            : !availableProfiles.length ? `ORS service for region '${regionName}' is not ready or has no profiles loaded. Wait for the region to finish provisioning, then refresh.`
             : 'Optimize delivery routes'
           }
           style={{ fontSize: 12, background: '#0DB048' }}
@@ -315,15 +363,14 @@ export default function RouteOptimization() {
         <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <h3 style={{ fontSize: 13, margin: 0 }}>Vehicles</h3>
-            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: 'driving-car', startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add</button>
+            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: availableProfiles[0] || 'driving-car', startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add</button>
           </div>
           {vehicles.map((v, i) => (
             <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, fontSize: 12 }}>
               <span style={{ width: 12, height: 12, borderRadius: '50%', background: `rgb(${ROUTE_COLORS[i % ROUTE_COLORS.length].join(',')})`, flexShrink: 0 }} />
-              <select className="select" value={v.profile} onChange={e => setVehicles(prev => prev.map((vv, ii) => ii === i ? { ...vv, profile: e.target.value } : vv))} style={{ width: 120 }}>
-                <option value="driving-car">Car</option>
-                <option value="driving-hgv">HGV</option>
-                <option value="cycling-regular">Bicycle</option>
+              <select className="select" value={v.profile} disabled={!availableProfiles.length} onChange={e => setVehicles(prev => prev.map((vv, ii) => ii === i ? { ...vv, profile: e.target.value } : vv))} style={{ width: 120 }}>
+                {availableProfiles.length === 0 && <option value="">—</option>}
+                {availableProfiles.map(p => <option key={p} value={p}>{PROFILE_LABELS[p] ?? p}</option>)}
               </select>
               <span style={{ color: 'var(--text-secondary)' }}>Cap:</span>
               <input type="number" value={v.capacity} onChange={e => setVehicles(prev => prev.map((vv, ii) => ii === i ? { ...vv, capacity: Number(e.target.value) } : vv))} style={{ width: 50 }} />
