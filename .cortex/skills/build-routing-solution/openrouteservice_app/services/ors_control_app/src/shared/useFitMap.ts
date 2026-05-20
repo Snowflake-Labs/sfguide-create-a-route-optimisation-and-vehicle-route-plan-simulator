@@ -26,8 +26,19 @@ export interface UseFitMapResult {
 
 const DEFAULT_FALLBACK: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 
-function isFiniteVS(vs: any): boolean {
+export function isFiniteVS(vs: any): boolean {
   return vs && Number.isFinite(vs.longitude) && Number.isFinite(vs.latitude) && Number.isFinite(vs.zoom);
+}
+
+function sanitizeVS(vs: Partial<ViewState> | undefined | null): Partial<ViewState> {
+  if (!vs) return {};
+  const out: Partial<ViewState> = {};
+  if (Number.isFinite(vs.longitude)) out.longitude = vs.longitude as number;
+  if (Number.isFinite(vs.latitude)) out.latitude = vs.latitude as number;
+  if (Number.isFinite(vs.zoom)) out.zoom = vs.zoom as number;
+  if (Number.isFinite(vs.pitch)) out.pitch = vs.pitch as number;
+  if (Number.isFinite(vs.bearing)) out.bearing = vs.bearing as number;
+  return out;
 }
 
 export function useFitMap(
@@ -37,8 +48,8 @@ export function useFitMap(
   const { fallback, padding = DEFAULT_PADDING, minZoom, maxZoom, pitch } = options;
   const initial: ViewState = {
     ...DEFAULT_FALLBACK,
-    ...(fallback || {}),
-    ...(pitch != null ? { pitch } : {}),
+    ...sanitizeVS(fallback),
+    ...(Number.isFinite(pitch as number) ? { pitch: pitch as number } : {}),
   };
 
   const containerRef = useRef<HTMLDivElement>(null);

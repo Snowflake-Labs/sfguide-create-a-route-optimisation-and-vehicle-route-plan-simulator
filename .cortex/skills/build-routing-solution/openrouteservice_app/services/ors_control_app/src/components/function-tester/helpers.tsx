@@ -66,15 +66,13 @@ export const FUNCTIONS = [
 ];
 
 export function bboxCenter(bbox: RegionOption['bbox']): [number, number] {
-  if (!bbox || bbox.min_lat == null || bbox.max_lat == null || bbox.min_lon == null || bbox.max_lon == null) {
-    return [0, 0];
-  }
-  if (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0) {
-    return [0, 0];
-  }
+  if (!bbox) return [0, 30];
+  const { min_lat, max_lat, min_lon, max_lon } = bbox;
+  if (![min_lat, max_lat, min_lon, max_lon].every((v) => Number.isFinite(v))) return [0, 30];
+  if (min_lat === 0 && max_lat === 0 && min_lon === 0 && max_lon === 0) return [0, 30];
   return [
-    +((bbox.min_lon + bbox.max_lon) / 2).toFixed(4),
-    +((bbox.min_lat + bbox.max_lat) / 2).toFixed(4),
+    +((min_lon + max_lon) / 2).toFixed(4),
+    +((min_lat + max_lat) / 2).toFixed(4),
   ];
 }
 
@@ -329,6 +327,8 @@ export interface OptimizationParsed {
 
 export function parseOptimizationResult(result: any): OptimizationParsed | null {
   if (!result || !Array.isArray(result) || result.length === 0) return null;
+  const isFinitePt = (p: any): p is [number, number] =>
+    Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
   const vehicles: OptimizationVehicle[] = [];
   let depot: [number, number] | null = null;
   for (const row of result) {
@@ -358,12 +358,13 @@ export function parseOptimizationResult(result: any): OptimizationParsed | null 
         }
       }
     }
+    path = path.filter(isFinitePt) as [number, number][];
     const stepsRaw = row.STEPS ?? row.steps;
     const stepsArr: any[] = Array.isArray(stepsRaw) ? stepsRaw : (() => { const p = tryParseJson(stepsRaw); return Array.isArray(p) ? p : []; })();
     const stops: OptimizationStop[] = [];
     stepsArr.forEach((step: any, idx: number) => {
       const loc = step.location;
-      if (!Array.isArray(loc) || loc.length < 2) return;
+      if (!isFinitePt(loc)) return;
       const position: [number, number] = [loc[0], loc[1]];
       if (step.type === 'start' || step.type === 'end') {
         if (!depot) depot = position;
@@ -374,6 +375,7 @@ export function parseOptimizationResult(result: any): OptimizationParsed | null 
     vehicles.push({ vehicleId, path, stops });
   }
   if (vehicles.length === 0) return null;
+  if (depot && !isFinitePt(depot)) depot = null;
   return { vehicles, depot };
 }
 

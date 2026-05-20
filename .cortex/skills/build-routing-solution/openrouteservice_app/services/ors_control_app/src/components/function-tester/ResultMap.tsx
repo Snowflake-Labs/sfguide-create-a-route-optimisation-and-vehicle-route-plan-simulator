@@ -8,10 +8,26 @@ import {
   extractGeoData, parseMatrixResult, parseOptimizationResult, travelTimeColor,
   parseIsochroneOrigin,
 } from './helpers';
-import { useFitMap } from '../../shared/useFitMap';
+import { useFitMap, isFiniteVS } from '../../shared/useFitMap';
 import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
-export function ResultMap({ result, fnName, regionCenter, executedSql }: { result: any; fnName: string; regionCenter: [number, number]; executedSql: string }) {
+interface RegionBbox { min_lat: number; max_lat: number; min_lon: number; max_lon: number }
+
+export function ResultMap({
+  result,
+  fnName,
+  regionCenter,
+  regionBbox = null,
+  regionBoundary = null,
+  executedSql,
+}: {
+  result: any;
+  fnName: string;
+  regionCenter: [number, number];
+  regionBbox?: RegionBbox | null;
+  regionBoundary?: any | null;
+  executedSql: string;
+}) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
   const optimization = useMemo(() => fnName === 'OPTIMIZATION' ? parseOptimizationResult(result) : null, [result, fnName]);
@@ -206,7 +222,10 @@ export function ResultMap({ result, fnName, regionCenter, executedSql }: { resul
 
   const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization);
 
-  const fitCoords = useMemo<LngLat[]>(() => {
+  const isFinitePt = (p: any): p is LngLat =>
+    Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+
+  const resultCoords = useMemo<LngLat[]>(() => {
     const out: LngLat[] = [];
     if (optimization) {
       for (const v of optimization.vehicles) {
@@ -222,10 +241,41 @@ export function ResultMap({ result, fnName, regionCenter, executedSql }: { resul
       for (const p of geo.points) out.push([p[0], p[1]]);
       if (isoOrigin) out.push([isoOrigin[0], isoOrigin[1]]);
     }
-    return out;
+    return out.filter(isFinitePt);
   }, [optimization, matrix, geo, isoOrigin]);
-  const fallback = useMemo(() => ({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 }), [regionCenter]);
-  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
+  const presetCoords = useMemo<LngLat[]>(() => {
+    if (regionBoundary) {
+      const c = coordsFromGeoJSON(regionBoundary).filter(isFinitePt);
+      if (c.length > 0) return c;
+    }
+    if (regionBbox) {
+      const { min_lat, max_lat, min_lon, max_lon } = regionBbox;
+      const corners: LngLat[] = [
+        [min_lon, min_lat],
+        [max_lon, min_lat],
+        [max_lon, max_lat],
+        [min_lon, max_lat],
+      ];
+      const valid = corners.filter(isFinitePt);
+      const allZero = min_lat === 0 && max_lat === 0 && min_lon === 0 && max_lon === 0;
+      if (valid.length === 4 && !allZero) return valid;
+    }
+    return [];
+  }, [regionBoundary, regionBbox]);
+
+  const fitCoords = useMemo<LngLat[]>(
+    () => (resultCoords.length > 0 ? resultCoords : presetCoords),
+    [resultCoords, presetCoords],
+  );
+
+  const fallback = useMemo(() => {
+    const lon = Number.isFinite(regionCenter?.[0]) ? regionCenter[0] : 0;
+    const lat = Number.isFinite(regionCenter?.[1]) ? regionCenter[1] : 30;
+    const hasCenter = Number.isFinite(regionCenter?.[0]) && Number.isFinite(regionCenter?.[1]) && !(regionCenter[0] === 0 && regionCenter[1] === 0);
+    return { longitude: lon, latitude: lat, zoom: hasCenter ? 12 : 2, pitch: 0, bearing: 0 };
+  }, [regionCenter]);
+  const { containerRef, dims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
 
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
@@ -294,14 +344,16 @@ export function ResultMap({ result, fnName, regionCenter, executedSql }: { resul
         </div>
       )}
       <div ref={containerRef} style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-        <DeckGL
-          viewState={viewState}
-          onViewStateChange={onViewStateChange}
-          controller={true}
-          layers={layers}
-          getTooltip={getTooltip}
-          style={{ width: '100%', height: '100%' }}
-        />
+        {dims && isFiniteVS(viewState) ? (
+          <DeckGL
+            viewState={viewState}
+            onViewStateChange={onViewStateChange}
+            controller={true}
+            layers={layers}
+            getTooltip={getTooltip}
+            style={{ width: '100%', height: '100%' }}
+          />
+        ) : null}
       </div>
     </div>
   );

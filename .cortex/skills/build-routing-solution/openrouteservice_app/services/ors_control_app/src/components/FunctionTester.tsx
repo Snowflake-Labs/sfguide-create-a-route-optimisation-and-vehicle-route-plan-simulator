@@ -365,7 +365,14 @@ export default function FunctionTester() {
         </div>
       )}
 
-      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} executedSql={lastExecutedSql} />}
+      {result !== null && <ResultMap
+        result={result}
+        fnName={selectedFn}
+        regionCenter={bboxCenter(selectedRegion?.bbox)}
+        regionBbox={selectedRegion?.bbox ?? null}
+        regionBoundary={selectedRegion?.boundaryGeoJson ?? null}
+        executedSql={lastExecutedSql}
+      />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {
         const raw = result?.[0] ? Object.values(result[0])[0] : null;
