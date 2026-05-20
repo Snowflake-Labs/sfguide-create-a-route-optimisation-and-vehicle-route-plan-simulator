@@ -423,11 +423,14 @@ export default function BackloadMatching() {
           stroked: true, getLineColor: [...c, 230], lineWidthMinPixels: 3,
         }));
       }
+    });
+    assignments.forEach((a, i) => {
       result.push(new GeoJsonLayer({
         id: `empty-${i}`,
         data: (a.EMPTY_GEOJSON ? a.EMPTY_GEOJSON : { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.TRAILER_DROPOFF_LON,a.TRAILER_DROPOFF_LAT],[a.PICKUP_LON,a.PICKUP_LAT]] } }) as any,
-        stroked: true, getLineColor: [128, 128, 128, 180], getDashArray: [4, 4], lineWidthMinPixels: 2,
+        stroked: true, getLineColor: [40, 40, 40, 255], getDashArray: [10, 6], lineWidthMinPixels: 4,
         extensions: [new PathStyleExtension({ dash: true })],
+        parameters: { depthTest: false },
       }));
     });
     if (selectedTrailer) {
@@ -543,7 +546,7 @@ export default function BackloadMatching() {
           Loaded leg (per-assignment colour)
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 24, height: 0, borderTop: '2px dashed rgb(128,128,128)', display: 'inline-block' }} />
+          <span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(40,40,40)', display: 'inline-block' }} />
           Empty leg (deadhead to pickup)
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
