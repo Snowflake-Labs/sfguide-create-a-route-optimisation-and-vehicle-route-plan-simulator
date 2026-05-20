@@ -76,6 +76,14 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       COMPLETED_AT TIMESTAMP_NTZ, LOG_TEXT VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS LOG_TEXT VARIANT`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.JOB_EVENTS (
+      JOB_ID VARCHAR,
+      SEQ NUMBER AUTOINCREMENT START 1 INCREMENT 1,
+      EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE(),
+      EVENT_TYPE VARCHAR(30),
+      PAYLOAD VARIANT
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-events","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE()`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
   for (const { sql, db, schema } of ddls) {
     try {
