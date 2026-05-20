@@ -248,14 +248,13 @@ export function createRegionsLifecycleRouter(): Router {
           log('WARN', 'CONFIG', `Failed to update ${schema}.CONFIG region: ${e.message}`);
         }
       }
-      try {
-        await runSql(
-          `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
-          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
-        );
-      } catch (e: any) {
-        log('WARN', 'RouteOpt', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
-      }
+      // Best-effort: detach so a slow seed (e.g. California ~1.8M Overture rows)
+      // doesn't block the response. PROVISION_REGION_WRAPPER also seeds PLACES
+      // at provisioning time; this is a top-up for already-provisioned regions.
+      runSql(
+        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
+      ).catch((e: any) => log('WARN', 'RouteOpt', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`));
       res.json({ ok: true, region });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

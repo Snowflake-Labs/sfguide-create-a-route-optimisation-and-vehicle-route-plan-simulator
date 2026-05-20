@@ -181,16 +181,13 @@ export function createFleetRouter(): Router {
         }
       }
 
-      // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, mirrors
-      // /api/regions/active behaviour).
-      try {
-        await runSql(
-          `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
-          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
-        );
-      } catch (e: any) {
-        log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
-      }
+      // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, detached so
+      // slow seeds for large regions don't block the /api/fleet/datasets
+      // response). PROVISION_REGION_WRAPPER also seeds at provisioning time.
+      runSql(
+        `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
+      ).catch((e: any) => log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`));
 
       res.json({ ok: true, region, vehicleType });
     } catch (err: any) {

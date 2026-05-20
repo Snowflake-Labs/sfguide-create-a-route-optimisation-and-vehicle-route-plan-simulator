@@ -282,4 +282,25 @@ SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","vers
 --------------------------------------------------------------------
 CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION($REGION_NAME);
 
+--------------------------------------------------------------------
+-- Seed PLACES for every region already provisioned in REGION_ORS_MAP.
+-- Idempotent: SEED_ROUTE_OPTIMIZATION_REGION skips regions whose PLACES
+-- is already populated. Safe to re-run after multi-region provisioning.
+-- Uses TRY/CATCH per region so a failure on one region (missing bbox,
+-- Overture share unmounted, etc.) doesn't abort the loop.
+--------------------------------------------------------------------
+DECLARE
+    c CURSOR FOR
+        SELECT REGION
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE STATUS = 'DEPLOYED';
+BEGIN
+    FOR rec IN c DO
+        BEGIN
+            CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION(:rec.REGION);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+END;
+
 

@@ -428,6 +428,15 @@ BEGIN
                             '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
+                    -- Seed Route Optimization PLACES from Overture Maps for this
+                    -- region so the Route Optimization page works on first open
+                    -- without a manual region switch. Best-effort: failures don't
+                    -- block successful provisioning. The procedure is idempotent
+                    -- (skips if PLACES already populated for the region).
+                    BEGIN
+                        CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION(:P_REGION);
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
                         MESSAGE='Region provisioned — ' || :profile_count || ' profile(s) ready (REBUILD_GRAPHS=false for fast resume)',
