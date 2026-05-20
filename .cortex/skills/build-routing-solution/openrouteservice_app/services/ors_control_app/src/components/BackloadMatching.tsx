@@ -6,6 +6,8 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import { useRegion } from '../hooks/useRegion';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromGeoJSON, fitBoundsToData, type LngLat } from '../shared/mapFit';
 import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import {
@@ -104,26 +106,6 @@ export default function BackloadMatching() {
       setWakingUp(false);
     }
   }, [fetchSvcStatus]);
-
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
-  const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = mapContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      if (width > 0 && height > 0) setMapDims({ width: Math.round(width), height: Math.round(height) });
-    });
-    ro.observe(el);
-    if (el.clientWidth > 0 && el.clientHeight > 0) setMapDims({ width: el.clientWidth, height: el.clientHeight });
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const refetch = useCallback(async () => {
     const [tRows, iRows, eRows, cRows, profRows] = await Promise.all([
@@ -410,25 +392,32 @@ export default function BackloadMatching() {
         stroked: true, lineWidthMinPixels: 1, getRadius: 1200, radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
       }));
     }
+    const hasSel = !!selectedTrailer;
     assignments.forEach((a, i) => {
       const c = ROUTE_COLORS[i % ROUTE_COLORS.length];
+      const isSel = a.TRAILER_ID === selectedTrailer;
+      const loadedW = isSel ? 6 : (hasSel ? 2 : 3);
+      const loadedAlpha = isSel ? 255 : (hasSel ? 100 : 230);
       if (a.ROUTE_GEOJSON) {
         result.push(new GeoJsonLayer({
           id: `loaded-${i}`, data: a.ROUTE_GEOJSON, stroked: true, filled: false,
-          getLineColor: [...c, 230], lineWidthMinPixels: 3,
+          getLineColor: [...c, loadedAlpha], lineWidthMinPixels: loadedW,
         }));
       } else {
         result.push(new GeoJsonLayer({
           id: `loaded-${i}`, data: { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.PICKUP_LON,a.PICKUP_LAT],[a.DROPOFF_LON,a.DROPOFF_LAT]] } } as any,
-          stroked: true, getLineColor: [...c, 230], lineWidthMinPixels: 3,
+          stroked: true, getLineColor: [...c, loadedAlpha], lineWidthMinPixels: loadedW,
         }));
       }
     });
     assignments.forEach((a, i) => {
+      const isSel = a.TRAILER_ID === selectedTrailer;
+      const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
+      const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
       result.push(new GeoJsonLayer({
         id: `empty-${i}`,
         data: (a.EMPTY_GEOJSON ? a.EMPTY_GEOJSON : { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.TRAILER_DROPOFF_LON,a.TRAILER_DROPOFF_LAT],[a.PICKUP_LON,a.PICKUP_LAT]] } }) as any,
-        stroked: true, getLineColor: [40, 40, 40, 255], getDashArray: [10, 6], lineWidthMinPixels: 4,
+        stroked: true, getLineColor: [110, 110, 110, emptyAlpha], getDashArray: [10, 6], lineWidthMinPixels: emptyW,
         extensions: [new PathStyleExtension({ dash: true })],
         parameters: { depthTest: false },
       }));
@@ -445,6 +434,47 @@ export default function BackloadMatching() {
     }
     return result;
   }, [basemap, external, internal, trailers, assignments, selectedTrailer]);
+
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const t of trailers) {
+      if (t.DROPOFF_LON != null && t.DROPOFF_LAT != null) out.push([Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)]);
+    }
+    for (const i of internal) {
+      if (i.PICKUP_LON != null && i.PICKUP_LAT != null) out.push([Number(i.PICKUP_LON), Number(i.PICKUP_LAT)]);
+      if ((i as any).DROPOFF_LON != null && (i as any).DROPOFF_LAT != null) out.push([Number((i as any).DROPOFF_LON), Number((i as any).DROPOFF_LAT)]);
+    }
+    for (const e of external) {
+      if (e.PICKUP_LON != null && e.PICKUP_LAT != null) out.push([Number(e.PICKUP_LON), Number(e.PICKUP_LAT)]);
+    }
+    for (const a of assignments) {
+      if (a.ROUTE_GEOJSON) out.push(...coordsFromGeoJSON(a.ROUTE_GEOJSON));
+      if (a.EMPTY_GEOJSON) out.push(...coordsFromGeoJSON(a.EMPTY_GEOJSON));
+    }
+    return out;
+  }, [trailers, internal, external, assignments]);
+
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, setViewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
+  useEffect(() => {
+    if (!selectedTrailer || !mapDims) return;
+    const a = assignments.find(x => x.TRAILER_ID === selectedTrailer);
+    if (!a) return;
+    const coords: LngLat[] = [
+      [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],
+      [Number(a.PICKUP_LON), Number(a.PICKUP_LAT)],
+      [Number(a.DROPOFF_LON), Number(a.DROPOFF_LAT)],
+      ...coordsFromGeoJSON(a.ROUTE_GEOJSON),
+      ...coordsFromGeoJSON(a.EMPTY_GEOJSON),
+    ];
+    const fitted = fitBoundsToData({
+      width: mapDims.width, height: mapDims.height,
+      coords, padding: 60, maxZoom: 12, fallback: viewState,
+    });
+    if (fitted) setViewState({ ...viewState, ...fitted });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTrailer, assignments, mapDims]);
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
@@ -546,7 +576,7 @@ export default function BackloadMatching() {
           Loaded leg (per-assignment colour)
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(40,40,40)', display: 'inline-block' }} />
+          <span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />
           Empty leg (deadhead to pickup)
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -584,7 +614,7 @@ export default function BackloadMatching() {
             <DeckGL
               width={mapDims.width} height={mapDims.height}
               viewState={viewState}
-              onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
+              onViewStateChange={onViewStateChange}
               controller={true} layers={layers} getTooltip={getTooltip}
               style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }}
             />
