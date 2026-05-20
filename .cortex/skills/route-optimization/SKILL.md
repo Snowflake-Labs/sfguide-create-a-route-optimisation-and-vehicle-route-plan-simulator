@@ -187,20 +187,63 @@ ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD SEARCH OPTIMIZATION
 ```
 
 ```sql
--- 5e: JOB_TEMPLATE (29 delivery jobs with time windows and skills)
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (ID INT AUTOINCREMENT PRIMARY KEY, SLOT_START INT NOT NULL, SLOT_END INT, SKILLS INT, PRODUCT STRING, STATUS STRING DEFAULT 'active', REGION STRING) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION)
-SELECT column1, column2, column3, column4, 'active', 'SanFrancisco' FROM VALUES
-(9,10,1,'pa'),(11,15,2,'pb'),(16,18,2,'pb'),(11,13,3,'pc'),(7,16,3,'pc'),
-(10,15,2,'pa'),(10,15,2,'pa'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),
-(13,18,2,'pb'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc'),
-(11,15,2,'pb'),(16,18,2,'pb'),(11,13,1,'pa'),(7,16,1,'pa'),(10,15,2,'pb'),
-(10,15,2,'pb'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),(13,18,2,'pb'),
-(13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc');
+-- 5e: JOB_TEMPLATE (delivery jobs with time windows in SECONDS and skills, per industry)
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (ID INT AUTOINCREMENT PRIMARY KEY, SLOT_START INT NOT NULL, SLOT_END INT, SKILLS INT, PRODUCT STRING, STATUS STRING DEFAULT 'active', REGION STRING, INDUSTRY STRING) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION, INDUSTRY)
+SELECT column1, column2, column3, column4, 'active', 'SanFrancisco', column5 FROM VALUES
+(32400, 36000, 1, 'pa', 'healthcare'),
+(39600, 54000, 2, 'pb', 'healthcare'),
+(57600, 64800, 2, 'pb', 'healthcare'),
+(39600, 46800, 3, 'pc', 'healthcare'),
+(25200, 57600, 3, 'pc', 'healthcare'),
+(36000, 54000, 2, 'pa', 'healthcare'),
+(46800, 64800, 1, 'pa', 'healthcare'),
+(39600, 54000, 2, 'pb', 'Food'),
+(57600, 64800, 2, 'pb', 'Food'),
+(39600, 46800, 1, 'pa', 'Food'),
+(25200, 57600, 1, 'pa', 'Food'),
+(36000, 54000, 2, 'pb', 'Food'),
+(36000, 54000, 2, 'pb', 'Food'),
+(25200, 57600, 1, 'pa', 'Food'),
+(32400, 64800, 2, 'pb', 'Food'),
+(46800, 64800, 2, 'pb', 'Cosmetics'),
+(46800, 64800, 2, 'pb', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 1, 'pa', 'Cosmetics'),
+(46800, 64800, 3, 'pc', 'Cosmetics'),
+(32400, 64800, 2, 'pb', 'Cosmetics'),
+(32400, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 2, 'pb', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 1, 'pa', 'Beverages'),
+(46800, 64800, 3, 'pc', 'Beverages'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 30600, 1, 'pa', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 2, 'pb', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(25200, 32400, 3, 'pc', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 59400, 1, 'pa', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 2, 'pb', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport'),
+(54000, 61200, 3, 'pc', 'SEN Transport');
 ```
 
 ```sql
--- 5f: LOOKUP (4 industries - customize per references/industry-customization.md)
+-- 5f: LOOKUP (5 industries - customize per references/industry-customization.md)
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION STRING, INDUSTRY STRING, PA STRING, PB STRING, PC STRING, IND ARRAY, IND2 ARRAY, CTYPE ARRAY, STYPE ARRAY) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
 SELECT 'SanFrancisco', 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
@@ -225,7 +268,13 @@ SELECT 'SanFrancisco', 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 
        ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
        ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
-       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity');
+       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity')
+UNION ALL
+SELECT 'SanFrancisco', 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
+       ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
+       ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
+       ARRAY_CONSTRUCT('childcare', 'community_center', 'nursery', 'day_care_center', 'church', 'library'),
+       ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus');
 ```
 
 4. Verify:
@@ -234,7 +283,7 @@ SELECT 'SanFrancisco', 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 
    UNION ALL SELECT 'LOOKUP', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
    UNION ALL SELECT 'JOB_TEMPLATE', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE;
    ```
-   Expected: PLACES 50K–1.5M (depends on geohash density), LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
+   Expected: PLACES 50K–1.5M (depends on geohash density), LOOKUP 5, JOB_TEMPLATE 50+. **STOP** if any table has 0 rows.
 
 **Output:** Standing data populated for `<REGION_NAME>`.
 
