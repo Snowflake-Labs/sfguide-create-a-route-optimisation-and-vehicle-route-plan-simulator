@@ -219,3 +219,214 @@ INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES VALUES
 (4, 'Walgreens Mission District', '2690 Mission St, SF',    -122.4200, 37.7503, 1),
 (5, 'CVS Market Street',          '2101 Market St, SF',     -122.4340, 37.7673, 2),
 (6, 'Walgreens Divisadero',       '3201 Divisadero St, SF', -122.4431, 37.7925, 2);
+
+-- ===================== STEP 6: TOOL_SUPPLY_CHAIN Procedure =====================
+
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN(
+    PROFILE VARCHAR DEFAULT 'driving-car'
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+try {
+    var depotLon = -122.3946;
+    var depotLat = 37.7941;
+    var depotName = 'SF Medical Supply Depot, 1 Market St';
+
+    var pharmaStmt = snowflake.createStatement({
+        sqlText: "SELECT PHARMACY_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, PRIORITY " +
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES ORDER BY PRIORITY"
+    });
+    var pharmaRes = pharmaStmt.execute();
+    var pharmacies = [];
+    while (pharmaRes.next()) {
+        pharmacies.push({
+            id: pharmaRes.getColumnValue(1),
+            name: pharmaRes.getColumnValue(2),
+            address: pharmaRes.getColumnValue(3),
+            longitude: pharmaRes.getColumnValue(4),
+            latitude: pharmaRes.getColumnValue(5),
+            priority: pharmaRes.getColumnValue(6)
+        });
+    }
+
+    var drugStmt = snowflake.createStatement({
+        sqlText: "SELECT DRUG_ID, CONDITION, DRUG_NAME, DRUG_CATEGORY, DELIVERY_SKILL, " +
+                 "SKILL_LABEL, UNITS_PER_1000, PRIORITY " +
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY ORDER BY PRIORITY"
+    });
+    var drugRes = drugStmt.execute();
+    var formulary = [];
+    while (drugRes.next()) {
+        formulary.push({
+            drug_id: drugRes.getColumnValue(1),
+            condition: drugRes.getColumnValue(2),
+            drug_name: drugRes.getColumnValue(3),
+            drug_category: drugRes.getColumnValue(4),
+            delivery_skill: drugRes.getColumnValue(5),
+            skill_label: drugRes.getColumnValue(6),
+            units_per_1000: drugRes.getColumnValue(7),
+            priority: drugRes.getColumnValue(8)
+        });
+    }
+
+    var demoStmt = snowflake.createStatement({
+        sqlText: "SELECT NEIGHBORHOOD, TOTAL_POPULATION, DIABETES_PCT, HYPERTENSION_PCT, " +
+                 "CARDIOVASCULAR_PCT, RESPIRATORY_PCT, MOBILITY_ISSUES_PCT " +
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS"
+    });
+    var demoRes = demoStmt.execute();
+    var totalDiabetes = 0, totalHypertension = 0, totalCardio = 0, totalResp = 0, totalMobility = 0, totalPop = 0;
+    while (demoRes.next()) {
+        var pop = demoRes.getColumnValue(2);
+        totalPop += pop;
+        totalDiabetes += demoRes.getColumnValue(3) * pop / 100;
+        totalHypertension += demoRes.getColumnValue(4) * pop / 100;
+        totalCardio += demoRes.getColumnValue(5) * pop / 100;
+        totalResp += demoRes.getColumnValue(6) * pop / 100;
+        totalMobility += demoRes.getColumnValue(7) * pop / 100;
+    }
+
+    var priorityWeights = { 1: 0.25, 2: 0.15, 3: 0.10 };
+    var vroomJobs = [];
+    var jobDetails = [];
+    var jobId = 1;
+
+    for (var p = 0; p < pharmacies.length; p++) {
+        var pharmacy = pharmacies[p];
+        var weight = priorityWeights[pharmacy.priority] || 0.10;
+        var primarySkill = (p % 3) + 1;
+
+        var conditions = {
+            'DIABETES': totalDiabetes * weight,
+            'HYPERTENSION': totalHypertension * weight,
+            'CARDIOVASCULAR': totalCardio * weight,
+            'RESPIRATORY': totalResp * weight,
+            'MOBILITY': totalMobility * weight
+        };
+
+        var pharmaOrders = [];
+        for (var d = 0; d < formulary.length; d++) {
+            var drug = formulary[d];
+            if (drug.delivery_skill !== primarySkill) continue;
+            var condPop = conditions[drug.condition] || 0;
+            var units = Math.round(condPop / 1000 * drug.units_per_1000);
+            if (units > 0) {
+                pharmaOrders.push({
+                    drug_name: drug.drug_name,
+                    drug_category: drug.drug_category,
+                    skill: drug.delivery_skill,
+                    skill_label: drug.skill_label,
+                    units: units,
+                    priority: drug.priority
+                });
+            }
+        }
+        pharmaOrders.sort(function(a, b) { return a.priority - b.priority || b.units - a.units; });
+        var topOrders = pharmaOrders.slice(0, 5);
+
+        if (topOrders.length > 0) {
+            var drugNames = topOrders.map(function(o2) { return o2.drug_name; });
+            var totalUnits = 0;
+            for (var t = 0; t < topOrders.length; t++) totalUnits += topOrders[t].units;
+
+            vroomJobs.push({
+                id: jobId,
+                location: [pharmacy.longitude, pharmacy.latitude],
+                amount: [1],
+                skills: [primarySkill],
+                description: pharmacy.name + ' - ' + topOrders[0].skill_label + ': ' + drugNames.join(', ')
+            });
+            jobDetails.push({
+                job_id: jobId,
+                pharmacy: pharmacy.name,
+                address: pharmacy.address,
+                longitude: pharmacy.longitude,
+                latitude: pharmacy.latitude,
+                skill: primarySkill,
+                skill_label: topOrders[0].skill_label,
+                drugs: drugNames,
+                total_units: totalUnits
+            });
+            jobId++;
+        }
+    }
+
+    var vehicles = [
+        { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
+          profile: PROFILE, capacity: [vroomJobs.length], skills: [1],
+          description: 'Cold Chain Van (Insulin, Biologics, Nitroglycerin)' },
+        { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
+          profile: PROFILE, capacity: [vroomJobs.length], skills: [2],
+          description: 'Controlled Substances Van (Opioids, Anticoagulants, Steroids)' },
+        { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
+          profile: PROFILE, capacity: [vroomJobs.length], skills: [3],
+          description: 'Standard Delivery Van (Oral medications, Inhalers, Topicals)' }
+    ];
+
+    var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
+    var optSQL = "SELECT o.RESPONSE FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
+    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, PROFILE] });
+    var optRes = optStmt.execute();
+
+    if (!optRes.next()) {
+        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails };
+    }
+
+    var rawResp = optRes.getColumnValue(1);
+    var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
+
+    var vroomRoutes = response.routes || [];
+    var routesWithGeometry = [];
+    for (var r = 0; r < vroomRoutes.length; r++) {
+        var route = vroomRoutes[r];
+        routesWithGeometry.push({
+            vehicle: route.vehicle,
+            cost: route.cost,
+            duration: route.duration,
+            distance: route.distance,
+            steps: route.steps || [],
+            geometry: route.geometry || []
+        });
+    }
+
+    var skill1Jobs = jobDetails.filter(function(j) { return j.skill === 1; });
+    var skill2Jobs = jobDetails.filter(function(j) { return j.skill === 2; });
+    var skill3Jobs = jobDetails.filter(function(j) { return j.skill === 3; });
+
+    return {
+        status: 'SUCCESS',
+        num_vehicles: 3,
+        total_jobs: vroomJobs.length,
+        pharmacies_served: pharmacies.length,
+        jobs: jobDetails,
+        vehicles: vehicles,
+        routes: routesWithGeometry,
+        unassigned: response.unassigned || [],
+        depot: { longitude: depotLon, latitude: depotLat, name: depotName },
+        geometry: null,
+        demand_summary: {
+            cold_chain_stops: skill1Jobs.length,
+            controlled_substance_stops: skill2Jobs.length,
+            standard_medicine_stops: skill3Jobs.length,
+            cold_chain_drugs: skill1Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, []),
+            controlled_drugs: skill2Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, []),
+            standard_drugs: skill3Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, [])
+        },
+        population_basis: {
+            total_population: totalPop,
+            diabetes_patients: Math.round(totalDiabetes),
+            hypertension_patients: Math.round(totalHypertension),
+            cardiovascular_patients: Math.round(totalCardio),
+            respiratory_patients: Math.round(totalResp),
+            mobility_patients: Math.round(totalMobility)
+        }
+    };
+} catch(err) {
+    return { error: err.message, status: 'FAILED' };
+}
+$$;
+
+SELECT 'Agent playground demo data deployed successfully' AS STATUS;

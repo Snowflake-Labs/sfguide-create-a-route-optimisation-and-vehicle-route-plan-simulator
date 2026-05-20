@@ -150,7 +150,8 @@ try {
         totalMobility += demoRes.getColumnValue(7) * pop / 100;
     }
 
-    // Distribute demand across pharmacies proportionally (high priority gets more)
+    // Distribute demand across pharmacies - assign each pharmacy a PRIMARY skill
+    // so each vehicle visits different pharmacies (visually distinct routes on map)
     var priorityWeights = { 1: 0.25, 2: 0.15, 3: 0.10 };
     var vroomJobs = [];
     var jobDetails = [];
@@ -159,8 +160,8 @@ try {
     for (var p = 0; p < pharmacies.length; p++) {
         var pharmacy = pharmacies[p];
         var weight = priorityWeights[pharmacy.priority] || 0.10;
+        var primarySkill = (p % 3) + 1;
 
-        // Determine top drugs for this pharmacy based on population health
         var conditions = {
             'DIABETES': totalDiabetes * weight,
             'HYPERTENSION': totalHypertension * weight,
@@ -169,10 +170,10 @@ try {
             'MOBILITY': totalMobility * weight
         };
 
-        // Pick top 5 drugs by estimated units for this pharmacy
         var pharmaOrders = [];
         for (var d = 0; d < formulary.length; d++) {
             var drug = formulary[d];
+            if (drug.delivery_skill !== primarySkill) continue;
             var condPop = conditions[drug.condition] || 0;
             var units = Math.round(condPop / 1000 * drug.units_per_1000);
             if (units > 0) {
@@ -189,24 +190,17 @@ try {
         pharmaOrders.sort(function(a, b) { return a.priority - b.priority || b.units - a.units; });
         var topOrders = pharmaOrders.slice(0, 5);
 
-        // Create one VROOM job per delivery to this pharmacy
-        // Group by skill to determine which vehicle handles it
-        var skillGroups = {};
-        for (var o = 0; o < topOrders.length; o++) {
-            var sk = topOrders[o].skill;
-            if (!skillGroups[sk]) skillGroups[sk] = { skill: sk, skill_label: topOrders[o].skill_label, drugs: [], total_units: 0 };
-            skillGroups[sk].drugs.push(topOrders[o].drug_name);
-            skillGroups[sk].total_units += topOrders[o].units;
-        }
+        if (topOrders.length > 0) {
+            var drugNames = topOrders.map(function(o2) { return o2.drug_name; });
+            var totalUnits = 0;
+            for (var t = 0; t < topOrders.length; t++) totalUnits += topOrders[t].units;
 
-        for (var sk in skillGroups) {
-            var group = skillGroups[sk];
             vroomJobs.push({
                 id: jobId,
                 location: [pharmacy.longitude, pharmacy.latitude],
                 amount: [1],
-                skills: [Number(sk)],
-                description: pharmacy.name + ' - ' + group.skill_label + ': ' + group.drugs.join(', ')
+                skills: [primarySkill],
+                description: pharmacy.name + ' - ' + topOrders[0].skill_label + ': ' + drugNames.join(', ')
             });
             jobDetails.push({
                 job_id: jobId,
@@ -214,10 +208,10 @@ try {
                 address: pharmacy.address,
                 longitude: pharmacy.longitude,
                 latitude: pharmacy.latitude,
-                skill: Number(sk),
-                skill_label: group.skill_label,
-                drugs: group.drugs,
-                total_units: group.total_units
+                skill: primarySkill,
+                skill_label: topOrders[0].skill_label,
+                drugs: drugNames,
+                total_units: totalUnits
             });
             jobId++;
         }
@@ -238,8 +232,7 @@ try {
 
     // Step 5: Call VROOM optimisation
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
-    var optSQL = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
-                 "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
+    var optSQL = "SELECT o.RESPONSE FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, PROFILE] });
     var optRes = optStmt.execute();
 
@@ -249,10 +242,22 @@ try {
 
     var rawResp = optRes.getColumnValue(1);
     var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
-    var geojsonRaw = optRes.getColumnValue(2);
-    var geojson = geojsonRaw ? ((typeof geojsonRaw === 'string') ? JSON.parse(geojsonRaw) : geojsonRaw) : null;
 
-    // Build summary
+    // Use per-route geometry from VROOM (each route has road-following coordinates)
+    var vroomRoutes = response.routes || [];
+    var routesWithGeometry = [];
+    for (var r = 0; r < vroomRoutes.length; r++) {
+        var route = vroomRoutes[r];
+        routesWithGeometry.push({
+            vehicle: route.vehicle,
+            cost: route.cost,
+            duration: route.duration,
+            distance: route.distance,
+            steps: route.steps || [],
+            geometry: route.geometry || []
+        });
+    }
+
     var skill1Jobs = jobDetails.filter(function(j) { return j.skill === 1; });
     var skill2Jobs = jobDetails.filter(function(j) { return j.skill === 2; });
     var skill3Jobs = jobDetails.filter(function(j) { return j.skill === 3; });
@@ -264,10 +269,10 @@ try {
         pharmacies_served: pharmacies.length,
         jobs: jobDetails,
         vehicles: vehicles,
-        routes: response.routes || [],
+        routes: routesWithGeometry,
         unassigned: response.unassigned || [],
         depot: { longitude: depotLon, latitude: depotLat, name: depotName },
-        geometry: geojson,
+        geometry: null,
         demand_summary: {
             cold_chain_stops: skill1Jobs.length,
             controlled_substance_stops: skill2Jobs.length,
