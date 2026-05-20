@@ -516,6 +516,46 @@ export default function BackloadMatching() {
         </button>
       </div>
 
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.02)' }}>
+        <b style={{ color: 'var(--text-primary)' }}>Legend</b>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(200,200,200)', border: '1px solid rgb(120,120,120)', display: 'inline-block' }} />
+          External offer (freight exchange)
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />
+          Internal volume
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(13,176,72)', border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.15)', display: 'inline-block' }} />
+          Idle trailer
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px solid rgb(245,158,11)', display: 'inline-block' }} />
+          Selected trailer pickup
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ display: 'inline-flex', gap: 1 }}>
+            {ROUTE_COLORS.slice(0, 4).map((rc, i) => (
+              <span key={i} style={{ width: 6, height: 3, background: `rgb(${rc.join(',')})`, display: 'inline-block' }} />
+            ))}
+          </span>
+          Loaded leg (per-assignment colour)
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 24, height: 0, borderTop: '2px dashed rgb(128,128,128)', display: 'inline-block' }} />
+          Empty leg (deadhead to pickup)
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(41,181,232,0.18)', color: 'var(--text-primary)' }}>INTERNAL</span>
+          own volume (assignment list)
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(200,200,200,0.4)', color: 'var(--text-primary)' }}>EXTERNAL</span>
+          freight-exchange offer (assignment list)
+        </span>
+      </div>
+
       {confirmMsg && (
         <div className="info-box success" style={{ marginBottom: 12 }}>{confirmMsg}</div>
       )}
