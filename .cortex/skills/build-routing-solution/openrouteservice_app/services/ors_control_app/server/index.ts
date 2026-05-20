@@ -75,9 +75,16 @@ async function verifySessionUtc(): Promise<void> {
 
 const PORT = parseInt(process.env.PORT || '3001');
 detectWarehouse().then(verifySessionUtc).then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`ORS Control App server running on port ${PORT} (SPCS: ${IS_SPCS}, WH: ${SF_WAREHOUSE})`);
   });
+  // Tune timeouts so long-lived SSE streams (Synthetic Data Studio job logs)
+  // are not closed by Node's defaults. headersTimeout must exceed
+  // keepAliveTimeout. The per-route SSE handler also calls req.setTimeout(0)
+  // and res.setTimeout(0) to fully disable per-socket inactivity timeouts.
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
+  server.requestTimeout = 0;
   reconcileStaleJobs(runSql, 30).catch((e) => {
     log('WARN', 'Studio', `Boot reconcile failed: ${e?.message?.slice(0, 200)}`);
   });

@@ -105,7 +105,15 @@ export function useStudioStream(
       }
       const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), 30000);
       retryCountRef.current++;
-      setLogLines((prev) => [...prev, `Connection lost, retrying in ${(delay / 1000).toFixed(0)}s (attempt ${retryCountRef.current}/20)...`]);
+      // Suppress the first quick reconnect from the visible viewer log — long
+      // SSE streams routinely get recycled by SPCS ingress / proxies and the
+      // first retry usually succeeds within ~1s. Still emit to console.warn
+      // so it remains visible for diagnostics.
+      if (retryCountRef.current >= 2) {
+        setLogLines((prev) => [...prev, `Connection lost, retrying in ${(delay / 1000).toFixed(0)}s (attempt ${retryCountRef.current}/20)...`]);
+      } else {
+        console.warn(`[Studio SSE] reconnect attempt ${retryCountRef.current}/20 in ${delay}ms`);
+      }
       retryTimerRef.current = setTimeout(() => connectSSE(jobId), delay);
     });
     evtSource.addEventListener('cancelled', (e: any) => {
