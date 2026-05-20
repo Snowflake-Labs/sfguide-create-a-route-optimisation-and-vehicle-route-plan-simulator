@@ -266,7 +266,7 @@ export default function App() {
                   document.cookie.split(';').forEach(c => {
                     document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/');
                   });
-                  window.location.href = '/logout';
+                  window.location.href = '/logout?ts=' + Date.now();
                 }}
                 style={{ fontSize: 11, padding: '4px 10px', border: '1px solid #E5484D', borderRadius: 6, background: 'rgba(229,72,77,0.1)', cursor: 'pointer', color: '#E5484D', fontWeight: 600 }}
                 title="Log out and refresh session"

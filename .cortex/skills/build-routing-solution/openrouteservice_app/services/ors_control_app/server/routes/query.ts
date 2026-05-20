@@ -3,7 +3,6 @@
 // /logout — redirect helper for Snowflake-side session termination.
 
 import { Router } from 'express';
-import { SNOWFLAKE_HOST } from '../constants.js';
 import { runSql } from '../lib/sql.js';
 import { log } from '../diagnostics.js';
 
@@ -67,22 +66,20 @@ export function createQueryRouter(): Router {
   });
 
   router.get('/logout', (req, res) => {
-    const appUrl = `https://${req.headers.host || ''}/`;
-    const accountHost = SNOWFLAKE_HOST || '';
-    if (!accountHost) {
-      res.clearCookie('session');
-      return res.redirect(302, '/');
+    const candidates = [
+      'session', 'AUTH_SESSION_ID', 'AUTH_SESSION_ID_LEGACY',
+      'snowflake_session_cookie', 'oauth-token', 'oauth-token-secure',
+      'OAuth_Token_Request_State', '_oauth2_proxy',
+      'snowflake.oauth.access_token', 'snowflake.oauth.refresh_token',
+    ];
+    for (const name of candidates) {
+      res.append('Set-Cookie',
+        `${name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`);
+      res.append('Set-Cookie',
+        `${name}=; Path=/; Max-Age=0; Secure; SameSite=Lax`);
     }
-    const action = `https://${accountHost}/session/v1/logout-from-application`;
-    const esc = (s: string) => s.replace(/[&<>"']/g, c =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-    res.set('Content-Type', 'text/html; charset=utf-8');
-    res.send(`<!doctype html><html><body onload="document.forms[0].submit()">
-<form method="POST" action="${esc(action)}">
-  <input type="hidden" name="redirect_url" value="${esc(appUrl)}" />
-  <noscript><button type="submit">Continue logout</button></noscript>
-</form>
-</body></html>`);
+    res.set('Cache-Control', 'no-store, max-age=0');
+    res.redirect(302, '/');
   });
 
   return router;
