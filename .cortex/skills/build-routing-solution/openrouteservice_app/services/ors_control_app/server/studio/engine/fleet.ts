@@ -61,14 +61,39 @@ export function buildFleet(config: GenerationConfig, pois: POI[], rng: () => num
 
   // Tag a configurable share of the fleet as "ghost" - they will sit idle at
   // their home POI for several days, replicating the non-moving-trailer pattern.
+  //
+  // Ghost selection is STRATIFIED by spatial bin so that for large regions
+  // (e.g. UsCalifornia) ghosts spread across the whole region instead of
+  // concentrating in whatever sub-area happens to dominate the POI catalog
+  // (typically the densest metro). Without this stratification a region the
+  // size of California with 30 vehicles produces ~3 ghosts that all cluster
+  // in a single metro because the home_poi distribution is itself clustered.
+  //
+  // Each spatial bin gets `bin_size * probability` ghosts (stochastic rounding),
+  // so the total expected ghost count is preserved while every populated bin
+  // has a fair chance of contributing.
   const ghostCfg = config.ghost_trailer;
   if (ghostCfg && ghostCfg.probability > 0) {
-    for (const member of fleet) {
-      if (rng() < ghostCfg.probability) {
+    const BIN_DEG = 0.5;
+    const bins = new Map<string, FleetMember[]>();
+    for (const m of fleet) {
+      const key = `${Math.floor(m.home_poi.lat / BIN_DEG)}|${Math.floor(m.home_poi.lng / BIN_DEG)}`;
+      const list = bins.get(key);
+      if (list) list.push(m);
+      else bins.set(key, [m]);
+    }
+    for (const members of bins.values()) {
+      const expected = members.length * ghostCfg.probability;
+      const baseCount = Math.floor(expected);
+      const ghostCount = baseCount + (rng() < (expected - baseCount) ? 1 : 0);
+      if (ghostCount === 0) continue;
+      const shuffled = members.slice().sort(() => rng() - 0.5);
+      const n = Math.min(ghostCount, shuffled.length);
+      for (let i = 0; i < n; i++) {
         const startDay = rngInt(rng, ghostCfg.start_day_min, ghostCfg.start_day_max);
         const duration = rngInt(rng, ghostCfg.duration_days_min, ghostCfg.duration_days_max);
-        member.ghost_start_day = startDay;
-        member.ghost_end_day = startDay + duration - 1;
+        shuffled[i].ghost_start_day = startDay;
+        shuffled[i].ghost_end_day = startDay + duration - 1;
       }
     }
   }
