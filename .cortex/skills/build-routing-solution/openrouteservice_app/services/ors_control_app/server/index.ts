@@ -2047,13 +2047,22 @@ async function callCortexAgentWithToolLoop(
   onProgress?: (data: { step: string; detail?: string }) => void,
   onToken?: (text: string) => void,
   onWorkflow?: (step: any) => void,
+  history?: Array<{role: string; content: string}>,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
   const messages: Array<{role: string; content: string}> = [
     { role: 'system', content: ROUTING_SYSTEM_PROMPT },
-    { role: 'user', content: message },
   ];
+  if (history && history.length > 0) {
+    for (const h of history) {
+      if (h.role === 'user' || h.role === 'assistant') {
+        const content = typeof h.content === 'string' ? h.content : '';
+        if (content) messages.push({ role: h.role, content });
+      }
+    }
+  }
+  messages.push({ role: 'user', content: message });
   const maxIterations = 5;
   const allToolResults: any[] = [];
   const workflowSteps: any[] = [];
@@ -2135,7 +2144,7 @@ app.get('/api/agent/config', async (_req, res) => {
 });
 
 app.post('/api/agent/chat', async (req, res) => {
-  const { message, thread_id, parent_message_id } = req.body;
+  const { message, thread_id, parent_message_id, history, max_tokens } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -2146,7 +2155,7 @@ app.post('/api/agent/chat', async (req, res) => {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
     const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
     const onWorkflow = (step: any) => { sendSseEvent(res, 'workflow', step); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, onWorkflow);
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, onWorkflow, history);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
