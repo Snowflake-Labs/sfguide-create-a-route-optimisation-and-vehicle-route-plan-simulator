@@ -205,7 +205,7 @@ UNION ALL
 SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
        ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
        ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
-       ARRAY_CONSTRUCT('school', 'community_center', 'nursery', 'college'),
+       ARRAY_CONSTRUCT('childcare', 'community_center', 'nursery', 'day_care_center', 'church', 'library'),
        ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus');
 
 --------------------------------------------------------------------

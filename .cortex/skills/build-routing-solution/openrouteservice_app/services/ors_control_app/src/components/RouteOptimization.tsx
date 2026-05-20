@@ -37,6 +37,13 @@ interface JobAssignment { jobIdx: number; vehicleIdx: number; placeName: string;
 interface RouteDirections { vehicleIdx: number; profile: string; totalDistance: number; totalDuration: number; steps: { instruction: string; distance: number; duration: number; name: string; }[]; }
 interface JobTemplateLocal { id: number; slotStart: string; slotEnd: string; skills: number[]; product: string; industry: string; serviceDuration: number; }
 
+function secsToHHMM(s: any): string {
+  if (typeof s === 'string' && s.includes(':')) return s;
+  const n = Number(s);
+  if (isNaN(n) || n === 0) return '08:00';
+  return `${String(Math.floor(n / 3600)).padStart(2, '0')}:${String(Math.floor((n % 3600) / 60)).padStart(2, '0')}`;
+}
+
 export default function RouteOptimization() {
   const { regionName, center, zoom } = useRegion();
   const [searchText, setSearchText] = useState('');
@@ -170,7 +177,7 @@ export default function RouteOptimization() {
     const templates: JobTemplateLocal[] = j.map((jt: any) => {
       let sk: number[] = [];
       try { const s = typeof jt.SKILLS === 'string' ? JSON.parse(jt.SKILLS) : jt.SKILLS; sk = (Array.isArray(s) ? s : [s]).map(Number).filter((n: number) => !isNaN(n)); } catch {}
-      return { id: jt.ID, slotStart: jt.SLOT_START || '08:00', slotEnd: jt.SLOT_END || '17:00', skills: sk, product: jt.PRODUCT || '', industry: jt.INDUSTRY || '', serviceDuration: SKILL_SERVICE_MINS[sk[0]] || 5 };
+      return { id: jt.ID, slotStart: secsToHHMM(jt.SLOT_START), slotEnd: secsToHHMM(jt.SLOT_END), skills: sk, product: jt.PRODUCT || '', industry: jt.INDUSTRY || '', serviceDuration: SKILL_SERVICE_MINS[sk[0]] || 5 };
     });
     setJobTemplates(templates);
     setLoading(false);

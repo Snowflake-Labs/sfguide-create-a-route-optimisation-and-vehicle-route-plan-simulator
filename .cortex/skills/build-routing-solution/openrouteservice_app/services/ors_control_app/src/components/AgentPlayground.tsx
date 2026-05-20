@@ -405,7 +405,7 @@ export default function AgentPlayground() {
                   assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
                   if (parsed.token_usage) {
-                    setTokenUsage(parsed.token_usage);
+                    if (parsed.token_usage.total_tokens != null) setTokenUsage(parsed.token_usage);
                     if (parsed.token_usage.workflow_steps) setWorkflowSteps(prev => [...prev, ...parsed.token_usage.workflow_steps]);
                   }
                   setMessages(prev => {
@@ -608,12 +608,12 @@ export default function AgentPlayground() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {tokenUsage && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`Prompt: ${tokenUsage.prompt_tokens} | Completion: ${tokenUsage.completion_tokens}${tokenUsage.summarised ? ` | ${tokenUsage.messages_summarised} msgs summarised, ${tokenUsage.messages_raw} raw` : ''}`}>
-                <span style={{ fontWeight: 500 }}>{tokenUsage.total_tokens.toLocaleString()}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} title={`Prompt: ${tokenUsage.prompt_tokens ?? 0} | Completion: ${tokenUsage.completion_tokens ?? 0}${tokenUsage.summarised ? ` | ${tokenUsage.messages_summarised} msgs summarised, ${tokenUsage.messages_raw} raw` : ''}`}>
+                <span style={{ fontWeight: 500 }}>{(tokenUsage.total_tokens ?? 0).toLocaleString()}</span>
                 <span>tokens</span>
               </div>
               <div style={{ width: 60, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(100, (tokenUsage.total_tokens / 8000) * 100)}%`, height: '100%', borderRadius: 2, background: tokenUsage.total_tokens > 6000 ? '#e74c3c' : tokenUsage.total_tokens > 4000 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
+                <div style={{ width: `${Math.min(100, ((tokenUsage.total_tokens ?? 0) / 8000) * 100)}%`, height: '100%', borderRadius: 2, background: (tokenUsage.total_tokens ?? 0) > 6000 ? '#e74c3c' : (tokenUsage.total_tokens ?? 0) > 4000 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
               </div>
               {tokenUsage.summarised && (
                 <span
@@ -815,15 +815,15 @@ export default function AgentPlayground() {
             <div style={{ marginBottom: 10, padding: '8px', background: 'rgba(0,0,0,0.03)', borderRadius: 6, border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ color: 'var(--text-secondary)' }}>Context window</span>
-                <span style={{ fontWeight: 600 }}>{(tokenUsage.context_tokens ?? tokenUsage.prompt_tokens).toLocaleString()} / {maxTokenLimit.toLocaleString()}</span>
+                <span style={{ fontWeight: 600 }}>{((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) || 0).toLocaleString()} / {maxTokenLimit.toLocaleString()}</span>
               </div>
               <div style={{ width: '100%', height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', marginBottom: 6 }}>
-                <div style={{ width: `${Math.min(100, ((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) / maxTokenLimit) * 100)}%`, height: '100%', borderRadius: 3, background: (tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) > maxTokenLimit * 0.8 ? '#e74c3c' : (tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) > maxTokenLimit * 0.5 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
+                <div style={{ width: `${Math.min(100, (((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) || 0) / maxTokenLimit) * 100)}%`, height: '100%', borderRadius: 3, background: ((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) || 0) > maxTokenLimit * 0.8 ? '#e74c3c' : ((tokenUsage.context_tokens ?? tokenUsage.prompt_tokens) || 0) > maxTokenLimit * 0.5 ? '#f39c12' : 'var(--accent)', transition: 'width 0.3s' }} />
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 10, color: 'var(--text-secondary)' }}>
-                <div>Read (prompt): <strong>{tokenUsage.prompt_tokens.toLocaleString()}</strong></div>
-                <div>Write (output): <strong>{tokenUsage.completion_tokens.toLocaleString()}</strong></div>
-                <div>Total cost: <strong>{tokenUsage.total_tokens.toLocaleString()}</strong></div>
+                <div>Read (prompt): <strong>{(tokenUsage.prompt_tokens ?? 0).toLocaleString()}</strong></div>
+                <div>Write (output): <strong>{(tokenUsage.completion_tokens ?? 0).toLocaleString()}</strong></div>
+                <div>Total cost: <strong>{(tokenUsage.total_tokens ?? 0).toLocaleString()}</strong></div>
                 <div>Raw msgs: <strong>{tokenUsage.messages_raw ?? '-'}</strong></div>
               </div>
               {tokenUsage.summarised && (
