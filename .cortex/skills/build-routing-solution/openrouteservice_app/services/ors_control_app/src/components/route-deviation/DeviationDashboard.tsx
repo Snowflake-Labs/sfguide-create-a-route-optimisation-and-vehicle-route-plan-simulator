@@ -4,10 +4,14 @@ import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
 import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 const PIE_COLORS = ['#0DB048', '#29B5E8', '#E5A100', '#E5484D'];
 
 export default function DeviationDashboard() {
+  const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [kpis, setKpis] = useState<any>({});
   const [trends, setTrends] = useState<any[]>([]);
   const [buckets, setBuckets] = useState<any[]>([]);
@@ -28,7 +32,7 @@ export default function DeviationDashboard() {
       setTopDeviators(d);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
 
   const pieData = useMemo(() => buckets.map(r => ({ name: r.BUCKET, value: Number(r.CNT) })), [buckets]);
 

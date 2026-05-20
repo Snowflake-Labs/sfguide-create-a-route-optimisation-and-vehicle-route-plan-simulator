@@ -1,0 +1,402 @@
+-- ============================================================================
+-- Backload Matching Engine — Seed Data
+-- Skill: backload-matching
+-- ============================================================================
+-- Creates schema FLEET_INTELLIGENCE.BACKLOAD_MATCHING and seeds:
+--   * CONFIG               — scoring weights + region constants
+--   * VW_TRAILERS          — view: idle-bound trailers (joins synthetic fleet)
+--   * INTERNAL_VOLUMES     — synthesised internal full/part-load shipments
+--   * EXTERNAL_OFFERS      — synthesised freight-exchange offers (Timocom-style)
+--   * BACKLOAD_PROPOSALS_VW — convenience view used by the React page
+--   * PROPOSAL_DECISIONS   — write-back target for the Assign Backload CTA
+--
+-- Geo: trailers and offers are positioned inside the OPENROUTESERVICE_APP
+-- "Germany" provisioned region (5.86E..15.05E, 47.27N..55.15N) so the
+-- driving-hgv ORS calls stay inside the deployed graph.
+-- ============================================================================
+
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+USE WAREHOUSE ROUTING_ANALYTICS;
+
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+USE SCHEMA FLEET_INTELLIGENCE.BACKLOAD_MATCHING;
+
+-- ----------------------------------------------------------------------------
+-- 1. CONFIG
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE CONFIG (
+    KEY     VARCHAR PRIMARY KEY,
+    VALUE   VARIANT,
+    UPDATED TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO CONFIG (KEY, VALUE) VALUES
+    ('REGION',                'Germany'::VARIANT),
+    ('HOME_REGION',           'Nordics'::VARIANT),
+    ('HOME_LAT',               TO_VARIANT(55.6759::FLOAT)),
+    ('HOME_LON',               TO_VARIANT(12.5655::FLOAT)),  -- Copenhagen as the Nordic anchor
+    ('EXTERNAL_OFFERS_COUNT',  300::VARIANT),
+    ('TRAILER_COUNT',          80::VARIANT),
+    ('W_EMPTY_KM',             0.40::VARIANT),
+    ('W_DIRECTION',            0.25::VARIANT),
+    ('W_SOURCE',               0.20::VARIANT),
+    ('W_TIME_WINDOW',          0.10::VARIANT),
+    ('W_PRICE',                0.05::VARIANT),
+    ('IDLE_COST_EUR_PER_DAY',  650::VARIANT);
+
+-- ----------------------------------------------------------------------------
+-- 2. Trailer roster (synthesised inside Germany bbox so HGV routing works)
+--    We do NOT modify SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET — instead seed
+--    a dedicated TRAILERS table for the demo.
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE TRAILERS (
+    TRAILER_ID        VARCHAR PRIMARY KEY,
+    OPERATING_COUNTRY VARCHAR,
+    HOME_DEPOT        VARCHAR,
+    HOME_LOCATION     GEOGRAPHY,
+    CURRENT_LOAD      VARCHAR,
+    DROPOFF_CITY      VARCHAR,
+    DROPOFF_LOCATION  GEOGRAPHY,
+    ETA_TS            TIMESTAMP_NTZ,
+    STATUS            VARCHAR,
+    HAZMAT_CERT       BOOLEAN,
+    MAX_PAYLOAD_KG    NUMBER
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- 12 named German destination cities; each gets ~7 trailers for ~80 total.
+INSERT INTO TRAILERS
+WITH cities (city, lat, lon) AS (
+    SELECT 'Hamburg',    53.5511,  9.9937 UNION ALL
+    SELECT 'Bremen',     53.0793,  8.8017 UNION ALL
+    SELECT 'Berlin',     52.5200, 13.4050 UNION ALL
+    SELECT 'Hannover',   52.3759,  9.7320 UNION ALL
+    SELECT 'Dortmund',   51.5136,  7.4653 UNION ALL
+    SELECT 'Cologne',    50.9375,  6.9603 UNION ALL
+    SELECT 'Frankfurt',  50.1109,  8.6821 UNION ALL
+    SELECT 'Leipzig',    51.3397, 12.3731 UNION ALL
+    SELECT 'Dresden',    51.0504, 13.7373 UNION ALL
+    SELECT 'Stuttgart',  48.7758,  9.1829 UNION ALL
+    SELECT 'Nuremberg',  49.4521, 11.0767 UNION ALL
+    SELECT 'Munich',     48.1351, 11.5820
+),
+seed AS (
+    SELECT
+        SEQ4() AS i,
+        UNIFORM(0, 11, RANDOM(42)) AS city_idx,
+        UNIFORM(0, 11, RANDOM(43)) AS home_idx,
+        UNIFORM(0, 4,  RANDOM(44)) AS load_idx,
+        UNIFORM(0, 1,  RANDOM(45)) AS hazmat_flag,
+        UNIFORM(0, 360, RANDOM(46)) AS eta_minutes
+    FROM TABLE(GENERATOR(ROWCOUNT => 80))
+)
+SELECT
+    'TR-' || LPAD(s.i::VARCHAR, 4, '0')                                    AS TRAILER_ID,
+    'DE'                                                                    AS OPERATING_COUNTRY,
+    h.city                                                                  AS HOME_DEPOT,
+    ST_MAKEPOINT(h.lon + (UNIFORM(-100, 100, RANDOM(47))/10000.0),
+                 h.lat + (UNIFORM(-100, 100, RANDOM(48))/10000.0))           AS HOME_LOCATION,
+    DECODE(s.load_idx, 0,'Furniture parts', 1,'Auto components', 2,'Pharma pallets',
+                       3,'Frozen food', 4,'Industrial machinery')            AS CURRENT_LOAD,
+    c.city                                                                  AS DROPOFF_CITY,
+    ST_MAKEPOINT(c.lon + (UNIFORM(-50, 50, RANDOM(49))/10000.0),
+                 c.lat + (UNIFORM(-50, 50, RANDOM(50))/10000.0))             AS DROPOFF_LOCATION,
+    DATEADD(MINUTE, s.eta_minutes, CURRENT_TIMESTAMP())                     AS ETA_TS,
+    CASE WHEN s.eta_minutes < 240 THEN 'IN_TRANSIT' ELSE 'STAGED' END       AS STATUS,
+    s.hazmat_flag = 0                                                       AS HAZMAT_CERT,
+    DECODE(s.load_idx, 0, 24000, 1, 22000, 2, 18000, 3, 20000, 4, 26000)    AS MAX_PAYLOAD_KG
+FROM seed s
+JOIN cities c ON c.lat IS NOT NULL AND c.lon IS NOT NULL
+              AND s.city_idx = (SELECT MIN(rn-1) FROM (SELECT ROW_NUMBER() OVER (ORDER BY city) rn, city FROM cities) WHERE city = c.city)
+JOIN cities h ON h.lat IS NOT NULL AND h.lon IS NOT NULL
+              AND s.home_idx = (SELECT MIN(rn-1) FROM (SELECT ROW_NUMBER() OVER (ORDER BY city) rn, city FROM cities) WHERE city = h.city);
+
+-- ----------------------------------------------------------------------------
+-- 3. VW_TRAILERS — the view the React page reads from
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW VW_TRAILERS AS
+SELECT
+    TRAILER_ID,
+    OPERATING_COUNTRY,
+    HOME_DEPOT,
+    HOME_LOCATION,
+    ST_X(HOME_LOCATION)                                            AS HOME_LON,
+    ST_Y(HOME_LOCATION)                                            AS HOME_LAT,
+    CURRENT_LOAD,
+    DROPOFF_CITY,
+    DROPOFF_LOCATION,
+    ST_X(DROPOFF_LOCATION)                                         AS DROPOFF_LON,
+    ST_Y(DROPOFF_LOCATION)                                         AS DROPOFF_LAT,
+    ETA_TS,
+    DATEDIFF('minute', CURRENT_TIMESTAMP(), ETA_TS)                AS ETA_MIN,
+    STATUS,
+    HAZMAT_CERT,
+    MAX_PAYLOAD_KG
+FROM TRAILERS
+WHERE STATUS IN ('IN_TRANSIT', 'STAGED');
+
+-- ----------------------------------------------------------------------------
+-- 4. INTERNAL_VOLUMES — DHL's own waiting full/part-load shipments
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE INTERNAL_VOLUMES (
+    ID                VARCHAR PRIMARY KEY,
+    PICKUP_CITY       VARCHAR,
+    PICKUP_GEOM       GEOGRAPHY,
+    DROPOFF_CITY      VARCHAR,
+    DROPOFF_GEOM      GEOGRAPHY,
+    PICKUP_FROM_TS    TIMESTAMP_NTZ,
+    PICKUP_TO_TS      TIMESTAMP_NTZ,
+    WEIGHT_KG         NUMBER,
+    PRODUCT           VARCHAR,
+    HAZMAT            BOOLEAN,
+    POSTED_AT         TIMESTAMP_NTZ
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO INTERNAL_VOLUMES
+WITH cities (city, lat, lon) AS (
+    SELECT 'Hamburg',    53.5511,  9.9937 UNION ALL
+    SELECT 'Berlin',     52.5200, 13.4050 UNION ALL
+    SELECT 'Hannover',   52.3759,  9.7320 UNION ALL
+    SELECT 'Dortmund',   51.5136,  7.4653 UNION ALL
+    SELECT 'Cologne',    50.9375,  6.9603 UNION ALL
+    SELECT 'Frankfurt',  50.1109,  8.6821 UNION ALL
+    SELECT 'Leipzig',    51.3397, 12.3731 UNION ALL
+    SELECT 'Stuttgart',  48.7758,  9.1829 UNION ALL
+    SELECT 'Nuremberg',  49.4521, 11.0767 UNION ALL
+    SELECT 'Munich',     48.1351, 11.5820
+),
+seed AS (
+    SELECT SEQ4() i,
+           UNIFORM(0, 9, RANDOM(101)) p_idx,
+           UNIFORM(0, 9, RANDOM(102)) d_idx,
+           UNIFORM(0, 4, RANDOM(103)) prod_idx,
+           UNIFORM(60, 720, RANDOM(104)) win_start,
+           UNIFORM(60, 480, RANDOM(105)) win_len,
+           UNIFORM(800, 25000, RANDOM(106)) wt
+    FROM TABLE(GENERATOR(ROWCOUNT => 120))
+),
+named AS (
+    SELECT s.*,
+           (SELECT city FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_city,
+           (SELECT lat  FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_lat,
+           (SELECT lon  FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_lon,
+           (SELECT city FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_city,
+           (SELECT lat  FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_lat,
+           (SELECT lon  FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_lon
+    FROM seed s
+)
+SELECT
+    'INT-' || LPAD(i::VARCHAR, 5, '0')                                                         AS ID,
+    p_city                                                                                     AS PICKUP_CITY,
+    ST_MAKEPOINT(p_lon + (UNIFORM(-30, 30, RANDOM(110))/10000.0),
+                 p_lat + (UNIFORM(-30, 30, RANDOM(111))/10000.0))                              AS PICKUP_GEOM,
+    d_city                                                                                     AS DROPOFF_CITY,
+    ST_MAKEPOINT(d_lon + (UNIFORM(-30, 30, RANDOM(112))/10000.0),
+                 d_lat + (UNIFORM(-30, 30, RANDOM(113))/10000.0))                              AS DROPOFF_GEOM,
+    DATEADD(MINUTE, win_start, CURRENT_TIMESTAMP())                                            AS PICKUP_FROM_TS,
+    DATEADD(MINUTE, win_start + win_len, CURRENT_TIMESTAMP())                                  AS PICKUP_TO_TS,
+    wt                                                                                         AS WEIGHT_KG,
+    DECODE(prod_idx, 0,'DHL Express parcels', 1,'B2B pallets',
+                     2,'Automotive parts', 3,'Pharma cold-chain', 4,'Retail e-commerce')        AS PRODUCT,
+    FALSE                                                                                       AS HAZMAT,
+    DATEADD(MINUTE, -UNIFORM(0, 360, RANDOM(114)), CURRENT_TIMESTAMP())                        AS POSTED_AT
+FROM named
+WHERE p_city IS NOT NULL
+  AND d_city IS NOT NULL
+  AND p_city <> d_city;
+
+-- ----------------------------------------------------------------------------
+-- 5. EXTERNAL_OFFERS — synthesised freight-exchange listings
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE EXTERNAL_OFFERS (
+    OFFER_ID          VARCHAR PRIMARY KEY,
+    SOURCE            VARCHAR,
+    PICKUP_GEOM       GEOGRAPHY,
+    DROPOFF_GEOM      GEOGRAPHY,
+    PICKUP_COUNTRY    VARCHAR,
+    DROPOFF_COUNTRY   VARCHAR,
+    PICKUP_CITY       VARCHAR,
+    DROPOFF_CITY      VARCHAR,
+    PICKUP_FROM_TS    TIMESTAMP_NTZ,
+    PICKUP_TO_TS      TIMESTAMP_NTZ,
+    WEIGHT_KG         NUMBER,
+    PRODUCT           VARCHAR,
+    PRICE_EUR         NUMBER,
+    HAZMAT            BOOLEAN,
+    POSTED_AT         TIMESTAMP_NTZ,
+    LISTING_TEXT      VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO EXTERNAL_OFFERS
+WITH cities (city, country, lat, lon) AS (
+    SELECT 'Hamburg',    'DE', 53.5511,  9.9937 UNION ALL
+    SELECT 'Berlin',     'DE', 52.5200, 13.4050 UNION ALL
+    SELECT 'Hannover',   'DE', 52.3759,  9.7320 UNION ALL
+    SELECT 'Dortmund',   'DE', 51.5136,  7.4653 UNION ALL
+    SELECT 'Cologne',    'DE', 50.9375,  6.9603 UNION ALL
+    SELECT 'Frankfurt',  'DE', 50.1109,  8.6821 UNION ALL
+    SELECT 'Leipzig',    'DE', 51.3397, 12.3731 UNION ALL
+    SELECT 'Stuttgart',  'DE', 48.7758,  9.1829 UNION ALL
+    SELECT 'Nuremberg',  'DE', 49.4521, 11.0767 UNION ALL
+    SELECT 'Munich',     'DE', 48.1351, 11.5820 UNION ALL
+    SELECT 'Bremen',     'DE', 53.0793,  8.8017 UNION ALL
+    SELECT 'Dresden',    'DE', 51.0504, 13.7373
+),
+seed AS (
+    SELECT SEQ4() i,
+           UNIFORM(0, 11, RANDOM(201)) p_idx,
+           UNIFORM(0, 11, RANDOM(202)) d_idx,
+           UNIFORM(0, 3,  RANDOM(203)) src_idx,
+           UNIFORM(0, 5,  RANDOM(204)) prod_idx,
+           UNIFORM(60, 1200, RANDOM(205)) win_start,
+           UNIFORM(60, 480,  RANDOM(206)) win_len,
+           UNIFORM(800, 25000, RANDOM(207)) wt,
+           UNIFORM(400, 4500, RANDOM(208)) price,
+           UNIFORM(0, 100, RANDOM(209))  hazmat_pct,
+           UNIFORM(0, 540, RANDOM(210))  posted_age
+    FROM TABLE(GENERATOR(ROWCOUNT => 300))
+),
+named AS (
+    SELECT s.*,
+           (SELECT city    FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_city,
+           (SELECT country FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_country,
+           (SELECT lat     FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_lat,
+           (SELECT lon     FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.p_idx + 1) p_lon,
+           (SELECT city    FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_city,
+           (SELECT country FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_country,
+           (SELECT lat     FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_lat,
+           (SELECT lon     FROM cities QUALIFY ROW_NUMBER() OVER (ORDER BY city) = s.d_idx + 1) d_lon
+    FROM seed s
+)
+SELECT
+    'OFF-' || LPAD(i::VARCHAR, 6, '0')                                                          AS OFFER_ID,
+    DECODE(src_idx, 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')                          AS SOURCE,
+    ST_MAKEPOINT(p_lon + (UNIFORM(-50, 50, RANDOM(220))/10000.0),
+                 p_lat + (UNIFORM(-50, 50, RANDOM(221))/10000.0))                                AS PICKUP_GEOM,
+    ST_MAKEPOINT(d_lon + (UNIFORM(-50, 50, RANDOM(222))/10000.0),
+                 d_lat + (UNIFORM(-50, 50, RANDOM(223))/10000.0))                                AS DROPOFF_GEOM,
+    p_country                                                                                    AS PICKUP_COUNTRY,
+    d_country                                                                                    AS DROPOFF_COUNTRY,
+    p_city                                                                                       AS PICKUP_CITY,
+    d_city                                                                                       AS DROPOFF_CITY,
+    DATEADD(MINUTE, win_start, CURRENT_TIMESTAMP())                                              AS PICKUP_FROM_TS,
+    DATEADD(MINUTE, win_start + win_len, CURRENT_TIMESTAMP())                                    AS PICKUP_TO_TS,
+    wt                                                                                           AS WEIGHT_KG,
+    DECODE(prod_idx, 0,'Pallets (general)', 1,'Steel coils', 2,'Plastic granulate',
+                     3,'Beverages', 4,'Furniture', 5,'Bulk paper')                                AS PRODUCT,
+    price                                                                                        AS PRICE_EUR,
+    hazmat_pct < 8                                                                               AS HAZMAT,
+    DATEADD(MINUTE, -posted_age, CURRENT_TIMESTAMP())                                            AS POSTED_AT,
+    DECODE(src_idx, 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
+        || ' • ' || p_city || ' → ' || d_city
+        || ' • ' || (wt::VARCHAR) || ' kg • '
+        || DECODE(prod_idx, 0,'Pallets (general)', 1,'Steel coils', 2,'Plastic granulate',
+                            3,'Beverages', 4,'Furniture', 5,'Bulk paper')
+        || ' • EUR ' || price::VARCHAR
+        || CASE WHEN hazmat_pct < 8 THEN ' • ADR' ELSE '' END                                    AS LISTING_TEXT
+FROM named
+WHERE p_city IS NOT NULL
+  AND d_city IS NOT NULL
+  AND p_city <> d_city;
+
+-- ----------------------------------------------------------------------------
+-- 6. BACKLOAD_PROPOSALS_VW — joins trailers x candidates with empty-km
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW BACKLOAD_PROPOSALS_VW AS
+WITH internal AS (
+    SELECT
+        'INTERNAL'                                AS SOURCE,
+        ID                                        AS OFFER_ID,
+        PICKUP_CITY,
+        DROPOFF_CITY,
+        PICKUP_GEOM,
+        DROPOFF_GEOM,
+        PICKUP_FROM_TS,
+        PICKUP_TO_TS,
+        WEIGHT_KG,
+        PRODUCT,
+        NULL::NUMBER                              AS PRICE_EUR,
+        HAZMAT,
+        POSTED_AT,
+        ('Internal • ' || PICKUP_CITY || ' → ' || DROPOFF_CITY ||
+         ' • ' || WEIGHT_KG::VARCHAR || ' kg • ' || PRODUCT)
+                                                  AS LISTING_TEXT
+    FROM INTERNAL_VOLUMES
+),
+ext AS (
+    SELECT
+        SOURCE,
+        OFFER_ID,
+        PICKUP_CITY,
+        DROPOFF_CITY,
+        PICKUP_GEOM,
+        DROPOFF_GEOM,
+        PICKUP_FROM_TS,
+        PICKUP_TO_TS,
+        WEIGHT_KG,
+        PRODUCT,
+        PRICE_EUR,
+        HAZMAT,
+        POSTED_AT,
+        LISTING_TEXT
+    FROM EXTERNAL_OFFERS
+),
+candidates AS (
+    SELECT * FROM internal UNION ALL SELECT * FROM ext
+)
+SELECT
+    t.TRAILER_ID,
+    t.DROPOFF_CITY                                                AS TRAILER_DROPOFF_CITY,
+    t.DROPOFF_LOCATION,
+    t.HOME_LOCATION,
+    t.ETA_TS,
+    t.HAZMAT_CERT,
+    c.SOURCE,
+    c.OFFER_ID,
+    c.PICKUP_CITY,
+    c.DROPOFF_CITY                                                AS PROPOSAL_DROPOFF_CITY,
+    c.PICKUP_GEOM,
+    c.DROPOFF_GEOM,
+    c.PICKUP_FROM_TS,
+    c.PICKUP_TO_TS,
+    c.WEIGHT_KG,
+    c.PRODUCT,
+    c.PRICE_EUR,
+    c.HAZMAT,
+    c.LISTING_TEXT,
+    ST_DISTANCE(t.DROPOFF_LOCATION, c.PICKUP_GEOM) / 1000           AS EMPTY_KM,
+    ST_DISTANCE(c.DROPOFF_GEOM, t.HOME_LOCATION) / 1000             AS HOME_KM_AFTER
+FROM TRAILERS t
+CROSS JOIN candidates c
+WHERE t.STATUS IN ('IN_TRANSIT', 'STAGED');
+
+-- ----------------------------------------------------------------------------
+-- 7. PROPOSAL_DECISIONS — write-back target for the Assign Backload CTA
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE PROPOSAL_DECISIONS (
+    DECISION_ID       VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+    TRAILER_ID        VARCHAR,
+    OFFER_ID          VARCHAR,
+    SOURCE            VARCHAR,
+    SCORE             FLOAT,
+    EMPTY_KM          FLOAT,
+    DECIDED_BY        VARCHAR,
+    DECIDED_AT        TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    RATIONALE         VARCHAR
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- ----------------------------------------------------------------------------
+-- 8. Sanity checks
+-- ----------------------------------------------------------------------------
+SELECT 'TRAILERS'           AS object, COUNT(*) AS n FROM TRAILERS
+UNION ALL SELECT 'INTERNAL_VOLUMES', COUNT(*) FROM INTERNAL_VOLUMES
+UNION ALL SELECT 'EXTERNAL_OFFERS',  COUNT(*) FROM EXTERNAL_OFFERS
+UNION ALL SELECT 'VW_TRAILERS rows', COUNT(*) FROM VW_TRAILERS
+ORDER BY 1;

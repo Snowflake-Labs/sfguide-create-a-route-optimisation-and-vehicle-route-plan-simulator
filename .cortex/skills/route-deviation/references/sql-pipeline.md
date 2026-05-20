@@ -208,8 +208,16 @@ UNION ALL SELECT 'DIM_POIS', COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.VW_POIS;
 
 Computes deviation metrics directly from FACT_TRIPS (via VW_TRIP_DEVIATION). Data Studio already provides actual and planned routes, distances, and detour flags.
 
+Declared as a **Dynamic Table** so it auto-refreshes when CONFIG.REGION/VEHICLE_TYPE or upstream FACT_TRIPS change. Without this, switching the active dataset has no effect on the Route Deviation pages.
+
 ```sql
-CREATE OR REPLACE TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS AS
+CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  LAG = '5 minutes'
+  REFRESH_MODE = 'AUTO'
+  INITIALIZE = 'ON_CREATE'
+  WAREHOUSE = ROUTING_ANALYTICS
+AS
 WITH trip_points AS (
     SELECT TRIP_ID, COUNT(*) AS POINT_COUNT
     FROM {TARGET_DB}.{TARGET_SCHEMA}.VW_VEHICLE_TELEMETRY
@@ -269,9 +277,6 @@ LEFT JOIN trip_points tp ON t.TRIP_ID = tp.TRIP_ID
 LEFT JOIN dedup_pois po ON t.ORIGIN_POI_ID = po.ID AND po.RN = 1
 LEFT JOIN dedup_pois pd ON t.DESTINATION_POI_ID = pd.ID AND pd.RN = 1
 WHERE t.ACTUAL_PATH IS NOT NULL;
-
-ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS;`
@@ -281,7 +286,13 @@ Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSI
 Aggregates deviation stats per driver, joined with fleet metadata via VW_FLEET.
 
 ```sql
-CREATE OR REPLACE TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY AS
+CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  LAG = '5 minutes'
+  REFRESH_MODE = 'AUTO'
+  INITIALIZE = 'ON_CREATE'
+  WAREHOUSE = ROUTING_ANALYTICS
+AS
 SELECT
     d.VEHICLE_ID,
     d.DRIVER_ID,
@@ -300,9 +311,6 @@ SELECT
 FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS d
 LEFT JOIN {TARGET_DB}.{TARGET_SCHEMA}.VW_FLEET f ON d.VEHICLE_ID = f.VEHICLE_ID
 GROUP BY d.VEHICLE_ID, d.DRIVER_ID, f.DRIVER_PROFILE, f.OPERATING_MODE, f.HOME_CITY;
-
-ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMARY;`
@@ -310,7 +318,13 @@ Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DRIVER_DEVIATION_SUMMA
 ## ETL Step 3: DAILY_DEVIATION_TRENDS
 
 ```sql
-CREATE OR REPLACE TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS AS
+CREATE OR REPLACE DYNAMIC TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  LAG = '5 minutes'
+  REFRESH_MODE = 'AUTO'
+  INITIALIZE = 'ON_CREATE'
+  WAREHOUSE = ROUTING_ANALYTICS
+AS
 SELECT
     TRIP_DATE,
     DAYNAME(TRIP_DATE) AS DAY_OF_WEEK,
@@ -323,9 +337,6 @@ SELECT
     ROUND(AVG(DURATION_DEVIATION_PCT), 2) AS AVG_DURATION_DEVIATION_PCT
 FROM {TARGET_DB}.{TARGET_SCHEMA}.TRIP_DEVIATION_ANALYSIS
 GROUP BY TRIP_DATE;
-
-ALTER TABLE {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 Verify: `SELECT COUNT(*) FROM {TARGET_DB}.{TARGET_SCHEMA}.DAILY_DEVIATION_TRENDS;`

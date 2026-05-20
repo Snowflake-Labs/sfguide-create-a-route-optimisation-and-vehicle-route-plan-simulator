@@ -36,6 +36,45 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 > All `snow stage copy` commands use `--connection <ACTIVE_CONNECTION>`. Replace `<ACTIVE_CONNECTION>` with the name of your currently active Snowflake connection.
 
+## Optional Dependencies
+
+| Skill | Used By | Behavior if missing |
+|-------|---------|---------------------|
+| `dwell-analysis` | Asset Velocity page | Page renders a friendly empty state pointing the user to deploy `dwell-analysis`. The core Route Optimizer (VRP) keeps working. |
+
+## Asset Velocity (Non-Moving Trailer Detection & Action Engine)
+
+This skill ships a second React page in the control app, **Asset Velocity**, that materialises an industry-standard ghost-trailer detection workflow. It is fully additive - the existing Route Optimizer (VRP) page is untouched.
+
+It reuses the dwell-analysis Dynamic Tables (no new DTs) and adds three thin views in `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION`:
+
+| View | Purpose |
+|------|---------|
+| `VW_IDLE_TRAILERS` | Latest dwell session per HGV, with idle duration metrics, deterministic dispatcher mapping, and an exception filter that drops `MAINTENANCE` statuses and `OUTLIER` driver profiles. |
+| `VW_LANE_DEMAND` | Net outbound trips per terminal over the most recent 30 days of `FACT_TRIPS`. High `DEMAND_SCORE` = trailer-short terminal. |
+| `VW_TRAILER_COST_OF_IDLENESS` | Joins `VW_IDLE_TRAILERS` with `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` and `CONFIG.RENTAL_CAPTURE_RATE` to compute cost-of-idleness, projected savings, and severity bucket. |
+
+Full use case framing, cross-vertical applicability, and risk mitigations live in [references/asset-velocity-use-case.md](references/asset-velocity-use-case.md).
+
+### Deploy the Asset Velocity views
+
+Prerequisites: `dwell-analysis` skill deployed.
+
+```bash
+snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sql -c <connection>
+```
+
+Verify:
+```sql
+SELECT 'VW_IDLE_TRAILERS' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+UNION ALL
+SELECT 'VW_LANE_DEMAND',         COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
+UNION ALL
+SELECT 'VW_TRAILER_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+```
+
+The page will gracefully render an empty state with deployment instructions if `DWELL_ANALYSIS.DT_DWELL_ENRICHED` is missing.
+
 ## Configuration
 
 | Parameter | Default | Description |
@@ -198,6 +237,33 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | PB | VARCHAR | RouteOptimization |
 | PC | VARCHAR | RouteOptimization |
 
+### VW_IDLE_TRAILERS (Asset Velocity)
+| Column | Type | Used By |
+|--------|------|---------|
+| VEHICLE_ID | VARCHAR | AssetVelocity (trailer id) |
+| REGION | VARCHAR | AssetVelocity (region filter) |
+| LAST_LOCATION_NAME | VARCHAR | AssetVelocity (table + tooltip) |
+| LAST_LOCATION_TYPE | VARCHAR | AssetVelocity (table) |
+| LAST_LOCATION_GEOM | GEOGRAPHY | AssetVelocity (deck.gl) |
+| LAST_LNG / LAST_LAT | FLOAT | AssetVelocity (deck.gl getPosition) |
+| IDLE_SINCE | TIMESTAMP | AssetVelocity (tooltip) |
+| IDLE_HOURS / IDLE_DAYS | NUMBER | AssetVelocity (KPIs, sort, severity) |
+| ASSIGNED_DISPATCHER | VARCHAR | AssetVelocity (table) |
+
+### VW_LANE_DEMAND (Asset Velocity)
+| Column | Type | Used By |
+|--------|------|---------|
+| TERMINAL_ID / TERMINAL_NAME | VARCHAR | AssetVelocity (tooltip + VRP jobs) |
+| TERMINAL_LAT / TERMINAL_LNG | FLOAT | AssetVelocity (deck.gl + VRP) |
+| NET_OUTBOUND_TRIPS / DEMAND_SCORE | NUMBER | AssetVelocity (sort + VRP priority) |
+
+### VW_TRAILER_COST_OF_IDLENESS (Asset Velocity)
+| Column | Type | Used By |
+|--------|------|---------|
+| COST_OF_IDLENESS_USD | NUMBER | AssetVelocity (KPI + sort) |
+| PROJECTED_SAVINGS_USD | NUMBER | AssetVelocity (KPI) |
+| IDLE_SEVERITY | VARCHAR | AssetVelocity (color + badge) |
+
 ### ORS Functions (cross-app)
 | Function | Used By |
 |----------|---------|
@@ -258,6 +324,9 @@ To remove all objects created by this skill:
 
 ```sql
 DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_AISQL;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;

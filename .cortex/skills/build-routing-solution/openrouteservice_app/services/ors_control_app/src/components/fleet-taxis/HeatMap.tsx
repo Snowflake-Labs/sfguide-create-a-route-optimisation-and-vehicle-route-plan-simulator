@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 
 const COLOR_RANGE: [number, number, number][] = [
@@ -10,19 +12,25 @@ const COLOR_RANGE: [number, number, number][] = [
 ];
 
 export default function HeatMap() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [metric, setMetric] = useState<'TRIP_COUNT' | 'AVG_SPEED'>('TRIP_COUNT');
   const [hour, setHour] = useState(-1);
   const [h3Res, setH3Res] = useState(7);
   const [hexData, setHexData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.42, latitude: 37.77, zoom: 11, pitch: 45, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     const hourFilter = hour >= 0 ? `WHERE HOUR(TRIP_START_TIME) = ${hour}` : '';
     sfQuery(`SELECT H3_POINT_TO_CELL_STRING(ORIGIN, ${h3Res}) AS H3_INDEX, COUNT(*) AS TRIP_COUNT, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 2) AS AVG_KM, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY ${hourFilter} GROUP BY 1 HAVING TRIP_COUNT >= 2 ORDER BY TRIP_COUNT DESC LIMIT 8000`)
       .then(rows => { setHexData(rows); setLoading(false); });
-  }, [hour, h3Res]);
+  }, [hour, h3Res, regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const maxVal = useMemo(() => Math.max(1, ...hexData.map((h: any) => Number(h[metric] || 0))), [hexData, metric]);
   const totalTrips = useMemo(() => hexData.reduce((s, h) => s + Number(h.TRIP_COUNT || 0), 0), [hexData]);

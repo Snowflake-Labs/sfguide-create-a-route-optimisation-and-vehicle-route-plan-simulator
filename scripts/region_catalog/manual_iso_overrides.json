@@ -1,0 +1,5 @@
+{
+  "_comment": "Manual ISO overrides for regions that don't resolve cleanly via pycountry. Edit and re-run build_boundaries.py to update the parquet.",
+  "countries": {},
+  "subdivisions": {}
+}

@@ -4,14 +4,18 @@ import { ScatterplotLayer, PathLayer } from '@deck.gl/layers';
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 export default function FleetMap() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [selectedCourier, setSelectedCourier] = useState<string | null>(null);
   const [routeGeo, setRouteGeo] = useState<any[]>([]);
   const [kpis, setKpis] = useState<any>({});
   const [couriers, setCouriers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -23,7 +27,11 @@ export default function FleetMap() {
       setCouriers(c);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const loadRoutes = useCallback(async (courierId: string) => {
     setSelectedCourier(courierId);

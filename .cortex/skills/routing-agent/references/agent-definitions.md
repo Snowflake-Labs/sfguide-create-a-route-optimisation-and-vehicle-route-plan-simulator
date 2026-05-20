@@ -7,6 +7,13 @@ SQL and Python definitions for the OpenRouteService Routing Agent.
 ## TOOL_DIRECTIONS Procedure
 
 Wraps ORS DIRECTIONS with AI geocoding for natural language location input.
+The geocoded coordinates are cross-checked against `REGION_CATALOG.BOUNDARY`
+via `REGION_FOR_POINT()` so the agent can produce a friendly error when the
+LLM returns coordinates outside any provisioned region (e.g. "Cambridge"
+geocoded to Cambridge MA when the user meant Cambridge UK), instead of a
+silent ORS RouteNotFound.
+
+See [`deploy-agent.sql`](./deploy-agent.sql) for the canonical implementation.
 
 ```sql
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(
@@ -199,7 +206,8 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZA
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION VARCHAR DEFAULT 'California'
 )
 RETURNS VARIANT
 LANGUAGE PYTHON
@@ -215,7 +223,7 @@ def _escape_sql_string(s: str) -> str:
     """Escape single quotes for safe SQL string interpolation."""
     return s.replace("'", "''")
 
-def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str) -> dict:
+def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
         # Geocode delivery locations
         safe_delivery = _escape_sql_string(delivery_locations)
@@ -274,8 +282,8 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
 
         opt_query = f"""
         SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
-            PARSE_JSON('{jobs_json}')::ARRAY,
-            PARSE_JSON('{vehicles_json}')::ARRAY
+            OBJECT_CONSTRUCT('jobs', PARSE_JSON('{jobs_json}')::ARRAY, 'vehicles', PARSE_JSON('{vehicles_json}')::ARRAY)::VARIANT,
+            '{region}'
         ))
         """
         opt_result = session.sql(opt_query).collect()[0]['RESULT']
@@ -330,7 +338,7 @@ $$;
 ```
 
 ```sql
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -449,6 +457,9 @@ tools:
           profile:
             type: string
             description: "Transport mode. Default: driving-car"
+          region:
+            type: string
+            description: "Provisioned ORS region for routing (e.g. California, Germany, UnitedStatesOfAmerica). Default: California"
         required: [delivery_locations, depot_location, num_vehicles]
 tool_resources:
   tool_directions:

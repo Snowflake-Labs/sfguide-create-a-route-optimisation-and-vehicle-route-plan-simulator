@@ -1,0 +1,55 @@
+-- 02_create_variants.sql
+-- Create the five table variants from the source travel-time matrix.
+-- Source: OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6
+-- Target schema: OPENROUTESERVICE_APP.BENCH_MATRIX
+
+USE WAREHOUSE BENCH_STD_WH;
+USE SCHEMA OPENROUTESERVICE_APP.BENCH_MATRIX;
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"is_quickstart":0,"source":"sql"}}';
+
+-- A. Standard table
+CREATE OR REPLACE TABLE BENCH_MATRIX_STD AS
+SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6;
+ALTER TABLE BENCH_MATRIX_STD SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"A_standard"}}';
+
+-- B. Standard table + Search Optimization on equality(ORIGIN_H3, DEST_H3)
+CREATE OR REPLACE TABLE BENCH_MATRIX_SOS AS
+SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6;
+ALTER TABLE BENCH_MATRIX_SOS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"B_standard_sos"}}';
+ALTER TABLE BENCH_MATRIX_SOS ADD SEARCH OPTIMIZATION ON EQUALITY(ORIGIN_H3, DEST_H3);
+
+-- C. Clustered standard table on (ORIGIN_H3) - sorted by ORIGIN_H3 at load
+CREATE OR REPLACE TABLE BENCH_MATRIX_CLUSTERED CLUSTER BY (ORIGIN_H3) AS
+SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6
+ORDER BY ORIGIN_H3;
+ALTER TABLE BENCH_MATRIX_CLUSTERED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"C_clustered"}}';
+
+-- D. Hybrid (Unistore) table with PK and secondary index
+CREATE OR REPLACE HYBRID TABLE BENCH_MATRIX_HYBRID (
+  ORIGIN_H3              VARCHAR     NOT NULL,
+  DEST_H3                VARCHAR     NOT NULL,
+  TRAVEL_TIME_SECONDS    FLOAT,
+  TRAVEL_DISTANCE_METERS FLOAT,
+  CALCULATED_AT          TIMESTAMP_LTZ,
+  PRIMARY KEY (ORIGIN_H3, DEST_H3),
+  INDEX idx_origin (ORIGIN_H3)
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"D_hybrid"}}';
+
+INSERT INTO BENCH_MATRIX_HYBRID (ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT)
+SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6;
+
+-- E. Interactive Table (Gen2) clustered by (ORIGIN_H3)
+CREATE OR REPLACE INTERACTIVE TABLE BENCH_MATRIX_INTERACTIVE
+CLUSTER BY (ORIGIN_H3) AS
+SELECT ORIGIN_H3, DEST_H3, TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS, CALCULATED_AT
+FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6;
+ALTER TABLE BENCH_MATRIX_INTERACTIVE SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-matrix-access-benchmark","version":{"major":1,"minor":0},"attributes":{"variant":"E_interactive"}}';
+
+-- Attach interactive table to the interactive warehouse so the data cache warms.
+ALTER WAREHOUSE BENCH_INT_WH ADD TABLES (OPENROUTESERVICE_APP.BENCH_MATRIX.BENCH_MATRIX_INTERACTIVE);
+ALTER WAREHOUSE BENCH_INT_WH RESUME IF SUSPENDED;

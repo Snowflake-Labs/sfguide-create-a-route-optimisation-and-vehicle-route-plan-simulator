@@ -3,8 +3,12 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { sfQuery } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 export default function DwellOverview() {
+  const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [kpis, setKpis] = useState<any[]>([]);
   const [trends, setTrends] = useState<any[]>([]);
   const [topFacilities, setTopFacilities] = useState<any[]>([]);
@@ -22,7 +26,7 @@ export default function DwellOverview() {
       setTopFacilities(f);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
 
   const k = kpis[0] || {};
 

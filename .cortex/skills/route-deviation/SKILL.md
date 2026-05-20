@@ -30,7 +30,7 @@ CRITICAL: Verify these before starting:
 | USAGE ON DATABASE SYNTHETIC_DATASETS | Database | Reads UNIFIED source data |
 | USAGE ON SCHEMA SYNTHETIC_DATASETS.UNIFIED | Schema | Reads FACT_VEHICLE_TELEMETRY, FACT_TRIPS, DIM_FLEET, DIM_POIS, DIM_TRIP_SCHEDULE |
 | CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTE_DEVIATION schema |
-| CREATE TABLE | Schema (FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Creates ETL output tables |
+| CREATE DYNAMIC TABLE | Schema (FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Creates ETL output tables (auto-refreshing) |
 | CREATE VIEW | Schema (FLEET_INTELLIGENCE.ROUTE_DEVIATION) | Creates VW_ projection views |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
@@ -68,7 +68,7 @@ If the table exists and has rows, data is already loaded. Skip to Step 5 (Verify
 
 ### Create views and run ETL
 
-Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, and 3 ETL tables (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) computed from the views.
+Execute `references/seed-data.sql`. This creates CONFIG, 5 projection views, and 3 ETL Dynamic Tables (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS) computed from the views with `lag='5 minutes'` so they auto-refresh whenever CONFIG or upstream FACT_TRIPS change.
 
 ## Workflow
 
@@ -114,7 +114,7 @@ UNION ALL SELECT 'DIM_POIS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW
 
 ### Step 4: Run ETL Pipeline
 
-Execute all 3 ETL steps in order. Each is a CREATE OR REPLACE TABLE. Full SQL in `references/sql-pipeline.md`.
+Execute all 3 ETL steps in order. Each is a CREATE OR REPLACE DYNAMIC TABLE with `lag='5 minutes'` and `refresh_mode='AUTO'` so the Route Deviation pages always reflect the active CONFIG.REGION/VEHICLE_TYPE without a manual rebuild. Full SQL in `references/sql-pipeline.md`.
 
 | Step | Table | Description |
 |------|-------|-------------|
@@ -248,9 +248,9 @@ Complete Route Deviation Analysis demo with:
 To remove all objects created by this skill:
 
 ```sql
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY;
+DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION;

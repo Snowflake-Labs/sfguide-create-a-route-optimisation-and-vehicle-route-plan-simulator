@@ -5,6 +5,8 @@ import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -15,6 +17,8 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 export default function RouteInspector() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [selectedTruck, setSelectedTruck] = useState('');
   const [truckTrips, setTruckTrips] = useState<any[]>([]);
   const [selectedTrip, setSelectedTrip] = useState('');
@@ -25,13 +29,17 @@ export default function RouteInspector() {
   const [maxAccuracy, setMaxAccuracy] = useState(50);
   const [trucks, setTrucks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     sfQuery(`SELECT DISTINCT VEHICLE_ID FROM TRIP_DEVIATION_ANALYSIS ORDER BY VEHICLE_ID LIMIT 100`)
       .then(t => { setTrucks(t); setLoading(false); });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   useEffect(() => {
     if (!selectedTruck) return;

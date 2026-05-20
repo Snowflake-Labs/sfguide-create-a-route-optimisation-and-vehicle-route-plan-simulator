@@ -30,12 +30,16 @@ DECLARE
     v_sql VARCHAR;
     res RESULTSET;
     v_locations VARIANT;
+    v_coords VARIANT;
     v_profile VARCHAR;
     v_distance_raw FLOAT;
     v_duration_raw FLOAT;
     v_segments VARIANT;
     v_geometry VARIANT;
     v_ors_error VARIANT;
+    v_detected_regions VARIANT;
+    v_out_of_region_count INT;
+    v_total_coords INT;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -52,6 +56,10 @@ BEGIN
         ELSE 'driving-car'
     END;
 
+    -- Step 1: Geocode. Pull locations + coords array out as bound variables
+    -- so step 2 can pass them to DIRECTIONS without inlining a CTE-derived
+    -- expression into the table function (Snowflake rejects that with
+    -- "Unsupported subquery type cannot be evaluated inside Function object").
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -59,33 +67,68 @@ BEGIN
                 {''temperature'': 0, ''max_tokens'': 2000},
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''locations'': {''type'': ''array'', ''items'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}}}}
             ) AS geocoded_result
-        ),
-        coordinates AS (
-            SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT)) AS coords,
-                   geocoded_result AS geo
-            FROM geocoded, TABLE(FLATTEN(geocoded.geocoded_result, ''locations''))
-            GROUP BY geocoded_result
-        ),
-        directions AS (
-            SELECT geo, coords, d.RESPONSE AS dir_result
-            FROM coordinates,
-                 TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(''' || v_safe_profile || ''', OBJECT_CONSTRUCT(''coordinates'', coords)::VARIANT)) d
         )
         SELECT
-            geo:locations AS locations,
-            ''' || v_safe_profile || ''' AS profile,
-            dir_result:features[0]:properties:summary:distance::FLOAT AS distance_raw,
-            dir_result:features[0]:properties:summary:duration::FLOAT AS duration_raw,
-            dir_result:features[0]:properties:segments AS segments,
-            dir_result:features[0]:geometry AS geometry,
-            dir_result:error AS ors_error
-        FROM directions';
+            geocoded_result:locations AS locations,
+            (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(value:longitude::FLOAT, value:latitude::FLOAT))
+             FROM TABLE(FLATTEN(geocoded_result, ''locations''))) AS coords
+        FROM geocoded';
 
     res := (EXECUTE IMMEDIATE :v_sql USING (LOCATIONS_DESCRIPTION));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_locations, v_profile, v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
+    FETCH c INTO v_locations, v_coords;
     CLOSE c;
+    v_profile := v_safe_profile;
+
+    IF (v_locations IS NULL OR v_coords IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
+    END IF;
+
+    -- Step 1b: Region validation (best-effort; non-fatal). Done as a
+    -- separate, simple FLATTEN that calls REGION_FOR_POINT per coord.
+    -- Failures here just leave the region info NULL.
+    BEGIN
+        LET val_sql VARCHAR := 'WITH pts AS (
+            SELECT
+                OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(c.value[0]::FLOAT, c.value[1]::FLOAT):lookup_name::STRING AS region_name
+            FROM TABLE(FLATTEN(PARSE_JSON(?))) c
+        )
+        SELECT
+            ARRAY_AGG(DISTINCT region_name) WITHIN GROUP (ORDER BY region_name),
+            COUNT_IF(region_name IS NULL),
+            COUNT(*)
+        FROM pts';
+        LET v_coords_str VARCHAR := v_coords::STRING;
+        res := (EXECUTE IMMEDIATE :val_sql USING (v_coords_str));
+        LET cv CURSOR FOR res;
+        OPEN cv;
+        FETCH cv INTO v_detected_regions, v_out_of_region_count, v_total_coords;
+        CLOSE cv;
+    EXCEPTION
+        WHEN OTHER THEN
+            v_detected_regions := NULL;
+            v_out_of_region_count := 0;
+            v_total_coords := 0;
+    END;
+
+    -- Step 2: Call DIRECTIONS with coords as a bound VARIANT parameter.
+    LET dir_sql VARCHAR := 'SELECT
+            d.RESPONSE:features[0]:properties:summary:distance::FLOAT,
+            d.RESPONSE:features[0]:properties:summary:duration::FLOAT,
+            d.RESPONSE:features[0]:properties:segments,
+            d.RESPONSE:features[0]:geometry,
+            d.RESPONSE:error
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+            ''' || v_safe_profile || ''',
+            OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT)) d';
+
+    LET v_coords_str2 VARCHAR := v_coords::STRING;
+    res := (EXECUTE IMMEDIATE :dir_sql USING (v_coords_str2));
+    LET c2 CURSOR FOR res;
+    OPEN c2;
+    FETCH c2 INTO v_distance_raw, v_duration_raw, v_segments, v_geometry, v_ors_error;
+    CLOSE c2;
 
     IF (v_locations IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ROUTING FAILED: Geocoding returned no locations. Could not parse locations from the description.', 'status', 'FAILED');
@@ -97,8 +140,26 @@ BEGIN
 
     IF (v_distance_raw IS NULL OR v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error', 'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. This typically means the locations are OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area. Please request routes only within the supported region.',
+            'error',
+              CASE
+                WHEN v_out_of_region_count > 0 THEN
+                  CONCAT(
+                    'ROUTING FAILED: ', v_out_of_region_count::VARCHAR, ' of ', v_total_coords::VARCHAR,
+                    ' geocoded coordinates fell outside every provisioned region (detected: ',
+                    COALESCE(v_detected_regions::VARCHAR, '[]'),
+                    '). The LLM may have geocoded to the wrong city of the same name, or the destination is not in any provisioned region. Try specifying the country or region in your prompt.'
+                  )
+                ELSE
+                  CONCAT(
+                    'ROUTING FAILED: OpenRouteService could not compute a route between the requested locations. Detected regions: ',
+                    COALESCE(v_detected_regions::VARCHAR, '[]'),
+                    '. The locations are inside known regions but no routing graph is loaded that covers them all. Provision the necessary region(s) and retry.'
+                  )
+              END,
             'locations_requested', v_locations,
+            'detected_regions', v_detected_regions,
+            'out_of_region_count', v_out_of_region_count,
+            'total_coords', v_total_coords,
             'status', 'FAILED'
         );
     END IF;
@@ -110,6 +171,7 @@ BEGIN
         'duration_mins', ROUND(DIV0(v_duration_raw, 60), 1),
         'segments', v_segments,
         'geometry', v_geometry,
+        'detected_regions', v_detected_regions,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -140,6 +202,7 @@ DECLARE
     v_area_raw FLOAT;
     v_geometry VARIANT;
     v_ors_error VARIANT;
+    v_detected_region OBJECT;
 BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
@@ -154,6 +217,7 @@ BEGIN
         ELSE 'driving-car'
     END;
 
+    -- First attempt: try with detected region (clips to region boundary).
     v_sql := 'WITH geocoded AS (
             SELECT AI_COMPLETE(
                 ''claude-sonnet-4-5'',
@@ -162,10 +226,28 @@ BEGIN
                 {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
             ) AS geocoded_result
         ),
+        validated AS (
+            -- Resolve LLM-extracted coord to a region; the isochrone is then
+            -- clipped to that region''s boundary so it doesn''t extend into
+            -- foreign territory or water.
+            SELECT geocoded_result,
+                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+                     geocoded_result:longitude::FLOAT,
+                     geocoded_result:latitude::FLOAT) AS detected_region
+            FROM geocoded
+        ),
         isochrone AS (
-            SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
-            FROM geocoded,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(''' || v_safe_profile || ''', geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
+            SELECT v.geocoded_result AS geo,
+                   v.detected_region,
+                   i.RESPONSE AS iso_result,
+                   i.GEOJSON AS clipped_geom
+            FROM validated v,
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+                     ''' || v_safe_profile || ''',
+                     v.geocoded_result:longitude::FLOAT,
+                     v.geocoded_result:latitude::FLOAT,
+                     ?::NUMBER,
+                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
         )
         SELECT
             geo AS center,
@@ -173,14 +255,34 @@ BEGIN
             ''' || v_safe_profile || ''' AS profile,
             iso_result:features[0]:properties:area::FLOAT AS area_raw,
             iso_result:features[0]:geometry AS geometry,
-            iso_result:error AS ors_error
+            iso_result:error AS ors_error,
+            detected_region AS detected_region
         FROM isochrone';
 
     res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
     LET c CURSOR FOR res;
     OPEN c;
-    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error;
+    FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error, v_detected_region;
     CLOSE c;
+
+    -- Fallback: if the gateway returned service_unreachable for the regional
+    -- ORS service (typical when the detected region is served by the default
+    -- ORS_SERVICE rather than a per-region ors-service-<region>), retry
+    -- with empty region which routes to the default ORS_SERVICE.
+    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_center IS NOT NULL) THEN
+        LET v_lon FLOAT := v_center:longitude::FLOAT;
+        LET v_lat FLOAT := v_center:latitude::FLOAT;
+        LET fb_sql VARCHAR := 'SELECT i.RESPONSE:features[0]:properties:area::FLOAT,
+                                      i.RESPONSE:features[0]:geometry,
+                                      i.RESPONSE:error
+            FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+                ''' || v_safe_profile || ''', ?::FLOAT, ?::FLOAT, ?::NUMBER, '''')) i';
+        res := (EXECUTE IMMEDIATE :fb_sql USING (v_lon, v_lat, RANGE_MINUTES));
+        LET c2 CURSOR FOR res;
+        OPEN c2;
+        FETCH c2 INTO v_area_raw, v_geometry, v_ors_error;
+        CLOSE c2;
+    END IF;
 
     IF (v_center IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('error', 'ISOCHRONE FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
@@ -192,8 +294,19 @@ BEGIN
 
     IF (v_geometry IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
-            'error', 'ISOCHRONE FAILED: OpenRouteService could not compute an isochrone for the requested location. This typically means the location is OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area. Please request isochrones only within the supported region.',
+            'error',
+              CASE
+                WHEN v_detected_region IS NULL THEN
+                  'ISOCHRONE FAILED: The geocoded coordinates fall outside every provisioned region. The LLM may have geocoded to the wrong city of the same name. Try specifying the country or region in your prompt.'
+                ELSE
+                  CONCAT(
+                    'ISOCHRONE FAILED: OpenRouteService could not compute an isochrone for ',
+                    v_detected_region:lookup_name::VARCHAR,
+                    '. The point is inside the region''s boundary but no routing graph is loaded for it - provision the region and retry.'
+                  )
+              END,
             'location_requested', v_center,
+            'detected_region', v_detected_region,
             'status', 'FAILED'
         );
     END IF;
@@ -204,6 +317,7 @@ BEGIN
         'profile', v_profile,
         'area_km2', ROUND(DIV0(v_area_raw, 1000000), 2),
         'geometry', v_geometry,
+        'detected_region', v_detected_region,
         'status', 'SUCCESS'
     );
 EXCEPTION
@@ -214,12 +328,228 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- TOOL_POI_IN_ISOCHRONE: Find Overture Maps POIs (cafes, restaurants, shops, etc.) reachable within X minutes of a location.
+-- Combines ISOCHRONES_CLIPPED with OVERTURE_MAPS__PLACES.CARTO.PLACE via ST_WITHIN.
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(
+    LOCATION_DESCRIPTION VARCHAR,
+    RANGE_MINUTES NUMBER,
+    POI_CATEGORY VARCHAR,
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    MAX_RESULTS NUMBER DEFAULT 25
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_safe_profile VARCHAR;
+    v_sql VARCHAR;
+    res RESULTSET;
+    v_center VARIANT;
+    v_range_minutes NUMBER;
+    v_profile VARCHAR;
+    v_category VARCHAR;
+    v_iso_geojson VARIANT;
+    v_iso_geojson_str VARCHAR;
+    v_center_lon FLOAT;
+    v_center_lat FLOAT;
+    v_ors_error VARIANT;
+    v_detected_region OBJECT;
+    v_pois VARIANT;
+    v_poi_count NUMBER;
+BEGIN
+    v_safe_profile := CASE UPPER(PROFILE)
+        WHEN 'DRIVING-CAR' THEN 'driving-car'
+        WHEN 'DRIVING-HGV' THEN 'driving-hgv'
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'FOOT-WALKING' THEN 'foot-walking'
+        WHEN 'FOOT-HIKING' THEN 'foot-hiking'
+        WHEN 'WHEELCHAIR' THEN 'wheelchair'
+        ELSE 'driving-car'
+    END;
+
+    -- Step 1: Geocode + isochrone (clipped to detected region)
+    v_sql := 'WITH geocoded AS (
+            SELECT AI_COMPLETE(
+                ''claude-sonnet-4-5'',
+                CONCAT(''Extract the location from this description and return its coordinates. Be precise with worldwide lat/lon. Description: '', ?),
+                {''temperature'': 0, ''max_tokens'': 1000},
+                {''type'': ''json'', ''schema'': {''type'': ''object'', ''properties'': {''name'': {''type'': ''string''}, ''longitude'': {''type'': ''number''}, ''latitude'': {''type'': ''number''}}, ''required'': [''name'', ''longitude'', ''latitude'']}}
+            ) AS geocoded_result
+        ),
+        validated AS (
+            SELECT geocoded_result,
+                   OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(
+                     geocoded_result:longitude::FLOAT,
+                     geocoded_result:latitude::FLOAT) AS detected_region
+            FROM geocoded
+        ),
+        isochrone AS (
+            SELECT v.geocoded_result AS geo,
+                   v.detected_region,
+                   i.RESPONSE AS iso_result
+            FROM validated v,
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+                     ''' || v_safe_profile || ''',
+                     v.geocoded_result:longitude::FLOAT,
+                     v.geocoded_result:latitude::FLOAT,
+                     ?::NUMBER,
+                     COALESCE(v.detected_region:lookup_name::STRING, ''''))) i
+        )
+        SELECT
+            geo AS center,
+            ?::NUMBER AS range_minutes,
+            ''' || v_safe_profile || ''' AS profile,
+            iso_result:features[0]:geometry AS iso_geojson,
+            iso_result:error AS ors_error,
+            detected_region AS detected_region
+        FROM isochrone';
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (LOCATION_DESCRIPTION, RANGE_MINUTES, RANGE_MINUTES));
+    LET c CURSOR FOR res;
+    OPEN c;
+    FETCH c INTO v_center, v_range_minutes, v_profile, v_iso_geojson, v_ors_error, v_detected_region;
+    CLOSE c;
+
+    -- Fallback: if the gateway returned service_unreachable for the regional
+    -- ORS service, retry with empty region (routes to default ORS_SERVICE).
+    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_center IS NOT NULL) THEN
+        LET v_lon FLOAT := v_center:longitude::FLOAT;
+        LET v_lat FLOAT := v_center:latitude::FLOAT;
+        LET fb_sql VARCHAR := 'SELECT i.RESPONSE:features[0]:geometry, i.RESPONSE:error
+            FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
+                ''' || v_safe_profile || ''', ?::FLOAT, ?::FLOAT, ?::NUMBER, '''')) i';
+        res := (EXECUTE IMMEDIATE :fb_sql USING (v_lon, v_lat, RANGE_MINUTES));
+        LET c2 CURSOR FOR res;
+        OPEN c2;
+        FETCH c2 INTO v_iso_geojson, v_ors_error;
+        CLOSE c2;
+    END IF;
+
+    IF (v_center IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', 'POI SEARCH FAILED: Geocoding returned no location. Could not parse location from the description.', 'status', 'FAILED');
+    END IF;
+
+    IF (v_ors_error IS NOT NULL) THEN
+        RETURN OBJECT_CONSTRUCT('error', CONCAT('POI SEARCH FAILED: OpenRouteService returned an error: ', v_ors_error::VARCHAR), 'location_requested', v_center, 'status', 'FAILED');
+    END IF;
+
+    IF (v_iso_geojson IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error',
+              CASE
+                WHEN v_detected_region IS NULL THEN
+                  'POI SEARCH FAILED: The geocoded coordinates fall outside every provisioned region. The LLM may have geocoded to the wrong city of the same name. Try specifying the country or region in your prompt.'
+                ELSE
+                  CONCAT(
+                    'POI SEARCH FAILED: OpenRouteService could not compute an isochrone for ',
+                    v_detected_region:lookup_name::VARCHAR,
+                    '. The point is inside the region''s boundary but no routing graph is loaded for it - provision the region and retry.'
+                  )
+              END,
+            'location_requested', v_center,
+            'detected_region', v_detected_region,
+            'status', 'FAILED'
+        );
+    END IF;
+
+    -- Step 2: Find Overture POIs inside the isochrone polygon, matching category.
+    -- Match against BASIC_CATEGORY and CATEGORIES:primary (case-insensitive).
+    v_category := LOWER(POI_CATEGORY);
+    v_center_lon := v_center:longitude::FLOAT;
+    v_center_lat := v_center:latitude::FLOAT;
+    v_iso_geojson_str := v_iso_geojson::STRING;
+    LET v_max_results NUMBER := COALESCE(MAX_RESULTS, 25);
+    IF (v_max_results > 200) THEN
+        v_max_results := 200;
+    END IF;
+
+    LET poi_sql VARCHAR := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+                ''name'', name,
+                ''longitude'', lon,
+                ''latitude'', lat,
+                ''distance_m'', distance_m,
+                ''primary_category'', primary_cat,
+                ''basic_category'', basic_cat
+            )) WITHIN GROUP (ORDER BY distance_m) AS pois,
+            COUNT(*) AS poi_count
+        FROM (
+            SELECT
+                p.NAMES:primary::STRING AS name,
+                ST_X(p.GEOMETRY) AS lon,
+                ST_Y(p.GEOMETRY) AS lat,
+                ROUND(ST_DISTANCE(p.GEOMETRY, ST_MAKEPOINT(?::FLOAT, ?::FLOAT)), 0) AS distance_m,
+                p.CATEGORIES:primary::STRING AS primary_cat,
+                p.BASIC_CATEGORY AS basic_cat
+            FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+            WHERE ST_WITHIN(p.GEOMETRY, TO_GEOGRAPHY(?))
+              AND p.NAMES:primary IS NOT NULL
+              AND (
+                LOWER(p.BASIC_CATEGORY) = ?
+                OR LOWER(p.CATEGORIES:primary::STRING) = ?
+                OR LOWER(p.BASIC_CATEGORY) LIKE ''%'' || ? || ''%''
+                OR LOWER(p.CATEGORIES:primary::STRING) LIKE ''%'' || ? || ''%''
+              )
+            ORDER BY distance_m
+            LIMIT ' || v_max_results::STRING || '
+        )';
+
+    res := (EXECUTE IMMEDIATE :poi_sql USING (
+        v_center_lon,
+        v_center_lat,
+        v_iso_geojson_str,
+        v_category,
+        v_category,
+        v_category,
+        v_category
+    ));
+    LET pc CURSOR FOR res;
+    OPEN pc;
+    FETCH pc INTO v_pois, v_poi_count;
+    CLOSE pc;
+
+    IF (v_poi_count = 0 OR v_pois IS NULL) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'center', v_center,
+            'range_minutes', v_range_minutes,
+            'profile', v_profile,
+            'category', POI_CATEGORY,
+            'detected_region', v_detected_region,
+            'pois', ARRAY_CONSTRUCT(),
+            'count', 0,
+            'message', CONCAT('No POIs matching category "', POI_CATEGORY, '" were found within the ', v_range_minutes::VARCHAR, '-minute ', v_profile, ' isochrone. Try a broader category (e.g. "restaurant" instead of "specialty bistro") or a longer range.'),
+            'status', 'SUCCESS'
+        );
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT(
+        'center', v_center,
+        'range_minutes', v_range_minutes,
+        'profile', v_profile,
+        'category', POI_CATEGORY,
+        'detected_region', v_detected_region,
+        'pois', v_pois,
+        'count', v_poi_count,
+        'status', 'SUCCESS'
+    );
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_POI_IN_ISOCHRONE failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- TOOL_ROUTE_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
-    PROFILE VARCHAR DEFAULT 'driving-car'
+    PROFILE VARCHAR DEFAULT 'driving-car',
+    REGION VARCHAR DEFAULT 'California'
 )
 RETURNS VARIANT
 LANGUAGE PYTHON
@@ -235,7 +565,7 @@ def _escape_sql_string(s: str) -> str:
     """Escape single quotes for safe SQL string interpolation."""
     return s.replace("'", "''")
 
-def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str) -> dict:
+def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
         safe_delivery = _escape_sql_string(delivery_locations)
         delivery_query = f"""
@@ -289,8 +619,8 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
 
         opt_query = f"""
         SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
-            PARSE_JSON('{jobs_json}')::ARRAY,
-            PARSE_JSON('{vehicles_json}')::ARRAY
+            OBJECT_CONSTRUCT('jobs', PARSE_JSON('{jobs_json}')::ARRAY, 'vehicles', PARSE_JSON('{vehicles_json}')::ARRAY)::VARIANT,
+            '{region}'
         ))
         """
         opt_result = session.sql(opt_query).collect()[0]['RESULT']
@@ -340,7 +670,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- CREATE AGENT with tool bindings
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
@@ -359,6 +689,8 @@ instructions:
     1. Driving/cycling/walking directions between locations
     2. Reachability analysis (isochrones) - areas reachable within X minutes
     3. Multi-stop delivery route optimization
+    4. Finding points of interest (cafes, restaurants, shops, parks, etc.) reachable
+       within X minutes of a location, by combining an isochrone with Overture Maps POI data.
 
     CRITICAL RULES - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
 
@@ -398,9 +730,25 @@ instructions:
     - NEVER provide estimated distances, durations, or travel advice when a tool has failed.
   orchestration: |
     - Directions between locations: Use tool_directions
-    - Reachability questions: Use tool_isochrone
+    - Reachability questions ("areas reachable", "how far"): Use tool_isochrone
     - Multi-stop optimization: Use tool_optimization
-    - ALWAYS use a tool for routing questions. NEVER answer from general knowledge.
+    - POI / amenity questions ("what cafes / restaurants / shops / pharmacies can I reach",
+      "places to eat near", "closest X within Y minutes"): Use tool_poi_in_isochrone.
+      Map the user's mode of travel to the profile arg using the profiles loaded in the
+      default ORS_SERVICE (driving-car, driving-hgv, cycling-electric):
+        - "cycle" / "bike" / "biking" / "cycling" / "ebike" / "e-bike" -> profile=cycling-electric
+        - "truck" / "lorry" / "HGV" / "freight" / "heavy goods" -> profile=driving-hgv
+        - "drive" / "driving" / "by car" (or unspecified) -> profile=driving-car
+      If the user explicitly asks for a profile that is NOT in
+      {driving-car, driving-hgv, cycling-electric} (e.g. "walking", "cycling-regular",
+      "foot-walking", "cycling-mountain"), still attempt the call but expect the tool
+      to return an error like "Parameter 'profile' has incorrect value of 'unknown'".
+      When that happens, explain that this OpenRouteService instance only has
+      driving-car, driving-hgv, and cycling-electric loaded, and offer to retry with
+      one of those.
+      Pass a single lowercase category keyword for poi_category (e.g. "cafe", "restaurant",
+      "bar", "pharmacy", "park", "supermarket", "hotel").
+    - ALWAYS use a tool for routing/POI questions. NEVER answer from general knowledge.
 tools:
   - tool_spec:
       type: generic
@@ -414,7 +762,7 @@ tools:
             description: "Locations to route between, e.g. 'from Times Square to Central Park'"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
         required: [locations_description]
   - tool_spec:
       type: generic
@@ -431,8 +779,31 @@ tools:
             description: "Minutes of travel time (1-60)"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
         required: [location_description, range_minutes]
+  - tool_spec:
+      type: generic
+      name: tool_poi_in_isochrone
+      description: "Find points of interest (cafes, restaurants, shops, pharmacies, parks, etc.) reachable within a given travel time of a location. Combines an OpenRouteService isochrone with Overture Maps POI data via spatial intersection. Returns status SUCCESS with a ranked list of POIs (by distance from the center), or status FAILED with an error if the location is outside the map region."
+      input_schema:
+        type: object
+        properties:
+          location_description:
+            type: string
+            description: "Center location, e.g. 'Civic Center, San Francisco'"
+          range_minutes:
+            type: number
+            description: "Travel time in minutes (1-60)"
+          poi_category:
+            type: string
+            description: "POI category keyword, e.g. 'cafe', 'restaurant', 'bar', 'pharmacy', 'park', 'supermarket', 'hotel'. Lowercase, single word preferred."
+          profile:
+            type: string
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Map cycle/bike/ebike to cycling-electric, truck/HGV to driving-hgv, otherwise driving-car. Default: driving-car."
+          max_results:
+            type: number
+            description: "Max POIs to return. Default 25."
+        required: [location_description, range_minutes, poi_category]
   - tool_spec:
       type: generic
       name: tool_optimization
@@ -451,7 +822,10 @@ tools:
             description: "Number of vehicles available"
           profile:
             type: string
-            description: "Transport mode. Default: driving-car"
+            description: "Transport mode. Loaded in default install: driving-car, driving-hgv, cycling-electric. Default: driving-car. (Other ORS profile names like cycling-regular, cycling-mountain, foot-walking are valid identifiers but require a different ORS install to be available.)"
+          region:
+            type: string
+            description: "Provisioned ORS region for routing (e.g. California, Germany, UnitedStatesOfAmerica). Default: California"
         required: [delivery_locations, depot_location, num_vehicles]
 tool_resources:
   tool_directions:
@@ -464,6 +838,11 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
+  tool_poi_in_isochrone:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
@@ -474,4 +853,5 @@ $$;
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
+UNION ALL SELECT 'TOOL_POI_IN_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_POI_IN_ISOCHRONE'
 UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION';

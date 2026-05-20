@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import { sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 
 const STATE_COLORS: Record<string, [number, number, number, number]> = {
@@ -12,10 +14,12 @@ const STATE_COLORS: Record<string, [number, number, number, number]> = {
 };
 
 export default function LiveOperations() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [openDwells, setOpenDwells] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -26,13 +30,17 @@ export default function LiveOperations() {
     setVehicles(v);
     setOpenDwells(d);
     setLoading(false);
-  }, []);
+  }, [regionName, vehicleType]);
 
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
   }, [refresh]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const stateCounts = useMemo(() => {
     const counts: Record<string, number> = {};

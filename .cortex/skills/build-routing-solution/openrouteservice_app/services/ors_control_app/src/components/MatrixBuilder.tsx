@@ -1,66 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
-import { RES_LABELS, RES_CUTOFFS, RES_HEX_PER_SQDEG, ROUTING_PROFILES } from '../types';
-
-const RATE_PAIRS_PER_SEC = 31500;
-const CREDIT_PER_HOUR_SMALL = 2;
-const ALL_RESOLUTIONS = [5, 6, 7, 8, 9, 10];
-
-function estimateHexCount(bounds: RegionInfo['bounds'], res: number): number {
-  const area = (bounds.maxLat - bounds.minLat) * (bounds.maxLon - bounds.minLon);
-  return Math.round(area * (RES_HEX_PER_SQDEG[res] || 2000));
-}
-
-function estimatePairs(hexCount: number): number {
-  return hexCount * (hexCount - 1);
-}
-
-function formatNumber(n: number): string {
-  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return n.toLocaleString();
-}
-
-function formatDuration(minutes: number): string {
-  if (minutes < 1) return `${Math.round(minutes * 60)}s`;
-  if (minutes < 60) return `${Math.round(minutes)} min`;
-  const hrs = Math.floor(minutes / 60);
-  const mins = Math.round(minutes % 60);
-  return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return (bytes / 1_000_000_000).toFixed(1) + ' GB';
-  if (bytes >= 1_000_000) return (bytes / 1_000_000).toFixed(1) + ' MB';
-  if (bytes >= 1_000) return (bytes / 1_000).toFixed(1) + ' KB';
-  return bytes + ' B';
-}
-
-function timeAgo(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  const now = new Date();
-  const secs = Math.floor((now.getTime() - d.getTime()) / 1000);
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
-}
-
-const STAGE_STEPS = [
-  { key: 'HEXAGONS', label: 'Hexagons', icon: '⬡' },
-  { key: 'WORK_QUEUE', label: 'Work Queue', icon: '📋' },
-  { key: 'BUILDING', label: 'API Calls', icon: '⟳' },
-  { key: 'FLATTENING', label: 'Flatten', icon: '⚡' },
-  { key: 'COMPLETE', label: 'Complete', icon: '✓' },
-];
-
-function getStageIndex(stage: string): number {
-  if (stage === 'NOT_STARTED' || stage === 'STARTING' || stage === 'PENDING') return -1;
-  const idx = STAGE_STEPS.findIndex((s) => s.key === stage);
-  return idx >= 0 ? idx : -1;
-}
+import { RES_LABELS, RES_CUTOFFS, ROUTING_PROFILES } from '../types';
+import { safeFetchJson } from '../utils/safeFetch';
+import {
+  RATE_PAIRS_PER_SEC, CREDIT_PER_HOUR_SMALL, ALL_RESOLUTIONS,
+  estimateHexCount, estimatePairs,
+  formatNumber, formatDuration, formatBytes, timeAgo,
+  STAGE_STEPS, getStageIndex, RoadFilterBadge,
+} from './matrix-builder/helpers';
 
 export default function MatrixBuilder() {
   const [regions, setRegions] = useState<RegionInfo[]>([]);
@@ -72,48 +19,97 @@ export default function MatrixBuilder() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildWarning, setBuildWarning] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [dismissedErrors, setDismissedErrors] = useState<Set<string>>(new Set());
+  const [roadFilterEnabled, setRoadFilterEnabled] = useState(true);
+  const [roadFilterAvailable, setRoadFilterAvailable] = useState<boolean | null>(null);
+  const [roadFilterReason, setRoadFilterReason] = useState<string>('');
+  const [serverHexEstimate, setServerHexEstimate] = useState<Record<number, number>>({});
+  const [estimateLoading, setEstimateLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchRegions = useCallback(async () => {
     setLoadingRegions(true);
-    try {
-      const r = await fetch('/api/matrix/regions');
-      const data = await r.json();
-      const fetched: RegionInfo[] = data.regions || [];
+    const { ok, data } = await safeFetchJson<{ regions: RegionInfo[] }>('/api/matrix/regions');
+    if (ok && data) {
+      const fetched = data.regions || [];
       setRegions(fetched);
       if (fetched.length > 0 && !selectedRegion) {
         const sf = fetched.find((r) => r.region.toUpperCase() === 'SANFRANCISCO');
         const running = fetched.find((r) => r.serviceStatus === 'RUNNING');
         setSelectedRegion((sf || running || fetched[0]).region);
       }
-    } catch {}
+    }
     setLoadingRegions(false);
   }, []);
 
   const fetchJobs = useCallback(async () => {
-    try {
-      const r = await fetch('/api/matrix/status');
-      const data = await r.json();
-      setJobs(data.jobs || []);
-    } catch {}
+    const { ok, data } = await safeFetchJson<{ jobs: MatrixJob[] }>('/api/matrix/status');
+    if (ok && data) setJobs(data.jobs || []);
   }, []);
 
   const fetchInventory = useCallback(async () => {
-    try {
-      const r = await fetch('/api/matrix/inventory');
-      const data = await r.json();
-      setInventory(data.inventory || []);
-    } catch {}
+    const { ok, data } = await safeFetchJson<{ inventory: MatrixInventoryItem[] }>('/api/matrix/inventory');
+    if (ok && data) setInventory(data.inventory || []);
   }, []);
 
   useEffect(() => {
     fetchRegions();
     fetchJobs();
     fetchInventory();
+    safeFetchJson<{ available: boolean; reason?: string }>('/api/matrix/road-filter-available').then(({ ok, data }) => {
+      if (ok && data) {
+        setRoadFilterAvailable(!!data.available);
+        if (!data.available) {
+          setRoadFilterReason(data.reason || 'Overture Transportation not accessible');
+          setRoadFilterEnabled(false);
+        }
+      } else {
+        setRoadFilterAvailable(false);
+        setRoadFilterEnabled(false);
+      }
+    });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchRegions, fetchJobs, fetchInventory]);
+
+  useEffect(() => {
+    if (!roadFilterEnabled || !roadFilterAvailable || !selectedRegion || selectedRes.size === 0) {
+      setServerHexEstimate({});
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setEstimateLoading(true);
+      const { ok, data, error } = await safeFetchJson<{ resolutions: any[] }>('/api/matrix/cost-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          region: selectedRegion,
+          profile: selectedProfile,
+          resolutions: Array.from(selectedRes).sort(),
+          road_filter: true,
+        }),
+      });
+      if (cancelled) return;
+      if (ok && data) {
+        const map: Record<number, number> = {};
+        (data.resolutions || []).forEach((e: any) => {
+          if (e.road_filter_applied) {
+            map[parseInt(e.resolution.replace('RES', ''))] = e.hex_count;
+          }
+        });
+        setServerHexEstimate(map);
+      } else {
+        setServerHexEstimate({});
+        if (error?.includes('504') || error?.includes('timed out')) {
+          setBuildError('Road-aware estimate timed out. Try disabling Road-aware filter or selecting fewer resolutions.');
+        }
+      }
+      setEstimateLoading(false);
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [roadFilterEnabled, roadFilterAvailable, selectedRegion, selectedProfile, selectedRes]);
 
   useEffect(() => {
     const hasActive = jobs.some((j) => j.status === 'RUNNING' || j.status === 'PENDING');
@@ -134,10 +130,11 @@ export default function MatrixBuilder() {
   const hexEstimates = React.useMemo(() => {
     if (!region) return [];
     return ALL_RESOLUTIONS.map((res) => {
-      const hexagons = estimateHexCount(region.bounds, res);
-      return { res, hexagons, pairs: estimatePairs(hexagons) };
+      const bboxHexagons = estimateHexCount(region, res);
+      const hexagons = serverHexEstimate[res] ?? bboxHexagons;
+      return { res, hexagons, bboxHexagons, pairs: estimatePairs(hexagons), filtered: serverHexEstimate[res] !== undefined };
     });
-  }, [region]);
+  }, [region, serverHexEstimate]);
 
   const estimate = React.useMemo(() => {
     const resolutions = hexEstimates.filter((h) => selectedRes.has(h.res)).map((h) => {
@@ -158,20 +155,26 @@ export default function MatrixBuilder() {
     if (!selectedRegion) return;
     setIsLaunching(true);
     setBuildError(null);
-    try {
-      const resp = await fetch('/api/matrix/build', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: selectedRegion, resolutions: Array.from(selectedRes).sort(), profile: selectedProfile }),
-      });
-      const data = await resp.json();
+    setBuildWarning(null);
+    const { ok, data, error } = await safeFetchJson<{ status: string; error?: string; warning?: string }>('/api/matrix/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        region: selectedRegion,
+        resolutions: Array.from(selectedRes).sort(),
+        profile: selectedProfile,
+        road_filter: roadFilterEnabled && roadFilterAvailable === true,
+      }),
+    });
+    if (ok && data) {
       if (data.error) setBuildError(data.error);
-      await fetchJobs();
-    } catch (e: any) {
-      setBuildError(e.message || 'Failed to launch build');
+      if (data.warning) setBuildWarning(data.warning);
+    } else {
+      setBuildError(error || 'Failed to launch build');
     }
+    await fetchJobs();
     setIsLaunching(false);
-  }, [selectedRegion, selectedRes, selectedProfile, fetchJobs]);
+  }, [selectedRegion, selectedRes, selectedProfile, roadFilterEnabled, roadFilterAvailable, fetchJobs]);
 
   const cancelJob = useCallback(async (jobId: string) => {
     try {
@@ -230,7 +233,7 @@ export default function MatrixBuilder() {
                   <tr key={key}>
                     <td>{item.region}</td>
                     <td>{item.profile}</td>
-                    <td>{item.resolution} — {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}</td>
+                    <td>{item.resolution} — {RES_LABELS[parseInt(item.resolution.replace('RES', ''))] || ''}<RoadFilterBadge on={item.road_filter} /></td>
                     <td>{formatNumber(item.row_count)}</td>
                     <td>{formatBytes(item.bytes)}</td>
                     <td>{item.execution_time_secs > 0 ? formatDuration(item.execution_time_secs / 60) : '—'}</td>
@@ -239,7 +242,7 @@ export default function MatrixBuilder() {
                       <button
                         className="btn small danger"
                         disabled={deletingKey === key}
-                        onClick={() => deleteConfig(item.region, item.profile, item.resolution)}
+                        onClick={() => deleteConfig(item.table_region, item.profile, item.resolution)}
                       >
                         {deletingKey === key ? '...' : 'Delete'}
                       </button>
@@ -266,7 +269,7 @@ export default function MatrixBuilder() {
             return (
               <div key={job.job_id} className="progress-card">
                 <div className="progress-header">
-                  <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</span>
+                  <span>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></span>
                   <span className={`badge ${isQueued ? '' : 'warn'}`}>{isQueued ? 'Queued' : job.stage}</span>
                 </div>
                 {isQueued ? (
@@ -308,7 +311,7 @@ export default function MatrixBuilder() {
               <div key={job.job_id} style={{ margin: '8px 0', padding: '12px 16px', background: 'rgba(229, 57, 53, 0.12)', borderRadius: 8, border: '1px solid rgba(229, 57, 53, 0.4)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div>
-                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}</strong>
+                    <strong>{job.region} / {job.profile} / {job.resolution} — {RES_LABELS[resNum] || ''}<RoadFilterBadge on={job.road_filter} /></strong>
                     <span className="badge error" style={{ marginLeft: 8 }}>FAILED</span>
                     {job.stage && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>at stage: {job.stage}</span>}
                     {job.completed_at && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>{timeAgo(job.completed_at)}</span>}
@@ -361,14 +364,47 @@ export default function MatrixBuilder() {
             ))}
           </div>
 
+          <h3>Road-Aware Filtering</h3>
+          <label
+            className={`res-card ${roadFilterEnabled && roadFilterAvailable ? 'active' : ''}`}
+            style={{ cursor: roadFilterAvailable === false ? 'not-allowed' : 'pointer', opacity: roadFilterAvailable === false ? 0.6 : 1 }}
+            title={roadFilterAvailable === false ? roadFilterReason : 'Skips hexagons with no road coverage. Reduces credits and build time.'}
+          >
+            <input
+              type="checkbox"
+              checked={roadFilterEnabled && roadFilterAvailable === true}
+              disabled={roadFilterAvailable !== true}
+              onChange={(e) => setRoadFilterEnabled(e.target.checked)}
+            />
+            <div>
+              <div className="res-label">
+                Road-Aware Filtering {estimateLoading ? ' (recalculating...)' : ''}
+              </div>
+              <div className="res-detail">
+                {roadFilterAvailable === null && 'Checking Overture Maps Transportation availability...'}
+                {roadFilterAvailable === false && `Unavailable: ${roadFilterReason}`}
+                {roadFilterAvailable === true && roadFilterEnabled && 'Only hexagons intersecting roads will be tessellated (default ON)'}
+                {roadFilterAvailable === true && !roadFilterEnabled && 'Disabled — full bbox tessellation (legacy behaviour)'}
+              </div>
+            </div>
+          </label>
+
           <h3>Select Resolutions</h3>
           <div className="res-grid">
             {hexEstimates.map((h) => (
               <label key={h.res} className={`res-card ${selectedRes.has(h.res) ? 'active' : ''}`}>
                 <input type="checkbox" checked={selectedRes.has(h.res)} onChange={() => toggleRes(h.res)} />
                 <div>
-                  <div className="res-label">Res {h.res} — {RES_LABELS[h.res]}</div>
-                  <div className="res-detail">~{formatNumber(h.hexagons)} hexagons · {RES_CUTOFFS[h.res]}mi cutoff · ~{formatNumber(h.pairs)} pairs</div>
+                  <div className="res-label">Res {h.res} — {RES_LABELS[h.res]}<RoadFilterBadge on={roadFilterEnabled && roadFilterAvailable === true} /></div>
+                  <div className="res-detail">
+                    ~{formatNumber(h.hexagons)} hexagons
+                    {h.filtered && h.bboxHexagons > 0 && (
+                      <span style={{ color: 'var(--accent, #3fb950)', marginLeft: 6 }}>
+                        (-{Math.round((1 - h.hexagons / h.bboxHexagons) * 100)}% vs bbox)
+                      </span>
+                    )}
+                    {' '}· {RES_CUTOFFS[h.res]}mi cutoff · ~{formatNumber(h.pairs)} pairs
+                  </div>
                 </div>
               </label>
             ))}
@@ -387,10 +423,15 @@ export default function MatrixBuilder() {
         <div className="existing-info">
           {activeJobs.length > 0 && <span>{activeJobs.length} build{activeJobs.length > 1 ? 's' : ''} in progress</span>}
         </div>
-        <button className="btn primary" onClick={startBuild} disabled={isLaunching || selectedRes.size === 0 || !region?.ready}>
-          {isLaunching ? 'Launching...' : `Build Matrix for ${region?.label || 'Region'}`}
+        <button className="btn primary" onClick={startBuild} disabled={isLaunching || estimateLoading || selectedRes.size === 0 || !region?.ready}>
+          {isLaunching ? 'Launching...' : estimateLoading ? 'Estimating...' : `Build Matrix for ${region?.label || 'Region'}`}
         </button>
       </div>
+      {buildWarning && (
+        <div className="warning-banner" style={{ marginTop: 8 }}>
+          <strong>Heads up:</strong> {buildWarning}
+        </div>
+      )}
       {buildError && (
         <div className="error-banner" style={{ marginTop: 8 }}>
           <strong>Build failed:</strong> {buildError}

@@ -124,40 +124,59 @@ Requires IMPORT SHARE privilege.
 
 ## Step 4: Create Base Locations (TAXI_LOCATIONS)
 
-Substitute `{MIN_LON}`, `{MAX_LON}`, `{MIN_LAT}`, `{MAX_LAT}` from the Supported Locations table.
+Substitute `{MIN_LON}`, `{MAX_LON}`, `{MIN_LAT}`, `{MAX_LAT}` from the Supported Locations table, and `{REGION_KEY}` with the OPENROUTESERVICE_APP `REGION_CATALOG` lookup name (e.g. `'SanFrancisco'`, `'Germany'`, `'California'`).
+
+The `region_boundary` CTE polygon-clips POIs / addresses against the region's
+true shape from `REGION_CATALOG.BOUNDARY`. For non-rectangular regions
+(California, Italy, Chile) this prevents Nevada / Adriatic / Pacific points
+from leaking into the seed. `COALESCE(..., TRUE)` gracefully degrades to
+bbox-only when the region has no catalog boundary row.
 
 ```sql
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS AS
+WITH region_boundary AS (
+    SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+    WHERE (UPPER(LOOKUP_NAME) = UPPER('{REGION_KEY}')
+           OR UPPER(REGION_KEY) = UPPER('{REGION_KEY}')
+           OR UPPER(REGION_NAME) = UPPER('{REGION_KEY}'))
+      AND BOUNDARY IS NOT NULL
+    ORDER BY BOUNDARY_AREA_KM2 ASC
+    LIMIT 1
+)
 -- POIs from Overture Maps Places
 SELECT 
-    ID AS LOCATION_ID,
-    GEOMETRY AS POINT_GEOM,
-    NAMES:primary::STRING AS NAME,
-    CATEGORIES:primary::STRING AS CATEGORY,
+    p.ID AS LOCATION_ID,
+    p.GEOMETRY AS POINT_GEOM,
+    p.NAMES:primary::STRING AS NAME,
+    p.CATEGORIES:primary::STRING AS CATEGORY,
     'poi' AS SOURCE_TYPE
-FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+LEFT JOIN region_boundary rb ON TRUE
 WHERE 
-    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
-    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
-    AND NAMES:primary IS NOT NULL
+    ST_X(p.GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
+    AND ST_Y(p.GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    AND COALESCE(ST_INTERSECTS(p.GEOMETRY, rb.BOUNDARY), TRUE)
+    AND p.NAMES:primary IS NOT NULL
 
 UNION ALL
 
 -- Addresses from Overture Maps Addresses
 SELECT 
-    ID AS LOCATION_ID,
-    GEOMETRY AS POINT_GEOM,
+    a.ID AS LOCATION_ID,
+    a.GEOMETRY AS POINT_GEOM,
     COALESCE(
-        ADDRESS_LEVELS[0]:value::STRING || ' ' || STREET,
-        STREET
+        a.ADDRESS_LEVELS[0]:value::STRING || ' ' || a.STREET,
+        a.STREET
     ) AS NAME,
     'address' AS CATEGORY,
     'address' AS SOURCE_TYPE
-FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
+LEFT JOIN region_boundary rb ON TRUE
 WHERE 
-    ST_X(GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
-    AND ST_Y(GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
-    AND STREET IS NOT NULL;
+    ST_X(a.GEOMETRY) BETWEEN {MIN_LON} AND {MAX_LON}
+    AND ST_Y(a.GEOMETRY) BETWEEN {MIN_LAT} AND {MAX_LAT}
+    AND COALESCE(ST_INTERSECTS(a.GEOMETRY, rb.BOUNDARY), TRUE)
+    AND a.STREET IS NOT NULL;
 ```
 
 ```sql

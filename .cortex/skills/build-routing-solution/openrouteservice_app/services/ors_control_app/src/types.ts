@@ -6,6 +6,7 @@ export interface ServiceInfo {
   max_instances?: number;
   current_instances?: number;
   target_instances?: number;
+  auto_suspend_secs?: number;
 }
 
 export interface ComputePoolInfo {
@@ -18,10 +19,26 @@ export interface ComputePoolInfo {
   num_services?: number;
 }
 
+export type PhaseStatus = 'done' | 'in_progress' | 'not_started' | 'na';
+
+export interface OrsProfilePhases {
+  osm: PhaseStatus;
+  lm: PhaseStatus;
+  ch: PhaseStatus;
+}
+
 export interface OrsGraphInfo {
   profile: string;
   ready: boolean;
   build_date?: string;
+  phases?: OrsProfilePhases;
+}
+
+export interface OrsRegionMarkers {
+  osm_done: boolean;
+  lm_done: boolean;
+  ch_done: boolean;
+  build_ok: boolean;
 }
 
 export interface OrsRegionReadiness {
@@ -30,6 +47,8 @@ export interface OrsRegionReadiness {
   profiles: string[];
   expected_profiles?: string[];
   graphs: OrsGraphInfo[];
+  graphs_persisted?: boolean;
+  markers?: OrsRegionMarkers;
   error?: string;
 }
 
@@ -51,6 +70,7 @@ export interface RegionInfo {
   region: string;
   label: string;
   bounds: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+  boundaryAreaKm2?: number | null;
   serviceStatus: string;
   serviceExists: boolean;
   matrixFunctionExists: boolean;
@@ -97,10 +117,15 @@ export interface MatrixJob {
   started_at: string;
   completed_at: string;
   statement_handle: string;
+  road_filter?: boolean;
+  hexagons_before_filter?: number;
+  hexagons_after_filter?: number;
+  filter_duration_seconds?: number;
 }
 
 export interface MatrixInventoryItem {
   region: string;
+  table_region: string;
   profile: string;
   resolution: string;
   row_count: number;
@@ -108,6 +133,7 @@ export interface MatrixInventoryItem {
   created: string;
   table_name: string;
   execution_time_secs: number;
+  road_filter?: boolean;
 }
 
 export const ROUTING_PROFILES = [
@@ -137,6 +163,13 @@ export const RES_CUTOFFS: Record<number, number> = {
 
 export const RES_HEX_PER_SQDEG: Record<number, number> = {
   5: 45, 6: 300, 7: 2000, 8: 13500, 9: 90000, 10: 630000,
+};
+
+// Average H3 hexagon area in km^2 per resolution. Used by the matrix
+// builder fast-estimate to compute hex count from REGION_CATALOG
+// BOUNDARY_AREA_KM2 (polygon-aware) instead of the bbox rectangle.
+export const RES_HEX_AREA_KM2: Record<number, number> = {
+  5: 252.9, 6: 36.13, 7: 5.16, 8: 0.737, 9: 0.105, 10: 0.015,
 };
 
 export interface MatrixEstimate {

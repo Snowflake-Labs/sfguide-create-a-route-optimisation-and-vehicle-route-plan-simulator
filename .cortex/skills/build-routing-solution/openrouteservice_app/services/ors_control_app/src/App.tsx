@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -12,6 +12,8 @@ import FleetDelivery from './components/FleetDelivery';
 import FleetTaxis from './components/FleetTaxis';
 import RouteDeviation from './components/RouteDeviation';
 import RouteOptimization from './components/RouteOptimization';
+import AssetVelocity from './components/AssetVelocity';
+import BackloadMatching from './components/BackloadMatching';
 import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
@@ -21,6 +23,8 @@ import Intro from './components/Intro';
 import Home from './components/Home';
 import RegionSwitcher from './shared/RegionSwitcher';
 import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
+import DatasetPicker from './shared/DatasetPicker';
+import OrsWakeButton from './shared/OrsWakeButton';
 
 interface SubPage { key: string; label: string; }
 
@@ -74,6 +78,8 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
     { key: 'route-deviation:comparison', label: 'Route Comparison' },
     { key: 'route-deviation:inspector', label: 'Route Inspector' },
   ]},
+  { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
+  { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];
@@ -88,6 +94,25 @@ const ALL_SECTIONS = [
   { label: 'Solution Accelerators', items: SOLUTION_ACCELERATORS },
   { label: 'Admin', items: ADMIN_NAV },
 ];
+
+const VALID_TABS: Set<string> = new Set([
+  'home',
+  ...ALL_SECTIONS.flatMap(s => s.items.flatMap(g =>
+    g.subPages ? [g.key, ...g.subPages.map(sp => sp.key)] : [g.key]
+  )),
+]);
+
+function tabToPath(tab: string): string {
+  if (!tab || tab === 'home') return '/';
+  return '/' + tab.replace(/:/g, '/');
+}
+
+function pathToTab(pathname: string): string {
+  const trimmed = pathname.replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return 'home';
+  const candidate = trimmed.replace(/\//g, ':');
+  return VALID_TABS.has(candidate) ? candidate : 'home';
+}
 
 function getHeaderLabel(tab: string): string {
   if (tab === 'home') return 'Home';
@@ -104,7 +129,9 @@ function getHeaderLabel(tab: string): string {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('home');
+  const [activeTab, setActiveTab] = useState<string>(() =>
+    typeof window !== 'undefined' ? pathToTab(window.location.pathname) : 'home'
+  );
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [appVersion, setAppVersion] = useState('');
   const region = useRegionProvider();
@@ -114,18 +141,35 @@ export default function App() {
     fetch('/api/health').then(r => r.json()).then(d => setAppVersion(d.version || '')).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const expected = tabToPath(activeTab);
+    if (window.location.pathname !== expected) {
+      window.history.replaceState({}, '', expected);
+    }
+    const onPop = () => setActiveTab(pathToTab(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const toggleExpand = (groupKey: string) => {
     setExpanded(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
 
   const navigateTo = (tab: string) => {
     setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      const next = tabToPath(tab);
+      if (window.location.pathname !== next) {
+        window.history.pushState({ tab }, '', next);
+      }
+    }
   };
 
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -199,8 +243,24 @@ export default function App() {
           <header className="app-header">
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{getHeaderLabel(activeTab)}</span>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <VehicleTypeSwitcher />
-              <RegionSwitcher />
+              {(typeof window !== 'undefined' && window.location.search.includes('debug=1')) && (
+                <span
+                  title="Live React context state - useful for diagnosing 'page didn't update' bugs"
+                  style={{
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    padding: '3px 8px',
+                    background: 'rgba(255,165,0,0.12)',
+                    color: '#c97800',
+                    borderRadius: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  {region.value.regionName} / {vehicleTypeCtx.value.vehicleType} @ ({region.value.center.lat.toFixed(2)},{region.value.center.lng.toFixed(2)})
+                </span>
+              )}
+              <DatasetPicker />
+              <OrsWakeButton />
               <button
                 onClick={() => {
                   document.cookie.split(';').forEach(c => {
@@ -214,6 +274,17 @@ export default function App() {
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
+            {/*
+              `dataKey` force-remounts demo components whenever the active
+              region or vehicle type changes. Without this, subtle React
+              context-update edge cases (stale closures inside useMemo
+              layers, throttled deck.gl re-renders, useEffect deps that
+              don't fire because referential identity didn't change) can
+              leave a panel showing stale data after a header switch.
+              Remount is cheap for these pages and guarantees a clean
+              fetch + map reset on every (region, vehicleType) change.
+            */}
+            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}`; return (<>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
             {activeTab === 'intro' && <Intro />}
@@ -224,14 +295,17 @@ export default function App() {
             {activeTab === 'matrix:builder' && <MatrixBuilder />}
             {activeTab === 'matrix:viewer' && <MatrixViewer />}
             {activeTab === 'studio' && <FleetDataStudio />}
-            {activeTab === 'route-opt' && <RouteOptimization />}
-            {activeCategory === 'fleet-taxis' && <FleetTaxis subTab={activeSubTab} />}
-            {activeCategory === 'fleet-delivery' && <FleetDelivery subTab={activeSubTab} />}
-            {activeCategory === 'dwell' && <DwellAnalysis subTab={activeSubTab} />}
-            {activeCategory === 'route-deviation' && <RouteDeviation subTab={activeSubTab} />}
-            {activeTab === 'retail' && <RetailCatchment />}
+            {activeTab === 'route-opt' && <RouteOptimization key={dataKey} />}
+            {activeTab === 'asset-velocity' && <AssetVelocity key={dataKey} />}
+            {activeTab === 'backload' && <BackloadMatching key={dataKey} />}
+            {activeCategory === 'fleet-taxis' && <FleetTaxis key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'fleet-delivery' && <FleetDelivery key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
+            {activeCategory === 'route-deviation' && <RouteDeviation key={dataKey} subTab={activeSubTab} />}
+            {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
             {activeTab === 'agent' && <AgentPlayground />}
             {activeTab === 'diagnostics' && <Diagnostics />}
+            </>); })()}
           </main>
         </div>
       </div>

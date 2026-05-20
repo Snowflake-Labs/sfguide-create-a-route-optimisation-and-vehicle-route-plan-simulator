@@ -3,8 +3,12 @@ import { BarChart, Bar, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGri
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 export default function FacilityUtilization() {
+  const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -16,7 +20,7 @@ export default function FacilityUtilization() {
       setData(rows);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
 
   const top15 = useMemo(() => data.slice(0, 15), [data]);
   const totalVisits = useMemo(() => data.reduce((s, r) => s + Number(r.TOTAL_VISITS || 0), 0), [data]);

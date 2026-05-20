@@ -40,6 +40,11 @@ Current recommended model: `claude-sonnet-4-5`.
 
 ## Step 8: Deploy AISQL Notebook
 
+> **Fast path — SanFrancisco / no-customization installs:**
+> If `<NOTEBOOK_CITY>` is `SanFrancisco` AND the user did NOT request custom industries in Step 3, the bundled `assets/notebooks/routing_functions_aisql.ipynb` already contains San-Francisco-specific prompts. **Skip Section 8.2 (Update AI Prompt Cells) entirely** — go directly to Section 8.3 (Post-Replacement Validation, just to sanity-check JSON validity) and Section 8.4 (Upload and Create Notebook). This makes the default-install path a single `snow stage copy` + `CREATE NOTEBOOK` call.
+>
+> For any other city, follow the full Section 8.2 cell-by-cell rewrite procedure below.
+
 ### 8.1: Text Replacement Rules
 
 > **CRITICAL — follow these rules to avoid garbled text in notebook prompts.**

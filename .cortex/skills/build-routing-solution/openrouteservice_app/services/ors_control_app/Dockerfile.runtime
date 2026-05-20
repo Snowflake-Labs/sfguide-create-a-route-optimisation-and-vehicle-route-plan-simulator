@@ -1,5 +1,6 @@
 # ── Stage 1: build ──────────────────────────────────────────────
 FROM node:20-alpine AS builder
+ARG GIT_SHA=unknown
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --legacy-peer-deps
@@ -9,6 +10,11 @@ RUN [ -d dist-server ] && echo "Skipping server build: dist-server/ already exis
 
 # ── Stage 2: runtime ────────────────────────────────────────────
 FROM node:20-alpine
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+LABEL git.sha="${GIT_SHA}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+LABEL org.opencontainers.image.source="https://github.com/Snowflake-Labs/sfguide-create-a-route-optimisation-and-vehicle-route-plan-simulator"
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/dist-server ./dist-server

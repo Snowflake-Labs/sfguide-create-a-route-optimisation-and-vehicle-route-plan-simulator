@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Matrix Access Benchmark Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e4e6f0; --muted: #8b8fa3; --accent: #29b5e8;
+    --green: #21c354; --orange: #ff8700; --red: #ff4b4b;
+    --purple: #a78bfa; --pink: #f472b6;
+    --hybrid: #ff8700; --interactive: #29b5e8; --standard: #8b8fa3;
+    --sos: #a78bfa; --clustered: #21c354;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 2rem; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 32px; }
+  h2 { font-size: 1.4rem; font-weight: 600; margin: 40px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1.1rem; font-weight: 600; margin: 24px 0 12px; color: var(--accent); }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; }
+  .kpi .value { font-size: 2.2rem; font-weight: 700; }
+  .kpi .label { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  .kpi .sub { font-size: 0.8rem; margin-top: 4px; }
+  .kpi.hybrid .value { color: var(--hybrid); }
+  .kpi.interactive .value { color: var(--interactive); }
+  .kpi.standard .value { color: var(--standard); }
+
+  .tab-bar { display: flex; gap: 4px; margin-bottom: 0; background: var(--card); border-radius: 12px 12px 0 0; padding: 4px 4px 0; border: 1px solid var(--border); border-bottom: none; }
+  .tab-bar button { background: transparent; border: none; color: var(--muted); padding: 10px 20px; cursor: pointer; font-size: 0.9rem; border-radius: 8px 8px 0 0; transition: all 0.2s; }
+  .tab-bar button.active { background: var(--bg); color: var(--text); font-weight: 600; }
+  .tab-bar button:hover:not(.active) { color: var(--text); }
+  .tab-content { background: var(--card); border: 1px solid var(--border); border-radius: 0 0 12px 12px; padding: 24px; margin-bottom: 32px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+  .chart-box { background: var(--bg); border-radius: 8px; padding: 16px; }
+  .chart-box canvas { width: 100% !important; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { background: var(--bg); color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
+  th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  tr:hover td { background: rgba(41,181,232,0.05); }
+  .winner { color: var(--accent); font-weight: 700; }
+  .bad { color: var(--red); }
+
+  .insight-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .insight { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .insight .num { font-size: 2rem; font-weight: 700; margin-bottom: 4px; }
+  .insight .title { font-weight: 600; margin-bottom: 8px; }
+  .insight .body { color: var(--muted); font-size: 0.9rem; }
+
+  .rec-table td:first-child { font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+  .badge.hybrid { background: rgba(255,135,0,0.15); color: var(--hybrid); }
+  .badge.interactive { background: rgba(41,181,232,0.15); color: var(--interactive); }
+  .badge.clustered { background: rgba(33,195,84,0.15); color: var(--clustered); }
+
+  .method { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 32px; }
+  .method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .method-item { font-size: 0.88rem; }
+  .method-item .k { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .toggle-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .toggle-row button { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-size: 0.82rem; transition: all 0.2s; }
+  .toggle-row button.on { border-color: var(--accent); color: var(--accent); background: rgba(41,181,232,0.1); }
+
+  @media (max-width: 768px) {
+    .chart-row, .insight-grid { grid-template-columns: 1fr; }
+    .kpi-row { grid-template-columns: 1fr 1fr; }
+  }
+  footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 40px 0 24px; border-top: 1px solid var(--border); margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Travel-Time Matrix Access Benchmark</h1>
+<p class="subtitle">Germany / driving-hgv / H3 resolution 6 &mdash; 121 M rows, 0.71 GB &mdash; 2026-05-13</p>
+
+<!-- KPI cards -->
+<div class="kpi-row">
+  <div class="kpi hybrid">
+    <div class="value">421 QPS</div>
+    <div class="label">Hybrid &mdash; W1 Point Lookup @ 100 workers</div>
+    <div class="sub" style="color:var(--hybrid)">p95 = 327 ms &bull; Near-linear scaling</div>
+  </div>
+  <div class="kpi interactive">
+    <div class="value">60 QPS</div>
+    <div class="label">Interactive &mdash; W2 Group Lookup @ 100 workers</div>
+    <div class="sub" style="color:var(--interactive)">p95 = 3.2 s &bull; 4x faster than Standard</div>
+  </div>
+  <div class="kpi standard">
+    <div class="value">~10 QPS</div>
+    <div class="label">Standard table ceiling @ any concurrency</div>
+    <div class="sub" style="color:var(--red)">p50 = 15.5 s at c=100 &bull; All queue wait</div>
+  </div>
+</div>
+
+<!-- Methodology -->
+<div class="method">
+  <h3 style="margin-top:0;">Methodology</h3>
+  <div class="method-grid">
+    <div class="method-item"><div class="k">Source table</div>GERMANY_DRIVING_HGV_MATRIX_RES6</div>
+    <div class="method-item"><div class="k">Rows</div>121,386,546 (9,669 origins &times; ~12,554 dests)</div>
+    <div class="method-item"><div class="k">Compressed size</div>0.71 GB</div>
+    <div class="method-item"><div class="k">Account / Region</div>WGB26798 / AWS US-West-2</div>
+    <div class="method-item"><div class="k">Standard WH</div>XSMALL, single cluster</div>
+    <div class="method-item"><div class="k">Interactive WH</div>XSMALL, max 3 clusters, auto-scale</div>
+    <div class="method-item"><div class="k">Measurement</div>30 s per cell, 5 s warm-up discarded</div>
+    <div class="method-item"><div class="k">Result cache</div>Disabled (USE_CACHED_RESULT=FALSE)</div>
+    <div class="method-item"><div class="k">Concurrency levels</div>1, 10, 50, 100 parallel workers</div>
+    <div class="method-item"><div class="k">Connection model</div>1 Snowflake conn per worker thread</div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tab-bar" id="mainTabs">
+  <button class="active" data-tab="concurrency">Concurrency Scaling</button>
+  <button data-tab="serial">Serial Latency</button>
+  <button data-tab="server">Server-Side Metrics</button>
+  <button data-tab="recommend">Recommendations</button>
+</div>
+<div class="tab-content">
+
+<!-- TAB: Concurrency -->
+<div class="tab-panel active" id="tab-concurrency">
+  <h3>W1 &mdash; Point Lookup (single origin&rarr;destination pair, 1 row)</h3>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="w1qps"></canvas></div>
+    <div class="chart-box"><canvas id="w1p95"></canvas></div>
+  </div>
+  <table>
+    <thead><tr><th>Variant</th><th>c=1 QPS</th><th>c=10</th><th>c=50</th><th>c=100</th><th>c=1 p50</th><th>c=10</th><th>c=50</th><th>c=100</th><th>Scaling</th></tr></thead>
+    <tbody>
+      <tr><td>Standard</td><td>2.5</td><td>8.6</td><td>8.9</td><td>10.1</td><td>386</td><td>1,292</td><td class="bad">6,993</td><td class="bad">15,518</td><td>4x</td></tr>
+      <tr><td>Standard+SOS</td><td>2.4</td><td>10.5</td><td>12.3</td><td>11.8</td><td>405</td><td>975</td><td class="bad">4,635</td><td class="bad">11,314</td><td>5x</td></tr>
+      <tr><td>Clustered</td><td>2.4</td><td>14.0</td><td>15.6</td><td>16.1</td><td>382</td><td>724</td><td class="bad">3,534</td><td class="bad">7,374</td><td>7x</td></tr>
+      <tr><td>Hybrid (Unistore)</td><td>4.1</td><td class="winner">47.1</td><td class="winner">233.9</td><td class="winner">420.8</td><td>220</td><td class="winner">208</td><td class="winner">206</td><td class="winner">227</td><td class="winner">103x</td></tr>
+      <tr><td>Interactive (Gen2)</td><td class="winner">4.5</td><td>38.0</td><td>145.9</td><td>148.7</td><td class="winner">219</td><td>243</td><td>326</td><td>678</td><td>33x</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:32px;">W2 &mdash; Group Lookup (one origin &rarr; all ~12,554 destinations)</h3>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="w2qps"></canvas></div>
+    <div class="chart-box"><canvas id="w2p95"></canvas></div>
+  </div>
+  <table>
+    <thead><tr><th>Variant</th><th>c=1 QPS</th><th>c=10</th><th>c=50</th><th>c=100</th><th>c=1 p50</th><th>c=10</th><th>c=50</th><th>c=100</th><th>Scaling</th></tr></thead>
+    <tbody>
+      <tr><td>Standard</td><td>1.0</td><td>7.4</td><td>8.5</td><td>10.1</td><td>1,045</td><td>1,381</td><td class="bad">7,091</td><td class="bad">13,817</td><td>10x</td></tr>
+      <tr><td>Standard+SOS</td><td>0.9</td><td>8.8</td><td>13.1</td><td>16.3</td><td>1,127</td><td>1,188</td><td class="bad">4,210</td><td class="bad">8,633</td><td>18x</td></tr>
+      <tr><td>Clustered</td><td>1.0</td><td>8.3</td><td>11.9</td><td>13.6</td><td>968</td><td>1,240</td><td class="bad">5,066</td><td class="bad">9,448</td><td>14x</td></tr>
+      <tr><td>Hybrid (Unistore)</td><td>0.4</td><td>5.4</td><td>10.9</td><td>14.8</td><td class="bad">2,410</td><td class="bad">2,003</td><td class="bad">5,209</td><td class="bad">8,703</td><td>37x</td></tr>
+      <tr><td>Interactive (Gen2)</td><td class="winner">1.2</td><td class="winner">11.1</td><td class="winner">50.7</td><td class="winner">59.9</td><td class="winner">792</td><td class="winner">819</td><td class="winner">958</td><td class="winner">1,632</td><td class="winner">50x</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- TAB: Serial -->
+<div class="tab-panel" id="tab-serial">
+  <p style="color:var(--muted);margin-bottom:16px;">Phase 1: single-client sequential queries (no concurrency). 150 W1 probes, 40 W2 probes per variant.</p>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="serialP50"></canvas></div>
+    <div class="chart-box"><canvas id="serialP95"></canvas></div>
+  </div>
+  <table>
+    <thead><tr><th>Variant</th><th>Workload</th><th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>mean ms</th><th>mean rows</th></tr></thead>
+    <tbody>
+      <tr><td>Standard</td><td>W1 point</td><td>495</td><td>920</td><td>1,324</td><td>551</td><td>1</td></tr>
+      <tr><td>Standard</td><td>W2 group</td><td>1,082</td><td>1,623</td><td>1,899</td><td>1,139</td><td>12,554</td></tr>
+      <tr><td>Standard+SOS</td><td>W1 point</td><td>451</td><td>860</td><td>1,146</td><td>521</td><td>1</td></tr>
+      <tr><td>Standard+SOS</td><td>W2 group</td><td>1,081</td><td>1,491</td><td>1,638</td><td>1,112</td><td>12,554</td></tr>
+      <tr><td>Clustered</td><td>W1 point</td><td>382</td><td>828</td><td>978</td><td>460</td><td>1</td></tr>
+      <tr><td>Clustered</td><td>W2 group</td><td>1,120</td><td>1,622</td><td>1,774</td><td>1,165</td><td>12,554</td></tr>
+      <tr><td>Hybrid</td><td>W1 point</td><td class="winner">213</td><td class="winner">235</td><td>428</td><td class="winner">219</td><td>1</td></tr>
+      <tr><td>Hybrid</td><td>W2 group</td><td class="bad">2,034</td><td class="bad">2,771</td><td class="bad">2,904</td><td class="bad">1,978</td><td>12,554</td></tr>
+      <tr><td>Interactive</td><td>W1 point</td><td>218</td><td>266</td><td class="winner">397</td><td>225</td><td>1</td></tr>
+      <tr><td>Interactive</td><td>W2 group</td><td class="winner">725</td><td class="winner">960</td><td class="winner">972</td><td class="winner">751</td><td>12,554</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- TAB: Server -->
+<div class="tab-panel" id="tab-server">
+  <p style="color:var(--muted);margin-bottom:16px;">Server-side execution and compilation time from ACCOUNT_USAGE.QUERY_HISTORY. Strips client network overhead.</p>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="serverExec"></canvas></div>
+    <div class="chart-box"><canvas id="serverCompile"></canvas></div>
+  </div>
+  <table>
+    <thead><tr><th>Variant</th><th>Workload</th><th>Exec ms</th><th>Compile ms</th><th>MB scanned</th><th>Parts scanned/total</th><th>Cache %</th></tr></thead>
+    <tbody>
+      <tr><td>Standard</td><td>W1</td><td>195</td><td>87</td><td>114</td><td>21 / 48</td><td>98%</td></tr>
+      <tr><td>Standard</td><td>W2</td><td>291</td><td>76</td><td>106</td><td>22 / 48</td><td>99%</td></tr>
+      <tr><td>Standard+SOS</td><td>W1</td><td>222</td><td>117</td><td>89</td><td>16 / 50</td><td>94%</td></tr>
+      <tr><td>Standard+SOS</td><td>W2</td><td>240</td><td>105</td><td>141</td><td>9 / 50</td><td>99%</td></tr>
+      <tr><td>Clustered</td><td>W1</td><td>188</td><td>77</td><td>70</td><td>12 / 50</td><td>93%</td></tr>
+      <tr><td>Clustered</td><td>W2</td><td>245</td><td>72</td><td>158</td><td>13 / 50</td><td>99%</td></tr>
+      <tr><td>Hybrid</td><td>W1</td><td>65</td><td>115</td><td>&mdash;</td><td>&mdash; (row-store)</td><td>&mdash;</td></tr>
+      <tr><td>Hybrid</td><td>W2</td><td class="bad">1,090</td><td>35</td><td>&mdash;</td><td>&mdash; (row-store)</td><td>&mdash;</td></tr>
+      <tr><td>Interactive</td><td>W1</td><td class="winner">33</td><td class="winner">16</td><td>88</td><td>18 / 76</td><td class="winner">100%</td></tr>
+      <tr><td>Interactive</td><td>W2</td><td class="winner">150</td><td class="winner">17</td><td>143</td><td>18 / 76</td><td class="winner">100%</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- TAB: Recommendations -->
+<div class="tab-panel" id="tab-recommend">
+  <div class="insight-grid" style="margin-bottom:24px;">
+    <div class="insight">
+      <div class="num" style="color:var(--hybrid);">103x</div>
+      <div class="title">Hybrid point-lookup scaling</div>
+      <div class="body">Hybrid Tables scale near-linearly from 4.1 to 421 QPS (c=1 &rarr; c=100) with flat p50 latency (~210 ms). The row-store PK lookup is fully independent per request.</div>
+    </div>
+    <div class="insight">
+      <div class="num" style="color:var(--interactive);">50x</div>
+      <div class="title">Interactive group-lookup scaling</div>
+      <div class="body">Interactive Tables scale from 1.2 to 60 QPS (c=1 &rarr; c=100). The Gen2 engine auto-scaled from 1 to 3 clusters, keeping p50 under 1.6 s even at 100 workers.</div>
+    </div>
+    <div class="insight">
+      <div class="num" style="color:var(--red);">15.5 s</div>
+      <div class="title">Standard table p50 at c=100</div>
+      <div class="body">Standard tables hit a QPS ceiling of ~10 on XSMALL. Beyond that, every additional worker just adds queue wait, pushing p50 above 15 seconds.</div>
+    </div>
+    <div class="insight">
+      <div class="num" style="color:var(--green);">0%</div>
+      <div class="title">Error rate</div>
+      <div class="body">Zero errors across all 40 test cells. No Interactive 5 s timeouts triggered. All queries completed successfully at every concurrency level.</div>
+    </div>
+  </div>
+
+  <h3>Which table type to use?</h3>
+  <table class="rec-table">
+    <thead><tr><th>Access pattern</th><th>Best variant</th><th>QPS @ c=100</th><th>p95 @ c=100</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Point lookup, high concurrency (API)</td><td><span class="badge hybrid">Hybrid</span></td><td class="winner">421</td><td class="winner">327 ms</td><td>Row-store PK lookup, flat latency under load</td></tr>
+      <tr><td>Point lookup, low concurrency</td><td><span class="badge hybrid">Hybrid</span> or <span class="badge interactive">Interactive</span></td><td>~4</td><td>~250 ms</td><td>Both tie at c=1; Hybrid if you need DML</td></tr>
+      <tr><td>Group lookup / reachability</td><td><span class="badge interactive">Interactive</span></td><td class="winner">60</td><td>3.2 s</td><td>Columnar engine + cache; 4x faster than Standard</td></tr>
+      <tr><td>Mixed point + group</td><td><span class="badge interactive">Interactive</span></td><td>&mdash;</td><td>&mdash;</td><td>Best balance across both workloads</td></tr>
+      <tr><td>Cost-sensitive, &lt;10 users</td><td><span class="badge clustered">Clustered</span></td><td>16</td><td>9.9 s</td><td>No interactive-WH minimum bill; decent pruning</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:32px;">Key takeaways</h3>
+  <ol style="padding-left:20px;color:var(--muted);font-size:0.92rem;line-height:1.8;">
+    <li><strong style="color:var(--text)">Different table types for different access patterns.</strong> There is no single "fastest" option. Hybrid dominates point lookups; Interactive dominates group lookups.</li>
+    <li><strong style="color:var(--text)">Concurrency reveals what serial tests hide.</strong> Phase 1 showed Hybrid and Interactive nearly tied. Phase 2 showed Hybrid scaling to 421 QPS while Interactive peaked at 149 QPS for point lookups.</li>
+    <li><strong style="color:var(--text)">Hybrid is terrible for bulk reads.</strong> At c=1, Hybrid returns 12.5k rows in 2.4 s &mdash; worst of all variants. The row-store secondary index walk is fundamentally slower than columnar scans.</li>
+    <li><strong style="color:var(--text)">Standard tables saturate quickly.</strong> On a single XSMALL cluster, throughput caps at ~10 QPS regardless of how many clients you throw at it. All additional concurrency becomes queue wait.</li>
+    <li><strong style="color:var(--text)">Search Optimization has diminishing returns here.</strong> SOS improved point-lookup latency by ~10% but didn't meaningfully help group lookups. The data is already well-suited to micropartition pruning.</li>
+    <li><strong style="color:var(--text)">Compilation time matters.</strong> Interactive compiles in 16 ms vs 80-120 ms for Standard. At sub-second latency targets, this is a major factor.</li>
+    <li><strong style="color:var(--text)">Network overhead is the floor.</strong> ~150-200 ms of every query is client-side overhead. To go below 200 ms end-to-end, you'd need a co-located client (e.g. SPCS service function).</li>
+  </ol>
+</div>
+
+</div><!-- tab-content -->
+
+<footer>
+  Benchmark executed 2026-05-13 &bull; Account WGB26798 &bull; AWS US-West-2 &bull;
+  Source: OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6
+</footer>
+
+</div><!-- container -->
+
+<script>
+const COLORS = {
+  'Standard': '#8b8fa3', 'Standard+SOS': '#a78bfa', 'Clustered': '#21c354',
+  'Hybrid': '#ff8700', 'Interactive': '#29b5e8'
+};
+const CONC = ['1','10','50','100'];
+const chartOpts = (title, yLabel) => ({
+  responsive: true,
+  plugins: { legend: { labels: { color: '#e4e6f0', boxWidth: 12 } }, title: { display: true, text: title, color: '#e4e6f0', font: { size: 14 } } },
+  scales: { x: { title: { display: true, text: 'Concurrent workers', color: '#8b8fa3' }, ticks: { color: '#8b8fa3' }, grid: { color: '#2a2d3a' } },
+            y: { title: { display: true, text: yLabel, color: '#8b8fa3' }, ticks: { color: '#8b8fa3' }, grid: { color: '#2a2d3a' } } }
+});
+
+function ds(label, data) { return { label, data, borderColor: COLORS[label], backgroundColor: COLORS[label]+'33', tension: 0.3, pointRadius: 5, borderWidth: 2 }; }
+
+// W1 QPS
+new Chart(document.getElementById('w1qps'), { type: 'line', data: { labels: CONC, datasets: [
+  ds('Standard',[2.5,8.6,8.9,10.1]), ds('Standard+SOS',[2.4,10.5,12.3,11.8]),
+  ds('Clustered',[2.4,14,15.6,16.1]), ds('Hybrid',[4.1,47.1,233.9,420.8]), ds('Interactive',[4.5,38,145.9,148.7])
+]}, options: chartOpts('W1 Point Lookup \u2014 QPS','Queries / sec') });
+
+// W1 p95
+new Chart(document.getElementById('w1p95'), { type: 'line', data: { labels: CONC, datasets: [
+  ds('Standard',[560,1766,8403,16576]), ds('Standard+SOS',[630,1469,6555,13118]),
+  ds('Clustered',[651,1087,4987,9854]), ds('Hybrid',[418,276,289,327]), ds('Interactive',[250,425,532,978])
+]}, options: chartOpts('W1 Point Lookup \u2014 p95 Latency','ms') });
+
+// W2 QPS
+new Chart(document.getElementById('w2qps'), { type: 'line', data: { labels: CONC, datasets: [
+  ds('Standard',[1,7.4,8.5,10.1]), ds('Standard+SOS',[0.9,8.8,13.1,16.3]),
+  ds('Clustered',[1,8.3,11.9,13.6]), ds('Hybrid',[0.4,5.4,10.9,14.8]), ds('Interactive',[1.2,11.1,50.7,59.9])
+]}, options: chartOpts('W2 Group Lookup \u2014 QPS','Queries / sec') });
+
+// W2 p95
+new Chart(document.getElementById('w2p95'), { type: 'line', data: { labels: CONC, datasets: [
+  ds('Standard',[1387,2062,8587,16463]), ds('Standard+SOS',[1677,1714,5872,10136]),
+  ds('Clustered',[1417,1753,6800,11975]), ds('Hybrid',[2792,3185,7335,9726]), ds('Interactive',[1187,1350,1653,3195])
+]}, options: chartOpts('W2 Group Lookup \u2014 p95 Latency','ms') });
+
+// Serial p50
+const SV = ['Standard','Std+SOS','Clustered','Hybrid','Interactive'];
+new Chart(document.getElementById('serialP50'), { type: 'bar', data: { labels: SV, datasets: [
+  { label: 'W1 point', data: [495,451,382,213,218], backgroundColor: '#29b5e833', borderColor: '#29b5e8', borderWidth: 1 },
+  { label: 'W2 group', data: [1082,1081,1120,2034,725], backgroundColor: '#ff870033', borderColor: '#ff8700', borderWidth: 1 }
+]}, options: { ...chartOpts('Serial p50 Latency','ms'), plugins: { ...chartOpts('','').plugins, title: { display: true, text: 'Serial p50 Latency (single client)', color: '#e4e6f0', font: { size: 14 } } } } });
+
+// Serial p95
+new Chart(document.getElementById('serialP95'), { type: 'bar', data: { labels: SV, datasets: [
+  { label: 'W1 point', data: [920,860,828,235,266], backgroundColor: '#29b5e833', borderColor: '#29b5e8', borderWidth: 1 },
+  { label: 'W2 group', data: [1623,1491,1622,2771,960], backgroundColor: '#ff870033', borderColor: '#ff8700', borderWidth: 1 }
+]}, options: { ...chartOpts('Serial p95 Latency','ms'), plugins: { ...chartOpts('','').plugins, title: { display: true, text: 'Serial p95 Latency (single client)', color: '#e4e6f0', font: { size: 14 } } } } });
+
+// Server exec
+new Chart(document.getElementById('serverExec'), { type: 'bar', data: { labels: SV, datasets: [
+  { label: 'W1 exec', data: [195,222,188,65,33], backgroundColor: '#29b5e8aa', borderRadius: 4 },
+  { label: 'W2 exec', data: [291,240,245,1090,150], backgroundColor: '#ff8700aa', borderRadius: 4 }
+]}, options: { ...chartOpts('','ms'), plugins: { ...chartOpts('','').plugins, title: { display: true, text: 'Server Execution Time', color: '#e4e6f0', font: { size: 14 } } } } });
+
+// Server compile
+new Chart(document.getElementById('serverCompile'), { type: 'bar', data: { labels: SV, datasets: [
+  { label: 'W1 compile', data: [87,117,77,115,16], backgroundColor: '#a78bfaaa', borderRadius: 4 },
+  { label: 'W2 compile', data: [76,105,72,35,17], backgroundColor: '#f472b6aa', borderRadius: 4 }
+]}, options: { ...chartOpts('','ms'), plugins: { ...chartOpts('','').plugins, title: { display: true, text: 'Compilation Time', color: '#e4e6f0', font: { size: 14 } } } } });
+
+// Tab switching
+document.getElementById('mainTabs').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  document.querySelectorAll('#mainTabs button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+});
+</script>
+</body>
+</html>

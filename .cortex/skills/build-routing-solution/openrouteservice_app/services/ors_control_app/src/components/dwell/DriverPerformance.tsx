@@ -3,6 +3,8 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import MetricCard from '../../shared/MetricCard';
 import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 const barColor = (breachRate: number) => {
   if (breachRate > 20) return '#E5484D';
@@ -11,6 +13,8 @@ const barColor = (breachRate: number) => {
 };
 
 export default function DriverPerformance() {
+  const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -22,7 +26,7 @@ export default function DriverPerformance() {
       setData(rows);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
 
   const drivers = data.length;
   const fleetAvg = useMemo(() => {

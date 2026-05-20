@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
 
 const COLOR_RANGE: [number, number, number][] = [
@@ -10,12 +12,14 @@ const COLOR_RANGE: [number, number, number][] = [
 ];
 
 export default function CourierHeatmap() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [metric, setMetric] = useState<'PING_COUNT' | 'AVG_SPEED'>('PING_COUNT');
   const [hour, setHour] = useState(-1);
   const [h3Res, setH3Res] = useState(8);
   const [hexData, setHexData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 45, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -25,11 +29,16 @@ export default function CourierHeatmap() {
               COUNT(*) AS PING_COUNT,
               ROUND(AVG(SPEED_KMH), 1) AS AVG_SPEED
        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY
-       WHERE VEHICLE_TYPE = 'ebike' AND REGION = 'SanFrancisco' ${hourFilter}
+       WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM ${FD_DB}.${FD_SCHEMA}.CONFIG LIMIT 1)
+         AND REGION = (SELECT REGION FROM ${FD_DB}.${FD_SCHEMA}.CONFIG LIMIT 1) ${hourFilter}
        GROUP BY 1 HAVING PING_COUNT >= 2
        ORDER BY PING_COUNT DESC LIMIT 8000`
     ).then(rows => { setHexData(rows); setLoading(false); });
-  }, [hour, h3Res]);
+  }, [hour, h3Res, regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const maxVal = useMemo(() => Math.max(1, ...hexData.map((h: any) => Number(h[metric] || 0))), [hexData, metric]);
   const totalPings = useMemo(() => hexData.reduce((s, h) => s + Number(h.PING_COUNT || 0), 0), [hexData]);

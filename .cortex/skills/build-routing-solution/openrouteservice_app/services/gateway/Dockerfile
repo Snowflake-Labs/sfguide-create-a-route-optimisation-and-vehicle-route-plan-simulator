@@ -4,4 +4,4 @@ RUN pip install --upgrade pip && \
 pip install flask requests polyline gunicorn
 
 COPY routing_service.py ./
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "300", "routing_service:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "360", "routing_service:app"]
