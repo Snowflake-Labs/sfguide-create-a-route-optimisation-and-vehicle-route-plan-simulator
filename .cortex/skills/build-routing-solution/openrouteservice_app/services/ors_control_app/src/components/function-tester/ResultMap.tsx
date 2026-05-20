@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, PathLayer, IconLayer, TextLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
@@ -8,47 +8,13 @@ import {
   extractGeoData, parseMatrixResult, parseOptimizationResult, travelTimeColor,
   parseIsochroneOrigin,
 } from './helpers';
+import { useFitMap } from '../../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 export function ResultMap({ result, fnName, regionCenter, executedSql }: { result: any; fnName: string; regionCenter: [number, number]; executedSql: string }) {
   const geo = useMemo(() => extractGeoData(result), [result]);
   const matrix = useMemo(() => (fnName === 'MATRIX' || fnName === 'MATRIX_TABULAR') ? parseMatrixResult(result) : null, [result, fnName]);
   const optimization = useMemo(() => fnName === 'OPTIMIZATION' ? parseOptimizationResult(result) : null, [result, fnName]);
-  const [viewState, setViewState] = useState({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 });
-
-  useEffect(() => {
-    if (optimization) {
-      const allPts: [number, number][] = [];
-      for (const v of optimization.vehicles) {
-        allPts.push(...v.path);
-        allPts.push(...v.stops.map(s => s.position));
-      }
-      if (optimization.depot) allPts.push(optimization.depot);
-      if (allPts.length > 0) {
-        const lons = allPts.map(p => p[0]);
-        const lats = allPts.map(p => p[1]);
-        const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-        const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-        const span = Math.max(maxLon - minLon, maxLat - minLat);
-        let zoom = 12;
-        if (span > 1) zoom = 8;
-        else if (span > 0.5) zoom = 9;
-        else if (span > 0.1) zoom = 11;
-        else if (span > 0.02) zoom = 13;
-        setViewState(prev => ({ ...prev, longitude: (minLon + maxLon) / 2, latitude: (minLat + maxLat) / 2, zoom }));
-      }
-      return;
-    }
-    if (matrix && matrix.sources.length > 0) {
-      const allPts = [...matrix.sources, ...matrix.destinations].filter(p => p.location);
-      if (allPts.length > 0) {
-        const lons = allPts.map((p: any) => p.location[0]);
-        const lats = allPts.map((p: any) => p.location[1]);
-        setViewState(prev => ({ ...prev, longitude: (Math.min(...lons) + Math.max(...lons)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 12 }));
-      }
-    } else if (geo.center) {
-      setViewState((prev) => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
-    }
-  }, [geo, matrix, optimization]);
 
   const geojsonLayer = useMemo(() => {
     if (!geo.geojson) return null;
@@ -240,6 +206,27 @@ export function ResultMap({ result, fnName, regionCenter, executedSql }: { resul
 
   const hasGeo = !!(geo.geojson || geo.points.length > 0 || matrix || optimization);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (optimization) {
+      for (const v of optimization.vehicles) {
+        for (const p of v.path) out.push([p[0], p[1]]);
+        for (const s of v.stops) out.push([s.position[0], s.position[1]]);
+      }
+      if (optimization.depot) out.push([optimization.depot[0], optimization.depot[1]]);
+    } else if (matrix) {
+      for (const s of matrix.sources) if (s.location) out.push([s.location[0], s.location[1]]);
+      for (const d of matrix.destinations) if (d.location) out.push([d.location[0], d.location[1]]);
+    } else {
+      if (geo.geojson) out.push(...coordsFromGeoJSON(geo.geojson));
+      for (const p of geo.points) out.push([p[0], p[1]]);
+      if (isoOrigin) out.push([isoOrigin[0], isoOrigin[1]]);
+    }
+    return out;
+  }, [optimization, matrix, geo, isoOrigin]);
+  const fallback = useMemo(() => ({ longitude: regionCenter[0], latitude: regionCenter[1], zoom: 12, pitch: 0, bearing: 0 }), [regionCenter]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   const getTooltip = ({ object, layer }: any) => {
     if (!object) return null;
     if (layer?.id === 'matrix-origins') return { text: object.name, style: { background: '#14141f', color: '#e8e8f0', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' } };
@@ -306,10 +293,10 @@ export function ResultMap({ result, fnName, regionCenter, executedSql }: { resul
           )}
         </div>
       )}
-      <div style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 450, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         <DeckGL
           viewState={viewState}
-          onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
+          onViewStateChange={onViewStateChange}
           controller={true}
           layers={layers}
           getTooltip={getTooltip}

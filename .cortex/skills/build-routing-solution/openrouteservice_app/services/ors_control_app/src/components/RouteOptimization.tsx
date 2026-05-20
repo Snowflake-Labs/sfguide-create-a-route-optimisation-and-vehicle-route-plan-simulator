@@ -1,10 +1,12 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, PathLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { useRegion } from '../hooks/useRegion';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 const RO_DB = 'FLEET_INTELLIGENCE';
 const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
@@ -48,28 +50,11 @@ export default function RouteOptimization() {
   const [geocoding, setGeocoding] = useState(false);
   const [showVehicles, setShowVehicles] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
-  const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = mapContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      if (width > 0 && height > 0) setMapDims({ width: Math.round(width), height: Math.round(height) });
-    });
-    ro.observe(el);
-    if (el.clientWidth > 0 && el.clientHeight > 0) setMapDims({ width: el.clientWidth, height: el.clientHeight });
-    return () => ro.disconnect();
-  }, []);
 
   useEffect(() => {
     const lng = Number(center.lng);
     const lat = Number(center.lat);
-    const z = Number(zoom);
-    if (Number.isFinite(lng) && Number.isFinite(lat) && Number.isFinite(z) && (lng !== 0 || lat !== 0)) {
-      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: z }));
+    if (Number.isFinite(lng) && Number.isFinite(lat) && (lng !== 0 || lat !== 0)) {
       setVehicles(prev => prev.map(v => ({ ...v, startLng: lng, startLat: lat, endLng: lng, endLat: lat })));
     }
     setCenterCoords(null);
@@ -93,7 +78,6 @@ export default function RouteOptimization() {
       const parsed = JSON.parse(raw);
       if (parsed.lat && parsed.lng) {
         setCenterCoords([parsed.lng, parsed.lat]);
-        setViewState(prev => ({ ...prev, longitude: parsed.lng, latitude: parsed.lat, zoom: 13 }));
         setVehicles(prev => prev.map(v => ({ ...v, startLng: parsed.lng, startLat: parsed.lat, endLng: parsed.lng, endLat: parsed.lat })));
       }
     } catch {}
@@ -240,6 +224,27 @@ export default function RouteOptimization() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (centerCoords) out.push([centerCoords[0], centerCoords[1]]);
+    for (const p of places) {
+      const lng = Number(p.LNG); const lat = Number(p.LAT);
+      if (Number.isFinite(lng) && Number.isFinite(lat)) out.push([lng, lat]);
+    }
+    if (catchmentGeoJson) out.push(...coordsFromGeoJSON(catchmentGeoJson));
+    for (const rp of routePaths) if (rp.geojson) out.push(...coordsFromGeoJSON(rp.geojson));
+    return out;
+  }, [centerCoords, places, catchmentGeoJson, routePaths]);
+
+  const fallback = useMemo(() => ({
+    longitude: Number(center.lng) || -122.4194,
+    latitude: Number(center.lat) || 37.7749,
+    zoom: Number(zoom) || 11,
+    pitch: 0, bearing: 0,
+  }), [center.lng, center.lat, zoom]);
+
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.NAME) return null;
     return { html: `<b>${object.NAME}</b><br/>${object.CATEGORY || ''}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
@@ -335,7 +340,7 @@ export default function RouteOptimization() {
 
       <div ref={mapContainerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving VRP...' : 'Loading...'}</div>}
-        {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
+        {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
       </div>
     </div>
   );

@@ -4,6 +4,8 @@ import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 const RC_DB = 'FLEET_INTELLIGENCE';
 const RC_SCHEMA = 'RETAIL_CATCHMENT';
@@ -85,7 +87,6 @@ export default function RetailCatchment() {
   const [showDensity, setShowDensity] = useState(true);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
   // Resolve every globalRegion against ORS_STATUS. Try REGION_NAME first, then
   // ORS_REGION_KEY — REGION_REGISTRY can hold a stale ORS_REGION_KEY (e.g.
@@ -126,9 +127,7 @@ export default function RetailCatchment() {
 
   // Initial map view follows the global region until the user picks one locally.
   useEffect(() => {
-    if (!selectedRegion && globalCenter.lng !== 0 && globalCenter.lat !== 0) {
-      setViewState(prev => ({ ...prev, longitude: globalCenter.lng, latitude: globalCenter.lat, zoom: globalZoom }));
-    }
+    /* viewState now driven by useFitMap below */
   }, [globalCenter.lng, globalCenter.lat, globalZoom, selectedRegion]);
 
   // When the local region selection changes: refresh available profiles, reset
@@ -157,9 +156,7 @@ export default function RetailCatchment() {
     }
 
     // Always recenter on the boundary centroid — even if 0 POIs come back.
-    if (region.center_lat && region.center_lon) {
-      setViewState(prev => ({ ...prev, longitude: region.center_lon, latitude: region.center_lat, zoom: region.zoom }));
-    }
+    /* viewState driven by useFitMap on data changes */
 
     setLoading(true);
     const useCached = region.region === 'SanFrancisco';
@@ -226,7 +223,6 @@ export default function RetailCatchment() {
 
     const lng = Number(poi.LNG);
     const lat = Number(poi.LAT);
-    setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: 13 }));
 
     const zones: any[] = [];
     for (let z = 1; z <= numZones; z++) {
@@ -294,6 +290,32 @@ export default function RetailCatchment() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (selectedStore && selectedStore.LNG != null && selectedStore.LAT != null) {
+      out.push([Number(selectedStore.LNG), Number(selectedStore.LAT)]);
+    }
+    for (const z of catchmentZones) {
+      if (z.geojson) out.push(...coordsFromGeoJSON(z.geojson));
+    }
+    for (const p of pois) {
+      if (p.LNG != null && p.LAT != null) out.push([Number(p.LNG), Number(p.LAT)]);
+    }
+    for (const c of competitors) {
+      if (c.LNG != null && c.LAT != null) out.push([Number(c.LNG), Number(c.LAT)]);
+    }
+    return out;
+  }, [selectedStore, catchmentZones, pois, competitors]);
+
+  const region = provisionedRegions.find(r => r.region === selectedRegion);
+  const fallback = useMemo(() => {
+    const lng = region?.center_lon ?? globalCenter.lng ?? -122.4194;
+    const lat = region?.center_lat ?? globalCenter.lat ?? 37.7749;
+    const z = region?.zoom ?? globalZoom ?? 11;
+    return { longitude: lng, latitude: lat, zoom: z, pitch: 0, bearing: 0 };
+  }, [region, globalCenter.lng, globalCenter.lat, globalZoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.NAME) return null;
     return { html: `<b>${object.NAME}</b><br/>${object.CATEGORY || ''}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
@@ -348,9 +370,9 @@ export default function RetailCatchment() {
         </table>
       </div>
 
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
         {catchmentZones.length > 0 && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 8, background: 'rgba(0,0,0,0.6)', borderRadius: 6, padding: '4px 8px' }}>
             {catchmentZones.map((z, i) => <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#fff' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${ZONE_COLORS[z.zoneIdx % ZONE_COLORS.length].join(',')})` }} />{z.minutes} min</span>)}

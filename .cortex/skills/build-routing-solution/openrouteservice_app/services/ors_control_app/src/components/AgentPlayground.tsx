@@ -9,6 +9,8 @@ import {
   poiColor, POI_DISPLAY_NAMES, extractAgentGeoData, stripToolCallJson,
   SAMPLE_PROMPTS, EMPTY_GEO,
 } from './agent-playground/helpers';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 injectCursorBlinkCss();
 
@@ -18,7 +20,15 @@ export default function AgentPlayground() {
   const [streaming, setStreaming] = useState(false);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const SF_FALLBACK = { longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 };
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (geoData.geojson) out.push(...coordsFromGeoJSON(geoData.geojson));
+    for (const p of geoData.points) if (p.position) out.push([p.position[0], p.position[1]]);
+    for (const p of geoData.poiPoints) if (p.position) out.push([p.position[0], p.position[1]]);
+    return out;
+  }, [geoData]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback: SF_FALLBACK });
   const streamingTextRef = useRef('');
 
   const clearConversation = useCallback(() => {
@@ -26,7 +36,6 @@ export default function AgentPlayground() {
     setInput('');
     setGeoData(EMPTY_GEO);
     streamingTextRef.current = '';
-    setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -126,7 +135,6 @@ export default function AgentPlayground() {
       if (toolResults.length) {
         const geo = extractAgentGeoData(toolResults);
         setGeoData(geo);
-        if (geo.center) setViewState(prev => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
       }
 
       setMessages(prev => {
@@ -336,8 +344,8 @@ export default function AgentPlayground() {
         </div>
 
         <div style={{ flex: 1, minWidth: 300 }}>
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-            <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+          <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+            <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
           </div>
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>

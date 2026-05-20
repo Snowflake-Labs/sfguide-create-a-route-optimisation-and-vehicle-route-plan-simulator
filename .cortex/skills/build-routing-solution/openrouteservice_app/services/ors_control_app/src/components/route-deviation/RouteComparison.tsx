@@ -6,6 +6,8 @@ import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import type { LngLat } from '../../shared/mapFit';
 
 export default function RouteComparison() {
   const { regionName, center, zoom } = useRegion();
@@ -15,17 +17,12 @@ export default function RouteComparison() {
   const [expectedPath, setExpectedPath] = useState<any[]>([]);
   const [routes, setRoutes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     sfQuery(`SELECT TRIP_ID, DRIVER_ID, TRIP_DATE, ROUND(DISTANCE_DEVIATION_PCT, 1) AS DEV_PCT, ORIGIN_NAME, DEST_NAME FROM TRIP_DEVIATION_ANALYSIS ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 100`)
       .then(r => { setRoutes(r); setLoading(false); });
   }, [regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const loadRoute = useCallback(async (tripId: string) => {
     setSelectedRoute(tripId);
@@ -35,12 +32,6 @@ export default function RouteComparison() {
     ]);
     setActualPath(actual);
     setExpectedPath(expected);
-    const allPts = [...actual, ...expected].filter((p: any) => p.LNG && p.LAT);
-    if (allPts.length) {
-      const lngs = allPts.map((p: any) => Number(p.LNG));
-      const lats = allPts.map((p: any) => Number(p.LAT));
-      setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 12 }));
-    }
   }, []);
 
   const selected = useMemo(() => routes.find(r => r.TRIP_ID === selectedRoute), [routes, selectedRoute]);
@@ -62,6 +53,15 @@ export default function RouteComparison() {
   }, [actualPath, expectedPath]);
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
+
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const p of actualPath) if (p.LNG != null && p.LAT != null) out.push([Number(p.LNG), Number(p.LAT)]);
+    for (const p of expectedPath) if (p.LNG != null && p.LAT != null) out.push([Number(p.LNG), Number(p.LAT)]);
+    return out;
+  }, [actualPath, expectedPath]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
 
   return (
     <div className="panel">
@@ -90,9 +90,9 @@ export default function RouteComparison() {
           ))}</tbody>
         </table>
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>
   );

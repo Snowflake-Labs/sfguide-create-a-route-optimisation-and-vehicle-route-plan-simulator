@@ -7,6 +7,8 @@ import { fmtDec } from '../../shared/format';
 import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 export default function DriverRoutes() {
   const { regionName, center, zoom } = useRegion();
@@ -20,17 +22,12 @@ export default function DriverRoutes() {
   const [aiLoading, setAiLoading] = useState(false);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     sfQuery(`SELECT DRIVER_ID, COUNT(*) AS TRIPS, ROUND(SUM(ROUTE_DISTANCE_METERS / 1000), 1) AS TOTAL_KM, ROUND(AVG(ROUTE_DURATION_SECS / 60), 1) AS AVG_DURATION, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY GROUP BY DRIVER_ID ORDER BY TRIPS DESC LIMIT 50`)
       .then(d => { setDrivers(d); setLoading(false); });
   }, [regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const loadRoutes = useCallback(async (driverId: string) => {
     setSelectedDriver(driverId);
@@ -39,11 +36,6 @@ export default function DriverRoutes() {
     setAiAnalysis('');
     const r = await sfQuery(`SELECT TRIP_ID, ST_X(ORIGIN) AS P_LNG, ST_Y(ORIGIN) AS P_LAT, ST_X(DESTINATION) AS D_LNG, ST_Y(DESTINATION) AS D_LAT, ROUND(ROUTE_DISTANCE_METERS / 1000, 2) AS TRIP_KM, ROUND(ROUTE_DURATION_SECS / 60, 1) AS TRIP_MIN, ORIGIN_ADDRESS, DESTINATION_ADDRESS, ST_ASGEOJSON(GEOMETRY)::STRING AS ROUTE_GEOJSON FROM TRIP_SUMMARY WHERE DRIVER_ID = '${driverId}' ORDER BY TRIP_START_TIME DESC LIMIT 50`);
     setRoutes(r);
-    if (r.length > 0) {
-      const lngs = r.filter((t: any) => t.P_LNG).map((t: any) => Number(t.P_LNG));
-      const lats = r.filter((t: any) => t.P_LAT).map((t: any) => Number(t.P_LAT));
-      if (lngs.length) setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 11 }));
-    }
   }, []);
 
   const loadTrip = useCallback(async (tripId: string) => {
@@ -51,7 +43,6 @@ export default function DriverRoutes() {
     setSliderIdx(0);
     const pts = await sfQuery(`SELECT LON, LAT, TO_VARCHAR(CURR_TIME, 'YYYY-MM-DD HH24:MI:SS') AS CURR_TIME, KMH, DRIVER_STATE, POINT_INDEX FROM DRIVER_LOCATIONS_V WHERE TRIP_ID = '${tripId}' ORDER BY POINT_INDEX`);
     setGpsPoints(pts);
-    if (pts.length > 0) setViewState(prev => ({ ...prev, longitude: Number(pts[0].LON), latitude: Number(pts[0].LAT), zoom: 13 }));
   }, []);
 
   const analyzeTrip = useCallback(async () => {
@@ -93,6 +84,26 @@ export default function DriverRoutes() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
   const speedData = useMemo(() => gpsPoints.map((p: any, i: number) => ({ idx: i, speed: Number(p.KMH || 0) })), [gpsPoints]);
+
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (gpsPoints.length) {
+      for (const p of gpsPoints) {
+        if (p.LON != null && p.LAT != null) out.push([Number(p.LON), Number(p.LAT)]);
+      }
+    } else {
+      for (const r of routes) {
+        if (r.P_LNG != null && r.P_LAT != null) out.push([Number(r.P_LNG), Number(r.P_LAT)]);
+        if (r.D_LNG != null && r.D_LAT != null) out.push([Number(r.D_LNG), Number(r.D_LAT)]);
+        if (r.ROUTE_GEOJSON) {
+          try { out.push(...coordsFromGeoJSON(JSON.parse(r.ROUTE_GEOJSON))); } catch { /* skip */ }
+        }
+      }
+    }
+    return out;
+  }, [gpsPoints, routes]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
 
   const sel = drivers.find((d: any) => d.DRIVER_ID === selectedDriver);
   const selTrip = routes.find((r: any) => r.TRIP_ID === selectedTrip);
@@ -166,9 +177,9 @@ export default function DriverRoutes() {
           {aiAnalysis && <div className="info-box" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{aiAnalysis}</div>}
         </div>
       )}
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
       </div>
       {speedData.length > 0 && (
         <div className="chart-card" style={{ marginTop: 12 }}>

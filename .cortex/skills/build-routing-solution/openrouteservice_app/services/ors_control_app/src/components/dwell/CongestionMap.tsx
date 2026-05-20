@@ -4,6 +4,9 @@ import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import type { LngLat } from '../../shared/mapFit';
+import { cellToLatLng } from 'h3-js';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -16,7 +19,6 @@ export default function CongestionMap() {
   const [hour, setHour] = useState(19);
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -27,10 +29,6 @@ export default function CongestionMap() {
       setLoading(false);
     });
   }, [hour, regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const maxCount = useMemo(() => Math.max(1, ...data.map((r: any) => Number(r.DWELL_COUNT || 0))), [data]);
   const basemap = useMemo(() => cartoBasemap(), []);
@@ -59,6 +57,21 @@ export default function CongestionMap() {
 
   const layers = useMemo(() => [basemap, hexLayer].filter(Boolean), [basemap, hexLayer]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const r of data) {
+      if (!r.H3_INDEX || typeof r.H3_INDEX !== 'string') continue;
+      try {
+        const [lat, lng] = cellToLatLng(r.H3_INDEX);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) out.push([lng, lat]);
+      } catch { /* skip */ }
+    }
+    return out;
+  }, [data]);
+
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback, pitch: 45 });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object || !object.H3_INDEX) return null;
     return {
@@ -77,9 +90,9 @@ export default function CongestionMap() {
         <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Hour of Day: <strong>{hour}:00</strong></label>
         <input type="range" min={0} max={23} value={hour} onChange={e => setHour(Number(e.target.value))} style={{ width: '100%' }} />
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
       <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden', marginTop: 8 }}>
         {COLOR_RANGE.map((c, i) => (

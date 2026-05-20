@@ -7,6 +7,8 @@ import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 export default function DeliveryDashboard() {
   const { regionName, center, zoom } = useRegion();
@@ -16,7 +18,6 @@ export default function DeliveryDashboard() {
   const [hourly, setHourly] = useState<any[]>([]);
   const [courierStats, setCourierStats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -28,18 +29,11 @@ export default function DeliveryDashboard() {
     ]).then(([k, t, h, c]) => {
       setKpis(k[0] || {});
       setTrips(t);
-      // Don't auto-pan to data centroid here - the boundary-derived center
-      // from useRegion is authoritative for the active region. See
-      // FleetOverview.tsx for the same pattern.
       setHourly(h);
       setCourierStats(c);
       setLoading(false);
     });
   }, [regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -76,6 +70,20 @@ export default function DeliveryDashboard() {
 
   const layers = useMemo(() => [basemap, routeLayer, pickupLayer].filter(Boolean), [basemap, routeLayer, pickupLayer]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const t of trips) {
+      if (t.P_LNG != null && t.P_LAT != null) out.push([Number(t.P_LNG), Number(t.P_LAT)]);
+      if (t.D_LNG != null && t.D_LAT != null) out.push([Number(t.D_LNG), Number(t.D_LAT)]);
+      if (t.ROUTE_GEOJSON) {
+        try { out.push(...coordsFromGeoJSON(JSON.parse(t.ROUTE_GEOJSON))); } catch { /* skip */ }
+      }
+    }
+    return out;
+  }, [trips]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   return (
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Delivery Dashboard</h2>
@@ -87,9 +95,9 @@ export default function DeliveryDashboard() {
         <MetricCard label="Avg Distance" value={loading ? '...' : `${fmtDec(kpis.AVG_DISTANCE_KM)} km`} />
         <MetricCard label="Completed" value={loading ? '...' : (kpis.COMPLETED ?? '—')} />
       </div>
-      <div style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginBottom: 12 }}>
+      <div ref={containerRef} style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginBottom: 12 }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         {hourly.length > 0 && (

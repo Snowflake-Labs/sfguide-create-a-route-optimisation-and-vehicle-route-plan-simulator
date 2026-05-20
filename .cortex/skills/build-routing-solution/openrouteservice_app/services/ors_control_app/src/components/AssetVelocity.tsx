@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 import {
   RO_DB, RO_SCHEMA,
   sfQuery, cartoBasemap, SEVERITY_COLOR,
@@ -22,31 +24,10 @@ export default function AssetVelocity() {
   const [routePaths, setRoutePaths] = useState<any[]>([]);
   const [vrpResult, setVrpResult] = useState<any>(null);
   const [sortBy, setSortBy] = useState<keyof Trailer>('COST_OF_IDLENESS_USD');
-  const [viewState, setViewState] = useState({ longitude: center.lng || -122.4194, latitude: center.lat || 37.7749, zoom: zoom || 11, pitch: 0, bearing: 0 });
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [orsProfile, setOrsProfile] = useState<string>('driving-car');
-  const [mapDims, setMapDims] = useState<{ width: number; height: number } | null>(null);
-  const mapContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const el = mapContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      if (width > 0 && height > 0) setMapDims({ width: Math.round(width), height: Math.round(height) });
-    });
-    ro.observe(el);
-    if (el.clientWidth > 0 && el.clientHeight > 0) setMapDims({ width: el.clientWidth, height: el.clientHeight });
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const lng = Number(center.lng);
-    const lat = Number(center.lat);
-    const z = Number(zoom);
-    if (Number.isFinite(lng) && Number.isFinite(lat) && Number.isFinite(z) && (lng !== 0 || lat !== 0)) {
-      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: z }));
-    }
     setRoutePaths([]);
     setVrpResult(null);
     setRationale(null);
@@ -142,12 +123,7 @@ export default function AssetVelocity() {
 
   const focusTrailer = useCallback((tr: Trailer) => {
     setSelectedVehicleId(tr.VEHICLE_ID);
-    const lng = Number(tr.LAST_LNG);
-    const lat = Number(tr.LAST_LAT);
-    if (Number.isFinite(lng) && Number.isFinite(lat)) {
-      setViewState(prev => ({ ...prev, longitude: lng, latitude: lat, zoom: 14 }));
-      mapContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
+    mapContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
   const generateRationale = useCallback(async (tr: Trailer) => {
@@ -267,6 +243,22 @@ export default function AssetVelocity() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const t of terminals) {
+      if (t.TERMINAL_LNG != null && t.TERMINAL_LAT != null) out.push([Number(t.TERMINAL_LNG), Number(t.TERMINAL_LAT)]);
+    }
+    for (const tr of trailers) {
+      if (tr.LAST_LNG != null && tr.LAST_LAT != null) out.push([Number(tr.LAST_LNG), Number(tr.LAST_LAT)]);
+    }
+    for (const rp of routePaths) {
+      if (rp.geojson) out.push(...coordsFromGeoJSON(rp.geojson));
+    }
+    return out;
+  }, [terminals, trailers, routePaths]);
+  const fallback = useMemo(() => ({ longitude: center.lng || -122.4194, latitude: center.lat || 37.7749, zoom: zoom || 11, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.VEHICLE_ID) {
@@ -337,7 +329,7 @@ export default function AssetVelocity() {
 
       <div ref={mapContainerRef} style={{ height: 420, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8', marginTop: 12 }}>
         {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving repositioning VRP...' : 'Loading...'}</div>}
-        {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
+        {mapDims && <DeckGL width={mapDims.width} height={mapDims.height} viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />}
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 11, color: 'var(--text-secondary)' }}>

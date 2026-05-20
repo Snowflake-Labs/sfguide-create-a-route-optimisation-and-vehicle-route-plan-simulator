@@ -3,23 +3,34 @@ import DeckGL from '@deck.gl/react';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import type { Layer } from '@deck.gl/core';
+import {
+  fitBoundsToData,
+  coordsSignature,
+  DEFAULT_PADDING,
+  type LngLat,
+  type Padding,
+  type ViewState,
+} from './mapFit';
+
+interface FitToOptions {
+  coords?: LngLat[] | null;
+  padding?: Padding | number;
+  minZoom?: number;
+  maxZoom?: number;
+}
 
 interface MapViewProps {
   layers?: Layer[];
-  initialViewState?: {
-    longitude: number;
-    latitude: number;
-    zoom: number;
-    pitch?: number;
-    bearing?: number;
-  };
+  initialViewState?: ViewState;
+  fitTo?: FitToOptions;
+  fallbackViewState?: ViewState;
   onClick?: (info: any) => void;
   onViewStateChange?: (viewState: any) => void;
   getTooltip?: (info: any) => any;
   children?: React.ReactNode;
 }
 
-const DEFAULT_VIEW = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
+const DEFAULT_VIEW: ViewState = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 const CARTO_TILES = '/api/tiles/{z}/{x}/{y}';
 
 function cartoBasemap() {
@@ -47,11 +58,26 @@ function isValidViewState(vs: any): boolean {
     Number.isFinite(vs.zoom);
 }
 
-export default function MapView({ layers = [], initialViewState, onClick, onViewStateChange, getTooltip, children }: MapViewProps) {
-  const [viewState, setViewState] = useState({ ...DEFAULT_VIEW, ...initialViewState });
+export default function MapView({
+  layers = [],
+  initialViewState,
+  fitTo,
+  fallbackViewState,
+  onClick,
+  onViewStateChange,
+  getTooltip,
+  children,
+}: MapViewProps) {
+  const [viewState, setViewState] = useState<ViewState>({
+    ...DEFAULT_VIEW,
+    ...(fallbackViewState || {}),
+    ...(initialViewState || {}),
+  });
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevInitRef = useRef(initialViewState);
+  const lastFitSigRef = useRef<string>('');
+  const lastDimsRef = useRef<string>('');
   const basemap = useMemo(() => cartoBasemap(), []);
 
   useEffect(() => {
@@ -79,6 +105,34 @@ export default function MapView({ layers = [], initialViewState, onClick, onView
     }, 500);
     return () => { ro.disconnect(); clearTimeout(fallbackTimer); };
   }, []);
+
+  const fitCoords = fitTo?.coords;
+  const fitPadding = fitTo?.padding;
+  const fitMinZoom = fitTo?.minZoom;
+  const fitMaxZoom = fitTo?.maxZoom;
+  const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
+
+  useEffect(() => {
+    if (!dims) return;
+    if (!fitTo || !fitCoords || fitCoords.length === 0) return;
+    const dimsKey = `${dims.width}x${dims.height}`;
+    if (lastFitSigRef.current === fitSig && lastDimsRef.current === dimsKey) return;
+
+    const next = fitBoundsToData({
+      width: dims.width,
+      height: dims.height,
+      coords: fitCoords,
+      padding: fitPadding ?? DEFAULT_PADDING,
+      minZoom: fitMinZoom,
+      maxZoom: fitMaxZoom,
+      fallback: fallbackViewState,
+    });
+    if (next && isValidViewState(next)) {
+      lastFitSigRef.current = fitSig;
+      lastDimsRef.current = dimsKey;
+      setViewState(prev => ({ ...prev, ...next }));
+    }
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fallbackViewState, fitTo]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||

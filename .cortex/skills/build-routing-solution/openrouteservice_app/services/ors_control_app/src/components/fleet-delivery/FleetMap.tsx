@@ -6,6 +6,8 @@ import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 export default function FleetMap() {
   const { regionName, center, zoom } = useRegion();
@@ -15,7 +17,6 @@ export default function FleetMap() {
   const [kpis, setKpis] = useState<any>({});
   const [couriers, setCouriers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -28,10 +29,6 @@ export default function FleetMap() {
       setLoading(false);
     });
   }, [regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const loadRoutes = useCallback(async (courierId: string) => {
     setSelectedCourier(courierId);
@@ -78,6 +75,26 @@ export default function FleetMap() {
 
   const layers = useMemo(() => [basemap, routeLayer, courierLayer].filter(Boolean), [basemap, routeLayer, courierLayer]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (routeGeo.length) {
+      for (const r of routeGeo) {
+        if (r.P_LNG != null && r.P_LAT != null) out.push([Number(r.P_LNG), Number(r.P_LAT)]);
+        if (r.D_LNG != null && r.D_LAT != null) out.push([Number(r.D_LNG), Number(r.D_LAT)]);
+        if (r.ROUTE_GEOJSON) {
+          try { out.push(...coordsFromGeoJSON(JSON.parse(r.ROUTE_GEOJSON))); } catch { /* skip */ }
+        }
+      }
+    } else {
+      for (const c of couriers) {
+        if (c.LNG != null && c.LAT != null) out.push([Number(c.LNG), Number(c.LAT)]);
+      }
+    }
+    return out;
+  }, [couriers, routeGeo]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange } = useFitMap(fitCoords, { fallback });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.COURIER_ID) return null;
     return {
@@ -110,9 +127,9 @@ export default function FleetMap() {
           </tbody>
         </table>
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>
   );
