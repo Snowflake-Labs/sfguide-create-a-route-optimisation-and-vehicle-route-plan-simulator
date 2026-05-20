@@ -309,6 +309,38 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 
 ## Geospatial Conventions
 
+### Prefer Boundary Polygons over Bounding Boxes
+
+Whenever a region's polygon is available — and it almost always is, because `OPENROUTESERVICE_APP.CORE.REGION_CATALOG.BOUNDARY` is baked for every provisioned region (Geofabrik poly, bbbike bbox, or fallback) — filter spatial data with the polygon, not the bbox. Bbox over-includes ocean, neighbouring states, and even neighbouring countries (e.g. a Germany bbox grabs Czechia, Switzerland, Austria, the North Sea).
+
+| Use case | Bbox (avoid) | Boundary (preferred) |
+|---|---|---|
+| Filter rows in a region | `LON BETWEEN ... AND LAT BETWEEN ...` | `ST_WITHIN(geog, rc.BOUNDARY)` |
+| Map recenter | midpoint of `MIN_LON/MAX_LON, MIN_LAT/MAX_LAT` | `BOUNDARY_CENTROID_LON/LAT` from `/api/regions` |
+| Region picker enrich | `REGION_ORS_MAP.MIN_LAT/MAX_LAT/...` | `REGION_CATALOG.BOUNDARY` joined via `LOOKUP_NAME` / `REGION_KEY` |
+| Live POI / address query | bbox SET vars at ingest | `JOIN REGION_CATALOG ON ST_WITHIN` at query time |
+
+Standard join pattern (use this verbatim across SQL and React queries):
+```sql
+JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  ON rc.BOUNDARY IS NOT NULL
+ AND (UPPER(rc.LOOKUP_NAME) = UPPER('<region>')
+      OR UPPER(rc.REGION_KEY) = UPPER('<region>'))
+WHERE ST_WITHIN(<your_geog_col>, rc.BOUNDARY)
+```
+
+In React components, prefer the resolved ORS key (the one that successfully answered `ORS_STATUS`) as the `<region>` literal in the join. Do NOT serialize `BOUNDARY_GEOJSON` into the query — it is large (multi-MB for country-sized polygons) and the join keeps the polygon server-side.
+
+Bbox is acceptable ONLY when:
+- The boundary doesn't yet exist (e.g. brand new user-added region not yet in `REGION_CATALOG`).
+- The downstream API requires bbox literals (Geofabrik PBF download URL builder, ORS provisioning input).
+- A `CLUSTER BY` expression is required (GEOGRAPHY isn't allowed in `CLUSTER BY`).
+- Performance probing where a cheap bbox prefilter is layered ahead of `ST_WITHIN` — but the `ST_WITHIN` MUST still be present as the authoritative filter.
+
+For SQL pipelines that pre-filter at ingest time, prefer
+`ST_WITHIN(geom, (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG WHERE UPPER(LOOKUP_NAME)=UPPER('<region>') OR UPPER(REGION_KEY)=UPPER('<region>') LIMIT 1))`
+over the legacy `SET BBOX_*` pattern when the polygon exists.
+
 ### GEOGRAPHY-First Schema Design
 - Store point locations as `GEOGRAPHY` columns (not separate FLOAT lat/lon).
 - Construct via `ST_MAKEPOINT(longitude, latitude)` — note: **longitude first**.

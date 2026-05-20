@@ -20,8 +20,20 @@ const PROFILE_LABELS: Record<string, string> = {
   'wheelchair': 'Wheelchair',
 };
 
+// POI categories used by the retail-catchment SQL pipeline. Kept in sync with
+// references/sql-pipeline.md Step 5b so that the live Overture path returns
+// the same kinds of stores as the cached RETAIL_POIS table.
+const POI_CATEGORIES = [
+  'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+  'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+  'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+  'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket',
+];
+const POI_CATEGORIES_SQL = POI_CATEGORIES.map(c => `'${c}'`).join(',');
+
 interface ProvisionedRegion {
-  region: string;
+  region: string;          // REGION_REGISTRY.REGION_NAME (used as REGION column value in cached tables)
+  ors_key: string;         // The key that ORS_STATUS / ISOCHRONES actually accept for this region
   display_name: string;
   profiles_loaded: string[];
   center_lat: number;
@@ -44,6 +56,18 @@ function cartoBasemap() {
 
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 
+// Standard boundary join pattern (see AGENTS.md "Prefer Boundary over Bbox").
+// Joins REGION_CATALOG via LOOKUP_NAME / REGION_KEY so spatial filtering
+// happens server-side against the polygon — no GeoJSON sent over the wire.
+function boundaryJoin(orsKey: string): string {
+  const k = orsKey.replace(/'/g, "''");
+  return `JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+            ON rc.BOUNDARY IS NOT NULL
+           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${k}')
+                OR UPPER(rc.REGION_KEY) = UPPER('${k}'))`;
+}
+const BOUNDARY_FILTER = `ST_WITHIN(p.GEOMETRY, rc.BOUNDARY)`;
+
 export default function RetailCatchment() {
   const { regions: globalRegions, center: globalCenter, zoom: globalZoom } = useRegion();
   const [provisionedRegions, setProvisionedRegions] = useState<ProvisionedRegion[]>([]);
@@ -57,35 +81,43 @@ export default function RetailCatchment() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [competitors, setCompetitors] = useState<any[]>([]);
   const [densityHexes, setDensityHexes] = useState<any[]>([]);
-  const [regionBbox, setRegionBbox] = useState<{ minLon: number; maxLon: number; minLat: number; maxLat: number } | null>(null);
   const [showCompetitors, setShowCompetitors] = useState(true);
   const [showDensity, setShowDensity] = useState(true);
   const [h3Res, setH3Res] = useState(7);
   const [loading, setLoading] = useState(true);
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
 
+  // Resolve every globalRegion against ORS_STATUS. Try REGION_NAME first, then
+  // ORS_REGION_KEY — REGION_REGISTRY can hold a stale ORS_REGION_KEY (e.g.
+  // 'California' for region 'UsCalifornia'), and the actual ORS service is
+  // named after REGION_NAME. The first key that returns service_ready=true
+  // with non-empty profiles is stored as ors_key for downstream calls.
   useEffect(() => {
     if (!globalRegions.length) return;
     setLoading(true);
-    const regionChecks = globalRegions.map(async (r, _idx) => {
-      const orsCall = `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${r.ORS_REGION_KEY || r.REGION_NAME}')) AS S`;
-      try {
-        const rows = await sfQuery(orsCall, 'OPENROUTESERVICE_APP', 'CORE');
-        const raw = rows?.[0]?.S;
-        if (!raw) return null;
-        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!data.service_ready) return null;
-        const profiles = Object.keys(data.profiles || {});
-        if (!profiles.length) return null;
-        return {
-          region: r.REGION_NAME,
-          display_name: r.DISPLAY_NAME || r.REGION_NAME,
-          profiles_loaded: profiles,
-          center_lat: Number(r.BOUNDARY_CENTROID_LAT ?? r.CENTER_LAT ?? 0) || 0,
-          center_lon: Number(r.BOUNDARY_CENTROID_LON ?? r.CENTER_LON ?? 0) || 0,
-          zoom: Number(r.ZOOM_LEVEL ?? 11),
-        } as ProvisionedRegion;
-      } catch { return null; }
+    const regionChecks = globalRegions.map(async r => {
+      const candidates = Array.from(new Set([r.REGION_NAME, r.ORS_REGION_KEY].filter(Boolean) as string[]));
+      for (const key of candidates) {
+        try {
+          const rows = await sfQuery(`SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE.ORS_STATUS('${key.replace(/'/g, "''")}')) AS S`, 'OPENROUTESERVICE_APP', 'CORE');
+          const raw = rows?.[0]?.S;
+          if (!raw) continue;
+          const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (!data?.service_ready) continue;
+          const profiles = Object.keys(data.profiles || {});
+          if (!profiles.length) continue;
+          return {
+            region: r.REGION_NAME,
+            ors_key: key,
+            display_name: r.DISPLAY_NAME || r.REGION_NAME,
+            profiles_loaded: profiles,
+            center_lat: Number(r.BOUNDARY_CENTROID_LAT ?? r.CENTER_LAT ?? 0) || 0,
+            center_lon: Number(r.BOUNDARY_CENTROID_LON ?? r.CENTER_LON ?? 0) || 0,
+            zoom: Number(r.ZOOM_LEVEL ?? 11),
+          } as ProvisionedRegion;
+        } catch { /* try next candidate */ }
+      }
+      return null;
     });
     Promise.all(regionChecks)
       .then(results => setProvisionedRegions(results.filter((r): r is ProvisionedRegion => r !== null)))
@@ -100,14 +132,16 @@ export default function RetailCatchment() {
   }, [globalCenter.lng, globalCenter.lat, globalZoom, selectedRegion]);
 
   // When the local region selection changes: refresh available profiles, reset
-  // travel mode if needed, recenter the map, and load POIs for that region.
+  // travel mode if needed, recenter the map onto the region's BOUNDARY centroid
+  // (authoritative — always on land, inside the polygon), and load POIs from
+  // either the cached pipeline tables (SanFrancisco) or live Overture
+  // polygon-clipped (every other region).
   useEffect(() => {
     setSelectedStore(null);
     setCatchmentZones([]);
     setCompetitors([]);
     setDensityHexes([]);
     setPois([]);
-    setRegionBbox(null);
 
     if (!selectedRegion) {
       setAvailableProfiles([]);
@@ -122,44 +156,73 @@ export default function RetailCatchment() {
       setTravelMode(region.profiles_loaded[0]);
     }
 
+    // Always recenter on the boundary centroid — even if 0 POIs come back.
     if (region.center_lat && region.center_lon) {
       setViewState(prev => ({ ...prev, longitude: region.center_lon, latitude: region.center_lat, zoom: region.zoom }));
     }
 
     setLoading(true);
-    sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${selectedRegion}' LIMIT 200`)
-      .then(r => {
-        setPois(r);
-        if (r.length > 0) {
-          const lngs = r.map((p: any) => Number(p.LNG));
-          const lats = r.map((p: any) => Number(p.LAT));
-          const avgLng = lngs.reduce((s: number, v: number) => s + v, 0) / lngs.length;
-          const avgLat = lats.reduce((s: number, v: number) => s + v, 0) / lats.length;
-          setRegionBbox({ minLon: Math.min(...lngs) - 0.1, maxLon: Math.max(...lngs) + 0.1, minLat: Math.min(...lats) - 0.08, maxLat: Math.max(...lats) + 0.08 });
-          setViewState(prev => ({ ...prev, longitude: avgLng, latitude: avgLat, zoom: 12 }));
-        }
-      })
+    const useCached = region.region === 'SanFrancisco';
+    const poiSql = useCached
+      // SF fast path: cached, indexed pipeline table. ST_WITHIN against the
+      // boundary is a safe over-filter (REGION column already constrains
+      // the result set, ST_WITHIN drops anything outside the polygon).
+      ? `SELECT p.POI_ID, p.POI_NAME AS NAME, p.BASIC_CATEGORY AS CATEGORY,
+                ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT
+         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
+           AND ${BOUNDARY_FILTER}
+         LIMIT 200`
+      // Live boundary path: any provisioned region. Polygon-clipped via
+      // REGION_CATALOG.BOUNDARY (no bbox, no GeoJSON over the wire).
+      : `SELECT p.ID AS POI_ID,
+                p.NAMES:primary::VARCHAR AS NAME,
+                p.BASIC_CATEGORY AS CATEGORY,
+                ST_X(p.GEOMETRY) AS LNG,
+                ST_Y(p.GEOMETRY) AS LAT
+         FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.GEOMETRY IS NOT NULL
+           AND p.BASIC_CATEGORY IN (${POI_CATEGORIES_SQL})
+           AND ${BOUNDARY_FILTER}
+         LIMIT 200`;
+
+    sfQuery(poiSql)
+      .then(r => setPois(r))
       .finally(() => setLoading(false));
   }, [selectedRegion, provisionedRegions]);
 
-  const fetchDensity = useCallback(async (_poi: any, res: number, bbox: { minLon: number; maxLon: number; minLat: number; maxLat: number } | null) => {
-    if (!selectedRegion) return;
-    const bboxFilter = bbox
-      ? `LONGITUDE BETWEEN ${bbox.minLon} AND ${bbox.maxLon} AND LATITUDE BETWEEN ${bbox.minLat} AND ${bbox.maxLat}`
-      : `REGION = '${selectedRegion}'`;
-    const density = await sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${selectedRegion}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`);
+  const fetchDensity = useCallback(async (region: ProvisionedRegion, res: number) => {
+    const sql = region.region === 'SanFrancisco'
+      ? `SELECT H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT
+         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
+           AND ${BOUNDARY_FILTER}
+         GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`
+      : `SELECT H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT
+         FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.GEOMETRY IS NOT NULL AND ${BOUNDARY_FILTER}
+         GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`;
+    const density = await sfQuery(sql);
     setDensityHexes(density);
-  }, [selectedRegion]);
+  }, []);
 
   useEffect(() => {
-    if (selectedStore && regionBbox) fetchDensity(selectedStore, h3Res, regionBbox);
-  }, [h3Res, fetchDensity, regionBbox]);
+    const region = provisionedRegions.find(r => r.region === selectedRegion);
+    if (selectedStore && region) fetchDensity(region, h3Res);
+  }, [h3Res, fetchDensity, selectedStore, selectedRegion, provisionedRegions]);
 
   const selectStore = useCallback(async (poi: any) => {
     setSelectedStore(poi);
     setCatchmentZones([]);
     setCompetitors([]);
     setDensityHexes([]);
+
+    const region = provisionedRegions.find(r => r.region === selectedRegion);
+    if (!region) return;
 
     const lng = Number(poi.LNG);
     const lat = Number(poi.LAT);
@@ -168,8 +231,9 @@ export default function RetailCatchment() {
     const zones: any[] = [];
     for (let z = 1; z <= numZones; z++) {
       const minutes = Math.round((maxMinutes / numZones) * z);
-      console.log('[RetailCatchment] calling ISOCHRONES', travelMode, lng, lat, minutes);
-      const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}::FLOAT, ${lat}::FLOAT, ${minutes}::INT, '${selectedRegion}'))`, 'OPENROUTESERVICE_APP', 'CORE');
+      const orsKey = region.ors_key.replace(/'/g, "''");
+      console.log('[RetailCatchment] calling ISOCHRONES', travelMode, lng, lat, minutes, orsKey);
+      const rows = await sfQuery(`SELECT GEOJSON AS GEO FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('${travelMode}', ${lng}::FLOAT, ${lat}::FLOAT, ${minutes}::INT, '${orsKey}'))`, 'OPENROUTESERVICE_APP', 'CORE');
       console.log('[RetailCatchment] ISOCHRONES rows:', rows.length, rows[0]);
       if (rows[0]?.GEO) {
         try { zones.push({ zoneIdx: z - 1, minutes, geojson: JSON.parse(rows[0].GEO) }); } catch {}
@@ -177,16 +241,35 @@ export default function RetailCatchment() {
     }
     setCatchmentZones(zones.reverse());
 
-    const bboxFilter = regionBbox
-      ? `LONGITUDE BETWEEN ${regionBbox.minLon} AND ${regionBbox.maxLon} AND LATITUDE BETWEEN ${regionBbox.minLat} AND ${regionBbox.maxLat}`
-      : `REGION = '${selectedRegion}'`;
-    const [comp, density] = await Promise.all([
-      sfQuery(`SELECT POI_ID, POI_NAME AS NAME, BASIC_CATEGORY AS CATEGORY, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM RETAIL_POIS WHERE REGION = '${selectedRegion}' AND POI_ID != '${poi.POI_ID}' AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000}) LIMIT 50`),
-      sfQuery(`SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, ${h3Res}) AS H3_INDEX, COUNT(*) AS CNT FROM REGIONAL_ADDRESSES WHERE REGION = '${selectedRegion}' AND ${bboxFilter} GROUP BY 1 HAVING CNT >= 2 LIMIT 5000`),
+    const poiId = String(poi.POI_ID).replace(/'/g, "''");
+    const compSql = region.region === 'SanFrancisco'
+      ? `SELECT p.POI_ID, p.POI_NAME AS NAME, p.BASIC_CATEGORY AS CATEGORY,
+                ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT
+         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
+           AND ${BOUNDARY_FILTER}
+           AND p.POI_ID != '${poiId}'
+           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000})
+         LIMIT 50`
+      : `SELECT p.ID AS POI_ID, p.NAMES:primary::VARCHAR AS NAME,
+                p.BASIC_CATEGORY AS CATEGORY,
+                ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT
+         FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+         ${boundaryJoin(region.ors_key)}
+         WHERE p.GEOMETRY IS NOT NULL
+           AND p.BASIC_CATEGORY IN (${POI_CATEGORIES_SQL})
+           AND ${BOUNDARY_FILTER}
+           AND p.ID != '${poiId}'
+           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${lng}, ${lat}), ${maxMinutes * 1000})
+         LIMIT 50`;
+
+    const [comp] = await Promise.all([
+      sfQuery(compSql),
+      fetchDensity(region, h3Res),
     ]);
     setCompetitors(comp);
-    setDensityHexes(density);
-  }, [selectedRegion, travelMode, numZones, maxMinutes, h3Res, regionBbox]);
+  }, [selectedRegion, provisionedRegions, travelMode, numZones, maxMinutes, h3Res, fetchDensity]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
