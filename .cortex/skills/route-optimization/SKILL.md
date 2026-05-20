@@ -343,6 +343,7 @@ The React Demo Dashboard page queries these exact tables and columns. If the pip
 | PA | VARCHAR | RouteOptimization (POI category filter) |
 | PB | VARCHAR | RouteOptimization |
 | PC | VARCHAR | RouteOptimization |
+| SOURCE_TABLE | VARCHAR | RouteOptimization (override table FQN; when set, loads jobs from this table instead of PLACES) |
 
 ### ORS Functions (cross-app)
 | Function | Used By |

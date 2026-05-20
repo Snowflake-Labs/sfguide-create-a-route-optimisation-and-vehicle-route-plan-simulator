@@ -99,3 +99,48 @@ For each custom industry, ask:
 | `IND` | "Keywords to find suppliers/distributors?" |
 | `CTYPE` | "What types of businesses receive these products?" |
 | `STYPE` | "What delivery capabilities are needed per product type?" |
+| `SOURCE_TABLE` | "Should jobs come from a custom table instead of PLACES? If so, provide the FQN." |
+
+## Override Tables (SOURCE_TABLE)
+
+For industries where generic Overture POIs aren't appropriate (e.g., SEN Transport needs student home addresses, not schools), create a custom override table and set `SOURCE_TABLE` in LOOKUP.
+
+### Required Schema for Override Tables
+
+| Column | Type | Required | Description |
+|--------|------|----------|-------------|
+| REGION | STRING | Yes | Region identifier (must match LOOKUP.REGION) |
+| NAME | STRING | Yes | Display name for the job location |
+| CATEGORY | STRING | Yes | Category label (e.g., 'student_pickup') |
+| LNG | FLOAT | Yes | Longitude |
+| LAT | FLOAT | Yes | Latitude |
+| ADDRESS | VARIANT | No | Structured address object from Overture |
+| DISPLAY_ADDRESS | STRING | No | Pre-formatted display address string |
+
+### Example: SEN Transport Override
+
+```sql
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS AS
+SELECT
+    'SanFrancisco' AS REGION,
+    'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()) AS NAME,
+    'student_pickup' AS CATEGORY,
+    ST_X(GEOMETRY) AS LNG,
+    ST_Y(GEOMETRY) AS LAT,
+    ADDRESS,
+    ADDRESS:freeform::VARCHAR || ', ' || COALESCE(ADDRESS:locality::VARCHAR, 'San Francisco') AS DISPLAY_ADDRESS
+FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+WHERE REGION = 'SanFrancisco'
+  AND ADDRESS:freeform IS NOT NULL
+  AND ADDRESS:locality::VARCHAR IS NOT NULL
+  AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits')
+ORDER BY RANDOM()
+LIMIT 60;
+```
+
+Then set in LOOKUP:
+```sql
+UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+SET SOURCE_TABLE = 'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS'
+WHERE INDUSTRY = 'SEN Transport';
+```

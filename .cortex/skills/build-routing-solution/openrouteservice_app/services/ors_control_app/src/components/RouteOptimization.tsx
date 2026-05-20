@@ -146,15 +146,26 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords || !selectedIndustry) return;
     setLoading(true);
-    const placesQuery = `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT, p.ADDRESS 
-         FROM PLACES p, LOOKUP l 
-         WHERE p.REGION = '${regionName}' 
-           AND l.REGION = '${regionName}'
-           AND l.INDUSTRY = '${selectedIndustry}'
-           AND ARRAY_CONTAINS(p.CATEGORY::VARIANT, l.CTYPE)
-           AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})
-         ORDER BY RANDOM()
-         LIMIT 200`;
+    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
+    const sourceTable = lookupRows?.[0]?.SOURCE_TABLE || null;
+    let placesQuery: string;
+    if (sourceTable) {
+      placesQuery = `SELECT NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS
+           FROM ${sourceTable}
+           WHERE REGION = '${regionName}'
+           ORDER BY RANDOM()
+           LIMIT 200`;
+    } else {
+      placesQuery = `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT, p.ADDRESS 
+           FROM PLACES p, LOOKUP l 
+           WHERE p.REGION = '${regionName}' 
+             AND l.REGION = '${regionName}'
+             AND l.INDUSTRY = '${selectedIndustry}'
+             AND ARRAY_CONTAINS(p.CATEGORY::VARIANT, l.CTYPE)
+             AND ST_DWITHIN(p.GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000})
+           ORDER BY RANDOM()
+           LIMIT 200`;
+    }
     const [p, j] = await Promise.all([
       sfQuery(placesQuery),
       sfQuery(`SELECT ID, SLOT_START, SLOT_END, SKILLS, PRODUCT, INDUSTRY, STATUS FROM JOB_TEMPLATE WHERE REGION = '${regionName}' AND STATUS = 'active' AND INDUSTRY = '${selectedIndustry}' LIMIT 30`),
@@ -309,10 +320,12 @@ export default function RouteOptimization() {
               const place = places[jobIdx];
               const jt = jobTemplates[jobIdx % (jobTemplates.length || 1)];
               if (place) {
-                let addr = '';
-                try { if (place.ADDRESS) { const a = typeof place.ADDRESS === 'string' ? JSON.parse(place.ADDRESS) : place.ADDRESS; addr = a?.freeform || ''; if (a?.locality) addr += `, ${a.locality}`; } } catch {}
+                let addr = place.DISPLAY_ADDRESS || '';
+                if (!addr) { try { if (place.ADDRESS) { const a = typeof place.ADDRESS === 'string' ? JSON.parse(place.ADDRESS) : place.ADDRESS; addr = a?.freeform || ''; if (a?.locality) addr += `, ${a.locality}`; } } catch {} }
                 const skillsStr = jt?.skills?.length ? jt.skills.map((n: number) => skillLabels[n] || `Skill ${n}`).join(', ') : '';
-                assignments.push({ jobIdx, vehicleIdx: vIdx, placeName: place.NAME || '', category: place.CATEGORY || '', lng: Number(place.LNG), lat: Number(place.LAT), arrival: step.arrival, address: addr, timeWindow: jt ? `${jt.slotStart} - ${jt.slotEnd}` : '', skills: skillsStr, sequence: seq, totalStops: jobSteps.length });
+                const isOverride = place.CATEGORY === 'student_pickup';
+                const displayName = isOverride ? (addr || place.NAME || '') : (place.NAME || '');
+                assignments.push({ jobIdx, vehicleIdx: vIdx, placeName: displayName, category: isOverride ? 'Student Pickup' : (place.CATEGORY || ''), lng: Number(place.LNG), lat: Number(place.LAT), arrival: step.arrival, address: isOverride ? '' : addr, timeWindow: jt ? `${jt.slotStart} - ${jt.slotEnd}` : '', skills: skillsStr, sequence: seq, totalStops: jobSteps.length });
               }
             }
           }
@@ -412,11 +425,14 @@ export default function RouteOptimization() {
     const key = `${Number(object.LNG).toFixed(6)},${Number(object.LAT).toFixed(6)}`;
     const assignment = assignmentMap.get(key);
     const isUnassigned = unassignedCoords.has(key);
-    let addr = '';
-    try { if (object.ADDRESS) { const a = typeof object.ADDRESS === 'string' ? JSON.parse(object.ADDRESS) : object.ADDRESS; addr = a?.freeform || ''; if (a?.locality) addr += `, ${a.locality}`; } } catch {}
-    let html = `<div style="margin-bottom:4px"><b style="font-size:13px">${object.NAME}</b></div>`;
-    html += `<div style="opacity:0.7;margin-bottom:2px">${object.CATEGORY || ''}</div>`;
-    if (addr) html += `<div style="opacity:0.8;margin-bottom:4px">\u{1F4CD} ${addr}</div>`;
+    let addr = object.DISPLAY_ADDRESS || '';
+    if (!addr) { try { if (object.ADDRESS) { const a = typeof object.ADDRESS === 'string' ? JSON.parse(object.ADDRESS) : object.ADDRESS; addr = a?.freeform || ''; if (a?.locality) addr += `, ${a.locality}`; } } catch {} }
+    const isOverride = object.CATEGORY === 'student_pickup';
+    const displayName = isOverride ? (addr || object.NAME) : object.NAME;
+    const displayCategory = isOverride ? 'Student Pickup' : (object.CATEGORY || '');
+    let html = `<div style="margin-bottom:4px"><b style="font-size:13px">${displayName}</b></div>`;
+    html += `<div style="opacity:0.7;margin-bottom:2px">${displayCategory}</div>`;
+    if (!isOverride && addr) html += `<div style="opacity:0.8;margin-bottom:4px">\u{1F4CD} ${addr}</div>`;
     if (isUnassigned) {
       const idx = places.findIndex((p: any) => `${Number(p.LNG).toFixed(6)},${Number(p.LAT).toFixed(6)}` === key);
       const jt = jobTemplates[idx % (jobTemplates.length || 1)];

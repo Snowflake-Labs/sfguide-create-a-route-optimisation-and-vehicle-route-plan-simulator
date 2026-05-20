@@ -173,40 +173,79 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     IND ARRAY,
     IND2 ARRAY,
     CTYPE ARRAY,
-    STYPE ARRAY
+    STYPE ARRAY,
+    SOURCE_TABLE STRING DEFAULT NULL
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE)
 SELECT $REGION_NAME, 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
        ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
        ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
        ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
-       ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge')
+       ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge'),
+       NULL
 UNION ALL
 SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
        ARRAY_CONSTRUCT('food vegatables meat vegatable'),
        ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
        ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
-       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery')
+       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
+       NULL
 UNION ALL
 SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
        ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
        ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
        ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
-       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery')
+       ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
+       NULL
 UNION ALL
 SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
        ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
        ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
-       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity')
+       ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'),
+       NULL
 UNION ALL
 SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
        ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
        ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
-       ARRAY_CONSTRUCT('childcare', 'community_center', 'nursery', 'day_care_center', 'church', 'library'),
-       ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus');
+       ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school'),
+       ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus'),
+       'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS';
+
+--------------------------------------------------------------------
+-- SEN_STUDENTS (override table for SEN Transport industry)
+-- Synthetic student pickup addresses from real SF street locations
+--------------------------------------------------------------------
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (
+    REGION STRING,
+    NAME STRING,
+    CATEGORY STRING DEFAULT 'student_pickup',
+    LNG FLOAT,
+    LAT FLOAT,
+    ADDRESS VARIANT,
+    DISPLAY_ADDRESS STRING
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (REGION, NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS)
+SELECT
+    $REGION_NAME,
+    'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()),
+    'student_pickup',
+    ST_X(GEOMETRY),
+    ST_Y(GEOMETRY),
+    ADDRESS,
+    ADDRESS:freeform::VARCHAR || ', ' || ADDRESS:locality::VARCHAR
+FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+WHERE REGION = $REGION_NAME
+  AND ADDRESS:freeform IS NOT NULL
+  AND ADDRESS:locality::VARCHAR IS NOT NULL
+  AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits','home_health_care','professional_services')
+  AND ST_DWITHIN(GEOMETRY, (SELECT ST_COLLECT(GEOMETRY) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE REGION = $REGION_NAME AND CATEGORY = 'school' LIMIT 1), 15000)
+ORDER BY RANDOM()
+LIMIT 60;
 
 --------------------------------------------------------------------
 -- DROP STAGING TABLE
