@@ -146,6 +146,30 @@ Mount order matters for `routes/static.ts` — its `*` SPA fallback must be last
 7. **Adding a route?** Bump `APP_VERSION` in the build pipeline so the running
    container reports the new endpoints in `/api/status`.
 
+## Long-lived SSE streams (Synthetic Data Studio)
+
+The Studio viewer subscribes to `/api/studio/jobs/:id/stream` (SSE). On long
+generation runs (e.g. Germany HGV) the browser-to-service connection can be
+recycled by the SPCS public ingress / intermediate proxies even while the job
+is still progressing server-side. The system is designed to be reconnect-safe:
+
+- Server emits `: heartbeat` every **5s** (well under typical 30-60s ingress
+  idle timeouts) — see `server/studio/routes.ts`.
+- Server holds per-job event buffers and replays them with `_replay:true` on
+  reconnect; the client filters those out so the UI does not double-log.
+- Node socket timeouts on the SSE response are fully disabled
+  (`req.setTimeout(0)` / `res.setTimeout(0)`).
+- `server.keepAliveTimeout` is raised to 120s and `server.requestTimeout = 0`
+  so non-SSE traffic is also not killed prematurely.
+- The client (`useStudioStream.ts`) suppresses the very first quick reconnect
+  from the visible viewer log (still surfaced via `console.warn`); it only
+  shows "Connection lost, retrying..." from attempt 2 onward, with up to 20
+  retries / 30s exponential backoff cap.
+
+If the viewer reports `Connection lost after 20 retries` the job may still be
+running — fetch `/api/studio/jobs/:id/logs` or query
+`FLEET_INTELLIGENCE.CORE.GENERATION_JOBS` to confirm status.
+
 ---
 
 ## Related references

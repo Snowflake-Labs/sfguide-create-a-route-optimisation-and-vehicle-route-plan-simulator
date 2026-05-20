@@ -309,6 +309,9 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    // Disable Node's default socket timeout for this long-lived SSE response.
+    req.setTimeout(0);
+    res.setTimeout(0);
     res.flushHeaders();
 
     const send = (event: string, data: any) => {
@@ -328,11 +331,15 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
       return res.end();
     }
 
+    // 5s heartbeat keeps the SSE stream warm under SPCS ingress / proxy idle
+    // timeouts. Long HGV runs with quiet windows during route-failure backoff
+    // were tripping ~15-30s idle timeouts; 5s is well under typical thresholds
+    // and the payload (`: heartbeat\n\n`) is negligible.
     const heartbeat = setInterval(() => {
       try { res.write(': heartbeat\n\n'); } catch (e: any) {
         log('DEBUG', 'Studio', `Heartbeat write failed (client likely disconnected)`);
       }
-    }, 15000);
+    }, 5000);
 
     const unsub = subscribeJob(jobId, send);
     req.on('close', () => {
