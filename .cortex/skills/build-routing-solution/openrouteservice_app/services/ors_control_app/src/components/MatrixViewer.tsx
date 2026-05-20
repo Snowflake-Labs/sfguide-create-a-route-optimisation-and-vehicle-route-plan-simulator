@@ -10,6 +10,9 @@ import {
   cartoBasemap, formatNumber, formatBytes,
   COLORS, rgb, lerpColor, rawValue, unitSuffix, fmtLegend,
 } from './matrix-viewer/helpers';
+import { getOdPair, getHexLatLon } from '../api/matrix';
+
+type ViewerMode = 'area' | 'pair';
 
 export default function MatrixViewer() {
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
@@ -33,6 +36,13 @@ export default function MatrixViewer() {
   const [scaleMode, setScaleMode] = useState<ScaleMode>('auto');
   const [timeUnit, setTimeUnit] = useState<TimeUnit>('min');
   const [fixedMax, setFixedMax] = useState(30);
+
+  const [mode, setMode] = useState<ViewerMode>('area');
+  const [destHex, setDestHex] = useState('');
+  const [destLat, setDestLat] = useState(0);
+  const [destLon, setDestLon] = useState(0);
+  const [pairResult, setPairResult] = useState<{ secs: number; meters: number } | null>(null);
+  const [pairMsg, setPairMsg] = useState('');
 
   useEffect(() => {
     fetch('/api/matrix/viewer-inventory')
@@ -81,6 +91,12 @@ export default function MatrixViewer() {
     inventory.find(t => t.region === selRegion && t.profile === selProfile && t.resolution === selRes) || null,
     [inventory, selRegion, selProfile, selRes]
   );
+
+  useEffect(() => {
+    setDestHex('');
+    setPairResult(null);
+    setPairMsg('');
+  }, [mode, selRegion, selProfile, selRes]);
 
   const fetchReachability = useCallback(async (tableName: string, origin: string, maxTimeSecs?: number) => {
     abortRef.current?.abort();
@@ -156,31 +172,85 @@ export default function MatrixViewer() {
   const handleHexClick = useCallback(async (info: any) => {
     const hexId = info?.object?.hex_id;
     if (!hexId || !activeTable) return;
-    if (hexId === originHex) return;
+
+    if (mode === 'area') {
+      if (hexId === originHex) return;
+      if (!originSet.has(hexId)) {
+        setNotOriginMsg(`${hexId} is a destination only — no origin data available. Click a gray hexagon instead.`);
+        setTimeout(() => setNotOriginMsg(''), 3000);
+        return;
+      }
+      setNotOriginMsg('');
+      setLoading(true);
+      setLoadingMsg('Loading reachability...');
+      try {
+        const reachData = await fetchReachability(activeTable, hexId);
+        const dests = parseDestinations(reachData);
+        setOriginHex(hexId);
+        setOriginLat(Number(reachData.origin_lat || 0));
+        setOriginLon(Number(reachData.origin_lon || 0));
+        setDestinations(dests);
+        const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
+        setDriveTimeLimit(Math.ceil(maxVisible / 60) || sliderMax);
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {}
+      } finally {
+        setLoading(false);
+        setLoadingMsg('');
+      }
+      return;
+    }
+
+    // pair mode
     if (!originSet.has(hexId)) {
       setNotOriginMsg(`${hexId} is a destination only — no origin data available. Click a gray hexagon instead.`);
       setTimeout(() => setNotOriginMsg(''), 3000);
       return;
     }
     setNotOriginMsg('');
+
+    if (!originHex || (originHex && destHex)) {
+      // first click, or restart after a complete pair
+      setLoading(true);
+      setLoadingMsg('Loading origin...');
+      try {
+        const ll = await getHexLatLon(hexId);
+        setOriginHex(hexId);
+        setOriginLat(ll.lat);
+        setOriginLon(ll.lon);
+        setDestHex('');
+        setPairResult(null);
+        setPairMsg('Click a second hexagon to measure travel time + distance.');
+      } finally {
+        setLoading(false);
+        setLoadingMsg('');
+      }
+      return;
+    }
+
+    // second click → fetch OD pair
     setLoading(true);
-    setLoadingMsg('Loading reachability...');
+    setLoadingMsg('Loading travel time...');
     try {
-      const reachData = await fetchReachability(activeTable, hexId);
-      const dests = parseDestinations(reachData);
-      setOriginHex(hexId);
-      setOriginLat(Number(reachData.origin_lat || 0));
-      setOriginLon(Number(reachData.origin_lon || 0));
-      setDestinations(dests);
-      const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
-      setDriveTimeLimit(Math.ceil(maxVisible / 60) || sliderMax);
+      const data = await getOdPair(activeTable, originHex, hexId);
+      if (!data.found) {
+        setPairMsg('No matrix entry for this OD pair (matrix may have been built with a max-time cutoff).');
+        return;
+      }
+      setDestHex(hexId);
+      setDestLat(Number(data.dest_lat || 0));
+      setDestLon(Number(data.dest_lon || 0));
+      if (data.origin_lat) setOriginLat(Number(data.origin_lat));
+      if (data.origin_lon) setOriginLon(Number(data.origin_lon));
+      setPairResult({ secs: Number(data.travel_time_secs || 0), meters: Number(data.distance_meters || 0) });
+      setPairMsg('');
     } catch (e: any) {
-      if (e.name !== 'AbortError') {}
+      setPairMsg(`Error: ${e.message || e}`);
     } finally {
       setLoading(false);
       setLoadingMsg('');
     }
-  }, [activeTable, originHex, fetchReachability, sliderMax, originSet]);
+  }, [mode, activeTable, originHex, destHex, fetchReachability, sliderMax, originSet]);
 
   const handleSliderChange = useCallback((mins: number) => {
     setDriveTimeLimit(mins);
@@ -235,6 +305,7 @@ export default function MatrixViewer() {
   }, [allHexes, reachSet, originHex]);
 
   const reachLayer = useMemo(() => {
+    if (mode !== 'area') return null;
     if (destinations.length === 0) return null;
     return new H3HexagonLayer({
       id: 'hex-reach',
@@ -253,7 +324,61 @@ export default function MatrixViewer() {
       opacity: 0.85,
       updateTriggers: { getFillColor: [destinations, gradientMetric, timeUnit, scaleMax] },
     });
-  }, [destinations, gradientMetric, timeUnit, scaleMax]);
+  }, [mode, destinations, gradientMetric, timeUnit, scaleMax]);
+
+  const bgLayerPair = useMemo(() => {
+    if (mode !== 'pair') return null;
+    if (allHexes.length === 0) return null;
+    const data = allHexes
+      .filter(h => h !== originHex && h !== destHex)
+      .map(h => ({ hex_id: h }));
+    if (data.length === 0) return null;
+    return new H3HexagonLayer({
+      id: 'hex-bg-pair',
+      data,
+      pickable: true,
+      filled: true,
+      extruded: false,
+      getHexagon: (d: any) => d.hex_id,
+      getFillColor: [160, 160, 175, 60] as [number, number, number, number],
+      opacity: 0.6,
+      updateTriggers: { data: [originHex, destHex] },
+    });
+  }, [mode, allHexes, originHex, destHex]);
+
+  const destHaloLayer = useMemo(() => {
+    if (mode !== 'pair' || !destHex) return null;
+    return new ScatterplotLayer({
+      id: 'dest-halo',
+      data: [{ lat: destLat, lon: destLon }],
+      pickable: false,
+      getPosition: (d: any) => [d.lon, d.lat],
+      getFillColor: [245, 158, 11, 50],
+      getRadius: 160,
+      radiusMinPixels: 18,
+      radiusMaxPixels: 60,
+      stroked: false,
+      filled: true,
+    });
+  }, [mode, destHex, destLat, destLon]);
+
+  const destLayer = useMemo(() => {
+    if (mode !== 'pair' || !destHex) return null;
+    return new ScatterplotLayer({
+      id: 'dest-marker',
+      data: [{ lat: destLat, lon: destLon }],
+      pickable: false,
+      getPosition: (d: any) => [d.lon, d.lat],
+      getFillColor: [255, 255, 255, 220],
+      getLineColor: [245, 158, 11, 255],
+      getRadius: 80,
+      radiusMinPixels: 8,
+      radiusMaxPixels: 30,
+      lineWidthMinPixels: 3,
+      stroked: true,
+      filled: true,
+    });
+  }, [mode, destHex, destLat, destLon]);
 
   const originHaloLayer = useMemo(() => {
     if (!originHex) return null;
@@ -290,13 +415,15 @@ export default function MatrixViewer() {
   }, [originHex, originLat, originLon]);
 
   const layers = useMemo(
-    () => [basemap, bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean),
-    [basemap, bgLayer, reachLayer, originHaloLayer, originLayer]
+    () => mode === 'area'
+      ? [basemap, bgLayer, reachLayer, originHaloLayer, originLayer].filter(Boolean)
+      : [basemap, bgLayerPair, originHaloLayer, originLayer, destHaloLayer, destLayer].filter(Boolean),
+    [mode, basemap, bgLayer, bgLayerPair, reachLayer, originHaloLayer, originLayer, destHaloLayer, destLayer]
   );
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
-    if (object.travel_time_secs !== undefined) {
+    if (mode === 'area' && object.travel_time_secs !== undefined) {
       const timeFmt = timeUnit === 'min'
         ? `${(object.travel_time_secs / 60).toFixed(1)} min`
         : `${(object.travel_time_secs / 3600).toFixed(2)} hr`;
@@ -309,13 +436,18 @@ export default function MatrixViewer() {
       };
     }
     if (object.hex_id) {
+      const hint = mode === 'area'
+        ? 'Click to set as origin'
+        : (!originHex || (originHex && destHex))
+          ? 'Click to set as origin'
+          : 'Click to set as destination';
       return {
-        html: `<b>${object.hex_id}</b><br/><i>Click to set as origin</i>`,
+        html: `<b>${object.hex_id}</b><br/><i>${hint}</i>`,
         style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
       };
     }
     return null;
-  }, [gradientMetric, timeUnit]);
+  }, [mode, gradientMetric, timeUnit, originHex, destHex]);
 
   const localMaxMin = useMemo(() => {
     if (destinations.length === 0) return 0;
@@ -381,13 +513,40 @@ export default function MatrixViewer() {
       {originHex && (
         <>
           <div style={{ marginBottom: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+              <div className="ctrl-group">
+                <span className="ctrl-label">Mode</span>
+                <SegControl value={mode} onChange={setMode} options={[{ value: 'area', label: 'Point\u2192Area' }, { value: 'pair', label: 'Point\u2192Point' }]} />
+              </div>
               <span style={{ fontSize: 13, fontWeight: 600 }}>Origin: {originHex}</span>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                {destinations.length.toLocaleString()} reachable
-                {allHexes.length > 0 && ` / ${allHexes.length.toLocaleString()} total`}
-              </span>
+              {mode === 'area' && (
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {destinations.length.toLocaleString()} reachable
+                  {allHexes.length > 0 && ` / ${allHexes.length.toLocaleString()} total`}
+                </span>
+              )}
+              {mode === 'pair' && destHex && (
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#f59e0b' }}>Destination: {destHex}</span>
+              )}
             </div>
+
+            {mode === 'pair' && (
+              <div style={{ marginBottom: 8, padding: '8px 12px', background: 'rgba(41,181,232,0.08)', border: '1px solid rgba(41,181,232,0.3)', borderRadius: 6 }}>
+                {pairResult ? (
+                  <div style={{ display: 'flex', gap: 24, fontSize: 13 }}>
+                    <span><b>Travel time:</b> {(pairResult.secs / 60).toFixed(1)} min</span>
+                    <span><b>Distance:</b> {(pairResult.meters / 1000).toFixed(2)} km</span>
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {pairMsg || 'Click any hexagon to set as destination.'}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {mode === 'area' && (
+              <>
             <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               Max travel time: <strong>{driveTimeLimit} min</strong>
               {localMaxMin > 0 && localMaxMin < sliderMax && (
@@ -458,6 +617,8 @@ export default function MatrixViewer() {
                 <span key={p}>{label}{p === 0 || p === 1 ? ` ${suffix}` : ''}</span>
               ))}
             </div>
+              </>
+            )}
           </div>
 
           <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
@@ -473,7 +634,11 @@ export default function MatrixViewer() {
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
-            Click any gray hexagon to set it as the new origin
+            {mode === 'area'
+              ? 'Click any gray hexagon to set it as the new origin'
+              : !destHex
+                ? 'Click any hexagon to set as destination'
+                : 'Click another hexagon to start a new pair (it becomes the new origin)'}
           </div>
           {notOriginMsg && (
             <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 4, padding: '6px 10px', background: 'rgba(245,158,11,0.1)', borderRadius: 6 }}>

@@ -91,6 +91,23 @@ export const RoadFilterAvailable = z.object({
   detail: z.string().optional(),
 });
 
+export const OdPairResponse = z.object({
+  found: z.boolean(),
+  travel_time_secs: z.number().optional(),
+  distance_meters: z.number().optional(),
+  origin_lat: z.number().optional(),
+  origin_lon: z.number().optional(),
+  dest_lat: z.number().optional(),
+  dest_lon: z.number().optional(),
+  error: z.string().optional(),
+});
+
+export const HexLatLonResponse = z.object({
+  lat: z.number(),
+  lon: z.number(),
+  error: z.string().optional(),
+});
+
 export type MatrixRegion = z.infer<typeof MatrixRegion>;
 export type MatrixJobStatus = z.infer<typeof MatrixJobStatus>;
 export type MatrixInventoryItem = z.infer<typeof MatrixInventoryItem>;

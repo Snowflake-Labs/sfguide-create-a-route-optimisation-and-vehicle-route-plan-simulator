@@ -10,6 +10,8 @@ import {
   MatrixBuildRequest,
   MatrixBuildResponse,
   RoadFilterAvailable,
+  OdPairResponse,
+  HexLatLonResponse,
 } from './schemas/matrix';
 
 export async function listMatrixRegions() {
@@ -37,4 +39,15 @@ export async function deleteMatrix(region: string, profile: string, resolution: 
     `/api/matrix/${encodeURIComponent(region)}/${encodeURIComponent(profile)}/${encodeURIComponent(resolution)}`,
     StatusOkEnvelope,
   );
+}
+
+export async function getOdPair(table: string, origin: string, dest: string) {
+  const t = encodeURIComponent(table);
+  const o = encodeURIComponent(origin);
+  const d = encodeURIComponent(dest);
+  return apiGet(`/api/matrix/od-pair?table=${t}&origin=${o}&dest=${d}`, OdPairResponse);
+}
+
+export async function getHexLatLon(hex: string) {
+  return apiGet(`/api/matrix/hex-latlon?hex=${encodeURIComponent(hex)}`, HexLatLonResponse);
 }

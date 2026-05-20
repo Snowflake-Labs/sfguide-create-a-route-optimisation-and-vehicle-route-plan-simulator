@@ -172,6 +172,74 @@ export function createMatrixQueryRouter(): Router {
     }
   });
 
+  router.get('/api/matrix/od-pair', async (req, res) => {
+    try {
+      const tableParam = req.query.table as string;
+      const origin = req.query.origin as string;
+      const dest = req.query.dest as string;
+      if (!tableParam || !origin || !dest) {
+        return res.status(400).json({ error: 'table, origin, dest required' });
+      }
+      await getViewerInventory();
+      const table = validateViewerTable(tableParam);
+      if (!table) return res.status(400).json({ error: 'Invalid table name' });
+      const safeO = origin.replace(/[^a-fA-F0-9]/g, '');
+      const safeD = dest.replace(/[^a-fA-F0-9]/g, '');
+      if (safeO === safeD) {
+        const ll = await runSql(
+          `SELECT ST_Y(H3_CELL_TO_POINT('${safeO}')) AS LAT, ST_X(H3_CELL_TO_POINT('${safeO}')) AS LON`
+        );
+        const lat = Number(ll[0]?.LAT || 0);
+        const lon = Number(ll[0]?.LON || 0);
+        return res.json({
+          found: true,
+          travel_time_secs: 0,
+          distance_meters: 0,
+          origin_lat: lat, origin_lon: lon,
+          dest_lat: lat, dest_lon: lon,
+        });
+      }
+      const rows = await runSql(`
+        SELECT TRAVEL_TIME_SECONDS, TRAVEL_DISTANCE_METERS,
+               ST_Y(H3_CELL_TO_POINT('${safeO}')) AS O_LAT,
+               ST_X(H3_CELL_TO_POINT('${safeO}')) AS O_LON,
+               ST_Y(H3_CELL_TO_POINT('${safeD}')) AS D_LAT,
+               ST_X(H3_CELL_TO_POINT('${safeD}')) AS D_LON
+        FROM ${table}
+        WHERE ORIGIN_H3 = '${safeO}' AND DEST_H3 = '${safeD}'
+        LIMIT 1
+      `);
+      const r = rows[0];
+      if (!r) return res.json({ found: false });
+      res.json({
+        found: true,
+        travel_time_secs: Number(r.TRAVEL_TIME_SECONDS),
+        distance_meters: Number(r.TRAVEL_DISTANCE_METERS),
+        origin_lat: Number(r.O_LAT), origin_lon: Number(r.O_LON),
+        dest_lat: Number(r.D_LAT), dest_lon: Number(r.D_LON),
+      });
+    } catch (err: any) {
+      console.error('OD-pair error:', err.message);
+      res.json({ found: false, error: err.message });
+    }
+  });
+
+  router.get('/api/matrix/hex-latlon', async (req, res) => {
+    try {
+      const hex = req.query.hex as string;
+      if (!hex) return res.status(400).json({ error: 'hex parameter required' });
+      const safe = hex.replace(/[^a-fA-F0-9]/g, '');
+      if (!safe) return res.status(400).json({ error: 'Invalid hex' });
+      const rows = await runSql(
+        `SELECT ST_Y(H3_CELL_TO_POINT('${safe}')) AS LAT, ST_X(H3_CELL_TO_POINT('${safe}')) AS LON`
+      );
+      res.json({ lat: Number(rows[0]?.LAT || 0), lon: Number(rows[0]?.LON || 0) });
+    } catch (err: any) {
+      console.error('hex-latlon error:', err.message);
+      res.json({ lat: 0, lon: 0, error: err.message });
+    }
+  });
+
   router.get('/api/matrix/ring-stats', async (req, res) => {
     try {
       const tableParam = req.query.table as string;
