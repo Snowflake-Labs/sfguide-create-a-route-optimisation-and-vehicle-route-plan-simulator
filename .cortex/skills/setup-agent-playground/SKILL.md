@@ -104,15 +104,26 @@ SHOW PROCEDURES LIKE 'TOOL_%' IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
 
 ## Step 4: Upload Agent Config to Stage
 
-Copy the agent-demos.json config file to the ORS stage. First copy the file to workspace root, then upload:
+**CRITICAL: Without this file, the Agent Playground will only show the hardcoded Pharma fallback scenario. All 3 scenarios (Pharma, Retail, Fleet Logistics) require this file.**
+
+**PREREQUISITE:** The JSON file format must exist for the app to read the config from stage:
+
+```sql
+CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT
+  TYPE = JSON
+  STRIP_OUTER_ARRAY = FALSE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+```
+
+The `agent-demos.json` file is at the workspace root. Upload it to the ORS stage:
 
 ```sql
 COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/
-FROM 'snow://workspace/<WORKSPACE_FQN>/versions/live'
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
 FILES=('agent-demos.json');
 ```
 
-If the file is nested under `.cortex/skills/...`, first write a copy to the workspace root, then upload from there. The target path must be `@ORS_SPCS_STAGE/config/agent-demos.json`.
+> **Note:** Replace the workspace FQN with the actual workspace name if different.
 
 **Verification:**
 
@@ -120,7 +131,13 @@ If the file is nested under `.cortex/skills/...`, first write a copy to the work
 LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/;
 ```
 
-**Expected:** `ors_spcs_stage/config/agent-demos.json` exists.
+**Expected:** `ors_spcs_stage/config/agent-demos.json` exists (size ~3.4 KB).
+
+**Test the config loads:**
+```sql
+SELECT $1 AS CONFIG FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT');
+```
+Must return 1 row with the JSON content.
 
 ## Step 5: Switch Back to Original Role
 
