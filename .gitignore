@@ -1,8 +1,9 @@
 # Ignore the 'output' folder
 /Native_app/output
 
-# Ignore log file
-/Native_app/provider_setup/spcs_setup.log
+# Log files (ad-hoc redirects, build output)
+# Note: logs/ directory is committed but contains only .md files, so this is safe.
+*.log
 
 # Environment and secrets
 .env
@@ -51,3 +52,7 @@ drafts/v1.md
 drafts/v2-critique.md
 drafts/v2.md
 logs/friction-log_2026-05-03_01-10.md
+/docs/blogpost
+/docs/old
+benchmarks/matrix-access/results/blogpost-blurb.md
+/tmp

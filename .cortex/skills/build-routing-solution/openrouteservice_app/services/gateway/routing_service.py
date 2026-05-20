@@ -11,13 +11,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 SERVICE_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVICE_PORT = os.getenv('SERVER_PORT', 8080)
-VROOM_HOST = os.getenv('VROOM_HOST', 'vroom-service')
 VROOM_PORT = os.getenv('VROOM_PORT', 3000)
-ORS_HOST = os.getenv('ORS_HOST', 'ors-service')
 ORS_PORT = os.getenv('ORS_PORT', 8082)
 ORS_API_PATH = os.getenv('ORS_API_PATH', '/ors/v2')
 MATRIX_CONCURRENCY = int(os.getenv('MATRIX_CONCURRENCY', '6'))
-GATEWAY_VERSION = 'v1.0.0'
+# v1.1.0 — Unified region model. There is NO global ORS_SERVICE or VROOM_SERVICE
+# anymore; every region (including the default) is served by a per-region pair
+# named ORS_SERVICE_<REGION> / VROOM_SERVICE_<REGION>. When a caller does not
+# supply a region, we resolve it to DEFAULT_REGION_NAME so we still produce a
+# valid per-region hostname. ORS_HOST / VROOM_HOST env vars are no longer read.
+DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
+# Per-endpoint downstream timeouts (seconds). Isochrones on continental graphs
+# (e.g. USA driving-hgv) routinely take longer than the legacy 120 s default
+# because fastisochrones is not enabled — see GitHub issue tracking that.
+ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
+ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
+GATEWAY_VERSION = 'v1.1.5'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -35,11 +44,31 @@ logger = get_logger('routing-service')
 app = Flask(__name__)
 
 
-def resolve_ors_host(region=None):
+def _normalize_region(region):
+    """Lowercase and strip spaces. Falls back to DEFAULT_REGION_NAME when empty."""
     if not region:
-        return ORS_HOST
-    normalized = region.strip().lower().replace(' ', '')
-    return f'ors-service-{normalized}'
+        region = DEFAULT_REGION_NAME
+    return str(region).strip().lower().replace(' ', '')
+
+
+def resolve_ors_host(region=None):
+    """Per-region ORS service. After the v1.1.0 unification there is no global
+    ORS_SERVICE — even the default region resolves to ors-service-<default>."""
+    return f'ors-service-{_normalize_region(region)}'
+
+
+def resolve_vroom_host(region=None):
+    """Per-region VROOM service co-located with the region's ORS. After v1.1.0
+    there is no global VROOM_SERVICE — the default region maps to
+    vroom-service-<default>."""
+    return f'vroom-service-{_normalize_region(region)}'
+
+
+# Backward-compat aliases were retired in v1.1.5. Pre-v1.1.0 code referenced
+# ORS_HOST / VROOM_HOST as the "global" service hostname; that model is gone.
+# Every call site now resolves the host explicitly via resolve_ors_host(region)
+# / resolve_vroom_host(region). Empty / None region falls back to
+# DEFAULT_REGION_NAME via _normalize_region.
 
 
 def _make_response(output_rows):
@@ -64,11 +93,11 @@ def _extract_region(row, region_index):
 
 @app.get("/health")
 def readiness_probe():
-    return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': ORS_HOST, 'vroom_host': VROOM_HOST}
+    return {'status': 'OK', 'version': GATEWAY_VERSION, 'ors_host': resolve_ors_host(None), 'vroom_host': resolve_vroom_host(None)}
 
 
 def _get_ors_health(ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     try:
         health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
         r = requests.get(url=health_url, timeout=5)
@@ -77,8 +106,26 @@ def _get_ors_health(ors_host=None):
         return False
 
 
+def _probe_ors_state(ors_host=None):
+    """Distinguish 'warming_up' (process up, /health returns non-200, e.g. 503)
+    from 'unreachable' (TCP refused / DNS fails, i.e. service suspended or not provisioned).
+    Returns one of: 'ready' | 'warming_up' | 'unreachable' | 'unknown'."""
+    host = ors_host or resolve_ors_host(None)
+    try:
+        health_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/health'
+        r = requests.get(url=health_url, timeout=5)
+        if r.status_code == 200:
+            return 'ready'
+        # Process is accepting connections but /health says not-ready: graph still loading.
+        return 'warming_up'
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        return 'unreachable'
+    except Exception:
+        return 'unknown'
+
+
 def _get_ors_status(ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     try:
         status_url = f'http://{host}:{ORS_PORT}{ORS_API_PATH}/status'
         logger.info(f'Querying ORS status: {status_url}')
@@ -102,11 +149,27 @@ def _get_ors_status(ors_host=None):
         status_data['ors_host'] = host
         return status_data
     except requests.exceptions.ConnectionError:
-        logger.error(f'Cannot connect to ORS at {host} - service may not be provisioned or is suspended')
+        # Differentiate warming-up vs suspended/unknown by probing /health separately.
+        state = _probe_ors_state(host)
+        if state == 'warming_up':
+            logger.info(f'ORS at {host} is warming up - /health returned non-200 while loading graph')
+            return {
+                'error': 'service_warming_up',
+                'graph_loading': True,
+                'message': f'ORS at {host} is warming up: graph is loading from stage. '
+                           f'Typical wait: 1-10 min depending on region size. '
+                           f'Re-poll ORS_STATUS(region) until service_ready=true.',
+                'service_ready': False,
+                'health_ready': False,
+                'ors_host': host
+            }
+        logger.error(f'Cannot connect to ORS at {host} - service is suspended or region not provisioned')
         return {
-            'error': 'connection_failed',
-            'message': f'Cannot connect to ORS at {host}. Region may not be provisioned or service is suspended. '
-                       f'Use SETUP_CITY_ORS(region) to provision.',
+            'error': 'service_unreachable',
+            'graph_loading': False,
+            'message': f'Cannot connect to ORS at {host}. Service appears suspended or region not provisioned. '
+                       f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
+                       f'2) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
             'service_ready': False,
             'health_ready': False,
             'ors_host': host
@@ -197,12 +260,15 @@ def _collect_locations(jobs, vehicles):
 
 
 def _remap_indices(jobs, vehicles, indices):
+    # Keep both 'location'/'start'/'end' AND the new *_index keys.
+    # Indices let VROOM use the pre-computed matrix (no ORS call for routing math).
+    # Coords let vroom-express enrich the response with geometry by calling its
+    # configured ORS host (which is the per-region service, so it has the coords).
     for item in (jobs or []):
         if isinstance(item, dict) and 'location' in item:
             t = tuple(item['location'])
             if t in indices:
                 item['location_index'] = indices[t]
-                del item['location']
     for item in (vehicles or []):
         if not isinstance(item, dict):
             continue
@@ -211,10 +277,9 @@ def _remap_indices(jobs, vehicles, indices):
                 t = tuple(item[key])
                 if t in indices:
                     item[idx_key] = indices[t]
-                    del item[key]
 
 
-def _handle_optimization_tabular(input_rows, ors_host_override=None):
+def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None):
     _collected_locs = []
 
     def build_vroom_payload(row):
@@ -232,7 +297,7 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None):
             elif isinstance(matrices, list) and len(matrices) > 0:
                 payload['matrices'] = matrices[0] if len(matrices) == 1 and isinstance(matrices[0], dict) else matrices
                 payload['options'] = {'g': False}
-        if ors_host_override and ors_host_override != ORS_HOST and 'matrices' not in payload:
+        if ors_host_override and ors_host_override != resolve_ors_host(None) and 'matrices' not in payload:
             jobs = payload.get('jobs', [])
             vehs = payload.get('vehicles', [])
             profile = 'driving-car'
@@ -255,7 +320,7 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None):
 
     results = []
     for row in input_rows:
-        resp = get_vroom_response(build_vroom_payload(row))
+        resp = get_vroom_response(build_vroom_payload(row), vroom_host=vroom_host_override)
         if ors_host_override and 'routes' in resp:
             needs_geo = any('geometry' not in r for r in resp['routes'])
             if needs_geo:
@@ -318,10 +383,11 @@ def post_optimization_tabular():
         return {}
     region = _extract_region(input_rows[0], -1)
     ors_host = resolve_ors_host(region) if region else None
+    vroom_host = resolve_vroom_host(region) if region else None
     stripped_rows = []
     for row in input_rows:
         stripped_rows.append(row[:-1])
-    output_rows = _handle_optimization_tabular(stripped_rows, ors_host_override=ors_host)
+    output_rows = _handle_optimization_tabular(stripped_rows, ors_host_override=ors_host, vroom_host_override=vroom_host)
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
@@ -341,11 +407,13 @@ def post_optimization():
     for row in input_rows:
         region = _extract_region(row, -1)
         ors_host = resolve_ors_host(region) if region else None
+        vroom_host = resolve_vroom_host(region) if region else None
         if ors_host:
             shifted = [row[0], row[1]]
             tabular_rows = _handle_optimization_tabular(
                 [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', [])]],
-                ors_host_override=ors_host
+                ors_host_override=ors_host,
+                vroom_host_override=vroom_host
             )
             output_rows.append(tabular_rows[0])
         else:
@@ -355,7 +423,7 @@ def post_optimization():
 
 
 def _handle_directions_tabular(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     output_rows = []
     for row in input_rows:
         output_rows.append([row[0], get_ors_response('directions', row[1], {'coordinates': [row[2], row[3]]}, format, host)])
@@ -383,7 +451,7 @@ def post_directions_tabular_with_format(format="geojson"):
 
 
 def _handle_directions(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     return [[row[0], get_ors_response('directions', row[1], row[2], format, host)] for row in input_rows]
 
 
@@ -408,7 +476,7 @@ def post_directions_with_format(format="geojson"):
 
 
 def _handle_isochrones_tabular(input_rows, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     output_rows = []
     for row in input_rows:
         output_rows.append([row[0], get_ors_response('isochrones', row[1], {
@@ -587,20 +655,33 @@ def post_matrix(format="json"):
     return _make_response(output_rows)
 
 
-def get_vroom_response(payload):
+def get_vroom_response(payload, vroom_host=None):
     logger.info(payload)
-    downstream_url = f'http://{VROOM_HOST}:{VROOM_PORT}'
+    default_vroom_host = resolve_vroom_host(None)
+    host = vroom_host or default_vroom_host
+    downstream_url = f'http://{host}:{VROOM_PORT}'
     downstream_headers = {"Content-Type": "application/json"}
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=300)
         vroom_r = r.json()
     except requests.exceptions.ConnectionError:
-        logger.error(f'Cannot connect to VROOM at {VROOM_HOST}:{VROOM_PORT}')
-        return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {VROOM_HOST}:{VROOM_PORT}'}
+        # Per-region VROOM unreachable. Fall back to the default-region VROOM service.
+        if host != default_vroom_host:
+            logger.warning(f'Per-region VROOM at {host} unreachable; falling back to default {default_vroom_host}')
+            try:
+                r = requests.post(url=f'http://{default_vroom_host}:{VROOM_PORT}',
+                                  headers=downstream_headers, json=payload, timeout=300)
+                vroom_r = r.json()
+            except requests.exceptions.ConnectionError:
+                logger.error(f'Cannot connect to VROOM at {default_vroom_host}:{VROOM_PORT} (fallback)')
+                return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host} or fallback {default_vroom_host}:{VROOM_PORT}'}
+        else:
+            logger.error(f'Cannot connect to VROOM at {host}:{VROOM_PORT}')
+            return {'error': 'connection_failed', 'message': f'Cannot connect to VROOM service at {host}:{VROOM_PORT}'}
     except requests.exceptions.Timeout:
-        logger.error(f'VROOM request timed out')
+        logger.error(f'VROOM request timed out at {host}')
         return {'error': 'timeout', 'message': 'VROOM optimization request timed out'}
-    logger.debug(f'VROOM response: {vroom_r}')
+    logger.debug(f'VROOM response from {host}: {vroom_r}')
     if 'routes' in vroom_r:
         for route in vroom_r['routes']:
             if 'geometry' in route:
@@ -609,41 +690,123 @@ def get_vroom_response(payload):
     return vroom_r
 
 
+def _extract_payload_locations(payload):
+    """Best-effort extraction of [lon, lat] pairs from an ORS request payload.
+    Different endpoints use different keys (coordinates / locations).
+    Returns a list of [lon, lat] pairs, or [] if none can be found."""
+    if not isinstance(payload, dict):
+        return []
+    for key in ('locations', 'coordinates'):
+        val = payload.get(key)
+        if isinstance(val, list) and val and isinstance(val[0], list):
+            return val
+    return []
+
+
+def _is_plausible_us_lonlat(lon, lat):
+    """CONUS bbox sanity check. Used only to hint at swapped lon/lat."""
+    try:
+        return -125.0 <= float(lon) <= -66.0 and 24.0 <= float(lat) <= 49.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _annotate_engine_error(resp, host, payload):
+    """If ORS returned an engine-level error (e.g. code 3099 'Unable to build an
+    isochrone map'), enrich the response with gateway diagnostics: host, the
+    coordinates that were sent, and a swapped-lon/lat hint when applicable.
+    Adds a non-destructive `gateway_diagnostics` block; existing fields are
+    untouched so downstream UDF error mapping continues to work."""
+    if not isinstance(resp, dict):
+        return resp
+    err = resp.get('error')
+    if not isinstance(err, dict):
+        return resp
+    code = err.get('code')
+    locations = _extract_payload_locations(payload)
+    diagnostics = {
+        'ors_host': host,
+        'requested_locations_lon_lat': locations,
+        'hint': None,
+    }
+    # Swapped lon/lat hint: ORS expects [lon, lat]. If the caller passed
+    # [lat, lon] and only the swapped form is plausible CONUS, point that out.
+    if locations:
+        first = locations[0]
+        if isinstance(first, list) and len(first) >= 2:
+            lon, lat = first[0], first[1]
+            if not _is_plausible_us_lonlat(lon, lat) and _is_plausible_us_lonlat(lat, lon):
+                diagnostics['hint'] = (
+                    'Coordinates may be swapped. ORS expects [longitude, latitude] '
+                    '(longitude first). For US points longitude is negative, '
+                    'roughly -125..-66, and latitude is +24..+49.'
+                )
+    if code == 3099:
+        diagnostics['hint'] = diagnostics['hint'] or (
+            'ORS could not snap the start point to a routable edge. The point '
+            'is likely outside the loaded region graph, in water, or far from '
+            'any road. Verify the coordinate is on land within the region '
+            'bounding box and that longitude is passed before latitude.'
+        )
+    if diagnostics['hint'] or code is not None:
+        resp['gateway_diagnostics'] = diagnostics
+    return resp
+
+
 def get_ors_response(function, profile, payload, format, ors_host=None):
-    host = ors_host or ORS_HOST
+    host = ors_host or resolve_ors_host(None)
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
 
     downstream_url = f'http://{host}:{ORS_PORT}{endpoint}'
     downstream_headers = {"Content-Type": "application/json"}
-    logger.info(f'Calling: {downstream_url}')
+    # Isochrones on large graphs (e.g. USA driving-hgv) can take > 120 s because
+    # fastisochrones preparation is not enabled. Use a longer per-endpoint
+    # timeout for isochrones to avoid silent gateway-side cliffs.
+    timeout_s = ORS_TIMEOUT_ISOCHRONES if function == 'isochrones' else ORS_TIMEOUT_DEFAULT
+    logger.info(f'Calling: {downstream_url} (timeout={timeout_s}s)')
     logger.info(f'Payload: {payload}')
 
     try:
-        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=120)
-        logger.debug(r.json())
-        return r.json()
+        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
+        resp = r.json()
+        logger.debug(resp)
+        return _annotate_engine_error(resp, host, payload)
     except requests.exceptions.ConnectionError:
-        region_hint = f' (host: {host})' if host != ORS_HOST else ''
-        logger.error(f'Cannot connect to ORS{region_hint}')
+        region_hint = f' (host: {host})' if host != resolve_ors_host(None) else ''
+        # Differentiate warming-up vs suspended/unknown by probing /health separately.
+        state = _probe_ors_state(host)
+        if state == 'warming_up':
+            logger.info(f'ORS{region_hint} is warming up - graph still loading')
+            return {
+                'error': 'service_warming_up',
+                'graph_loading': True,
+                'message': f'ORS{region_hint} is warming up: graph is loading from stage. '
+                           f'Typical wait: 1-10 min depending on region size. '
+                           f'Re-poll SELECT CORE.ORS_STATUS(region) until service_ready=true, then retry.',
+                'ors_host': host
+            }
+        logger.error(f'Cannot connect to ORS{region_hint} - suspended or not provisioned')
         return {
-            'error': 'connection_failed',
-            'message': f'Cannot connect to ORS{region_hint}. '
-                       f'Region may not be provisioned or service is suspended. '
+            'error': 'service_unreachable',
+            'graph_loading': False,
+            'message': f'Cannot connect to ORS{region_hint}. Service appears suspended or region not provisioned. '
                        f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
                        f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
                        f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
             'ors_host': host
         }
     except requests.exceptions.Timeout:
-        logger.error(f'ORS request timed out on {host}')
+        logger.error(f'ORS request timed out on {host} after {timeout_s}s')
         return {
             'error': 'timeout',
-            'message': f'ORS request timed out on {host}. '
+            'message': f'ORS request timed out on {host} after {timeout_s}s. '
                        f'Possible causes: graphs still loading after resume (~2-3 min), '
-                       f'or request too large. Try reducing batch size or check ORS_STATUS().',
-            'ors_host': host
+                       f'or request too large (e.g. very large isochrone range on a continental graph). '
+                       f'Try reducing range/batch size, or check ORS_STATUS().',
+            'ors_host': host,
+            'timeout_seconds': timeout_s
         }
 
 

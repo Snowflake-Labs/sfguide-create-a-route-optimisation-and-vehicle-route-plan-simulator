@@ -83,6 +83,15 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Best-effort warehouse-size drift repair: if no matrix job is active,
+    -- shrink ROUTING_ANALYTICS back to the SMALL steady-state. This catches
+    -- the case where a matrix build bumped the warehouse to LARGE / X-LARGE
+    -- and the in-procedure restore was skipped (e.g. session killed).
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;
 
     LET rs RESULTSET := (
@@ -236,7 +245,8 @@ BEGIN
             "min_instances" AS svc_min,
             "max_instances" AS svc_max,
             "current_instances" AS svc_cur,
-            "target_instances" AS svc_target
+            "target_instances" AS svc_target,
+            "auto_suspend_secs" AS svc_auto_suspend
         FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         WHERE "is_job" = 'false'
     );
@@ -250,7 +260,8 @@ BEGIN
             'min_instances', rec.svc_min,
             'max_instances', rec.svc_max,
             'current_instances', rec.svc_cur,
-            'target_instances', rec.svc_target
+            'target_instances', rec.svc_target,
+            'auto_suspend_secs', rec.svc_auto_suspend
         ));
     END FOR;
 
@@ -464,21 +475,177 @@ BEGIN
         END;
     END FOR;
 
-    -- Legacy single-tenant ors_service: only touch if it exists; treat as busy
-    -- only if the gateway is busy (matrix path).
+    -- Reconcile each VROOM_SERVICE_<REGION>: busy iff this region has a matrix
+    -- job in flight. VROOM is not used during region provisioning, only matrix.
+    SHOW SERVICES LIKE 'VROOM_SERVICE_%' IN SCHEMA OPENROUTESERVICE_APP.CORE;
+    LET vrs RESULTSET := (
+        SELECT "name" AS svc_name
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "is_job" = 'false'
+    );
+    LET vc CURSOR FOR vrs;
+
+    FOR rec IN vc DO
+        LET vregion_key VARCHAR := REGEXP_REPLACE(UPPER(rec.svc_name), '^VROOM_SERVICE_', '');
+        LET vbusy BOOLEAN := FALSE;
+        BEGIN
+            LET vmc INTEGER := 0;
+            SELECT COUNT(*) INTO :vmc
+            FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE UPPER(REGION) = :vregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE NOT IN ('COMPLETE','ERROR');
+            IF (vmc > 0) THEN vbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            IF (vbusy) THEN
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 0';
+                left_zero := left_zero + 1;
+            ELSE
+                EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
+                reconciled := reconciled + 1;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    -- Reconcile DOWNLOADER: busy iff a region is actively in DOWNLOADING stage.
+    -- Tighter scope than the rest of provisioning so the downloader is freed
+    -- the moment the PBF fetch completes, even if the graph build is still in
+    -- flight.
+    LET dl_busy BOOLEAN := FALSE;
     BEGIN
-        IF (gateway_busy) THEN
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 0;
+        LET dc INTEGER := 0;
+        SELECT COUNT(*) INTO :dc
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING')
+          AND STAGE = 'DOWNLOADING';
+        IF (dc > 0) THEN dl_busy := TRUE; END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        IF (dl_busy) THEN
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER SET AUTO_SUSPEND_SECS = 0;
+            left_zero := left_zero + 1;
         ELSE
-            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ors_service SET AUTO_SUSPEND_SECS = 14400;
+            ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNLOADER SET AUTO_SUSPEND_SECS = 14400;
+            reconciled := reconciled + 1;
         END IF;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+
+    -- Reconcile each ORS_POOL_<REGION>: busy iff that region has a provision
+    -- or matrix job in flight. FINALIZE_PROVISION_ITER pins the pool to 0 in
+    -- its rescue path; without this loop the pool stays pinned indefinitely
+    -- once the rescue resolves, since DOWNSIZE_REGION_AFTER_BUILD only fires
+    -- on L/XXL builds. Default idle value is 3600 (matches create_region_ors_service
+    -- and DOWNSIZE_REGION_AFTER_BUILD), not 14400 — pools may suspend faster
+    -- than services.
+    SHOW COMPUTE POOLS LIKE 'ORS_POOL_%';
+    LET pls RESULTSET := (SELECT "name" AS pool_name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+    LET pc CURSOR FOR pls;
+    FOR rec IN pc DO
+        LET pregion_key VARCHAR := REGEXP_REPLACE(UPPER(rec.pool_name), '^ORS_POOL_', '');
+        LET pbusy BOOLEAN := FALSE;
+        BEGIN
+            LET pjc INTEGER := 0;
+            SELECT COUNT(*) INTO :pjc
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE UPPER(REGION) = :pregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH');
+            IF (pjc > 0) THEN pbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            LET pmc INTEGER := 0;
+            SELECT COUNT(*) INTO :pmc
+            FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+            WHERE UPPER(REGION) = :pregion_key
+              AND STATUS IN ('PENDING','RUNNING')
+              AND STAGE NOT IN ('COMPLETE','ERROR');
+            IF (pmc > 0) THEN pbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            IF (pbusy) THEN
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 0';
+                left_zero := left_zero + 1;
+            ELSE
+                EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 3600';
+                reconciled := reconciled + 1;
+            END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
 
     RETURN OBJECT_CONSTRUCT(
         'reconciled_to_default', reconciled,
         'left_at_zero_due_to_active_job', left_zero
     )::STRING;
+END;
+$$;
+
+
+-- =============================================================================
+-- ROUTING_ANALYTICS warehouse size invariant / reconciliation
+-- ---------------------------------------------------------------------------
+-- Invariant: while a matrix build is running, the matrix pipeline may bump
+-- ROUTING_ANALYTICS to LARGE (>5k hex) or X-LARGE (>25k hex) and is expected
+-- to restore the original size when the BUILD_WORK_QUEUE step finishes. If
+-- the session is killed or an unhandled error path is hit, the warehouse can
+-- get stranded at the bumped size.
+--
+-- RECONCILE_WAREHOUSE_SIZE() is an idempotent safety-net that shrinks
+-- ROUTING_ANALYTICS back to the 'SMALL' steady-state when no matrix job is
+-- active. It is auto-called from SUSPEND_ALL_SERVICES.
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RECONCILE_WAREHOUSE_SIZE()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"lifecycle"}}'
+AS
+$$
+DECLARE
+    active_jobs INTEGER DEFAULT 0;
+    current_size VARCHAR DEFAULT NULL;
+BEGIN
+    BEGIN
+        SELECT COUNT(*) INTO :active_jobs
+        FROM OPENROUTESERVICE_APP.TRAVEL_MATRIX.MATRIX_BUILD_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING')
+          AND STAGE NOT IN ('COMPLETE','ERROR');
+    EXCEPTION WHEN OTHER THEN active_jobs := 0;
+    END;
+
+    IF (active_jobs > 0) THEN
+        RETURN 'skipped: ' || active_jobs || ' active matrix job(s)';
+    END IF;
+
+    BEGIN
+        SHOW WAREHOUSES LIKE 'ROUTING_ANALYTICS';
+        SELECT "size" INTO :current_size
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN current_size := NULL;
+    END;
+
+    -- Already at or below steady-state: nothing to do.
+    IF (current_size IS NOT NULL
+        AND UPPER(current_size) IN ('X-SMALL','XSMALL','SMALL'))
+    THEN
+        RETURN 'already at steady-state: ' || current_size;
+    END IF;
+
+    BEGIN
+        ALTER WAREHOUSE ROUTING_ANALYTICS SET WAREHOUSE_SIZE = 'SMALL';
+    EXCEPTION WHEN OTHER THEN
+        RETURN 'reconcile_failed: could not resize from ' || COALESCE(current_size, 'unknown');
+    END;
+
+    RETURN 'reconciled: ' || COALESCE(current_size, 'unknown') || ' -> SMALL';
 END;
 $$;
 

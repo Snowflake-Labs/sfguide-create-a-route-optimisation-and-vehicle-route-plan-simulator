@@ -53,6 +53,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
+| `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
 
 ## Skill Conventions (Quick Reference)
 
@@ -78,6 +79,58 @@ Key rules:
 ## Error Logging
 
 When any step fails or produces unexpected results (SQL errors, missing objects, wrong row counts, service failures, deployment issues), log the issue to `logs/` following the format in `logs/README.md`. Create one log file per execution: `<skill-name>_{YYYY-MM-DD}_{HH-MM}.md`. Continue execution where possible, logging all issues encountered. If execution completes with no issues, do not create a log file.
+
+## Commit Discipline
+
+**MANDATORY:** After each logical change is completed and verified, create a new git commit on the user's single shared branch AND push it immediately. Do not batch unrelated changes into a single commit, and do not leave commits unpushed at the end of a turn.
+
+### Branching Rules (NON-NEGOTIABLE)
+- **NEVER commit directly to `main`.** `main` is protected — changes only land via merged PRs from `dev`.
+- **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from per-user branches.
+- **All work happens on ONE per-user long-lived branch named `feat/<GITHUB_LOGIN>-feat`.** The GitHub login MUST be detected dynamically at the start of every session — never hardcoded.
+  ```bash
+  GITHUB_LOGIN=$(gh api user --jq .login)
+  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  ```
+  Example: for login `sfc-gh-preszke` the branch is `feat/sfc-gh-preszke-feat`.
+  This single branch is shared by all parallel Cortex Code chats on the user's machine, so no branch switching is ever needed mid-session.
+- **Do NOT create additional branches.** No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. One user, one branch. Multiple parallel chats sharing one working tree cannot each own their own branch — that causes constant `git checkout` thrashing and lost work. Commit straight onto the user's branch instead.
+- **All PRs target `dev`** (not `main`). Only release/promotion PRs go from `dev` → `main`, and those are opened by humans, not assistants.
+- Before starting work, detect the user branch and verify you are on it:
+  ```bash
+  GITHUB_LOGIN=$(gh api user --jq .login)
+  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  CURRENT=$(git branch --show-current)
+  if [ "$CURRENT" != "$USER_BRANCH" ]; then
+    git checkout "$USER_BRANCH" 2>/dev/null || git checkout -b "$USER_BRANCH"
+  fi
+  ```
+  If `gh` is not authenticated, stop and ask the user to run `gh auth login` — never fall back to a hardcoded branch name.
+- After EVERY commit, push the branch immediately. Do not leave local commits unpushed:
+  ```bash
+  git push -u origin "$USER_BRANCH"
+  ```
+- Open / update a single PR into `dev` for the branch when there is reviewable work:
+  ```bash
+  gh pr create --base dev --head "$USER_BRANCH" --title "..." --body "..."
+  ```
+- A PR may include several commits from the branch. Keep PRs scoped to one logical theme — open a new PR rather than piling unrelated commits into one.
+
+### Commit Rules
+- One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
+- Commits land on `$USER_BRANCH` (i.e. `feat/<GITHUB_LOGIN>-feat`). Never on a fresh per-change branch.
+- After every commit, run `git push origin "$USER_BRANCH"` immediately. A change is not "done" until it is pushed to remote.
+  - **CRITICAL: Plain `git push` will fail with SSH permission denied.** Before your first push in a session, ALWAYS read `/memories/git-push-method.md` for the working command (uses `gh auth token` + `GIT_CONFIG_GLOBAL=/dev/null` to bypass the global SSH `insteadOf` rule). Do NOT attempt `git push origin <branch>` directly — it always fails for this repo.
+- Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
+- Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
+- Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
+  - Examples:
+    - `feat(fleet-intelligence-taxis): add H3 resolution config parameter`
+    - `fix(build-routing-solution): handle ARM Mac esbuild segfault`
+    - `docs(AGENTS.md): add commit discipline rule`
+- If a change spans multiple skills, prefer multiple smaller commits over one large one
+- Never amend or force-push commits the user has not explicitly authorized
+- Never push directly to `main` or `dev` — push only to `$USER_BRANCH` (`feat/<GITHUB_LOGIN>-feat`)
 
 ## Friction Logging
 
@@ -120,6 +173,10 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
+- **Skip committing AND pushing after a completed change** — every verified change must result in a commit AND a push to `feat/<GITHUB_LOGIN>-feat` before the turn ends (see `## Commit Discipline`)
+- **Commit directly to `main` or `dev`** — both are protected. All work goes on `feat/<GITHUB_LOGIN>-feat` with PRs targeting `dev`. Only humans promote `dev` → `main`.
+- **Hardcode the user branch name** — always derive it from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-preszke-feat` into AGENTS.md, skill files, or scripts.
+- **Create a new branch per change or per topic** — there is exactly one branch per user (`feat/<GITHUB_LOGIN>-feat`). No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same branch.
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
 ## Control App Image Deployment (ors_control_app)
@@ -150,6 +207,29 @@ docker build --platform linux/amd64 \
 
 # 3. Push:
 docker push $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
+
+# 3b. If `docker push` hangs (single layer stuck at "Waiting" forever):
+#     This is a known SPCS registry token-refresh bug — the bearer token
+#     issued by `snow spcs image-registry login` expires mid-PUT and the
+#     registry rejects the upload with 401. Docker daemon retries auth
+#     silently → re-queues the blob → the layer "Waits" indefinitely.
+#     Symptoms: 8 of 9 layers report "Layer already exists", 1 sits on
+#     "Waiting". Podman shows the explicit error
+#     "unable to retrieve auth token: invalid username/password".
+#
+#     Workaround: use `crane` (from go-containerregistry), which handles
+#     registry token refresh correctly:
+brew install crane
+snow spcs image-registry login -c <connection>   # refreshes ~/.docker/config.json + keychain
+docker save $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z -o /tmp/img.tar
+crane push /tmp/img.tar $REPO_URL/openrouteservice_app/core/image_repository/ors_control_app:vX.Y.Z
+#     Expected output: `pushed blob: sha256:<hash>` followed by
+#     `<image>:<tag>: digest: sha256:... size: 1729`. Total ~5 minutes
+#     for a typical 139 MB image with one new layer.
+#
+#     `docker save | podman load | podman push` does NOT help here —
+#     both daemons hit the same registry-side bug. Restarting Docker
+#     Desktop and re-logging in does not help either. Only crane works.
 
 # 4. Update version:
 #    - $APP_DIR/ors_control_app_service.yaml (image tag)
@@ -193,6 +273,8 @@ graph TD
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
     BRS --> RA[routing-agent]
+    RO --> BM[backload-matching]
+    BRS --> BM
     RC --> FIT
     RC --> FIFD
     RC --> RD
@@ -214,7 +296,16 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 - **REBUILD_GRAPHS management (Issue #59)**: Routing graphs are persisted on `@ORS_GRAPHS_SPCS_STAGE/<region>/` and MUST be reused across suspend/resume cycles. The `create_region_ors_service` proc probes the stage and sets `REBUILD_GRAPHS="false"` if graphs already exist. After first-time provisioning completes (`service_ready=true`), `PROVISION_REGION_WRAPPER` auto-calls `SET_REBUILD_GRAPHS_FLAG(region, 'false')` so the next resume is instant (~1–2 min). For forced rebuilds (PBF update / corruption), call `REBUILD_REGION_GRAPHS(region)`.
-- **AUTO_SUSPEND_SECS invariant**: While a region is being provisioned (`REGION_PROVISION_JOBS.STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')`) or an H3 matrix job is running (`MATRIX_BUILD_JOBS.STATUS IN ('PENDING','RUNNING')`) the relevant services (`ORS_SERVICE_<REGION>`, `routing_gateway_service`, `downloader`) MUST have `AUTO_SUSPEND_SECS=0` so automatic time-based suspension cannot interrupt the long-running work. At all other times they MUST be `AUTO_SUSPEND_SECS=14400` (4h). Every procedure that flips these values to `0` is responsible for restoring `14400` on ALL exits (happy path, timeout, early return, exception). The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` detects drift and can be called at any time; it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
+- **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed — the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **v1.1.0 unification**: there is NO global `ORS_SERVICE`/`VROOM_SERVICE` anymore — even the default region (`SanFrancisco`) is served by `ORS_SERVICE_SANFRANCISCO` + `VROOM_SERVICE_SANFRANCISCO` in `ORS_POOL_SANFRANCISCO`. The gateway resolves a missing/NULL `region` to the env var `DEFAULT_REGION_NAME` (default: `SanFrancisco`) so callers may still omit the argument; both omitted and explicit-region paths land on the same per-region service. Passing `region` is recommended in all multi-region payloads to be self-documenting and to avoid relying on the DEFAULT_REGION_NAME setting. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
+- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Only services *strictly involved in the active build* are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`. The contract:
+  - `STAGE = 'DOWNLOADING'` → pin `DOWNLOADER`, `ORS_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
+  - `STAGE IN ('CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')` → pin `ORS_SERVICE_<REGION>` and `ORS_POOL_<REGION>` to 0; `DOWNLOADER` returns to 14400 (the PBF is already on stage).
+  - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
+  - All other times → services = `14400` (4h), per-region pools = `3600` (1h). `OPENROUTERSERVICE_APP_COMPUTE_POOL` is unrelated to this invariant (its default is `600`).
+  - `ors_control_app` has public endpoints and therefore no `AUTO_SUSPEND_SECS` — it is excluded.
+  - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
+  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
+- **v1.1.4 default-sentinel retirement**: The legacy `region:'default'` sentinel returned by `/api/regions/provisioned` was retired. `LIST_REGIONS()` now returns SanFrancisco as a regular row in `REGION_ORS_MAP` (with new `IS_DEFAULT BOOLEAN` column, seeded `TRUE` for the canonical default). The control-app server no longer synthesizes a `region:'default'` entry, no longer makes 0-arg `ORS_STATUS()` calls, and no longer special-cases `'default'` in studio job pool scaling, ors-readiness, or stage probing. The `isDefault` boolean is preserved as a pure UI hint (dropdown auto-selection + "(Default)" badge) but is decoupled from SQL routing. Inbound API requests passing `'default'` or empty region are still resolved at the gateway boundary via `normalizeRegion()` -> `DEFAULT_REGION_NAME`, but internal contracts assume real region keys.
 
 ## Geospatial Conventions
 
@@ -267,4 +358,5 @@ t.DESTINATION   -- trip destination
 ## Documentation
 
 - `docs/guides/QUICKSTART.md` — End-to-end deployment quickstart
+- `docs/dev/server-architecture.md` — One-page map of `ors_control_app` server modules (`server/{lib,routes,studio}/`) and decision tree for "where do I add X?"
 - `docs/README.md` — Full index

@@ -12,6 +12,18 @@ export interface RegionInfo {
   ZOOM_LEVEL: number;
   ORS_REGION_KEY: string | null;
   DATA_SOURCE: string;
+  // Boundary fields populated from REGION_CATALOG (joined via
+  // ORS_REGION_KEY -> LOOKUP_NAME). Null when no catalog row matches
+  // (e.g. user-added regions before the catalog is refreshed).
+  BOUNDARY_GEOJSON?: string | null;     // GeoJSON string of the simplified polygon
+  BOUNDARY_SOURCE?: string | null;      // 'geofabrik-poly' | 'bbbike-bbox' | 'bbox-fallback'
+  BOUNDARY_AREA_KM2?: number | null;
+  BOUNDARY_BAKED_AT?: string | null;    // ISO date - cache-bust signal
+  BOUNDARY_CENTROID_LON?: number | null; // ST_X(ST_CENTROID(BOUNDARY))
+  BOUNDARY_CENTROID_LAT?: number | null;
+  ISO_COUNTRY_A2?: string | null;
+  ISO_COUNTRY_A3?: string | null;
+  ISO_SUBDIVISION?: string | null;
 }
 
 interface RegionContextValue {
@@ -20,6 +32,12 @@ interface RegionContextValue {
   center: { lat: number; lng: number };
   zoom: number;
   bbox: { minLat: number; maxLat: number; minLon: number; maxLon: number } | null;
+  // Polygon boundary as GeoJSON for deck.gl GeoJsonLayer + turf.js
+  // boolean-point-in-polygon. Null when no catalog row matches.
+  boundaryGeoJson: string | null;
+  boundarySource: string | null;
+  boundaryBakedAt: string | null;
+  isoCountry: string | null;       // alpha-2
   regions: RegionInfo[];
   loading: boolean;
   switchRegion: (regionName: string) => Promise<void>;
@@ -32,6 +50,10 @@ const defaults: RegionContextValue = {
   center: { lat: 37.7749, lng: -122.4194 },
   zoom: 11,
   bbox: { minLat: 37.700, maxLat: 37.820, minLon: -122.520, maxLon: -122.350 },
+  boundaryGeoJson: null,
+  boundarySource: null,
+  boundaryBakedAt: null,
+  isoCountry: null,
   regions: [],
   loading: true,
   switchRegion: async () => {},
@@ -67,22 +89,35 @@ export function useRegionProvider() {
   useEffect(() => { fetchRegions(); }, [fetchRegions]);
 
   const switchRegion = useCallback(async (regionName: string) => {
+    // IMPORTANT: await the server-side CONFIG.REGION update BEFORE flipping
+    // React state. Otherwise `setActive` causes the App.tsx `dataKey` to
+    // change synchronously, which remounts every demo component. Those
+    // remounted components fire `useEffect` SQL queries against projection
+    // views (e.g. VW_TRIP_SUMMARY) that read REGION via `(SELECT REGION
+    // FROM CONFIG LIMIT 1)`. If the POST hasn't completed yet, CONFIG
+    // still holds the OLD region and demos render stale data.
     try {
       await fetch('/api/regions/active', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region: regionName }),
       });
+      const target = regions.find(r => r.REGION_NAME === regionName);
+      if (target) setActive(target);
       await fetchRegions();
-    } catch {}
-  }, [fetchRegions]);
+    } catch {
+      await fetchRegions();
+    }
+  }, [fetchRegions, regions]);
 
   const value: RegionContextValue = {
     regionName: active?.REGION_NAME ?? defaults.regionName,
     displayName: active?.DISPLAY_NAME ?? defaults.displayName,
     center: {
-      lat: Number(active?.CENTER_LAT ?? defaults.center.lat),
-      lng: Number(active?.CENTER_LON ?? defaults.center.lng),
+      // Prefer boundary centroid (always on land, inside the region) over
+      // CENTER_LAT/LON (sometimes water for bbox-defined regions).
+      lat: Number(active?.BOUNDARY_CENTROID_LAT ?? active?.CENTER_LAT ?? defaults.center.lat),
+      lng: Number(active?.BOUNDARY_CENTROID_LON ?? active?.CENTER_LON ?? defaults.center.lng),
     },
     zoom: Number(active?.ZOOM_LEVEL ?? defaults.zoom),
     bbox: active?.BBOX_MIN_LAT != null
@@ -93,6 +128,10 @@ export function useRegionProvider() {
           maxLon: active.BBOX_MAX_LON!,
         }
       : defaults.bbox,
+    boundaryGeoJson: active?.BOUNDARY_GEOJSON ?? null,
+    boundarySource: active?.BOUNDARY_SOURCE ?? null,
+    boundaryBakedAt: active?.BOUNDARY_BAKED_AT ?? null,
+    isoCountry: active?.ISO_COUNTRY_A2 ?? null,
     regions,
     loading,
     switchRegion,

@@ -5,14 +5,18 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import MetricCard from '../../shared/MetricCard';
 import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
+import { useRegion } from '../../hooks/useRegion';
+import { useVehicleType } from '../../hooks/useVehicleType';
 
 export default function DeliveryDashboard() {
+  const { regionName, center, zoom } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [kpis, setKpis] = useState<any>({});
   const [trips, setTrips] = useState<any[]>([]);
   const [hourly, setHourly] = useState<any[]>([]);
   const [courierStats, setCourierStats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 12, pitch: 0, bearing: 0 });
+  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -24,16 +28,18 @@ export default function DeliveryDashboard() {
     ]).then(([k, t, h, c]) => {
       setKpis(k[0] || {});
       setTrips(t);
-      if (t.length) {
-        const lngs = t.filter((r: any) => r.P_LNG).map((r: any) => Number(r.P_LNG));
-        const lats = t.filter((r: any) => r.P_LAT).map((r: any) => Number(r.P_LAT));
-        if (lngs.length) setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2 }));
-      }
+      // Don't auto-pan to data centroid here - the boundary-derived center
+      // from useRegion is authoritative for the active region. See
+      // FleetOverview.tsx for the same pattern.
       setHourly(h);
       setCourierStats(c);
       setLoading(false);
     });
-  }, []);
+  }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
+  }, [center.lng, center.lat, zoom]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 

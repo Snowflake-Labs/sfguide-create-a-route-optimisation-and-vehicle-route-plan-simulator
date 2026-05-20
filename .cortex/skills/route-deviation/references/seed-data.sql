@@ -107,8 +107,12 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
 --------------------------------------------------------------------
 -- ETL: TRIP_DEVIATION_ANALYSIS
 --------------------------------------------------------------------
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    LAG = '5 minutes'
+    REFRESH_MODE = 'AUTO'
+    INITIALIZE = 'ON_CREATE'
+    WAREHOUSE = ROUTING_ANALYTICS
 AS
 WITH trip_points AS (
     SELECT TRIP_ID, COUNT(*) AS POINT_COUNT
@@ -171,8 +175,12 @@ WHERE t.ACTUAL_PATH IS NOT NULL;
 --------------------------------------------------------------------
 -- ETL: DRIVER_DEVIATION_SUMMARY
 --------------------------------------------------------------------
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY
+CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    LAG = '5 minutes'
+    REFRESH_MODE = 'AUTO'
+    INITIALIZE = 'ON_CREATE'
+    WAREHOUSE = ROUTING_ANALYTICS
 AS
 SELECT
     d.VEHICLE_ID, d.DRIVER_ID,
@@ -193,8 +201,12 @@ GROUP BY d.VEHICLE_ID, d.DRIVER_ID, f.DRIVER_PROFILE, f.OPERATING_MODE, f.HOME_C
 --------------------------------------------------------------------
 -- ETL: DAILY_DEVIATION_TRENDS
 --------------------------------------------------------------------
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS
+CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-deviation","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    LAG = '5 minutes'
+    REFRESH_MODE = 'AUTO'
+    INITIALIZE = 'ON_CREATE'
+    WAREHOUSE = ROUTING_ANALYTICS
 AS
 SELECT
     TRIP_DATE,
