@@ -2046,6 +2046,7 @@ async function callCortexAgentWithToolLoop(
   message: string, threadId?: string, parentMessageId?: string,
   onProgress?: (data: { step: string; detail?: string }) => void,
   onToken?: (text: string) => void,
+  onWorkflow?: (step: any) => void,
 ): Promise<any> {
   if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
   console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
@@ -2055,21 +2056,33 @@ async function callCortexAgentWithToolLoop(
   ];
   const maxIterations = 5;
   const allToolResults: any[] = [];
+  const workflowSteps: any[] = [];
   let toolsExecuted = false;
+
+  onWorkflow?.({ type: 'start', label: 'Agent started', ts: Date.now() });
+  workflowSteps.push({ type: 'start', label: 'Agent started', ts: Date.now() });
 
   for (let iter = 0; iter < maxIterations; iter++) {
     onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
+    onWorkflow?.({ type: 'llm', label: iter === 0 ? 'Reasoning' : `Reasoning (step ${iter + 1})`, ts: Date.now() });
+    workflowSteps.push({ type: 'llm', label: iter === 0 ? 'Reasoning' : `Reasoning (step ${iter + 1})`, ts: Date.now() });
 
     if (toolsExecuted && onToken) {
       onProgress?.({ step: 'formatting', detail: 'Generating response...' });
+      onWorkflow?.({ type: 'formatting', label: 'Generating response', ts: Date.now() });
+      workflowSteps.push({ type: 'formatting', label: 'Generating response', ts: Date.now() });
       try {
         const streamedText = await callCortexCompleteStreaming(messages, onToken);
-        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults };
+        onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
+        workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
+        return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
       } catch (streamErr: any) {
         console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
         const fallback = await callCortexComplete(messages);
         onToken(fallback);
-        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults };
+        onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
+        workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
+        return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
       }
     }
 
@@ -2080,20 +2093,28 @@ async function callCortexAgentWithToolLoop(
     if (!toolCall) {
       console.log(`[Agent] No tool call found, returning text response`);
       if (onToken) onToken(response);
-      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
+      onWorkflow?.({ type: 'done', label: 'Complete', ts: Date.now() });
+      workflowSteps.push({ type: 'done', label: 'Complete', ts: Date.now() });
+      return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
     }
 
     const toolLabel = toolCall.name.replace('tool_', '');
     onProgress?.({ step: 'executing_tool', detail: toolLabel });
+    onWorkflow?.({ type: 'tool_start', label: `Calling ${toolLabel}`, tool: toolCall.name, input: toolCall.input, ts: Date.now() });
+    workflowSteps.push({ type: 'tool_start', label: `Calling ${toolLabel}`, tool: toolCall.name, input: toolCall.input, ts: Date.now() });
     console.log(`[Agent] Executing tool: ${toolCall.name}`);
     messages.push({ role: 'assistant', content: response });
     const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
     allToolResults.push(toolResult);
     toolsExecuted = true;
+    onWorkflow?.({ type: 'tool_done', label: `${toolLabel} complete`, tool: toolCall.name, ts: Date.now() });
+    workflowSteps.push({ type: 'tool_done', label: `${toolLabel} complete`, tool: toolCall.name, ts: Date.now() });
     const resultStr = JSON.stringify(toolResult).slice(0, 30000);
     messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
   }
-  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults };
+  onWorkflow?.({ type: 'done', label: 'Max iterations reached', ts: Date.now() });
+  workflowSteps.push({ type: 'done', label: 'Max iterations reached', ts: Date.now() });
+  return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults, _workflowSteps: workflowSteps };
 }
 
 function sendSseEvent(res: any, event: string, data: any) {
@@ -2124,15 +2145,17 @@ app.post('/api/agent/chat', async (req, res) => {
   try {
     const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
     const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken);
+    const onWorkflow = (step: any) => { sendSseEvent(res, 'workflow', step); };
+    const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken, onWorkflow);
     const content = agentResult?.content || [];
     let msg = '';
     let geometry: any = null;
     const toolResults: any[] = agentResult?._toolResults || [];
+    const workflowSteps: any[] = agentResult?._workflowSteps || [];
     for (const item of content) { if (item.type === 'text') msg += (msg ? '\n' : '') + item.text; }
     for (const tr of toolResults) { if (tr && typeof tr === 'object' && tr.geometry && !geometry) geometry = tr.geometry; }
     if (!msg) msg = agentResult?.message || 'No response from agent';
-    const response: any = { message: msg, tool_results: toolResults };
+    const response: any = { message: msg, tool_results: toolResults, token_usage: { workflow_steps: workflowSteps } };
     if (geometry) response.geometry = geometry;
     if (agentResult?.metadata?.thread_id) response.thread_id = agentResult.metadata.thread_id;
     if (agentResult?.metadata?.message_id) response.message_id = agentResult.metadata.message_id;
