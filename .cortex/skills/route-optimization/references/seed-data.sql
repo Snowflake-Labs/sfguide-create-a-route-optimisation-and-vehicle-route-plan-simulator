@@ -187,7 +187,7 @@ SELECT $REGION_NAME, 'healthcare', 'flammable', 'sharps', 'temperature-controlle
        ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
        ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge'),
        NULL,
-       ARRAY_CONSTRUCT('warehouse', 'medical_supply', 'pharmaceutical'),
+       ARRAY_CONSTRUCT('warehouses', 'medical_supply', 'storage_facility'),
        'Supplier Depot'
 UNION ALL
 SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
@@ -196,7 +196,7 @@ SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Peris
        ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
        ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
        NULL,
-       ARRAY_CONSTRUCT('warehouse', 'food_processing', 'cold_storage', 'distribution_center'),
+       ARRAY_CONSTRUCT('warehouses', 'food_beverage_service_distribution', 'storage_facility'),
        'Distribution Depot'
 UNION ALL
 SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
@@ -205,7 +205,7 @@ SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up'
        ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
        ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
        NULL,
-       ARRAY_CONSTRUCT('warehouse', 'distribution_center', 'factory'),
+       ARRAY_CONSTRUCT('warehouses', 'distribution_services', 'storage_facility'),
        'Distribution Centre'
 UNION ALL
 SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
@@ -214,7 +214,7 @@ SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'S
        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
        ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'),
        NULL,
-       ARRAY_CONSTRUCT('warehouse', 'brewery', 'distillery', 'winery'),
+       ARRAY_CONSTRUCT('warehouses', 'brewery', 'distillery', 'winery'),
        'Distribution Depot'
 UNION ALL
 SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',

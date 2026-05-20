@@ -69,6 +69,7 @@ export default function RouteOptimization() {
   const [nearbySchools, setNearbySchools] = useState<any[]>([]);
   const [selectedSchools, setSelectedSchools] = useState<any[]>([]);
   const [depotLabel, setDepotLabel] = useState('Depot');
+  const [skillCapacity, setSkillCapacity] = useState<Record<number, number>>({ 1: 10, 2: 10, 3: 10 });
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
   const [activeResultTab, setActiveResultTab] = useState<'map' | 'assignments'>('map');
   const [jobAssignments, setJobAssignments] = useState<JobAssignment[]>([]);
@@ -147,11 +148,22 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords || !selectedIndustry) return;
     setLoading(true);
-    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
+    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL, CAPACITY FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
     const sourceTable = lookupRows?.[0]?.SOURCE_TABLE || null;
     const depotCtype = lookupRows?.[0]?.DEPOT_CTYPE;
     const dLabel = lookupRows?.[0]?.DEPOT_LABEL || 'Depot';
     setDepotLabel(dLabel);
+    const capArr = lookupRows?.[0]?.CAPACITY;
+    if (capArr) {
+      const caps = typeof capArr === 'string' ? JSON.parse(capArr) : capArr;
+      if (Array.isArray(caps)) {
+        const capMap: Record<number, number> = {};
+        caps.forEach((c: number, i: number) => { capMap[i + 1] = c; });
+        setSkillCapacity(capMap);
+      }
+    } else {
+      setSkillCapacity({ 1: 10, 2: 10, 3: 10 });
+    }
     let placesQuery: string;
     if (sourceTable) {
       placesQuery = `SELECT NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS
@@ -213,7 +225,7 @@ export default function RouteOptimization() {
     let id = 1;
     for (const [skillStr, count] of Object.entries(skillCounts)) {
       const skill = Number(skillStr);
-      const cap = SKILL_CAPACITY[skill] || 10;
+      const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10;
       const numVehicles = Math.max(1, Math.ceil(count / cap));
       for (let i = 0; i < numVehicles; i++) {
         recommended.push({ id: id++, profile: 'driving-car', skills: [skill], startLng: centerCoords[0], startLat: centerCoords[1], endLng: centerCoords[0], endLat: centerCoords[1], capacity: cap });
@@ -292,12 +304,13 @@ export default function RouteOptimization() {
         capacity: [Number(v.capacity)],
         skills: v.skills.length ? v.skills : [(i % 3) + 1],
       };
-      if (isSenTransport) veh.max_travel_time = 2700;
+      if (isSenTransport) veh.max_travel_time = 7200;
       return veh;
     });
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
-    const rows = await sfQuery(`SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`, 'OPENROUTESERVICE_APP', 'CORE');
+    const vrpSql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}')))`;
+    let rows = await sfQuery(vrpSql, 'OPENROUTESERVICE_APP', 'CORE');
     if (rows.length > 0) {
       setVrpResult(rows[0]);
       const paths: any[] = [];
@@ -524,6 +537,26 @@ export default function RouteOptimization() {
         </div>
       )}
 
+      {fleetRecommendation && fleetRecommendation.length > 0 && (
+        <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid #29B5E8', background: 'rgba(41,181,232,0.05)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>Fleet Recommendation</span>
+            <button onClick={() => { const depot = selectedSchools[0]; const vecs = fleetRecommendation.map(v => depot ? { ...v, startLng: Number(depot.LNG), startLat: Number(depot.LAT), endLng: Number(depot.LNG), endLat: Number(depot.LAT) } : v); setVehicles(vecs); }} style={{ fontSize: 11, padding: '3px 10px', background: '#29B5E8', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Apply</button>
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.8 }}>
+            Based on your job templates, you need:{' '}
+            {(() => {
+              const counts: Record<string, number> = {};
+              fleetRecommendation.forEach(v => {
+                const label = v.skills.map(s => skillLabels[s] || `Skill ${s}`).join(' + ');
+                counts[label] = (counts[label] || 0) + 1;
+              });
+              return Object.entries(counts).map(([label, count]) => `${count}x ${label} (cap: ${fleetRecommendation.find(fr => fr.skills.some(s => skillLabels[s] === label.split(' + ')[0]))?.capacity || '?'})`).join(', ');
+            })()}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <button className="btn-primary" onClick={() => setShowVehicleBuilder(!showVehicleBuilder)} style={{ fontSize: 12 }}>{showVehicleBuilder ? 'Hide' : 'Show'} Vehicle Builder</button>
         <button className="btn-primary" onClick={() => setShowJobTemplates(!showJobTemplates)} style={{ fontSize: 12 }}>{showJobTemplates ? 'Hide' : 'Show'} Job Templates</button>
@@ -556,7 +589,7 @@ export default function RouteOptimization() {
                   const num = Number(numStr);
                   const active = v.skills.includes(num);
                   return (
-                    <button key={num} onClick={() => setVehicles(prev => prev.map((vv, ii) => { if (ii !== i) return vv; const newSkills = active ? vv.skills.filter(s => s !== num) : [...vv.skills, num]; const primarySkill = newSkills[newSkills.length - 1]; return { ...vv, skills: newSkills, capacity: SKILL_CAPACITY[primarySkill] || vv.capacity }; }))} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: active ? '1px solid #29B5E8' : '1px solid var(--border)', background: active ? 'rgba(41,181,232,0.15)' : 'transparent', color: active ? '#29B5E8' : 'var(--text-secondary)', cursor: 'pointer' }}>{label.split(' ')[0]}</button>
+                    <button key={num} onClick={() => setVehicles(prev => prev.map((vv, ii) => { if (ii !== i) return vv; const newSkills = active ? vv.skills.filter(s => s !== num) : [...vv.skills, num]; const primarySkill = newSkills[newSkills.length - 1]; return { ...vv, skills: newSkills, capacity: skillCapacity[primarySkill] || SKILL_CAPACITY[primarySkill] || vv.capacity }; }))} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, border: active ? '1px solid #29B5E8' : '1px solid var(--border)', background: active ? 'rgba(41,181,232,0.15)' : 'transparent', color: active ? '#29B5E8' : 'var(--text-secondary)', cursor: 'pointer' }}>{label.split(' ')[0]}</button>
                   );
                 })}
               </div>
@@ -591,28 +624,8 @@ export default function RouteOptimization() {
             ))}
           </div>
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: 'driving-car', skills: [skill], startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
+            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: 'driving-car', skills: [skill], startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
             <span style={{ fontSize: 11, opacity: 0.6 }}>{Math.min(places.length, maxJobs)} jobs will be sent to solver</span>
-          </div>
-        </div>
-      )}
-
-      {fleetRecommendation && fleetRecommendation.length > 0 && (
-        <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid #29B5E8', background: 'rgba(41,181,232,0.05)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>Fleet Recommendation</span>
-            <button onClick={() => setVehicles(fleetRecommendation)} style={{ fontSize: 11, padding: '3px 10px', background: '#29B5E8', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>Apply</button>
-          </div>
-          <div style={{ fontSize: 11, opacity: 0.8 }}>
-            Based on your job templates, you need:{' '}
-            {(() => {
-              const counts: Record<string, number> = {};
-              fleetRecommendation.forEach(v => {
-                const label = v.skills.map(s => skillLabels[s] || `Skill ${s}`).join(' + ');
-                counts[label] = (counts[label] || 0) + 1;
-              });
-              return Object.entries(counts).map(([label, count]) => `${count}x ${label}`).join(', ');
-            })()}
           </div>
         </div>
       )}
