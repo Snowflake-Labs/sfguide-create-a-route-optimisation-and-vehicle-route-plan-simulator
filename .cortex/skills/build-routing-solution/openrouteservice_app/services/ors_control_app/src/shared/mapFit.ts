@@ -1,4 +1,5 @@
 import { WebMercatorViewport } from '@deck.gl/core';
+import { cellToBoundary } from 'h3-js';
 
 export type LngLat = [number, number];
 export type Bounds = [[number, number], [number, number]];
@@ -47,6 +48,30 @@ export function coordsFromPoints<T>(
       const lat = (v as any).lat ?? (v as any).latitude;
       if (isFiniteNum(lng) && isFiniteNum(lat)) out.push([lng, lat]);
     }
+  }
+  return out;
+}
+
+export function coordsFromH3Cells<T>(
+  rows: T[] | null | undefined,
+  getCell: (row: T) => string | null | undefined,
+  opts: { sample?: number } = {}
+): LngLat[] {
+  if (!rows || !rows.length) return [];
+  const out: LngLat[] = [];
+  const sample = opts.sample ?? 2000;
+  const stride = sample > 0 && rows.length > sample ? Math.ceil(rows.length / sample) : 1;
+  for (let i = 0; i < rows.length; i += stride) {
+    const cell = getCell(rows[i]);
+    if (!cell || typeof cell !== 'string' || cell.length < 15) continue;
+    try {
+      const verts = cellToBoundary(cell);
+      for (const v of verts) {
+        const lat = v[0];
+        const lng = v[1];
+        if (isFiniteNum(lat) && isFiniteNum(lng)) out.push([lng, lat]);
+      }
+    } catch { /* skip invalid */ }
   }
   return out;
 }

@@ -4,10 +4,8 @@ import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
-import { useFitMap } from '../../shared/useFitMap';
+import { useH3FitMap } from '../../shared/useH3FitMap';
 import RecenterButton from '../../shared/RecenterButton';
-import type { LngLat } from '../../shared/mapFit';
-import { cellToLatLng } from 'h3-js';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -58,20 +56,16 @@ export default function CongestionMap() {
 
   const layers = useMemo(() => [basemap, hexLayer].filter(Boolean), [basemap, hexLayer]);
 
-  const fitCoords = useMemo<LngLat[]>(() => {
-    const out: LngLat[] = [];
-    for (const r of data) {
-      if (!r.H3_INDEX || typeof r.H3_INDEX !== 'string') continue;
-      try {
-        const [lat, lng] = cellToLatLng(r.H3_INDEX);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) out.push([lng, lat]);
-      } catch { /* skip */ }
-    }
-    return out;
-  }, [data]);
+  const fitCoordsDeps = data;
+  const getCell = useCallback((d: any) => d.H3_INDEX, []);
 
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, pitch: 45, regionKey: regionName });
+  const { containerRef, viewState, onViewStateChange, recenter, fitCoords } = useH3FitMap(fitCoordsDeps, getCell, {
+    fallback,
+    pitch: 45,
+    regionKey: regionName,
+    padding: { top: 100, bottom: 60, left: 60, right: 60 },
+  });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object || !object.H3_INDEX) return null;

@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { PathLayer, BitmapLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { TileLayer, H3HexagonLayer } from '@deck.gl/geo-layers';
 import { useFitMap } from '../shared/useFitMap';
+import { coordsFromH3Cells } from '../shared/mapFit';
 import RecenterButton from '../shared/RecenterButton';
 import { useRegion } from '../hooks/useRegion';
 
@@ -122,8 +123,12 @@ export default function Intro() {
         }
       } catch { /* skip */ }
     }
+    if (showGrid && hexData.length) {
+      const hexCoords = coordsFromH3Cells(hexData, (d: any) => d.H3_INDEX, { sample: 2000 });
+      for (const c of hexCoords) pts.push(c);
+    }
     return pts;
-  }, [visibleTrips]);
+  }, [visibleTrips, showGrid, hexData]);
 
   const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback: SF_VIEW, regionKey: regionName });
 

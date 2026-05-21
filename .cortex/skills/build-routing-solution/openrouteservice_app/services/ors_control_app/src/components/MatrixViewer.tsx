@@ -12,9 +12,9 @@ import {
 } from './matrix-viewer/helpers';
 import { getOdPair, getHexLatLon } from '../api/matrix';
 import { useFitMap } from '../shared/useFitMap';
+import { coordsFromH3Cells } from '../shared/mapFit';
 import RecenterButton from '../shared/RecenterButton';
 import { useRegion } from '../hooks/useRegion';
-import { cellToLatLng } from 'h3-js';
 import type { LngLat } from '../shared/mapFit';
 
 type ViewerMode = 'area' | 'pair';
@@ -423,12 +423,8 @@ export default function MatrixViewer() {
     if (mode === 'pair' && destHex && (destLat !== 0 || destLon !== 0)) {
       out.push([destLon, destLat]);
     } else if (mode === 'area' && destinations.length > 0) {
-      for (const d of destinations) {
-        try {
-          const [lat, lng] = cellToLatLng(d.hex_id);
-          if (Number.isFinite(lat) && Number.isFinite(lng)) out.push([lng, lat]);
-        } catch { /* skip */ }
-      }
+      const hexCoords = coordsFromH3Cells(destinations, (d: ReachabilityData) => d.hex_id, { sample: 2000 });
+      for (const c of hexCoords) out.push(c);
     }
     return out;
   }, [mode, originLat, originLon, destHex, destLat, destLon, destinations]);

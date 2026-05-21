@@ -5,10 +5,8 @@ import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
-import { useFitMap } from '../../shared/useFitMap';
+import { useH3FitMap } from '../../shared/useH3FitMap';
 import RecenterButton from '../../shared/RecenterButton';
-import type { LngLat } from '../../shared/mapFit';
-import { cellToLatLng } from 'h3-js';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -64,19 +62,14 @@ export default function CourierHeatmap() {
 
   const layers = useMemo(() => [basemap, hexLayer].filter(Boolean), [basemap, hexLayer]);
 
-  const fitCoords = useMemo<LngLat[]>(() => {
-    const out: LngLat[] = [];
-    for (const h of hexData) {
-      if (!h.H3_INDEX || typeof h.H3_INDEX !== 'string') continue;
-      try {
-        const [lat, lng] = cellToLatLng(h.H3_INDEX);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) out.push([lng, lat]);
-      } catch { /* skip */ }
-    }
-    return out;
-  }, [hexData]);
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 }), [center.lng, center.lat, zoom]);
-  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, pitch: 45, regionKey: regionName });
+  const getCell = useCallback((d: any) => d.H3_INDEX, []);
+  const { containerRef, viewState, onViewStateChange, recenter, fitCoords } = useH3FitMap(hexData, getCell, {
+    fallback,
+    pitch: 45,
+    regionKey: regionName,
+    padding: { top: 100, bottom: 60, left: 60, right: 60 },
+  });
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.H3_INDEX) return null;
