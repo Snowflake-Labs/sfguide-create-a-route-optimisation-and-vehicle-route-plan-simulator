@@ -186,12 +186,30 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
           `SELECT BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY WHERE REGION_NAME='${preset.REGION}'`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
-        const bbox = regionRows.length ? {
-          min_lat: Number(regionRows[0].BBOX_MIN_LAT),
-          max_lat: Number(regionRows[0].BBOX_MAX_LAT),
-          min_lng: Number(regionRows[0].BBOX_MIN_LON),
-          max_lng: Number(regionRows[0].BBOX_MAX_LON),
-        } : { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 };
+        let bbox: { min_lat: number; max_lat: number; min_lng: number; max_lng: number };
+        if (regionRows.length) {
+          bbox = {
+            min_lat: Number(regionRows[0].BBOX_MIN_LAT),
+            max_lat: Number(regionRows[0].BBOX_MAX_LAT),
+            min_lng: Number(regionRows[0].BBOX_MIN_LON),
+            max_lng: Number(regionRows[0].BBOX_MAX_LON),
+          };
+        } else {
+          const orsMapRows = await snowSql(
+            `SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION='${preset.REGION}'`,
+            'OPENROUTESERVICE_APP', 'CORE'
+          );
+          if (orsMapRows.length) {
+            bbox = {
+              min_lat: Number(orsMapRows[0].MIN_LAT),
+              max_lat: Number(orsMapRows[0].MAX_LAT),
+              min_lng: Number(orsMapRows[0].MIN_LON),
+              max_lng: Number(orsMapRows[0].MAX_LON),
+            };
+          } else {
+            bbox = { min_lat: 37.7, max_lat: 37.82, min_lng: -122.52, max_lng: -122.35 };
+          }
+        }
 
         config = {
           ...presetConfig,

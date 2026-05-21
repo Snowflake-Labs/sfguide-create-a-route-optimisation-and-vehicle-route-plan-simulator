@@ -333,7 +333,9 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","resources":{"requests":{"cpu":"2","memory":"' ||
+    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '16Gi' WHEN 'L' THEN '8Gi' WHEN 'S' THEN '2Gi' ELSE '4Gi' END ||
+    '"}},"volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
     '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
     CASE UPPER(P_COMPUTE_SIZE) WHEN 'XL' THEN '16G' WHEN 'L' THEN '8G' WHEN 'S' THEN '2G' ELSE '4G' END ||
     '","XMX":"' ||

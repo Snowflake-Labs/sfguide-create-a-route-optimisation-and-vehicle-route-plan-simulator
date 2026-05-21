@@ -543,22 +543,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql"       -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql" -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql" -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection>
-   ```
-
-   **Advanced Matrix Modules (Optional):**
-   
-   Modules 05 and 06 implement precomputed travel-time matrix functionality for performance optimization. These are **optional** — core routing functions (DIRECTIONS, ISOCHRONES, OPTIMIZATION) work without them.
-   
-   ```bash
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql" -c <connection> && \
    snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql"   -c <connection> && \
-   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection> 
+   snow sql -f ".cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql"        -c <connection>
    ```
-   
-   Skip these modules if:
-   - You don't need precomputed travel-time matrices
-   - You want faster initial deployment
-   - You'll deploy them later when needed
 
    > **Note on Module 03:** Module 03 is large (461 lines) but required. In workspace environments, executing complex procedures via `snowflake_sql_execute` is acceptable. Core tables and procedures (`REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, `REFRESH_REGION_CATALOG`, `LOAD_SEED_CATALOG`) are essential; advanced provisioning procedures can be created later if needed.
 
