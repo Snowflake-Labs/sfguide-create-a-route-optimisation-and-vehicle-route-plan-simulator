@@ -75,7 +75,13 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
       COMPLETED_AT TIMESTAMP_NTZ, LOG_TEXT VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
-    { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS LOG_TEXT VARIANT`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS LOG_TEXT VARIANT;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.JOB_EVENTS (
       JOB_ID VARCHAR,
       SEQ NUMBER AUTOINCREMENT START 1 INCREMENT 1,
@@ -83,7 +89,13 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       EVENT_TYPE VARCHAR(30),
       PAYLOAD VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-studio-job-events","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
-    { sql: `ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE()`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE FLEET_INTELLIGENCE.CORE.JOB_EVENTS ADD COLUMN IF NOT EXISTS EVENT_TS TIMESTAMP_NTZ DEFAULT SYSDATE();
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
   for (const { sql, db, schema } of ddls) {
     try {
@@ -96,6 +108,14 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
           `or re-run deploy.sh which grants all required privileges automatically.`;
         log('ERROR', 'Studio', hint);
         throw new Error(hint);
+      }
+      // Snowflake's ALTER TABLE ... ADD COLUMN IF NOT EXISTS can raise a
+      // spurious compile-time "ambiguous column name" / "already exists" error
+      // when the column is already present. Treat as a no-op so legacy backfill
+      // ALTERs cannot abort startGeneration.
+      if (/ambiguous column name/i.test(raw) || /already exists/i.test(raw)) {
+        log('INFO', 'Studio', `DDL no-op on ${db}.${schema}: ${raw.slice(0, 160)}`);
+        continue;
       }
       const msg = `DDL error (${db}.${schema}): ${raw.slice(0, 200)}`;
       console.error(`[Studio] ${msg}`);
