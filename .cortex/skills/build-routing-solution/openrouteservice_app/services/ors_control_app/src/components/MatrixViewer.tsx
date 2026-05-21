@@ -429,9 +429,10 @@ export default function MatrixViewer() {
     return out;
   }, [mode, originLat, originLon, destHex, destLat, destLon, destinations]);
 
+  const fitKey = useMemo(() => `${regionName}|${activeTable || ''}`, [regionName, activeTable]);
   const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, {
     fallback: { longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 },
-    regionKey: regionName,
+    regionKey: fitKey,
   });
 
   const getTooltip = useCallback(({ object }: any) => {
