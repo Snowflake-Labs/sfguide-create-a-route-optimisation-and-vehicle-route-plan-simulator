@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { FlyToInterpolator } from '@deck.gl/core';
 import {
   fitBoundsToData,
   coordsSignature,
@@ -68,6 +69,11 @@ export function useFitMap(
   const hasFittedRef = useRef(false);
   const lastRegionRef = useRef<string | undefined>(regionKey);
   const forceFitRef = useRef(false);
+  const echoGuardRef = useRef(0);
+  const coordsRef = useRef(coords);
+  coordsRef.current = coords;
+  const dimsRef = useRef(dims);
+  dimsRef.current = dims;
 
   // Reset the fit-once gate when the active region changes.
   if (lastRegionRef.current !== regionKey) {
@@ -111,17 +117,24 @@ export function useFitMap(
     if (next && isFiniteVS(next)) {
       hasFittedRef.current = true;
       forceFitRef.current = false;
+      echoGuardRef.current = 2;
       setViewState(prev => ({
         ...prev,
         longitude: next.longitude,
         latitude: next.latitude,
         zoom: next.zoom,
-      }));
+        transitionDuration: 600,
+        transitionInterpolator: new FlyToInterpolator(),
+      } as ViewState));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dims, sig, regionKey, recenterTick]);
 
   const onViewStateChange = useCallback((e: { viewState: any }) => {
+    if (echoGuardRef.current > 0) {
+      echoGuardRef.current -= 1;
+      return;
+    }
     const vs = e.viewState;
     if (isFiniteVS(vs)) setViewState(vs);
   }, []);
