@@ -200,6 +200,18 @@ export interface GenerationConfig {
     ping_interval_min_sec: number;
     ping_interval_max_sec: number;
   };
+  // Region-agnostic spatial-bin stratification for home POI assignment and
+  // destination picking. Spreads synthetic data evenly across the active
+  // region polygon instead of inheriting Overture POI density (which clusters
+  // in metros - Ruhr for Germany, Bay Area for California, Paris for France).
+  // Defaults are applied to ALL 5,194 regions in REGION_CATALOG; bin_deg is
+  // null = auto-derived from BOUNDARY_AREA_KM2 at job start.
+  spatial_spread?: {
+    enabled: boolean;
+    bin_deg: number | null;       // null = auto from area
+    min_bins_required: number;    // small regions w/ < N populated bins fall back
+  };
+  region_area_km2?: number | null; // populated by routes.ts before generation
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {
@@ -269,4 +281,24 @@ export function uuid(rng: () => number): string {
     else s += hex[Math.floor(rng() * 16)];
   }
   return s;
+}
+
+// Region-agnostic distance-distribution defaults. Templates that explicitly
+// set `distance_distribution` keep their values; this only fills gaps when the
+// caller (or saved preset) omits the block entirely. Larger regions get a
+// higher long-trip share so trips actually cross spatial bins; tiny regions
+// (cities) keep most trips short.
+export function defaultDistanceDistributionForArea(areaKm2: number | null | undefined): {
+  short_pct: number; short_max_km: number; medium_pct: number; medium_max_km: number; long_pct: number;
+} {
+  if (areaKm2 == null || !Number.isFinite(areaKm2) || areaKm2 <= 0) {
+    return { short_pct: 0.5, short_max_km: 10, medium_pct: 0.3, medium_max_km: 50, long_pct: 0.2 };
+  }
+  if (areaKm2 < 5_000) {
+    return { short_pct: 0.7, short_max_km: 5, medium_pct: 0.25, medium_max_km: 15, long_pct: 0.05 };
+  }
+  if (areaKm2 < 100_000) {
+    return { short_pct: 0.5, short_max_km: 15, medium_pct: 0.3, medium_max_km: 75, long_pct: 0.2 };
+  }
+  return { short_pct: 0.35, short_max_km: 30, medium_pct: 0.35, medium_max_km: 200, long_pct: 0.3 };
 }

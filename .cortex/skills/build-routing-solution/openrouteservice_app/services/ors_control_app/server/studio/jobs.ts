@@ -374,10 +374,38 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, buildFleet, generateFreightOffers } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers } = await import('./engine.js');
+      const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
+      const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
-      const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
+      const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
+      const fleet = fleetResult.fleet;
       const offers = generateFreightOffers(pois, config, 300);
+
+      // Region-agnostic spatial spread diagnostics. Logged once at fleet build
+      // time so users can verify on any of the 5,194 regions in REGION_CATALOG
+      // that homes spread across multiple bins.
+      const ssEnabled = config.spatial_spread?.enabled !== false;
+      const effBinDeg = fleetResult.diagnostics.bin_deg;
+      const poiSpread = ssEnabled ? spreadStats(pois, effBinDeg) : { populated_bins: 0, top_bin_share: 0, median_per_bin: 0 };
+      const homeSpread = ssEnabled ? spreadStats(fleet.map(m => ({ lat: m.home_poi.lat, lng: m.home_poi.lng })), effBinDeg) : { populated_bins: 0, top_bin_share: 0, median_per_bin: 0 };
+      log('INFO', 'Studio', `Spatial spread: bin_deg=${effBinDeg}, area_km2=${config.region_area_km2}, POI bins=${poiSpread.populated_bins} (top_share=${poiSpread.top_bin_share.toFixed(3)}), home bins=${homeSpread.populated_bins} (top_share=${homeSpread.top_bin_share.toFixed(3)}), stratification=${fleetResult.diagnostics.stratification_used}`, {
+        jobId,
+        detail: {
+          bin_deg: effBinDeg,
+          region_area_km2: config.region_area_km2,
+          poi_populated_bins: poiSpread.populated_bins,
+          poi_top_bin_share: poiSpread.top_bin_share,
+          home_populated_bins: homeSpread.populated_bins,
+          home_top_bin_share: homeSpread.top_bin_share,
+          home_vehicles_per_bin_p50: fleetResult.diagnostics.vehicles_per_bin_p50,
+          home_vehicles_per_bin_p95: fleetResult.diagnostics.vehicles_per_bin_p95,
+          stratification_used: fleetResult.diagnostics.stratification_used,
+          total_home_pois: fleetResult.diagnostics.total_home_pois,
+          distance_distribution: config.distance_distribution,
+        },
+      });
+      broadcast(job, 'progress', { status: `Spatial spread: ${homeSpread.populated_bins} home bins, top_share=${(homeSpread.top_bin_share * 100).toFixed(1)}% (bin=${effBinDeg} deg)` });
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);

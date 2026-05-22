@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents } from './jobs.js';
-import { GenerationConfig, PROFILE_TEMPLATES } from './profiles.js';
+import { GenerationConfig, PROFILE_TEMPLATES, defaultDistanceDistributionForArea } from './profiles.js';
 import { log } from '../diagnostics.js';
 import { normalizeRegion } from '../lib/region.js';
+import { bboxAreaKm2 } from './engine/spatial.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
@@ -58,6 +59,30 @@ async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bb
     throw new Error(`No bbox registered for region '${region}'. Add it to FLEET_INTELLIGENCE.CORE.REGION_REGISTRY (or OPENROUTESERVICE_APP.CORE.REGION_CATALOG) before generating data.`);
   }
   return bbox;
+}
+
+// Look up REGION_CATALOG.BOUNDARY_AREA_KM2 for the active region. Used to
+// auto-derive spatial-spread bin_deg and area-aware distance_distribution.
+// Returns null on miss; callers must fall back to bbox-area heuristic.
+async function resolveRegionAreaKm2(region: string, snowSql: SnowSqlFn): Promise<number | null> {
+  const safe = region.replace(/'/g, "''");
+  try {
+    const rows = await snowSql(
+      `SELECT BOUNDARY_AREA_KM2
+       FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+       WHERE UPPER(LOOKUP_NAME) = UPPER('${safe}')
+          OR UPPER(REGION_KEY) = UPPER('${safe}')
+       QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+      'OPENROUTESERVICE_APP', 'CORE',
+    );
+    if (rows.length && rows[0].BOUNDARY_AREA_KM2 != null) {
+      const v = Number(rows[0].BOUNDARY_AREA_KM2);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    }
+  } catch (e: any) {
+    log('WARN', 'Studio', `BOUNDARY_AREA_KM2 lookup failed for '${region}': ${e.message?.slice(0, 200)}`);
+  }
+  return null;
 }
 
 async function checkOrsReadiness(
@@ -261,6 +286,33 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
         config.bbox = await resolveRegionBbox(config.region, snowSql);
       } catch (e: any) {
         return res.status(400).json({ error: e.message, code: 'REGION_NOT_REGISTERED' });
+      }
+
+      // Region-agnostic spatial-spread inputs: read BOUNDARY_AREA_KM2 from
+      // REGION_CATALOG so the engine can auto-derive bin_deg and area-aware
+      // distance distribution. Falls back to bbox-area heuristic when the
+      // catalog row is missing (e.g. user-added region not yet baked).
+      const areaKm2 = (await resolveRegionAreaKm2(config.region, snowSql)) ?? bboxAreaKm2(config.bbox);
+      config.region_area_km2 = areaKm2;
+
+      // Default spatial_spread ON for ALL 5,194 regions; respect user override.
+      if (!config.spatial_spread) {
+        config.spatial_spread = { enabled: true, bin_deg: null, min_bins_required: 3 };
+      } else {
+        if (config.spatial_spread.enabled == null) config.spatial_spread.enabled = true;
+        if (config.spatial_spread.min_bins_required == null) config.spatial_spread.min_bins_required = 3;
+        if (config.spatial_spread.bin_deg === undefined) config.spatial_spread.bin_deg = null;
+      }
+
+      // Fill area-aware defaults only when distance_distribution is missing or
+      // incomplete; explicit template/preset values are preserved.
+      const dd = config.distance_distribution as any;
+      const ddIncomplete = !dd
+        || dd.short_pct == null || dd.short_max_km == null
+        || dd.medium_pct == null || dd.medium_max_km == null
+        || dd.long_pct == null;
+      if (ddIncomplete) {
+        config.distance_distribution = defaultDistanceDistributionForArea(areaKm2);
       }
 
       const health = await checkOrsReadiness(snowSql, config.ors_profile, config.region);
