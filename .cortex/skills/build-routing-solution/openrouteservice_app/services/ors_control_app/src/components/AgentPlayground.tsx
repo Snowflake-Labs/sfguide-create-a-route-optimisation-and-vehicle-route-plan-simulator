@@ -4,10 +4,13 @@ import remarkGfm from 'remark-gfm';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import {
-  injectCursorBlinkCss, cartoBasemap, decodePolyline,
-  MarkerPoint, PoiPoint, GeoData, ChatMsg,
-  poiColor, POI_DISPLAY_NAMES, extractAgentGeoData, stripToolCallJson,
-  SAMPLE_PROMPTS, EMPTY_GEO,
+  injectCursorBlinkCss, cartoBasemap,
+  MarkerPoint, GeoData, ChatMsg,
+  POI_DISPLAY_NAMES, extractAgentGeoData, stripToolCallJson,
+  EMPTY_GEO,
+  DemoScenario, AgentDemosConfig, FALLBACK_SCENARIOS,
+  SavedPrompt, SAVED_PROMPTS_KEY, loadSavedPrompts, persistSavedPrompts,
+  WorkflowStep,
 } from './agent-playground/helpers';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
@@ -22,6 +25,10 @@ export default function AgentPlayground() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
+  const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
+  const [activeScenario, setActiveScenario] = useState<string>(FALLBACK_SCENARIOS[0]?.id || 'pharma');
+  const [savedPrompts, setSavedPromptsState] = useState<SavedPrompt[]>([]);
+  const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const SF_FALLBACK = { longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 };
   const fitCoords = useMemo<LngLat[]>(() => {
@@ -38,10 +45,52 @@ export default function AgentPlayground() {
     setMessages([]);
     setInput('');
     setGeoData(EMPTY_GEO);
+    setWorkflowSteps([]);
     streamingTextRef.current = '';
   }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  // Load scenarios from /api/agent/config (served from ORS stage's agent-demos.json).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agent/config')
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: AgentDemosConfig | null) => {
+        if (cancelled || !data || !Array.isArray(data.scenarios) || data.scenarios.length === 0) return;
+        setScenarios(data.scenarios);
+        if (data.default_scenario && data.scenarios.some(s => s.id === data.default_scenario)) {
+          setActiveScenario(data.default_scenario);
+        } else {
+          setActiveScenario(data.scenarios[0].id);
+        }
+      })
+      .catch(() => { /* keep fallback */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => { setSavedPromptsState(loadSavedPrompts()); }, []);
+
+  const addSavedPrompt = useCallback((prompt: string) => {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    const label = trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed;
+    const next: SavedPrompt = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, label, prompt: trimmed };
+    setSavedPromptsState(prev => {
+      const dedup = prev.filter(p => p.prompt !== trimmed);
+      const updated = [next, ...dedup].slice(0, 12);
+      persistSavedPrompts(updated);
+      return updated;
+    });
+  }, []);
+
+  const deleteSavedPrompt = useCallback((id: string) => {
+    setSavedPromptsState(prev => {
+      const updated = prev.filter(p => p.id !== id);
+      persistSavedPrompts(updated);
+      return updated;
+    });
+  }, []);
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || streaming) return;
@@ -49,6 +98,7 @@ export default function AgentPlayground() {
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setStreaming(true);
+    setWorkflowSteps([]);
 
     try {
       const controller = new AbortController();
@@ -97,9 +147,14 @@ export default function AgentPlayground() {
                     else updated.push({ role: 'assistant', content: accumulated, streaming: true });
                     return updated;
                   });
+                } else if (eventType === 'workflow') {
+                  setWorkflowSteps(prev => [...prev, parsed as WorkflowStep]);
                 } else if (eventType === 'result') {
                   assistantContent = parsed.message || streamingTextRef.current || '';
                   if (parsed.tool_results) toolResults.push(...parsed.tool_results);
+                  if (parsed.token_usage?.workflow_steps && Array.isArray(parsed.token_usage.workflow_steps)) {
+                    setWorkflowSteps(parsed.token_usage.workflow_steps as WorkflowStep[]);
+                  }
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
@@ -286,9 +341,31 @@ export default function AgentPlayground() {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
 
       <div style={{ marginBottom: 10 }}>
+        {scenarios.length > 1 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {scenarios.map(sc => (
+              <button
+                key={sc.id}
+                onClick={() => setActiveScenario(sc.id)}
+                disabled={streaming}
+                title={sc.description}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px',
+                  background: activeScenario === sc.id ? 'var(--accent)' : 'var(--surface, rgba(0,0,0,0.03))',
+                  color: activeScenario === sc.id ? '#fff' : 'var(--text)',
+                  border: activeScenario === sc.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  borderRadius: 20, cursor: 'pointer', fontSize: 12,
+                  fontWeight: activeScenario === sc.id ? 600 : 400,
+                }}
+              >
+                <span>{sc.icon}</span><span>{sc.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Try an example</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {SAMPLE_PROMPTS.map((sp, i) => (
+          {(scenarios.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (
             <button
               key={i}
               onClick={() => setInput(sp.prompt)}
@@ -306,6 +383,36 @@ export default function AgentPlayground() {
             </button>
           ))}
         </div>
+        {savedPrompts.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>My saved prompts</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {savedPrompts.map(sp => (
+                <span key={sp.id} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 4px 4px 10px',
+                  background: 'var(--surface, rgba(0,0,0,0.03))', border: '1px solid var(--border)',
+                  borderRadius: 20, fontSize: 12, color: 'var(--text)',
+                }}>
+                  <button
+                    onClick={() => setInput(sp.prompt)}
+                    disabled={streaming}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 12, padding: 0 }}
+                  >
+                    {sp.label}
+                  </button>
+                  <button
+                    onClick={() => deleteSavedPrompt(sp.id)}
+                    aria-label="Remove saved prompt"
+                    title="Remove"
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 6px' }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -342,6 +449,12 @@ export default function AgentPlayground() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="select" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} placeholder="Type a message..." style={{ flex: 1 }} />
+            <button
+              onClick={() => addSavedPrompt(input)}
+              disabled={!input.trim() || streaming}
+              title="Save this prompt"
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 16 }}
+            >☆</button>
             <button className="btn-primary" onClick={sendMessage} disabled={streaming || !input.trim()}>{streaming ? '...' : 'Send'}</button>
           </div>
         </div>
@@ -361,6 +474,38 @@ export default function AgentPlayground() {
               ))}
             </div>
           )}
+        </div>
+
+        <div style={{ flex: '0 0 220px', display: 'flex', flexDirection: 'column', maxHeight: 540, padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.02)' }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, color: 'var(--text)' }}>Token Workflow</div>
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {workflowSteps.length === 0 && (
+              <div style={{ color: 'var(--text-secondary)', fontSize: 11, textAlign: 'center', padding: 8 }}>
+                {streaming ? 'Waiting for steps...' : 'No steps yet'}
+              </div>
+            )}
+            {workflowSteps.map((step, i) => {
+              const colorMap: Record<string, string> = {
+                start: 'rgba(99, 102, 241, 0.85)',
+                tool_start: 'rgba(245, 158, 11, 0.85)',
+                tool_done: 'rgba(48, 209, 88, 0.85)',
+                status: 'rgba(148, 163, 184, 0.85)',
+                done: 'rgba(48, 209, 88, 0.95)',
+              };
+              const swatch = colorMap[step.type] || 'rgba(148, 163, 184, 0.7)';
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, color: 'var(--text)' }}>
+                  <span style={{ width: 8, height: 8, marginTop: 4, borderRadius: '50%', background: swatch, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, wordBreak: 'break-word' }}>{step.label || step.type}</div>
+                    {step.tool && step.type !== 'tool_done' && (
+                      <div style={{ color: 'var(--text-secondary)', fontSize: 10 }}>{step.tool}</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
