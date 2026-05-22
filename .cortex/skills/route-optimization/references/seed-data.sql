@@ -82,9 +82,14 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (
     SKILLS INT,
     PRODUCT STRING,
     STATUS STRING DEFAULT 'active',
-    REGION STRING
+    REGION STRING,
+    INDUSTRY STRING
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Backfill INDUSTRY column on installs created before v1.0.172.
+-- Snowflake silently no-ops ADD COLUMN IF NOT EXISTS when the column already exists.
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE ADD COLUMN IF NOT EXISTS INDUSTRY STRING;
 
 --------------------------------------------------------------------
 -- LOOKUP (industry configuration for VRP simulation)
@@ -98,9 +103,17 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     IND ARRAY,
     IND2 ARRAY,
     CTYPE ARRAY,
-    STYPE ARRAY
+    STYPE ARRAY,
+    SOURCE_TABLE STRING DEFAULT NULL,
+    DEPOT_CTYPE ARRAY DEFAULT NULL,
+    DEPOT_LABEL STRING DEFAULT NULL
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Backfill SOURCE_TABLE/DEPOT_CTYPE/DEPOT_LABEL on installs created before v1.0.185.
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS SOURCE_TABLE STRING;
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS DEPOT_CTYPE ARRAY;
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS DEPOT_LABEL STRING;
 
 --------------------------------------------------------------------
 -- SEED_ROUTE_OPTIMIZATION_REGION procedure
@@ -198,8 +211,8 @@ BEGIN
         WHERE REGION != :REGION_KEY
         LIMIT 1;
 
-        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
-        SELECT :REGION_KEY, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL)
+        SELECT :REGION_KEY, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
         WHERE REGION = :source_region;
     ELSE
@@ -207,30 +220,51 @@ BEGIN
         -- (`Invalid expression [ARRAY_CONSTRUCT(...)] in VALUES clause`). Use SELECT ... UNION ALL
         -- to construct array columns inline. See AGENTS.md > "Loading GEOGRAPHY Data" for the same
         -- restriction on ST_MAKEPOINT in VALUES.
-        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE)
-        SELECT :REGION_KEY, 'Healthcare', 'flammable', 'sharps', 'temperature-controlled',
-            ARRAY_CONSTRUCT('hospital health pharmaceutical drug'),
-            ARRAY_CONSTRUCT('supplies warehouse depot'),
-            ARRAY_CONSTRUCT('hospital', 'pharmacy', 'dentist'),
-            ARRAY_CONSTRUCT('Explosive goods', 'Sharp instruments', 'Fridge')
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL)
+        SELECT :REGION_KEY, 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
+            ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
+            ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
+            ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
+            ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge'),
+            NULL,
+            ARRAY_CONSTRUCT('warehouses', 'medical_supply', 'storage_facility'),
+            'Supplier Depot'
         UNION ALL
         SELECT :REGION_KEY, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
             ARRAY_CONSTRUCT('food vegetables meat'),
-            ARRAY_CONSTRUCT('wholesaler warehouse factory'),
+            ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
             ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
-            ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')
+            ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
+            NULL,
+            ARRAY_CONSTRUCT('warehouses', 'food_beverage_service_distribution', 'storage_facility'),
+            'Distribution Depot'
         UNION ALL
         SELECT :REGION_KEY, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
-            ARRAY_CONSTRUCT('hair cosmetics beauty'),
-            ARRAY_CONSTRUCT('wholesaler warehouse factory'),
+            ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
+            ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
             ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
-            ARRAY_CONSTRUCT('Fresh Food', 'Fridge', 'Premium Delivery')
+            ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
+            NULL,
+            ARRAY_CONSTRUCT('warehouses', 'distribution_services', 'storage_facility'),
+            'Distribution Centre'
         UNION ALL
         SELECT :REGION_KEY, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
-            ARRAY_CONSTRUCT('beverage drink brewery'),
-            ARRAY_CONSTRUCT('warehouse distribution depot'),
+            ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
+            ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
             ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
-            ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity');
+            ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'),
+            NULL,
+            ARRAY_CONSTRUCT('warehouses', 'brewery', 'distillery', 'winery'),
+            'Distribution Depot'
+        UNION ALL
+        SELECT :REGION_KEY, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
+            ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
+            ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
+            ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school'),
+            ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus'),
+            'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS',
+            ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school', 'private_school'),
+            'School Destinations';
     END IF;
 
     DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE WHERE REGION = :REGION_KEY;
@@ -247,20 +281,75 @@ BEGIN
         WHERE REGION != :REGION_KEY
         LIMIT 1;
 
-        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION)
-        SELECT SLOT_START, SLOT_END, SKILLS, PRODUCT, 'active', :REGION_KEY
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION, INDUSTRY)
+        SELECT SLOT_START, SLOT_END, SKILLS, PRODUCT, 'active', :REGION_KEY, INDUSTRY
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE
         WHERE REGION = :job_source_region;
     ELSE
-        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION)
-        SELECT column1, column2, column3, column4, 'active', :REGION_KEY FROM VALUES
-        (9,10,1,'pa'),(11,15,2,'pb'),(16,18,2,'pb'),(11,13,3,'pc'),(7,16,3,'pc'),
-        (10,15,2,'pa'),(10,15,2,'pa'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),
-        (13,18,2,'pb'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc'),
-        (11,15,2,'pb'),(16,18,2,'pb'),(11,13,1,'pa'),(7,16,1,'pa'),(10,15,2,'pb'),
-        (10,15,2,'pb'),(7,16,1,'pa'),(9,18,2,'pb'),(13,18,2,'pb'),(13,18,2,'pb'),
-        (13,18,1,'pa'),(13,18,1,'pa'),(13,18,1,'pa'),(13,18,3,'pc');
+        -- SLOT_START/SLOT_END are stored in SECONDS-from-midnight (e.g. 32400 = 09:00).
+        -- Component renders via secsToHHMM(). One row per (industry, time-window, skill).
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION, INDUSTRY)
+        SELECT column1, column2, column3, column4, 'active', :REGION_KEY, column5 FROM VALUES
+        (32400,36000,1,'pa','healthcare'),(39600,54000,2,'pb','healthcare'),(57600,64800,2,'pb','healthcare'),
+        (39600,46800,3,'pc','healthcare'),(25200,57600,3,'pc','healthcare'),(36000,54000,2,'pa','healthcare'),
+        (46800,64800,1,'pa','healthcare'),
+        (39600,54000,2,'pb','Food'),(57600,64800,2,'pb','Food'),(39600,46800,1,'pa','Food'),
+        (25200,57600,1,'pa','Food'),(36000,54000,2,'pb','Food'),(36000,54000,2,'pb','Food'),
+        (25200,57600,1,'pa','Food'),(32400,64800,2,'pb','Food'),
+        (46800,64800,2,'pb','Cosmetics'),(46800,64800,2,'pb','Cosmetics'),(46800,64800,1,'pa','Cosmetics'),
+        (46800,64800,1,'pa','Cosmetics'),(46800,64800,1,'pa','Cosmetics'),(46800,64800,3,'pc','Cosmetics'),
+        (32400,64800,2,'pb','Cosmetics'),
+        (32400,64800,2,'pb','Beverages'),(46800,64800,2,'pb','Beverages'),(46800,64800,2,'pb','Beverages'),
+        (46800,64800,1,'pa','Beverages'),(46800,64800,1,'pa','Beverages'),(46800,64800,1,'pa','Beverages'),
+        (46800,64800,3,'pc','Beverages'),
+        (25200,30600,1,'pa','SEN Transport'),(25200,30600,1,'pa','SEN Transport'),(25200,30600,1,'pa','SEN Transport'),
+        (25200,32400,2,'pb','SEN Transport'),(25200,32400,2,'pb','SEN Transport'),(25200,32400,2,'pb','SEN Transport'),
+        (25200,32400,2,'pb','SEN Transport'),(25200,32400,3,'pc','SEN Transport'),(25200,32400,3,'pc','SEN Transport'),
+        (25200,32400,3,'pc','SEN Transport'),(54000,59400,1,'pa','SEN Transport'),(54000,59400,1,'pa','SEN Transport'),
+        (54000,59400,1,'pa','SEN Transport'),(54000,61200,2,'pb','SEN Transport'),(54000,61200,2,'pb','SEN Transport'),
+        (54000,61200,2,'pb','SEN Transport'),(54000,61200,2,'pb','SEN Transport'),(54000,61200,3,'pc','SEN Transport'),
+        (54000,61200,3,'pc','SEN Transport'),(54000,61200,3,'pc','SEN Transport');
     END IF;
+
+    --------------------------------------------------------------------
+    -- SEN_STUDENTS override table for SEN Transport industry
+    -- (Synthetic student pickup addresses derived from real PLACES rows.)
+    -- Idempotent: only seeded if PLACES has the seed row categories AND
+    -- there are 'school' rows to anchor the 15km buffer.
+    --------------------------------------------------------------------
+    CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (
+        REGION STRING,
+        NAME STRING,
+        CATEGORY STRING DEFAULT 'student_pickup',
+        LNG FLOAT,
+        LAT FLOAT,
+        ADDRESS VARIANT,
+        DISPLAY_ADDRESS STRING
+    )
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+    DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS WHERE REGION = :REGION_KEY;
+
+    BEGIN
+        INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (REGION, NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS)
+        SELECT
+            :REGION_KEY,
+            'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()),
+            'student_pickup',
+            ST_X(GEOMETRY),
+            ST_Y(GEOMETRY),
+            ADDRESS,
+            ADDRESS:freeform::VARCHAR || ', ' || ADDRESS:locality::VARCHAR
+        FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+        WHERE REGION = :REGION_KEY
+          AND ADDRESS:freeform IS NOT NULL
+          AND ADDRESS:locality::VARCHAR IS NOT NULL
+          AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits','home_health_care','professional_services')
+          AND ST_DWITHIN(GEOMETRY, (SELECT ST_COLLECT(GEOMETRY) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE REGION = :REGION_KEY AND CATEGORY = 'school' LIMIT 1), 15000)
+        ORDER BY RANDOM()
+        LIMIT 60;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     -- Refresh counts to report what was actually persisted.
     SELECT COUNT(*) INTO :places_count FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES       WHERE REGION = :REGION_KEY;
