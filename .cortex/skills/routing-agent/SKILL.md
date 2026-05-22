@@ -5,13 +5,27 @@ depends_on:
   - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
-  version: 1.0.0
+  version: 1.1.0
   category: intelligence-agent
 ---
 
 # OpenRouteService Intelligence Demo
 
 Create a Snowflake Intelligence agent that provides AI-powered route planning using OpenRouteService functions with natural language geocoding.
+
+The agent registers seven tools:
+
+- `tool_directions` — multi-region driving / cycling / walking directions.
+- `tool_isochrone` — multi-region reachability polygons.
+- `tool_poi_in_isochrone` — Overture Maps POI search inside an isochrone.
+- `tool_optimization` — multi-region multi-vehicle VRP via VROOM.
+- `tool_supply_chain` — full SF pharma supply-chain plan (depot + 6 pharmacies + 3 specialist vans).
+- `tool_pharma_optimization` — 30 pre-geocoded SF pharmacy stops with skill-bound vehicles.
+- `tool_pharma_catchment` — drive-time catchment morbidity profile for a SF pharmacy.
+
+The first four are functional immediately after this skill runs. The three pharma
+tools require seed data deployed by [`setup-agent-playground`](../setup-agent-playground/SKILL.md);
+they fail gracefully with a "run setup-agent-playground" message if the data is missing.
 
 ## Configuration
 
