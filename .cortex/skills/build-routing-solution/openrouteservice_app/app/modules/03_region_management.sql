@@ -435,7 +435,14 @@ BEGIN
                     -- (skips if PLACES already populated for the region).
                     BEGIN
                         CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION(:P_REGION);
-                    EXCEPTION WHEN OTHER THEN NULL;
+                    EXCEPTION WHEN OTHER THEN
+                        -- Surface seed failures in REGION_PROVISION_JOBS.MESSAGE so they
+                        -- are visible in the UI status panel. Do not block provisioning;
+                        -- the React page calls /api/route-optimization/ensure-seeded as
+                        -- a self-healing fallback the next time a user opens the page.
+                        UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        SET MESSAGE = COALESCE(MESSAGE, '') || ' [route_opt_seed_failed: ' || COALESCE(SQLERRM, 'unknown') || ']'
+                        WHERE JOB_ID = :P_JOB_ID;
                     END;
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
                     SET STATUS='COMPLETE', STAGE='READY',
