@@ -265,23 +265,24 @@ BEGIN
     FETCH c INTO v_center, v_range_minutes, v_profile, v_area_raw, v_geometry, v_ors_error, v_detected_region;
     CLOSE c;
 
-    -- Fallback: if the gateway returned service_unreachable for the regional
-    -- ORS service (typical when the detected region is served by the default
-    -- ORS_SERVICE rather than a per-region ors-service-<region>), retry
-    -- with empty region which routes to the default ORS_SERVICE.
-    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_center IS NOT NULL) THEN
-        LET v_lon FLOAT := v_center:longitude::FLOAT;
-        LET v_lat FLOAT := v_center:latitude::FLOAT;
-        LET fb_sql VARCHAR := 'SELECT i.RESPONSE:features[0]:properties:area::FLOAT,
-                                      i.RESPONSE:features[0]:geometry,
-                                      i.RESPONSE:error
-            FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                ''' || v_safe_profile || ''', ?::FLOAT, ?::FLOAT, ?::NUMBER, '''')) i';
-        res := (EXECUTE IMMEDIATE :fb_sql USING (v_lon, v_lat, RANGE_MINUTES));
-        LET c2 CURSOR FOR res;
-        OPEN c2;
-        FETCH c2 INTO v_area_raw, v_geometry, v_ors_error;
-        CLOSE c2;
+    -- If the gateway returned service_unreachable, the resolved region's ORS
+    -- service is suspended or not provisioned. Surface an actionable error
+    -- naming the region instead of silently falling back to the default region
+    -- (which would hide the real failure and route Berlin queries to SF).
+    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_detected_region IS NOT NULL) THEN
+        LET v_region_name VARCHAR := v_detected_region:lookup_name::VARCHAR;
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT(
+                'ISOCHRONE FAILED: ORS service for region ',
+                v_region_name,
+                ' is not running. Resume it with: ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE_',
+                UPPER(v_region_name),
+                ' RESUME;'
+            ),
+            'detected_region', v_detected_region,
+            'location_requested', v_center,
+            'status', 'FAILED'
+        );
     END IF;
 
     IF (v_center IS NULL) THEN
@@ -414,19 +415,23 @@ BEGIN
     FETCH c INTO v_center, v_range_minutes, v_profile, v_iso_geojson, v_ors_error, v_detected_region;
     CLOSE c;
 
-    -- Fallback: if the gateway returned service_unreachable for the regional
-    -- ORS service, retry with empty region (routes to default ORS_SERVICE).
-    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_center IS NOT NULL) THEN
-        LET v_lon FLOAT := v_center:longitude::FLOAT;
-        LET v_lat FLOAT := v_center:latitude::FLOAT;
-        LET fb_sql VARCHAR := 'SELECT i.RESPONSE:features[0]:geometry, i.RESPONSE:error
-            FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                ''' || v_safe_profile || ''', ?::FLOAT, ?::FLOAT, ?::NUMBER, '''')) i';
-        res := (EXECUTE IMMEDIATE :fb_sql USING (v_lon, v_lat, RANGE_MINUTES));
-        LET c2 CURSOR FOR res;
-        OPEN c2;
-        FETCH c2 INTO v_iso_geojson, v_ors_error;
-        CLOSE c2;
+    -- If the gateway returned service_unreachable, the resolved region's ORS
+    -- service is suspended or not provisioned. Surface an actionable error
+    -- naming the region instead of silently falling back to the default region.
+    IF (v_ors_error IS NOT NULL AND v_ors_error::STRING = 'service_unreachable' AND v_detected_region IS NOT NULL) THEN
+        LET v_region_name VARCHAR := v_detected_region:lookup_name::VARCHAR;
+        RETURN OBJECT_CONSTRUCT(
+            'error', CONCAT(
+                'POI SEARCH FAILED: ORS service for region ',
+                v_region_name,
+                ' is not running. Resume it with: ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_SERVICE_',
+                UPPER(v_region_name),
+                ' RESUME;'
+            ),
+            'detected_region', v_detected_region,
+            'location_requested', v_center,
+            'status', 'FAILED'
+        );
     END IF;
 
     IF (v_center IS NULL) THEN
