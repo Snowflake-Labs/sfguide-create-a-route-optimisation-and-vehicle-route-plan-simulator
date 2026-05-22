@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -15,6 +15,7 @@ import RouteOptimization from './components/RouteOptimization';
 import AssetVelocity from './components/AssetVelocity';
 import BackloadMatching from './components/BackloadMatching';
 import RetailCatchment from './components/RetailCatchment';
+import EmergencyResponseShell from './components/emergency/EmergencyResponseShell';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
@@ -81,6 +82,13 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
   { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
+  { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle, subPages: [
+    { key: 'emergency:hazard-ops', label: 'Hazard Ops' },
+    { key: 'emergency:triage', label: 'Triage' },
+    { key: 'emergency:reachability', label: 'Reachability' },
+    { key: 'emergency:dispatch', label: 'Dispatch' },
+    { key: 'emergency:vulnerability', label: 'Vulnerability' },
+  ]},
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];
 
@@ -169,7 +177,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload', 'emergency'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -293,6 +301,7 @@ export default function App() {
             {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'route-deviation' && <RouteDeviation key={dataKey} subTab={activeSubTab} />}
             {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
+            {activeCategory === 'emergency' && <EmergencyResponseShell subTab={activeSubTab || 'hazard-ops'} />}
             {activeTab === 'agent' && <AgentPlayground />}
             {activeTab === 'diagnostics' && <Diagnostics />}
             </>); })()}
