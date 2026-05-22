@@ -59,6 +59,15 @@ function secsToHHMM(s: any): string {
   return `${String(Math.floor(n / 3600)).padStart(2, '0')}:${String(Math.floor((n % 3600) / 60)).padStart(2, '0')}`;
 }
 
+function hhmmToSecs(s: any): number {
+  if (typeof s !== 'string' || !s.includes(':')) {
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+  const [h, m] = s.split(':').map(Number);
+  return (h || 0) * 3600 + (m || 0) * 60;
+}
+
 export default function RouteOptimization() {
   const { regionName, center, zoom } = useRegion();
   const [searchText, setSearchText] = useState('');
@@ -99,6 +108,15 @@ export default function RouteOptimization() {
   const [unassignedExplanation, setUnassignedExplanation] = useState('');
   const [fleetRecommendation, setFleetRecommendation] = useState<VehicleConfig[] | null>(null);
   const [seedingRegion, setSeedingRegion] = useState(false);
+
+  const depotCoords = useMemo<[number, number] | null>(
+    () => (selectedSchools[0] ? [Number(selectedSchools[0].LNG), Number(selectedSchools[0].LAT)] : null),
+    [selectedSchools]
+  );
+  const vehicleHomeCoords = useMemo<[number, number]>(
+    () => depotCoords || centerCoords || [center.lng, center.lat],
+    [depotCoords, centerCoords, center.lng, center.lat]
+  );
 
   useEffect(() => {
     const lng = Number(center.lng);
@@ -315,11 +333,11 @@ export default function RouteOptimization() {
       const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10;
       const numVehicles = Math.max(1, Math.ceil(count / cap));
       for (let i = 0; i < numVehicles; i++) {
-        recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: centerCoords[0], startLat: centerCoords[1], endLng: centerCoords[0], endLat: centerCoords[1], capacity: cap });
+        recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: cap });
       }
     }
     setFleetRecommendation(recommended);
-  }, [jobTemplates, centerCoords, maxJobs, places.length, availableProfiles, skillCapacity]);
+  }, [jobTemplates, centerCoords, maxJobs, places.length, availableProfiles, skillCapacity, vehicleHomeCoords]);
 
   const previewCatchment = useCallback(async () => {
     if (!centerCoords) return;
@@ -386,11 +404,15 @@ export default function RouteOptimization() {
 
     const vrpJobs = places.slice(0, maxJobs).map((p: any, i: number) => {
       const jt = jobTemplates[i % (jobTemplates.length || 1)];
+      const slotStartSecs = hhmmToSecs(jt?.slotStart || '06:00');
+      const slotEndSecs = hhmmToSecs(jt?.slotEnd || '20:00');
       return {
         id: i + 1,
         location: [Number(p.LNG), Number(p.LAT)],
         service: (jt?.serviceDuration || 5) * 60,
         skills: jt?.skills?.length ? jt.skills : [(i % 3) + 1],
+        delivery: [1],
+        time_windows: [[slotStartSecs, slotEndSecs]],
       };
     });
     const isSenTransport = selectedIndustry === 'SEN Transport';
@@ -402,6 +424,7 @@ export default function RouteOptimization() {
         end: [v.endLng, v.endLat],
         capacity: [Number(v.capacity)],
         skills: v.skills.length ? v.skills : [(i % 3) + 1],
+        time_window: [21600, 72000],
       };
       if (isSenTransport) veh.max_travel_time = 7200;
       return veh;
@@ -764,7 +787,7 @@ export default function RouteOptimization() {
         <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <h3 style={{ fontSize: 13, margin: 0 }}>Vehicle Builder</h3>
-            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: availableProfiles[0] || 'driving-car', skills: [1], startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add Vehicle</button>
+            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: availableProfiles[0] || 'driving-car', skills: [1], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add Vehicle</button>
           </div>
           {vehicles.map((v, i) => (
             <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 12, flexWrap: 'wrap' }}>
@@ -816,7 +839,7 @@ export default function RouteOptimization() {
             ))}
           </div>
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; const baseProfile = availableProfiles[0] || 'driving-car'; for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: centerCoords?.[0] || center.lng, startLat: centerCoords?.[1] || center.lat, endLng: centerCoords?.[0] || center.lng, endLat: centerCoords?.[1] || center.lat, capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
+            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; const baseProfile = availableProfiles[0] || 'driving-car'; for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
             <span style={{ fontSize: 11, opacity: 0.6 }}>{Math.min(places.length, maxJobs)} jobs will be sent to solver</span>
           </div>
         </div>
