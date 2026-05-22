@@ -338,6 +338,39 @@ export function createAgentRouter(): Router {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
+  const FALLBACK_AGENT_CONFIG = {
+    version: '1.0',
+    default_scenario: 'pharma',
+    max_token_limit: 8000,
+    scenarios: [
+      {
+        id: 'pharma',
+        label: 'Pharma Supply Chain',
+        icon: '\u{1F48A}',
+        description: 'Pharmaceutical delivery planning',
+        prompts: [
+          { label: '1. Catchment', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within 10 min drive of 498 Castro Street, San Francisco' },
+        ],
+      },
+    ],
+  };
+
+  router.get('/api/agent/config', async (_req, res) => {
+    try {
+      const rows = await runSql(
+        `SELECT $1 AS CONFIG FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT')`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+      if (rows?.[0]?.CONFIG) {
+        const cfg = typeof rows[0].CONFIG === 'string' ? JSON.parse(rows[0].CONFIG) : rows[0].CONFIG;
+        return res.json(cfg);
+      }
+    } catch (e: any) {
+      console.log(`[agent/config] Stage load failed: ${e.message}, using fallback`);
+    }
+    res.json(FALLBACK_AGENT_CONFIG);
+  });
+
   router.post('/api/agent/chat', async (req, res) => {
     const { message, thread_id, parent_message_id } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
