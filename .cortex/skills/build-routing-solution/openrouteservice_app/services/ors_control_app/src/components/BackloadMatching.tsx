@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, GeoJsonLayer, IconLayer, PathLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, GeoJsonLayer, PathLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
@@ -11,9 +11,10 @@ import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, fitBoundsToData, type LngLat } from '../shared/mapFit';
 import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
+import StopsPanel from './backload-matching/StopsPanel';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_EMPTY_KM, ROUTE_COLORS,
-  Trailer, Volume, Offer, Assignment, SvcStatus,
+  Trailer, Volume, Offer, Assignment, Stop, SvcStatus,
   sfQuery, haversineKm, profileForVehicleType,
 } from './backload-matching/helpers';
 
@@ -40,6 +41,9 @@ export default function BackloadMatching() {
   const [windowToleranceHrs, setWindowToleranceHrs] = useState(4);
   const [maxEmptyKm, setMaxEmptyKm] = useState(200);
   const [forceSharedDest, setForceSharedDest] = useState(false);
+  const [matchMode, setMatchMode] = useState<'single' | 'consolidate'>('single');
+  const [detourSlackHrs, setDetourSlackHrs] = useState(4);
+  const [maxDetourKm, setMaxDetourKm] = useState(120);
   const [sharedDestLon, setSharedDestLon] = useState<number | null>(null);
   const [sharedDestLat, setSharedDestLat] = useState<number | null>(null);
   const [sharedDestUserEdited, setSharedDestUserEdited] = useState(false);
@@ -48,7 +52,7 @@ export default function BackloadMatching() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const emptyLegCacheRef = useRef<Map<string, any>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
-  const [selectedTrailer, setSelectedTrailer] = useState<string | null>(null);
+  const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
   const [rationale, setRationale] = useState<Record<string, string>>({});
   const [rationaleLoading, setRationaleLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -225,54 +229,99 @@ export default function BackloadMatching() {
     const effSharedLon = sharedDestLon ?? fallbackLon;
     const effSharedLat = sharedDestLat ?? fallbackLat;
     const trailerById = new Map<number, Trailer>();
+    const trailerEnd = (t: Trailer): [number, number] =>
+      forceSharedDest && effSharedLon !== null && effSharedLat !== null
+        ? [effSharedLon, effSharedLat]
+        : [Number(t.HOME_LON), Number(t.HOME_LAT)];
+    // Approx HGV avg speed for max_travel_time budget.
+    const KMH_HGV = 60;
+    const directKmFor = (t: Trailer) => {
+      const [eLon, eLat] = trailerEnd(t);
+      return haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, eLon, eLat);
+    };
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
-      return {
+      const [eLon, eLat] = trailerEnd(t);
+      const base: any = {
         id,
         profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
-        end:   forceSharedDest && effSharedLon !== null && effSharedLat !== null
-          ? [effSharedLon, effSharedLat]
-          : [Number(t.HOME_LON),    Number(t.HOME_LAT)],
+        end:   [eLon, eLat],
         capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
       };
+      if (matchMode === 'single') {
+        const directKm = directKmFor(t);
+        const directS  = (directKm / KMH_HGV) * 3600;
+        const slackS   = detourSlackHrs * 3600;
+        // Single backload: 1 pickup + 1 delivery = 2 task steps; bound detour;
+        // high fixed cost so VROOM never adds a trailer for a tiny gain.
+        base.max_tasks = 2;
+        base.max_travel_time = Math.max(1800, Math.round(directS + slackS));
+        base.costs = { fixed: 100000, per_hour: 3600 };
+      }
+      return base;
     });
 
     const offerById = new Map<number, { kind: 'INTERNAL' | string; row: any }>();
     let nextId = 1000;
-    const vrpJobs: any[] = [];
+    const vrpShipments: any[] = [];
 
-    for (const v of internal) {
+    // Score each shipment by detour vs direct trailer->home for the
+    // BEST-FITTING trailer. detourKm = idle->pickup + pickup->dropoff
+    // + dropoff->home  -  direct(idle->home). Lower = better backload.
+    const detourKmForBestTrailer = (lonP: number, latP: number, lonD: number, latD: number) => {
+      let best = Infinity;
+      for (const t of trailers) {
+        const [eLon, eLat] = trailerEnd(t);
+        const direct = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, eLon, eLat);
+        const tour = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, lonP, latP)
+                   + haversineKm(lonP, latP, lonD, latD)
+                   + haversineKm(lonD, latD, eLon, eLat);
+        const detour = tour - direct;
+        if (detour < best) best = detour;
+      }
+      return best;
+    };
+
+    const MAX_INTERNAL = 60;
+    const MAX_EXTERNAL = 30;
+    const internalScored = internal.map(v => ({ v, d: detourKmForBestTrailer(Number(v.PICKUP_LON), Number(v.PICKUP_LAT), Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)) }));
+    const externalScored = external.map(o => ({ o, d: detourKmForBestTrailer(Number(o.PICKUP_LON), Number(o.PICKUP_LAT), Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)) }));
+    const detourCutoff = matchMode === 'single' ? maxDetourKm : Infinity;
+    const internalSubset = internalScored.filter(x => x.d <= detourCutoff).sort((a, b) => a.d - b.d).slice(0, MAX_INTERNAL).map(x => x.v);
+    const externalSubset = externalScored.filter(x => x.d <= detourCutoff).sort((a, b) => a.d - b.d).slice(0, MAX_EXTERNAL).map(x => x.o);
+    const internalSkipped = Math.max(0, internal.length - internalSubset.length);
+    const externalSkipped = Math.max(0, external.length - externalSubset.length);
+
+    for (const v of internalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: 'INTERNAL', row: v });
-      vrpJobs.push({
-        id,
-        location: [Number(v.PICKUP_LON), Number(v.PICKUP_LAT)],
-        service: 1800,
+      vrpShipments.push({
+        pickup:   { id, location: [Number(v.PICKUP_LON),  Number(v.PICKUP_LAT)],  service: 1800 },
+        delivery: { id, location: [Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)], service: 600  },
         amount: [Math.min(Number(v.WEIGHT_KG), 24000)],
         skills: v.HAZMAT ? [1, 3] : [1],
         priority: internalPriority,
       });
     }
-    for (const o of external) {
+    for (const o of externalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: o.SOURCE, row: o });
-      vrpJobs.push({
-        id,
-        location: [Number(o.PICKUP_LON), Number(o.PICKUP_LAT)],
-        service: 1800,
+      vrpShipments.push({
+        pickup:   { id, location: [Number(o.PICKUP_LON),  Number(o.PICKUP_LAT)],  service: 1800 },
+        delivery: { id, location: [Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)], service: 600  },
         amount: [Math.min(Number(o.WEIGHT_KG), 24000)],
         skills: o.HAZMAT ? [2, 3] : [2],
         priority: externalPriority,
       });
     }
 
-    const challenge = { vehicles: vrpVehicles, jobs: vrpJobs, options: { g: true } };
+    const challenge = { vehicles: vrpVehicles, shipments: vrpShipments, options: { g: true } };
     const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
     const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
-    console.log('[BM] OPTIMIZATION challenge: vehicles=', vrpVehicles.length, 'jobs=', vrpJobs.length, 'region=', regionName);
+    console.log('[BM] OPTIMIZATION challenge: vehicles=', vrpVehicles.length, 'shipments=', vrpShipments.length, 'region=', regionName);
     const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
 
     const newAssignments: Assignment[] = [];
@@ -292,35 +341,124 @@ export default function BackloadMatching() {
       try { steps = typeof r.STEPS === 'string' ? JSON.parse(r.STEPS) : (r.STEPS || []); } catch {}
       let routeGeo: any = null;
       try { routeGeo = typeof r.GEOJSON === 'string' ? JSON.parse(r.GEOJSON) : r.GEOJSON; } catch {}
-      const jobSteps = steps.filter((s: any) => s.type === 'job');
-      if (!jobSteps.length) continue;
-      const first = jobSteps[0];
-      const ent = offerById.get(Number(first.job));
+      // Handle 'pickup' and 'delivery' step types from VROOM shipments (with backward-compat 'job').
+      const taskSteps = steps.filter((s: any) => s.type === 'pickup' || s.type === 'delivery' || s.type === 'job');
+      if (!taskSteps.length) continue;
+      const firstPick = taskSteps.find((s: any) => s.type === 'pickup' || s.type === 'job');
+      if (!firstPick) continue;
+      const firstId = Number(firstPick.id ?? firstPick.job);
+      const ent = offerById.get(firstId);
       if (!ent) continue;
       const row: any = ent.row;
       const empty = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, row.PICKUP_LON, row.PICKUP_LAT);
       if (empty > maxEmptyKm) continue;
       const loaded = haversineKm(row.PICKUP_LON, row.PICKUP_LAT, row.DROPOFF_LON, row.DROPOFF_LAT);
+
+      // Build full STOPS list from VROOM step sequence: trailer start -> (pickups/deliveries in solver order) -> end (home/shared)
+      const stops: Stop[] = [];
+      stops.push({
+        kind: 'start',
+        label: 'Trailer idle location',
+        city: t.DROPOFF_CITY,
+        lon: Number(t.DROPOFF_LON),
+        lat: Number(t.DROPOFF_LAT),
+      });
+      for (const ts of taskSteps) {
+        const sid = Number(ts.id ?? ts.job);
+        const je = offerById.get(sid);
+        if (!je) continue;
+        const jr: any = je.row;
+        const offerId = je.kind === 'INTERNAL' ? jr.ID : jr.OFFER_ID;
+        if (ts.type === 'delivery') {
+          stops.push({
+            kind: 'dropoff',
+            label: `${je.kind} ${offerId}`,
+            city: jr.DROPOFF_CITY,
+            lon: Number(jr.DROPOFF_LON),
+            lat: Number(jr.DROPOFF_LAT),
+            jobId: sid,
+            offerId,
+            source: je.kind,
+            product: jr.PRODUCT,
+            weightKg: Number(jr.WEIGHT_KG) || undefined,
+          });
+        } else {
+          // 'pickup' or legacy 'job'
+          stops.push({
+            kind: 'pickup',
+            label: `${je.kind} ${offerId}`,
+            city: jr.PICKUP_CITY,
+            lon: Number(jr.PICKUP_LON),
+            lat: Number(jr.PICKUP_LAT),
+            jobId: sid,
+            offerId,
+            source: je.kind,
+            product: jr.PRODUCT,
+            weightKg: Number(jr.WEIGHT_KG) || undefined,
+          });
+          if (ts.type === 'job') {
+            // legacy fallback: synthesize a dropoff right after pickup
+            stops.push({
+              kind: 'dropoff',
+              label: `${je.kind} ${offerId}`,
+              city: jr.DROPOFF_CITY,
+              lon: Number(jr.DROPOFF_LON),
+              lat: Number(jr.DROPOFF_LAT),
+              jobId: sid,
+              offerId,
+              source: je.kind,
+              product: jr.PRODUCT,
+              weightKg: Number(jr.WEIGHT_KG) || undefined,
+            });
+          }
+        }
+      }
+      const endLon = forceSharedDest && effSharedLon !== null ? effSharedLon : Number(t.HOME_LON);
+      const endLat = forceSharedDest && effSharedLat !== null ? effSharedLat : Number(t.HOME_LAT);
+      stops.push({
+        kind: 'end',
+        label: forceSharedDest ? 'Shared destination' : 'Home depot',
+        city: forceSharedDest ? undefined : t.HOME_DEPOT,
+        lon: endLon,
+        lat: endLat,
+      });
+
+      const offerIdFirst = ent.kind === 'INTERNAL' ? row.ID : row.OFFER_ID;
+      // Detour vs direct trailer->home: positive = extra km on top of empty trip,
+      // ideally close to 0 or even negative (route goes "through" home anyway).
+      const directHomeKm = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, endLon, endLat);
+      const tourKm =
+        haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, row.PICKUP_LON, row.PICKUP_LAT) +
+        haversineKm(row.PICKUP_LON, row.PICKUP_LAT, row.DROPOFF_LON, row.DROPOFF_LAT) +
+        haversineKm(row.DROPOFF_LON, row.DROPOFF_LAT, endLon, endLat);
+      const detourKm = Math.max(0, tourKm - directHomeKm);
+      const savedKm  = Math.max(0, directHomeKm - detourKm);
       newAssignments.push({
+        ASSIGNMENT_ID: `${t.TRAILER_ID}|${offerIdFirst}`,
         TRAILER_ID: t.TRAILER_ID,
-        OFFER_ID: ent.kind === 'INTERNAL' ? row.ID : row.OFFER_ID,
+        OFFER_ID: offerIdFirst,
         SOURCE: ent.kind,
         PICKUP_LON: row.PICKUP_LON, PICKUP_LAT: row.PICKUP_LAT,
         DROPOFF_LON: row.DROPOFF_LON, DROPOFF_LAT: row.DROPOFF_LAT,
         TRAILER_DROPOFF_LON: t.DROPOFF_LON, TRAILER_DROPOFF_LAT: t.DROPOFF_LAT,
         HOME_LON: t.HOME_LON, HOME_LAT: t.HOME_LAT,
         EMPTY_KM: empty, LOADED_KM: loaded,
+        DETOUR_KM: detourKm, SAVED_KM: savedKm,
         SCORE: Number(r.DURATION) || 0,
         PRODUCT: row.PRODUCT,
         PICKUP_CITY: row.PICKUP_CITY,
         PROPOSAL_DROPOFF_CITY: row.DROPOFF_CITY,
         ROUTE_GEOJSON: routeGeo,
+        STOPS: stops,
       });
     }
     setAssignments(newAssignments);
     setUnassigned(newUnassigned);
-    setSolverLog(`Sent ${vrpVehicles.length} vehicles, ${vrpJobs.length} jobs (region=${regionName}, profile=${profile}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned.`);
-    if (rows.length === 0 && vrpJobs.length > 0) {
+    const avgDetour = newAssignments.length
+      ? Math.round(newAssignments.reduce((s, a) => s + (a.DETOUR_KM || 0), 0) / newAssignments.length)
+      : 0;
+    setSolverLog(`Mode=${matchMode} | Sent ${vrpVehicles.length} vehicles, ${vrpShipments.length} candidate shipments (cap: ${MAX_INTERNAL} internal + ${MAX_EXTERNAL} external by detour score; skipped ${internalSkipped} internal, ${externalSkipped} external; region=${regionName}, profile=${profile}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned. Avg detour +${avgDetour} km.`);
+    if (rows.length === 0 && vrpShipments.length > 0) {
       setSolveError(
         `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING (check ORS status in the header), ` +
         `(2) region='${regionName}' covers your data bbox, ` +
@@ -341,7 +479,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, forceSharedDest, sharedDestLon, sharedDestLat, fetchSvcStatus, wakeUp]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, forceSharedDest, sharedDestLon, sharedDestLat, matchMode, detourSlackHrs, maxDetourKm, fetchSvcStatus, wakeUp]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -349,7 +487,7 @@ export default function BackloadMatching() {
     const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt.replace(/'/g, "''")}') AS RESULT`;
     const rows = await sfQuery(sql, 'SNOWFLAKE', 'CORTEX');
     const text = (rows[0]?.RESULT || '').toString().trim();
-    setRationale(prev => ({ ...prev, [a.TRAILER_ID]: text || '(no rationale returned)' }));
+    setRationale(prev => ({ ...prev, [a.ASSIGNMENT_ID]: text || '(no rationale returned)' }));
     setRationaleLoading(false);
   }, [trailers]);
 
@@ -369,7 +507,7 @@ export default function BackloadMatching() {
       RATIONALE    VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`);
     const values = assignments.map(a => {
-      const r = (rationale[a.TRAILER_ID] || '').replace(/'/g, "''").slice(0, 500);
+      const r = (rationale[a.ASSIGNMENT_ID] || '').replace(/'/g, "''").slice(0, 500);
       return `('${a.TRAILER_ID}', '${a.OFFER_ID}', '${a.SOURCE}', ${a.SCORE.toFixed(2)}, ${a.EMPTY_KM.toFixed(2)}, 'demo-user', '${r}')`;
     }).join(',\n');
     const insertSql = `INSERT INTO ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS (TRAILER_ID, OFFER_ID, SOURCE, SCORE, EMPTY_KM, DECIDED_BY, RATIONALE) VALUES\n${values}`;
@@ -416,14 +554,14 @@ export default function BackloadMatching() {
         stroked: true, lineWidthMinPixels: 1, getRadius: 1200, radiusMinPixels: 5, radiusMaxPixels: 9, pickable: true,
       }));
     }
-    const hasSel = !!selectedTrailer;
+    const hasSel = !!selectedAssignment;
     const loadedPaths = assignments
       .map((a, i) => ({ a, i }))
       .filter(({ a }) => !!a.ROUTE_GEOJSON)
       .map(({ a, i }) => ({
         idx: i,
         path: coordsFromGeoJSON(a.ROUTE_GEOJSON),
-        isSel: a.TRAILER_ID === selectedTrailer,
+        isSel: a.ASSIGNMENT_ID === selectedAssignment,
       }));
     result.push(new PathLayer({
       id: 'loaded-routes',
@@ -440,12 +578,12 @@ export default function BackloadMatching() {
       parameters: { depthTest: false },
       pickable: true,
       updateTriggers: {
-        getColor: [selectedTrailer, hasSel],
-        getWidth: [selectedTrailer, hasSel],
+        getColor: [selectedAssignment, hasSel],
+        getWidth: [selectedAssignment, hasSel],
       },
     }));
     assignments.forEach((a, i) => {
-      const isSel = a.TRAILER_ID === selectedTrailer;
+      const isSel = a.ASSIGNMENT_ID === selectedAssignment;
       const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
       const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
       result.push(new GeoJsonLayer({
@@ -456,18 +594,52 @@ export default function BackloadMatching() {
         parameters: { depthTest: false },
       }));
     });
-    if (selectedTrailer) {
-      const a = assignments.find(x => x.TRAILER_ID === selectedTrailer);
+    if (selectedAssignment) {
+      const a = assignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
       if (a) {
-        result.push(new IconLayer({
-          id: 'selected', data: [a], getPosition: (d: Assignment) => [Number(d.PICKUP_LON), Number(d.PICKUP_LAT)],
-          getColor: [245, 158, 11], getSize: 28, sizeUnits: 'pixels',
-          getIcon: () => ({ url: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="white" stroke-width="3"/></svg>', width: 32, height: 32 }),
+        const pickup = [{ lon: Number(a.PICKUP_LON), lat: Number(a.PICKUP_LAT) }];
+        // Anchor green dropoff pin to the trailer's TRUE final endpoint (last STOPS entry),
+        // not to first job's dropoff. With multi-shipment routes, the route ends at home/shared dest.
+        const lastStop = (a.STOPS && a.STOPS.length) ? a.STOPS[a.STOPS.length - 1] : null;
+        const endLon = lastStop ? lastStop.lon : Number(a.DROPOFF_LON);
+        const endLat = lastStop ? lastStop.lat : Number(a.DROPOFF_LAT);
+        const dropoff = [{ lon: endLon, lat: endLat }];
+        // Pickup halo + marker (orange)
+        result.push(new ScatterplotLayer({
+          id: 'sel-pickup-halo', data: pickup, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [245, 158, 11, 50], getRadius: 160,
+          radiusMinPixels: 18, radiusMaxPixels: 60, stroked: false, filled: true,
+          parameters: { depthTest: false },
+        }));
+        result.push(new ScatterplotLayer({
+          id: 'sel-pickup-marker', data: pickup, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [255, 255, 255, 230], getLineColor: [245, 158, 11, 255],
+          getRadius: 80, radiusMinPixels: 8, radiusMaxPixels: 30,
+          lineWidthMinPixels: 3, stroked: true, filled: true,
+          parameters: { depthTest: false },
+        }));
+        // Dropoff halo + marker (green)
+        result.push(new ScatterplotLayer({
+          id: 'sel-dropoff-halo', data: dropoff, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [13, 176, 72, 50], getRadius: 160,
+          radiusMinPixels: 18, radiusMaxPixels: 60, stroked: false, filled: true,
+          parameters: { depthTest: false },
+        }));
+        result.push(new ScatterplotLayer({
+          id: 'sel-dropoff-marker', data: dropoff, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [255, 255, 255, 230], getLineColor: [13, 176, 72, 255],
+          getRadius: 80, radiusMinPixels: 8, radiusMaxPixels: 30,
+          lineWidthMinPixels: 3, stroked: true, filled: true,
+          parameters: { depthTest: false },
         }));
       }
     }
     return result;
-  }, [basemap, external, internal, trailers, assignments, selectedTrailer]);
+  }, [basemap, external, internal, trailers, assignments, selectedAssignment]);
 
   const fitCoords = useMemo<LngLat[]>(() => {
     const out: LngLat[] = [];
@@ -492,8 +664,8 @@ export default function BackloadMatching() {
   const { containerRef: mapContainerRef, dims: mapDims, viewState, setViewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   useEffect(() => {
-    if (!selectedTrailer || !mapDims) return;
-    const a = assignments.find(x => x.TRAILER_ID === selectedTrailer);
+    if (!selectedAssignment || !mapDims) return;
+    const a = assignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
     if (!a) return;
     const coords: LngLat[] = [
       [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],
@@ -508,7 +680,7 @@ export default function BackloadMatching() {
     });
     if (fitted) setViewState({ ...viewState, ...fitted });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTrailer, assignments, mapDims]);
+  }, [selectedAssignment, assignments, mapDims]);
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
@@ -518,7 +690,13 @@ export default function BackloadMatching() {
     return null;
   }, []);
 
-  const selected = assignments.find(a => a.TRAILER_ID === selectedTrailer);
+  const selected = assignments.find(a => a.ASSIGNMENT_ID === selectedAssignment);
+  const stopsPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (selected && stopsPanelRef.current) {
+      stopsPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [selected?.ASSIGNMENT_ID]);
 
   return (
     <div className="panel" style={{ padding: 16 }}>
@@ -559,6 +737,31 @@ export default function BackloadMatching() {
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ minWidth: 220 }}>
+          <label className="range-label">Match mode</label>
+          <div style={{ display: 'flex', gap: 12, fontSize: 12, marginTop: 2 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+              <input type="radio" name="matchMode" checked={matchMode === 'single'} onChange={() => setMatchMode('single')} />
+              Single backload (DHL)
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+              <input type="radio" name="matchMode" checked={matchMode === 'consolidate'} onChange={() => setMatchMode('consolidate')} />
+              Consolidation tour
+            </label>
+          </div>
+        </div>
+        {matchMode === 'single' && (
+          <>
+            <div style={{ minWidth: 180 }}>
+              <label className="range-label">Detour slack: +{detourSlackHrs} h</label>
+              <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
+            </div>
+            <div style={{ minWidth: 180 }}>
+              <label className="range-label">Max detour: {maxDetourKm} km</label>
+              <input type="range" min={20} max={400} step={10} value={maxDetourKm} onChange={e => setMaxDetourKm(Number(e.target.value))} style={{ width: '100%' }} />
+            </div>
+          </>
+        )}
         <div style={{ minWidth: 180 }}>
           <label className="range-label">Internal priority: {internalPriority}</label>
           <input type="range" min={1} max={200} value={internalPriority} onChange={e => setInternalPriority(Number(e.target.value))} style={{ width: '100%' }} />
@@ -682,13 +885,22 @@ export default function BackloadMatching() {
             />
           )}
           <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
+          {selected && (
+            <button
+              type="button"
+              onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              style={{ position: 'absolute', top: 12, right: 56, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}
+            >
+              Stops ↓
+            </button>
+          )}
         </div>
 
         <AssignmentList
           assignments={assignments}
           unassigned={unassigned}
-          selectedTrailer={selectedTrailer}
-          onSelect={setSelectedTrailer}
+          selectedAssignment={selectedAssignment}
+          onSelect={setSelectedAssignment}
           rationale={rationale}
           rationaleLoading={rationaleLoading}
           onAskRationale={askRationale}
@@ -700,6 +912,10 @@ export default function BackloadMatching() {
           Selected trailer: <b>{selected.TRAILER_ID}</b> - duration {selected.SCORE.toFixed(0)}s - empty {Math.round(selected.EMPTY_KM)} km
         </div>
       )}
+
+      <div ref={stopsPanelRef}>
+        <StopsPanel assignment={selected || null} />
+      </div>
 
       <DecisionsAudit rows={auditRows} onRefresh={loadAudit} />
     </div>

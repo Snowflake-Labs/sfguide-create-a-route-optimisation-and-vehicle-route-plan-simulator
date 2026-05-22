@@ -32,16 +32,32 @@ export interface Offer extends Volume {
   LISTING_TEXT: string;
 }
 
+export interface Stop {
+  kind: 'start' | 'pickup' | 'dropoff' | 'end';
+  label: string;
+  city?: string;
+  lon: number;
+  lat: number;
+  jobId?: number;
+  offerId?: string;
+  source?: string;
+  product?: string;
+  weightKg?: number;
+}
+
 export interface Assignment {
+  ASSIGNMENT_ID: string;
   TRAILER_ID: string; OFFER_ID: string; SOURCE: string;
   PICKUP_LON: number; PICKUP_LAT: number;
   DROPOFF_LON: number; DROPOFF_LAT: number;
   EMPTY_KM: number; LOADED_KM: number; SCORE: number;
+  DETOUR_KM?: number; SAVED_KM?: number;
   PRODUCT: string; PICKUP_CITY: string; PROPOSAL_DROPOFF_CITY: string;
   HOME_LON: number; HOME_LAT: number;
   TRAILER_DROPOFF_LON: number; TRAILER_DROPOFF_LAT: number;
   ROUTE_GEOJSON?: any;
   EMPTY_GEOJSON?: any;
+  STOPS: Stop[];
 }
 
 export interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
