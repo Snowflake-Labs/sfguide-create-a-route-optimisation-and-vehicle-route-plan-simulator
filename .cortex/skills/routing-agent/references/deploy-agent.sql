@@ -523,6 +523,7 @@ BEGIN
             'profile', v_profile,
             'category', POI_CATEGORY,
             'detected_region', v_detected_region,
+            'geometry', v_iso_geojson,
             'pois', ARRAY_CONSTRUCT(),
             'count', 0,
             'message', CONCAT('No POIs matching category "', POI_CATEGORY, '" were found within the ', v_range_minutes::VARCHAR, '-minute ', v_profile, ' isochrone. Try a broader category (e.g. "restaurant" instead of "specialty bistro") or a longer range.'),
@@ -536,6 +537,7 @@ BEGIN
         'profile', v_profile,
         'category', POI_CATEGORY,
         'detected_region', v_detected_region,
+        'geometry', v_iso_geojson,
         'pois', v_pois,
         'count', v_poi_count,
         'status', 'SUCCESS'

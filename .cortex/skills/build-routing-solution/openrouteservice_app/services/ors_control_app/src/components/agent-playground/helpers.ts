@@ -157,16 +157,21 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
 
   for (const tr of toolResults) {
     if (!tr || typeof tr !== 'object') continue;
-    if (Array.isArray(tr.poi_list)) {
-      for (const poi of tr.poi_list) {
-        if (poi.lng != null && poi.lat != null) {
-          poiPoints.push({
-            position: [Number(poi.lng), Number(poi.lat)],
-            name: poi.name || 'Unknown',
-            category: poi.category || '',
-            color: poiColor(poi.category || ''),
-          });
-        }
+    // Two POI list shapes are accepted:
+    //   tr.poi_list  — legacy local executeToolPoi shape: { name, lng, lat, category }
+    //   tr.pois      — TOOL_POI_IN_ISOCHRONE proc shape:   { name, longitude, latitude, basic_category, primary_category }
+    const list: any[] = Array.isArray(tr.poi_list) ? tr.poi_list : (Array.isArray(tr.pois) ? tr.pois : []);
+    for (const poi of list) {
+      const lng = poi.lng ?? poi.longitude;
+      const lat = poi.lat ?? poi.latitude;
+      if (lng != null && lat != null) {
+        const cat = poi.category || poi.basic_category || poi.primary_category || '';
+        poiPoints.push({
+          position: [Number(lng), Number(lat)],
+          name: poi.name || 'Unknown',
+          category: cat,
+          color: poiColor(cat),
+        });
       }
     }
   }
