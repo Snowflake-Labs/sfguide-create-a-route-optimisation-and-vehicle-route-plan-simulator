@@ -93,30 +93,39 @@ PIPELINE.FACT_IMPACTED_PARTICIPANTS    (Step 3)  ST_WITHIN(participant, alert.bo
 
 ## Quick Start
 
-```sql
--- 1. Set query tag (per AGENTS.md, hard requirement)
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+From repo root, after `build-routing-solution` has finished and ORS is RUNNING:
 
--- 2. Verify both Marketplace listings are accessible (auto-installed by Step 0a)
-SELECT COUNT(*) FROM SNOWFLAKE_PUBLIC_DATA_FREE.public_data.geography_index WHERE level = 'County' LIMIT 1;
-SELECT COUNT(*) FROM FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_CENSUSTRACTS LIMIT 1;
-
--- 3. Verify ORS is up (per AGENTS.md "Do NOT assume ORS is running")
-SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;
--- All 5 services must be RUNNING
+```bash
+./.cortex/skills/emergency-response/scripts/install.sh -c <connection>
 ```
 
-Then run the pipeline:
+The wrapper does three things in order, with no manual steps in between:
+
+1. Runs `references/sql-pipeline-stage-only.sql` (Marketplace listings, DB, schemas, `IPAWS_SEED_STAGE`).
+2. `snow stage copy assets/ipaws_sf.parquet -> @IPAWS_SEED_STAGE/` (overwrites).
+3. Runs `references/sql-pipeline.sql` (creates `IPAWS_SF`, `COPY INTO` 274 rows, all source views, CORE entity tables, ORS UDF wrappers, Dynamic Tables, EXPORT proc, and the Step 15 `EXECUTE IMMEDIATE` verification).
+
+If the verification block raises, the parquet was not on the stage -- re-run `install.sh`.
+
+Optional sanity checks before running the wrapper:
 
 ```sql
--- Run each Step in references/sql-pipeline.sql sequentially
+SELECT COUNT(*) FROM SNOWFLAKE_PUBLIC_DATA_FREE.public_data.geography_index WHERE level = 'County' LIMIT 1;
+SELECT COUNT(*) FROM FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_CENSUSTRACTS LIMIT 1;
+SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;  -- all 5 services RUNNING
 ```
 
 ## Workflow
 
-### Step 1: Run SQL Pipeline
+### Step 1: Run the install wrapper
 
-Execute statements in `references/sql-pipeline.sql` sequentially using `snowflake_sql_execute`. Every CREATE includes the COMMENT tracking tag per AGENTS.md.
+From repo root:
+
+```bash
+./.cortex/skills/emergency-response/scripts/install.sh -c <connection>
+```
+
+Under the hood it walks the steps below in order. Every CREATE includes the COMMENT tracking tag per AGENTS.md.
 
 | Step | Object | Type | Description |
 |------|--------|------|-------------|
@@ -124,7 +133,7 @@ Execute statements in `references/sql-pipeline.sql` sequentially using `snowflak
 | 0 | Database + 4 schemas (CONFIG, SOURCE, CORE, PIPELINE) | DDL | Create container |
 | 0b | CONFIG.PARAMS | Table | Single-table key/value config |
 | 0c | SOURCE.IPAWS_SEED_STAGE | Stage | Holds bundled `ipaws_sf.parquet` (PARQUET file format) |
-| 0d | (out-of-band) `snow stage copy assets/ipaws_sf.parquet @SOURCE.IPAWS_SEED_STAGE/` | CLI | Uploads the bundled seed parquet (or use `COPY FILES` from a Workspace) |
+| 0d | (auto) `snow stage copy assets/ipaws_sf.parquet @SOURCE.IPAWS_SEED_STAGE/` | CLI inside `install.sh` | Uploads the bundled seed parquet (no manual step required) |
 | 0e | SOURCE.IPAWS_SF | Table | GEOGRAPHY-first IPAWS rows pre-clipped to SF region |
 | 0f | `COPY INTO IPAWS_SF` | DML | Loads the parquet, transforms `search_geometry_geojson` -> GEOGRAPHY |
 | 1 | SOURCE.V_NWS_ALERTS_ACTIVE | View | Re-mapper over Marketplace NWS alerts (active + region-filtered via REGION_CATALOG.BOUNDARY) |
@@ -208,18 +217,15 @@ git add .cortex/skills/emergency-response/assets/ipaws_sf.parquet
 git commit -m "chore(emergency-response): refresh IPAWS SF seed"
 ```
 
-After the refresh, re-upload the parquet to the install stage:
+After the refresh, re-run the install wrapper -- it re-uploads the new parquet
+and re-runs the COPY INTO automatically:
 
 ```bash
-snow stage copy \
-  .cortex/skills/emergency-response/assets/ipaws_sf.parquet \
-  @EMERGENCY_RESPONSE.SOURCE.IPAWS_SEED_STAGE/ \
-  --overwrite -c <connection>
+./.cortex/skills/emergency-response/scripts/install.sh -c <connection>
 ```
 
-Then re-run Step 0f (`COPY INTO`) from `references/sql-pipeline.sql` to land
-the new rows. The downstream Dynamic Tables refresh automatically within the
-`TARGET_LAG` window.
+The downstream Dynamic Tables refresh on their own within the `TARGET_LAG`
+window.
 
 ## Examples
 
