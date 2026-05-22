@@ -26,7 +26,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 # because fastisochrones is not enabled — see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
-GATEWAY_VERSION = 'v1.1.5'
+GATEWAY_VERSION = 'v1.1.6'
 
 def get_logger(logger_name):
     logger = logging.getLogger(logger_name)
@@ -243,7 +243,7 @@ def _compute_matrices_from_ors(locations, profile, ors_host):
         return None
 
 
-def _collect_locations(jobs, vehicles):
+def _collect_locations(jobs, vehicles, shipments=None):
     locs = []
     indices = {}
     for item in (jobs or []) + (vehicles or []):
@@ -256,10 +256,22 @@ def _collect_locations(jobs, vehicles):
                 if t not in indices:
                     indices[t] = len(locs)
                     locs.append(list(t))
+    for sh in (shipments or []):
+        if not isinstance(sh, dict):
+            continue
+        for side in ('pickup', 'delivery'):
+            sub = sh.get(side)
+            if isinstance(sub, dict):
+                loc = sub.get('location')
+                if loc and isinstance(loc, list) and len(loc) == 2:
+                    t = tuple(loc)
+                    if t not in indices:
+                        indices[t] = len(locs)
+                        locs.append(list(t))
     return locs, indices
 
 
-def _remap_indices(jobs, vehicles, indices):
+def _remap_indices(jobs, vehicles, indices, shipments=None):
     # Keep both 'location'/'start'/'end' AND the new *_index keys.
     # Indices let VROOM use the pre-computed matrix (no ORS call for routing math).
     # Coords let vroom-express enrich the response with geometry by calling its
@@ -277,6 +289,15 @@ def _remap_indices(jobs, vehicles, indices):
                 t = tuple(item[key])
                 if t in indices:
                     item[idx_key] = indices[t]
+    for sh in (shipments or []):
+        if not isinstance(sh, dict):
+            continue
+        for side in ('pickup', 'delivery'):
+            sub = sh.get(side)
+            if isinstance(sub, dict) and 'location' in sub:
+                t = tuple(sub['location'])
+                if t in indices:
+                    sub['location_index'] = indices[t]
 
 
 def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_override=None):
@@ -289,6 +310,9 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             if isinstance(v, dict) and 'profile' not in v:
                 v['profile'] = 'driving-car'
         payload = {'jobs': row[1], 'vehicles': vehicles}
+        shipments = row[4] if len(row) > 4 and row[4] else None
+        if shipments:
+            payload['shipments'] = shipments
         if len(row) > 3 and row[3]:
             matrices = row[3]
             if isinstance(matrices, dict) and len(matrices) > 0:
@@ -300,16 +324,17 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
         if ors_host_override and ors_host_override != resolve_ors_host(None) and 'matrices' not in payload:
             jobs = payload.get('jobs', [])
             vehs = payload.get('vehicles', [])
+            shps = payload.get('shipments', [])
             profile = 'driving-car'
             for v in vehs:
                 if isinstance(v, dict) and 'profile' in v:
                     profile = v['profile']
                     break
-            locs, loc_indices = _collect_locations(jobs, vehs)
+            locs, loc_indices = _collect_locations(jobs, vehs, shps)
             if len(locs) >= 2:
                 computed = _compute_matrices_from_ors(locs, profile, ors_host_override)
                 if computed:
-                    _remap_indices(jobs, vehs, loc_indices)
+                    _remap_indices(jobs, vehs, loc_indices, shps)
                     payload['matrices'] = {profile: computed}
                     payload['options'] = {'g': False}
                     _collected_locs.extend(locs)
@@ -411,7 +436,7 @@ def post_optimization():
         if ors_host:
             shifted = [row[0], row[1]]
             tabular_rows = _handle_optimization_tabular(
-                [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', [])]],
+                [[row[0], row[1].get('jobs', []), row[1].get('vehicles', []), row[1].get('matrices', []), row[1].get('shipments', [])]],
                 ors_host_override=ors_host,
                 vroom_host_override=vroom_host
             )
