@@ -417,34 +417,31 @@ export default function BackloadMatching() {
       }));
     }
     const hasSel = !!selectedTrailer;
-    const N = assignments.length;
-    const loadedPaths = assignments.map((a, i) => ({
-      idx: i,
-      path: a.ROUTE_GEOJSON
-        ? coordsFromGeoJSON(a.ROUTE_GEOJSON)
-        : [[a.PICKUP_LON, a.PICKUP_LAT], [a.DROPOFF_LON, a.DROPOFF_LAT]],
-      isSel: a.TRAILER_ID === selectedTrailer,
-    }));
+    const loadedPaths = assignments
+      .map((a, i) => ({ a, i }))
+      .filter(({ a }) => !!a.ROUTE_GEOJSON)
+      .map(({ a, i }) => ({
+        idx: i,
+        path: coordsFromGeoJSON(a.ROUTE_GEOJSON),
+        isSel: a.TRAILER_ID === selectedTrailer,
+      }));
     result.push(new PathLayer({
       id: 'loaded-routes',
       data: loadedPaths,
       getPath: (d: any) => d.path,
       getColor: (d: any) => {
         const c = ROUTE_COLORS[d.idx % ROUTE_COLORS.length];
-        const a = d.isSel ? 255 : (hasSel ? 100 : 230);
+        const a = d.isSel ? 255 : (hasSel ? 80 : 110);
         return [c[0], c[1], c[2], a];
       },
       getWidth: (d: any) => (d.isSel ? 6 : (hasSel ? 2 : 3)),
       widthUnits: 'pixels',
       widthMinPixels: 2,
-      getOffset: (d: any) => forceSharedDest ? (d.idx - (N - 1) / 2) * 1.5 : 0,
-      extensions: [new PathStyleExtension({ offset: true })],
       parameters: { depthTest: false },
       pickable: true,
       updateTriggers: {
         getColor: [selectedTrailer, hasSel],
         getWidth: [selectedTrailer, hasSel],
-        getOffset: [forceSharedDest, N],
       },
     }));
     assignments.forEach((a, i) => {
