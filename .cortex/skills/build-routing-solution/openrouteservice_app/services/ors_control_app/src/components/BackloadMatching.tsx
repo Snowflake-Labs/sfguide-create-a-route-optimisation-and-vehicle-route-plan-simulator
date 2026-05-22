@@ -40,8 +40,9 @@ export default function BackloadMatching() {
   const [windowToleranceHrs, setWindowToleranceHrs] = useState(4);
   const [maxEmptyKm, setMaxEmptyKm] = useState(200);
   const [forceSharedDest, setForceSharedDest] = useState(false);
-  const [sharedDestLon, setSharedDestLon] = useState(12.5655);
-  const [sharedDestLat, setSharedDestLat] = useState(55.6759);
+  const [sharedDestLon, setSharedDestLon] = useState<number | null>(null);
+  const [sharedDestLat, setSharedDestLat] = useState<number | null>(null);
+  const [sharedDestUserEdited, setSharedDestUserEdited] = useState(false);
 
   const [solving, setSolving] = useState(false);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -79,6 +80,18 @@ export default function BackloadMatching() {
         tgt: Number(r.target_instances ?? r.TARGET_INSTANCES) || 0,
       }));
   }, [requiredServices]);
+
+  // Auto-fill shared destination from first trailer when toggle turns on,
+  // unless user has explicitly edited the inputs. Re-fills on region change
+  // (trailers reload) so the default always lands inside the active region.
+  useEffect(() => {
+    if (!forceSharedDest) return;
+    if (sharedDestUserEdited) return;
+    const t = trailers[0];
+    if (!t) return;
+    setSharedDestLon(Number(t.HOME_LON));
+    setSharedDestLat(Number(t.HOME_LAT));
+  }, [forceSharedDest, trailers, sharedDestUserEdited]);
 
   useEffect(() => {
     let active = true;
@@ -206,6 +219,11 @@ export default function BackloadMatching() {
     }
 
     const profile = orsProfile || profileForVehicleType(vehicleType);
+    const firstTrailer = trailers[0];
+    const fallbackLon = firstTrailer ? Number(firstTrailer.HOME_LON) : null;
+    const fallbackLat = firstTrailer ? Number(firstTrailer.HOME_LAT) : null;
+    const effSharedLon = sharedDestLon ?? fallbackLon;
+    const effSharedLat = sharedDestLat ?? fallbackLat;
     const trailerById = new Map<number, Trailer>();
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
@@ -214,8 +232,8 @@ export default function BackloadMatching() {
         id,
         profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
-        end:   forceSharedDest
-          ? [sharedDestLon, sharedDestLat]
+        end:   forceSharedDest && effSharedLon !== null && effSharedLat !== null
+          ? [effSharedLon, effSharedLat]
           : [Number(t.HOME_LON),    Number(t.HOME_LAT)],
         capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
@@ -560,15 +578,15 @@ export default function BackloadMatching() {
             <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
               <input
                 type="number" step="0.0001"
-                value={sharedDestLon}
-                onChange={e => setSharedDestLon(Number(e.target.value))}
+                value={sharedDestLon ?? ''}
+                onChange={e => { setSharedDestUserEdited(true); setSharedDestLon(e.target.value === '' ? null : Number(e.target.value)); }}
                 placeholder="lon"
                 style={{ width: '50%', fontSize: 11 }}
               />
               <input
                 type="number" step="0.0001"
-                value={sharedDestLat}
-                onChange={e => setSharedDestLat(Number(e.target.value))}
+                value={sharedDestLat ?? ''}
+                onChange={e => { setSharedDestUserEdited(true); setSharedDestLat(e.target.value === '' ? null : Number(e.target.value)); }}
                 placeholder="lat"
                 style={{ width: '50%', fontSize: 11 }}
               />
