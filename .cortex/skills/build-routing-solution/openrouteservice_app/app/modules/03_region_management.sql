@@ -1190,6 +1190,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '        maximum_distance_alternative_routes: 1500000',
         '        maximum_distance_round_trip_routes: 1500000',
         '        maximum_visited_nodes: 100000000',
+        '        maximum_waypoints: 1000',
         '    profiles:',
     ]
     yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'

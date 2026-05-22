@@ -15,6 +15,7 @@ ors:
         maximum_distance_alternative_routes: 1500000
         maximum_distance_round_trip_routes: 1500000
         maximum_visited_nodes: 100000000
+        maximum_waypoints: 1000
     profiles:   
 ## Driving profiles
       driving-car: 
