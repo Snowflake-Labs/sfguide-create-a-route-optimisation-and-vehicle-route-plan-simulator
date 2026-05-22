@@ -1163,32 +1163,21 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         enabled = 'true' if p in profiles_list else 'false'
         profile_lines.append('      ' + p + ':')
         profile_lines.append('        enabled: ' + enabled)
-        if enabled == 'true':
-            profile_lines.append('        build:')
-            profile_lines.append('          preparation:')
-            profile_lines.append('            methods:')
-            profile_lines.append('              ch:')
-            profile_lines.append('                enabled: true')
-            profile_lines.append('                threads: ' + str(tc['ch_threads']))
-            profile_lines.append('              lm:')
-            profile_lines.append('                enabled: true')
-            profile_lines.append('                threads: ' + str(tc['lm_threads']))
 
     all_profiles_str = ', '.join(all_profiles)
     lines = [
         'ors:',
         '  engine:',
-        '    init_threads: ' + str(tc['init_threads']),
         '    profile_default:',
         '      build:',
         '        source_file: /home/ors/files/' + p_pbf_file,
         '        instructions: false',
         '      service:',
-        '        maximum_distance: 1500000',
-        '        maximum_distance_dynamic_weights: 1500000',
-        '        maximum_distance_avoid_areas: 1500000',
-        '        maximum_distance_alternative_routes: 1500000',
-        '        maximum_distance_round_trip_routes: 1500000',
+        '        maximum_distance: 100000000',
+        '        maximum_distance_dynamic_weights: 100000000',
+        '        maximum_distance_avoid_areas: 100000000',
+        '        maximum_distance_alternative_routes: 100000000',
+        '        maximum_distance_round_trip_routes: 100000000',
         '        maximum_visited_nodes: 100000000',
         '        maximum_waypoints: 1000',
         '    profiles:',
@@ -1198,7 +1187,8 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '  endpoints:',
         '    matrix:',
         '      maximum_visited_nodes: 100000000',
-        '      maximum_routes: 250000',
+        '      maximum_routes: 2000000',
+        '      maximum_routes_flexible: 2000000',
         '    isochrones:',
         '      maximum_locations: 2',
         '      maximum_intervals: 10',
