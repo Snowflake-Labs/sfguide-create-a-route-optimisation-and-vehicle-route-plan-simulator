@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, GeoJsonLayer, IconLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, GeoJsonLayer, IconLayer, PathLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
@@ -417,23 +417,36 @@ export default function BackloadMatching() {
       }));
     }
     const hasSel = !!selectedTrailer;
-    assignments.forEach((a, i) => {
-      const c = ROUTE_COLORS[i % ROUTE_COLORS.length];
-      const isSel = a.TRAILER_ID === selectedTrailer;
-      const loadedW = isSel ? 6 : (hasSel ? 2 : 3);
-      const loadedAlpha = isSel ? 255 : (hasSel ? 100 : 230);
-      if (a.ROUTE_GEOJSON) {
-        result.push(new GeoJsonLayer({
-          id: `loaded-${i}`, data: a.ROUTE_GEOJSON, stroked: true, filled: false,
-          getLineColor: [...c, loadedAlpha], lineWidthMinPixels: loadedW,
-        }));
-      } else {
-        result.push(new GeoJsonLayer({
-          id: `loaded-${i}`, data: { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.PICKUP_LON,a.PICKUP_LAT],[a.DROPOFF_LON,a.DROPOFF_LAT]] } } as any,
-          stroked: true, getLineColor: [...c, loadedAlpha], lineWidthMinPixels: loadedW,
-        }));
-      }
-    });
+    const N = assignments.length;
+    const loadedPaths = assignments.map((a, i) => ({
+      idx: i,
+      path: a.ROUTE_GEOJSON
+        ? coordsFromGeoJSON(a.ROUTE_GEOJSON)
+        : [[a.PICKUP_LON, a.PICKUP_LAT], [a.DROPOFF_LON, a.DROPOFF_LAT]],
+      isSel: a.TRAILER_ID === selectedTrailer,
+    }));
+    result.push(new PathLayer({
+      id: 'loaded-routes',
+      data: loadedPaths,
+      getPath: (d: any) => d.path,
+      getColor: (d: any) => {
+        const c = ROUTE_COLORS[d.idx % ROUTE_COLORS.length];
+        const a = d.isSel ? 255 : (hasSel ? 100 : 230);
+        return [c[0], c[1], c[2], a];
+      },
+      getWidth: (d: any) => (d.isSel ? 6 : (hasSel ? 2 : 3)),
+      widthUnits: 'pixels',
+      widthMinPixels: 2,
+      getOffset: (d: any) => forceSharedDest ? (d.idx - (N - 1) / 2) * 1.5 : 0,
+      extensions: [new PathStyleExtension({ offset: true })],
+      parameters: { depthTest: false },
+      pickable: true,
+      updateTriggers: {
+        getColor: [selectedTrailer, hasSel],
+        getWidth: [selectedTrailer, hasSel],
+        getOffset: [forceSharedDest, N],
+      },
+    }));
     assignments.forEach((a, i) => {
       const isSel = a.TRAILER_ID === selectedTrailer;
       const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
