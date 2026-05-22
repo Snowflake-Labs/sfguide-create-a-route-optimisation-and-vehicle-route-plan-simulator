@@ -238,3 +238,63 @@ export const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] =
 ];
 
 export const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
+
+// ---------------------------------------------------------------------------
+// Scenario / saved-prompts / workflow types (added when porting the SUMMIT
+// Agent Playground UX into the current refactored AgentPlayground).
+// ---------------------------------------------------------------------------
+
+export interface ScenarioPrompt { label: string; icon: string; prompt: string; }
+export interface DemoScenario {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  prompts: ScenarioPrompt[];
+}
+export interface AgentDemosConfig {
+  version?: string;
+  default_scenario?: string;
+  max_token_limit?: number;
+  scenarios: DemoScenario[];
+}
+
+export interface SavedPrompt { id: string; label: string; prompt: string; }
+export const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
+
+export function loadSavedPrompts(): SavedPrompt[] {
+  try {
+    const raw = localStorage.getItem(SAVED_PROMPTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+export function persistSavedPrompts(prompts: SavedPrompt[]) {
+  try { localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(prompts)); } catch {}
+}
+
+export interface WorkflowStep {
+  type: string;
+  label: string;
+  ts: number;
+  duration_ms?: number;
+  tool?: string;
+  input?: any;
+  detail?: any;
+}
+
+export const FALLBACK_SCENARIOS: DemoScenario[] = [
+  {
+    id: 'pharma',
+    label: 'Pharma Supply Chain',
+    icon: '\u{1F48A}',
+    description: 'Pharmaceutical delivery planning',
+    prompts: [
+      { label: '1. Catchment analysis', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco' },
+      { label: '2. Drug demand', icon: '\u{1F48A}', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
+      { label: '3. Supply chain plan', icon: '\u{1F69A}', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
+    ],
+  },
+];
