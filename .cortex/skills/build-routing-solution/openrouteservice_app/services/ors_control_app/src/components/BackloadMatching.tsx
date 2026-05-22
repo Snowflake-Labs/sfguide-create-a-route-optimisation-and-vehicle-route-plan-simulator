@@ -39,6 +39,9 @@ export default function BackloadMatching() {
   const [externalPriority, setExternalPriority] = useState(10);
   const [windowToleranceHrs, setWindowToleranceHrs] = useState(4);
   const [maxEmptyKm, setMaxEmptyKm] = useState(200);
+  const [forceSharedDest, setForceSharedDest] = useState(false);
+  const [sharedDestLon, setSharedDestLon] = useState(12.5655);
+  const [sharedDestLat, setSharedDestLat] = useState(55.6759);
 
   const [solving, setSolving] = useState(false);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -211,7 +214,9 @@ export default function BackloadMatching() {
         id,
         profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
-        end:   [Number(t.HOME_LON),    Number(t.HOME_LAT)],
+        end:   forceSharedDest
+          ? [sharedDestLon, sharedDestLat]
+          : [Number(t.HOME_LON),    Number(t.HOME_LAT)],
         capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
       };
@@ -318,7 +323,7 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, fetchSvcStatus, wakeUp]);
+  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, forceSharedDest, sharedDestLon, sharedDestLat, fetchSvcStatus, wakeUp]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
@@ -541,6 +546,34 @@ export default function BackloadMatching() {
         <div style={{ minWidth: 180 }}>
           <label className="range-label">Max empty km/leg: {maxEmptyKm}</label>
           <input type="range" min={50} max={600} step={10} value={maxEmptyKm} onChange={e => setMaxEmptyKm(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
+        <div style={{ minWidth: 220 }}>
+          <label className="range-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={forceSharedDest}
+              onChange={e => setForceSharedDest(e.target.checked)}
+            />
+            Force shared destination
+          </label>
+          {forceSharedDest && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+              <input
+                type="number" step="0.0001"
+                value={sharedDestLon}
+                onChange={e => setSharedDestLon(Number(e.target.value))}
+                placeholder="lon"
+                style={{ width: '50%', fontSize: 11 }}
+              />
+              <input
+                type="number" step="0.0001"
+                value={sharedDestLat}
+                onChange={e => setSharedDestLat(Number(e.target.value))}
+                placeholder="lat"
+                style={{ width: '50%', fontSize: 11 }}
+              />
+            </div>
+          )}
         </div>
         <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
           {solving ? 'Solving...' : 'Solve Backloads'}
