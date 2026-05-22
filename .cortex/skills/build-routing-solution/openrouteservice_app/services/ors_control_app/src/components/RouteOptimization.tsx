@@ -98,6 +98,7 @@ export default function RouteOptimization() {
   const [unassignedJobIds, setUnassignedJobIds] = useState<Set<number>>(new Set());
   const [unassignedExplanation, setUnassignedExplanation] = useState('');
   const [fleetRecommendation, setFleetRecommendation] = useState<VehicleConfig[] | null>(null);
+  const [seedingRegion, setSeedingRegion] = useState(false);
 
   useEffect(() => {
     const lng = Number(center.lng);
@@ -120,8 +121,35 @@ export default function RouteOptimization() {
     setSelectedSchools([]);
   }, [center.lng, center.lat, zoom]);
 
+  // Self-heal: ensure FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION data exists for the
+  // active region. The endpoint is region-agnostic and idempotent — if LOOKUP
+  // already has rows for the region the call returns instantly. Otherwise it
+  // synchronously seeds PLACES/LOOKUP/JOB_TEMPLATE/SEN_STUDENTS via the
+  // SEED_ROUTE_OPTIMIZATION_REGION procedure. After it resolves we re-query
+  // industries so the dropdown auto-populates with no page reload.
   useEffect(() => {
-    sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`).then(r => setIndustries(r));
+    if (!regionName) return;
+    let cancelled = false;
+    setSeedingRegion(true);
+    setIndustries([]);
+    (async () => {
+      try {
+        await fetch('/api/route-optimization/ensure-seeded', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ region: regionName }),
+        });
+      } catch (e) {
+        console.warn('[RouteOpt] ensure-seeded failed:', e);
+      }
+      if (cancelled) return;
+      const r = await sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`);
+      if (!cancelled) {
+        setIndustries(r);
+        setSeedingRegion(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [regionName]);
 
   // Load profiles available on the active region's ORS service.
@@ -548,12 +576,21 @@ export default function RouteOptimization() {
     return out;
   }, [centerCoords, selectedSchools, places, catchmentGeoJson, routePaths]);
 
-  const fallback = useMemo(() => ({
-    longitude: Number(center.lng) || -122.4194,
-    latitude: Number(center.lat) || 37.7749,
-    zoom: Number(zoom) || 11,
-    pitch: 0, bearing: 0,
-  }), [center.lng, center.lat, zoom]);
+  const fallback = useMemo(() => {
+    const lng = Number(center.lng);
+    const lat = Number(center.lat);
+    const z = Number(zoom);
+    // Region-agnostic fallback: when there is no active region or the picker
+    // hasn't supplied a centroid yet, show a world view rather than baking in
+    // a city-specific default.
+    const haveRegionCenter = Number.isFinite(lng) && Number.isFinite(lat) && (lng !== 0 || lat !== 0);
+    return {
+      longitude: haveRegionCenter ? lng : 0,
+      latitude: haveRegionCenter ? lat : 0,
+      zoom: Number.isFinite(z) && z > 0 ? z : (haveRegionCenter ? 11 : 2),
+      pitch: 0, bearing: 0,
+    };
+  }, [center.lng, center.lat, zoom]);
 
   const { containerRef: mapContainerRef, dims: mapDims, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
@@ -631,14 +668,20 @@ export default function RouteOptimization() {
           <label className="range-label">Search Location</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="select" value={searchText} onChange={e => setSearchText(e.target.value)} onKeyDown={e => e.key === 'Enter' && geocode()} placeholder="Enter address or city..." style={{ flex: 1 }} />
-            <button className="btn-primary" onClick={geocode} disabled={geocoding || !selectedIndustry}>{geocoding ? '...' : 'Go'}</button>
+            <button className="btn-primary" onClick={geocode} disabled={geocoding}>{geocoding ? '...' : 'Go'}</button>
           </div>
         </div>
       </div>
 
-      {centerCoords && !loading && places.length === 0 && (
+      {seedingRegion && (
+        <div className="info-box" style={{ background: 'rgba(41,181,232,0.10)', color: '#0e7490', border: '1px solid rgba(41,181,232,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
+          Preparing data for <b>{regionName}</b>... (one-time seed from Overture Maps; this can take a few minutes for large regions)
+        </div>
+      )}
+
+      {centerCoords && !loading && !seedingRegion && industries.length > 0 && places.length === 0 && (
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. Data is auto-seeded from Overture Maps when you switch regions. Try increasing the radius, moving the map center, or if the region was just activated, wait a moment and refresh.
+          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. Try increasing the radius or moving the map center.
         </div>
       )}
 
@@ -801,7 +844,7 @@ export default function RouteOptimization() {
       <div style={{ display: (!vrpResult || activeResultTab === 'map') ? 'block' : 'none' }}>
         <div ref={mapContainerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
           {(loading || solving) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{solving ? 'Solving VRP...' : 'Loading...'}</div>}
-          <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 5, background: 'rgba(20,20,31,0.85)', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#e8e8f0', backdropFilter: 'blur(4px)', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+          <div style={{ position: 'absolute', top: 56, right: 12, zIndex: 5, background: 'rgba(20,20,31,0.85)', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#e8e8f0', backdropFilter: 'blur(4px)', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
             <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 10, textTransform: 'uppercase', opacity: 0.6 }}>Layers</div>
             {[
               { label: 'POI Locations', checked: showPOIs, set: setShowPOIs, color: '#29B5E8' },
