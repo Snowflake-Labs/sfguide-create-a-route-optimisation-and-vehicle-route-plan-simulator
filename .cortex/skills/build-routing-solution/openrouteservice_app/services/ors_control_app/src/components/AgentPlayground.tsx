@@ -9,8 +9,9 @@ import {
   POI_DISPLAY_NAMES, extractAgentGeoData, stripToolCallJson,
   EMPTY_GEO,
   DemoScenario, AgentDemosConfig, FALLBACK_SCENARIOS,
-  SavedPrompt, SAVED_PROMPTS_KEY, loadSavedPrompts, persistSavedPrompts,
+  SavedPrompt, loadSavedPrompts, persistSavedPrompts,
   WorkflowStep,
+  VEHICLE_ROUTE_COLORS,
 } from './agent-playground/helpers';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
@@ -29,6 +30,11 @@ export default function AgentPlayground() {
   const [activeScenario, setActiveScenario] = useState<string>(FALLBACK_SCENARIOS[0]?.id || 'pharma');
   const [savedPrompts, setSavedPromptsState] = useState<SavedPrompt[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
+  const [tokenUsage, setTokenUsage] = useState<{ prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; context_tokens?: number } | null>(null);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveIcon, setSaveIcon] = useState('⭐');
+  const [saveLabel, setSaveLabel] = useState('');
+  const TOKEN_REFERENCE = 8000;
   const chatEndRef = useRef<HTMLDivElement>(null);
   const SF_FALLBACK = { longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 };
   const fitCoords = useMemo<LngLat[]>(() => {
@@ -46,6 +52,7 @@ export default function AgentPlayground() {
     setInput('');
     setGeoData(EMPTY_GEO);
     setWorkflowSteps([]);
+    setTokenUsage(null);
     streamingTextRef.current = '';
   }, []);
 
@@ -71,11 +78,16 @@ export default function AgentPlayground() {
 
   useEffect(() => { setSavedPromptsState(loadSavedPrompts()); }, []);
 
-  const addSavedPrompt = useCallback((prompt: string) => {
+  const addSavedPrompt = useCallback((prompt: string, label: string, icon: string) => {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
-    const label = trimmed.length > 60 ? trimmed.slice(0, 57) + '...' : trimmed;
-    const next: SavedPrompt = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, label, prompt: trimmed };
+    const trimmedLabel = label.trim();
+    if (!trimmed || !trimmedLabel) return;
+    const next: SavedPrompt = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      label: trimmedLabel.length > 60 ? trimmedLabel.slice(0, 57) + '...' : trimmedLabel,
+      prompt: trimmed,
+      icon: icon || '⭐',
+    };
     setSavedPromptsState(prev => {
       const dedup = prev.filter(p => p.prompt !== trimmed);
       const updated = [next, ...dedup].slice(0, 12);
@@ -83,6 +95,18 @@ export default function AgentPlayground() {
       return updated;
     });
   }, []);
+
+  const openSaveDialog = useCallback(() => {
+    if (!input.trim()) return;
+    setSaveLabel('');
+    setSaveIcon('⭐');
+    setSaveDialogOpen(true);
+  }, [input]);
+
+  const confirmSave = useCallback(() => {
+    addSavedPrompt(input, saveLabel, saveIcon);
+    setSaveDialogOpen(false);
+  }, [input, saveLabel, saveIcon, addSavedPrompt]);
 
   const deleteSavedPrompt = useCallback((id: string) => {
     setSavedPromptsState(prev => {
@@ -155,6 +179,10 @@ export default function AgentPlayground() {
                   if (parsed.token_usage?.workflow_steps && Array.isArray(parsed.token_usage.workflow_steps)) {
                     setWorkflowSteps(parsed.token_usage.workflow_steps as WorkflowStep[]);
                   }
+                  if (parsed.token_usage?.total_tokens != null || parsed.token_usage?.prompt_tokens != null) {
+                    const { workflow_steps: _ws, ...usage } = parsed.token_usage;
+                    setTokenUsage(usage);
+                  }
                   setMessages(prev => {
                     const updated = [...prev];
                     const last = updated[updated.length - 1];
@@ -225,7 +253,7 @@ export default function AgentPlayground() {
       stroked: true,
       filled: true,
       lineWidthMinPixels: 3,
-      getLineColor: [41, 181, 232, 220] as [number, number, number, number],
+      getLineColor: (f: any) => f?.properties?.routeColor || ([41, 181, 232, 220] as [number, number, number, number]),
       getFillColor: [41, 181, 232, 50] as [number, number, number, number],
       getLineWidth: 3,
       pointRadiusMinPixels: 6,
@@ -305,6 +333,17 @@ export default function AgentPlayground() {
     return Object.values(counts);
   }, [geoData.poiPoints]);
 
+  const routeLegend = useMemo(() => {
+    if (!geoData.geojson) return null;
+    const vehicles: Record<number, [number, number, number, number]> = {};
+    for (const f of geoData.geojson.features) {
+      const v = f.properties?.vehicle;
+      if (v != null) vehicles[v] = f.properties.routeColor || VEHICLE_ROUTE_COLORS[(v - 1) % VEHICLE_ROUTE_COLORS.length];
+    }
+    if (Object.keys(vehicles).length < 2) return null;
+    return Object.entries(vehicles).map(([v, color]) => ({ vehicle: Number(v), color }));
+  }, [geoData.geojson]);
+
   const layers = useMemo(() => [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer].filter(Boolean), [basemap, geojsonLayer, startEndLayer, pointsLayer, poiLayer]);
 
   const getTooltip = useCallback(({ object, layer }: any) => {
@@ -332,11 +371,30 @@ export default function AgentPlayground() {
     <div className="panel">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <h2 style={{ fontSize: 20, margin: 0 }}>Agent Playground</h2>
-        {messages.length > 0 && (
-          <button onClick={clearConversation} disabled={streaming} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-            New conversation
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {tokenUsage && (tokenUsage.total_tokens != null || tokenUsage.prompt_tokens != null) && (() => {
+            const used = tokenUsage.total_tokens ?? ((tokenUsage.prompt_tokens ?? 0) + (tokenUsage.completion_tokens ?? 0));
+            const pct = Math.min(100, (used / TOKEN_REFERENCE) * 100);
+            const barColor = pct >= 80 ? '#e74c3c' : pct >= 50 ? '#f39c12' : 'var(--accent)';
+            return (
+              <div
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)' }}
+                title={`Prompt: ${tokenUsage.prompt_tokens ?? 0} | Completion: ${tokenUsage.completion_tokens ?? 0}${tokenUsage.context_tokens != null ? ` | Context: ${tokenUsage.context_tokens}` : ''}`}
+              >
+                <span style={{ fontWeight: 500 }}>{used.toLocaleString()}</span>
+                <span>tokens</span>
+                <div style={{ width: 60, height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                  <div style={{ width: `${pct}%`, height: '100%', background: barColor, transition: 'width 0.3s' }} />
+                </div>
+              </div>
+            );
+          })()}
+          {messages.length > 0 && (
+            <button onClick={clearConversation} disabled={streaming} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              New conversation
+            </button>
+          )}
+        </div>
       </div>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 10 }}>Chat with the routing agent — ask about directions, reachability, or place discovery</p>
 
@@ -396,9 +454,10 @@ export default function AgentPlayground() {
                   <button
                     onClick={() => setInput(sp.prompt)}
                     disabled={streaming}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 12, padding: 0 }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 12, padding: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}
                   >
-                    {sp.label}
+                    <span>{sp.icon || '⭐'}</span>
+                    <span>{sp.label}</span>
                   </button>
                   <button
                     onClick={() => deleteSavedPrompt(sp.id)}
@@ -450,13 +509,39 @@ export default function AgentPlayground() {
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="select" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} placeholder="Type a message..." style={{ flex: 1 }} />
             <button
-              onClick={() => addSavedPrompt(input)}
+              onClick={openSaveDialog}
               disabled={!input.trim() || streaming}
-              title="Save this prompt"
-              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 16 }}
+              title="Save as example"
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: input.trim() ? 'pointer' : 'default', opacity: input.trim() ? 1 : 0.4, fontSize: 16 }}
             >☆</button>
             <button className="btn-primary" onClick={sendMessage} disabled={streaming || !input.trim()}>{streaming ? '...' : 'Send'}</button>
           </div>
+          {saveDialogOpen && (
+            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(41,181,232,0.06)', border: '1px solid rgba(41,181,232,0.3)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>Save this prompt</div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                <input
+                  value={saveIcon}
+                  onChange={e => setSaveIcon(e.target.value)}
+                  style={{ width: 36, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 14, textAlign: 'center' }}
+                  maxLength={2}
+                  aria-label="Icon"
+                />
+                <input
+                  value={saveLabel}
+                  onChange={e => setSaveLabel(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') confirmSave(); if (e.key === 'Escape') setSaveDialogOpen(false); }}
+                  placeholder="Short label e.g. Castro pharmacy check"
+                  autoFocus
+                  style={{ flex: 1, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn-primary" onClick={confirmSave} disabled={!saveLabel.trim()} style={{ fontSize: 12, padding: '4px 12px' }}>Save</button>
+                <button onClick={() => setSaveDialogOpen(false)} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 300 }}>
@@ -470,6 +555,16 @@ export default function AgentPlayground() {
                 <div key={entry.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <div style={{ width: 10, height: 10, borderRadius: '50%', background: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})`, flexShrink: 0 }} />
                   <span>{entry.label} ({entry.count})</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {routeLegend && routeLegend.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {routeLegend.map(entry => (
+                <div key={entry.vehicle} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <div style={{ width: 18, height: 4, borderRadius: 2, background: `rgb(${entry.color[0]},${entry.color[1]},${entry.color[2]})`, flexShrink: 0 }} />
+                  <span>Vehicle {entry.vehicle}</span>
                 </div>
               ))}
             </div>
@@ -493,12 +588,19 @@ export default function AgentPlayground() {
                 done: 'rgba(48, 209, 88, 0.95)',
               };
               const swatch = colorMap[step.type] || 'rgba(148, 163, 184, 0.7)';
+              const friendly = step.label
+                || (step.type === 'tool_start' ? `Tool: ${(step.tool || '').replace('tool_', '')}`
+                  : step.type === 'tool_done'  ? `\u2713 ${(step.tool || '').replace('tool_', '')}`
+                  : step.type === 'done'       ? '\u2713 Complete'
+                  : step.type === 'start'      ? 'Agent started'
+                  : step.type === 'status'     ? 'Processing'
+                  : step.type);
               return (
                 <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, color: 'var(--text)' }}>
                   <span style={{ width: 8, height: 8, marginTop: 4, borderRadius: '50%', background: swatch, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, wordBreak: 'break-word' }}>{step.label || step.type}</div>
-                    {step.tool && step.type !== 'tool_done' && (
+                    <div style={{ fontWeight: 500, wordBreak: 'break-word' }}>{friendly}</div>
+                    {step.tool && step.type === 'tool_start' && !step.label && (
                       <div style={{ color: 'var(--text-secondary)', fontSize: 10 }}>{step.tool}</div>
                     )}
                   </div>
