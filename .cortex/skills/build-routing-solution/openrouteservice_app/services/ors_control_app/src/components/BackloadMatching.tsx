@@ -353,7 +353,10 @@ export default function BackloadMatching() {
           : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
-        max_travel_time: Math.max(1800, Math.round((idealHrs + detourSlackHrs) * 3600)),
+        // Floor the time budget so trailers parked near home still have a
+        // realistic tour budget. 4 h is the conservative minimum for an HGV
+        // doing one pickup + one delivery within a region.
+        max_travel_time: Math.max(1800, Math.round((Math.max(idealHrs, 4) + detourSlackHrs) * 3600)),
         // max_distance is a hard cap on the WHOLE tour (empty + loaded legs).
         // The "ideal empty trip" alone is rarely a useful baseline because the
         // tour with a backload always exceeds it. Use a generous baseline:
@@ -416,8 +419,29 @@ export default function BackloadMatching() {
       return [win1, win2];
     };
 
-    const internalSubset = internal.slice(0, BM_MAX_INTERNAL);
-    const externalSubset = external.slice(0, BM_MAX_EXTERNAL);
+    // Score every shipment by haversine distance to the NEAREST idle trailer
+    // pickup point. Lower score = better backload candidate. Sorting by score
+    // (with id as deterministic tie-break) makes the subset reproducible
+    // across solves on the same data, so users see consistent results.
+    const nearestTrailerKm = (lon: number, lat: number): number => {
+      let best = Infinity;
+      for (const t of trailers) {
+        const d = haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), lon, lat);
+        if (d < best) best = d;
+      }
+      return best;
+    };
+
+    const internalSubset = [...internal]
+      .map(v => ({ v, score: nearestTrailerKm(Number(v.PICKUP_LON), Number(v.PICKUP_LAT)) }))
+      .sort((a, b) => a.score - b.score || String(a.v.ID).localeCompare(String(b.v.ID)))
+      .slice(0, BM_MAX_INTERNAL)
+      .map(x => x.v);
+    const externalSubset = [...external]
+      .map(o => ({ o, score: nearestTrailerKm(Number(o.PICKUP_LON), Number(o.PICKUP_LAT)) }))
+      .sort((a, b) => a.score - b.score || String(a.o.OFFER_ID).localeCompare(String(b.o.OFFER_ID)))
+      .slice(0, BM_MAX_EXTERNAL)
+      .map(x => x.o);
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
@@ -789,6 +813,22 @@ export default function BackloadMatching() {
     }
     if (vroomErr) {
       setSolveError(`VROOM rejected the request: ${vroomErr}`);
+    } else if (newAssignments.length === 0 && newUnassigned.length > 0) {
+      // Solver responded but couldn't place anything. Aggregate VROOM's
+      // per-shipment reasons so the user knows which lever to loosen.
+      const reasonCounts = newUnassigned.reduce((m: Record<string, number>, u) => {
+        const k = u.reason || 'unknown';
+        m[k] = (m[k] || 0) + 1;
+        return m;
+      }, {});
+      const summary = Object.entries(reasonCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([r, n]) => `${n}× ${r}`)
+        .join(', ');
+      setSolveError(
+        `VROOM placed 0 shipments out of ${newUnassigned.length}. Top reasons: ${summary}. ` +
+        `Tweak: raise deviation %, raise detour budget, widen window slack, or relax skill requirements.`
+      );
     } else if (rows.length === 0 && vrpShipments.length > 0) {
       setSolveError(
         `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING, ` +
