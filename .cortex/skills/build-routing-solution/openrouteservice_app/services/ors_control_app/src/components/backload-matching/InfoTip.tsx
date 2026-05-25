@@ -10,10 +10,14 @@ interface Props {
 
 export default function InfoTip({ text }: Props) {
   const [open, setOpen] = useState(false);
+  // Allow callers to use literal "\n" inside string-attribute form
+  // (text="...\n...") and still get rendered line breaks. JSX string
+  // attributes don't interpret escape sequences, so we normalise here.
+  const rendered = text.replace(/\\n/g, '\n');
   return (
     <span
       tabIndex={0}
-      aria-label={text}
+      aria-label={text.replace(/\\n/g, ' ')}
       role="button"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
@@ -60,7 +64,7 @@ export default function InfoTip({ text }: Props) {
             letterSpacing: 0,
           }}
         >
-          {text}
+          {rendered}
           <span
             aria-hidden="true"
             style={{
