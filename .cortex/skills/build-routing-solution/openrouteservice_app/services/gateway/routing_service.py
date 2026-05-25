@@ -226,9 +226,15 @@ def _compute_matrices_from_ors(locations, profile, ors_host):
     if not endpoint.startswith('/'):
         endpoint = '/' + endpoint
     url = f'http://{ors_host}:{ORS_PORT}{endpoint}'
-    logger.info(f'Pre-computing matrix from regional ORS: {url} with {len(locations)} locations')
+    # Tighter timeout (was 120s). Continental graphs can routinely exceed 120s
+    # for a 200x200 matrix, and the silent fallback to per-leg VROOM routing
+    # turns into a multi-minute apparent hang at the OPTIMIZATION TVF caller.
+    # 45s is enough for any well-sized request (the UI now caps at ~50
+    # locations) and lets us surface a clear error fast.
+    timeout_s = int(os.getenv('ORS_TIMEOUT_MATRIX_PRECOMPUTE', '45'))
+    logger.info(f'Pre-computing matrix from regional ORS: {url} with {len(locations)} locations (timeout={timeout_s}s)')
     try:
-        r = requests.post(url=url, headers={'Content-Type': 'application/json'}, json=body, timeout=120)
+        r = requests.post(url=url, headers={'Content-Type': 'application/json'}, json=body, timeout=timeout_s)
         data = r.json()
         if 'durations' in data and 'distances' in data:
             durations = [[round(v) if v is not None else 0 for v in row] for row in data['durations']]
@@ -236,11 +242,14 @@ def _compute_matrices_from_ors(locations, profile, ors_host):
             return {'durations': durations, 'costs': costs}
         if 'error' in data:
             logger.error(f'ORS matrix error: {data}')
-            return None
+            return {'__error__': data.get('error') or data}
         return None
+    except requests.exceptions.Timeout:
+        logger.error(f'ORS matrix pre-compute timed out on {ors_host} after {timeout_s}s')
+        return {'__error__': f'matrix pre-compute timed out after {timeout_s}s on {ors_host}'}
     except Exception as e:
         logger.error(f'Failed to pre-compute matrix from {ors_host}: {e}')
-        return None
+        return {'__error__': f'matrix pre-compute failed on {ors_host}: {e}'}
 
 
 def _collect_locations(jobs, vehicles, shipments=None):
@@ -333,19 +342,34 @@ def _handle_optimization_tabular(input_rows, ors_host_override=None, vroom_host_
             locs, loc_indices = _collect_locations(jobs, vehs, shps)
             if len(locs) >= 2:
                 computed = _compute_matrices_from_ors(locs, profile, ors_host_override)
-                if computed:
+                if isinstance(computed, dict) and computed.get('__error__'):
+                    # Surface a structured error to the OPTIMIZATION caller
+                    # instead of silently dropping the matrices and letting
+                    # VROOM fall back to per-leg ORS routing (= multi-minute
+                    # hang). The wrapper UI can render this directly.
+                    payload['__matrix_error__'] = computed['__error__']
+                elif computed:
                     _remap_indices(jobs, vehs, loc_indices, shps)
                     payload['matrices'] = {profile: computed}
                     payload['options'] = {'g': False}
                     _collected_locs.extend(locs)
                     logger.info(f'Injected pre-computed {len(locs)}x{len(locs)} matrix for {ors_host_override}')
                 else:
-                    logger.warning(f'Matrix pre-computation failed for {ors_host_override}, VROOM will use default ORS')
+                    logger.warning(f'Matrix pre-computation returned empty for {ors_host_override}, VROOM will use default ORS')
         return payload
 
     results = []
     for row in input_rows:
-        resp = get_vroom_response(build_vroom_payload(row), vroom_host=vroom_host_override)
+        payload = build_vroom_payload(row)
+        if payload.get('__matrix_error__'):
+            results.append([row[0], {
+                'code': 99,
+                'error': 'matrix_precompute_failed',
+                'message': payload['__matrix_error__'],
+                'hint': 'Try again after the ORS graph is fully loaded, or reduce the number of unique locations (lower vehicle/shipment caps).',
+            }])
+            continue
+        resp = get_vroom_response(payload, vroom_host=vroom_host_override)
         if ors_host_override and 'routes' in resp:
             needs_geo = any('geometry' not in r for r in resp['routes'])
             if needs_geo:

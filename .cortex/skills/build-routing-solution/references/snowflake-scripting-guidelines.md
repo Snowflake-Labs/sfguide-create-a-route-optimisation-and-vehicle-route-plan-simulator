@@ -152,6 +152,6 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 |---------|-------|-----|
 | ORS | openrouteservice | v9.0.0 |
 | Downloader | downloader | v0.0.3 |
-| Gateway | routing_reverse_proxy | v1.1.0 |
+| Gateway | routing_reverse_proxy | v1.1.2 |
 | VROOM | vroom-docker | v1.0.4 |
-| Control App | ors_control_app | v1.1.8 |
+| Control App | ors_control_app | v1.1.39 |

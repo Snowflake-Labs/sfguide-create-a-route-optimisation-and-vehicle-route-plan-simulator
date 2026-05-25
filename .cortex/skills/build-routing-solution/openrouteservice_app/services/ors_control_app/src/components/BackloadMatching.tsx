@@ -17,8 +17,26 @@ import PageContainer from '../shared/PageContainer';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
   Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
-  sfQuery, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
+  sfQuery, asSqlJsonLiteral, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
+  isOrsRegionReady, buildVroomMatrix,
 } from './backload-matching/helpers';
+
+// Hard caps on solve payload size. Picked so that the precomputed matrix
+// stays well under ORS's `max_locations` limit (default 3500 cells = 59x59)
+// AND so the VROOM search space stays bounded. Raising these without first
+// landing OPTIMIZATION_TABULAR + a persistent matrix cache (Card I) is
+// known to cause multi-minute hangs at "Calling OPTIMIZATION..." — see
+// .snowflake/cortex/plans/backload-solve-hang-fix.plan.md.
+const BM_MAX_VEHICLES = 15;
+const BM_MAX_INTERNAL = 30;
+const BM_MAX_EXTERNAL = 15;
+// Hard ceiling on the unique-location count we'll try to precompute a matrix
+// for. ORS default is max 3500 cells = sqrt(3500) ≈ 59 locations.
+const BM_MAX_MATRIX_LOCATIONS = 50;
+// Wall-clock budget for the whole solve, including the in-gateway matrix
+// pre-compute and the VROOM call. Past this we abort the fetch and surface
+// a precise error instead of an open-ended spinner.
+const BM_SOLVE_TIMEOUT_MS = 180_000;
 
 function cartoBasemap() {
   return new TileLayer({
@@ -79,6 +97,7 @@ export default function BackloadMatching() {
   const [showWaitTimes, setShowWaitTimes]         = useState(true);
 
   const [solving, setSolving] = useState(false);
+  const solveAbortRef = useRef<AbortController | null>(null);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const emptyLegCacheRef = useRef<Map<string, any>>(new Map());
   const [unassigned, setUnassigned] = useState<{ id: number; reason?: string }[]>([]);
@@ -243,11 +262,40 @@ export default function BackloadMatching() {
     if (!trailers.length) return;
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null); setSolveError(null);
 
+    // (1) Fast-fail wake up: if any required service is suspended, kick a resume
+    //     and wait up to ~90s for SHOW SERVICES to flip to RUNNING. The flag flips
+    //     BEFORE the ORS graph finishes loading though, so step (2) is required.
     const probe = await fetchSvcStatus();
     setSvcStatus(probe);
     if (!probe.every(s => s.status === 'RUNNING' && s.cur >= s.tgt)) {
       setSolverLog('Routing services are suspended/warming. Resuming before solve...');
       await wakeUp();
+    }
+
+    // (2) Strong readiness probe: ORS_STATUS reports service_ready=true ONLY
+    //     when the routing graph for `regionName` is fully loaded into the
+    //     ORS process. Without this check the gateway's matrix pre-compute
+    //     hits a half-warm ORS, returns 5xx, and the gateway silently falls
+    //     back to per-leg VROOM routing — the canonical "hang for several
+    //     minutes" failure mode this Solve button has shown.
+    if (regionName) {
+      setSolverLog('Verifying ORS graph readiness...');
+      const deadline = Date.now() + 60_000;
+      let lastReason: string | undefined;
+      while (Date.now() < deadline) {
+        const r = await isOrsRegionReady(regionName);
+        if (r.ready) { lastReason = undefined; break; }
+        lastReason = r.reason;
+        await new Promise(res => setTimeout(res, 5000));
+      }
+      if (lastReason) {
+        setSolveError(
+          `ORS for region "${regionName}" is not ready (${lastReason}). ` +
+          `Click "Wake services" or wait for the graph to finish loading and try again.`,
+        );
+        setSolving(false);
+        return;
+      }
     }
 
     const profile = orsProfile || profileForVehicleType(vehicleType);
@@ -285,7 +333,7 @@ export default function BackloadMatching() {
     const shiftStartSec = etaSeconds.length ? Math.min(...etaSeconds) : nowSec;
     const shiftEndSec   = shiftStartSec + Math.round(shiftLengthHrs * 3600);
 
-    const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
+    const vrpVehicles = trailers.slice(0, BM_MAX_VEHICLES).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
       const endPt = trailerEnd(t);
@@ -368,10 +416,8 @@ export default function BackloadMatching() {
       return [win1, win2];
     };
 
-    const MAX_INTERNAL = 60;
-    const MAX_EXTERNAL = 30;
-    const internalSubset = internal.slice(0, MAX_INTERNAL);
-    const externalSubset = external.slice(0, MAX_EXTERNAL);
+    const internalSubset = internal.slice(0, BM_MAX_INTERNAL);
+    const externalSubset = external.slice(0, BM_MAX_EXTERNAL);
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
@@ -408,9 +454,89 @@ export default function BackloadMatching() {
       });
     }
 
-    const challenge = { vehicles: vrpVehicles, shipments: vrpShipments, options: { g: true } };
-    const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
-    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
+    // (3) Build a setup an AbortController + wall-clock deadline so the user
+    //     can cancel and so we surface a precise error instead of waiting
+    //     forever. Server-side polling caps at 600s and the browser had no
+    //     way to break out before this fix.
+    const ac = new AbortController();
+    solveAbortRef.current = ac;
+    const deadlineHandle = setTimeout(() => ac.abort(), BM_SOLVE_TIMEOUT_MS);
+
+    // (4) Pre-compute the VROOM matrix from the UI rather than relying on the
+    //     gateway's hidden in-request pre-compute. This makes each step
+    //     observable, lets us cap location count up-front, and avoids the
+    //     silent fallback to per-leg VROOM routing when the in-gateway
+    //     matrix call exceeds its 120s timeout on continental graphs.
+    let precomputedMatrix: { durations: number[][]; costs: number[][] } | null = null;
+    let matrixNote = '';
+    try {
+      const uniq = new Map<string, [number, number]>();
+      const addLoc = (lon: number, lat: number) => {
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
+        const key = `${lon.toFixed(6)},${lat.toFixed(6)}`;
+        if (!uniq.has(key)) uniq.set(key, [lon, lat]);
+      };
+      for (const v of vrpVehicles) {
+        if (v.start) addLoc(Number(v.start[0]), Number(v.start[1]));
+        if (v.end)   addLoc(Number(v.end[0]),   Number(v.end[1]));
+      }
+      for (const sh of vrpShipments) {
+        if (sh?.pickup?.location)   addLoc(Number(sh.pickup.location[0]),   Number(sh.pickup.location[1]));
+        if (sh?.delivery?.location) addLoc(Number(sh.delivery.location[0]), Number(sh.delivery.location[1]));
+      }
+      const locs: [number, number][] = Array.from(uniq.values());
+      if (locs.length > BM_MAX_MATRIX_LOCATIONS) {
+        matrixNote = `Skipped UI matrix pre-compute (${locs.length} locations > cap ${BM_MAX_MATRIX_LOCATIONS}); falling back to gateway pre-compute.`;
+      } else if (locs.length >= 2) {
+        setSolverLog(`Pre-computing ${locs.length}x${locs.length} matrix...`);
+        precomputedMatrix = await buildVroomMatrix(profile, locs, regionName || null, { signal: ac.signal });
+        // Re-key shipment / vehicle locations into matrix indices.
+        const indexFor = (lon: number, lat: number) =>
+          locs.findIndex(([lo, la]) => Math.abs(lo - lon) < 1e-9 && Math.abs(la - lat) < 1e-9);
+        if (precomputedMatrix) {
+          for (const v of vrpVehicles) {
+            if (v.start) {
+              const i = indexFor(Number(v.start[0]), Number(v.start[1]));
+              if (i >= 0) (v as any).start_index = i;
+            }
+            if (v.end) {
+              const i = indexFor(Number(v.end[0]), Number(v.end[1]));
+              if (i >= 0) (v as any).end_index = i;
+            }
+          }
+          for (const sh of vrpShipments) {
+            if (sh.pickup?.location) {
+              const i = indexFor(Number(sh.pickup.location[0]), Number(sh.pickup.location[1]));
+              if (i >= 0) sh.pickup.location_index = i;
+            }
+            if (sh.delivery?.location) {
+              const i = indexFor(Number(sh.delivery.location[0]), Number(sh.delivery.location[1]));
+              if (i >= 0) sh.delivery.location_index = i;
+            }
+          }
+        } else {
+          matrixNote = 'UI matrix pre-compute returned no data; gateway will retry inline.';
+        }
+      }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') {
+        clearTimeout(deadlineHandle);
+        setSolveError('Solve cancelled.');
+        setSolving(false);
+        solveAbortRef.current = null;
+        return;
+      }
+      matrixNote = `UI matrix pre-compute failed (${e?.message || e}); gateway will retry inline.`;
+    }
+
+    const challenge: any = { vehicles: vrpVehicles, shipments: vrpShipments };
+    if (precomputedMatrix) {
+      challenge.matrices = { [profile]: precomputedMatrix };
+      challenge.options = { g: false };
+    } else {
+      challenge.options = { g: true };
+    }
+    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${regionName}'))`;
     console.log('[BM] OPTIMIZATION challenge:',
       'vehicles=', vrpVehicles.length,
       'shipments=', vrpShipments.length,
@@ -419,8 +545,27 @@ export default function BackloadMatching() {
       'devPct=', deviationPct,
       'eurPerKm(eff)=', effPerKmEur,
       'breaks=', enforceDriverBreak,
-      'avoid=', avoidGeoJSON.length);
-    const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
+      'avoid=', avoidGeoJSON.length,
+      'matrix=', precomputedMatrix ? `${precomputedMatrix.durations.length}^2 (UI pre-computed)` : 'gateway-side');
+    let rows: any[] = [];
+    try {
+      rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { signal: ac.signal, throwOnError: true });
+    } catch (e: any) {
+      clearTimeout(deadlineHandle);
+      solveAbortRef.current = null;
+      if (e?.name === 'AbortError') {
+        setSolveError(
+          `Solve cancelled or timed out after ${Math.round(BM_SOLVE_TIMEOUT_MS / 1000)}s. ` +
+          `Try lowering Max stops, deviation %, or disabling Multi-window pickups.`,
+        );
+      } else {
+        setSolveError(`OPTIMIZATION call failed: ${e?.message || e}`);
+      }
+      setSolving(false);
+      return;
+    }
+    clearTimeout(deadlineHandle);
+    solveAbortRef.current = null;
 
     const newAssignments: Assignment[] = [];
     const newUnassigned: { id: number; reason?: string }[] = [];
@@ -620,7 +765,9 @@ export default function BackloadMatching() {
       `intFirst=${internalFirstWeight}, breaks=${enforceDriverBreak ? 'on' : 'off'}, ` +
       `multiDim=${useMultiDimCapacity ? 'on' : 'off'}, end=${endMode}, ` +
       `avoidZones=${selectedAvoidZoneIds.length}; skipped ${internalSkipped} internal, ` +
-      `${externalSkipped} external; region=${regionName}, profile=${profile}). ` +
+      `${externalSkipped} external; region=${regionName}, profile=${profile}, ` +
+      `matrix=${precomputedMatrix ? `UI ${precomputedMatrix.durations.length}^2` : 'gateway-side'}). ` +
+      (matrixNote ? `${matrixNote} ` : '') +
       `Got ${rows.length} rows → ${newAssignments.length} assigned, ${newUnassigned.length} unassigned. ` +
       `Avg detour +${avgDetour} km. Net benefit total €${totalNet.toLocaleString()}.`
     );
@@ -1022,6 +1169,13 @@ export default function BackloadMatching() {
         <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
           {solving ? 'Solving...' : 'Solve Backloads'}
         </button>
+        {solving && (
+          <button type="button"
+                  onClick={() => solveAbortRef.current?.abort()}
+                  style={{ minWidth: 100, padding: '6px 12px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(239,68,68,0.6)', background: '#fff', color: '#b91c1c', cursor: 'pointer' }}>
+            Cancel
+          </button>
+        )}
         <button className="btn-primary" onClick={confirmPlan} disabled={confirming || !visibleAssignments.length} style={{ minWidth: 140 }}>
           {confirming ? 'Saving...' : 'Confirm Plan'}
         </button>
@@ -1134,8 +1288,12 @@ export default function BackloadMatching() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 12 }}>
         <div ref={mapContainerRef} style={{ height: 560, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
           {solving && (
-            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>
-              Calling OPTIMIZATION...
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#fff', zIndex: 10, fontSize: 14 }}>
+              <div>{solverLog || 'Calling OPTIMIZATION...'}</div>
+              <button type="button" onClick={() => solveAbortRef.current?.abort()}
+                      style={{ padding: '6px 14px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(255,255,255,0.6)', background: 'transparent', color: '#fff', cursor: 'pointer' }}>
+                Cancel
+              </button>
             </div>
           )}
           {mapDims && (
