@@ -1,4 +1,4 @@
-// Helpers, types, and constants for AssetVelocity.
+// Helpers, types, and constants for AssetVelocity (smart reposition v1.1).
 
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
@@ -36,6 +36,8 @@ export const SEVERITY_COLOR: Record<string, [number, number, number]> = {
   OK: [34, 197, 94],
 };
 
+export type VehicleSubtype = 'DRY' | 'REEFER' | 'FLAT' | 'TANKER' | null;
+
 export interface Trailer {
   VEHICLE_ID: string;
   REGION: string;
@@ -50,6 +52,18 @@ export interface Trailer {
   COST_OF_IDLENESS_USD: number;
   PROJECTED_SAVINGS_USD: number;
   IDLE_SEVERITY: string;
+  // v1.1 HGV profile (may be NULL for non-trucking presets)
+  VEHICLE_SUBTYPE?: VehicleSubtype;
+  HAZMAT?: boolean;
+  WEIGHT_TONS?: number;
+  HEIGHT_M?: number;
+  LENGTH_M?: number;
+  WIDTH_M?: number;
+  AXLELOAD_T?: number;
+  ORS_PROFILE?: string;
+  // v1.1 page config (same on every row, materialised here for convenience)
+  MAX_REPOSITION_MINUTES?: number;
+  AVOID_FEATURES?: string;
 }
 
 export interface Terminal {
@@ -62,4 +76,27 @@ export interface Terminal {
   INBOUND: number;
   NET_OUTBOUND_TRIPS: number;
   DEMAND_SCORE: number;
+}
+
+// Reason codes shown for excluded terminals in the action-alerts table.
+export type ExclusionReason =
+  | 'OUT_OF_SHIFT'         // road duration > MAX_REPOSITION_MINUTES
+  | 'NOT_ROUTABLE'         // ORS could not snap / unreachable in current graph
+  | 'INCOMPATIBLE_SKILL'   // trailer subtype cannot serve terminal lane mix
+  | 'NO_DEMAND';           // terminal has no positive net-outbound (filtered upstream)
+
+export interface ReachabilityCell {
+  durationSec: number | null;   // null = not routable
+  distanceM: number | null;
+  reachable: boolean;           // true when durationSec <= MAX_REPOSITION_MINUTES * 60
+}
+
+// MatrixCache[trailerId][terminalId] = ReachabilityCell
+export type MatrixCache = Record<string, Record<string, ReachabilityCell>>;
+
+export interface VrpResult {
+  warning?: string;
+  routesCount?: number;
+  unassignedCount?: number;
+  totalDurationSec?: number;
 }
