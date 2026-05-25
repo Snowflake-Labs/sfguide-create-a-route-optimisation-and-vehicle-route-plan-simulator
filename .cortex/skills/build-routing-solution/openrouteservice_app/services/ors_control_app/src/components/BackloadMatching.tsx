@@ -871,12 +871,14 @@ export default function BackloadMatching() {
   useEffect(() => { loadAudit(); }, [loadAudit, confirmMsg]);
 
   // Hide-unprofitable filter applies to list AND map.
-  const visibleAssignments = useMemo(
-    () => hideUnprofitable
-            ? assignments.filter(a => (a.NET_BENEFIT_EUR ?? 0) >= 0)
-            : assignments,
-    [assignments, hideUnprofitable],
-  );
+  const visibleAssignments = useMemo(() => {
+    const base = hideUnprofitable
+      ? assignments.filter(a => (a.NET_BENEFIT_EUR ?? 0) >= 0)
+      : assignments;
+    return [...base].sort(
+      (a, b) => (b.NET_BENEFIT_EUR ?? -Infinity) - (a.NET_BENEFIT_EUR ?? -Infinity),
+    );
+  }, [assignments, hideUnprofitable]);
 
   const totalEmptyKm = useMemo(() => visibleAssignments.reduce((s, a) => s + a.EMPTY_KM, 0), [visibleAssignments]);
   const totalLoadedKm = useMemo(() => visibleAssignments.reduce((s, a) => s + a.LOADED_KM, 0), [visibleAssignments]);
