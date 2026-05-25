@@ -333,13 +333,74 @@ export default function BackloadMatching() {
     const shiftStartSec = etaSeconds.length ? Math.min(...etaSeconds) : nowSec;
     const shiftEndSec   = shiftStartSec + Math.round(shiftLengthHrs * 3600);
 
+    // Score every shipment by haversine distance to the NEAREST idle trailer
+    // pickup point. Lower score = better backload candidate. Sorting by score
+    // (with id as deterministic tie-break) makes the subset reproducible
+    // across solves on the same data, so users see consistent results.
+    const nearestTrailerKm = (lon: number, lat: number): number => {
+      let best = Infinity;
+      for (const t of trailers) {
+        const d = haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), lon, lat);
+        if (d < best) best = d;
+      }
+      return best;
+    };
+
+    const internalSubset = [...internal]
+      .map(v => ({ v, score: nearestTrailerKm(Number(v.PICKUP_LON), Number(v.PICKUP_LAT)) }))
+      .sort((a, b) => a.score - b.score || String(a.v.ID).localeCompare(String(b.v.ID)))
+      .slice(0, BM_MAX_INTERNAL)
+      .map(x => x.v);
+    const externalSubset = [...external]
+      .map(o => ({ o, score: nearestTrailerKm(Number(o.PICKUP_LON), Number(o.PICKUP_LAT)) }))
+      .sort((a, b) => a.score - b.score || String(a.o.OFFER_ID).localeCompare(String(b.o.OFFER_ID)))
+      .slice(0, BM_MAX_EXTERNAL)
+      .map(x => x.o);
+    const internalSkipped = Math.max(0, internal.length - internalSubset.length);
+    const externalSkipped = Math.max(0, external.length - externalSubset.length);
+
+    // Region-agnostic time/distance budget.
+    // Compute the haversine envelope (longest pair-wise distance) over every
+    // point any tour might visit: trailer starts/ends + shipment pickups and
+    // dropoffs in the candidate subset. Then assume the worst tour visits up
+    // to (2 * maxStops + 1) legs at the envelope's diameter. This scales
+    // correctly for compact city graphs (envelope ~ a few km) and continental
+    // graphs (envelope ~ 1000+ km) without hardcoding any region constants.
+    // Replaces the previous formula that used haversine(trailer→home) only,
+    // which collapsed to an 8 h budget on Germany and caused VROOM to drop
+    // every candidate route silently → "OPTIMIZATION returned 0 rows".
+    const envelopePoints: [number, number][] = [
+      ...trailers.flatMap(t => ([
+        [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)] as [number, number],
+        [Number(t.HOME_LON),    Number(t.HOME_LAT)]    as [number, number],
+      ])),
+      ...internalSubset.flatMap(v => ([
+        [Number(v.PICKUP_LON),  Number(v.PICKUP_LAT)]  as [number, number],
+        [Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)] as [number, number],
+      ])),
+      ...externalSubset.flatMap(o => ([
+        [Number(o.PICKUP_LON),  Number(o.PICKUP_LAT)]  as [number, number],
+        [Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)] as [number, number],
+      ])),
+    ];
+    let envelopeKm = 0;
+    for (let i = 0; i < envelopePoints.length; i++) {
+      for (let j = i + 1; j < envelopePoints.length; j++) {
+        const d = haversineKm(
+          envelopePoints[i][0], envelopePoints[i][1],
+          envelopePoints[j][0], envelopePoints[j][1],
+        );
+        if (d > envelopeKm) envelopeKm = d;
+      }
+    }
+    const tourLegs     = 2 * maxStops + 1;
+    const worstTourKm  = Math.max(200, envelopeKm * tourLegs);
+    const worstTourHrs = worstTourKm / KMH_HGV;
+
     const vrpVehicles = trailers.slice(0, BM_MAX_VEHICLES).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
       const endPt = trailerEnd(t);
-      const idealEnd = endPt ?? [Number(t.HOME_LON), Number(t.HOME_LAT)];
-      const idealKm  = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, idealEnd[0], idealEnd[1]);
-      const idealHrs = idealKm / KMH_HGV;
       const capacityKg = Number(t.MAX_PAYLOAD_KG) || 24000;
 
       const veh: any = {
@@ -353,18 +414,17 @@ export default function BackloadMatching() {
           : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
-        // Floor the time budget so trailers parked near home still have a
-        // realistic tour budget. 4 h is the conservative minimum for an HGV
-        // doing one pickup + one delivery within a region.
-        max_travel_time: Math.max(1800, Math.round((Math.max(idealHrs, 4) + detourSlackHrs) * 3600)),
-        // max_distance is a hard cap on the WHOLE tour (empty + loaded legs).
-        // The "ideal empty trip" alone is rarely a useful baseline because the
-        // tour with a backload always exceeds it. Use a generous baseline:
-        //   max(2 × idealEmptyKm, 200 km) × (1 + dev%/100)
-        // and floor at 100 km so VROOM never sees a degenerate value.
+        // Time budget: worst-case envelope tour + user's detour-slack slider.
+        // detourSlackHrs widens linearly on top of the realistic baseline.
+        max_travel_time: Math.max(
+          1800,
+          Math.round((worstTourHrs + detourSlackHrs) * 3600),
+        ),
+        // Distance budget: envelope tour scaled by user's deviation% slider.
+        // 100 km floor protects the degenerate single-city candidate case.
         max_distance: Math.max(
           100_000,
-          Math.round(Math.max(idealKm * 2, 200) * (1 + deviationPct / 100) * 1000),
+          Math.round(worstTourKm * (1 + deviationPct / 100) * 1000),
         ),
         costs: {
           fixed:  Math.round(fixedDispatchEur * COST_SCALE),
@@ -418,32 +478,6 @@ export default function BackloadMatching() {
       const win2: number[] = [win1[0] + 8 * 3600, win1[1] + 8 * 3600];
       return [win1, win2];
     };
-
-    // Score every shipment by haversine distance to the NEAREST idle trailer
-    // pickup point. Lower score = better backload candidate. Sorting by score
-    // (with id as deterministic tie-break) makes the subset reproducible
-    // across solves on the same data, so users see consistent results.
-    const nearestTrailerKm = (lon: number, lat: number): number => {
-      let best = Infinity;
-      for (const t of trailers) {
-        const d = haversineKm(Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT), lon, lat);
-        if (d < best) best = d;
-      }
-      return best;
-    };
-
-    const internalSubset = [...internal]
-      .map(v => ({ v, score: nearestTrailerKm(Number(v.PICKUP_LON), Number(v.PICKUP_LAT)) }))
-      .sort((a, b) => a.score - b.score || String(a.v.ID).localeCompare(String(b.v.ID)))
-      .slice(0, BM_MAX_INTERNAL)
-      .map(x => x.v);
-    const externalSubset = [...external]
-      .map(o => ({ o, score: nearestTrailerKm(Number(o.PICKUP_LON), Number(o.PICKUP_LAT)) }))
-      .sort((a, b) => a.score - b.score || String(a.o.OFFER_ID).localeCompare(String(b.o.OFFER_ID)))
-      .slice(0, BM_MAX_EXTERNAL)
-      .map(x => x.o);
-    const internalSkipped = Math.max(0, internal.length - internalSubset.length);
-    const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
     for (const v of internalSubset) {
       const id = nextId++;
@@ -831,11 +865,16 @@ export default function BackloadMatching() {
       );
     } else if (rows.length === 0 && vrpShipments.length > 0) {
       setSolveError(
-        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING, ` +
+        `OPTIMIZATION returned 0 rows. ` +
+        `Per-vehicle limits sent to VROOM: ` +
+        `max_travel_time≈${Math.round(worstTourHrs + detourSlackHrs)}h, ` +
+        `max_distance≈${Math.round(worstTourKm * (1 + deviationPct / 100))}km ` +
+        `(envelope=${Math.round(envelopeKm)}km, legs=${tourLegs}). ` +
+        `If the actual tour exceeds these, raise "Detour slack (h)" or "Max deviation %" and re-solve. ` +
+        `Other checks: (1) ORS_SERVICE_${(regionName || '').toUpperCase()} RUNNING, ` +
         `(2) region='${regionName}' covers your data bbox, ` +
-        `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}, ` +
-        `(4) constraints aren't too tight (try raising deviation %, detour slack, or window slack), ` +
-        `(5) no unknown vehicle/job fields (e.g. costs.per_hour requires VROOM v1.13+).`
+        `(3) profile='${profile}' supported by this region, ` +
+        `(4) no unknown vehicle/job fields (e.g. costs.per_hour requires VROOM v1.13+).`
       );
     }
 

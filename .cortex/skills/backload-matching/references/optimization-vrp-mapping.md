@@ -93,3 +93,40 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 - **Pre-computed matrices**: for repeated what-if solves on the same point set, call `OPENROUTESERVICE_APP.CORE._OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` with a cached matrix. (Cache table not seeded in v1.1.35; follow-up work.)
 - **Pinned stops** (`vehicle.steps[]`): dispatcher overrides where a specific stop is locked to a specific trailer. (UI hook not shipped in v1.1.35; follow-up work.)
 - **Mixed jobs + shipments**: VROOM accepts both `jobs[]` (single-location) and `shipments[]` (paired). Useful for return / empty-container relocation tasks. (Follow-up.)
+
+## Sanity probe: "OPTIMIZATION returned 0 rows"
+
+If the UI surfaces "OPTIMIZATION returned 0 rows", first verify VROOM itself is
+healthy for the region with this minimal probe (replace `$REGION` and the four
+coordinates with values that lie inside the region's boundary). One returned
+row means VROOM works — the issue is then in the payload your code is
+generating (almost always `max_travel_time` or `max_distance` too tight, or an
+unknown VROOM v1.0.4 field; see compatibility table above).
+
+```sql
+SET REGION = 'Germany';
+SELECT VEHICLE FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
+  PARSE_JSON('{
+    "vehicles":[{"id":1,"profile":"driving-hgv",
+      "start":[13.4050,52.5200],"end":[11.5820,48.1351],
+      "capacity":[24000],"max_tasks":3}],
+    "shipments":[{"pickup":{"id":1001,"location":[8.6821,50.1109],"service":1800},
+      "delivery":{"id":1001,"location":[9.9937,53.5511],"service":600},
+      "amount":[10000]}]
+  }'), $REGION));
+```
+
+### Common silent-rejection causes (VROOM v1.0.4)
+
+VROOM v1.0.4 silently drops the entire response (0 rows, no error) when:
+
+- `max_travel_time` is smaller than the shortest feasible tour. The React UI
+  computes this from the haversine envelope of the candidate pool times
+  `(2 * maxStops + 1)` legs plus the user's `detourSlackHrs` slider — a fixed
+  4 h baseline like the legacy formula collapses on continental graphs.
+- `max_distance` is smaller than the shortest feasible tour distance.
+- `costs.per_hour` is set (added in upstream VROOM v1.13). Fold into
+  `costs.per_km` via assumed speed (HGV ≈ 60 km/h).
+- Multi-dim `capacity` does not match `amount` length on a shipment.
+- `vehicle.profile_options.avoid_polygons` is set but the routing gateway
+  does not yet forward it to the ORS matrix call.
