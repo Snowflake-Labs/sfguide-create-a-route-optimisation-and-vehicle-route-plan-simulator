@@ -156,6 +156,50 @@ export async function ensureBackloadAndAssetVelocityObjects(
         WHERE f.REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
+    // ---------------------------------------------------------------
+    // Card F: AVOID_ZONES — seeded with two real EU low-emission zones
+    // (Berlin, Munich) and a sample construction zone. The Backload UI
+    // sends the polygons to ORS via vehicle.profile_options.avoid_polygons.
+    // ---------------------------------------------------------------
+    {
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.AVOID_ZONES (
+        ZONE_ID   VARCHAR PRIMARY KEY,
+        NAME      VARCHAR,
+        CATEGORY  VARCHAR,
+        POLYGON   GEOGRAPHY,
+        CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+      ) COMMENT = ${TRACK}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.AVOID_ZONES tgt
+        USING (
+          SELECT 'BERLIN_LEZ' AS ZONE_ID,
+                 'Berlin Umweltzone (LEZ)' AS NAME,
+                 'low-emission-zone' AS CATEGORY,
+                 TO_GEOGRAPHY('POLYGON((13.310 52.475, 13.450 52.475, 13.450 52.555, 13.310 52.555, 13.310 52.475))') AS POLYGON
+          UNION ALL
+          SELECT 'MUNICH_LEZ',
+                 'München Umweltzone (LEZ)',
+                 'low-emission-zone',
+                 TO_GEOGRAPHY('POLYGON((11.530 48.110, 11.620 48.110, 11.620 48.180, 11.530 48.180, 11.530 48.110))')
+          UNION ALL
+          SELECT 'SAMPLE_CONSTRUCTION',
+                 'Sample construction zone',
+                 'construction',
+                 TO_GEOGRAPHY('POLYGON((11.560 48.140, 11.580 48.140, 11.580 48.150, 11.560 48.150, 11.560 48.140))')
+        ) src ON tgt.ZONE_ID = src.ZONE_ID
+        WHEN NOT MATCHED THEN INSERT (ZONE_ID, NAME, CATEGORY, POLYGON)
+                              VALUES (src.ZONE_ID, src.NAME, src.CATEGORY, src.POLYGON)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    // Best-effort: extend PROPOSAL_DECISIONS with NET_BENEFIT_EUR for
+    // older deployments that pre-date the economics column.
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+              ADD COLUMN IF NOT EXISTS NET_BENEFIT_EUR FLOAT`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
     // Asset Velocity views (ROUTE_OPTIMIZATION) — ensure CONFIG has the
     // cost-of-idleness columns then deploy the three vehicle-type-aware views.
     {

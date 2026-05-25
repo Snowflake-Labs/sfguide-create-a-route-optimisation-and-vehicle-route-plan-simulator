@@ -13,9 +13,9 @@ import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import StopsPanel from './backload-matching/StopsPanel';
 import {
-  BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_EMPTY_KM, ROUTE_COLORS,
-  Trailer, Volume, Offer, Assignment, Stop, SvcStatus,
-  sfQuery, haversineKm, profileForVehicleType,
+  BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
+  Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
+  sfQuery, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
 } from './backload-matching/helpers';
 
 function cartoBasemap() {
@@ -28,6 +28,8 @@ function cartoBasemap() {
   });
 }
 
+type EndMode = 'home' | 'shared' | 'open';
+
 export default function BackloadMatching() {
   const { regionName, center, zoom } = useRegion();
   const [trailers, setTrailers] = useState<Trailer[]>([]);
@@ -35,18 +37,44 @@ export default function BackloadMatching() {
   const [external, setExternal] = useState<Offer[]>([]);
   const [vehicleType, setVehicleType] = useState<string>('hgv');
   const [solveError, setSolveError] = useState<string | null>(null);
+  const [avoidZones, setAvoidZones] = useState<AvoidZone[]>([]);
 
-  const [internalPriority, setInternalPriority] = useState(100);
-  const [externalPriority, setExternalPriority] = useState(10);
-  const [windowToleranceHrs, setWindowToleranceHrs] = useState(4);
-  const [maxEmptyKm, setMaxEmptyKm] = useState(200);
-  const [forceSharedDest, setForceSharedDest] = useState(false);
-  const [matchMode, setMatchMode] = useState<'single' | 'consolidate'>('single');
-  const [detourSlackHrs, setDetourSlackHrs] = useState(4);
-  const [maxDetourKm, setMaxDetourKm] = useState(120);
-  const [sharedDestLon, setSharedDestLon] = useState<number | null>(null);
-  const [sharedDestLat, setSharedDestLat] = useState<number | null>(null);
+  // ---------------- Solver levers (every one maps 1:1 to VROOM/ORS) ----------------
+  const [maxStops, setMaxStops]                   = useState(2);    // vehicle.max_tasks
+  const [detourSlackHrs, setDetourSlackHrs]       = useState(4);    // vehicle.max_travel_time
+  const [deviationPct, setDeviationPct]           = useState(50);   // vehicle.max_distance
+  const [internalFirstWeight, setInternalFirstWeight] = useState(90); // job.priority gap
+  const [windowSlackHrs, setWindowSlackHrs]       = useState(2);    // job.time_windows
+  const [endMode, setEndMode]                     = useState<EndMode>('home'); // vehicle.end
+  const [sharedDestLon, setSharedDestLon]         = useState<number | null>(null);
+  const [sharedDestLat, setSharedDestLat]         = useState<number | null>(null);
   const [sharedDestUserEdited, setSharedDestUserEdited] = useState(false);
+
+  // ---------------- Economics levers (€) ----------------
+  const [costPerHourEur, setCostPerHourEur]       = useState(45);   // vehicle.costs.per_hour
+  const [costPerKmEur, setCostPerKmEur]           = useState(0.85); // folded into per_hour + post-solve
+  const [fixedDispatchEur, setFixedDispatchEur]   = useState(120);  // vehicle.costs.fixed
+  const [costPerDeliveryEur, setCostPerDeliveryEur] = useState(15); // post-solve only
+  const [internalRatePerKm, setInternalRatePerKm] = useState(EUR_PER_LOADED_KM); // revenue
+  const [hideUnprofitable, setHideUnprofitable]   = useState(false);
+
+  // ---------------- Engine-feature toggles (Cards A-J) ----------------
+  const [showAdvanced, setShowAdvanced]           = useState(false);
+  // Card A: vehicle.breaks[]
+  const [enforceDriverBreak, setEnforceDriverBreak] = useState(false);
+  const [breakAfterHrs, setBreakAfterHrs]         = useState(4.5);
+  const [breakLengthMin, setBreakLengthMin]       = useState(45);
+  // Card D: vehicle.time_window
+  const [enforceShift, setEnforceShift]           = useState(false);
+  const [shiftLengthHrs, setShiftLengthHrs]       = useState(9);
+  // Card C: multi-dim capacity
+  const [useMultiDimCapacity, setUseMultiDimCapacity] = useState(false);
+  // Card B: multi-window pickups (synthesise a 2nd window)
+  const [useMultiWindow, setUseMultiWindow]       = useState(false);
+  // Card F: avoid polygons
+  const [selectedAvoidZoneIds, setSelectedAvoidZoneIds] = useState<string[]>([]);
+  // Card J: wait-time chips
+  const [showWaitTimes, setShowWaitTimes]         = useState(true);
 
   const [solving, setSolving] = useState(false);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -85,17 +113,14 @@ export default function BackloadMatching() {
       }));
   }, [requiredServices]);
 
-  // Auto-fill shared destination from first trailer when toggle turns on,
-  // unless user has explicitly edited the inputs. Re-fills on region change
-  // (trailers reload) so the default always lands inside the active region.
   useEffect(() => {
-    if (!forceSharedDest) return;
+    if (endMode !== 'shared') return;
     if (sharedDestUserEdited) return;
     const t = trailers[0];
     if (!t) return;
     setSharedDestLon(Number(t.HOME_LON));
     setSharedDestLat(Number(t.HOME_LAT));
-  }, [forceSharedDest, trailers, sharedDestUserEdited]);
+  }, [endMode, trailers, sharedDestUserEdited]);
 
   useEffect(() => {
     let active = true;
@@ -129,12 +154,13 @@ export default function BackloadMatching() {
   }, [fetchSvcStatus]);
 
   const refetch = useCallback(async () => {
-    const [tRows, iRows, eRows, cRows, profRows] = await Promise.all([
+    const [tRows, iRows, eRows, cRows, profRows, azRows] = await Promise.all([
       sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.VW_TRAILERS LIMIT 100`),
       sfQuery(`SELECT ID, PICKUP_CITY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, HAZMAT FROM ${BM_DB}.${BM_SCHEMA}.VW_INTERNAL_VOLUMES LIMIT 200`),
       sfQuery(`SELECT OFFER_ID, SOURCE, PICKUP_CITY, PICKUP_COUNTRY, PICKUP_LON, PICKUP_LAT, DROPOFF_CITY, DROPOFF_COUNTRY, DROPOFF_LON, DROPOFF_LAT, PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_EUR, HAZMAT, LISTING_TEXT FROM ${BM_DB}.${BM_SCHEMA}.VW_EXTERNAL_OFFERS LIMIT 500`),
       sfQuery(`SELECT * FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`),
       sfQuery(`SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS='COMPLETE' AND REGION='${regionName?.replace(/'/g, "''") || ''}' ORDER BY COMPLETED_AT DESC LIMIT 1`, 'OPENROUTESERVICE_APP', 'CORE'),
+      sfQuery(`SELECT ZONE_ID, NAME, CATEGORY, ST_ASGEOJSON(POLYGON)::VARCHAR AS POLYGON_GEOJSON FROM ${BM_DB}.${BM_SCHEMA}.AVOID_ZONES`).catch(() => []),
     ]);
     setTrailers(tRows as Trailer[]);
     setInternal(iRows as Volume[]);
@@ -143,6 +169,10 @@ export default function BackloadMatching() {
     if (cfg.VEHICLE_TYPE != null) setVehicleType(String(cfg.VEHICLE_TYPE));
     const provProfile = (profRows[0] as any)?.PROFILES;
     if (provProfile) setOrsProfile(provProfile.split(',')[0].trim());
+    setAvoidZones((azRows as any[]).map(r => ({
+      ZONE_ID: r.ZONE_ID, NAME: r.NAME, CATEGORY: r.CATEGORY,
+      POLYGON_GEOJSON: typeof r.POLYGON_GEOJSON === 'string' ? JSON.parse(r.POLYGON_GEOJSON) : r.POLYGON_GEOJSON,
+    })));
     if (!tRows.length || !iRows.length || !eRows.length) {
       setSeedHint(`Tables are empty for region "${regionName}". Click "Generate seed data" to populate them, or run a Data Studio job for this region.`);
     } else {
@@ -150,10 +180,6 @@ export default function BackloadMatching() {
     }
   }, [regionName]);
 
-  // Option B: app region picker is the source of truth.
-  // On mount + on regionName change, sync BACKLOAD_MATCHING.CONFIG (REGION + VEHICLE_TYPE)
-  // then refetch. VEHICLE_TYPE is resolved from DIM_FLEET so the views match the
-  // active preset (e.g. ebike for San Francisco, hgv for Germany).
   useEffect(() => {
     if (!regionName) return;
     (async () => {
@@ -173,9 +199,6 @@ export default function BackloadMatching() {
             `UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
           );
         }
-        // Mirror the same (region, vehicle_type) into ROUTE_OPTIMIZATION.CONFIG so
-        // Asset Velocity views (VW_IDLE_TRAILERS, VW_LANE_DEMAND,
-        // VW_TRAILER_COST_OF_IDLENESS) line up with the active preset.
         try {
           await sfQuery(
             `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
@@ -210,11 +233,14 @@ export default function BackloadMatching() {
       setSeeding(false);
     }
   }, [regionName, seeding, refetch]);
+
+  // -----------------------------------------------------------------
+  // Solve — every visible knob lands inside the OPTIMIZATION call.
+  // -----------------------------------------------------------------
   const solve = useCallback(async () => {
     if (!trailers.length) return;
     setSolving(true); setAssignments([]); setUnassigned([]); setRationale({}); setConfirmMsg(null); setSolverLog(null); setSolveError(null);
 
-    // Auto-warm: if any required ORS service is suspended/warming, resume + wait before issuing OPTIMIZATION.
     const probe = await fetchSvcStatus();
     setSvcStatus(probe);
     if (!probe.every(s => s.status === 'RUNNING' && s.cur >= s.tgt)) {
@@ -229,99 +255,161 @@ export default function BackloadMatching() {
     const effSharedLon = sharedDestLon ?? fallbackLon;
     const effSharedLat = sharedDestLat ?? fallbackLat;
     const trailerById = new Map<number, Trailer>();
-    const trailerEnd = (t: Trailer): [number, number] =>
-      forceSharedDest && effSharedLon !== null && effSharedLat !== null
-        ? [effSharedLon, effSharedLat]
-        : [Number(t.HOME_LON), Number(t.HOME_LAT)];
-    // Approx HGV avg speed for max_travel_time budget.
-    const KMH_HGV = 60;
-    const directKmFor = (t: Trailer) => {
-      const [eLon, eLat] = trailerEnd(t);
-      return haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, eLon, eLat);
+    const trailerEnd = (t: Trailer): [number, number] | null => {
+      if (endMode === 'open') return null;
+      if (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null) {
+        return [effSharedLon, effSharedLat];
+      }
+      return [Number(t.HOME_LON), Number(t.HOME_LAT)];
     };
+    // Effective €/h for VROOM = real €/h + €/km * km/h (folds per-km cost into per-hour).
+    const effPerHourEur = costPerHourEur + costPerKmEur * KMH_HGV;
+    // Avoid-polygon GeoJSON list (Card F).
+    const avoidGeoJSON = selectedAvoidZoneIds
+      .map(id => avoidZones.find(z => z.ZONE_ID === id)?.POLYGON_GEOJSON)
+      .filter(Boolean);
+
+    // Pick a common shift start (earliest trailer ETA, fallback now).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const etaSeconds = trailers
+      .map(t => Math.floor(new Date(t.ETA_TS || 0).getTime() / 1000))
+      .filter(s => Number.isFinite(s) && s > 0);
+    const shiftStartSec = etaSeconds.length ? Math.min(...etaSeconds) : nowSec;
+    const shiftEndSec   = shiftStartSec + Math.round(shiftLengthHrs * 3600);
+
     const vrpVehicles = trailers.slice(0, 30).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
-      const [eLon, eLat] = trailerEnd(t);
-      const base: any = {
+      const endPt = trailerEnd(t);
+      const idealEnd = endPt ?? [Number(t.HOME_LON), Number(t.HOME_LAT)];
+      const idealKm  = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, idealEnd[0], idealEnd[1]);
+      const idealHrs = idealKm / KMH_HGV;
+      const capacityKg = Number(t.MAX_PAYLOAD_KG) || 24000;
+
+      const veh: any = {
         id,
         profile,
         start: [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)],
-        end:   [eLon, eLat],
-        capacity: [Number(t.MAX_PAYLOAD_KG) || 24000],
+        capacity: useMultiDimCapacity
+          ? [capacityKg,
+             Number(t.MAX_PALLETS) || synthPallets(capacityKg),
+             Number(t.MAX_VOLUME_M3) || synthVolumeM3(capacityKg)]
+          : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
+        max_tasks: maxStops,
+        max_travel_time: Math.max(1800, Math.round((idealHrs + detourSlackHrs) * 3600)),
+        max_distance:    Math.max(5000, Math.round(idealKm * (1 + deviationPct / 100) * 1000)),
+        costs: {
+          fixed:    Math.round(fixedDispatchEur * COST_SCALE),
+          per_hour: Math.round(effPerHourEur     * COST_SCALE),
+        },
       };
-      if (matchMode === 'single') {
-        const directKm = directKmFor(t);
-        const directS  = (directKm / KMH_HGV) * 3600;
-        const slackS   = detourSlackHrs * 3600;
-        // Single backload: 1 pickup + 1 delivery = 2 task steps; bound detour;
-        // high fixed cost so VROOM never adds a trailer for a tiny gain.
-        base.max_tasks = 2;
-        base.max_travel_time = Math.max(1800, Math.round(directS + slackS));
-        base.costs = { fixed: 100000, per_hour: 3600 };
+
+      if (endPt) veh.end = endPt;
+
+      // Card D: vehicle shift / hours-of-service.
+      if (enforceShift) veh.time_window = [shiftStartSec, shiftEndSec];
+
+      // Card A: EU driver break (45 min after 4.5h, by default).
+      if (enforceDriverBreak) {
+        const breakStart = shiftStartSec + Math.round(breakAfterHrs * 3600);
+        const breakLatest = shiftStartSec + Math.round((breakAfterHrs + 1.5) * 3600);
+        veh.breaks = [{
+          id: 1,
+          service: Math.round(breakLengthMin * 60),
+          time_windows: [[breakStart, breakLatest]],
+        }];
       }
-      return base;
+
+      // Card F: avoid polygons forwarded as ORS profile options on the vehicle.
+      if (avoidGeoJSON.length) {
+        veh.profile_options = {
+          avoid_polygons: {
+            type: 'MultiPolygon',
+            coordinates: avoidGeoJSON.flatMap((g: any) => {
+              if (!g) return [];
+              if (g.type === 'Polygon') return [g.coordinates];
+              if (g.type === 'MultiPolygon') return g.coordinates;
+              if (g.type === 'Feature' && g.geometry?.type === 'Polygon') return [g.geometry.coordinates];
+              if (g.type === 'Feature' && g.geometry?.type === 'MultiPolygon') return g.geometry.coordinates;
+              return [];
+            }),
+          },
+        };
+      }
+
+      return veh;
     });
 
     const offerById = new Map<number, { kind: 'INTERNAL' | string; row: any }>();
     let nextId = 1000;
     const vrpShipments: any[] = [];
 
-    // Score each shipment by detour vs direct trailer->home for the
-    // BEST-FITTING trailer. detourKm = idle->pickup + pickup->dropoff
-    // + dropoff->home  -  direct(idle->home). Lower = better backload.
-    const detourKmForBestTrailer = (lonP: number, latP: number, lonD: number, latD: number) => {
-      let best = Infinity;
-      for (const t of trailers) {
-        const [eLon, eLat] = trailerEnd(t);
-        const direct = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, eLon, eLat);
-        const tour = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, lonP, latP)
-                   + haversineKm(lonP, latP, lonD, latD)
-                   + haversineKm(lonD, latD, eLon, eLat);
-        const detour = tour - direct;
-        if (detour < best) best = detour;
-      }
-      return best;
+    const widenSec = Math.round(windowSlackHrs * 3600);
+    const tw = (fromIso: string | null | undefined, toIso: string | null | undefined): number[][] | undefined => {
+      if (!fromIso || !toIso) return undefined;
+      const a = Math.floor(new Date(fromIso).getTime() / 1000);
+      const b = Math.ceil(new Date(toIso).getTime() / 1000);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return undefined;
+      const win1: number[] = [a - widenSec, b + widenSec];
+      if (!useMultiWindow) return [win1];
+      // Card B: synthesise an evening window 8 hours later.
+      const win2: number[] = [win1[0] + 8 * 3600, win1[1] + 8 * 3600];
+      return [win1, win2];
     };
 
     const MAX_INTERNAL = 60;
     const MAX_EXTERNAL = 30;
-    const internalScored = internal.map(v => ({ v, d: detourKmForBestTrailer(Number(v.PICKUP_LON), Number(v.PICKUP_LAT), Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)) }));
-    const externalScored = external.map(o => ({ o, d: detourKmForBestTrailer(Number(o.PICKUP_LON), Number(o.PICKUP_LAT), Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)) }));
-    const detourCutoff = matchMode === 'single' ? maxDetourKm : Infinity;
-    const internalSubset = internalScored.filter(x => x.d <= detourCutoff).sort((a, b) => a.d - b.d).slice(0, MAX_INTERNAL).map(x => x.v);
-    const externalSubset = externalScored.filter(x => x.d <= detourCutoff).sort((a, b) => a.d - b.d).slice(0, MAX_EXTERNAL).map(x => x.o);
+    const internalSubset = internal.slice(0, MAX_INTERNAL);
+    const externalSubset = external.slice(0, MAX_EXTERNAL);
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
     for (const v of internalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: 'INTERNAL', row: v });
+      const kg = Math.min(Number(v.WEIGHT_KG), 24000);
+      const amount = useMultiDimCapacity
+        ? [kg, Number(v.PALLETS) || synthPallets(kg), Number(v.VOLUME_M3) || synthVolumeM3(kg)]
+        : [kg];
+      const windows = tw(v.PICKUP_FROM_TS, v.PICKUP_TO_TS);
       vrpShipments.push({
-        pickup:   { id, location: [Number(v.PICKUP_LON),  Number(v.PICKUP_LAT)],  service: 1800 },
-        delivery: { id, location: [Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)], service: 600  },
-        amount: [Math.min(Number(v.WEIGHT_KG), 24000)],
+        pickup:   { id, location: [Number(v.PICKUP_LON),  Number(v.PICKUP_LAT)],  service: 1800, time_windows: windows },
+        delivery: { id, location: [Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)], service: 600 },
+        amount,
         skills: v.HAZMAT ? [1, 3] : [1],
-        priority: internalPriority,
+        priority: internalFirstWeight,
       });
     }
     for (const o of externalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: o.SOURCE, row: o });
+      const kg = Math.min(Number(o.WEIGHT_KG), 24000);
+      const amount = useMultiDimCapacity
+        ? [kg, Number(o.PALLETS) || synthPallets(kg), Number(o.VOLUME_M3) || synthVolumeM3(kg)]
+        : [kg];
+      const windows = tw(o.PICKUP_FROM_TS, o.PICKUP_TO_TS);
       vrpShipments.push({
-        pickup:   { id, location: [Number(o.PICKUP_LON),  Number(o.PICKUP_LAT)],  service: 1800 },
-        delivery: { id, location: [Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)], service: 600  },
-        amount: [Math.min(Number(o.WEIGHT_KG), 24000)],
+        pickup:   { id, location: [Number(o.PICKUP_LON),  Number(o.PICKUP_LAT)],  service: 1800, time_windows: windows },
+        delivery: { id, location: [Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)], service: 600 },
+        amount,
         skills: o.HAZMAT ? [2, 3] : [2],
-        priority: externalPriority,
+        priority: Math.max(0, 100 - internalFirstWeight),
       });
     }
 
     const challenge = { vehicles: vrpVehicles, shipments: vrpShipments, options: { g: true } };
     const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
     const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
-    console.log('[BM] OPTIMIZATION challenge: vehicles=', vrpVehicles.length, 'shipments=', vrpShipments.length, 'region=', regionName);
+    console.log('[BM] OPTIMIZATION challenge:',
+      'vehicles=', vrpVehicles.length,
+      'shipments=', vrpShipments.length,
+      'region=', regionName,
+      'maxStops=', maxStops,
+      'devPct=', deviationPct,
+      'eurPerHour=', effPerHourEur,
+      'breaks=', enforceDriverBreak,
+      'avoid=', avoidGeoJSON.length);
     const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
 
     const newAssignments: Assignment[] = [];
@@ -341,8 +429,9 @@ export default function BackloadMatching() {
       try { steps = typeof r.STEPS === 'string' ? JSON.parse(r.STEPS) : (r.STEPS || []); } catch {}
       let routeGeo: any = null;
       try { routeGeo = typeof r.GEOJSON === 'string' ? JSON.parse(r.GEOJSON) : r.GEOJSON; } catch {}
-      // Handle 'pickup' and 'delivery' step types from VROOM shipments (with backward-compat 'job').
-      const taskSteps = steps.filter((s: any) => s.type === 'pickup' || s.type === 'delivery' || s.type === 'job');
+
+      const taskSteps = steps.filter((s: any) =>
+        s.type === 'pickup' || s.type === 'delivery' || s.type === 'job' || s.type === 'break');
       if (!taskSteps.length) continue;
       const firstPick = taskSteps.find((s: any) => s.type === 'pickup' || s.type === 'job');
       if (!firstPick) continue;
@@ -351,10 +440,9 @@ export default function BackloadMatching() {
       if (!ent) continue;
       const row: any = ent.row;
       const empty = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, row.PICKUP_LON, row.PICKUP_LAT);
-      if (empty > maxEmptyKm) continue;
       const loaded = haversineKm(row.PICKUP_LON, row.PICKUP_LAT, row.DROPOFF_LON, row.DROPOFF_LAT);
 
-      // Build full STOPS list from VROOM step sequence: trailer start -> (pickups/deliveries in solver order) -> end (home/shared)
+      // Build STOPS list (Card J wait-time + Card A breaks included).
       const stops: Stop[] = [];
       stops.push({
         kind: 'start',
@@ -363,69 +451,90 @@ export default function BackloadMatching() {
         lon: Number(t.DROPOFF_LON),
         lat: Number(t.DROPOFF_LAT),
       });
+      let totalLoadedKm = 0;
+      let prevLon: number | null = null, prevLat: number | null = null;
       for (const ts of taskSteps) {
         const sid = Number(ts.id ?? ts.job);
+        const wait = Number(ts.waiting_time) || 0;
+        if (ts.type === 'break') {
+          // Card A: a break has no location returned in some VROOM versions;
+          // if the previous step's location is known, anchor it there, else
+          // skip drawing a marker but still display in StopsPanel.
+          const lon = Number(ts.location?.[0]) || prevLon || Number(t.DROPOFF_LON);
+          const lat = Number(ts.location?.[1]) || prevLat || Number(t.DROPOFF_LAT);
+          stops.push({
+            kind: 'break',
+            label: `Driver break (${Math.round((Number(ts.service) || breakLengthMin * 60) / 60)} min)`,
+            lon, lat,
+            waitSec: wait,
+            serviceSec: Number(ts.service) || breakLengthMin * 60,
+          });
+          continue;
+        }
         const je = offerById.get(sid);
         if (!je) continue;
         const jr: any = je.row;
         const offerId = je.kind === 'INTERNAL' ? jr.ID : jr.OFFER_ID;
         if (ts.type === 'delivery') {
+          if (prevLon !== null && prevLat !== null) {
+            totalLoadedKm += haversineKm(prevLon, prevLat, Number(jr.DROPOFF_LON), Number(jr.DROPOFF_LAT));
+          }
           stops.push({
             kind: 'dropoff',
             label: `${je.kind} ${offerId}`,
             city: jr.DROPOFF_CITY,
             lon: Number(jr.DROPOFF_LON),
             lat: Number(jr.DROPOFF_LAT),
-            jobId: sid,
-            offerId,
-            source: je.kind,
-            product: jr.PRODUCT,
+            jobId: sid, offerId, source: je.kind, product: jr.PRODUCT,
             weightKg: Number(jr.WEIGHT_KG) || undefined,
+            waitSec: wait,
           });
+          prevLon = Number(jr.DROPOFF_LON); prevLat = Number(jr.DROPOFF_LAT);
         } else {
-          // 'pickup' or legacy 'job'
           stops.push({
             kind: 'pickup',
             label: `${je.kind} ${offerId}`,
             city: jr.PICKUP_CITY,
             lon: Number(jr.PICKUP_LON),
             lat: Number(jr.PICKUP_LAT),
-            jobId: sid,
-            offerId,
-            source: je.kind,
-            product: jr.PRODUCT,
+            jobId: sid, offerId, source: je.kind, product: jr.PRODUCT,
             weightKg: Number(jr.WEIGHT_KG) || undefined,
+            waitSec: wait,
           });
+          prevLon = Number(jr.PICKUP_LON); prevLat = Number(jr.PICKUP_LAT);
           if (ts.type === 'job') {
-            // legacy fallback: synthesize a dropoff right after pickup
+            // legacy fallback: synthesise a dropoff after a job step
             stops.push({
               kind: 'dropoff',
               label: `${je.kind} ${offerId}`,
               city: jr.DROPOFF_CITY,
               lon: Number(jr.DROPOFF_LON),
               lat: Number(jr.DROPOFF_LAT),
-              jobId: sid,
-              offerId,
-              source: je.kind,
-              product: jr.PRODUCT,
+              jobId: sid, offerId, source: je.kind, product: jr.PRODUCT,
               weightKg: Number(jr.WEIGHT_KG) || undefined,
             });
+            prevLon = Number(jr.DROPOFF_LON); prevLat = Number(jr.DROPOFF_LAT);
           }
         }
       }
-      const endLon = forceSharedDest && effSharedLon !== null ? effSharedLon : Number(t.HOME_LON);
-      const endLat = forceSharedDest && effSharedLat !== null ? effSharedLat : Number(t.HOME_LAT);
+      const endPt = endMode === 'open'
+        ? null
+        : (endMode === 'shared' && effSharedLon !== null && effSharedLat !== null
+            ? [effSharedLon, effSharedLat] as [number, number]
+            : [Number(t.HOME_LON), Number(t.HOME_LAT)] as [number, number]);
+      const endLon = endPt ? endPt[0] : (prevLon ?? Number(t.HOME_LON));
+      const endLat = endPt ? endPt[1] : (prevLat ?? Number(t.HOME_LAT));
       stops.push({
         kind: 'end',
-        label: forceSharedDest ? 'Shared destination' : 'Home depot',
-        city: forceSharedDest ? undefined : t.HOME_DEPOT,
+        label: endMode === 'open'
+          ? 'Tour ends here (open-ended)'
+          : (endMode === 'shared' ? 'Shared destination' : 'Home depot'),
+        city: endMode === 'home' ? t.HOME_DEPOT : undefined,
         lon: endLon,
         lat: endLat,
       });
 
       const offerIdFirst = ent.kind === 'INTERNAL' ? row.ID : row.OFFER_ID;
-      // Detour vs direct trailer->home: positive = extra km on top of empty trip,
-      // ideally close to 0 or even negative (route goes "through" home anyway).
       const directHomeKm = haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, endLon, endLat);
       const tourKm =
         haversineKm(t.DROPOFF_LON, t.DROPOFF_LAT, row.PICKUP_LON, row.PICKUP_LAT) +
@@ -433,6 +542,36 @@ export default function BackloadMatching() {
         haversineKm(row.DROPOFF_LON, row.DROPOFF_LAT, endLon, endLat);
       const detourKm = Math.max(0, tourKm - directHomeKm);
       const savedKm  = Math.max(0, directHomeKm - detourKm);
+
+      // Post-solve economics — VROOM returns DURATION (sec); DISTANCE may be
+      // present as meters depending on solver version.
+      const tourSec   = Number(r.DURATION) || 0;
+      const tourHrs   = tourSec / 3600;
+      const tourKmReal = (Number(r.DISTANCE) || (tourSec * KMH_HGV / 3600 * 1000)) / 1000;
+      const waitSec   = taskSteps.reduce((s: number, ts: any) => s + (Number(ts.waiting_time) || 0), 0);
+      const nDeliv    = taskSteps.filter((s: any) => s.type === 'delivery' || s.type === 'job').length;
+
+      // Revenue: external offers carry PRICE_EUR; internal volumes price by
+      // €/loaded-km × allocated loaded km (= sum of loaded segments inside
+      // this trailer's tour). For the demo we approximate per-shipment loaded
+      // km with the haversine pickup→dropoff for the first shipment only.
+      let revenue = 0;
+      for (const ts of taskSteps) {
+        if (ts.type !== 'pickup' && ts.type !== 'job') continue;
+        const sid = Number(ts.id ?? ts.job);
+        const je = offerById.get(sid);
+        if (!je) continue;
+        const jr: any = je.row;
+        const segLoadedKm = haversineKm(Number(jr.PICKUP_LON), Number(jr.PICKUP_LAT), Number(jr.DROPOFF_LON), Number(jr.DROPOFF_LAT));
+        if (je.kind === 'INTERNAL') revenue += segLoadedKm * internalRatePerKm;
+        else revenue += Number(jr.PRICE_EUR) || segLoadedKm * internalRatePerKm;
+      }
+      const cost = fixedDispatchEur
+                 + tourHrs * costPerHourEur
+                 + tourKmReal * costPerKmEur
+                 + nDeliv * costPerDeliveryEur;
+      const netBenefit = revenue - cost;
+
       newAssignments.push({
         ASSIGNMENT_ID: `${t.TRAILER_ID}|${offerIdFirst}`,
         TRAILER_ID: t.TRAILER_ID,
@@ -442,7 +581,7 @@ export default function BackloadMatching() {
         DROPOFF_LON: row.DROPOFF_LON, DROPOFF_LAT: row.DROPOFF_LAT,
         TRAILER_DROPOFF_LON: t.DROPOFF_LON, TRAILER_DROPOFF_LAT: t.DROPOFF_LAT,
         HOME_LON: t.HOME_LON, HOME_LAT: t.HOME_LAT,
-        EMPTY_KM: empty, LOADED_KM: loaded,
+        EMPTY_KM: empty, LOADED_KM: totalLoadedKm || loaded,
         DETOUR_KM: detourKm, SAVED_KM: savedKm,
         SCORE: Number(r.DURATION) || 0,
         PRODUCT: row.PRODUCT,
@@ -450,6 +589,13 @@ export default function BackloadMatching() {
         PROPOSAL_DROPOFF_CITY: row.DROPOFF_CITY,
         ROUTE_GEOJSON: routeGeo,
         STOPS: stops,
+        TOUR_KM: tourKmReal,
+        TOUR_HRS: tourHrs,
+        WAIT_SEC: waitSec,
+        N_DELIVERIES: nDeliv,
+        COST_EUR: cost,
+        REVENUE_EUR: revenue,
+        NET_BENEFIT_EUR: netBenefit,
       });
     }
     setAssignments(newAssignments);
@@ -457,12 +603,23 @@ export default function BackloadMatching() {
     const avgDetour = newAssignments.length
       ? Math.round(newAssignments.reduce((s, a) => s + (a.DETOUR_KM || 0), 0) / newAssignments.length)
       : 0;
-    setSolverLog(`Mode=${matchMode} | Sent ${vrpVehicles.length} vehicles, ${vrpShipments.length} candidate shipments (cap: ${MAX_INTERNAL} internal + ${MAX_EXTERNAL} external by detour score; skipped ${internalSkipped} internal, ${externalSkipped} external; region=${regionName}, profile=${profile}). Received ${rows.length} rows, ${newAssignments.length} assignments, ${newUnassigned.length} unassigned. Avg detour +${avgDetour} km.`);
+    const totalNet = Math.round(newAssignments.reduce((s, a) => s + (a.NET_BENEFIT_EUR || 0), 0));
+    setSolverLog(
+      `Sent ${vrpVehicles.length} vehicles, ${vrpShipments.length} shipments ` +
+      `(maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, ` +
+      `intFirst=${internalFirstWeight}, breaks=${enforceDriverBreak ? 'on' : 'off'}, ` +
+      `multiDim=${useMultiDimCapacity ? 'on' : 'off'}, end=${endMode}, ` +
+      `avoidZones=${selectedAvoidZoneIds.length}; skipped ${internalSkipped} internal, ` +
+      `${externalSkipped} external; region=${regionName}, profile=${profile}). ` +
+      `Got ${rows.length} rows → ${newAssignments.length} assigned, ${newUnassigned.length} unassigned. ` +
+      `Avg detour +${avgDetour} km. Net benefit total €${totalNet.toLocaleString()}.`
+    );
     if (rows.length === 0 && vrpShipments.length > 0) {
       setSolveError(
-        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING (check ORS status in the header), ` +
+        `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING, ` +
         `(2) region='${regionName}' covers your data bbox, ` +
-        `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}.`
+        `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}, ` +
+        `(4) constraints aren't too tight (try raising deviation %, detour slack, or window slack).`
       );
     }
 
@@ -479,11 +636,20 @@ export default function BackloadMatching() {
     })).then(() => setAssignments([...newAssignments]));
 
     setSolving(false);
-  }, [trailers, internal, external, internalPriority, externalPriority, windowToleranceHrs, maxEmptyKm, regionName, vehicleType, orsProfile, forceSharedDest, sharedDestLon, sharedDestLat, matchMode, detourSlackHrs, maxDetourKm, fetchSvcStatus, wakeUp]);
+  }, [
+    trailers, internal, external, regionName, vehicleType, orsProfile,
+    maxStops, detourSlackHrs, deviationPct, internalFirstWeight, windowSlackHrs,
+    endMode, sharedDestLon, sharedDestLat,
+    costPerHourEur, costPerKmEur, fixedDispatchEur, costPerDeliveryEur, internalRatePerKm,
+    enforceDriverBreak, breakAfterHrs, breakLengthMin,
+    enforceShift, shiftLengthHrs,
+    useMultiDimCapacity, useMultiWindow, selectedAvoidZoneIds, avoidZones,
+    fetchSvcStatus, wakeUp,
+  ]);
 
   const askRationale = useCallback(async (a: Assignment) => {
     setRationaleLoading(true);
-    const prompt = `You are a fleet dispatcher coach. In two short sentences, explain why trailer ${a.TRAILER_ID} (idle in ${trailers.find(t=>t.TRAILER_ID===a.TRAILER_ID)?.DROPOFF_CITY || ''}) is a good match for ${a.SOURCE} offer ${a.OFFER_ID} (${a.PICKUP_CITY} -> ${a.PROPOSAL_DROPOFF_CITY}, ${Math.round(a.EMPTY_KM)} km empty, ${a.PRODUCT}). Mention empty km saved and direction-to-home if relevant.`;
+    const prompt = `You are a fleet dispatcher coach. In two short sentences, explain why trailer ${a.TRAILER_ID} (idle in ${trailers.find(t=>t.TRAILER_ID===a.TRAILER_ID)?.DROPOFF_CITY || ''}) is a good match for ${a.SOURCE} offer ${a.OFFER_ID} (${a.PICKUP_CITY} -> ${a.PROPOSAL_DROPOFF_CITY}, ${Math.round(a.EMPTY_KM)} km empty, net €${Math.round(a.NET_BENEFIT_EUR || 0)}, ${a.PRODUCT}). Mention empty km saved, profitability, and direction-to-home if relevant.`;
     const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${prompt.replace(/'/g, "''")}') AS RESULT`;
     const rows = await sfQuery(sql, 'SNOWFLAKE', 'CORTEX');
     const text = (rows[0]?.RESULT || '').toString().trim();
@@ -496,21 +662,25 @@ export default function BackloadMatching() {
     setConfirming(true); setConfirmMsg(null);
     await sfQuery(`CREATE SCHEMA IF NOT EXISTS ${BM_DB}.${BM_SCHEMA}`);
     await sfQuery(`CREATE TABLE IF NOT EXISTS ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS (
-      DECISION_ID  VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
-      TRAILER_ID   VARCHAR,
-      OFFER_ID     VARCHAR,
-      SOURCE       VARCHAR,
-      SCORE        FLOAT,
-      EMPTY_KM     FLOAT,
-      DECIDED_BY   VARCHAR,
-      DECIDED_AT   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-      RATIONALE    VARCHAR
+      DECISION_ID    VARCHAR DEFAULT UUID_STRING() PRIMARY KEY,
+      TRAILER_ID     VARCHAR,
+      OFFER_ID       VARCHAR,
+      SOURCE         VARCHAR,
+      SCORE          FLOAT,
+      EMPTY_KM       FLOAT,
+      NET_BENEFIT_EUR FLOAT,
+      DECIDED_BY     VARCHAR,
+      DECIDED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+      RATIONALE      VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`);
+    // Best-effort add column for older deployments.
+    try { await sfQuery(`ALTER TABLE ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS ADD COLUMN IF NOT EXISTS NET_BENEFIT_EUR FLOAT`); } catch {}
     const values = assignments.map(a => {
       const r = (rationale[a.ASSIGNMENT_ID] || '').replace(/'/g, "''").slice(0, 500);
-      return `('${a.TRAILER_ID}', '${a.OFFER_ID}', '${a.SOURCE}', ${a.SCORE.toFixed(2)}, ${a.EMPTY_KM.toFixed(2)}, 'demo-user', '${r}')`;
+      const net = (a.NET_BENEFIT_EUR ?? 0).toFixed(2);
+      return `('${a.TRAILER_ID}', '${a.OFFER_ID}', '${a.SOURCE}', ${a.SCORE.toFixed(2)}, ${a.EMPTY_KM.toFixed(2)}, ${net}, 'demo-user', '${r}')`;
     }).join(',\n');
-    const insertSql = `INSERT INTO ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS (TRAILER_ID, OFFER_ID, SOURCE, SCORE, EMPTY_KM, DECIDED_BY, RATIONALE) VALUES\n${values}`;
+    const insertSql = `INSERT INTO ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS (TRAILER_ID, OFFER_ID, SOURCE, SCORE, EMPTY_KM, NET_BENEFIT_EUR, DECIDED_BY, RATIONALE) VALUES\n${values}`;
     await sfQuery(insertSql);
     setConfirmMsg(`Wrote ${assignments.length} decisions to ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS.`);
     setConfirming(false);
@@ -518,22 +688,43 @@ export default function BackloadMatching() {
 
   const [auditRows, setAuditRows] = useState<any[]>([]);
   const loadAudit = useCallback(async () => {
-    const sql = `SELECT TO_VARCHAR(DECIDED_AT, 'YYYY-MM-DD HH24:MI') AS DECIDED_AT, TRAILER_ID, OFFER_ID, SOURCE, ROUND(EMPTY_KM,1) AS EMPTY_KM, ROUND(EMPTY_KM * ${EUR_PER_EMPTY_KM}, 0) AS EUR_RECLAIMED FROM ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS ORDER BY DECIDED_AT DESC LIMIT 25`;
+    const sql = `SELECT TO_VARCHAR(DECIDED_AT, 'YYYY-MM-DD HH24:MI') AS DECIDED_AT, TRAILER_ID, OFFER_ID, SOURCE, ROUND(EMPTY_KM,1) AS EMPTY_KM, ROUND(COALESCE(NET_BENEFIT_EUR, EMPTY_KM * ${EUR_PER_LOADED_KM}), 0) AS EUR_RECLAIMED FROM ${BM_DB}.${BM_SCHEMA}.PROPOSAL_DECISIONS ORDER BY DECIDED_AT DESC LIMIT 25`;
     const rows = await sfQuery(sql);
     setAuditRows(rows);
   }, []);
   useEffect(() => { loadAudit(); }, [loadAudit, confirmMsg]);
 
-  const totalEmptyKm = useMemo(() => assignments.reduce((s, a) => s + a.EMPTY_KM, 0), [assignments]);
-  const totalLoadedKm = useMemo(() => assignments.reduce((s, a) => s + a.LOADED_KM, 0), [assignments]);
-  const internalCount = useMemo(() => assignments.filter(a => a.SOURCE === 'INTERNAL').length, [assignments]);
-  const internalPct = assignments.length ? Math.round((internalCount / assignments.length) * 100) : 0;
-  const trailersAssignedPct = trailers.length ? Math.round((assignments.length / Math.min(trailers.length, 30)) * 100) : 0;
-  const eurReclaimed = Math.round(totalLoadedKm * 1.20);
+  // Hide-unprofitable filter applies to list AND map.
+  const visibleAssignments = useMemo(
+    () => hideUnprofitable
+            ? assignments.filter(a => (a.NET_BENEFIT_EUR ?? 0) >= 0)
+            : assignments,
+    [assignments, hideUnprofitable],
+  );
+
+  const totalEmptyKm = useMemo(() => visibleAssignments.reduce((s, a) => s + a.EMPTY_KM, 0), [visibleAssignments]);
+  const totalLoadedKm = useMemo(() => visibleAssignments.reduce((s, a) => s + a.LOADED_KM, 0), [visibleAssignments]);
+  const totalNetBenefit = useMemo(() => Math.round(visibleAssignments.reduce((s, a) => s + (a.NET_BENEFIT_EUR || 0), 0)), [visibleAssignments]);
+  const internalCount = useMemo(() => visibleAssignments.filter(a => a.SOURCE === 'INTERNAL').length, [visibleAssignments]);
+  const internalPct = visibleAssignments.length ? Math.round((internalCount / visibleAssignments.length) * 100) : 0;
+  const trailersAssignedPct = trailers.length ? Math.round((visibleAssignments.length / Math.min(trailers.length, 30)) * 100) : 0;
 
   const basemap = useMemo(() => cartoBasemap(), []);
   const layers = useMemo(() => {
     const result: any[] = [basemap];
+    // Card F: render selected avoid polygons.
+    if (selectedAvoidZoneIds.length) {
+      const zones = avoidZones.filter(z => selectedAvoidZoneIds.includes(z.ZONE_ID));
+      if (zones.length) {
+        result.push(new GeoJsonLayer({
+          id: 'avoid-zones',
+          data: { type: 'FeatureCollection', features: zones.map(z => ({ type: 'Feature', properties: { name: z.NAME }, geometry: z.POLYGON_GEOJSON })) },
+          stroked: true, filled: true,
+          getFillColor: [239, 68, 68, 40], getLineColor: [239, 68, 68, 220],
+          lineWidthMinPixels: 2, pickable: true,
+        }));
+      }
+    }
     if (external.length) {
       result.push(new ScatterplotLayer({
         id: 'ext-offers', data: external, getPosition: (d: Offer) => [Number(d.PICKUP_LON), Number(d.PICKUP_LAT)],
@@ -555,7 +746,7 @@ export default function BackloadMatching() {
       }));
     }
     const hasSel = !!selectedAssignment;
-    const loadedPaths = assignments
+    const loadedPaths = visibleAssignments
       .map((a, i) => ({ a, i }))
       .filter(({ a }) => !!a.ROUTE_GEOJSON)
       .map(({ a, i }) => ({
@@ -582,7 +773,7 @@ export default function BackloadMatching() {
         getWidth: [selectedAssignment, hasSel],
       },
     }));
-    assignments.forEach((a, i) => {
+    visibleAssignments.forEach((a, i) => {
       const isSel = a.ASSIGNMENT_ID === selectedAssignment;
       const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
       const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
@@ -595,16 +786,13 @@ export default function BackloadMatching() {
       }));
     });
     if (selectedAssignment) {
-      const a = assignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
+      const a = visibleAssignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
       if (a) {
         const pickup = [{ lon: Number(a.PICKUP_LON), lat: Number(a.PICKUP_LAT) }];
-        // Anchor green dropoff pin to the trailer's TRUE final endpoint (last STOPS entry),
-        // not to first job's dropoff. With multi-shipment routes, the route ends at home/shared dest.
         const lastStop = (a.STOPS && a.STOPS.length) ? a.STOPS[a.STOPS.length - 1] : null;
         const endLon = lastStop ? lastStop.lon : Number(a.DROPOFF_LON);
         const endLat = lastStop ? lastStop.lat : Number(a.DROPOFF_LAT);
         const dropoff = [{ lon: endLon, lat: endLat }];
-        // Pickup halo + marker (orange)
         result.push(new ScatterplotLayer({
           id: 'sel-pickup-halo', data: pickup, pickable: false,
           getPosition: (d: any) => [d.lon, d.lat],
@@ -620,7 +808,6 @@ export default function BackloadMatching() {
           lineWidthMinPixels: 3, stroked: true, filled: true,
           parameters: { depthTest: false },
         }));
-        // Dropoff halo + marker (green)
         result.push(new ScatterplotLayer({
           id: 'sel-dropoff-halo', data: dropoff, pickable: false,
           getPosition: (d: any) => [d.lon, d.lat],
@@ -639,7 +826,7 @@ export default function BackloadMatching() {
       }
     }
     return result;
-  }, [basemap, external, internal, trailers, assignments, selectedAssignment]);
+  }, [basemap, external, internal, trailers, visibleAssignments, selectedAssignment, avoidZones, selectedAvoidZoneIds]);
 
   const fitCoords = useMemo<LngLat[]>(() => {
     const out: LngLat[] = [];
@@ -653,19 +840,19 @@ export default function BackloadMatching() {
     for (const e of external) {
       if (e.PICKUP_LON != null && e.PICKUP_LAT != null) out.push([Number(e.PICKUP_LON), Number(e.PICKUP_LAT)]);
     }
-    for (const a of assignments) {
+    for (const a of visibleAssignments) {
       if (a.ROUTE_GEOJSON) out.push(...coordsFromGeoJSON(a.ROUTE_GEOJSON));
       if (a.EMPTY_GEOJSON) out.push(...coordsFromGeoJSON(a.EMPTY_GEOJSON));
     }
     return out;
-  }, [trailers, internal, external, assignments]);
+  }, [trailers, internal, external, visibleAssignments]);
 
   const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
   const { containerRef: mapContainerRef, dims: mapDims, viewState, setViewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   useEffect(() => {
     if (!selectedAssignment || !mapDims) return;
-    const a = assignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
+    const a = visibleAssignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
     if (!a) return;
     const coords: LngLat[] = [
       [Number(a.TRAILER_DROPOFF_LON), Number(a.TRAILER_DROPOFF_LAT)],
@@ -680,17 +867,18 @@ export default function BackloadMatching() {
     });
     if (fitted) setViewState({ ...viewState, ...fitted });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAssignment, assignments, mapDims]);
+  }, [selectedAssignment, visibleAssignments, mapDims]);
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.TRAILER_ID) return { html: `<b>${object.TRAILER_ID}</b><br/>Idle in: ${object.DROPOFF_CITY}<br/>Home: ${object.HOME_DEPOT}<br/>HAZMAT: ${object.HAZMAT_CERT ? 'yes' : 'no'}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     if (object.OFFER_ID) return { html: `<b>${object.SOURCE} ${object.OFFER_ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}<br/>EUR ${object.PRICE_EUR}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     if (object.ID) return { html: `<b>Internal ${object.ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
+    if (object.properties?.name) return { html: `<b>Avoid zone: ${object.properties.name}</b>`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     return null;
   }, []);
 
-  const selected = assignments.find(a => a.ASSIGNMENT_ID === selectedAssignment);
+  const selected = visibleAssignments.find(a => a.ASSIGNMENT_ID === selectedAssignment);
   const stopsPanelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (selected && stopsPanelRef.current) {
@@ -698,29 +886,25 @@ export default function BackloadMatching() {
     }
   }, [selected?.ASSIGNMENT_ID]);
 
+  // Common slider/input style helpers.
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-secondary)', marginBottom: 2, display: 'block' };
+  const sliderBlock: React.CSSProperties = { minWidth: 170 };
+
   return (
     <div className="panel" style={{ padding: 16 }}>
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Backload Matching Engine</h2>
-      <p className="subtitle">Fleet-wide VRP solve over idle-bound trailers, internal volumes, and external freight-exchange offers.</p>
+      <p className="subtitle">Fleet-wide VRP solve with VROOM + ORS — every visible knob maps 1:1 to a solver field.</p>
 
       {seedHint && (
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{seedHint}</span>
           <span style={{ display: 'flex', gap: 8 }}>
-            <button
-              type="button"
-              disabled={seeding}
-              onClick={seedData}
-              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.6)', background: '#fff', color: '#a16207', cursor: seeding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
-            >
+            <button type="button" disabled={seeding} onClick={seedData}
+                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.6)', background: '#fff', color: '#a16207', cursor: seeding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
               {seeding ? 'Generating...' : 'Generate seed data'}
             </button>
-            <button
-              type="button"
-              disabled={seeding}
-              onClick={() => refetch()}
-              style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}
-            >
+            <button type="button" disabled={seeding} onClick={() => refetch()}
+                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}>
               Refresh
             </button>
           </span>
@@ -733,92 +917,168 @@ export default function BackloadMatching() {
         <MetricCard label="External offers" value={external.length} />
         <MetricCard label="% trailers assigned" value={`${trailersAssignedPct}%`} />
         <MetricCard label="% internal coverage" value={`${internalPct}%`} />
-        <MetricCard label="EUR/day reclaimed" value={`EUR ${eurReclaimed.toLocaleString()}`} />
+        <MetricCard label="Net benefit (€)" value={`€${totalNetBenefit.toLocaleString()}`} />
       </div>
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+      {/* SOLVER ROW */}
+      <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>SOLVER (VROOM-native)</div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
+        <div style={sliderBlock}>
+          <label style={labelStyle}>Max stops per trailer: {maxStops} <span title="vehicle.max_tasks">ⓘ</span></label>
+          <input type="range" min={1} max={6} value={maxStops} onChange={e => setMaxStops(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
+        <div style={sliderBlock}>
+          <label style={labelStyle}>Detour budget: +{detourSlackHrs} h <span title="vehicle.max_travel_time">ⓘ</span></label>
+          <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
+        <div style={sliderBlock}>
+          <label style={labelStyle}>Allowed deviation: +{deviationPct}% <span title="vehicle.max_distance vs ideal empty trip">ⓘ</span></label>
+          <input type="range" min={0} max={200} step={5} value={deviationPct} onChange={e => setDeviationPct(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
+        <div style={sliderBlock}>
+          <label style={labelStyle}>Internal-first: {internalFirstWeight} <span title="job.priority gap (internal vs external)">ⓘ</span></label>
+          <input type="range" min={0} max={100} value={internalFirstWeight} onChange={e => setInternalFirstWeight(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
+        <div style={sliderBlock}>
+          <label style={labelStyle}>Window slack: ±{windowSlackHrs} h <span title="job.time_windows widening">ⓘ</span></label>
+          <input type="range" min={0} max={12} value={windowSlackHrs} onChange={e => setWindowSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
+        </div>
         <div style={{ minWidth: 220 }}>
-          <label className="range-label">Match mode</label>
-          <div style={{ display: 'flex', gap: 12, fontSize: 12, marginTop: 2 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-              <input type="radio" name="matchMode" checked={matchMode === 'single'} onChange={() => setMatchMode('single')} />
-              Single backload (DHL)
-            </label>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-              <input type="radio" name="matchMode" checked={matchMode === 'consolidate'} onChange={() => setMatchMode('consolidate')} />
-              Consolidation tour
-            </label>
+          <label style={labelStyle}>Trailer end <span title="vehicle.end (omit for open-ended)">ⓘ</span></label>
+          <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'home'} onChange={() => setEndMode('home')} />Home</label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'shared'} onChange={() => setEndMode('shared')} />Shared</label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'open'} onChange={() => setEndMode('open')} />Open</label>
           </div>
-        </div>
-        {matchMode === 'single' && (
-          <>
-            <div style={{ minWidth: 180 }}>
-              <label className="range-label">Detour slack: +{detourSlackHrs} h</label>
-              <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
-            </div>
-            <div style={{ minWidth: 180 }}>
-              <label className="range-label">Max detour: {maxDetourKm} km</label>
-              <input type="range" min={20} max={400} step={10} value={maxDetourKm} onChange={e => setMaxDetourKm(Number(e.target.value))} style={{ width: '100%' }} />
-            </div>
-          </>
-        )}
-        <div style={{ minWidth: 180 }}>
-          <label className="range-label">Internal priority: {internalPriority}</label>
-          <input type="range" min={1} max={200} value={internalPriority} onChange={e => setInternalPriority(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div style={{ minWidth: 180 }}>
-          <label className="range-label">External priority: {externalPriority}</label>
-          <input type="range" min={1} max={200} value={externalPriority} onChange={e => setExternalPriority(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div style={{ minWidth: 180 }}>
-          <label className="range-label">Time-window slack: +/- {windowToleranceHrs} h</label>
-          <input type="range" min={0} max={12} value={windowToleranceHrs} onChange={e => setWindowToleranceHrs(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div style={{ minWidth: 180 }}>
-          <label className="range-label">Max empty km/leg: {maxEmptyKm}</label>
-          <input type="range" min={50} max={600} step={10} value={maxEmptyKm} onChange={e => setMaxEmptyKm(Number(e.target.value))} style={{ width: '100%' }} />
-        </div>
-        <div style={{ minWidth: 220 }}>
-          <label className="range-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <input
-              type="checkbox"
-              checked={forceSharedDest}
-              onChange={e => setForceSharedDest(e.target.checked)}
-            />
-            Force shared destination
-          </label>
-          {forceSharedDest && (
+          {endMode === 'shared' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-              <input
-                type="number" step="0.0001"
-                value={sharedDestLon ?? ''}
-                onChange={e => { setSharedDestUserEdited(true); setSharedDestLon(e.target.value === '' ? null : Number(e.target.value)); }}
-                placeholder="lon"
-                style={{ width: '50%', fontSize: 11 }}
-              />
-              <input
-                type="number" step="0.0001"
-                value={sharedDestLat ?? ''}
-                onChange={e => { setSharedDestUserEdited(true); setSharedDestLat(e.target.value === '' ? null : Number(e.target.value)); }}
-                placeholder="lat"
-                style={{ width: '50%', fontSize: 11 }}
-              />
+              <input type="number" step="0.0001" value={sharedDestLon ?? ''}
+                     onChange={e => { setSharedDestUserEdited(true); setSharedDestLon(e.target.value === '' ? null : Number(e.target.value)); }}
+                     placeholder="lon" style={{ width: '50%', fontSize: 11 }} />
+              <input type="number" step="0.0001" value={sharedDestLat ?? ''}
+                     onChange={e => { setSharedDestUserEdited(true); setSharedDestLat(e.target.value === '' ? null : Number(e.target.value)); }}
+                     placeholder="lat" style={{ width: '50%', fontSize: 11 }} />
             </div>
           )}
         </div>
+      </div>
+
+      {/* ECONOMICS ROW */}
+      <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>ECONOMICS (€)</div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
+        <div style={{ minWidth: 130 }}>
+          <label style={labelStyle}>Cost €/h <span title="vehicle.costs.per_hour">ⓘ</span></label>
+          <input type="number" min={0} step={1} value={costPerHourEur} onChange={e => setCostPerHourEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
+        </div>
+        <div style={{ minWidth: 130 }}>
+          <label style={labelStyle}>Cost €/km <span title="folded into per_hour via 60 km/h">ⓘ</span></label>
+          <input type="number" min={0} step={0.05} value={costPerKmEur} onChange={e => setCostPerKmEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
+        </div>
+        <div style={{ minWidth: 130 }}>
+          <label style={labelStyle}>Dispatch (€) <span title="vehicle.costs.fixed">ⓘ</span></label>
+          <input type="number" min={0} step={5} value={fixedDispatchEur} onChange={e => setFixedDispatchEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
+        </div>
+        <div style={{ minWidth: 130 }}>
+          <label style={labelStyle}>€/delivery <span title="post-solve only">ⓘ</span></label>
+          <input type="number" min={0} step={1} value={costPerDeliveryEur} onChange={e => setCostPerDeliveryEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
+        </div>
+        <div style={{ minWidth: 150 }}>
+          <label style={labelStyle}>Internal €/loaded-km <span title="revenue model for internal volumes">ⓘ</span></label>
+          <input type="number" min={0} step={0.05} value={internalRatePerKm} onChange={e => setInternalRatePerKm(Number(e.target.value) || 0)} style={{ width: '100%' }} />
+        </div>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <input type="checkbox" checked={hideUnprofitable} onChange={e => setHideUnprofitable(e.target.checked)} />
+          Hide unprofitable
+        </label>
         <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
           {solving ? 'Solving...' : 'Solve Backloads'}
         </button>
-        <button className="btn-primary" onClick={confirmPlan} disabled={confirming || !assignments.length} style={{ minWidth: 140 }}>
+        <button className="btn-primary" onClick={confirmPlan} disabled={confirming || !visibleAssignments.length} style={{ minWidth: 140 }}>
           {confirming ? 'Saving...' : 'Confirm Plan'}
         </button>
+      </div>
+
+      {/* ENGINE FEATURES (collapsible) */}
+      <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 6 }}>
+        <button onClick={() => setShowAdvanced(s => !s)} type="button"
+                style={{ width: '100%', padding: '8px 12px', textAlign: 'left', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>
+          <span>ENGINE FEATURES (VROOM + ORS) — {showAdvanced ? 'hide' : 'show'}</span>
+          <span>{showAdvanced ? '▴' : '▾'}</span>
+        </button>
+        {showAdvanced && (
+          <div style={{ padding: '8px 12px 12px', borderTop: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12 }}>
+            {/* Card A */}
+            <div style={{ minWidth: 220 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={enforceDriverBreak} onChange={e => setEnforceDriverBreak(e.target.checked)} />
+                <b>Driver break</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(vehicle.breaks)</span>
+              </label>
+              {enforceDriverBreak && (
+                <div style={{ marginTop: 4, fontSize: 11 }}>
+                  After {breakAfterHrs} h:
+                  <input type="range" min={2} max={6} step={0.5} value={breakAfterHrs} onChange={e => setBreakAfterHrs(Number(e.target.value))} style={{ width: '60%', marginLeft: 6 }} />
+                  <br/>{breakLengthMin} min:
+                  <input type="range" min={15} max={90} step={5} value={breakLengthMin} onChange={e => setBreakLengthMin(Number(e.target.value))} style={{ width: '60%', marginLeft: 6 }} />
+                </div>
+              )}
+            </div>
+            {/* Card D */}
+            <div style={{ minWidth: 200 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={enforceShift} onChange={e => setEnforceShift(e.target.checked)} />
+                <b>Shift / hours-of-service</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(vehicle.time_window)</span>
+              </label>
+              {enforceShift && (
+                <div style={{ marginTop: 4, fontSize: 11 }}>
+                  Shift = {shiftLengthHrs} h
+                  <input type="range" min={4} max={13} value={shiftLengthHrs} onChange={e => setShiftLengthHrs(Number(e.target.value))} style={{ width: '70%', marginLeft: 6 }} />
+                </div>
+              )}
+            </div>
+            {/* Card C */}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={useMultiDimCapacity} onChange={e => setUseMultiDimCapacity(e.target.checked)} />
+              <b>Multi-dim capacity</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(kg + pallets + m³)</span>
+            </label>
+            {/* Card B */}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={useMultiWindow} onChange={e => setUseMultiWindow(e.target.checked)} />
+              <b>Multi-window pickups</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(2nd window +8 h)</span>
+            </label>
+            {/* Card J */}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={showWaitTimes} onChange={e => setShowWaitTimes(e.target.checked)} />
+              <b>Show wait times</b>
+            </label>
+            {/* Card F */}
+            {avoidZones.length > 0 && (
+              <div style={{ minWidth: 240 }}>
+                <label style={{ display: 'block', marginBottom: 4 }}>
+                  <b>Avoid zones</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(ORS avoid_polygons)</span>
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 100, overflowY: 'auto' }}>
+                  {avoidZones.map(z => (
+                    <label key={z.ZONE_ID} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                      <input type="checkbox"
+                             checked={selectedAvoidZoneIds.includes(z.ZONE_ID)}
+                             onChange={e => setSelectedAvoidZoneIds(prev => e.target.checked
+                                ? [...prev, z.ZONE_ID]
+                                : prev.filter(x => x !== z.ZONE_ID))} />
+                      {z.NAME} <span style={{ color: 'var(--text-secondary)' }}>({z.CATEGORY})</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11, color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.02)' }}>
         <b style={{ color: 'var(--text-primary)' }}>Legend</b>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(200,200,200)', border: '1px solid rgb(120,120,120)', display: 'inline-block' }} />
-          External offer (freight exchange)
+          External offer
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'rgb(41,181,232)', display: 'inline-block' }} />
@@ -829,46 +1089,20 @@ export default function BackloadMatching() {
           Idle trailer
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px solid rgb(245,158,11)', display: 'inline-block' }} />
-          Selected trailer pickup
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ display: 'inline-flex', gap: 1 }}>
-            {ROUTE_COLORS.slice(0, 4).map((rc, i) => (
-              <span key={i} style={{ width: 6, height: 3, background: `rgb(${rc.join(',')})`, display: 'inline-block' }} />
-            ))}
-          </span>
-          Loaded leg (per-assignment colour)
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 24, height: 0, borderTop: '3px dashed rgb(110,110,110)', display: 'inline-block' }} />
-          Empty leg (deadhead to pickup)
+          Empty leg
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(41,181,232,0.18)', color: 'var(--text-primary)' }}>INTERNAL</span>
-          own volume (assignment list)
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(200,200,200,0.4)', color: 'var(--text-primary)' }}>EXTERNAL</span>
-          freight-exchange offer (assignment list)
+          <span style={{ width: 12, height: 12, background: 'rgba(239,68,68,0.4)', border: '1px solid rgb(239,68,68)', display: 'inline-block' }} />
+          Avoid zone
         </span>
       </div>
 
-      {confirmMsg && (
-        <div className="info-box success" style={{ marginBottom: 12 }}>{confirmMsg}</div>
-      )}
-      {solverLog && (
-        <div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary)' }}>
-          {solverLog}
-        </div>
-      )}
-      {solveError && (
-        <div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}>
-          <b>Solve returned no assignments.</b> {solveError}
-        </div>
-      )}
+      {confirmMsg && (<div className="info-box success" style={{ marginBottom: 12 }}>{confirmMsg}</div>)}
+      {solverLog && (<div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary)' }}>{solverLog}</div>)}
+      {solveError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Solve returned no assignments.</b> {solveError}</div>)}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 12 }}>
         <div ref={mapContainerRef} style={{ height: 560, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
           {solving && (
             <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>
@@ -876,28 +1110,22 @@ export default function BackloadMatching() {
             </div>
           )}
           {mapDims && (
-            <DeckGL
-              width={mapDims.width} height={mapDims.height}
-              viewState={viewState}
-              onViewStateChange={onViewStateChange}
-              controller={true} layers={layers} getTooltip={getTooltip}
-              style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }}
-            />
+            <DeckGL width={mapDims.width} height={mapDims.height}
+                    viewState={viewState} onViewStateChange={onViewStateChange}
+                    controller={true} layers={layers} getTooltip={getTooltip}
+                    style={{ position: 'absolute', top: '0', left: '0', width: `${mapDims.width}px`, height: `${mapDims.height}px` }} />
           )}
           <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
           {selected && (
-            <button
-              type="button"
-              onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              style={{ position: 'absolute', top: 12, right: 56, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}
-            >
+            <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    style={{ position: 'absolute', top: 12, right: 56, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>
               Stops ↓
             </button>
           )}
         </div>
 
         <AssignmentList
-          assignments={assignments}
+          assignments={visibleAssignments}
           unassigned={unassigned}
           selectedAssignment={selectedAssignment}
           onSelect={setSelectedAssignment}
@@ -909,12 +1137,12 @@ export default function BackloadMatching() {
 
       {selected && (
         <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-secondary)' }}>
-          Selected trailer: <b>{selected.TRAILER_ID}</b> - duration {selected.SCORE.toFixed(0)}s - empty {Math.round(selected.EMPTY_KM)} km
+          Selected trailer: <b>{selected.TRAILER_ID}</b> · duration {selected.SCORE.toFixed(0)}s · empty {Math.round(selected.EMPTY_KM)} km · net €{Math.round(selected.NET_BENEFIT_EUR || 0)}
         </div>
       )}
 
       <div ref={stopsPanelRef}>
-        <StopsPanel assignment={selected || null} />
+        <StopsPanel assignment={selected || null} showWaitTimes={showWaitTimes} />
       </div>
 
       <DecisionsAudit rows={auditRows} onRefresh={loadAudit} />

@@ -3,7 +3,14 @@
 export const BM_DB = 'FLEET_INTELLIGENCE';
 export const BM_SCHEMA = 'BACKLOAD_MATCHING';
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
-export const EUR_PER_EMPTY_KM = 1.20;
+
+// Default freight economics (€/loaded-km is the standard pricing unit on
+// European freight exchanges — Timocom, WTransnet, Teleroute all quote rates
+// per loaded km). Internal volumes inherit the same model.
+export const EUR_PER_LOADED_KM = 1.20;
+export const EUR_PER_EMPTY_KM = 1.20; // legacy alias kept for older code paths
+export const KMH_HGV = 60;            // assumed avg HGV speed for time-budget math
+export const COST_SCALE = 100;        // €→VROOM int units (VROOM costs are ints)
 
 export const ROUTE_COLORS: [number, number, number][] = [
   [41, 181, 232], [34, 197, 94], [245, 158, 11], [239, 68, 68],
@@ -17,6 +24,8 @@ export interface Trailer {
   DROPOFF_CITY: string; DROPOFF_LON: number; DROPOFF_LAT: number;
   ETA_TS: string; ETA_MIN: number; STATUS: string;
   HAZMAT_CERT: boolean; MAX_PAYLOAD_KG: number;
+  // Card C: multi-dim capacity (synthetic when not in source)
+  MAX_PALLETS?: number; MAX_VOLUME_M3?: number;
 }
 
 export interface Volume {
@@ -24,6 +33,8 @@ export interface Volume {
   DROPOFF_CITY: string; DROPOFF_LON: number; DROPOFF_LAT: number;
   PICKUP_FROM_TS: string; PICKUP_TO_TS: string;
   WEIGHT_KG: number; PRODUCT: string; HAZMAT: boolean;
+  // Card C: optional pallets / m3 columns; we synthesize defaults if missing.
+  PALLETS?: number; VOLUME_M3?: number;
 }
 
 export interface Offer extends Volume {
@@ -33,7 +44,7 @@ export interface Offer extends Volume {
 }
 
 export interface Stop {
-  kind: 'start' | 'pickup' | 'dropoff' | 'end';
+  kind: 'start' | 'pickup' | 'dropoff' | 'end' | 'break';
   label: string;
   city?: string;
   lon: number;
@@ -43,6 +54,17 @@ export interface Stop {
   source?: string;
   product?: string;
   weightKg?: number;
+  // Card J: wait time at this step (seconds) returned by VROOM.
+  waitSec?: number;
+  // Card A: break service time (seconds) when kind === 'break'.
+  serviceSec?: number;
+}
+
+export interface AvoidZone {
+  ZONE_ID: string;
+  NAME: string;
+  CATEGORY: string;
+  POLYGON_GEOJSON: any;
 }
 
 export interface Assignment {
@@ -58,6 +80,14 @@ export interface Assignment {
   ROUTE_GEOJSON?: any;
   EMPTY_GEOJSON?: any;
   STOPS: Stop[];
+  // Post-solve economics (Card: cost / net-benefit).
+  TOUR_KM?: number;
+  TOUR_HRS?: number;
+  WAIT_SEC?: number;
+  N_DELIVERIES?: number;
+  COST_EUR?: number;
+  REVENUE_EUR?: number;
+  NET_BENEFIT_EUR?: number;
 }
 
 export interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
@@ -89,3 +119,8 @@ export function profileForVehicleType(vt: string): string {
     default:                                   return 'driving-hgv';
   }
 }
+
+// Synthesize multi-dim capacity for vehicles/shipments when source data only
+// has kg. Heuristic: 1 pallet ≈ 750 kg, 1 m³ ≈ 250 kg (typical mixed freight).
+export function synthPallets(kg: number): number { return Math.max(1, Math.round(kg / 750)); }
+export function synthVolumeM3(kg: number): number { return Math.max(1, Math.round(kg / 250)); }

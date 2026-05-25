@@ -1,6 +1,6 @@
 # Backload Matching Engine — OPTIMIZATION VRP mapping
 
-This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` and how each field maps to the DHL Freight backload story.
+This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(...)` and how each visible UI lever maps 1:1 to a real VROOM or ORS field. The new design has **no JS pre-filters or post-filters** — every knob you turn lands inside the solver.
 
 ## Vehicles (one per idle-bound trailer)
 
@@ -9,82 +9,87 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
   "id": 1,
   "profile": "driving-hgv",
   "start": [6.9603, 50.9375],
-  "end":   [12.5655, 55.6759],
-  "capacity": [24000],
+  "end":   [12.5655, 55.6759],            // omit when "Open-ended"
+  "capacity": [24000, 33, 90],            // [kg, pallets, m³] when multi-dim
   "skills": [1, 2],
-  "time_window": [1715874000, 1715917200]
+  "max_tasks": 2,                         // Max stops per trailer
+  "max_travel_time": 28800,               // ideal_empty_hrs + slack
+  "max_distance": 600000,                 // ideal_empty_km × (1 + dev%)
+  "costs": { "fixed": 12000, "per_hour": 9560 },
+  "time_window": [1715874000, 1715906400],         // optional shift
+  "breaks": [{ "id": 1, "service": 2700,
+               "time_windows": [[1715890200, 1715895600]] }],
+  "profile_options": { "avoid_polygons": { "type": "MultiPolygon", ... } }
 }
 ```
 
-| Field | Source | Why |
+| Field | UI lever | Why |
 |---|---|---|
 | `start` | `VW_TRAILERS.DROPOFF_LON / DROPOFF_LAT` | Where the trailer becomes idle |
-| `end` | `VW_TRAILERS.HOME_LON / HOME_LAT` | Forces the solver to bias jobs that point home |
-| `profile` | `'driving-hgv'` | HGV graph — respects truck restrictions |
-| `capacity` | `[VW_TRAILERS.MAX_PAYLOAD_KG]` | Single dimension (mass); add volume / pallets as needed |
-| `skills` | `[1, 2]` if non-ADR; `[1, 2, 3]` if `HAZMAT_CERT = TRUE` | Skill `1` = internal, `2` = external, `3` = ADR-only |
-| `time_window` | `[ETA_TS_unix, ETA_TS + 12h_unix]` | Trailer becomes available at ETA, expires after 12h shift |
+| `end` | radio: Home / Shared / Open | When `Open`, omit the field — solver lets the trailer finish anywhere |
+| `profile` | derived from region | ORS routing graph |
+| `capacity` | toggle: multi-dim capacity | `[kg]` or `[kg, pallets, m³]` |
+| `skills` | HAZMAT cert flag | `[1,2,3]` if certified, `[1,2]` otherwise |
+| `max_tasks` | **Max stops per trailer** | 1 = single backload, 2-6 = consolidation |
+| `max_travel_time` | **Detour budget** (+h on top of ideal empty trip) | Hard time cap on the whole tour |
+| `max_distance` | **Allowed deviation** (+% from ideal empty trip) | Hard distance cap on the whole tour |
+| `costs.fixed` | **Fixed dispatch cost** (€) × 100 | Pay-to-add-vehicle penalty |
+| `costs.per_hour` | (**€/h** + **€/km** × 60 km/h) × 100 | Time + distance weighted into VROOM's per-hour cost |
+| `time_window` | toggle: shift / hours-of-service | `[shiftStart, shiftEnd]` |
+| `breaks` | toggle: enforce driver break | EU 45-min rest after 4.5 h |
+| `profile_options.avoid_polygons` | multi-select: avoid zones | Forwarded to ORS routing for LEZ / construction / hazard avoidance |
 
-## Jobs (internal volumes + external offers, unioned)
+## Shipments (internal volumes + external offers)
 
 ```json
 {
-  "id": 41,
-  "location": [6.9512, 50.9301],
-  "service": 1800,
-  "amount": [12500],
-  "skills": [1],
-  "priority": 100,
-  "time_windows": [[1715874000, 1715901000]]
+  "pickup":   { "id": 41, "location": [...], "service": 1800,
+                "time_windows": [[t1_from, t1_to], [t2_from, t2_to]] },
+  "delivery": { "id": 41, "location": [...], "service": 600 },
+  "amount":   [12500, 17, 50],
+  "skills":   [1],
+  "priority": 90
 }
 ```
 
-| Field | Source | Why |
+| Field | UI lever | Why |
 |---|---|---|
-| `location` | `INTERNAL_VOLUMES.PICKUP_GEOM` or `EXTERNAL_OFFERS.PICKUP_GEOM` | Pickup point |
-| `amount` | `WEIGHT_KG` | Must fit in vehicle capacity |
-| `skills` | `[1]` for INTERNAL, `[2]` for EXTERNAL, plus `3` if ADR | Gates assignability |
-| `priority` | `INTERNAL_PRIORITY=100` for INTERNAL, `EXTERNAL_PRIORITY=10` for EXTERNAL | VROOM unloads jobs in priority order under contention |
-| `service` | 1800 sec (30 min) | Loading time at pickup |
-| `time_windows` | `[PICKUP_FROM_TS, PICKUP_TO_TS]` (unix) | Hard window |
+| `pickup.location` / `delivery.location` | source data | Pickup / dropoff |
+| `service` | hard-coded (1800 / 600 sec) | Loading / unloading time |
+| `amount` | toggle: multi-dim | `[kg]` or `[kg, pallets, m³]` |
+| `skills` | HAZMAT flag on shipment | `[1]` internal, `[2]` external, `+3` if ADR |
+| `priority` | **Internal-first weight** (single slider) | Internal = `W`, External = `100 - W` |
+| `time_windows` | **Window slack** (±h) and toggle: multi-window | Widened ±slack; second window synthesised at +8 h when toggled |
 
-## The full `OPTIMIZATION(...)` call
+## Top-level options
+- `options.g = true` — return GeoJSON geometry per route. Always on.
 
-The page builds:
+## Post-solve economics (computed in the React layer, not VROOM)
 
-```javascript
-const challenge = {
-  jobs:     [...internalJobs, ...externalJobs],
-  vehicles: trailers.map(toVehicle),
-  options:  { g: true } // return geometry for each route
-};
-
-const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
-  PARSE_JSON('${JSON.stringify(challenge)}'), '${regionName}'))`;
-```
-
-VROOM returns one row per vehicle with:
-
-- `VEHICLE` — the vehicle id we sent.
-- `STEPS` — ordered jobs assigned (start, job_1, job_2, ..., end).
-- `COST` — total travel time in seconds for that vehicle.
-- `GEOJSON` — the LineString for the whole route (when `options.g = true`).
-- `UNASSIGNED` (top-level row) — jobs the solver could not place (capacity, time-window, skill, or `max_empty_km` exceeded).
-
-## How DHL's "structural process" maps to VROOM parameters
-
-| Customer parameter | VROOM lever |
+| Display column | Formula |
 |---|---|
-| Internal-first | Job `priority`: 100 vs 10 |
-| Direction-to-home | Vehicle `end` location set to home depot |
-| ADR equipment gating | Skill id `3` on both ADR jobs and ADR-certified vehicles |
-| Time-window tolerance | Widen `time_windows` on jobs by `tolerance_hrs` |
-| Max empty km per leg | Pre-filter the `jobs[]` array in SQL: `WHERE empty_km <= MAX_EMPTY_KM` |
-| Trailer capacity | Vehicle `capacity[0]` |
-| Cargo weight | Job `amount[0]` |
+| Tour km | `r.DISTANCE / 1000` (or fallback from duration × speed) |
+| Tour hrs | `r.DURATION / 3600` |
+| Cost (€) | `dispatch + tourHrs × €/h + tourKm × €/km + nDeliveries × €/delivery` |
+| Revenue (€) | external: `PRICE_EUR`. Internal: `loaded_km × €/loaded-km` |
+| Net benefit (€) | `Revenue − Cost` (red badge when negative) |
+| Wait time | per-step `waiting_time` from VROOM (chip when > 30 min) |
+
+## What got removed from the old UI
+
+| Old control | Why it's gone |
+|---|---|
+| `Max empty km/leg` | Was a JS post-filter that silently dropped solver decisions. Empty km is now minimised directly by `costs.per_hour` + `max_travel_time`. |
+| `Max detour km` | Was a JS pre-filter that hid candidates from VROOM. Redundant with `max_distance` (deviation %). |
+| Two priority sliders (internal + external) | Collapsed into one **Internal-first weight** slider. |
+| Match mode radio (`single` / `consolidate`) | Replaced by **Max stops** number (1 = single, ≥2 = consolidation). |
+| `Force shared destination` checkbox | Replaced by the 3-way **Trailer end** radio (Home / Shared / Open). |
 
 ## Productisation notes (out of scope for the demo)
 
 - **Real-time refresh**: replace the polled `VW_TRAILERS` with Snowpipe Streaming on a `TELEMETRY_RAW` topic; rebuild the view as a Dynamic Table with a 5-minute target lag.
-- **Live freight-exchange feeds**: the four portals (Timocom, WTransnet, Teleroute, B2P) all publish offers via either REST APIs (Timocom Smart Logistics System REST), webhook subscriptions, or paid CSV pulls. A small Snowpark Container Services worker can normalize them into `EXTERNAL_OFFERS` with the same schema.
-- **Solver scale**: VROOM solves 200+ vehicles x 1000+ jobs in a few seconds. Beyond that, partition by region (NRW, Bavaria, Île-de-France) and solve in parallel — the customer's existing dispatcher mental model already partitions this way.
+- **Live freight-exchange feeds**: the four EU portals (Timocom, WTransnet, Teleroute, B2P) all publish offers via REST APIs or webhook subscriptions. A small Snowpark Container Services worker can normalize them into `EXTERNAL_OFFERS` with the same schema.
+- **Solver scale**: VROOM solves 200+ vehicles × 1000+ jobs in a few seconds. Beyond that, partition by region (NRW, Bavaria, Île-de-France) and solve in parallel.
+- **Pre-computed matrices**: for repeated what-if solves on the same point set, call `OPENROUTESERVICE_APP.CORE._OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` with a cached matrix. (Cache table not seeded in v1.1.35; follow-up work.)
+- **Pinned stops** (`vehicle.steps[]`): dispatcher overrides where a specific stop is locked to a specific trailer. (UI hook not shipped in v1.1.35; follow-up work.)
+- **Mixed jobs + shipments**: VROOM accepts both `jobs[]` (single-location) and `shipments[]` (paired). Useful for return / empty-container relocation tasks. (Follow-up.)
