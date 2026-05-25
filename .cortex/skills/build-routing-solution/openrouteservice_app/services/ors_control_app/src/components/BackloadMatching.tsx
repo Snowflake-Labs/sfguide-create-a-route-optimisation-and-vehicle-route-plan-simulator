@@ -1306,7 +1306,7 @@ export default function BackloadMatching() {
           <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
           {selected && (
             <button type="button" onClick={() => stopsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                    style={{ position: 'absolute', top: 12, right: 56, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>
+                    style={{ position: 'absolute', top: 12, right: 140, zIndex: 5, padding: '6px 10px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.92)', color: 'var(--text-primary)', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' }}>
               Stops ↓
             </button>
           )}
