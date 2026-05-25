@@ -1,6 +1,12 @@
 -- Asset Velocity views for Non-Moving Trailer Detection & Action Engine
 -- Reuses FLEET_INTELLIGENCE.DWELL_ANALYSIS Dynamic Tables (must be deployed via dwell-analysis skill)
 -- Source telemetry must exist in SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY / FACT_TRIPS / DIM_FLEET / DIM_POIS
+--
+-- IMPORTANT: The control app's `server/lib/init.ts` ALSO bootstraps these views
+-- on every container start and will silently overwrite any out-of-band changes.
+-- If you change a view definition here, you MUST mirror the change in
+-- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/server/lib/init.ts`
+-- (search for `VW_TRAILER_COST_OF_IDLENESS` etc.) before redeploying the SPCS image.
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}';
 

@@ -15,7 +15,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
   "max_tasks": 2,                         // Max stops per trailer
   "max_travel_time": 28800,               // ideal_empty_hrs + slack
   "max_distance": 600000,                 // ideal_empty_km × (1 + dev%)
-  "costs": { "fixed": 12000, "per_hour": 9560 },
+  "costs": { "fixed": 12000, "per_km": 160 },
   "time_window": [1715874000, 1715906400],         // optional shift
   "breaks": [{ "id": 1, "service": 2700,
                "time_windows": [[1715890200, 1715895600]] }],
@@ -34,7 +34,7 @@ This document shows the exact JSON the page sends to `OPENROUTESERVICE_APP.CORE.
 | `max_travel_time` | **Detour budget** (+h on top of ideal empty trip) | Hard time cap on the whole tour |
 | `max_distance` | **Allowed deviation** (+% from ideal empty trip) | Hard distance cap on the whole tour |
 | `costs.fixed` | **Fixed dispatch cost** (€) × 100 | Pay-to-add-vehicle penalty |
-| `costs.per_hour` | (**€/h** + **€/km** × 60 km/h) × 100 | Time + distance weighted into VROOM's per-hour cost |
+| `costs.per_km` | (**€/km** + **€/h** ÷ 60 km/h) × 100 | Time + distance weighted into VROOM's per-km cost. Note: the deployed regional VROOM image is `vroom-docker:v1.0.4`, which does NOT yet support `costs.per_hour` (added upstream in VROOM v1.13). When the gateway upgrades to v1.13+, switch back to `per_hour` for cleaner semantics. |
 | `time_window` | toggle: shift / hours-of-service | `[shiftStart, shiftEnd]` |
 | `breaks` | toggle: enforce driver break | EU 45-min rest after 4.5 h |
 | `profile_options.avoid_polygons` | multi-select: avoid zones | Forwarded to ORS routing for LEZ / construction / hazard avoidance |

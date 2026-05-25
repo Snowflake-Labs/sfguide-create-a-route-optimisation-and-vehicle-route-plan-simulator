@@ -161,6 +161,7 @@ If no friction was encountered, the log should still be created with "No frictio
 ## Do NOT
 
 - **Inline large SQL blocks in SKILL.md** — put them in `references/*.md` and link
+- **Modify a `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.*` (or any other shared) view in `references/asset-velocity-views.sql` (or its sibling `*.sql` under `references/`) without also updating its parallel definition in `services/ors_control_app/server/lib/init.ts`.** The control app's `init.ts` runs on every container start and `CREATE OR REPLACE`s the views it owns, silently overwriting any out-of-band changes. If the React page references a column that `init.ts` hasn't recreated, `sfQuery` gets a SQL error, swallows it, and the page renders empty data with no obvious failure. When in doubt, search `init.ts` for the view name before changing a reference SQL file.
 - **Skip the query tag** — every skill must set the session query tag for attribution tracking:
   ```sql
   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';

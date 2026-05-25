@@ -201,7 +201,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // Asset Velocity views (ROUTE_OPTIMIZATION) — ensure CONFIG has the
-    // cost-of-idleness columns then deploy the three vehicle-type-aware views.
+    // cost-of-idleness columns then deploy the four vehicle-type-aware views.
+    //
+    // IMPORTANT: This block is the SOURCE OF TRUTH for the views the React
+    // page reads (it runs on every container start and CREATE OR REPLACEs them).
+    // Keep it in sync with .cortex/skills/route-optimization/references/asset-velocity-views.sql.
     {
       sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS DAILY_RENTAL_RATE_AVOIDED_USD NUMBER(10,2)`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
@@ -210,10 +214,22 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS RENTAL_CAPTURE_RATE NUMBER(4,3)`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
+    // v1.1 smart-reposition columns: shift cap (drives matrix gate +
+    // isochrone range + VROOM time_window) and ORS avoid_features.
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS MAX_REPOSITION_MINUTES NUMBER(6,0)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS AVOID_FEATURES VARCHAR(200)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
     {
       sql: `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
               SET DAILY_RENTAL_RATE_AVOIDED_USD = COALESCE(DAILY_RENTAL_RATE_AVOIDED_USD, 80.00),
-                  RENTAL_CAPTURE_RATE          = COALESCE(RENTAL_CAPTURE_RATE, 0.600)`,
+                  RENTAL_CAPTURE_RATE          = COALESCE(RENTAL_CAPTURE_RATE, 0.600),
+                  MAX_REPOSITION_MINUTES       = COALESCE(MAX_REPOSITION_MINUTES, 600),
+                  AVOID_FEATURES               = COALESCE(AVOID_FEATURES, 'tollways,ferries')`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
@@ -312,6 +328,39 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE
+        COMMENT = ${TRACK_RO}
+        AS
+        WITH cfg AS (
+          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
+        ),
+        filtered AS (
+          SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f, cfg
+          WHERE f.REGION = cfg.REGION AND f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
+        )
+        SELECT
+          f.VEHICLE_ID, f.REGION, f.VEHICLE_TYPE, f.ORS_PROFILE, f.OPERATING_MODE,
+          CASE
+            WHEN f.OPERATING_MODE <> 'trucking' THEN NULL
+            WHEN f.BKT <  60 THEN 'DRY'
+            WHEN f.BKT <  85 THEN 'REEFER'
+            WHEN f.BKT <  97 THEN 'FLAT'
+            ELSE 'TANKER'
+          END AS VEHICLE_SUBTYPE,
+          CASE WHEN f.OPERATING_MODE = 'trucking' AND f.BKT = 99 THEN TRUE ELSE FALSE END AS HAZMAT,
+          CASE WHEN f.OPERATING_MODE = 'trucking'
+               THEN ROUND(38 + (MOD(ABS(HASH(f.VEHICLE_ID || '_w')), 600) / 100.0), 2)
+               ELSE 2.0 END AS WEIGHT_TONS,
+          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 4.00 ELSE 2.00 END AS HEIGHT_M,
+          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 16.50 ELSE 4.50 END AS LENGTH_M,
+          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 2.55 ELSE 1.85 END AS WIDTH_M,
+          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 11.50 ELSE 1.20 END AS AXLELOAD_T
+        FROM filtered f`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
         COMMENT = ${TRACK_RO}
         AS
@@ -321,6 +370,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           t.IDLE_SINCE, t.IDLE_MINUTES, t.IDLE_HOURS, t.IDLE_DAYS,
           t.ASSIGNED_DISPATCHER, t.DRIVER_PROFILE,
           c.DAILY_RENTAL_RATE_AVOIDED_USD, c.RENTAL_CAPTURE_RATE,
+          c.MAX_REPOSITION_MINUTES, c.AVOID_FEATURES,
+          hgv.VEHICLE_SUBTYPE, hgv.HAZMAT, hgv.WEIGHT_TONS, hgv.HEIGHT_M,
+          hgv.LENGTH_M, hgv.WIDTH_M, hgv.AXLELOAD_T, hgv.ORS_PROFILE,
           ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD, 2)                            AS COST_OF_IDLENESS_USD,
           ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD * c.RENTAL_CAPTURE_RATE, 2)    AS PROJECTED_SAVINGS_USD,
           CASE
@@ -330,8 +382,12 @@ export async function ensureBackloadAndAssetVelocityObjects(
             ELSE 'OK'
           END                                                                                AS IDLE_SEVERITY
         FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS t
+        LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE hgv
+          ON hgv.VEHICLE_ID = t.VEHICLE_ID
         CROSS JOIN (SELECT MAX(DAILY_RENTAL_RATE_AVOIDED_USD) AS DAILY_RENTAL_RATE_AVOIDED_USD,
-                           MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE
+                           MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE,
+                           MAX(MAX_REPOSITION_MINUTES)       AS MAX_REPOSITION_MINUTES,
+                           MAX(AVOID_FEATURES)               AS AVOID_FEATURES
                     FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG) c`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },

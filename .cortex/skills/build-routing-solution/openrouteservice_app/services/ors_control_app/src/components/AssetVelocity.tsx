@@ -64,25 +64,10 @@ export default function AssetVelocity() {
       setLoading(false);
       return;
     }
-    try {
-      const safeRegion = (regionName || '').replace(/'/g, "''");
-      const vtRows = await sfQuery(
-        `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-         WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
-        'SYNTHETIC_DATASETS', 'UNIFIED',
-      );
-      const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
-      if (detectedVt) {
-        await sfQuery(
-          `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
-             SET REGION = '${safeRegion}',
-                 VEHICLE_TYPE = '${String(detectedVt).replace(/'/g, "''")}'`,
-          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
-        );
-      }
-    } catch (e) {
-      console.warn('[AV] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
-    }
+    // CONFIG.REGION + CONFIG.VEHICLE_TYPE are kept in sync atomically by the
+    // dataset picker (`POST /api/datasets/activate`). The page used to do its
+    // own UPDATE here, but `/api/query` is read-only (SELECT/SHOW/DESCRIBE/CALL/WITH)
+    // so that UPDATE silently 403'd. Removed in v1.1.
     const trailerSql = `
       SELECT VEHICLE_ID, REGION, LAST_LOCATION_NAME, LAST_LOCATION_TYPE,
              LAST_LNG, LAST_LAT, IDLE_SINCE::STRING AS IDLE_SINCE,

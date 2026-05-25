@@ -264,7 +264,13 @@ export default function BackloadMatching() {
       return [Number(t.HOME_LON), Number(t.HOME_LAT)];
     };
     // Effective €/h for VROOM = real €/h + €/km * km/h (folds per-km cost into per-hour).
-    const effPerHourEur = costPerHourEur + costPerKmEur * KMH_HGV;
+    // VROOM v1.0.4 (the deployed regional build) does NOT support
+    // vehicle.costs.per_hour — that field was added in upstream VROOM v1.13.
+    // When present it silently rejects the entire payload (0 rows back). Until
+    // the gateway upgrades VROOM, we fold the user's €/h slider into an
+    // equivalent €/km via the assumed average HGV speed (60 km/h) and send
+    // costs.per_km, which v1.0.4 does honour.
+    const effPerKmEur = costPerKmEur + costPerHourEur / KMH_HGV;
     // Avoid-polygon GeoJSON list (Card F).
     const avoidGeoJSON = selectedAvoidZoneIds
       .map(id => avoidZones.find(z => z.ZONE_ID === id)?.POLYGON_GEOJSON)
@@ -309,8 +315,8 @@ export default function BackloadMatching() {
           Math.round(Math.max(idealKm * 2, 200) * (1 + deviationPct / 100) * 1000),
         ),
         costs: {
-          fixed:    Math.round(fixedDispatchEur * COST_SCALE),
-          per_hour: Math.round(effPerHourEur     * COST_SCALE),
+          fixed:  Math.round(fixedDispatchEur * COST_SCALE),
+          per_km: Math.round(effPerKmEur      * COST_SCALE),
         },
       };
 
@@ -410,7 +416,7 @@ export default function BackloadMatching() {
       'region=', regionName,
       'maxStops=', maxStops,
       'devPct=', deviationPct,
-      'eurPerHour=', effPerHourEur,
+      'eurPerKm(eff)=', effPerKmEur,
       'breaks=', enforceDriverBreak,
       'avoid=', avoidGeoJSON.length);
     const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
@@ -617,12 +623,30 @@ export default function BackloadMatching() {
       `Got ${rows.length} rows → ${newAssignments.length} assigned, ${newUnassigned.length} unassigned. ` +
       `Avg detour +${avgDetour} km. Net benefit total €${totalNet.toLocaleString()}.`
     );
-    if (rows.length === 0 && vrpShipments.length > 0) {
+    // When VROOM rejects the payload (e.g. unknown vehicle field), the
+    // OPTIMIZATION TVF returns rows whose RESPONSE column carries an
+    // {error, code} object even though VEHICLE is null. Surface that text
+    // verbatim so we don't masquerade real errors as "0 rows".
+    let vroomErr: string | null = null;
+    for (const r of rows) {
+      const resp: any = (r as any).RESPONSE;
+      try {
+        const obj = typeof resp === 'string' ? JSON.parse(resp) : resp;
+        if (obj && (obj.error || (obj.code && obj.message))) {
+          vroomErr = String(obj.error || obj.message);
+          break;
+        }
+      } catch {}
+    }
+    if (vroomErr) {
+      setSolveError(`VROOM rejected the request: ${vroomErr}`);
+    } else if (rows.length === 0 && vrpShipments.length > 0) {
       setSolveError(
         `OPTIMIZATION returned 0 rows. Check: (1) all required ORS services RUNNING, ` +
         `(2) region='${regionName}' covers your data bbox, ` +
         `(3) profile='${profile}' is supported by ORS_SERVICE_${(regionName || '').toUpperCase()}, ` +
-        `(4) constraints aren't too tight (try raising deviation %, detour slack, or window slack).`
+        `(4) constraints aren't too tight (try raising deviation %, detour slack, or window slack), ` +
+        `(5) no unknown vehicle/job fields (e.g. costs.per_hour requires VROOM v1.13+).`
       );
     }
 
