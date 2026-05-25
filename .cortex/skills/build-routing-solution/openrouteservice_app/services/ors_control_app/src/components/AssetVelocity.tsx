@@ -9,7 +9,7 @@ import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 import PageContainer from '../shared/PageContainer';
 import {
   RO_DB, RO_SCHEMA,
-  sfQuery, cartoBasemap, SEVERITY_COLOR,
+  sfQuery, cartoBasemap, SEVERITY_COLOR, asSqlJsonLiteral,
   Trailer, Terminal, MatrixCache, ExclusionReason,
 } from './asset-velocity/helpers';
 import {
@@ -39,6 +39,7 @@ export default function AssetVelocity() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [orsProfile, setOrsProfile] = useState<string>('driving-car');
   const [matrix, setMatrix] = useState<MatrixCache>({});
+  const [matrixError, setMatrixError] = useState<string | null>(null);
   const [maxRepositionMinutes, setMaxRepositionMinutes] = useState<number>(600);
   const [avoidFeatures, setAvoidFeatures] = useState<string>('tollways,ferries');
   const [isoByVehicle, setIsoByVehicle] = useState<Record<string, any>>({});
@@ -124,9 +125,11 @@ export default function AssetVelocity() {
       const avoid = avoidFeaturesArr(avoidFeatures);
       const cache = await fetchMatrix(cappedTrailers, cappedTerminals, profile, envelope, avoid, regionName, maxRepositionMinutes);
       setMatrix(cache);
-    } catch (e) {
+      setMatrixError(null);
+    } catch (e: any) {
       console.error('[AV] matrix fetch failed', e);
       setMatrix({});
+      setMatrixError((e?.message ?? 'matrix fetch failed').toString().slice(0, 240));
     } finally {
       setMatrixLoading(false);
     }
@@ -248,10 +251,18 @@ export default function AssetVelocity() {
       nowEpoch: Math.floor(Date.now() / 1000),
     });
 
-    const rows = await sfQuery(
-      `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(challenge).replace(/'/g, "''")}'), '${regionName}'))`,
-      'OPENROUTESERVICE_APP', 'CORE',
-    );
+    let rows: any[] = [];
+    try {
+      rows = await sfQuery(
+        `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${regionName}'))`,
+        'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true },
+      );
+    } catch (e: any) {
+      const msg = (e?.message ?? 'unknown error').toString().slice(0, 240);
+      setVrpResult({ warning: `Optimize Repositioning failed: ${msg}` });
+      setSolving(false);
+      return;
+    }
 
     if (rows.length) {
       const paths: any[] = [];
@@ -439,6 +450,12 @@ export default function AssetVelocity() {
             : vrpResult.message
               ? vrpResult.message
               : `Repositioning solution: ${vrpResult.routesCount} reposition routes (${vrpResult.unassignedCount ?? 0} unassigned), total drive time ${Math.round((vrpResult.totalDurationSec || 0) / 60)} min.`}
+        </div>
+      )}
+
+      {matrixError && (
+        <div className="info-box warning" style={{ marginTop: 8, background: 'rgba(245,158,11,0.1)', border: '1px solid #F59E0B', padding: 12, borderRadius: 8 }}>
+          ORS matrix call failed: {matrixError}
         </div>
       )}
 

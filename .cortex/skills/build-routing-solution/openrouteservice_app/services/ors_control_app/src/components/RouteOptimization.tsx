@@ -13,16 +13,9 @@ const RO_DB = 'FLEET_INTELLIGENCE';
 const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
-async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
+import { sfQuery as sharedSfQuery, asSqlJsonLiteral, type SfQueryOpts } from '../lib/sfQuery';
+async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA, opts?: SfQueryOpts): Promise<any[]> {
+  return sharedSfQuery(sql, database, schema, opts);
 }
 
 function cartoBasemap() {
@@ -431,10 +424,10 @@ export default function RouteOptimization() {
     });
 
     const vrpChallenge = { jobs: vrpJobs, vehicles: vrpVehicles };
-    const vrpSql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}'))`;
+    const vrpSql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(vrpChallenge)}), '${regionName}'))`;
     let rows: any[] = [];
     try {
-      rows = await sfQuery(vrpSql, 'OPENROUTESERVICE_APP', 'CORE');
+      rows = await sfQuery(vrpSql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
     } catch (e: any) {
       console.error('[VRP] error:', e);
       alert(`Optimize Routes error: ${e?.message || e}`);
@@ -444,7 +437,7 @@ export default function RouteOptimization() {
     if (rows.length === 0) {
       let msg = 'No routes returned from solver';
       try {
-        const errRows = await sfQuery(`SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON('${JSON.stringify(vrpChallenge).replace(/'/g, "''")}'), '${regionName}')::VARCHAR AS RESP`, 'OPENROUTESERVICE_APP', 'CORE');
+        const errRows = await sfQuery(`SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON(${asSqlJsonLiteral(vrpChallenge)}), '${regionName}')::VARCHAR AS RESP`, 'OPENROUTESERVICE_APP', 'CORE');
         const respObj = errRows[0]?.RESP ? JSON.parse(errRows[0].RESP) : {};
         if (respObj.error) msg = `${respObj.error}: ${respObj.message || ''}`;
       } catch {}

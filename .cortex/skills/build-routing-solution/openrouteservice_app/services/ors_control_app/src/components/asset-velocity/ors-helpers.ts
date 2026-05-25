@@ -1,7 +1,7 @@
 // ORS-call helpers for AssetVelocity smart-reposition logic.
 // Wraps OPENROUTESERVICE_APP.CORE.MATRIX (options variant) and ISOCHRONES.
 
-import { sfQuery, type Trailer, type Terminal, type MatrixCache, type ReachabilityCell } from './helpers';
+import { sfQuery, asSqlJsonLiteral, type Trailer, type Terminal, type MatrixCache } from './helpers';
 
 // Best-fit ORS profile for the active fleet. Trucking ALWAYS uses driving-hgv
 // even if individual rows say driving-car, because the page is HGV-tuned.
@@ -108,13 +108,17 @@ export async function fetchMatrix(
     const batch = trailers.slice(i, i + effectiveTrailerBatch);
     const sources = batch.map(t => [Number(t.LAST_LNG), Number(t.LAST_LAT)] as [number, number]);
     const opts = buildMatrixOptions(profile, sources, dests, envelope, avoid);
+    // Dollar-quoted SQL literal so apostrophes/backslashes/quotes inside any
+    // free-text field never need escaping. Bubble SQL errors up to the caller
+    // so the page can surface "ORS matrix call failed: <msg>" instead of
+    // silently rendering 0 reachable terminals.
     const sql = `
       SELECT OPENROUTESERVICE_APP.CORE.MATRIX(
         '${profile.replace(/'/g, "''")}',
-        PARSE_JSON('${JSON.stringify(opts).replace(/'/g, "''")}'),
+        ${asSqlJsonLiteral(opts)},
         '${region.replace(/'/g, "''")}'
       ) AS RESP`;
-    const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE');
+    const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
     const resp = rows[0]?.RESP;
     if (!resp) {
       console.warn('[AV] MATRIX returned no RESP for batch', i);

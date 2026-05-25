@@ -13,6 +13,7 @@
 // OPENROUTESERVICE_APP.CORE.OPTIMIZATION(challenge, region).
 
 import type { Trailer, Terminal, VehicleSubtype } from './helpers';
+import { safeText } from './helpers';
 
 // Skill IDs (arbitrary but stable):
 //   1 = REEFER required, 2 = FLAT required, 3 = TANKER required, 4 = HAZMAT-capable
@@ -114,7 +115,7 @@ export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
     // not a per-job delta. (Production: derive load weight from terminal lane mix.)
     const job: VrpJob = {
       id: i + 1,
-      description: `${t.TERMINAL_NAME} (${t.LOCATION_TYPE}) demand ${t.DEMAND_SCORE}`,
+      description: `${safeText(t.TERMINAL_NAME)} (${t.LOCATION_TYPE}) demand ${t.DEMAND_SCORE}`,
       location: [Number(t.TERMINAL_LNG), Number(t.TERMINAL_LAT)],
       service: serviceSecondsForTerminal(t),
       priority: Math.min(100, Math.max(1, Math.round(Number(t.DEMAND_SCORE) || 1))),
@@ -132,7 +133,7 @@ export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
     const a = Math.round((tr.AXLELOAD_T ?? 11.5) * 100);
     return {
       id: i + 1,
-      description: `${tr.VEHICLE_ID} (${tr.VEHICLE_SUBTYPE ?? 'DRY'})`,
+      description: `${safeText(tr.VEHICLE_ID, 32)} (${tr.VEHICLE_SUBTYPE ?? 'DRY'})`,
       profile,
       start: [Number(tr.LAST_LNG), Number(tr.LAST_LAT)],
       capacity: [1, w, a],

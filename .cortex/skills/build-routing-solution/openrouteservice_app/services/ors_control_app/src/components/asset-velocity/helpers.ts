@@ -3,20 +3,24 @@
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 
+// sfQuery + asSqlJsonLiteral live in the shared src/lib/sfQuery module so all
+// pages share the same body.error handling and dollar-quoted JSON escape path.
+// We re-export here to keep the existing import sites in this folder stable.
+import { sfQuery as sharedSfQuery, asSqlJsonLiteral, safeText, type SfQueryOpts } from '../../lib/sfQuery';
+export { asSqlJsonLiteral, safeText };
+export type { SfQueryOpts };
+
 export const RO_DB = 'FLEET_INTELLIGENCE';
 export const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
-export async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
+export async function sfQuery(
+  sql: string,
+  database = RO_DB,
+  schema = RO_SCHEMA,
+  opts: SfQueryOpts = {},
+): Promise<any[]> {
+  return sharedSfQuery(sql, database, schema, opts);
 }
 
 export function cartoBasemap() {

@@ -92,16 +92,24 @@ export interface Assignment {
 
 export interface SvcStatus { name: string; status: string; cur: number; tgt: number; }
 
-export async function sfQuery(sql: string, database = BM_DB, schema = BM_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[BM/sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
+// sfQuery / SfQueryOpts / asSqlJsonLiteral are owned by src/lib/sfQuery so all
+// pages share a single body.error path and a single dollar-quoted JSON inliner.
+import {
+  sfQuery as sharedSfQuery,
+  asSqlJsonLiteral,
+  safeText,
+  type SfQueryOpts as SharedSfQueryOpts,
+} from '../../lib/sfQuery';
+export { asSqlJsonLiteral, safeText };
+export type SfQueryOpts = SharedSfQueryOpts;
+
+export async function sfQuery(
+  sql: string,
+  database = BM_DB,
+  schema = BM_SCHEMA,
+  opts: SfQueryOpts = {},
+): Promise<any[]> {
+  return sharedSfQuery(sql, database, schema, opts);
 }
 
 export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: number): number {
@@ -124,3 +132,64 @@ export function profileForVehicleType(vt: string): string {
 // has kg. Heuristic: 1 pallet ≈ 750 kg, 1 m³ ≈ 250 kg (typical mixed freight).
 export function synthPallets(kg: number): number { return Math.max(1, Math.round(kg / 750)); }
 export function synthVolumeM3(kg: number): number { return Math.max(1, Math.round(kg / 250)); }
+
+// Probe per-region ORS health. Returns true only when both:
+//   * SHOW SERVICES reports RUNNING with cur >= tgt
+//   * ORS_STATUS(region) -> service_ready=true (i.e. graphs are loaded)
+// Used by the BackloadMatching solve flow to avoid the documented cold-start
+// race where the service flips RUNNING before the graph is loaded, which
+// causes the gateway's matrix pre-compute to silently fall back to per-leg
+// VROOM (-> hours-long apparent hang). See plan: backload-solve-hang-fix.
+export async function isOrsRegionReady(
+  region: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ ready: boolean; reason?: string }> {
+  if (!region) return { ready: false, reason: 'no region' };
+  try {
+    const safe = region.replace(/'/g, "''");
+    const rows = await sfQuery(
+      `SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS('${safe}') AS S`,
+      'OPENROUTESERVICE_APP', 'CORE',
+      { signal: opts.signal, throwOnError: true },
+    );
+    const raw = rows?.[0]?.S;
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const ready = !!(obj && (obj.service_ready === true || obj.service_ready === 'true'));
+    return ready ? { ready: true } : { ready: false, reason: obj?.message || obj?.error || 'service not ready' };
+  } catch (err: any) {
+    return { ready: false, reason: err?.message || 'status probe failed' };
+  }
+}
+
+// Build a precomputed VROOM matrix from a list of unique [lon,lat] locations
+// using the deployed MATRIX TVF. Returns { durations, costs } in seconds /
+// meters (rounded), matching the shape VROOM expects in payload.matrices.
+// Returns null if the locations < 2 or the MATRIX call yielded nothing.
+export async function buildVroomMatrix(
+  profile: string,
+  locations: [number, number][],
+  region: string | null | undefined,
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ durations: number[][]; costs: number[][] } | null> {
+  if (!locations || locations.length < 2) return null;
+  const locArrSql = locations
+    .map(([lon, lat]) => `ARRAY_CONSTRUCT(${Number(lon)}::FLOAT, ${Number(lat)}::FLOAT)`)
+    .join(', ');
+  const regionLit = region ? `'${String(region).replace(/'/g, "''")}'` : 'NULL';
+  const sql = `SELECT OPENROUTESERVICE_APP.CORE.MATRIX('${profile}', ARRAY_CONSTRUCT(${locArrSql}), ${regionLit}) AS M`;
+  const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', {
+    signal: opts.signal,
+    throwOnError: true,
+  });
+  const raw = rows?.[0]?.M;
+  if (!raw) return null;
+  const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  const dur = obj?.durations;
+  const dist = obj?.distances;
+  if (!Array.isArray(dur) || !Array.isArray(dist)) return null;
+  const durations = dur.map((row: any[]) =>
+    row.map(v => (v == null ? 0 : Math.round(Number(v)))));
+  const costs = dist.map((row: any[]) =>
+    row.map(v => (v == null ? 0 : Math.round(Number(v)))));
+  return { durations, costs };
+}
