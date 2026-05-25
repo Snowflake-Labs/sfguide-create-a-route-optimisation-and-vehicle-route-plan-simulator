@@ -17,7 +17,7 @@ import PageContainer from '../shared/PageContainer';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
   Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
-  sfQuery, asSqlJsonLiteral, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
+  sfQuery, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
   isOrsRegionReady, buildVroomMatrix,
 } from './backload-matching/helpers';
 
@@ -536,7 +536,8 @@ export default function BackloadMatching() {
     } else {
       challenge.options = { g: true };
     }
-    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${regionName}'))`;
+    const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
+    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
     console.log('[BM] OPTIMIZATION challenge:',
       'vehicles=', vrpVehicles.length,
       'shipments=', vrpShipments.length,
