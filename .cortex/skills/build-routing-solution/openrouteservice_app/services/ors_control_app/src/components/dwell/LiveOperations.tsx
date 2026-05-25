@@ -8,6 +8,7 @@ import { fmtDec } from '../../shared/format';
 import { useFitMap } from '../../shared/useFitMap';
 import RecenterButton from '../../shared/RecenterButton';
 import { coordsFromPoints, type LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 const STATE_COLORS: Record<string, [number, number, number, number]> = {
   DRIVING: [41, 181, 232, 200],
@@ -78,7 +79,7 @@ export default function LiveOperations() {
   }, []);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Live Operations</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
         {loading ? 'Refreshing...' : `${vehicles.length} vehicles tracked`} · Auto-refresh 30s
@@ -124,6 +125,6 @@ export default function LiveOperations() {
           </div>
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

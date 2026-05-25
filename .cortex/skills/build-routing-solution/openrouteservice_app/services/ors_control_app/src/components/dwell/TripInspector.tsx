@@ -8,6 +8,7 @@ import { fmtDec } from '../../shared/format';
 import { useFitMap } from '../../shared/useFitMap';
 import RecenterButton from '../../shared/RecenterButton';
 import type { LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 export default function TripInspector() {
   const { regionName, center, zoom } = useRegion();
@@ -85,7 +86,7 @@ export default function TripInspector() {
   }, []);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Trip Inspector</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
         {tripsLoading ? 'Loading trips...' : `${trips.length} recent trips`}
@@ -144,6 +145,6 @@ export default function TripInspector() {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageContainer>
   );
 }

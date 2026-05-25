@@ -5,6 +5,7 @@ import { fmtDec } from '../../shared/format';
 import { sfQuery } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import PageContainer from '../../shared/PageContainer';
 
 export default function DwellOverview() {
   const { regionName } = useRegion();
@@ -44,7 +45,7 @@ export default function DwellOverview() {
     })), [topFacilities]);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Dwell Analysis Overview</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Fleet dwell time analytics and SLA monitoring</p>
       <div className="metric-grid">
@@ -84,6 +85,6 @@ export default function DwellOverview() {
           </ResponsiveContainer>
         </div>
       </div>
-    </div>
+    </PageContainer>
   );
 }

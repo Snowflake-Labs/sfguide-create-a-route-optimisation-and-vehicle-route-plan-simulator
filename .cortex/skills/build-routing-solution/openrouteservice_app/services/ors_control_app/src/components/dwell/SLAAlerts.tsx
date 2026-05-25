@@ -5,6 +5,7 @@ import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import PageContainer from '../../shared/PageContainer';
 
 const SEV_COLORS: Record<string, string> = { CRITICAL: '#E5484D', WARNING: '#E5A100', INFO: '#29B5E8' };
 
@@ -37,7 +38,7 @@ export default function SLAAlerts() {
   const pieData = useMemo(() => summary.map(r => ({ name: r.SEVERITY, value: Number(r.CNT) })), [summary]);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>SLA Alerts</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Service level agreement breach monitoring</p>
       <div className="metric-grid">
@@ -73,6 +74,6 @@ export default function SLAAlerts() {
       <h3>Alert Log</h3>
       <DataTable data={alerts} columns={['ALERT_ID', 'TRIP_ID', 'DRIVER_ID', 'FACILITY_NAME', 'SEVERITY', 'DWELL_DURATION_MIN', 'SLA_LIMIT_MIN']} />
       {!loading && alerts.length === 0 && <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>No alerts found.</div>}
-    </div>
+    </PageContainer>
   );
 }
