@@ -12,6 +12,7 @@ import { coordsFromGeoJSON, fitBoundsToData, type LngLat } from '../shared/mapFi
 import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import StopsPanel from './backload-matching/StopsPanel';
+import PageContainer from '../shared/PageContainer';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
   Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
@@ -42,7 +43,7 @@ export default function BackloadMatching() {
   // ---------------- Solver levers (every one maps 1:1 to VROOM/ORS) ----------------
   const [maxStops, setMaxStops]                   = useState(2);    // vehicle.max_tasks
   const [detourSlackHrs, setDetourSlackHrs]       = useState(4);    // vehicle.max_travel_time
-  const [deviationPct, setDeviationPct]           = useState(50);   // vehicle.max_distance
+  const [deviationPct, setDeviationPct]           = useState(200);  // vehicle.max_distance
   const [internalFirstWeight, setInternalFirstWeight] = useState(90); // job.priority gap
   const [windowSlackHrs, setWindowSlackHrs]       = useState(2);    // job.time_windows
   const [endMode, setEndMode]                     = useState<EndMode>('home'); // vehicle.end
@@ -298,7 +299,15 @@ export default function BackloadMatching() {
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
         max_travel_time: Math.max(1800, Math.round((idealHrs + detourSlackHrs) * 3600)),
-        max_distance:    Math.max(5000, Math.round(idealKm * (1 + deviationPct / 100) * 1000)),
+        // max_distance is a hard cap on the WHOLE tour (empty + loaded legs).
+        // The "ideal empty trip" alone is rarely a useful baseline because the
+        // tour with a backload always exceeds it. Use a generous baseline:
+        //   max(2 × idealEmptyKm, 200 km) × (1 + dev%/100)
+        // and floor at 100 km so VROOM never sees a degenerate value.
+        max_distance: Math.max(
+          100_000,
+          Math.round(Math.max(idealKm * 2, 200) * (1 + deviationPct / 100) * 1000),
+        ),
         costs: {
           fixed:    Math.round(fixedDispatchEur * COST_SCALE),
           per_hour: Math.round(effPerHourEur     * COST_SCALE),
@@ -321,22 +330,16 @@ export default function BackloadMatching() {
         }];
       }
 
-      // Card F: avoid polygons forwarded as ORS profile options on the vehicle.
-      if (avoidGeoJSON.length) {
-        veh.profile_options = {
-          avoid_polygons: {
-            type: 'MultiPolygon',
-            coordinates: avoidGeoJSON.flatMap((g: any) => {
-              if (!g) return [];
-              if (g.type === 'Polygon') return [g.coordinates];
-              if (g.type === 'MultiPolygon') return g.coordinates;
-              if (g.type === 'Feature' && g.geometry?.type === 'Polygon') return [g.geometry.coordinates];
-              if (g.type === 'Feature' && g.geometry?.type === 'MultiPolygon') return g.geometry.coordinates;
-              return [];
-            }),
-          },
-        };
-      }
+      // Card F (avoid polygons): the routing gateway does not yet forward
+      // `vehicle.profile_options.avoid_polygons` to the ORS matrix call, so
+      // we must not stuff this into the VROOM payload (some VROOM builds
+      // reject unknown vehicle fields). The polygons are still drawn on the
+      // map for visual context until the gateway is extended.
+      // TODO: extend routing_gateway to honour avoid_polygons during matrix
+      // pre-computation, then re-enable the payload field below.
+      // if (avoidGeoJSON.length) {
+      //   veh.profile_options = { avoid_polygons: { ... } };
+      // }
 
       return veh;
     });
@@ -891,6 +894,7 @@ export default function BackloadMatching() {
   const sliderBlock: React.CSSProperties = { minWidth: 170 };
 
   return (
+    <PageContainer width="wide" padded={false}>
     <div className="panel" style={{ padding: 16 }}>
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Backload Matching Engine</h2>
       <p className="subtitle">Fleet-wide VRP solve with VROOM + ORS — every visible knob maps 1:1 to a solver field.</p>
@@ -932,8 +936,8 @@ export default function BackloadMatching() {
           <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Allowed deviation: +{deviationPct}% <span title="vehicle.max_distance vs ideal empty trip">ⓘ</span></label>
-          <input type="range" min={0} max={200} step={5} value={deviationPct} onChange={e => setDeviationPct(Number(e.target.value))} style={{ width: '100%' }} />
+          <label style={labelStyle}>Allowed deviation: +{deviationPct}% <span title="vehicle.max_distance from a baseline of max(2×ideal empty trip, 200 km)">ⓘ</span></label>
+          <input type="range" min={0} max={500} step={10} value={deviationPct} onChange={e => setDeviationPct(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
           <label style={labelStyle}>Internal-first: {internalFirstWeight} <span title="job.priority gap (internal vs external)">ⓘ</span></label>
@@ -1147,5 +1151,6 @@ export default function BackloadMatching() {
 
       <DecisionsAudit rows={auditRows} onRefresh={loadAudit} />
     </div>
+    </PageContainer>
   );
 }
