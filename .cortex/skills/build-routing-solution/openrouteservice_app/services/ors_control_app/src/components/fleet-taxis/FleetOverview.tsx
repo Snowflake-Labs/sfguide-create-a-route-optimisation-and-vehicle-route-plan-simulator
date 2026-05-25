@@ -8,6 +8,7 @@ import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { useFitMap } from '../../shared/useFitMap';
+import PageContainer from '../../shared/PageContainer';
 import RecenterButton from '../../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
@@ -85,6 +86,7 @@ export default function FleetOverview() {
   const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Fleet Overview</h2>
       <p className="subtitle">Taxi fleet analytics</p>
@@ -114,5 +116,6 @@ export default function FleetOverview() {
         </div>
       )}
     </div>
+    </PageContainer>
   );
 }

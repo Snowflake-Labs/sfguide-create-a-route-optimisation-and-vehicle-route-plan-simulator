@@ -8,6 +8,7 @@ import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { useFitMap } from '../../shared/useFitMap';
 import RecenterButton from '../../shared/RecenterButton';
+import PageContainer from '../../shared/PageContainer';
 import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
@@ -127,6 +128,7 @@ export default function CatchmentPanel() {
   }, []);
 
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment Analysis</h2>
       <p className="subtitle">Restaurant delivery isochrone catchment</p>
@@ -179,5 +181,6 @@ export default function CatchmentPanel() {
         )}
       </div>
     </div>
+    </PageContainer>
   );
 }
