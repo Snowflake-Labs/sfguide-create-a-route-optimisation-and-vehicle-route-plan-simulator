@@ -316,10 +316,12 @@ snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/serv
 
 **Actions (Workspace Alternative):**
 
-If running in Snowflake Workspace, service YAML files should already exist at workspace root from Step 3. Upload them:
+If running in Snowflake Workspace where `snow stage copy` is unavailable, service YAML files must be at **workspace root** (flat path) before uploading. Read each YAML from its source directory, write it to workspace root, then COPY FILES:
+
+> **WHY:** `COPY FILES` preserves source directory structure. Files must be at workspace root to get flat paths on stage.
 
 ```sql
--- Upload service specifications
+-- Upload service specifications (files already written to workspace root)
 COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
 FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
 FILES=('openrouteservice.yaml');
@@ -340,6 +342,12 @@ COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_a
 FROM 'snow://workspace/<DATABASE>.<SCHEMA>.<WORKSPACE_NAME>/versions/live/'
 FILES=('ors_control_app_service.yaml');
 ```
+
+**IMPORTANT:** When writing the `ors_control_app_service.yaml` to workspace root, update the image tag to the **latest version** visible in:
+```sql
+SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
+```
+Use the highest `v1.0.X` tag for `ors_control_app`.
 
 ---
 
@@ -374,7 +382,10 @@ snow stage copy ".cortex/skills/build-routing-solution/openrouteservice_app/stag
 
 **Actions (Workspace Alternative - MANDATORY STEPS):**
 
-Workspace `COPY FILES` command **does not support nested source paths**. You must first copy files to workspace root, then upload.
+> **CRITICAL COPY FILES BEHAVIOR:** `COPY FILES` always preserves the full source relative path at the destination. A file at `dir/sub/file.ext` uploaded to `@stage/prefix/` ends up at `@stage/prefix/dir/sub/file.ext` (not `@stage/prefix/file.ext`).
+>
+> **Text files:** Write to workspace root first (flat path), then COPY FILES.
+> **Binary files:** Use the `COPY_FILE_FLAT` Python stored procedure (see `upload-map-files/SKILL.md` Step 2b.2).
 
 1. **Read and write ors-config.yml to workspace root:**
    

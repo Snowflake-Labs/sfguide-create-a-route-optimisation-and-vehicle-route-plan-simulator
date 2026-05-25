@@ -11,6 +11,18 @@ metadata:
 
 Uploads OpenStreetMap (OSM) map data and ORS configuration files to Snowflake stage for routing graph generation. Handles workspace vs CLI environment differences and validates successful uploads.
 
+## CRITICAL: COPY FILES Path Behavior
+
+> **Snowflake `COPY FILES` always preserves the full relative source path at the destination.**
+>
+> - File at workspace root (`file.yaml`) → `COPY FILES INTO @stage/prefix/` → `@stage/prefix/file.yaml` ✅
+> - File in subdirectory (`dir/sub/file.yaml`) → `COPY FILES INTO @stage/prefix/` → `@stage/prefix/dir/sub/file.yaml` ❌ (nested)
+>
+> **Solution for text files:** Write the file to workspace root first (using the write tool), then COPY FILES.
+> **Solution for binary files:** Use the `COPY_FILE_FLAT` Python stored procedure (defined in Step 2b.2 below).
+>
+> **NEVER** attempt stage-to-stage COPY FILES to flatten paths — it preserves nesting too.
+
 ## Prerequisites
 
 1. **ORS infrastructure deployed** (database, schemas, stages created via build-routing-solution Step 1-3)
@@ -130,90 +142,87 @@ Uploads OpenStreetMap (OSM) map data and ORS configuration files to Snowflake st
 
 **Output:** `ors-config.yml` uploaded to stage at flat path
 
-#### Step 2b.2: Upload OSM Map File (25MB Binary)
+#### Step 2b.2: Upload OSM Map File (25MB Binary) — Flatten via Python SP
 
-**CRITICAL:** The OSM file is 25MB and binary - cannot be read/written with workspace text tools. Must use SQL-based stage copy.
+**CRITICAL:** The OSM file is 25MB and binary — cannot be read/written with workspace text tools. The `COPY FILES` command **always preserves** the source directory structure, so files in subdirectories get nested paths at the destination. To get a flat path, use a Python stored procedure.
 
 **Actions:**
 
-1. **Create temporary stage** for intermediate copy:
+1. **Create the COPY_FILE_FLAT helper procedure** (idempotent — safe to re-run):
    ```sql
-   CREATE OR REPLACE TEMPORARY STAGE temp_map_stage;
+   CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.COPY_FILE_FLAT(
+       src_stage STRING, src_path STRING, dst_stage STRING, dst_filename STRING
+   )
+   RETURNS STRING
+   LANGUAGE PYTHON
+   RUNTIME_VERSION = '3.11'
+   PACKAGES = ('snowflake-snowpark-python')
+   HANDLER = 'run'
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+   AS $$
+   def run(session, src_stage, src_path, dst_stage, dst_filename):
+       import os, tempfile
+       with tempfile.TemporaryDirectory() as td:
+           session.file.get(f"@{src_stage}/{src_path}", td)
+           # get() strips directories, file lands as basename
+           basename = os.path.basename(src_path)
+           local_path = os.path.join(td, basename)
+           if not os.path.exists(local_path):
+               # fallback: find whatever file was downloaded
+               for f in os.listdir(td):
+                   local_path = os.path.join(td, f)
+                   break
+           # rename to desired flat filename
+           dst_local = os.path.join(td, dst_filename)
+           os.rename(local_path, dst_local)
+           session.file.put(dst_local, f"@{dst_stage}", auto_compress=False, overwrite=True)
+       return f"Copied to @{dst_stage}/{dst_filename}"
+   $$;
    ```
 
-2. **Copy OSM file from workspace to temp stage:**
+2. **Upload OSM file from workspace to a temp stage** (preserves nested path — that's fine):
    ```sql
-   COPY FILES INTO @temp_map_stage/
+   CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.TMP_UPLOAD ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+
+   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.TMP_UPLOAD
    FROM '<WORKSPACE_STAGE_URI>'
    FILES=('.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf');
    ```
-   
-   **Result:** File will be at nested path in temp stage:
-   ```
-   @temp_map_stage/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf
-   ```
 
-3. **List temp stage to confirm nested structure:**
+3. **Flatten the file** from temp stage to its final destination:
    ```sql
-   LIST @temp_map_stage;
+   CALL OPENROUTESERVICE_APP.CORE.COPY_FILE_FLAT(
+       'OPENROUTESERVICE_APP.CORE.TMP_UPLOAD',
+       '.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf',
+       'OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco',
+       'SanFrancisco.osm.pbf'
+   );
    ```
    
-   Verify the file exists at the nested path with size ~25,103,536 bytes.
+   **Result:** File at flat path ✅
+   ```
+   @ORS_SPCS_STAGE/SanFrancisco/SanFrancisco.osm.pbf
+   ```
 
-4. **Copy from temp stage to ORS stage using PATTERN:**
+4. **Drop temp stage:**
    ```sql
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
-   FROM @temp_map_stage
-   PATTERN='.*SanFrancisco.osm.pbf';
+   DROP STAGE IF EXISTS OPENROUTESERVICE_APP.CORE.TMP_UPLOAD;
    ```
-   
-   **Result:** File will still have nested path at destination:
-   ```
-   @ORS_SPCS_STAGE/SanFrancisco/.cortex/skills/.../SanFrancisco.osm.pbf
-   ```
-   
-   **This is expected behavior** - Snowflake COPY FILES always preserves source structure.
 
-5. **Verify the nested upload:**
+5. **Verify the flat upload:**
    ```sql
    LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/;
    ```
    
-   Confirm file exists at nested path with correct size (~25 MB).
+   Confirm: `ors_spcs_stage/SanFrancisco/SanFrancisco.osm.pbf` (~25 MB, flat path).
 
-**Output:** `SanFrancisco.osm.pbf` uploaded at nested path (this is correct for workspace)
+**Output:** `SanFrancisco.osm.pbf` uploaded at **flat path** — no config adjustment needed.
 
-#### Step 2b.3: Update ORS Configuration for Nested Path
-
-**CRITICAL:** Since the OSM file is at a nested path, we must update the `ors-config.yml` to point to it.
-
-**Actions:**
-
-1. **Read** the `ors-config.yml` file currently at workspace root
-
-2. **Update** the `source_file` path in the config to point to the nested location:
-   ```yaml
-   ors:
-     engine:
-       profile_default:
-         build:
-           source_file: /home/ors/files/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/SanFrancisco.osm.pbf
-   ```
-   
-   **Explanation:** The ORS service mounts `@ORS_SPCS_STAGE/SanFrancisco` to `/home/ors/files`, so:
-   - Stage path: `@stage/SanFrancisco/.cortex/.../SanFrancisco.osm.pbf`
-   - Container path: `/home/ors/files/.cortex/.../SanFrancisco.osm.pbf`
-
-3. **Write** the updated config back to workspace root
-
-4. **Re-upload** the updated config to stage (overwrite):
-   ```sql
-   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
-   FROM '<WORKSPACE_STAGE_URI>'
-   FILES=('ors-config.yml');
-   ```
-
-**Output:** `ors-config.yml` updated with correct nested path for OSM file
+**IMPORTANT:** Because the file is now at a flat path (`/home/ors/files/SanFrancisco.osm.pbf` inside the container), the `ors-config.yml` `source_file` value should be:
+```yaml
+source_file: /home/ors/files/SanFrancisco.osm.pbf
+```
+This is the default value — **no config path adjustment needed**.
 
 **Next:** Proceed to Step 3 (Verify Uploads)
 
