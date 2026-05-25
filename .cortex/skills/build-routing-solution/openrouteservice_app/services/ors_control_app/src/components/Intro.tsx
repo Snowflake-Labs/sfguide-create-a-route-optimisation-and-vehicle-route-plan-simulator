@@ -6,6 +6,7 @@ import { useFitMap } from '../shared/useFitMap';
 import { coordsFromH3Cells } from '../shared/mapFit';
 import RecenterButton from '../shared/RecenterButton';
 import { useRegion } from '../hooks/useRegion';
+import PageContainer from '../shared/PageContainer';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 const SF_VIEW = { longitude: -122.44, latitude: 37.76, zoom: 12, pitch: 0, bearing: 0 };
@@ -269,6 +270,7 @@ export default function Intro() {
   const cost = (v: number) => `$${Math.round(v / 1000)}`;
 
   return (
+    <PageContainer width="wide" padded={false}>
     <div className="panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
         <div>
@@ -347,5 +349,6 @@ export default function Intro() {
         <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
+    </PageContainer>
   );
 }

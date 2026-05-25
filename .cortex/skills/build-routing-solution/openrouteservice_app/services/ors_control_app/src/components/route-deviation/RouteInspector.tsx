@@ -10,6 +10,7 @@ import { useVehicleType } from '../../hooks/useVehicleType';
 import { useFitMap } from '../../shared/useFitMap';
 import RecenterButton from '../../shared/RecenterButton';
 import type { LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -107,6 +108,7 @@ export default function RouteInspector() {
   const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
 
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Route Inspector</h2>
       <p className="subtitle">GPS trace analysis with teleport and detour detection</p>
@@ -184,5 +186,6 @@ export default function RouteInspector() {
         </div>
       )}
     </div>
+    </PageContainer>
   );
 }

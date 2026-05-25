@@ -6,6 +6,7 @@ import { useRegion } from '../hooks/useRegion';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
+import PageContainer from '../shared/PageContainer';
 import {
   RO_DB, RO_SCHEMA,
   sfQuery, cartoBasemap, SEVERITY_COLOR,
@@ -414,6 +415,7 @@ export default function AssetVelocity() {
   }
 
   return (
+    <PageContainer width="wide" padded={false}>
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Asset Velocity</h2>
       <p className="subtitle">Non-Moving Trailer Detection &amp; Action Engine - now powered by ORS road-network matrix, isochrone reachability gate, and full VROOM constraints (skills, time windows, breaks, costs).</p>
@@ -593,6 +595,7 @@ export default function AssetVelocity() {
         </div>
       )}
     </div>
+    </PageContainer>
   );
 }
 

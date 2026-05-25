@@ -6,6 +6,7 @@ import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import PageContainer from '../../shared/PageContainer';
 
 const PIE_COLORS = ['#0DB048', '#29B5E8', '#E5A100', '#E5484D'];
 
@@ -37,6 +38,7 @@ export default function DeviationDashboard() {
   const pieData = useMemo(() => buckets.map(r => ({ name: r.BUCKET, value: Number(r.CNT) })), [buckets]);
 
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Deviation Dashboard</h2>
       <p className="subtitle">Route deviation analytics overview</p>
@@ -77,5 +79,6 @@ export default function DeviationDashboard() {
       <h3>Top Deviators</h3>
       <DataTable data={topDeviators} columns={['DRIVER_ID', 'ROUTES', 'AVG_DEV_PCT', 'AVG_TIME_DEV']} />
     </div>
+    </PageContainer>
   );
 }
