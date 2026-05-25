@@ -12,6 +12,7 @@ import { coordsFromGeoJSON, fitBoundsToData, type LngLat } from '../shared/mapFi
 import AssignmentList from './backload-matching/AssignmentList';
 import DecisionsAudit from './backload-matching/DecisionsAudit';
 import StopsPanel from './backload-matching/StopsPanel';
+import InfoTip from './backload-matching/InfoTip';
 import PageContainer from '../shared/PageContainer';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
@@ -952,27 +953,27 @@ export default function BackloadMatching() {
       <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>SOLVER (VROOM-native)</div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Max stops per trailer: {maxStops} <span title="vehicle.max_tasks">ⓘ</span></label>
+          <label style={labelStyle}>Max stops per trailer: {maxStops}<InfoTip text="How many shipments one trailer may collect on a single tour. 1 = pure backload (one extra pickup on the way home). Higher = consolidation tours.\n\nVROOM field: vehicle.max_tasks" /></label>
           <input type="range" min={1} max={6} value={maxStops} onChange={e => setMaxStops(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Detour budget: +{detourSlackHrs} h <span title="vehicle.max_travel_time">ⓘ</span></label>
+          <label style={labelStyle}>Detour budget: +{detourSlackHrs} h<InfoTip text="Extra hours allowed on top of the direct trailer→end empty trip. Hard cap on total tour driving time.\n\nVROOM field: vehicle.max_travel_time" /></label>
           <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Allowed deviation: +{deviationPct}% <span title="vehicle.max_distance from a baseline of max(2×ideal empty trip, 200 km)">ⓘ</span></label>
+          <label style={labelStyle}>Allowed deviation: +{deviationPct}%<InfoTip text="Hard distance cap on the tour, expressed as a % above a generous baseline (max of 2× the empty trip or 200 km). Raise to allow more far-flung pickups.\n\nVROOM field: vehicle.max_distance" /></label>
           <input type="range" min={0} max={500} step={10} value={deviationPct} onChange={e => setDeviationPct(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Internal-first: {internalFirstWeight} <span title="job.priority gap (internal vs external)">ⓘ</span></label>
+          <label style={labelStyle}>Internal-first: {internalFirstWeight}<InfoTip text="Bias toward internal volumes vs external offers. 100 = always pick internal first when in conflict, 50 = treat them equally, 0 = always pick external first.\n\nVROOM field: job.priority" /></label>
           <input type="range" min={0} max={100} value={internalFirstWeight} onChange={e => setInternalFirstWeight(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Window slack: ±{windowSlackHrs} h <span title="job.time_windows widening">ⓘ</span></label>
+          <label style={labelStyle}>Window slack: ±{windowSlackHrs} h<InfoTip text="Widens every pickup/delivery time window by ±N hours so the solver has more flexibility to fit the shipment in.\n\nVROOM field: job.time_windows" /></label>
           <input type="range" min={0} max={12} value={windowSlackHrs} onChange={e => setWindowSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 220 }}>
-          <label style={labelStyle}>Trailer end <span title="vehicle.end (omit for open-ended)">ⓘ</span></label>
+          <label style={labelStyle}>Trailer end<InfoTip text="Where the trailer must finish: Home depot, a Shared destination you pick, or Open-ended (no return — useful for asset rebalancing).\n\nVROOM field: vehicle.end (omitted for open-ended)" /></label>
           <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'home'} onChange={() => setEndMode('home')} />Home</label>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="radio" name="endMode" checked={endMode === 'shared'} onChange={() => setEndMode('shared')} />Shared</label>
@@ -995,23 +996,23 @@ export default function BackloadMatching() {
       <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>ECONOMICS (€)</div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
         <div style={{ minWidth: 130 }}>
-          <label style={labelStyle}>Cost €/h <span title="vehicle.costs.per_hour">ⓘ</span></label>
+          <label style={labelStyle}>Cost €/h<InfoTip text="Driver hour cost. Folded into VROOM's per-km cost via the assumed 60 km/h average so the solver minimises a single time+distance objective." /></label>
           <input type="number" min={0} step={1} value={costPerHourEur} onChange={e => setCostPerHourEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 130 }}>
-          <label style={labelStyle}>Cost €/km <span title="folded into per_hour via 60 km/h">ⓘ</span></label>
+          <label style={labelStyle}>Cost €/km<InfoTip text="Distance cost (fuel, wear). Combined with €/h to form vehicle.costs.per_km that VROOM uses to score every candidate route." /></label>
           <input type="number" min={0} step={0.05} value={costPerKmEur} onChange={e => setCostPerKmEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 130 }}>
-          <label style={labelStyle}>Dispatch (€) <span title="vehicle.costs.fixed">ⓘ</span></label>
+          <label style={labelStyle}>Dispatch (€)<InfoTip text="Fixed cost paid every time a trailer is dispatched. High values discourage adding trailers for marginal gains.\n\nVROOM field: vehicle.costs.fixed" /></label>
           <input type="number" min={0} step={5} value={fixedDispatchEur} onChange={e => setFixedDispatchEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 130 }}>
-          <label style={labelStyle}>€/delivery <span title="post-solve only">ⓘ</span></label>
+          <label style={labelStyle}>€/delivery<InfoTip text="Per-stop overhead added in the post-solve net-benefit calculation only (e.g. paperwork, unloading admin). Does not influence the solver itself." /></label>
           <input type="number" min={0} step={1} value={costPerDeliveryEur} onChange={e => setCostPerDeliveryEur(Number(e.target.value) || 0)} style={{ width: '100%' }} />
         </div>
         <div style={{ minWidth: 150 }}>
-          <label style={labelStyle}>Internal €/loaded-km <span title="revenue model for internal volumes">ⓘ</span></label>
+          <label style={labelStyle}>Internal €/loaded-km<InfoTip text="Synthetic revenue rate for internal volumes (external offers carry their real PRICE_EUR). Matches the EU freight-exchange convention of pricing per loaded km." /></label>
           <input type="number" min={0} step={0.05} value={internalRatePerKm} onChange={e => setInternalRatePerKm(Number(e.target.value) || 0)} style={{ width: '100%' }} />
         </div>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -1039,7 +1040,7 @@ export default function BackloadMatching() {
             <div style={{ minWidth: 220 }}>
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={enforceDriverBreak} onChange={e => setEnforceDriverBreak(e.target.checked)} />
-                <b>Driver break</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(vehicle.breaks)</span>
+                <b>Driver break</b><InfoTip text="Inserts a mandatory rest stop into the tour. Default mimics EU rules: 45 min after 4.5 h of driving. The solver picks the best moment within the window.\n\nVROOM field: vehicle.breaks" />
               </label>
               {enforceDriverBreak && (
                 <div style={{ marginTop: 4, fontSize: 11 }}>
@@ -1054,7 +1055,7 @@ export default function BackloadMatching() {
             <div style={{ minWidth: 200 }}>
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" checked={enforceShift} onChange={e => setEnforceShift(e.target.checked)} />
-                <b>Shift / hours-of-service</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(vehicle.time_window)</span>
+                <b>Shift / hours-of-service</b><InfoTip text="Forces the whole tour to fit inside a single driver shift starting at the trailer's earliest ETA.\n\nVROOM field: vehicle.time_window" />
               </label>
               {enforceShift && (
                 <div style={{ marginTop: 4, fontSize: 11 }}>
@@ -1066,23 +1067,23 @@ export default function BackloadMatching() {
             {/* Card C */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <input type="checkbox" checked={useMultiDimCapacity} onChange={e => setUseMultiDimCapacity(e.target.checked)} />
-              <b>Multi-dim capacity</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(kg + pallets + m³)</span>
+              <b>Multi-dim capacity</b><InfoTip text="Adds pallets and m³ alongside kg. The solver enforces all three simultaneously — a shipment that fits by weight may still be rejected on volume.\n\nVROOM fields: vehicle.capacity[] / shipment.amount[]" />
             </label>
             {/* Card B */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <input type="checkbox" checked={useMultiWindow} onChange={e => setUseMultiWindow(e.target.checked)} />
-              <b>Multi-window pickups</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(2nd window +8 h)</span>
+              <b>Multi-window pickups</b><InfoTip text="Adds a synthetic second pickup window at +8 h. Shows that VROOM can pick the better of multiple windows per trailer.\n\nVROOM field: pickup.time_windows[[a,b],[c,d]]" />
             </label>
             {/* Card J */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <input type="checkbox" checked={showWaitTimes} onChange={e => setShowWaitTimes(e.target.checked)} />
-              <b>Show wait times</b>
+              <b>Show wait times</b><InfoTip text="Display a 'wait N min' chip per stop when the trailer arrives early and idles before the time window opens. Computed from VROOM step.waiting_time." />
             </label>
             {/* Card F */}
             {avoidZones.length > 0 && (
               <div style={{ minWidth: 240 }}>
                 <label style={{ display: 'block', marginBottom: 4 }}>
-                  <b>Avoid zones</b> <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>(ORS avoid_polygons)</span>
+                  <b>Avoid zones</b><InfoTip text="Polygons forwarded to ORS as routing avoid_polygons. Currently rendered on the map only — routing-gateway propagation to ORS matrix pre-computation is a TODO." />
                 </label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 100, overflowY: 'auto' }}>
                   {avoidZones.map(z => (
