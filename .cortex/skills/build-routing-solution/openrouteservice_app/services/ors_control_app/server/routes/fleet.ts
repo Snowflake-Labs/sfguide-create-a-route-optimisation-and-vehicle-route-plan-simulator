@@ -257,6 +257,32 @@ export function createFleetRouter(): Router {
     try {
       const region = String(req.body?.region || '').replace(/'/g, "''");
       if (!region) return res.status(400).json({ error: 'region required' });
+      // Guard: the seed endpoint only generates FACT_FREIGHT_OFFERS, and the
+      // INSERT joins V_DIM_POIS_CURRENT to pick pickup / dropoff locations.
+      // If the active dataset for this region has no fleet OR no POIs, the
+      // INSERT silently produces 0 rows and the user keeps seeing the empty
+      // hint. Detect that up front and return an actionable error pointing
+      // the user to Data Studio (the only path that creates fleet + POIs).
+      const coverage = await runSql(
+        `SELECT
+           (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT WHERE REGION = '${region}') AS FLEET,
+           (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT  WHERE REGION = '${region}') AS POIS`,
+        'SYNTHETIC_DATASETS', 'UNIFIED',
+      );
+      const fleetCount = Number((coverage[0] as any)?.FLEET ?? 0);
+      const poisCount  = Number((coverage[0] as any)?.POIS  ?? 0);
+      if (fleetCount === 0 || poisCount === 0) {
+        return res.status(409).json({
+          status: 'error',
+          error:
+            `The active dataset for "${region}" is missing fleet (${fleetCount}) or POIs (${poisCount}). ` +
+            `The seed button only generates freight offers and cannot create fleet/POIs. ` +
+            `Run a Data Studio job for this region (Solution Accelerators -> Data Studio) ` +
+            `to generate a complete dataset, then return here.`,
+          fleet: fleetCount,
+          pois: poisCount,
+        });
+      }
       const vtRows = await runSql(
         `SELECT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
          WHERE REGION = '${region}' GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1`,
