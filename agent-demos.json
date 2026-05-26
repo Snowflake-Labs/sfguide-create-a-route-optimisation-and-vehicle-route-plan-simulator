@@ -17,6 +17,21 @@
       ]
     },
     {
+      "id": "analytics",
+      "label": "Fleet Analytics",
+      "icon": "📊",
+      "description": "Fleet performance analytics — trips, speed, compliance, dwell time, battery, vehicle comparison",
+      "prompts": [
+        { "label": "1. Fleet overview", "icon": "📈", "prompt": "Give me an overview of the fleet: total trips, average distance, average duration, and number of active vehicles" },
+        { "label": "2. Top performers", "icon": "🏆", "prompt": "Which vehicles completed the most trips and what was their average distance and duration?" },
+        { "label": "3. Speed & compliance", "icon": "🚨", "prompt": "What is the speeding rate by vehicle? Which couriers have the most speed violations?" },
+        { "label": "4. Dwell & idle time", "icon": "⏸️", "prompt": "What percentage of time do vehicles spend moving vs dwelling vs idle?" },
+        { "label": "5. Battery health", "icon": "🔋", "prompt": "Which vehicles have the lowest battery levels? Show average and minimum battery by courier." },
+        { "label": "6. Busiest locations", "icon": "📍", "prompt": "Which pickup locations have the most orders? What are the top 10 busiest restaurants?" },
+        { "label": "7. Hourly patterns", "icon": "🕐", "prompt": "What is the trip distribution by hour of day? When is peak demand?" }
+      ]
+    },
+    {
       "id": "retail",
       "label": "Retail & Catchment",
       "icon": "🏪",

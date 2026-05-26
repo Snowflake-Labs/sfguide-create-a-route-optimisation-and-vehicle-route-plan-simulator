@@ -296,7 +296,8 @@ instructions:
     - Full pharmaceutical supply chain plan (all SF pharmacies): Use tool_supply_chain
     - Pharma fleet delivery demo (30 pre-geocoded stops): Use tool_pharma_optimization
     - Population health / catchment analysis around a pharmacy: Use tool_pharma_catchment
-    - ALWAYS use a tool for routing questions. NEVER answer from general knowledge.
+    - Analytical questions about trip counts, vehicle performance, delivery stats, fleet data: Use FLEET_ANALYTICS
+    - ALWAYS use a tool. NEVER answer from general knowledge.
 tools:
   - tool_spec:
       type: generic
@@ -386,6 +387,10 @@ tools:
             type: string
             description: "Transport mode. Default: driving-car"
         required: [pharmacy_description]
+  - tool_spec:
+      type: cortex_analyst_text_to_sql
+      name: FLEET_ANALYTICS
+      description: "Answer analytical questions about fleet data: trip counts, vehicle performance, delivery times, busiest POIs, hourly distributions, detour rates, and fleet utilization. Use for any data/analytics question."
 tool_resources:
   tool_directions:
     type: procedure
@@ -420,6 +425,12 @@ tool_resources:
   tool_pharma_catchment:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
+  FLEET_ANALYTICS:
+    type: semantic_view
+    semantic_view: FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS

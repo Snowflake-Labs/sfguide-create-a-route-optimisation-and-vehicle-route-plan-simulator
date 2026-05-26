@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const CURSOR_BLINK_CSS = `
 @keyframes agent-cursor-blink {
@@ -289,6 +290,99 @@ const FALLBACK_SCENARIOS: DemoScenario[] = [
 
 const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
 
+const CHART_COLORS = ['#29B5E8', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#FF5722', '#607D8B'];
+
+interface ChartData { type: 'bar' | 'line' | 'pie' | 'table'; data: any[]; labelKey: string; valueKeys: string[]; title: string; }
+
+function detectChartFromMarkdown(content: string): ChartData | null {
+  const tableMatch = content.match(/\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)+)/);
+  if (!tableMatch) return null;
+  const headers = tableMatch[1].split('|').map(h => h.trim()).filter(Boolean);
+  const rows = tableMatch[2].trim().split('\n').map(row =>
+    row.split('|').map(c => c.trim()).filter(Boolean)
+  );
+  if (headers.length < 2 || rows.length < 2) return null;
+
+  const data = rows.map(row => {
+    const obj: any = {};
+    headers.forEach((h, i) => {
+      const val = row[i] || '';
+      const num = parseFloat(val.replace(/[,%]/g, ''));
+      obj[h] = isNaN(num) ? val : num;
+    });
+    return obj;
+  });
+
+  const numericCols = headers.filter(h => data.every(d => typeof d[h] === 'number'));
+  const textCols = headers.filter(h => data.some(d => typeof d[h] === 'string'));
+
+  if (numericCols.length === 0 || textCols.length === 0) return null;
+
+  const labelKey = textCols[0];
+  const valueKeys = numericCols.slice(0, 3);
+
+  const isTimeSeries = labelKey.toLowerCase().includes('date') || labelKey.toLowerCase().includes('day') || labelKey.toLowerCase().includes('hour');
+  const isPieCandidate = data.length <= 6 && valueKeys.length === 1;
+
+  let type: 'bar' | 'line' | 'pie' = 'bar';
+  if (isTimeSeries) type = 'line';
+  else if (isPieCandidate) type = 'pie';
+
+  return { type, data, labelKey, valueKeys, title: '' };
+}
+
+function AgentChart({ chart, expanded, onToggle }: { chart: ChartData; expanded: boolean; onToggle: () => void }) {
+  const height = expanded ? 360 : 200;
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>📊 Analytics Visualization</span>
+        <button onClick={onToggle} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          {expanded ? '↙ Collapse' : '↗ Expand'}
+        </button>
+      </div>
+      <div style={{ padding: 12, height }}>
+        {chart.type === 'bar' && (
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey={chart.labelKey} tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
+              {chart.valueKeys.map((key, i) => (
+                <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+        {chart.type === 'line' && (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey={chart.labelKey} tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
+              {chart.valueKeys.map((key, i) => (
+                <Line key={key} type="monotone" dataKey={key} stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+        {chart.type === 'pie' && (
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={chart.data} dataKey={chart.valueKeys[0]} nameKey={chart.labelKey} cx="50%" cy="50%" outerRadius={expanded ? 130 : 70} label={(e: any) => e[chart.labelKey]?.toString().slice(0, 15)} labelLine={false}>
+                {chart.data.map((_: any, i: number) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              </Pie>
+              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AgentPlayground() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -298,6 +392,8 @@ export default function AgentPlayground() {
   const [maxTokenLimit, setMaxTokenLimit] = useState(8000);
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
+  const [chartData, setChartData] = useState<ChartData | null>(null);
+  const [chartExpanded, setChartExpanded] = useState(false);
 
   useEffect(() => {
     fetch('/api/agent/config').then(r => r.json()).then(data => {
@@ -341,11 +437,21 @@ export default function AgentPlayground() {
     setGeoData(EMPTY_GEO);
     setTokenUsage(null);
     setWorkflowSteps([]);
+    setChartData(null);
+    setChartExpanded(false);
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  useEffect(() => {
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content && !m.streaming);
+    if (lastAssistant?.content) {
+      const chart = detectChartFromMarkdown(lastAssistant.content);
+      setChartData(chart);
+    }
+  }, [messages]);
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || streaming) return;
@@ -767,9 +873,14 @@ export default function AgentPlayground() {
         </div>
 
         <div style={{ flex: 1, minWidth: 300 }}>
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-            <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-          </div>
+          {chartData && (
+            <AgentChart chart={chartData} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
+          )}
+          {(!chartData || !chartExpanded) && (
+            <div style={{ height: chartData ? 280 : 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+              <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+            </div>
+          )}
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {poiLegend.map(entry => (
