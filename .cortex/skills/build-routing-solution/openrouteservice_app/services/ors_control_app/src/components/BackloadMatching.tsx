@@ -22,15 +22,38 @@ import {
   type EmptyLegBaseline,
 } from './backload-matching/helpers';
 
-// Hard caps on solve payload size. Picked so that the precomputed matrix
-// stays well under ORS's `max_locations` limit (default 3500 cells = 59x59)
-// AND so the VROOM search space stays bounded. Raising these without first
-// landing OPTIMIZATION_TABULAR + a persistent matrix cache (Card I) is
-// known to cause multi-minute hangs at "Calling OPTIMIZATION..." — see
-// .snowflake/cortex/plans/backload-solve-hang-fix.plan.md.
-const BM_MAX_VEHICLES = 15;
-const BM_MAX_INTERNAL = 30;
-const BM_MAX_EXTERNAL = 15;
+// Default caps on solve payload size. The matrix budget below is the hard
+// guardrail; the three default counts are now editable via UI sliders so
+// users can scale up coverage on regions with many idle trailers. The
+// clampPayload() helper enforces the matrix budget on Solve regardless of
+// what the sliders say, so users cannot accidentally trigger the
+// matrix_precompute_failed -> 45 s gateway timeout failure mode
+// (see .snowflake/cortex/plans/backload-solve-hang-fix.plan.md).
+const BM_DEFAULT_MAX_VEHICLES = 15;
+const BM_DEFAULT_MAX_INTERNAL = 30;
+const BM_DEFAULT_MAX_EXTERNAL = 15;
+// Slider ranges. Upper bounds are intentionally permissive: clampPayload()
+// will scale them down at Solve time if the matrix budget would be exceeded.
+const BM_VEHICLES_MIN = 1, BM_VEHICLES_MAX = 60;
+const BM_INTERNAL_MIN = 0, BM_INTERNAL_MAX = 80;
+const BM_EXTERNAL_MIN = 0, BM_EXTERNAL_MAX = 60;
+
+// Proportionally clamp (v, i, e) so that 2v + 2i + 2e <= matrixBudget.
+// Returns the clamped triple plus a `clamped` flag so the solver log can
+// surface when the guardrail kicked in.
+function clampPayload(
+  v: number, i: number, e: number, matrixBudget: number,
+): { v: number; i: number; e: number; clamped: boolean } {
+  const used = 2 * v + 2 * i + 2 * e;
+  if (used <= matrixBudget) return { v, i, e, clamped: false };
+  const scale = matrixBudget / used;
+  return {
+    v: Math.max(1, Math.floor(v * scale)),
+    i: Math.max(0, Math.floor(i * scale)),
+    e: Math.max(0, Math.floor(e * scale)),
+    clamped: true,
+  };
+}
 // Hard ceiling on the unique-location count we'll try to precompute a matrix
 // for. ORS default is max 3500 cells = sqrt(3500) ≈ 59 locations.
 // Cap for the UI-side MATRIX pre-compute path. Raised from 50 → 200 because
@@ -65,6 +88,11 @@ export default function BackloadMatching() {
   const [vehicleType, setVehicleType] = useState<string>('hgv');
   const [solveError, setSolveError] = useState<string | null>(null);
   const [avoidZones, setAvoidZones] = useState<AvoidZone[]>([]);
+
+  // ---------------- Payload-size sliders (clamped to matrix budget on Solve) ----------------
+  const [maxVehicles, setMaxVehicles] = useState(BM_DEFAULT_MAX_VEHICLES);
+  const [maxInternal, setMaxInternal] = useState(BM_DEFAULT_MAX_INTERNAL);
+  const [maxExternal, setMaxExternal] = useState(BM_DEFAULT_MAX_EXTERNAL);
 
   // ---------------- Solver levers (every one maps 1:1 to VROOM/ORS) ----------------
   const [maxStops, setMaxStops]                   = useState(2);    // vehicle.max_tasks
@@ -201,8 +229,27 @@ export default function BackloadMatching() {
       return true;
     });
     setTrailers(tDeduped);
-    setInternal(iRows as Volume[]);
-    setExternal(eRows as Offer[]);
+    // Same defence-in-depth on internal volumes and external offers: the
+    // upstream views can regress and emit the same physical shipment under
+    // duplicate OFFER_IDs (external) or under different INT-NNNNN IDs but
+    // with identical pickup/dropoff coords (internal). Sending duplicates
+    // to VROOM produces "2 pickups + 2 dropoffs" for one shipment.
+    const seenInt = new Set<string>();
+    const iDeduped = (iRows as Volume[]).filter(v => {
+      const k = `${Number(v.PICKUP_LON).toFixed(6)},${Number(v.PICKUP_LAT).toFixed(6)}|${Number(v.DROPOFF_LON).toFixed(6)},${Number(v.DROPOFF_LAT).toFixed(6)}|${v.WEIGHT_KG}`;
+      if (seenInt.has(k)) return false;
+      seenInt.add(k);
+      return true;
+    });
+    setInternal(iDeduped);
+    const seenExt = new Set<string>();
+    const eDeduped = (eRows as Offer[]).filter(o => {
+      const k = String(o.OFFER_ID);
+      if (seenExt.has(k)) return false;
+      seenExt.add(k);
+      return true;
+    });
+    setExternal(eDeduped);
     const cfg: Record<string, any> = (cRows[0] as any) || {};
     if (cfg.VEHICLE_TYPE != null) setVehicleType(String(cfg.VEHICLE_TYPE));
     const provProfile = (profRows[0] as any)?.PROFILES;
@@ -363,15 +410,33 @@ export default function BackloadMatching() {
       return best;
     };
 
+    // Apply the matrix-budget guardrail BEFORE slicing. clampPayload()
+    // proportionally scales (maxVehicles, maxInternal, maxExternal) down
+    // until 2v + 2i + 2e <= BM_MAX_MATRIX_LOCATIONS. If the user's sliders
+    // already fit, the triple is returned unchanged and clamped=false.
+    const clamped = clampPayload(
+      maxVehicles, maxInternal, maxExternal, BM_MAX_MATRIX_LOCATIONS,
+    );
+    const effMaxVehicles = clamped.v;
+    const effMaxInternal = clamped.i;
+    const effMaxExternal = clamped.e;
+    if (clamped.clamped) {
+      console.warn(
+        `[BM] payload clamped to fit ${BM_MAX_MATRIX_LOCATIONS}-location matrix budget: ` +
+        `${maxVehicles}/${maxInternal}/${maxExternal} -> ` +
+        `${effMaxVehicles}/${effMaxInternal}/${effMaxExternal}`,
+      );
+    }
+
     const internalSubset = [...internal]
       .map(v => ({ v, score: nearestTrailerKm(Number(v.PICKUP_LON), Number(v.PICKUP_LAT)) }))
       .sort((a, b) => a.score - b.score || String(a.v.ID).localeCompare(String(b.v.ID)))
-      .slice(0, BM_MAX_INTERNAL)
+      .slice(0, effMaxInternal)
       .map(x => x.v);
     const externalSubset = [...external]
       .map(o => ({ o, score: nearestTrailerKm(Number(o.PICKUP_LON), Number(o.PICKUP_LAT)) }))
       .sort((a, b) => a.score - b.score || String(a.o.OFFER_ID).localeCompare(String(b.o.OFFER_ID)))
-      .slice(0, BM_MAX_EXTERNAL)
+      .slice(0, effMaxExternal)
       .map(x => x.o);
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
@@ -392,7 +457,7 @@ export default function BackloadMatching() {
     try {
       baselines = await computeEmptyLegBaselines(
         profile,
-        trailers.slice(0, BM_MAX_VEHICLES),
+        trailers.slice(0, effMaxVehicles),
         trailerEnd,
         regionName,
       );
@@ -415,7 +480,7 @@ export default function BackloadMatching() {
       source:     'fixed-open',
     };
 
-    const vrpVehicles = trailers.slice(0, BM_MAX_VEHICLES).map((t, i) => {
+    const vrpVehicles = trailers.slice(0, effMaxVehicles).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
       const endPt = trailerEnd(t);
@@ -878,6 +943,8 @@ export default function BackloadMatching() {
     setSolverLog(
       `Sent ${vrpVehicles.length} vehicles, ${vrpShipments.length} shipments ` +
       `(maxStops=${maxStops}, dev=${deviationPct}%, slack=+${detourSlackHrs}h, ` +
+      `caps=${effMaxVehicles}v/${effMaxInternal}i/${effMaxExternal}e` +
+      `${clamped.clamped ? ` [clamped from ${maxVehicles}/${maxInternal}/${maxExternal}]` : ''}, ` +
       `intFirst=${internalFirstWeight}, breaks=${enforceDriverBreak ? 'on' : 'off'}, ` +
       `multiDim=${useMultiDimCapacity ? 'on' : 'off'}, end=${endMode}, ` +
       `avoidZones=${selectedAvoidZoneIds.length}; skipped ${internalSkipped} internal, ` +
@@ -957,6 +1024,7 @@ export default function BackloadMatching() {
     setSolving(false);
   }, [
     trailers, internal, external, regionName, vehicleType, orsProfile,
+    maxVehicles, maxInternal, maxExternal,
     maxStops, detourSlackHrs, deviationPct, internalFirstWeight, windowSlackHrs,
     endMode, sharedDestLon, sharedDestLat,
     costPerHourEur, costPerKmEur, fixedDispatchEur, costPerDeliveryEur, internalRatePerKm,
@@ -1276,6 +1344,47 @@ export default function BackloadMatching() {
         <MetricCard label="% internal coverage" value={`${internalPct}%`} />
         <MetricCard label="Net benefit (€)" value={`€${totalNetBenefit.toLocaleString()}`} />
       </div>
+
+      {/* PAYLOAD SIZE ROW */}
+      {(() => {
+        const used = 2 * maxVehicles + 2 * maxInternal + 2 * maxExternal;
+        const overBudget = used > BM_MAX_MATRIX_LOCATIONS;
+        const nearBudget = !overBudget && used >= Math.round(BM_MAX_MATRIX_LOCATIONS * 0.8);
+        const counterColor = overBudget ? '#dc2626' : nearBudget ? '#d97706' : 'var(--text-secondary)';
+        const clampedPreview = overBudget
+          ? clampPayload(maxVehicles, maxInternal, maxExternal, BM_MAX_MATRIX_LOCATIONS)
+          : null;
+        return (
+          <>
+            <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>PAYLOAD SIZE (matrix budget)</div>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6 }}>
+              <div style={sliderBlock}>
+                <label style={labelStyle}>Max trailers: {maxVehicles}<InfoTip text={"How many idle trailers (closest to shipments) get sent to VROOM. Trailers beyond this cap are skipped \u2014 raise this to lift the assignment ratio.\n\nDefault 15. Auto-clamped on Solve so the precomputed ORS matrix stays under " + BM_MAX_MATRIX_LOCATIONS + " unique locations (gateway 45 s timeout protection)."} /></label>
+                <input type="range" min={BM_VEHICLES_MIN} max={BM_VEHICLES_MAX} value={maxVehicles} onChange={e => setMaxVehicles(Number(e.target.value))} style={{ width: '100%' }} />
+              </div>
+              <div style={sliderBlock}>
+                <label style={labelStyle}>Max internal volumes: {maxInternal}<InfoTip text="How many internal (own-fleet) shipments enter the solver, sorted by proximity to the nearest idle trailer." /></label>
+                <input type="range" min={BM_INTERNAL_MIN} max={BM_INTERNAL_MAX} value={maxInternal} onChange={e => setMaxInternal(Number(e.target.value))} style={{ width: '100%' }} />
+              </div>
+              <div style={sliderBlock}>
+                <label style={labelStyle}>Max external offers: {maxExternal}<InfoTip text="How many external freight-exchange offers enter the solver, sorted by proximity to the nearest idle trailer." /></label>
+                <input type="range" min={BM_EXTERNAL_MIN} max={BM_EXTERNAL_MAX} value={maxExternal} onChange={e => setMaxExternal(Number(e.target.value))} style={{ width: '100%' }} />
+              </div>
+              <div style={{ minWidth: 220, fontSize: 12, color: counterColor }}>
+                <div style={{ fontWeight: 600 }}>Locations used: {used} / {BM_MAX_MATRIX_LOCATIONS}</div>
+                {overBudget && clampedPreview && (
+                  <div style={{ fontSize: 11 }}>
+                    Will clamp on Solve to {clampedPreview.v}/{clampedPreview.i}/{clampedPreview.e}
+                  </div>
+                )}
+                {!overBudget && nearBudget && (
+                  <div style={{ fontSize: 11 }}>Approaching matrix budget</div>
+                )}
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* SOLVER ROW */}
       <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: 0.5 }}>SOLVER (VROOM-native)</div>
