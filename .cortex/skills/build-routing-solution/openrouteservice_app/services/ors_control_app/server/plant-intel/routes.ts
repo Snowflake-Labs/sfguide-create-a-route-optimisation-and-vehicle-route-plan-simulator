@@ -7,17 +7,33 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
 
   router.get('/plants', async (_req, res) => {
     try {
-      const rows = await runSql(
-        `SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, CITY, COUNTRY, REGION,
-                SPECIALISATION, CAPACITY_BATCHES_MONTH, LATITUDE, LONGITUDE,
-                MAX_SEVERITY, BATCH_SEVERITY, TEMP_SEVERITY, STOCK_SEVERITY, SHIPMENT_SEVERITY,
-                CRITICAL_BATCHES, TEMP_EXCURSIONS, CRITICAL_STOCK_ITEMS,
-                DELAYED_SHIPMENTS, BATCHES_IN_PROGRESS
-         FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
-         ORDER BY PLANT_ID`,
-        'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-      );
-      res.json(rows);
+      let rows: any[] = [];
+      try {
+        rows = await runSql(
+          `SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, CITY, COUNTRY, REGION,
+                  SPECIALISATION, CAPACITY_BATCHES_MONTH, LATITUDE, LONGITUDE,
+                  MAX_SEVERITY, BATCH_SEVERITY, TEMP_SEVERITY, STOCK_SEVERITY, SHIPMENT_SEVERITY,
+                  CRITICAL_BATCHES, TEMP_EXCURSIONS, CRITICAL_STOCK_ITEMS,
+                  DELAYED_SHIPMENTS, BATCHES_IN_PROGRESS
+           FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
+           ORDER BY PLANT_ID`,
+          'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
+        );
+      } catch {
+        // Fallback: alert view not yet created — return plants with zero severity
+        rows = await runSql(
+          `SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, CITY, COUNTRY, REGION,
+                  SPECIALISATION, CAPACITY_BATCHES_MONTH, LATITUDE, LONGITUDE,
+                  0 AS MAX_SEVERITY, 0 AS BATCH_SEVERITY, 0 AS TEMP_SEVERITY,
+                  0 AS STOCK_SEVERITY, 0 AS SHIPMENT_SEVERITY,
+                  0 AS CRITICAL_BATCHES, 0 AS TEMP_EXCURSIONS,
+                  0 AS CRITICAL_STOCK_ITEMS, 0 AS DELAYED_SHIPMENTS, 0 AS BATCHES_IN_PROGRESS
+           FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS
+           ORDER BY PLANT_ID`,
+          'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
+        );
+      }
+      res.json(Array.isArray(rows) ? rows : []);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -69,7 +69,7 @@ export default function PlantIntelligence() {
   useEffect(() => {
     fetch('/api/plant-intel/plants')
       .then(r => r.json())
-      .then((rows: PlantStatus[]) => setPlants(rows))
+      .then((data: any) => setPlants(Array.isArray(data) ? data : []))
       .catch(console.error);
   }, []);
 
