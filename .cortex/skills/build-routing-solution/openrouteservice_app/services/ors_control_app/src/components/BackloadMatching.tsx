@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, GeoJsonLayer, PathLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, GeoJsonLayer, PathLayer, TextLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { PathStyleExtension } from '@deck.gl/extensions';
@@ -550,9 +550,15 @@ export default function BackloadMatching() {
     let matrixNote = '';
     try {
       const uniq = new Map<string, [number, number]>();
+      // Single source of truth for location keys. addLoc and indexFor MUST
+      // agree, otherwise some vehicles/shipments will silently fail to get a
+      // *_index — and VROOM rejects the payload with
+      // "Missing start_index or end_index" when matrices are provided.
+      const keyFor = (lon: number, lat: number) =>
+        `${Number(lon).toFixed(6)},${Number(lat).toFixed(6)}`;
       const addLoc = (lon: number, lat: number) => {
         if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
-        const key = `${lon.toFixed(6)},${lat.toFixed(6)}`;
+        const key = keyFor(lon, lat);
         if (!uniq.has(key)) uniq.set(key, [lon, lat]);
       };
       for (const v of vrpVehicles) {
@@ -569,29 +575,34 @@ export default function BackloadMatching() {
       } else if (locs.length >= 2) {
         setSolverLog(`Pre-computing ${locs.length}x${locs.length} matrix...`);
         precomputedMatrix = await buildVroomMatrix(profile, locs, regionName || null, { signal: ac.signal });
-        // Re-key shipment / vehicle locations into matrix indices.
-        const indexFor = (lon: number, lat: number) =>
-          locs.findIndex(([lo, la]) => Math.abs(lo - lon) < 1e-9 && Math.abs(la - lat) < 1e-9);
+        // O(1) index lookup keyed identically to addLoc.
+        const keyToIndex = new Map<string, number>();
+        locs.forEach(([lo, la], i) => keyToIndex.set(keyFor(lo, la), i));
+        const indexFor = (lon: number, lat: number) => {
+          const v = keyToIndex.get(keyFor(lon, lat));
+          return v === undefined ? -1 : v;
+        };
         if (precomputedMatrix) {
+          // Defence-in-depth: track whether every vehicle/shipment got an
+          // index. If not, drop the matrix and let the gateway pre-compute
+          // (options.g=true) instead of letting VROOM error out.
+          let allIndexed = true;
+          const setIdx = (target: any, key: string, lon: number, lat: number) => {
+            const i = indexFor(lon, lat);
+            if (i >= 0) target[key] = i;
+            else allIndexed = false;
+          };
           for (const v of vrpVehicles) {
-            if (v.start) {
-              const i = indexFor(Number(v.start[0]), Number(v.start[1]));
-              if (i >= 0) (v as any).start_index = i;
-            }
-            if (v.end) {
-              const i = indexFor(Number(v.end[0]), Number(v.end[1]));
-              if (i >= 0) (v as any).end_index = i;
-            }
+            if (v.start) setIdx(v, 'start_index', Number(v.start[0]), Number(v.start[1]));
+            if (v.end)   setIdx(v, 'end_index',   Number(v.end[0]),   Number(v.end[1]));
           }
           for (const sh of vrpShipments) {
-            if (sh.pickup?.location) {
-              const i = indexFor(Number(sh.pickup.location[0]), Number(sh.pickup.location[1]));
-              if (i >= 0) sh.pickup.location_index = i;
-            }
-            if (sh.delivery?.location) {
-              const i = indexFor(Number(sh.delivery.location[0]), Number(sh.delivery.location[1]));
-              if (i >= 0) sh.delivery.location_index = i;
-            }
+            if (sh.pickup?.location)   setIdx(sh.pickup,   'location_index', Number(sh.pickup.location[0]),   Number(sh.pickup.location[1]));
+            if (sh.delivery?.location) setIdx(sh.delivery, 'location_index', Number(sh.delivery.location[0]), Number(sh.delivery.location[1]));
+          }
+          if (!allIndexed) {
+            precomputedMatrix = null;
+            matrixNote = 'UI matrix pre-compute had unindexed locations; falling back to gateway pre-compute.';
           }
         } else {
           matrixNote = 'UI matrix pre-compute returned no data; gateway will retry inline.';
@@ -1097,40 +1108,51 @@ export default function BackloadMatching() {
     });
     if (selectedAssignment) {
       const a = visibleAssignments.find(x => x.ASSIGNMENT_ID === selectedAssignment);
-      if (a) {
-        const pickup = [{ lon: Number(a.PICKUP_LON), lat: Number(a.PICKUP_LAT) }];
-        const lastStop = (a.STOPS && a.STOPS.length) ? a.STOPS[a.STOPS.length - 1] : null;
-        const endLon = lastStop ? lastStop.lon : Number(a.DROPOFF_LON);
-        const endLat = lastStop ? lastStop.lat : Number(a.DROPOFF_LAT);
-        const dropoff = [{ lon: endLon, lat: endLat }];
+      if (a && Array.isArray(a.STOPS) && a.STOPS.length) {
+        // Numbered, hoverable stop markers driven directly by selected.STOPS
+        // so order/colors/numbers match the Stops/Audit panel 1:1.
+        // Palette mirrors KIND_STYLES in components/backload-matching/StopsPanel.tsx.
+        const palette: Record<Stop['kind'], { ring: [number, number, number]; halo: [number, number, number, number] }> = {
+          start:   { ring: [156, 163, 175], halo: [156, 163, 175, 60] },
+          pickup:  { ring: [245, 158, 11],  halo: [245, 158, 11, 60]  },
+          dropoff: { ring: [13, 176, 72],   halo: [13, 176, 72, 60]   },
+          end:     { ring: [41, 181, 232],  halo: [41, 181, 232, 60]  },
+          break:   { ring: [168, 85, 247],  halo: [168, 85, 247, 60]  },
+        };
+        // Tag each stop with its 1-based index up-front so it survives hover.
+        const stopData = a.STOPS.map((s, i) => ({ ...s, _idx: i + 1, _total: a.STOPS.length }));
+
         result.push(new ScatterplotLayer({
-          id: 'sel-pickup-halo', data: pickup, pickable: false,
+          id: 'sel-stop-halo', data: stopData, pickable: false,
           getPosition: (d: any) => [d.lon, d.lat],
-          getFillColor: [245, 158, 11, 50], getRadius: 160,
-          radiusMinPixels: 18, radiusMaxPixels: 60, stroked: false, filled: true,
+          getFillColor: (d: any) => palette[d.kind as Stop['kind']].halo,
+          getRadius: 160, radiusMinPixels: 16, radiusMaxPixels: 50,
+          stroked: false, filled: true,
           parameters: { depthTest: false },
         }));
         result.push(new ScatterplotLayer({
-          id: 'sel-pickup-marker', data: pickup, pickable: false,
+          id: 'sel-stop-marker', data: stopData, pickable: true,
           getPosition: (d: any) => [d.lon, d.lat],
-          getFillColor: [255, 255, 255, 230], getLineColor: [245, 158, 11, 255],
-          getRadius: 80, radiusMinPixels: 8, radiusMaxPixels: 30,
-          lineWidthMinPixels: 3, stroked: true, filled: true,
+          getFillColor: [255, 255, 255, 240],
+          getLineColor: (d: any) => {
+            const c = palette[d.kind as Stop['kind']].ring;
+            return [c[0], c[1], c[2], 255];
+          },
+          getRadius: 90, radiusMinPixels: 11, radiusMaxPixels: 18,
+          lineWidthMinPixels: 2, stroked: true, filled: true,
           parameters: { depthTest: false },
         }));
-        result.push(new ScatterplotLayer({
-          id: 'sel-dropoff-halo', data: dropoff, pickable: false,
+        result.push(new TextLayer({
+          id: 'sel-stop-number', data: stopData, pickable: false,
           getPosition: (d: any) => [d.lon, d.lat],
-          getFillColor: [13, 176, 72, 50], getRadius: 160,
-          radiusMinPixels: 18, radiusMaxPixels: 60, stroked: false, filled: true,
-          parameters: { depthTest: false },
-        }));
-        result.push(new ScatterplotLayer({
-          id: 'sel-dropoff-marker', data: dropoff, pickable: false,
-          getPosition: (d: any) => [d.lon, d.lat],
-          getFillColor: [255, 255, 255, 230], getLineColor: [13, 176, 72, 255],
-          getRadius: 80, radiusMinPixels: 8, radiusMaxPixels: 30,
-          lineWidthMinPixels: 3, stroked: true, filled: true,
+          getText: (d: any) => String(d._idx),
+          getColor: (d: any) => {
+            const c = palette[d.kind as Stop['kind']].ring;
+            return [c[0], c[1], c[2], 255];
+          },
+          getSize: 12, sizeUnits: 'pixels',
+          fontWeight: 700,
+          getAlignmentBaseline: 'center', getTextAnchor: 'middle',
           parameters: { depthTest: false },
         }));
       }
@@ -1181,6 +1203,30 @@ export default function BackloadMatching() {
 
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
+    // Stop marker on selected route — matches StopsPanel row info.
+    if (object._idx && (object.kind === 'start' || object.kind === 'pickup' ||
+                        object.kind === 'dropoff' || object.kind === 'end' ||
+                        object.kind === 'break')) {
+      const labelMap: Record<string, string> = {
+        start: 'START', pickup: 'PICKUP', dropoff: 'DROPOFF', end: 'END', break: 'BREAK',
+      };
+      const lines: string[] = [];
+      lines.push(`<b>#${object._idx} of ${object._total} - ${labelMap[object.kind]}</b>`);
+      if (object.city) lines.push(object.city);
+      if (object.label && object.label !== object.city) lines.push(object.label);
+      if (object.product) {
+        const wt = object.weightKg ? ` - ${(object.weightKg / 1000).toFixed(1)} t` : '';
+        lines.push(`${object.product}${wt}`);
+      }
+      if (object.kind === 'break' && object.serviceSec) {
+        lines.push(`Driver break - ${Math.round(object.serviceSec / 60)} min`);
+      }
+      if (object.waitSec) lines.push(`Wait ${Math.round(object.waitSec / 60)} min`);
+      return {
+        html: lines.filter(Boolean).join('<br/>'),
+        style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' },
+      };
+    }
     if (object.TRAILER_ID) return { html: `<b>${object.TRAILER_ID}</b><br/>Idle in: ${object.DROPOFF_CITY}<br/>Home: ${object.HOME_DEPOT}<br/>HAZMAT: ${object.HAZMAT_CERT ? 'yes' : 'no'}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     if (object.OFFER_ID) return { html: `<b>${object.SOURCE} ${object.OFFER_ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}<br/>EUR ${object.PRICE_EUR}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
     if (object.ID) return { html: `<b>Internal ${object.ID}</b><br/>${object.PICKUP_CITY} -> ${object.DROPOFF_CITY}<br/>${object.WEIGHT_KG} kg - ${object.PRODUCT}`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
