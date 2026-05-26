@@ -334,17 +334,16 @@ with tab5:
         center_name = st.selectbox("Center location", pois["NAME"].tolist(), index=0, key="matrix_center")
         col1, col2, col3 = st.columns(3)
         with col1:
-            profile = st.selectbox("Vehicle type", ["driving-car", "cycling-regular", "foot-walking"], index=0, key="matrix_profile")
+            profile = st.selectbox("Vehicle type", ["driving-car", "cycling-electric", "driving-hgv"], index=0, key="matrix_profile")
         with col2:
             h3_res = st.slider("H3 resolution", 7, 9, 8, key="h3_res")
         with col3:
-            grid_size = st.slider("Grid points", 9, 25, 16, key="grid_size")
+            grid_size = st.slider("Grid size (per side)", 3, 9, 5, step=2, key="grid_size")
 
         if st.button("Generate Matrix Heatmap", type="primary"):
             center = pois[pois["NAME"] == center_name].iloc[0]
-            import math
-            step = 0.005 if h3_res >= 8 else 0.01
-            half = int(math.sqrt(grid_size))
+            step = 0.003
+            half = grid_size // 2
             points = []
             for i in range(-half, half+1):
                 for j in range(-half, half+1):
