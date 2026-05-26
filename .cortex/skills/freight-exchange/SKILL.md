@@ -113,12 +113,43 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX REFRESH;
 |-------|--------|-------|
 | A     | shipped | Browse + filter shell, grid + map + detail drawer |
 | B     | shipped | Trust badge, market-rate badge, partner lane-history tooltip |
+| E1    | shipped (server) | ORS road km/min cache (`FACT_OFFER_ROUTES`, `VW_OFFER_ENRICHED_V2`); endpoints `POST /api/fx/refresh-routes`, `POST /api/fx/eta` |
+| E2    | shipped (server) | Reachability isochrone via `POST /api/fx/isochrone` |
+| E3    | shipped (server) | Deadhead matrix vs. `BACKLOAD_MATCHING.VW_TRAILERS` (`FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`); endpoints `GET /api/fx/deadhead`, `POST /api/fx/refresh-deadhead` |
+| E4    | shipped (server) | Round-trip 1-vehicle/2-shipment VROOM via `POST /api/fx/round-trip` |
+| E5    | shipped (server) | Multi-offer bundle solver with EU 561/2006 break via `POST /api/fx/bundle` |
+| E6    | shipped (server) | HGV profile selection per vehicle type; ADR offers add `avoid_features=ferries,tunnels`; `VW_OFFER_COMPLIANCE` view |
+| E7    | shipped (sql) | Lane density H3 res-5 heatmap via `VW_LANE_DENSITY` + `GET /api/fx/lane-density` |
+| E8    | shipped (server) | Cortex Complete negotiation drafts in `OFFER_DRAFTS` via `POST /api/fx/draft-counter` |
+| --    | shipped (sql) | `PROPOSAL_DECISIONS` schema migration: `SOURCE_PAGE`, `DECISION_TYPE`, `BUNDLE_ID`; shared audit endpoint `POST /api/fx/decisions` |
 | C     | future | Saved searches, Snowflake Alerts -> SSE, posting (trucks + loads), chat, bids |
-| D     | future | OFFER_DOCS + AI_PARSE_DOCUMENT, cross-border flags, round-trip toggle, tariff calculator |
+| D     | future | OFFER_DOCS + AI_PARSE_DOCUMENT, full cabotage cross-border flags, round-trip toggle UI, tariff calculator |
+
+> **Pending:** UI surfaces for E1–E8 (React grid columns, drawers, map layers) are not yet wired into [FreightExchange.tsx](../build-routing-solution/openrouteservice_app/services/ors_control_app/src/components/FreightExchange.tsx). Server endpoints + SQL objects exist; UI integration is a follow-up.
+
+## Enrichment Bootstrap (E1–E8)
+
+To deploy the new objects:
+
+```bash
+snow sql -f .cortex/skills/freight-exchange/references/bootstrap-enrichment.sql -c <ACTIVE_CONNECTION>
+```
+
+Then rebuild + redeploy the `ors_control_app` image per the `Control App Image Deployment` block in `AGENTS.md` so the new `/api/fx/*` endpoints land.
 
 ## Cleanup
 
 ```sql
+-- Phase E1-E8 enrichment objects
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.OFFER_DRAFTS;
+DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_COMPLIANCE;
+DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_DENSITY;
+DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_DEADHEAD;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DEADHEAD_MATRIX;
+DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES;
+
+-- Phase A/B core objects
 DROP DYNAMIC TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY;
@@ -127,6 +158,10 @@ DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
+
+-- The PROPOSAL_DECISIONS schema additions (SOURCE_PAGE, DECISION_TYPE,
+-- BUNDLE_ID) are NOT dropped automatically — backload-matching also writes
+-- to those columns now.
 ```
 
 > Note: the `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, and the new enrichment columns on `FACT_FREIGHT_OFFERS` are owned by `build-routing-solution` (Data Studio output) and shared. Use the `routing-solution-cleanup` skill if you also want to remove those rows.
