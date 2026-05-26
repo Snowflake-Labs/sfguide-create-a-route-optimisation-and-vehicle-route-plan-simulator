@@ -13,51 +13,57 @@ export function createAgentRouter(): Router {
   const router = Router();
 
   // ------------------------------------------------------------------
-  // Tool procedure map for local re-execution (geometry recovery)
+  // Tool procedure map for local re-execution (geometry recovery).
+  // Defaults are computed per-request so the active region/profile from the
+  // UI flow through to the re-executed CALLs.
   // ------------------------------------------------------------------
   type ToolDef = { proc: string; params: string[]; defaults?: Record<string, string> };
-  const TOOL_PROC_MAP: Record<string, ToolDef> = {
-    tool_directions: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
-      params: ['locations_description', 'profile'],
-      defaults: { profile: 'driving-car' },
-    },
-    tool_isochrone: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
-      params: ['location_description', 'range_minutes', 'profile'],
-      defaults: { profile: 'driving-car', range_minutes: '10' },
-    },
-    tool_optimization: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
-      params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
-      defaults: { profile: 'driving-car', region: 'California' },
-    },
-    tool_route_optimization: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
-      params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
-      defaults: { profile: 'driving-car', region: 'California' },
-    },
-    tool_poi_in_isochrone: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE',
-      params: ['location_description', 'range_minutes', 'poi_category', 'profile', 'max_results'],
-      defaults: { profile: 'driving-car', range_minutes: '10', max_results: '25' },
-    },
-    tool_supply_chain: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
-      params: ['profile'],
-      defaults: { profile: 'driving-car' },
-    },
-    tool_pharma_optimization: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
-      params: ['profile'],
-      defaults: { profile: 'driving-car' },
-    },
-    tool_pharma_catchment: {
-      proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
-      params: ['pharmacy_description', 'range_minutes', 'profile'],
-      defaults: { profile: 'driving-car', range_minutes: '10' },
-    },
-  };
+  function buildToolProcMap(activeRegion: string, activeProfile: string): Record<string, ToolDef> {
+    const region = activeRegion || 'California';
+    const profile = activeProfile || 'driving-car';
+    return {
+      tool_directions: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
+        params: ['locations_description', 'profile'],
+        defaults: { profile },
+      },
+      tool_isochrone: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
+        params: ['location_description', 'range_minutes', 'profile'],
+        defaults: { profile, range_minutes: '10' },
+      },
+      tool_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
+        params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
+        defaults: { profile, region },
+      },
+      tool_route_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
+        params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
+        defaults: { profile, region },
+      },
+      tool_poi_in_isochrone: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE',
+        params: ['location_description', 'range_minutes', 'poi_category', 'profile', 'max_results'],
+        defaults: { profile, range_minutes: '10', max_results: '25' },
+      },
+      tool_supply_chain: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
+        params: ['profile'],
+        defaults: { profile },
+      },
+      tool_pharma_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
+        params: ['profile'],
+        defaults: { profile },
+      },
+      tool_pharma_catchment: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
+        params: ['pharmacy_description', 'range_minutes', 'profile'],
+        defaults: { profile, range_minutes: '10' },
+      },
+    };
+  }
 
   function sendSseEvent(res: any, event: string, data: any) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -83,20 +89,159 @@ export function createAgentRouter(): Router {
     ],
   };
 
-  router.get('/api/agent/config', async (_req, res) => {
+  async function loadStaticAgentDemos(): Promise<any> {
     try {
       const rows = await runSql(
         `SELECT $1 AS CONFIG FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT')`,
         'OPENROUTESERVICE_APP', 'CORE',
       );
       if (rows?.[0]?.CONFIG) {
-        const cfg = typeof rows[0].CONFIG === 'string' ? JSON.parse(rows[0].CONFIG) : rows[0].CONFIG;
-        return res.json(cfg);
+        return typeof rows[0].CONFIG === 'string' ? JSON.parse(rows[0].CONFIG) : rows[0].CONFIG;
       }
     } catch (e: any) {
       console.log(`[agent/config] Stage load failed: ${e.message}, using fallback`);
     }
-    res.json(FALLBACK_AGENT_CONFIG);
+    return FALLBACK_AGENT_CONFIG;
+  }
+
+  router.get('/api/agent/config', async (_req, res) => {
+    res.json(await loadStaticAgentDemos());
+  });
+
+  // ------------------------------------------------------------------
+  // /api/agent/examples?region=...&vehicle=... - live AI_COMPLETE-generated
+  // example chips for the Agent Playground. Falls back to agent-demos.json.
+  // ------------------------------------------------------------------
+  function profileFromVehicle(vt: string): string {
+    const v = (vt || '').toLowerCase();
+    if (!v) return 'driving-car';
+    if (v.includes('hgv') || v.includes('truck') || v.includes('lorry') || v.includes('semi')) return 'driving-hgv';
+    if (v.includes('ebike') || v.includes('e-bike') || v.includes('electric_bike')) return 'cycling-electric';
+    if (v.includes('mountain')) return 'cycling-mountain';
+    if (v.includes('bike') || v.includes('bicycle') || v.includes('cycle')) return 'cycling-regular';
+    if (v.includes('walk') || v.includes('foot') || v.includes('pedestrian')) return 'foot-walking';
+    if (v.includes('hike')) return 'foot-hiking';
+    if (v.includes('wheelchair')) return 'wheelchair';
+    return 'driving-car';
+  }
+
+  function extractFirstJson(text: string): any | null {
+    if (!text) return null;
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1] : text;
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(candidate.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+
+  router.get('/api/agent/examples', async (req, res) => {
+    const region = String(req.query.region || '').trim();
+    const vehicle = String(req.query.vehicle || '').trim();
+    const profile = profileFromVehicle(vehicle);
+
+    if (!region) {
+      return res.json(await loadStaticAgentDemos());
+    }
+
+    try {
+      // Set tracking query tag for attribution.
+      await runSql(
+        `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+
+      // Resolve region centroid from REGION_CATALOG (boundary preferred).
+      const regionLit = escapeString(region);
+      const centroidRows = await runSql(
+        `SELECT
+            rc.REGION_NAME AS REGION_NAME,
+            rc.COUNTRY AS COUNTRY,
+            rc.CONTINENT AS CONTINENT,
+            ST_X(ST_CENTROID(rc.BOUNDARY))::FLOAT AS CENTROID_LON,
+            ST_Y(ST_CENTROID(rc.BOUNDARY))::FLOAT AS CENTROID_LAT,
+            (rc.MIN_LAT + rc.MAX_LAT)/2.0 AS BBOX_LAT,
+            (rc.MIN_LON + rc.MAX_LON)/2.0 AS BBOX_LON
+         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+         WHERE rc.BOUNDARY IS NOT NULL
+           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${regionLit}')
+                OR UPPER(rc.REGION_KEY) = UPPER('${regionLit}'))
+         LIMIT 1`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+
+      let regionLabel = region;
+      let country = '';
+      let continent = '';
+      let centroidLat: number | null = null;
+      let centroidLon: number | null = null;
+      if (centroidRows?.[0]) {
+        regionLabel = centroidRows[0].REGION_NAME || region;
+        country = centroidRows[0].COUNTRY || '';
+        continent = centroidRows[0].CONTINENT || '';
+        centroidLat = centroidRows[0].CENTROID_LAT ?? centroidRows[0].BBOX_LAT ?? null;
+        centroidLon = centroidRows[0].CENTROID_LON ?? centroidRows[0].BBOX_LON ?? null;
+      }
+
+      const isSF = /san[\s-]?francisco/i.test(region) || /^sf$/i.test(region);
+
+      const promptText =
+        `You are generating example prompts for a routing/fleet AI playground. ` +
+        `The active map region is "${regionLabel}"${country ? ` (${country}${continent ? ', ' + continent : ''})` : ''}` +
+        (centroidLat != null && centroidLon != null ? ` centred near lat ${centroidLat.toFixed(4)}, lon ${centroidLon.toFixed(4)}` : '') +
+        `. The active vehicle type is "${vehicle || 'car'}" mapped to ORS profile "${profile}". ` +
+        `\n\nGenerate 2 scenario tabs, each with 4-5 short example prompts that exercise these tools: ` +
+        `tool_directions (point-to-point routing), tool_isochrone (drive/cycle/walk-time reachability polygons), ` +
+        `tool_poi_in_isochrone (Overture Maps POI search inside an isochrone, e.g. pharmacies, restaurants, shops), ` +
+        `tool_route_optimization (multi-vehicle VRP with depot + stops). ` +
+        (isSF ? `Because the region is San Francisco, also include: tool_supply_chain, tool_pharma_optimization, tool_pharma_catchment. ` : '') +
+        `\n\nRules:` +
+        `\n- Use REAL street addresses, neighbourhoods, or landmarks within "${regionLabel}". Do NOT invent SF addresses for non-SF regions.` +
+        `\n- Each prompt must read like a natural-language question a dispatcher would ask.` +
+        `\n- Reference the vehicle type / ORS profile where appropriate (e.g. cycling, HGV, walking).` +
+        `\n- Use ONLY plain ASCII apostrophes (') and double quotes ("). No smart quotes.` +
+        `\n- Each prompt label must start with "1. ", "2. ", etc.` +
+        `\n- Each scenario needs an id (kebab-case), label, single emoji icon, short description, and 4-5 prompt entries.` +
+        `\n\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n` +
+        `{"default_scenario":"<id>","scenarios":[{"id":"...","label":"...","icon":"...","description":"...","prompts":[{"label":"1. ...","icon":"...","prompt":"..."}]}]}`;
+
+      const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${escapeString(promptText)}') AS RESULT`;
+      const cortexRows = await runSql(cortexSql, 'OPENROUTESERVICE_APP', 'CORE');
+      const raw = cortexRows?.[0]?.RESULT;
+      const parsed = typeof raw === 'string' ? extractFirstJson(raw) : (raw && typeof raw === 'object' ? raw : null);
+
+      if (parsed && Array.isArray(parsed.scenarios) && parsed.scenarios.length > 0) {
+        const cleaned = {
+          version: '1.0',
+          default_scenario: parsed.default_scenario || parsed.scenarios[0].id,
+          max_token_limit: 8000,
+          scenarios: parsed.scenarios.map((s: any, i: number) => ({
+            id: String(s.id || `scenario-${i + 1}`),
+            label: String(s.label || `Scenario ${i + 1}`),
+            icon: String(s.icon || '\u{1F4CD}'),
+            description: String(s.description || ''),
+            prompts: Array.isArray(s.prompts)
+              ? s.prompts.slice(0, 6).map((p: any, j: number) => ({
+                  label: String(p.label || `${j + 1}. Example`),
+                  icon: String(p.icon || '\u{1F4CD}'),
+                  prompt: String(p.prompt || ''),
+                })).filter((p: any) => p.prompt)
+              : [],
+          })).filter((s: any) => s.prompts.length > 0),
+        };
+        if (cleaned.scenarios.length > 0) {
+          return res.json(cleaned);
+        }
+      }
+      console.log(`[agent/examples] AI_COMPLETE returned unparseable JSON for region=${region} vehicle=${vehicle}, falling back`);
+    } catch (e: any) {
+      console.log(`[agent/examples] Generation failed for region=${region} vehicle=${vehicle}: ${e.message}`);
+    }
+    res.json(await loadStaticAgentDemos());
   });
 
   // ------------------------------------------------------------------
@@ -132,8 +277,12 @@ export function createAgentRouter(): Router {
   // /api/agent/chat - Cortex Agent REST API call with SSE forwarding
   // ------------------------------------------------------------------
   router.post('/api/agent/chat', async (req, res) => {
-    const { message, thread_id, parent_message_id, history } = req.body;
+    const { message, thread_id, parent_message_id, history, region, vehicle_type, profile } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
+    const activeRegion: string = (typeof region === 'string' && region) ? region : '';
+    const activeProfile: string = (typeof profile === 'string' && profile) ? profile : 'driving-car';
+    const activeVehicle: string = (typeof vehicle_type === 'string' && vehicle_type) ? vehicle_type : '';
+    const TOOL_PROC_MAP = buildToolProcMap(activeRegion, activeProfile);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -146,6 +295,18 @@ export function createAgentRouter(): Router {
       const agentUrl = `https://${SNOWFLAKE_HOST}/api/v2/databases/FLEET_INTELLIGENCE/schemas/ROUTING_AGENT/agents/ROUTING_AGENT:run`;
 
       const messages: Array<{ role: string; content: Array<{ type: string; text: string }> }> = [];
+      // Inject a hidden first-turn context note so the LLM defaults tool args
+      // to the active region + ORS profile chosen in the UI header.
+      if (activeRegion || activeVehicle) {
+        const ctx =
+          `Context for this conversation: active map region = ${activeRegion || 'unknown'}; ` +
+          `active vehicle type = ${activeVehicle || 'unknown'} (ORS profile = ${activeProfile}). ` +
+          `When you call routing tools, default the 'region' argument to "${activeRegion || 'California'}" ` +
+          `and the 'profile' argument to "${activeProfile}" unless the user explicitly asks for a different region or transport mode. ` +
+          `Geocode all place names within "${activeRegion || 'California'}" by default.`;
+        messages.push({ role: 'user', content: [{ type: 'text', text: ctx }] });
+        messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Understood. I will default to the active region and profile.' }] });
+      }
       if (Array.isArray(history)) {
         for (const h of history) {
           if ((h.role === 'user' || h.role === 'assistant') && h.content) {

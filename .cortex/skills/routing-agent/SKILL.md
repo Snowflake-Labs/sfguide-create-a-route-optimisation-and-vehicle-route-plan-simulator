@@ -60,6 +60,14 @@ they fail gracefully with a "run setup-agent-playground" message if the data is 
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
 
+## Region awareness (Agent Playground)
+
+The Agent Playground (control-app page) is region- and vehicle-aware end-to-end:
+
+- The active region (`useRegion`) and vehicle type (`useVehicleType`) are sent on every chat call as `region`, `vehicle_type`, and the derived ORS `profile`. The chat backend prepends a hidden context turn instructing the LLM to default tool args to the active region/profile, and uses those values as the local re-execution defaults in `TOOL_PROC_MAP` (replacing the previously hard-coded `California` / `driving-car`).
+- Example chips under "Try an example" are generated **live** by `SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', ...)` via `GET /api/agent/examples?region=...&vehicle=...`. The endpoint resolves the region centroid from `OPENROUTESERVICE_APP.CORE.REGION_CATALOG` (boundary preferred, bbox fallback) and asks Cortex for 2 scenarios x 4-5 prompts in the existing `AgentDemosConfig` shape. On any failure (parse error, no region match, unprovisioned region) it falls back to the static `config/agent-demos.json` on `ORS_SPCS_STAGE`, then to a hardcoded SF stub.
+- Example regeneration is debounced 300 ms and re-runs every time the user switches region or vehicle type. There is no caching by design.
+
 ## Error Logging
 
 > Follow the Error Logging convention in AGENTS.md. Log file prefix: `routing-agent`.

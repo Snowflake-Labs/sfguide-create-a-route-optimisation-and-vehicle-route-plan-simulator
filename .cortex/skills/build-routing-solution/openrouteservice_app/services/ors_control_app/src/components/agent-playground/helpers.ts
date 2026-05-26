@@ -322,6 +322,22 @@ export const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] =
 
 export const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
 
+// Map a fleet "vehicle type" (truck / ebike / car / ...) to the matching ORS
+// transport profile. Default is driving-car for unknown types.
+export function profileFromVehicle(vehicleType: string | null | undefined): string {
+  const v = (vehicleType || '').toLowerCase();
+  if (!v) return 'driving-car';
+  if (v.includes('hgv') || v.includes('truck') || v.includes('lorry') || v.includes('semi')) return 'driving-hgv';
+  if (v.includes('ebike') || v.includes('e-bike') || v.includes('electric_bike') || v.includes('cycling-electric')) return 'cycling-electric';
+  if (v.includes('mountain')) return 'cycling-mountain';
+  if (v.includes('road_bike') || v.includes('cycling-road')) return 'cycling-road';
+  if (v.includes('bike') || v.includes('bicycle') || v.includes('cycle')) return 'cycling-regular';
+  if (v.includes('walk') || v.includes('foot') || v.includes('pedestrian')) return 'foot-walking';
+  if (v.includes('hike')) return 'foot-hiking';
+  if (v.includes('wheelchair')) return 'wheelchair';
+  return 'driving-car';
+}
+
 // ---------------------------------------------------------------------------
 // Scenario / saved-prompts / workflow types (added when porting the SUMMIT
 // Agent Playground UX into the current refactored AgentPlayground).

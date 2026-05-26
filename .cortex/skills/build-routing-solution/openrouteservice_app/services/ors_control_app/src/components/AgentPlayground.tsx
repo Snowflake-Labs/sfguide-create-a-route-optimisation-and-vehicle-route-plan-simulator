@@ -12,17 +12,21 @@ import {
   SavedPrompt, loadSavedPrompts, persistSavedPrompts,
   WorkflowStep,
   VEHICLE_ROUTE_COLORS,
+  profileFromVehicle,
 } from './agent-playground/helpers';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { useRegion } from '../hooks/useRegion';
+import { useVehicleType } from '../hooks/useVehicleType';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 injectCursorBlinkCss();
 
 export default function AgentPlayground() {
   const { regionName } = useRegion();
+  const { vehicleType } = useVehicleType();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [examplesLoading, setExamplesLoading] = useState(false);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
@@ -58,23 +62,31 @@ export default function AgentPlayground() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Load scenarios from /api/agent/config (served from ORS stage's agent-demos.json).
+  // Load scenarios from /api/agent/examples (live AI_COMPLETE-generated, region+vehicle aware).
+  // Re-fetches whenever the active region or vehicle type changes. Debounced 300ms.
   useEffect(() => {
+    if (!regionName) return;
     let cancelled = false;
-    fetch('/api/agent/config')
-      .then(r => (r.ok ? r.json() : null))
-      .then((data: AgentDemosConfig | null) => {
-        if (cancelled || !data || !Array.isArray(data.scenarios) || data.scenarios.length === 0) return;
-        setScenarios(data.scenarios);
-        if (data.default_scenario && data.scenarios.some(s => s.id === data.default_scenario)) {
-          setActiveScenario(data.default_scenario);
-        } else {
-          setActiveScenario(data.scenarios[0].id);
-        }
-      })
-      .catch(() => { /* keep fallback */ });
-    return () => { cancelled = true; };
-  }, []);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      setExamplesLoading(true);
+      const qs = new URLSearchParams({ region: regionName, vehicle: vehicleType || '' });
+      fetch(`/api/agent/examples?${qs.toString()}`, { signal: ctrl.signal })
+        .then(r => (r.ok ? r.json() : null))
+        .then((data: AgentDemosConfig | null) => {
+          if (cancelled || !data || !Array.isArray(data.scenarios) || data.scenarios.length === 0) return;
+          setScenarios(data.scenarios);
+          if (data.default_scenario && data.scenarios.some(s => s.id === data.default_scenario)) {
+            setActiveScenario(data.default_scenario);
+          } else {
+            setActiveScenario(data.scenarios[0].id);
+          }
+        })
+        .catch(() => { /* keep previous scenarios on error */ })
+        .finally(() => { if (!cancelled) setExamplesLoading(false); });
+    }, 300);
+    return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
+  }, [regionName, vehicleType]);
 
   useEffect(() => { setSavedPromptsState(loadSavedPrompts()); }, []);
 
@@ -130,7 +142,13 @@ export default function AgentPlayground() {
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg.content, history: messages }),
+        body: JSON.stringify({
+          message: userMsg.content,
+          history: messages,
+          region: regionName,
+          vehicle_type: vehicleType,
+          profile: profileFromVehicle(vehicleType),
+        }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -240,7 +258,7 @@ export default function AgentPlayground() {
       });
     }
     setStreaming(false);
-  }, [input, streaming, messages]);
+  }, [input, streaming, messages, regionName, vehicleType]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 
@@ -421,7 +439,9 @@ export default function AgentPlayground() {
             ))}
           </div>
         )}
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Try an example</div>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Try an example{examplesLoading ? ` — generating for ${regionName}${vehicleType ? ` + ${vehicleType}` : ''}...` : ''}
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {(scenarios.find(s => s.id === activeScenario)?.prompts || []).map((sp, i) => (
             <button
