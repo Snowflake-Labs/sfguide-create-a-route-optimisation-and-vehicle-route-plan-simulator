@@ -273,7 +273,7 @@ export default function BackloadMatching() {
         const cfg = await sfQuery(`SELECT REGION, VEHICLE_TYPE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
         const cur = (cfg[0] as any) || {};
         const vtRows = await sfQuery(
-          `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+          `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
            WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
           'SYNTHETIC_DATASETS', 'UNIFIED',
         );
