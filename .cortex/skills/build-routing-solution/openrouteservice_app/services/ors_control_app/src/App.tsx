@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, Factory, ChevronDown, ChevronRight } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -14,6 +14,7 @@ import RouteDeviation from './components/RouteDeviation';
 import RouteOptimization from './components/RouteOptimization';
 import RetailCatchment from './components/RetailCatchment';
 import AgentPlayground from './components/AgentPlayground';
+import PlantIntelligence from './components/PlantIntelligence';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
 import About from './components/About';
@@ -76,6 +77,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   ]},
   { key: 'retail', label: 'Retail Catchment', icon: Store },
   { key: 'agent', label: 'Routing Agent', icon: Bot },
+  { key: 'plant-intel', label: 'Plant Intelligence', icon: Factory },
 ];
 
 const ADMIN_NAV: NavGroup[] = [
@@ -125,7 +127,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'plant-intel'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -231,6 +233,7 @@ export default function App() {
             {activeCategory === 'route-deviation' && <RouteDeviation subTab={activeSubTab} />}
             {activeTab === 'retail' && <RetailCatchment />}
             {activeTab === 'agent' && <AgentPlayground />}
+            {activeTab === 'plant-intel' && <PlantIntelligence />}
             {activeTab === 'diagnostics' && <Diagnostics />}
           </main>
         </div>

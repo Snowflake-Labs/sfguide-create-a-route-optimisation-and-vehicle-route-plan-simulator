@@ -1,4 +1,4 @@
-import { Info, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot } from 'lucide-react';
+import { Info, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Factory } from 'lucide-react';
 
 interface Props {
   onNavigate: (tab: string) => void;
@@ -24,6 +24,7 @@ const ACCELERATORS: { key: string; label: string; desc: string; icon: React.Comp
   { key: 'route-deviation:dashboard', label: 'Route Deviation', desc: 'Planned vs actual route comparison and detour detection', icon: GitBranch },
   { key: 'retail', label: 'Retail Catchment', desc: 'Drive-time isochrone analysis and competitor proximity mapping', icon: Store },
   { key: 'agent', label: 'Routing Agent', desc: 'Cortex Agent integration for natural language routing queries', icon: Bot },
+  { key: 'plant-intel', label: 'Plant Intelligence', desc: 'Manufacturing plant map with Overture building footprints and live supply chain alerts', icon: Factory },
 ];
 
 export default function Home({ onNavigate }: Props) {
