@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle, ShoppingBasket } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -14,6 +14,7 @@ import RouteDeviation from './components/RouteDeviation';
 import RouteOptimization from './components/RouteOptimization';
 import AssetVelocity from './components/AssetVelocity';
 import BackloadMatching from './components/BackloadMatching';
+import FreightExchange from './components/FreightExchange';
 import RetailCatchment from './components/RetailCatchment';
 import EmergencyResponseShell from './components/emergency/EmergencyResponseShell';
 import AgentPlayground from './components/AgentPlayground';
@@ -81,6 +82,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   ]},
   { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
   { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
+  { key: 'freight-exchange', label: 'Freight Exchange', icon: ShoppingBasket },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
   { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle, subPages: [
     { key: 'emergency:hazard-ops', label: 'Hazard Ops' },
@@ -177,7 +179,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload', 'emergency'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload', 'emergency', 'freight-exchange'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -296,6 +298,7 @@ export default function App() {
             {activeTab === 'route-opt' && <RouteOptimization key={dataKey} />}
             {activeTab === 'asset-velocity' && <AssetVelocity key={dataKey} />}
             {activeTab === 'backload' && <BackloadMatching key={dataKey} />}
+            {activeTab === 'freight-exchange' && <FreightExchange key={dataKey} />}
             {activeCategory === 'fleet-taxis' && <FleetTaxis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'fleet-delivery' && <FleetDelivery key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
