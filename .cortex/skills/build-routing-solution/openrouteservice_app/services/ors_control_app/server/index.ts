@@ -2235,15 +2235,15 @@ app.post('/api/agent/chat', async (req, res) => {
       console.log(`[Agent] No geometry from agent stream, re-executing ${toolsCalled.length} tool(s) locally for map data`);
       const TOOL_PROC_MAP: Record<string, { proc: string; params: string[]; defaults?: Record<string, string> }> = {
         tool_supply_chain: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN', params: ['profile'], defaults: { profile: 'driving-car' } },
-        tool_directions: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS', params: ['origin', 'destination', 'profile'], defaults: { profile: 'driving-car' } },
-        tool_isochrone: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE', params: ['location', 'range_minutes', 'profile'], defaults: { profile: 'driving-car', range_minutes: '10' } },
-        tool_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION', params: ['jobs_json', 'vehicles_json', 'profile'], defaults: { profile: 'driving-car' } },
-        tool_route_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION', params: ['jobs_json', 'vehicles_json', 'profile'], defaults: { profile: 'driving-car' } },
+        tool_directions: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS', params: ['locations_description', 'profile'], defaults: { profile: 'driving-car' } },
+        tool_isochrones: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES', params: ['location_description', 'minutes', 'profile'], defaults: { profile: 'driving-car', minutes: '10' } },
+        tool_route_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION', params: ['description', 'num_vehicles', 'profile'], defaults: { profile: 'driving-car', num_vehicles: '1' } },
         tool_pharma_optimization: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION', params: ['profile'], defaults: { profile: 'driving-car' } },
         tool_pharma_catchment: { proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT', params: ['pharmacy_description', 'range_minutes', 'profile'], defaults: { profile: 'driving-car', range_minutes: '10' } },
       };
       for (const tc of toolsCalled) {
-        const toolDef = TOOL_PROC_MAP[tc.name];
+        const toolName = (tc.name || '').toLowerCase();
+        const toolDef = TOOL_PROC_MAP[toolName];
         if (!toolDef) continue;
         try {
           const args = tc.input || {};
