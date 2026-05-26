@@ -148,8 +148,9 @@ GRANT USAGE ON FUNCTION FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(FL
 
 -- =============================================================================
 -- 4. TOOL_WEATHER — stored procedure the agent calls
---    Looks up region lat/lon from REGION_REGISTRY (or uses SF default),
---    fetches all key weather parameters and returns routing recommendations.
+--    Looks up region lat/lon from REGION_REGISTRY, fetches weather with fallback:
+--    today → yesterday+lead → same-date-last-year (for demo environments).
+--    Returns geometry Point for map rendering + routing advisory.
 -- =============================================================================
 
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER(
@@ -157,77 +158,76 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER(
 )
 RETURNS VARIANT
 LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-weather-routing","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 DECLARE
-    v_lat   FLOAT;
-    v_lon   FLOAT;
-    v_today DATE;
-    v_temp  VARIANT;
-    v_wind  VARIANT;
-    v_prec  VARIANT;
-    v_vis   VARIANT;
-    v_hum   VARIANT;
-    c_region CURSOR FOR
-        SELECT
-            (BBOX_MIN_LAT + BBOX_MAX_LAT) / 2 AS center_lat,
-            (BBOX_MIN_LON + BBOX_MAX_LON) / 2 AS center_lon
-        FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY
-        WHERE REGION_NAME = ?;
+    v_lat FLOAT; v_lon FLOAT; v_region VARCHAR;
+    v_temp VARIANT; v_wind VARIANT; v_rain VARIANT; v_vis VARIANT; v_humidity VARIANT; v_pressure VARIANT; v_cloud VARIANT;
+    v_model_date DATE;
+    v_lead_hours INT;
 BEGIN
-    -- Look up region centre; fall back to San Francisco if not found
-    OPEN c_region USING (REGION_NAME);
-    FETCH c_region INTO v_lat, v_lon;
-    CLOSE c_region;
-
+    v_region := REGION_NAME;
+    v_model_date := CURRENT_DATE();
+    v_lead_hours := 0;
+    SELECT CENTER_LAT, CENTER_LON INTO v_lat, v_lon FROM OPENROUTESERVICE_APP.CORE.REGION_REGISTRY WHERE REGION = :v_region LIMIT 1;
     IF (v_lat IS NULL) THEN
-        v_lat := 37.7749;
-        v_lon := -122.4194;
+        v_lat := 37.7749; v_lon := -122.4194;
     END IF;
-
-    v_today := DATEADD('day', -1, CURRENT_DATE());
-
-    -- Use yesterday's 12Z model run with lead_hours offset to get today's forecast
-    -- Met Office publishes with ~12hr delay, so yesterday's model is the latest available
-    LET v_lead_hours INT := HOUR(CURRENT_TIMESTAMP()) + 24;
-
-    -- Fetch each parameter
-    SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, v_lead_hours, 'temperature')  INTO v_temp;
-    SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, v_lead_hours, 'wind_speed')   INTO v_wind;
-    SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, v_lead_hours, 'precipitation') INTO v_prec;
-    SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, v_lead_hours, 'visibility')   INTO v_vis;
-    SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, v_lead_hours, 'humidity')     INTO v_hum;
-
+    -- Try today first
+    v_temp := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'temperature');
+    -- Fallback 1: yesterday's model with lead hours for today
+    IF (v_temp:error IS NOT NULL) THEN
+        v_model_date := DATEADD('day', -1, CURRENT_DATE());
+        v_lead_hours := HOUR(CURRENT_TIMESTAMP()) + 24;
+        v_temp := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'temperature');
+    END IF;
+    -- Fallback 2: same date last year (for demo environments with future clocks)
+    IF (v_temp:error IS NOT NULL) THEN
+        v_model_date := DATEADD('year', -1, CURRENT_DATE());
+        v_lead_hours := 0;
+        v_temp := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'temperature');
+    END IF;
+    -- Fetch remaining parameters with the working model_date
+    v_wind := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'wind_speed');
+    v_rain := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'precipitation');
+    v_vis := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'visibility');
+    v_humidity := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'humidity');
+    v_pressure := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'pressure');
+    v_cloud := FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(v_lat, v_lon, v_model_date, v_lead_hours, 'cloud');
     RETURN OBJECT_CONSTRUCT(
-        'region',      REGION_NAME,
-        'date',        v_today::VARCHAR,
-        'coordinates', OBJECT_CONSTRUCT('lat', v_lat, 'lon', v_lon),
-        'conditions',  OBJECT_CONSTRUCT(
-            'temperature_c',     v_temp:value,
-            'wind_speed_ms',     v_wind:value,
-            'precipitation_mmhr',v_prec:value,
-            'visibility_m',      v_vis:value,
-            'humidity_pct',      v_hum:value
+        'status', CASE WHEN v_temp:error IS NOT NULL THEN 'PARTIAL' ELSE 'SUCCESS' END,
+        'region', v_region,
+        'location', OBJECT_CONSTRUCT('lat', v_lat, 'lon', v_lon),
+        'center', OBJECT_CONSTRUCT('lat', v_lat, 'lon', v_lon, 'name', v_region),
+        'geometry', OBJECT_CONSTRUCT('type', 'Point', 'coordinates', ARRAY_CONSTRUCT(v_lon, v_lat)),
+        'timestamp', CURRENT_TIMESTAMP()::VARCHAR,
+        'model_info', OBJECT_CONSTRUCT('model_date', v_model_date::VARCHAR, 'lead_hours', v_lead_hours),
+        'conditions', OBJECT_CONSTRUCT(
+            'temperature', v_temp,
+            'wind_speed', v_wind,
+            'precipitation', v_rain,
+            'visibility', v_vis,
+            'humidity', v_humidity,
+            'pressure', v_pressure,
+            'cloud_cover', v_cloud
         ),
-        'routing_advisory', OBJECT_CONSTRUCT(
-            'cycling_safe',  IFF(v_wind:value::FLOAT < 10 AND v_vis:value::FLOAT > 1000 AND v_prec:value::FLOAT < 1, TRUE, FALSE),
-            'warnings',      ARRAY_CONSTRUCT(
-                IFF(v_wind:value::FLOAT >= 10,   CONCAT('High wind: ', v_wind:value::VARCHAR, ' m/s — avoid cycling/e-bike routes'), NULL),
-                IFF(v_vis:value::FLOAT  <= 1000, CONCAT('Low visibility: ', v_vis:value::VARCHAR, ' m — caution for all profiles'), NULL),
-                IFF(v_prec:value::FLOAT >= 1,    CONCAT('Precipitation: ', v_prec:value::VARCHAR, ' mm/hr — allow extra delivery time'), NULL)
-            )
-        ),
+        'routing_advisory', CASE
+            WHEN v_temp:error IS NOT NULL THEN 'WEATHER DATA UNAVAILABLE: Proceed with default routing profiles.'
+            WHEN v_vis:value::FLOAT < 1000 THEN 'LOW VISIBILITY WARNING: Fog detected. Avoid cycling/walking. Recommend driving-car only.'
+            WHEN v_wind:value::FLOAT > 10 THEN 'HIGH WIND WARNING: Wind > 10 m/s. E-bike routes unsafe. Recommend driving-car.'
+            WHEN v_rain:value::FLOAT > 2 THEN 'HEAVY RAIN: >2mm/hr. Increase ETAs 20%. Avoid cycling.'
+            WHEN v_rain:value::FLOAT > 0.5 THEN 'LIGHT RAIN: Cycling OK with caution. Waterproof packaging advised.'
+            ELSE 'CONDITIONS CLEAR: All routing profiles safe.'
+        END,
         'source', 'Met Office Global Deterministic 10km (Open Government Licence)'
     );
 EXCEPTION
     WHEN OTHER THEN
         RETURN OBJECT_CONSTRUCT('error', 'TOOL_WEATHER failed: ' || SQLERRM,
                                 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
 END;
 $$;
 
