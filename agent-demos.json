@@ -45,6 +45,19 @@
       ]
     },
     {
+      "id": "upstream_supply",
+      "label": "Pharma Manufacturing",
+      "icon": "🏭",
+      "description": "Upstream supply chain intelligence — API suppliers, manufacturing plants, batch production, shipment delays, cold chain risk",
+      "prompts": [
+        { "label": "1. Supply chain status", "icon": "🌍", "prompt": "Give me an overview of our manufacturing supply chain status. Which products are critically low on raw materials and which batches are currently on hold or have quality failures?" },
+        { "label": "2. Supplier risk", "icon": "⚠️", "prompt": "Which suppliers have a reliability score below 80% or are on GMP probation? What products do they supply and what is the single-source risk?" },
+        { "label": "3. Batch quality", "icon": "🔬", "prompt": "Show me all production batches with critical or major deviations, quality failures, or that are currently on hold. What is the total batch cost at risk?" },
+        { "label": "4. Shipment delays", "icon": "🚢", "prompt": "Which inbound API shipments are currently delayed or held in customs? Are any cold chain shipments at risk of temperature excursion? What is the total value at risk?" },
+        { "label": "5. End-to-end risk", "icon": "🔗", "prompt": "Identify the highest-risk product in our portfolio — low stock at both manufacturing and pharmacy level, with supplier reliability concerns. Which patients could be affected and what should we do?" }
+      ]
+    },
+    {
       "id": "pharma_supply",
       "label": "Pharma Supply Intelligence",
       "icon": "🏭",
