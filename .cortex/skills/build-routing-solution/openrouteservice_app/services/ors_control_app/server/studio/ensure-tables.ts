@@ -121,6 +121,65 @@ BEGIN
 EXCEPTION WHEN OTHER THEN RETURN 'skipped';
 END;
 $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    // Dataset versioning registry. Each Studio run = one immutable dataset
+    // keyed by JOB_ID. At most one IS_ACTIVE = TRUE per (REGION, VEHICLE_TYPE).
+    // Downstream consumers read via V_*_CURRENT views (see init.ts) which
+    // join to this table and filter on IS_ACTIVE = TRUE.
+    { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_DATASETS (
+      DATASET_ID    VARCHAR,
+      REGION        VARCHAR(100),
+      VEHICLE_TYPE  VARCHAR(20),
+      LABEL         VARCHAR,
+      IS_ACTIVE     BOOLEAN DEFAULT TRUE,
+      CREATED_AT    TIMESTAMP_NTZ DEFAULT SYSDATE(),
+      ROW_COUNTS    VARIANT,
+      NOTES         VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    // Idempotent backfill from existing data. Latest JOB_ID per
+    // (REGION, VEHICLE_TYPE) -> IS_ACTIVE = TRUE; older JOB_IDs (if any
+    // survived prior cleanRegionScope deletions) -> IS_ACTIVE = FALSE.
+    // Skipped row-by-row via NOT EXISTS so re-runs are safe.
+    { sql: `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+      (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE, CREATED_AT)
+      WITH all_jobs AS (
+        SELECT REGION, VEHICLE_TYPE, JOB_ID, MAX(POSTED_AT) AS LAST_TS
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+        WHERE JOB_ID IS NOT NULL AND REGION IS NOT NULL AND VEHICLE_TYPE IS NOT NULL
+        GROUP BY REGION, VEHICLE_TYPE, JOB_ID
+        UNION ALL
+        SELECT REGION, VEHICLE_TYPE, JOB_ID, NULL
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+        WHERE JOB_ID IS NOT NULL AND REGION IS NOT NULL AND VEHICLE_TYPE IS NOT NULL
+        GROUP BY REGION, VEHICLE_TYPE, JOB_ID
+        UNION ALL
+        SELECT REGION, VEHICLE_TYPE, JOB_ID, MAX(TRIP_START)
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+        WHERE JOB_ID IS NOT NULL AND REGION IS NOT NULL AND VEHICLE_TYPE IS NOT NULL
+        GROUP BY REGION, VEHICLE_TYPE, JOB_ID
+      ),
+      collapsed AS (
+        SELECT REGION, VEHICLE_TYPE, JOB_ID, MAX(LAST_TS) AS LAST_TS
+        FROM all_jobs
+        GROUP BY REGION, VEHICLE_TYPE, JOB_ID
+      ),
+      ranked AS (
+        SELECT REGION, VEHICLE_TYPE, JOB_ID, LAST_TS,
+               ROW_NUMBER() OVER (PARTITION BY REGION, VEHICLE_TYPE
+                                  ORDER BY LAST_TS DESC NULLS LAST, JOB_ID DESC) AS RN
+        FROM collapsed
+      )
+      SELECT
+        r.JOB_ID,
+        r.REGION,
+        r.VEHICLE_TYPE,
+        'backfilled @ ' || TO_VARCHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI'),
+        (r.RN = 1),
+        COALESCE(r.LAST_TS, CURRENT_TIMESTAMP)
+      FROM ranked r
+      WHERE NOT EXISTS (
+        SELECT 1 FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+        WHERE d.DATASET_ID = r.JOB_ID
+      )`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
   ];
   for (const { sql, db, schema } of ddls) {
     try {
