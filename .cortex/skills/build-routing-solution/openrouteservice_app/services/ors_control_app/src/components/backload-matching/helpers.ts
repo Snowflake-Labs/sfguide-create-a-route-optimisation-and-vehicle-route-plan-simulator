@@ -203,3 +203,135 @@ export async function buildVroomMatrix(
     row.map(v => (v == null ? 0 : Math.round(Number(v)))));
   return { durations, costs };
 }
+
+// Per-trailer empty-leg baseline: shortest-path travel time + distance from
+// each trailer's current dropoff location to its end point (HOME or shared
+// destination). Used to derive per-vehicle VROOM `max_travel_time` and
+// `max_distance` so that the "Detour budget" and "Allowed deviation" sliders
+// scale linearly with the empty drive home rather than a global envelope.
+//
+// Sources:
+//   'matrix'     - real ORS shortest-path from MATRIX TVF.
+//   'haversine'  - great-circle fallback for a single trailer when MATRIX
+//                  failed or returned a missing/zero cell. Other trailers in
+//                  the same call still get the real ORS baseline.
+//   'fixed-open' - open-end mode (`endMode === 'open'`): no end point exists,
+//                  so we use a fixed 200 km / (200 / KMH_HGV) h baseline per
+//                  trailer. Sliders still bite on top.
+export type EmptyLegBaseline = {
+  durSec: number;
+  distMeters: number;
+  source: 'matrix' | 'haversine' | 'fixed-open';
+};
+
+const FIXED_OPEN_KM = 200;
+
+function fixedOpenBaseline(): EmptyLegBaseline {
+  return {
+    durSec:     Math.round((FIXED_OPEN_KM / KMH_HGV) * 3600),
+    distMeters: FIXED_OPEN_KM * 1000,
+    source:     'fixed-open',
+  };
+}
+
+function haversineBaseline(
+  startLon: number, startLat: number,
+  endLon: number,   endLat: number,
+): EmptyLegBaseline {
+  const meters = haversineKm(startLon, startLat, endLon, endLat) * 1000;
+  return {
+    durSec:     Math.max(1, Math.round((meters / 1000) / KMH_HGV * 3600)),
+    distMeters: Math.max(1, Math.round(meters)),
+    source:     'haversine',
+  };
+}
+
+export async function computeEmptyLegBaselines(
+  profile: string,
+  trailers: Trailer[],
+  trailerEnd: (t: Trailer) => [number, number] | null,
+  region: string | null | undefined,
+  opts: { signal?: AbortSignal } = {},
+): Promise<Map<Trailer, EmptyLegBaseline>> {
+  const out = new Map<Trailer, EmptyLegBaseline>();
+  if (!trailers.length) return out;
+
+  // Open-end short-circuit: if no trailer has an end point, no MATRIX call.
+  const anyEnd = trailers.some(t => trailerEnd(t) !== null);
+  if (!anyEnd) {
+    for (const t of trailers) out.set(t, fixedOpenBaseline());
+    return out;
+  }
+
+  // Build deduped [lon,lat] location list. Index by "lon,lat" rounded to
+  // 6 decimal places (~10cm) so identical points share an index.
+  const key = (lon: number, lat: number) =>
+    `${lon.toFixed(6)},${lat.toFixed(6)}`;
+  const indexByKey = new Map<string, number>();
+  const locations: [number, number][] = [];
+  const addLoc = (lon: number, lat: number): number => {
+    const k = key(lon, lat);
+    let idx = indexByKey.get(k);
+    if (idx === undefined) {
+      idx = locations.length;
+      indexByKey.set(k, idx);
+      locations.push([lon, lat]);
+    }
+    return idx;
+  };
+
+  type Spec = { trailer: Trailer; startIdx: number; endIdx: number | null;
+                startLon: number; startLat: number;
+                endLon: number | null; endLat: number | null; };
+  const specs: Spec[] = trailers.map(t => {
+    const startLon = Number(t.DROPOFF_LON);
+    const startLat = Number(t.DROPOFF_LAT);
+    const startIdx = addLoc(startLon, startLat);
+    const endPt = trailerEnd(t);
+    if (!endPt) {
+      return { trailer: t, startIdx, endIdx: null,
+               startLon, startLat, endLon: null, endLat: null };
+    }
+    const endLon = Number(endPt[0]);
+    const endLat = Number(endPt[1]);
+    const endIdx = addLoc(endLon, endLat);
+    return { trailer: t, startIdx, endIdx,
+             startLon, startLat, endLon, endLat };
+  });
+
+  let matrix: { durations: number[][]; costs: number[][] } | null = null;
+  try {
+    matrix = await buildVroomMatrix(profile, locations, region, opts);
+  } catch {
+    matrix = null;
+  }
+
+  for (const spec of specs) {
+    if (spec.endIdx === null || spec.endLon === null || spec.endLat === null) {
+      // Trailer has no end point even though some others do - treat as open.
+      out.set(spec.trailer, fixedOpenBaseline());
+      continue;
+    }
+    if (!matrix) {
+      out.set(spec.trailer,
+        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat));
+      continue;
+    }
+    const durRow = matrix.durations[spec.startIdx];
+    const costRow = matrix.costs[spec.startIdx];
+    const dur  = durRow ? Number(durRow[spec.endIdx]) : NaN;
+    const dist = costRow ? Number(costRow[spec.endIdx]) : NaN;
+    if (Number.isFinite(dur) && Number.isFinite(dist) && dur > 0 && dist > 0) {
+      out.set(spec.trailer, {
+        durSec:     Math.round(dur),
+        distMeters: Math.round(dist),
+        source:     'matrix',
+      });
+    } else {
+      out.set(spec.trailer,
+        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat));
+    }
+  }
+
+  return out;
+}
