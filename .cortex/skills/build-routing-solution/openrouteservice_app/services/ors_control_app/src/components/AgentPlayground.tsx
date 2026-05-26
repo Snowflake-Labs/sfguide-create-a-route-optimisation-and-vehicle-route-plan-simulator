@@ -394,6 +394,10 @@ export default function AgentPlayground() {
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [chartExpanded, setChartExpanded] = useState(false);
+  const [leftWidth, setLeftWidth] = useState(380);
+  const isDragging = useRef(false);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(380);
 
   useEffect(() => {
     fetch('/api/agent/config').then(r => r.json()).then(data => {
@@ -802,8 +806,8 @@ export default function AgentPlayground() {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: '0 0 380px', display: 'flex', flexDirection: 'column', maxHeight: 540 }}>
+      <div style={{ display: 'flex', gap: 0, alignItems: 'stretch' }}>
+        <div style={{ flex: `0 0 ${leftWidth}px`, display: 'flex', flexDirection: 'column', maxHeight: 540, minWidth: 240 }}>
           <div style={{ flex: 1, overflowY: 'auto', marginBottom: 8, padding: 8, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.02)', minHeight: 200 }}>
             {messages.length === 0 && (
               <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: 16, textAlign: 'center' }}>Select an example above or type your own question</div>
@@ -872,7 +876,26 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: 1, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div
+          onMouseDown={(e: React.MouseEvent) => {
+            e.preventDefault();
+            isDragging.current = true;
+            dragStartX.current = e.clientX;
+            dragStartWidth.current = leftWidth;
+            const onMove = (ev: MouseEvent) => {
+              if (!isDragging.current) return;
+              const delta = ev.clientX - dragStartX.current;
+              setLeftWidth(w => Math.max(240, Math.min(640, dragStartWidth.current + delta)));
+            };
+            const onUp = () => { isDragging.current = false; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+          }}
+          style={{ flex: '0 0 6px', cursor: 'col-resize', margin: '0 6px', borderRadius: 3, background: 'var(--border, rgba(0,0,0,0.1))', transition: 'background 0.15s', alignSelf: 'stretch' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(41,181,232,0.5)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--border, rgba(0,0,0,0.1))'; }}
+        />
+        <div style={{ flex: 1, minWidth: 260, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(() => {
             const hasChart = !!chartData;
             const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
@@ -928,7 +951,7 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: '0 0 220px', display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11 }}>
+        <div style={{ flex: '0 0 220px', marginLeft: 12, display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11 }}>
           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, color: 'var(--text)' }}>Token Workflow</div>
 
           <div style={{ marginBottom: 10 }}>
