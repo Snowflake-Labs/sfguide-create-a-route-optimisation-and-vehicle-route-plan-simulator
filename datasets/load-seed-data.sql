@@ -445,6 +445,9 @@ CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
 --    These are needed for the Agent Playground catchment/supply chain scenarios.
 --------------------------------------------------------------------------------
 
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 7a. SF_HEALTH_DEMOGRAPHICS (55 SF neighborhoods with morbidity + deprivation data)
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS (
   DEMO_ID NUMBER, NEIGHBORHOOD VARCHAR, LATITUDE FLOAT, LONGITUDE FLOAT,
