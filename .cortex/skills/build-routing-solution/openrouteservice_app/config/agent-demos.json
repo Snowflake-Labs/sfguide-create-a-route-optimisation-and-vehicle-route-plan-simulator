@@ -41,6 +41,19 @@
         { "label": "4. Reachability", "icon": "⏱️", "prompt": "Show me the area reachable within 20 minutes by HGV from the Port of San Francisco" },
         { "label": "5. Custom route", "icon": "📍", "prompt": "I have 2 vehicles starting from 1 Market Street, San Francisco. Optimise routes to deliver to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, and Walgreens 2690 Mission St" }
       ]
+    },
+    {
+      "id": "weather",
+      "label": "Weather-Aware Routing",
+      "icon": "🌦️",
+      "description": "Check real-time Met Office weather conditions before routing — fog, wind, rain advisories",
+      "prompts": [
+        { "label": "1. Current conditions", "icon": "🌡️", "prompt": "What are the current weather conditions in San Francisco?" },
+        { "label": "2. Cycling safety", "icon": "🚲", "prompt": "Is it safe to send e-bike couriers out today? Check the wind and visibility." },
+        { "label": "3. Weather + directions", "icon": "🗺️", "prompt": "Check the weather, then give me cycling directions from Union Square to the Ferry Building if conditions are safe" },
+        { "label": "4. Delivery planning", "icon": "🚚", "prompt": "Check today's weather and plan deliveries for 3 vehicles from 1 Market Street to 5 pharmacies. If it's raining, use driving-car instead of cycling." },
+        { "label": "5. Fog check", "icon": "🌫️", "prompt": "Is there fog in San Francisco right now? Should I avoid sending walking couriers?" }
+      ]
     }
   ]
 }

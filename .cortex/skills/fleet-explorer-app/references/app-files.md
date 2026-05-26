@@ -78,7 +78,7 @@ Key characteristics of the current version:
 - `TRIM(NAME, '"')::TEXT` for POI names
 - ISOCHRONES: pass minutes directly (not seconds), cast `::FLOAT` and `::NUMBER`
 - OPTIMIZATION: vehicles must have `"profile": "driving-car"` and `"capacity": [N]`; jobs have `"delivery": [1]`
-- MATRIX: vehicle type selectable (driving-car, cycling-electric, driving-hgv); grid size = points per side (3-9); step=0.003 for all resolutions
+- MATRIX: vehicle type selectable (driving-car, cycling-regular, foot-walking); tooltips show drive time + distance
 - H3: `H3_POINT_TO_CELL_STRING(ST_MAKEPOINT(lng, lat), resolution)`
 - All maps use `map_style="dark"` and HTML tooltips with dark styling
 - No external image URLs (blocked in runtime)

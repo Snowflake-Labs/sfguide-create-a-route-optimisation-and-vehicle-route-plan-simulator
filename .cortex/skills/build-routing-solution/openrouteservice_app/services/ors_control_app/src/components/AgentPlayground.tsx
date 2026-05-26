@@ -306,17 +306,15 @@ function detectChartFromMarkdown(content: string): ChartData | null {
   const data = rows.map(row => {
     const obj: any = {};
     headers.forEach((h, i) => {
-      const val = (row[i] || '').replace(/\*+/g, '').trim();
+      const val = row[i] || '';
       const num = parseFloat(val.replace(/[,%]/g, ''));
       obj[h] = isNaN(num) ? val : num;
     });
     return obj;
   });
 
-  const cleanHeaders = headers.map(h => h.replace(/\*+/g, '').trim());
-
-  const numericCols = cleanHeaders.filter(h => data.every(d => typeof d[h] === 'number'));
-  const textCols = cleanHeaders.filter(h => data.some(d => typeof d[h] === 'string'));
+  const numericCols = headers.filter(h => data.every(d => typeof d[h] === 'number'));
+  const textCols = headers.filter(h => data.some(d => typeof d[h] === 'string'));
 
   if (numericCols.length === 0 || textCols.length === 0) return null;
 
@@ -333,24 +331,20 @@ function detectChartFromMarkdown(content: string): ChartData | null {
   return { type, data, labelKey, valueKeys, title: '' };
 }
 
-function AgentChart({ chart }: { chart: ChartData }) {
-  const height = 280;
-  const cleanData = chart.data.map(d => {
-    const cleaned: any = {};
-    for (const [k, v] of Object.entries(d)) {
-      cleaned[k] = typeof v === 'string' ? v.replace(/\*+/g, '').trim() : v;
-    }
-    return cleaned;
-  });
+function AgentChart({ chart, expanded, onToggle }: { chart: ChartData; expanded: boolean; onToggle: () => void }) {
+  const height = expanded ? 360 : 200;
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)' }}>
-      <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>📊 Analytics</span>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>📊 Analytics Visualization</span>
+        <button onClick={onToggle} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          {expanded ? '↙ Collapse' : '↗ Expand'}
+        </button>
       </div>
       <div style={{ padding: 12, height }}>
         {chart.type === 'bar' && (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={cleanData} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
+            <BarChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey={chart.labelKey} tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
               <YAxis tick={{ fontSize: 10 }} />
@@ -363,7 +357,7 @@ function AgentChart({ chart }: { chart: ChartData }) {
         )}
         {chart.type === 'line' && (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={cleanData} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
+            <LineChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
               <XAxis dataKey={chart.labelKey} tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
               <YAxis tick={{ fontSize: 10 }} />
@@ -377,8 +371,8 @@ function AgentChart({ chart }: { chart: ChartData }) {
         {chart.type === 'pie' && (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
-              <Pie data={cleanData} dataKey={chart.valueKeys[0]} nameKey={chart.labelKey} cx="50%" cy="50%" outerRadius={70} label={(e: any) => String(e[chart.labelKey] || '').slice(0, 15)} labelLine={false}>
-                {cleanData.map((_: any, i: number) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              <Pie data={chart.data} dataKey={chart.valueKeys[0]} nameKey={chart.labelKey} cx="50%" cy="50%" outerRadius={expanded ? 130 : 70} label={(e: any) => e[chart.labelKey]?.toString().slice(0, 15)} labelLine={false}>
+                {chart.data.map((_: any, i: number) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
               </Pie>
               <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
             </PieChart>
@@ -399,6 +393,7 @@ export default function AgentPlayground() {
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
   const [chartData, setChartData] = useState<ChartData | null>(null);
+  const [chartExpanded, setChartExpanded] = useState(false);
 
   useEffect(() => {
     fetch('/api/agent/config').then(r => r.json()).then(data => {
@@ -443,6 +438,7 @@ export default function AgentPlayground() {
     setTokenUsage(null);
     setWorkflowSteps([]);
     setChartData(null);
+    setChartExpanded(false);
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
@@ -453,11 +449,7 @@ export default function AgentPlayground() {
     const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content && !m.streaming);
     if (lastAssistant?.content) {
       const chart = detectChartFromMarkdown(lastAssistant.content);
-      if (chart && chart.type === 'pie') {
-        setChartData(null);
-      } else {
-        setChartData(chart);
-      }
+      setChartData(chart);
     }
   }, [messages]);
 
@@ -880,43 +872,15 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: 1, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {(() => {
-            const hasChart = !!chartData;
-            const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
-            if (hasMap) {
-              return (
-                <div style={{ display: 'flex', gap: 8, flex: 1 }}>
-                  {hasChart && <div style={{ flex: 1, minWidth: 0 }}><AgentChart chart={chartData!} /></div>}
-                  <div style={{ flex: hasChart ? 1 : 'auto', width: hasChart ? undefined : '100%', height: hasChart ? 320 : 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-                    <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-                  </div>
-                </div>
-              );
-            }
-            if (hasChart) {
-              return <AgentChart chart={chartData!} />;
-            }
-            return (
-              <div style={{ padding: 24, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', height: 380, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                <div style={{ fontSize: 28, marginBottom: 12 }}>🗺️</div>
-                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Routing Agent Playground</h3>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 16 }}>
-                  Ask questions about directions, travel times, delivery optimisation, or reachability — the agent will call OpenRouteService tools and render results here.
-                </p>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-                  <div><strong>🧭 Directions</strong> — "Drive from Union Square to Fisherman's Wharf"</div>
-                  <div><strong>⏱️ Isochrones</strong> — "Show me areas within 10 min drive of SFO"</div>
-                  <div><strong>🚚 Optimisation</strong> — "Optimise deliveries to 5 pharmacies with 2 vehicles"</div>
-                  <div><strong>💊 Supply Chain</strong> — "Run the pharma fleet delivery demo"</div>
-                  <div><strong>🏥 Catchment</strong> — "Health profile within 10 min of 498 Castro St"</div>
-                </div>
-                <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 16, opacity: 0.7 }}>
-                  Select a scenario from the left panel, or type your own question below.
-                </p>
-              </div>
-            );
-          })()}
+        <div style={{ flex: 1, minWidth: 300 }}>
+          {chartData && (
+            <AgentChart chart={chartData} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
+          )}
+          {(!chartData || !chartExpanded) && (
+            <div style={{ height: chartData ? 280 : 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+              <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+            </div>
+          )}
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {poiLegend.map(entry => (

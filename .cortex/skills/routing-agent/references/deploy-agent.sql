@@ -93,11 +93,11 @@ $$;
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_ISOCHRONES: Wraps ORS ISOCHRONES with AI geocoding
+-- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
-    RANGE_MINUTES NUMBER DEFAULT 10,
+    RANGE_MINUTES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
@@ -117,7 +117,7 @@ DECLARE
         isochrone AS (
             SELECT geocoded_result AS geo, i.RESPONSE AS iso_result
             FROM geocoded,
-                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::INT)) i
+                 TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, geocoded_result:longitude::FLOAT, geocoded_result:latitude::FLOAT, ?::NUMBER)) i
         )
         SELECT
             geo AS center,
@@ -164,225 +164,212 @@ BEGIN
     );
 EXCEPTION
     WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('error', 'TOOL_ISOCHRONES failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_ISOCHRONE failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_ROUTE_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (JavaScript)
--- NOTE: Uses JavaScript because it handles JSON manipulation more naturally
--- for building VROOM-format payloads.
+-- TOOL_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
-    DESCRIPTION VARCHAR,
-    NUM_VEHICLES FLOAT DEFAULT 1,
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(
+    DELIVERY_LOCATIONS VARCHAR,
+    DEPOT_LOCATION VARCHAR,
+    NUM_VEHICLES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
-LANGUAGE JAVASCRIPT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
 AS
 $$
-try {
-    var geocodeSQL = "SELECT AI_COMPLETE(" +
-        "'claude-sonnet-4-5'," +
-        "CONCAT('Parse this routing problem into separate lists for jobs (deliveries/stops) and vehicles (start/end points). Use worldwide lat/lon coordinates. Description: ', ?)," +
-        "{'temperature': 0, 'max_tokens': 3000}," +
-        "{'type': 'json', 'schema': {'type': 'object', 'properties': {" +
-            "'jobs': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'longitude': {'type': 'number'}, 'latitude': {'type': 'number'}}, 'required': ['name', 'longitude', 'latitude']}}," +
-            "'vehicles': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': {'type': 'string'}, 'start_longitude': {'type': 'number'}, 'start_latitude': {'type': 'number'}, 'end_longitude': {'type': 'number'}, 'end_latitude': {'type': 'number'}}, 'required': ['name', 'start_longitude', 'start_latitude', 'end_longitude', 'end_latitude']}}" +
-        "}, 'required': ['jobs', 'vehicles']}}" +
-        ") AS result";
-    var geocodeStmt = snowflake.createStatement({ sqlText: geocodeSQL, binds: [DESCRIPTION] });
-    var geocodeRes = geocodeStmt.execute();
-    geocodeRes.next();
-    var raw = geocodeRes.getColumnValue(1);
-    var geocoded = (typeof raw === 'string') ? JSON.parse(raw) : raw;
-    if (!geocoded.jobs || geocoded.jobs.length === 0) {
-        return { error: 'Geocoding returned no jobs', status: 'FAILED' };
-    }
-    if (!geocoded.vehicles || geocoded.vehicles.length === 0) {
-        return { error: 'Geocoding returned no vehicles', status: 'FAILED' };
-    }
-    var jobs = geocoded.jobs.map(function(j, i) {
-        return { id: i + 1, location: [j.longitude, j.latitude], amount: [1], description: j.name };
-    });
-    var vehicles = geocoded.vehicles.map(function(v, i) {
-        return { id: i + 1, start: [v.start_longitude, v.start_latitude], end: [v.end_longitude, v.end_latitude], profile: PROFILE, capacity: [jobs.length] };
-    });
-    var vroomPayload = JSON.stringify({ jobs: jobs, vehicles: vehicles });
-    var optSQL = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
-    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, PROFILE] });
-    var optRes = optStmt.execute();
-    if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: geocoded.jobs, vehicles: geocoded.vehicles };
-    }
-    var rawResp = optRes.getColumnValue(1);
-    var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
-    var geojsonRaw = optRes.getColumnValue(2);
-    var geojson = geojsonRaw ? ((typeof geojsonRaw === 'string') ? JSON.parse(geojsonRaw) : geojsonRaw) : null;
-    if (response.code && response.code !== 0) {
-        return { error: 'VROOM error: ' + JSON.stringify(response), status: 'FAILED' };
-    }
-    return { status: 'SUCCESS', num_vehicles: geocoded.vehicles.length, jobs: geocoded.jobs, vehicles: geocoded.vehicles, routes: response.routes || [], depot: geocoded.vehicles[0] ? { longitude: geocoded.vehicles[0].start_longitude, latitude: geocoded.vehicles[0].start_latitude, name: geocoded.vehicles[0].name } : null, geometry: geojson };
-} catch(err) {
-    return { error: err.message, status: 'FAILED' };
-}
+import json
+from snowflake.snowpark import Session
+
+def _escape_sql_string(s: str) -> str:
+    """Escape single quotes for safe SQL string interpolation."""
+    return s.replace("'", "''")
+
+def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str) -> dict:
+    try:
+        safe_delivery = _escape_sql_string(delivery_locations)
+        delivery_query = f"""
+        SELECT AI_COMPLETE(
+            'claude-sonnet-4-5',
+            'Extract all delivery locations and return coordinates. Description: {safe_delivery}',
+            {{'temperature': 0, 'max_tokens': 3000}},
+            {{'type': 'json', 'schema': {{'type': 'object', 'properties': {{'locations': {{'type': 'array', 'items': {{'type': 'object', 'properties': {{'name': {{'type': 'string'}}, 'longitude': {{'type': 'number'}}, 'latitude': {{'type': 'number'}}}}, 'required': ['name', 'longitude', 'latitude']}}}}}}}}}}
+        ) AS result
+        """
+        delivery_result = session.sql(delivery_query).collect()[0]['RESULT']
+        delivery_data = json.loads(delivery_result) if isinstance(delivery_result, str) else delivery_result
+
+        if not delivery_data.get('locations'):
+            return {'error': 'OPTIMIZATION FAILED: Geocoding returned no delivery locations. Could not parse locations from the description.', 'status': 'FAILED'}
+
+        safe_depot = _escape_sql_string(depot_location)
+        depot_query = f"""
+        SELECT AI_COMPLETE(
+            'claude-sonnet-4-5',
+            'Extract the depot location coordinates. Description: {safe_depot}',
+            {{'temperature': 0, 'max_tokens': 1000}},
+            {{'type': 'json', 'schema': {{'type': 'object', 'properties': {{'name': {{'type': 'string'}}, 'longitude': {{'type': 'number'}}, 'latitude': {{'type': 'number'}}}}, 'required': ['name', 'longitude', 'latitude']}}}}
+        ) AS result
+        """
+        depot_result = session.sql(depot_query).collect()[0]['RESULT']
+        depot_data = json.loads(depot_result) if isinstance(depot_result, str) else depot_result
+
+        if 'longitude' not in depot_data or 'latitude' not in depot_data:
+            return {'error': 'OPTIMIZATION FAILED: Geocoding failed for the depot location. Could not parse coordinates.', 'status': 'FAILED'}
+
+        jobs = []
+        for i, loc in enumerate(delivery_data.get('locations', []), start=1):
+            jobs.append({
+                'id': i,
+                'location': [loc['longitude'], loc['latitude']],
+                'description': loc['name']
+            })
+
+        vehicles = []
+        for i in range(1, num_vehicles + 1):
+            vehicles.append({
+                'id': i,
+                'profile': profile,
+                'start': [depot_data['longitude'], depot_data['latitude']],
+                'end': [depot_data['longitude'], depot_data['latitude']]
+            })
+
+        jobs_json = json.dumps(jobs).replace("'", "''")
+        vehicles_json = json.dumps(vehicles).replace("'", "''")
+
+        opt_query = f"""
+        SELECT RESPONSE AS result FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(
+            PARSE_JSON('{jobs_json}')::ARRAY,
+            PARSE_JSON('{vehicles_json}')::ARRAY
+        ))
+        """
+        opt_result = session.sql(opt_query).collect()[0]['RESULT']
+        opt_data = json.loads(opt_result) if isinstance(opt_result, str) else opt_result
+
+        if 'error' in opt_data:
+            return {
+                'error': f"OPTIMIZATION FAILED: OpenRouteService returned an error: {opt_data['error']}",
+                'deliveries_requested': delivery_data.get('locations', []),
+                'depot_requested': depot_data,
+                'status': 'FAILED'
+            }
+
+        routes = opt_data.get('routes', [])
+        if not routes:
+            return {
+                'error': 'OPTIMIZATION FAILED: OpenRouteService could not compute routes for the requested locations. This typically means the locations are OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area.',
+                'deliveries_requested': delivery_data.get('locations', []),
+                'depot_requested': depot_data,
+                'status': 'FAILED'
+            }
+
+        unassigned = opt_data.get('unassigned', [])
+        if len(unassigned) == len(jobs):
+            return {
+                'error': 'OPTIMIZATION FAILED: None of the delivery locations could be routed. This typically means ALL locations are OUTSIDE the loaded map region.',
+                'deliveries_requested': delivery_data.get('locations', []),
+                'depot_requested': depot_data,
+                'status': 'FAILED'
+            }
+
+        return {
+            'deliveries': delivery_data.get('locations', []),
+            'depot': depot_data,
+            'num_vehicles': num_vehicles,
+            'routes': routes,
+            'unassigned': unassigned,
+            'summary': opt_data.get('summary', {}),
+            'status': 'SUCCESS'
+        }
+
+    except json.JSONDecodeError as e:
+        return {'error': f'OPTIMIZATION FAILED: Failed to parse geocoding response as JSON: {str(e)}', 'status': 'FAILED'}
+    except KeyError as e:
+        return {'error': f'OPTIMIZATION FAILED: Missing expected field in geocoding response: {str(e)}', 'status': 'FAILED'}
+    except Exception as e:
+        return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- ROUTING_AGENT: Cortex Agent with tool bindings
--- CRITICAL: tool_spec type MUST be 'generic' (NOT 'custom_tool')
--- tool_resources MUST include 'type: warehouse' in execution_environment
 ----------------------------------------------------------------------
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+COMMENT = 'Routing agent using OpenRouteService for directions, isochrones, optimization, and pharmaceutical supply chain planning.'
+PROFILE = '{"display_name": "Routing Agent", "color": "green"}'
 FROM SPECIFICATION $$
 models:
   orchestration: auto
-
+orchestration:
+  budget:
+    seconds: 120
+    tokens: 32000
 instructions:
+  system: |
+    You are a routing agent powered by OpenRouteService. You help users with:
+    1. Driving/cycling/walking directions between locations
+    2. Reachability analysis (isochrones) - areas reachable within X minutes
+    3. Multi-stop delivery route optimization
+    4. Pharmaceutical supply chain planning with pre-loaded SF pharmacy data
+    5. Population health catchment analysis around pharmacies
+
+    CRITICAL RULES - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
+
+    1. NEVER provide distances, durations, route details, or travel advice from your own knowledge.
+       ALL routing information MUST come from the tool results. You are NOT a general travel advisor.
+
+    2. ALWAYS call the appropriate tool for ANY routing question. Never answer routing questions
+       without using a tool first.
+
+    3. After calling a tool, check the result for a "status" field:
+       - If status is "FAILED" or the result contains an "error" field: Report the EXACT error
+         message to the user. Do NOT attempt to answer the question yourself.
+       - If status is "SUCCESS": Use ONLY the data returned by the tool to answer.
+
+    4. If a tool fails because locations are outside the map region, tell the user:
+       "The requested locations are outside the map region loaded in OpenRouteService."
+       Do NOT follow up with general travel advice or estimated distances.
+
+    5. NEVER claim you used a tool if you did not. NEVER fabricate tool results.
+
+    6. For pharmaceutical supply chain questions (deliver to pharmacies, fleet demo, supply chain plan),
+       use tool_supply_chain. This tool has ALL data pre-loaded: 6 SF pharmacies, health demographics,
+       drug formulary, and 3 specialist vehicles. Do NOT ask the user for pharmacy addresses or depot info.
+
+    7. For catchment/population health analysis around a pharmacy, use tool_pharma_catchment.
+
+    8. For the pharma fleet delivery demo with 30 stops, use tool_pharma_optimization.
+
+    Transport profiles: driving-car, driving-hgv, cycling-electric
   response: |
-    You are a routing and fleet intelligence assistant for the San Francisco Bay Area.
-    Present distances in km and durations in minutes.
-
-    VISUALIZATION RULES:
-    - When presenting ranked lists, ALWAYS include a numeric column with values.
-    - Do NOT use bold/italic inside table cells.
-    - For route optimization: present | Vehicle | Stops | Distance km | Duration min |
-    - For catchment: present | Neighborhood | Population | Diabetes % | Risk Score |
+    Be concise. Format results clearly:
+    - Distances in km, durations in minutes
+    - For optimization, summarize vehicle assignments and total distance/duration
+    - For supply chain, summarize by vehicle type (cold chain, controlled, standard)
+    - If a tool returns an error, report it clearly without supplementing from your knowledge.
   orchestration: |
-    - Directions: Use TOOL_DIRECTIONS
-    - Reachability/isochrone: Use TOOL_ISOCHRONES
-    - Multi-stop optimization (user locations): Use TOOL_ROUTE_OPTIMIZATION
-    - Population health catchment: Use TOOL_PHARMA_CATCHMENT
-    - Full pharma supply chain plan (all SF pharmacies, 3 vehicles): Use TOOL_SUPPLY_CHAIN
-    - ALWAYS use a tool for routing questions.
-
+    - Directions between locations: Use tool_directions
+    - Reachability/isochrone questions: Use tool_isochrone
+    - Multi-stop optimization with user-provided locations: Use tool_optimization
+    - Full pharmaceutical supply chain plan (all SF pharmacies): Use tool_supply_chain
+    - Pharma fleet delivery demo (30 pre-geocoded stops): Use tool_pharma_optimization
+    - Population health / catchment analysis around a pharmacy: Use tool_pharma_catchment
+    - ALWAYS use a tool for routing questions. NEVER answer from general knowledge.
 tools:
   - tool_spec:
       type: generic
-      name: TOOL_DIRECTIONS
-      description: "Calculate driving directions between locations."
+      name: tool_directions
+      description: "Get directions between locations with distance, duration, turn-by-turn instructions."
       input_schema:
-        type: object
-        properties:
-          locations_description:
-            type: string
-            description: "Natural language start and end locations"
-          profile:
-            type: string
-            description: "driving-car, driving-hgv, or cycling-electric"
-        required: [locations_description]
-  - tool_spec:
-      type: generic
-      name: TOOL_ISOCHRONES
-      description: "Generate reachability polygon from a location."
-      input_schema:
-        type: object
-        properties:
-          location_description:
-            type: string
-            description: "Center location description"
-          minutes:
-            type: integer
-            description: "Travel time in minutes"
-          profile:
-            type: string
-        required: [location_description, minutes]
-  - tool_spec:
-      type: generic
-      name: TOOL_ROUTE_OPTIMIZATION
-      description: "Optimize multi-stop delivery route (VRP) for user-specified locations."
-      input_schema:
-        type: object
-        properties:
-          description:
-            type: string
-            description: "Depot and delivery locations"
-          num_vehicles:
-            type: number
-            description: "Number of vehicles"
-          profile:
-            type: string
-        required: [description]
-  - tool_spec:
-      type: generic
-      name: TOOL_PHARMA_CATCHMENT
-      description: "Analyse population health demographics within drive-time catchment of a pharmacy."
-      input_schema:
-        type: object
-        properties:
-          pharmacy_description:
-            type: string
-            description: "Pharmacy location"
-          range_minutes:
-            type: number
-            description: "Drive time minutes (default 10)"
-          profile:
-            type: string
-        required: [pharmacy_description]
-  - tool_spec:
-      type: generic
-      name: TOOL_SUPPLY_CHAIN
-      description: "Run the FULL pre-configured pharmaceutical supply chain delivery. Uses ALL pre-loaded data: 6 SF pharmacies, health demographics, drug formulary, and 3 specialist vehicles (cold chain, controlled substances, standard). Depot at 1 Market Street. Do NOT ask for data."
-      input_schema:
-        type: object
-        properties:
-          profile:
-            type: string
-            description: "Transport mode (default driving-car)"
-
-tool_resources:
-  TOOL_DIRECTIONS:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_ISOCHRONES:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_ROUTE_OPTIMIZATION:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_PHARMA_CATCHMENT:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_SUPPLY_CHAIN:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-$$;
-
-----------------------------------------------------------------------
--- Grant access (optional - only if ALL_AGENTS_ROLE exists)
-----------------------------------------------------------------------
--- GRANT USAGE ON AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT TO ROLE ALL_AGENTS_ROLE;
-
-----------------------------------------------------------------------
--- Register with Snowflake Intelligence (optional)
-----------------------------------------------------------------------
--- ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT
--- ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
-
-SELECT 'Agent deployed successfully' AS STATUS;
-
         type: object
         properties:
           locations_description:
@@ -466,52 +453,36 @@ SELECT 'Agent deployed successfully' AS STATUS;
             type: string
             description: "Transport mode. Default: driving-car"
         required: [pharmacy_description]
-  - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: FLEET_ANALYTICS
-      description: "Answer analytical questions about fleet data: trip counts, vehicle performance, delivery times, busiest POIs, hourly distributions, detour rates, and fleet utilization. Use for any data/analytics question."
 tool_resources:
   tool_directions:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
     execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
   tool_isochrone:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
     execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
     execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
   tool_supply_chain:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
     execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
   tool_pharma_optimization:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION
     execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
   tool_pharma_catchment:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
     execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  FLEET_ANALYTICS:
-    type: semantic_view
-    semantic_view: FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
-    execution_environment:
-      type: warehouse
       warehouse: ROUTING_ANALYTICS
 $$;
 

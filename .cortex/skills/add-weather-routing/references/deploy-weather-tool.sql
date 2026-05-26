@@ -185,19 +185,23 @@ BEGIN
         v_lon := -122.4194;
     END IF;
 
-    v_today := CURRENT_DATE();
+    v_today := DATEADD('day', -1, CURRENT_DATE());
 
-    -- Fetch each parameter (forecast_hour=0 = latest analysis)
+    -- Use yesterday's 12Z model run with lead_hours offset to get today's forecast
+    -- Met Office publishes with ~12hr delay, so yesterday's model is the latest available
+    LET v_lead_hours INT := HOUR(CURRENT_TIMESTAMP()) + 24;
+
+    -- Fetch each parameter
     SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, 0, 'temperature')  INTO v_temp;
+        :v_lat, :v_lon, :v_today, v_lead_hours, 'temperature')  INTO v_temp;
     SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, 0, 'wind_speed')   INTO v_wind;
+        :v_lat, :v_lon, :v_today, v_lead_hours, 'wind_speed')   INTO v_wind;
     SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, 0, 'precipitation') INTO v_prec;
+        :v_lat, :v_lon, :v_today, v_lead_hours, 'precipitation') INTO v_prec;
     SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, 0, 'visibility')   INTO v_vis;
+        :v_lat, :v_lon, :v_today, v_lead_hours, 'visibility')   INTO v_vis;
     SELECT FLEET_INTELLIGENCE.ROUTING_AGENT.GET_WEATHER_AT_POINT(
-        :v_lat, :v_lon, :v_today, 0, 'humidity')     INTO v_hum;
+        :v_lat, :v_lon, :v_today, v_lead_hours, 'humidity')     INTO v_hum;
 
     RETURN OBJECT_CONSTRUCT(
         'region',      REGION_NAME,
