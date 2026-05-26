@@ -18,7 +18,8 @@ import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
   Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
   sfQuery, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
-  isOrsRegionReady, buildVroomMatrix,
+  isOrsRegionReady, buildVroomMatrix, computeEmptyLegBaselines,
+  type EmptyLegBaseline,
 } from './backload-matching/helpers';
 
 // Hard caps on solve payload size. Picked so that the precomputed matrix
@@ -189,7 +190,17 @@ export default function BackloadMatching() {
       sfQuery(`SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE STATUS='COMPLETE' AND REGION='${regionName?.replace(/'/g, "''") || ''}' ORDER BY COMPLETED_AT DESC LIMIT 1`, 'OPENROUTESERVICE_APP', 'CORE'),
       sfQuery(`SELECT ZONE_ID, NAME, CATEGORY, ST_ASGEOJSON(POLYGON)::VARCHAR AS POLYGON_GEOJSON FROM ${BM_DB}.${BM_SCHEMA}.AVOID_ZONES`).catch(() => []),
     ]);
-    setTrailers(tRows as Trailer[]);
+    // Defensive dedupe by TRAILER_ID — guards against the upstream view
+    // regressing and feeding the same trailer to VROOM as multiple vehicles
+    // (which produces visually-identical duplicate assignment cards).
+    const seenTrailerIds = new Set<string>();
+    const tDeduped = (tRows as Trailer[]).filter(r => {
+      const id = String(r.TRAILER_ID);
+      if (seenTrailerIds.has(id)) return false;
+      seenTrailerIds.add(id);
+      return true;
+    });
+    setTrailers(tDeduped);
     setInternal(iRows as Volume[]);
     setExternal(eRows as Offer[]);
     const cfg: Record<string, any> = (cRows[0] as any) || {};
@@ -365,49 +376,51 @@ export default function BackloadMatching() {
     const internalSkipped = Math.max(0, internal.length - internalSubset.length);
     const externalSkipped = Math.max(0, external.length - externalSubset.length);
 
-    // Region-agnostic time/distance budget.
-    // Compute the haversine envelope (longest pair-wise distance) over every
-    // point any tour might visit: trailer starts/ends + shipment pickups and
-    // dropoffs in the candidate subset. Then assume the worst tour visits up
-    // to (2 * maxStops + 1) legs at the envelope's diameter. This scales
-    // correctly for compact city graphs (envelope ~ a few km) and continental
-    // graphs (envelope ~ 1000+ km) without hardcoding any region constants.
-    // Replaces the previous formula that used haversine(trailer→home) only,
-    // which collapsed to an 8 h budget on Germany and caused VROOM to drop
-    // every candidate route silently → "OPTIMIZATION returned 0 rows".
-    const envelopePoints: [number, number][] = [
-      ...trailers.flatMap(t => ([
-        [Number(t.DROPOFF_LON), Number(t.DROPOFF_LAT)] as [number, number],
-        [Number(t.HOME_LON),    Number(t.HOME_LAT)]    as [number, number],
-      ])),
-      ...internalSubset.flatMap(v => ([
-        [Number(v.PICKUP_LON),  Number(v.PICKUP_LAT)]  as [number, number],
-        [Number(v.DROPOFF_LON), Number(v.DROPOFF_LAT)] as [number, number],
-      ])),
-      ...externalSubset.flatMap(o => ([
-        [Number(o.PICKUP_LON),  Number(o.PICKUP_LAT)]  as [number, number],
-        [Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT)] as [number, number],
-      ])),
-    ];
-    let envelopeKm = 0;
-    for (let i = 0; i < envelopePoints.length; i++) {
-      for (let j = i + 1; j < envelopePoints.length; j++) {
-        const d = haversineKm(
-          envelopePoints[i][0], envelopePoints[i][1],
-          envelopePoints[j][0], envelopePoints[j][1],
-        );
-        if (d > envelopeKm) envelopeKm = d;
-      }
+    // Region-agnostic time/distance budget — per-vehicle empty-leg baselines.
+    // For each trailer we compute the shortest-path travel time + distance
+    // from its current dropoff to its end point (HOME or shared dest) using
+    // the ORS MATRIX TVF. The user's "Detour budget" slider then adds extra
+    // hours linearly on top, and "Allowed deviation" scales the distance
+    // baseline multiplicatively. This makes both sliders bite per-vehicle
+    // instead of being dwarfed by a global envelope tour.
+    //
+    // Fallbacks (per-trailer):
+    //   * MATRIX failure or missing cell -> haversine(start, end) / KMH_HGV.
+    //   * Open-end mode (no end point)   -> fixed 200 km / (200/KMH_HGV) h.
+    setSolverLog('Computing empty-leg baselines...');
+    let baselines: Map<Trailer, EmptyLegBaseline>;
+    try {
+      baselines = await computeEmptyLegBaselines(
+        profile,
+        trailers.slice(0, BM_MAX_VEHICLES),
+        trailerEnd,
+        regionName,
+      );
+    } catch (e: any) {
+      console.warn('[BM] computeEmptyLegBaselines threw, using haversine for all trailers', e);
+      baselines = new Map();
     }
-    const tourLegs     = 2 * maxStops + 1;
-    const worstTourKm  = Math.max(200, envelopeKm * tourLegs);
-    const worstTourHrs = worstTourKm / KMH_HGV;
+    let baselineMatrixCount = 0;
+    let baselineHaversineCount = 0;
+    let baselineFixedOpenCount = 0;
+    for (const b of baselines.values()) {
+      if (b.source === 'matrix')      baselineMatrixCount++;
+      else if (b.source === 'haversine') baselineHaversineCount++;
+      else if (b.source === 'fixed-open') baselineFixedOpenCount++;
+    }
+
+    const FALLBACK_BASELINE: EmptyLegBaseline = {
+      durSec:     Math.round((200 / KMH_HGV) * 3600),
+      distMeters: 200_000,
+      source:     'fixed-open',
+    };
 
     const vrpVehicles = trailers.slice(0, BM_MAX_VEHICLES).map((t, i) => {
       const id = i + 1;
       trailerById.set(id, t);
       const endPt = trailerEnd(t);
       const capacityKg = Number(t.MAX_PAYLOAD_KG) || 24000;
+      const base = baselines.get(t) ?? FALLBACK_BASELINE;
 
       const veh: any = {
         id,
@@ -420,17 +433,19 @@ export default function BackloadMatching() {
           : [capacityKg],
         skills: t.HAZMAT_CERT ? [1, 2, 3] : [1, 2],
         max_tasks: maxStops,
-        // Time budget: worst-case envelope tour + user's detour-slack slider.
-        // detourSlackHrs widens linearly on top of the realistic baseline.
+        // Time budget = empty-leg baseline + user's detour-slack slider.
+        // The slider therefore ADDS hours linearly on top of the empty
+        // drive home (or the 200 km fixed baseline in open-end mode).
         max_travel_time: Math.max(
           1800,
-          Math.round((worstTourHrs + detourSlackHrs) * 3600),
+          base.durSec + Math.round(detourSlackHrs * 3600),
         ),
-        // Distance budget: envelope tour scaled by user's deviation% slider.
-        // 100 km floor protects the degenerate single-city candidate case.
+        // Distance budget = empty-leg baseline scaled by deviation%.
+        // The slider therefore MULTIPLIES the empty drive home: e.g.
+        // 200% means "tour may be up to 3x the empty distance".
         max_distance: Math.max(
-          100_000,
-          Math.round(worstTourKm * (1 + deviationPct / 100) * 1000),
+          10_000,
+          Math.round(base.distMeters * (1 + deviationPct / 100)),
         ),
         costs: {
           fixed:  Math.round(fixedDispatchEur * COST_SCALE),
@@ -856,7 +871,8 @@ export default function BackloadMatching() {
       `multiDim=${useMultiDimCapacity ? 'on' : 'off'}, end=${endMode}, ` +
       `avoidZones=${selectedAvoidZoneIds.length}; skipped ${internalSkipped} internal, ` +
       `${externalSkipped} external; region=${regionName}, profile=${profile}, ` +
-      `matrix=${precomputedMatrix ? `UI ${precomputedMatrix.durations.length}^2` : 'gateway-side'}). ` +
+      `matrix=${precomputedMatrix ? `UI ${precomputedMatrix.durations.length}^2` : 'gateway-side'}, ` +
+      `baselines=${baselineMatrixCount} matrix/${baselineHaversineCount} haversine/${baselineFixedOpenCount} open-end). ` +
       (matrixNote ? `${matrixNote} ` : '') +
       `Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned → ` +
       `${newAssignments.length} assigned. ` +
@@ -884,13 +900,30 @@ export default function BackloadMatching() {
         `Tweak: raise deviation %, raise detour budget, widen window slack, or relax skill requirements.`
       );
     } else if (vroomRoutes.length === 0 && vrpShipments.length > 0) {
+      // Compute median per-vehicle bounds for diagnostics, using the same
+      // baseline + slider math the vehicles were built with.
+      const baseDurArr  = Array.from(baselines.values()).map(b => b.durSec);
+      const baseDistArr = Array.from(baselines.values()).map(b => b.distMeters);
+      const median = (arr: number[]): number => {
+        if (!arr.length) return 0;
+        const s = [...arr].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+      };
+      const medDurH  = (median(baseDurArr) / 3600);
+      const medDistKm = (median(baseDistArr) / 1000);
+      const medMaxTravelH = medDurH + detourSlackHrs;
+      const medMaxDistKm  = medDistKm * (1 + deviationPct / 100);
+      const baselineSummary =
+        `${baselineMatrixCount} matrix, ${baselineHaversineCount} haversine, ${baselineFixedOpenCount} open-end`;
       setSolveError(
         `OPTIMIZATION returned no routes and no unassigned. ` +
-        `Per-vehicle limits sent to VROOM: ` +
-        `max_travel_time≈${Math.round(worstTourHrs + detourSlackHrs)}h, ` +
-        `max_distance≈${Math.round(worstTourKm * (1 + deviationPct / 100))}km ` +
-        `(envelope=${Math.round(envelopeKm)}km, legs=${tourLegs}). ` +
-        `If the actual tour exceeds these, raise "Detour slack (h)" or "Max deviation %" and re-solve. ` +
+        `Per-vehicle limits sent to VROOM (median): ` +
+        `max_travel_time≈${medMaxTravelH.toFixed(1)}h, ` +
+        `max_distance≈${Math.round(medMaxDistKm)}km ` +
+        `(empty-leg baselines: ${baselineSummary}; ` +
+        `median baseline=${medDurH.toFixed(1)}h / ${Math.round(medDistKm)}km). ` +
+        `If the actual tour exceeds these, raise "Detour budget" or "Allowed deviation" and re-solve. ` +
         `Other checks: (1) ORS_SERVICE_${(regionName || '').toUpperCase()} RUNNING, ` +
         `(2) region='${regionName}' covers your data bbox, ` +
         `(3) profile='${profile}' supported by this region, ` +
@@ -1206,11 +1239,11 @@ export default function BackloadMatching() {
           <input type="range" min={1} max={6} value={maxStops} onChange={e => setMaxStops(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Detour budget: +{detourSlackHrs} h<InfoTip text="Extra hours allowed on top of the direct trailer→end empty trip. Hard cap on total tour driving time.\n\nVROOM field: vehicle.max_travel_time" /></label>
+          <label style={labelStyle}>Detour budget: +{detourSlackHrs} h<InfoTip text="Extra hours allowed on top of each trailer's empty drive home (shortest-path travel time from current dropoff to its end point). Adds linearly per vehicle. Open-end mode uses a fixed 200 km baseline (~3.3 h).\n\nVROOM field: vehicle.max_travel_time = baseline_sec + slack*3600" /></label>
           <input type="range" min={0} max={12} value={detourSlackHrs} onChange={e => setDetourSlackHrs(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>
-          <label style={labelStyle}>Allowed deviation: +{deviationPct}%<InfoTip text="Hard distance cap on the tour, expressed as a % above a generous baseline (max of 2× the empty trip or 200 km). Raise to allow more far-flung pickups.\n\nVROOM field: vehicle.max_distance" /></label>
+          <label style={labelStyle}>Allowed deviation: +{deviationPct}%<InfoTip text="Distance cap as a percentage above each trailer's empty drive home (shortest-path distance from current dropoff to its end point). E.g. 200% = tour may be up to 3× the empty distance. Open-end mode uses a fixed 200 km baseline.\n\nVROOM field: vehicle.max_distance = baseline_m * (1 + dev%/100)" /></label>
           <input type="range" min={0} max={500} step={10} value={deviationPct} onChange={e => setDeviationPct(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
         <div style={sliderBlock}>

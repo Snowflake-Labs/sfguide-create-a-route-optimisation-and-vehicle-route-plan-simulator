@@ -66,6 +66,32 @@ export async function ensureBackloadAndAssetVelocityObjects(
           SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+        ),
+        -- Collapse DIM_POIS to one row per LOCATION_ID. The base table can have
+        -- multiple rows per LOCATION_ID (POI name variants, regen overlap),
+        -- which would otherwise multiply trailer rows via the LEFT JOINs below
+        -- and cause VROOM to receive the same TRAILER_ID as multiple vehicles.
+        poi AS (
+          SELECT LOCATION_ID,
+                 ANY_VALUE(NAME) AS NAME,
+                 ANY_VALUE(LAT)  AS LAT,
+                 ANY_VALUE(LNG)  AS LNG
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          GROUP BY LOCATION_ID
+        ),
+        -- Collapse DIM_FLEET to one row per VEHICLE_ID for the same reason
+        -- (the synthetic dataset can carry duplicate fleet rows).
+        fleet AS (
+          SELECT VEHICLE_ID,
+                 ANY_VALUE(REGION)             AS REGION,
+                 ANY_VALUE(VEHICLE_TYPE)       AS VEHICLE_TYPE,
+                 ANY_VALUE(HOME_LOCATION_ID)   AS HOME_LOCATION_ID,
+                 ANY_VALUE(BATTERY_RANGE_KM)   AS BATTERY_RANGE_KM
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+          WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
+            AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          GROUP BY VEHICLE_ID
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -82,12 +108,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
           'IN_TRANSIT'                                        AS STATUS,
           FALSE                                               AS HAZMAT_CERT,
           COALESCE(NULLIF(f.BATTERY_RANGE_KM, 0), 24000)::NUMBER AS MAX_PAYLOAD_KG
-        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+        FROM fleet f
         JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
-        WHERE f.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-          AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)`,
+        LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
+        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
