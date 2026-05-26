@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { sfQuery, asSqlJsonLiteral, safeText } from './sfQuery';
 
 describe('asSqlJsonLiteral', () => {
-  it('wraps the JSON in the static dollar-quote tag', () => {
-    expect(asSqlJsonLiteral({ a: 1 })).toBe('$_SF_JSON_${"a":1}$_SF_JSON_$');
+  it('wraps the JSON in plain $$...$$ (Snowflake-supported dollar quotes)', () => {
+    expect(asSqlJsonLiteral({ a: 1 })).toBe('$$' + '{"a":1}' + '$$');
   });
 
   it('round-trips a literal double-quote without breaking PARSE_JSON-ready output', () => {
@@ -13,10 +13,12 @@ describe('asSqlJsonLiteral', () => {
     // quoted form embeds the JSON.stringify output verbatim, so the JSON
     // parser sees the standard `\"` escape and accepts it.
     const out = asSqlJsonLiteral({ description: '"Mansheim Clemens Spedition" (WAREHOUSE)' });
-    // The serialised JSON is `{"description":"\"Mansheim Clemens Spedition\" (WAREHOUSE)"}`
     expect(out).toContain('\\"Mansheim Clemens Spedition\\"');
     // Crucially: no single-quote escaping nonsense is needed.
     expect(out).not.toContain("''");
+    // And the wrapper is plain $$...$$ (the form the Snowflake REST API parses).
+    expect(out.startsWith('$$')).toBe(true);
+    expect(out.endsWith('$$')).toBe(true);
   });
 
   it("handles apostrophes without doubling them (no '' gymnastics needed)", () => {
@@ -25,16 +27,20 @@ describe('asSqlJsonLiteral', () => {
     expect(out).not.toContain("''");
   });
 
-  it('uses a unique delimiter when payload collides with the static tag', () => {
-    // Construct a payload that contains the static delimiter as content.
-    const collide = { x: '$_SF_JSON_$' };
-    const out = asSqlJsonLiteral(collide);
-    expect(out.startsWith('$_SF_JSON_$')).toBe(false);
-    expect(out).toMatch(/^\$_SF_JSON_[A-Z0-9]+_\$/);
-    // Round-trip the inner JSON and verify it's intact.
-    const start = out.indexOf('{');
-    const end = out.lastIndexOf('}') + 1;
-    expect(JSON.parse(out.slice(start, end))).toEqual(collide);
+  it('escapes literal $ with \\u0024 to prevent dollar-quote collisions', () => {
+    // A payload containing a literal `$` (or worse, `$$`) would otherwise
+    // prematurely close the dollar-quoted SQL literal. We escape every `$`
+    // to the JSON unicode form `\u0024`; PARSE_JSON decodes it back to `$`.
+    const out = asSqlJsonLiteral({ price: '$100', collide: '$$' });
+    // The wrapper itself contains only the surrounding $$.
+    expect(out.startsWith('$$')).toBe(true);
+    expect(out.endsWith('$$')).toBe(true);
+    // The body has zero literal `$` characters between the wrappers.
+    const body = out.slice(2, -2);
+    expect(body).not.toContain('$');
+    // Both `$` chars from the input were rewritten as \u0024.
+    expect(body).toContain('\\u0024100');
+    expect(body).toContain('\\u0024\\u0024');
   });
 
   it('handles backslashes and newlines without re-escaping', () => {

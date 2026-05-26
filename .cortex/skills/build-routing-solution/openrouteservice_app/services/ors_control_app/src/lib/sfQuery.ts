@@ -64,32 +64,33 @@ export async function sfQuery(
 }
 
 /**
- * Embed `value` as a Snowflake dollar-quoted string literal.
+ * Embed `value` as a Snowflake plain dollar-quoted string literal (`$$...$$`).
  *
- * Example output for `{a: 'O\'Reilly', b: '"quoted"'}`:
+ * Why dollar-quoting: a single-quoted SQL literal forces the JSON payload to
+ * survive TWO escape layers (SQL `''` doubling AND JSON `\"` escaping). When
+ * a free-text field contains a literal `"` (e.g. terminal names exported with
+ * surrounding quotes), the resulting `\"...\"` sequence inside a single-quoted
+ * SQL string trips Snowflake's PARSE_JSON ("missing comma"). Dollar-quoted
+ * literals pass their contents through verbatim, so PARSE_JSON sees the
+ * original JSON.stringify output unchanged.
  *
- *   $_SF_JSON_${"a":"O'Reilly","b":"\"quoted\""}$_SF_JSON_$
+ * Snowflake's dollar-quote syntax is plain `$$...$$` ONLY. Postgres-style
+ * tagged delimiters (`$tag$...$tag$`) are NOT supported by Snowflake's parser
+ * (and cause "syntax error ... unexpected '$'" via the REST SQL API).
  *
- * Snowflake passes the contents of a dollar-quoted string verbatim to
- * downstream functions (PARSE_JSON, etc.) — there is no second layer of
- * SQL-string escaping to fight with, so the JSON payload's own escapes
- * (\", \\, \n, ...) get to PARSE_JSON unmodified.
- *
- * The collision check is purely defensive: realistic payloads never contain
- * the static delimiter, but we suffix it with a random tag if they do.
+ * Collision safety: JSON.stringify never produces `$$` from typical data, but
+ * a payload could in theory contain a literal `$$` (e.g. user-supplied text).
+ * We replace every `$` in the serialised JSON with the JSON unicode escape
+ * `\u0024`. The receiving JSON parser decodes `\u0024` back to `$`, so
+ * semantics are preserved, but the Snowflake SQL lexer never sees a stray
+ * `$` that could be mistaken for a dollar-quote terminator.
  */
 export function asSqlJsonLiteral(value: unknown): string {
-  const json = JSON.stringify(value);
-  const STATIC = '$_SF_JSON_$';
-  if (!json.includes(STATIC)) return `${STATIC}${json}${STATIC}`;
-  // Vanishingly rare path. Generate a unique delimiter that is not present
-  // in the payload.
-  for (let i = 0; i < 8; i++) {
-    const tag = `$_SF_JSON_${Math.random().toString(36).slice(2, 10).toUpperCase()}_$`;
-    if (!json.includes(tag)) return `${tag}${json}${tag}`;
-  }
-  // Safety net: should be unreachable.
-  throw new Error('asSqlJsonLiteral: could not pick a non-colliding delimiter');
+  // Replace `$` chars in the serialised JSON with the unicode escape \u0024.
+  // The string is then dollar-quote-safe AND still semantically identical
+  // after PARSE_JSON.
+  const json = JSON.stringify(value).replace(/\$/g, '\\u0024');
+  return `$$${json}$$`;
 }
 
 /**
