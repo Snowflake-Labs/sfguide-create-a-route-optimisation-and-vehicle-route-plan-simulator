@@ -2,6 +2,12 @@ import { Router } from 'express';
 
 type RunSql = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
+const up = (rows: any[]) => rows.map(row => {
+  const r: Record<string, any> = {};
+  for (const [k, v] of Object.entries(row)) r[k.toUpperCase()] = v;
+  return r;
+});
+
 export function createPlantIntelRouter(runSql: RunSql): Router {
   const router = Router();
 
@@ -9,7 +15,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
     try {
       let rows: any[] = [];
       try {
-        rows = await runSql(
+        rows = up(await runSql(
           `SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, CITY, COUNTRY, REGION,
                   SPECIALISATION, CAPACITY_BATCHES_MONTH, LATITUDE, LONGITUDE,
                   MAX_SEVERITY, BATCH_SEVERITY, TEMP_SEVERITY, STOCK_SEVERITY, SHIPMENT_SEVERITY,
@@ -18,10 +24,10 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
            FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
            ORDER BY PLANT_ID`,
           'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-        );
+        ));
       } catch {
         // Fallback: alert view not yet created — return plants with zero severity
-        rows = await runSql(
+        rows = up(await runSql(
           `SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, CITY, COUNTRY, REGION,
                   SPECIALISATION, CAPACITY_BATCHES_MONTH, LATITUDE, LONGITUDE,
                   0 AS MAX_SEVERITY, 0 AS BATCH_SEVERITY, 0 AS TEMP_SEVERITY,
@@ -31,7 +37,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
            FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS
            ORDER BY PLANT_ID`,
           'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-        );
+        ));
       }
       res.json(Array.isArray(rows) ? rows : []);
     } catch (err: any) {
@@ -45,13 +51,13 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
       if (isNaN(plantId) || plantId < 1) {
         return res.status(400).json({ error: 'Valid plant_id required' });
       }
-      const rows = await runSql(
+      const rows = up(await runSql(
         `SELECT OVERTURE_ID, GEOJSON, BUILDING_NAME, CLASS, HEIGHT, FOOTPRINT_TYPE
          FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS
          WHERE PLANT_ID = ${plantId}
            AND GEOJSON IS NOT NULL`,
         'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-      );
+      ));
       const features = rows.map((r: any) => {
         let geometry: any = null;
         try { geometry = typeof r.GEOJSON === 'string' ? JSON.parse(r.GEOJSON) : r.GEOJSON; } catch {}
@@ -77,7 +83,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
     try {
       const plantId = parseInt(req.query.plant_id as string, 10);
       if (isNaN(plantId)) return res.status(400).json({ error: 'Valid plant_id required' });
-      const rows = await runSql(
+      const rows = up(await runSql(
         `SELECT b.BATCH_NUMBER, pr.PRODUCT_NAME, pr.BUSINESS_LINE,
                 b.STATUS, b.QC_RESULT, b.YIELD_PCT,
                 b.DEVIATION_COUNT, b.DEVIATION_SEVERITY,
@@ -90,7 +96,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
            CASE b.STATUS WHEN 'ON_HOLD' THEN 1 WHEN 'REJECTED' THEN 2
                          WHEN 'QC_REVIEW' THEN 3 WHEN 'IN_PROGRESS' THEN 4 ELSE 5 END`,
         'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-      );
+      ));
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -101,7 +107,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
     try {
       const plantId = parseInt(req.query.plant_id as string, 10);
       if (isNaN(plantId)) return res.status(400).json({ error: 'Valid plant_id required' });
-      const rows = await runSql(
+      const rows = up(await runSql(
         `SELECT pr.PRODUCT_NAME, pr.BUSINESS_LINE,
                 mi.MATERIAL_TYPE, mi.STOCK_KG, mi.SAFETY_STOCK_KG,
                 mi.DAYS_OF_COVERAGE, mi.STOCK_STATUS,
@@ -114,7 +120,7 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
            CASE mi.STOCK_STATUS WHEN 'CRITICAL' THEN 1 WHEN 'LOW' THEN 2 ELSE 3 END,
            mi.TEMP_EXCURSION_FLAG DESC`,
         'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'
-      );
+      ));
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
