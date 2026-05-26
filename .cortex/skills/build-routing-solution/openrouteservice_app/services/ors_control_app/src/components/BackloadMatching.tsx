@@ -32,7 +32,13 @@ const BM_MAX_INTERNAL = 30;
 const BM_MAX_EXTERNAL = 15;
 // Hard ceiling on the unique-location count we'll try to precompute a matrix
 // for. ORS default is max 3500 cells = sqrt(3500) ≈ 59 locations.
-const BM_MAX_MATRIX_LOCATIONS = 50;
+// Cap for the UI-side MATRIX pre-compute path. Raised from 50 → 200 because
+// the gateway-side fallback has a 45 s ceiling (services/gateway/routing_service.py)
+// that times out on continental graphs (Germany ~120 locs), returning
+// matrix_precompute_failed which the OPTIMIZATION TVF then strips because
+// LATERAL FLATTEN(resp:routes) yields 0 rows when routes is absent. Direct
+// MATRIX('driving-hgv', 90 locs, 'Germany') returns instantly via SQL.
+const BM_MAX_MATRIX_LOCATIONS = 200;
 // Wall-clock budget for the whole solve, including the in-gateway matrix
 // pre-compute and the VROOM call. Past this we abort the fetch and surface
 // a precise error instead of an open-ended spinner.
@@ -595,7 +601,13 @@ export default function BackloadMatching() {
       challenge.options = { g: true };
     }
     const jsonStr = JSON.stringify(challenge).replace(/'/g, "''");
-    const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON('${jsonStr}'), '${regionName}'))`;
+    // Use _OPTIMIZATION_RAW (returns the full VROOM JSON as VARIANT) instead
+    // of the OPTIMIZATION TVF. The TVF does LATERAL FLATTEN(resp:routes), which
+    // strips the row entirely when VROOM (or the gateway) returns an error
+    // payload with no `routes` array — manifesting as the misleading
+    // "OPTIMIZATION returned 0 rows" overlay. Parsing the raw response keeps
+    // routes / unassigned / error / matrix_precompute_failed all visible.
+    const sql = `SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON('${jsonStr}'), '${regionName}') AS RESP`;
     console.log('[BM] OPTIMIZATION challenge:',
       'vehicles=', vrpVehicles.length,
       'shipments=', vrpShipments.length,
@@ -606,9 +618,9 @@ export default function BackloadMatching() {
       'breaks=', enforceDriverBreak,
       'avoid=', avoidGeoJSON.length,
       'matrix=', precomputedMatrix ? `${precomputedMatrix.durations.length}^2 (UI pre-computed)` : 'gateway-side');
-    let rows: any[] = [];
+    let respRows: any[] = [];
     try {
-      rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { signal: ac.signal, throwOnError: true });
+      respRows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { signal: ac.signal, throwOnError: true });
     } catch (e: any) {
       clearTimeout(deadlineHandle);
       solveAbortRef.current = null;
@@ -626,23 +638,42 @@ export default function BackloadMatching() {
     clearTimeout(deadlineHandle);
     solveAbortRef.current = null;
 
+    // Parse VROOM's raw JSON response. Three things can be present:
+    //   routes:[]           — successful tours
+    //   unassigned:[]       — shipments VROOM couldn't place (with reasons)
+    //   error / message     — gateway / VROOM rejected the payload (e.g.
+    //                         matrix_precompute_failed at code 99)
+    const rawResp: any = respRows?.[0]?.RESP;
+    const respObj: any = (() => {
+      if (rawResp == null) return null;
+      if (typeof rawResp === 'string') {
+        try { return JSON.parse(rawResp); } catch { return null; }
+      }
+      return rawResp;
+    })();
+    const vroomRoutes: any[]     = Array.isArray(respObj?.routes)     ? respObj.routes     : [];
+    const vroomUnassigned: any[] = Array.isArray(respObj?.unassigned) ? respObj.unassigned : [];
+    const vroomError: string | null =
+      respObj?.error ||
+      (respObj?.code && respObj?.code !== 0 ? (respObj?.message || `VROOM code=${respObj.code}`) : null);
+
     const newAssignments: Assignment[] = [];
     const newUnassigned: { id: number; reason?: string }[] = [];
-    for (const r of rows) {
-      const vehId = Number(r.VEHICLE);
-      if (!vehId) {
-        try {
-          const ua = typeof r.UNASSIGNED === 'string' ? JSON.parse(r.UNASSIGNED) : r.UNASSIGNED;
-          if (Array.isArray(ua)) for (const u of ua) newUnassigned.push({ id: Number(u.id), reason: u.reason });
-        } catch {}
-        continue;
-      }
+    for (const u of vroomUnassigned) {
+      const id = Number(u?.id);
+      if (Number.isFinite(id)) newUnassigned.push({ id, reason: u?.reason });
+    }
+    for (const route of vroomRoutes) {
+      const vehId = Number(route?.vehicle);
+      if (!vehId) continue;
       const t = trailerById.get(vehId);
       if (!t) continue;
-      let steps: any[] = [];
-      try { steps = typeof r.STEPS === 'string' ? JSON.parse(r.STEPS) : (r.STEPS || []); } catch {}
-      let routeGeo: any = null;
-      try { routeGeo = typeof r.GEOJSON === 'string' ? JSON.parse(r.GEOJSON) : r.GEOJSON; } catch {}
+      const steps: any[] = Array.isArray(route?.steps) ? route.steps : [];
+      // route.geometry is a coordinate array; wrap into a GeoJSON LineString
+      // for the map layer (matches the TVF's previous shape).
+      const routeGeo: any = Array.isArray(route?.geometry)
+        ? { type: 'LineString', coordinates: route.geometry }
+        : null;
 
       const taskSteps = steps.filter((s: any) =>
         s.type === 'pickup' || s.type === 'delivery' || s.type === 'job' || s.type === 'break');
@@ -757,11 +788,11 @@ export default function BackloadMatching() {
       const detourKm = Math.max(0, tourKm - directHomeKm);
       const savedKm  = Math.max(0, directHomeKm - detourKm);
 
-      // Post-solve economics — VROOM returns DURATION (sec); DISTANCE may be
+      // Post-solve economics — VROOM returns duration (sec); distance may be
       // present as meters depending on solver version.
-      const tourSec   = Number(r.DURATION) || 0;
+      const tourSec   = Number(route?.duration) || 0;
       const tourHrs   = tourSec / 3600;
-      const tourKmReal = (Number(r.DISTANCE) || (tourSec * KMH_HGV / 3600 * 1000)) / 1000;
+      const tourKmReal = (Number(route?.distance) || (tourSec * KMH_HGV / 3600 * 1000)) / 1000;
       const waitSec   = taskSteps.reduce((s: number, ts: any) => s + (Number(ts.waiting_time) || 0), 0);
       const nDeliv    = taskSteps.filter((s: any) => s.type === 'delivery' || s.type === 'job').length;
 
@@ -797,7 +828,7 @@ export default function BackloadMatching() {
         HOME_LON: t.HOME_LON, HOME_LAT: t.HOME_LAT,
         EMPTY_KM: empty, LOADED_KM: totalLoadedKm || loaded,
         DETOUR_KM: detourKm, SAVED_KM: savedKm,
-        SCORE: Number(r.DURATION) || 0,
+        SCORE: Number(route?.duration) || 0,
         PRODUCT: row.PRODUCT,
         PICKUP_CITY: row.PICKUP_CITY,
         PROPOSAL_DROPOFF_CITY: row.DROPOFF_CITY,
@@ -827,26 +858,15 @@ export default function BackloadMatching() {
       `${externalSkipped} external; region=${regionName}, profile=${profile}, ` +
       `matrix=${precomputedMatrix ? `UI ${precomputedMatrix.durations.length}^2` : 'gateway-side'}). ` +
       (matrixNote ? `${matrixNote} ` : '') +
-      `Got ${rows.length} rows → ${newAssignments.length} assigned, ${newUnassigned.length} unassigned. ` +
+      `Got ${vroomRoutes.length} routes, ${vroomUnassigned.length} unassigned → ` +
+      `${newAssignments.length} assigned. ` +
       `Avg detour +${avgDetour} km. Net benefit total €${totalNet.toLocaleString()}.`
     );
-    // When VROOM rejects the payload (e.g. unknown vehicle field), the
-    // OPTIMIZATION TVF returns rows whose RESPONSE column carries an
-    // {error, code} object even though VEHICLE is null. Surface that text
-    // verbatim so we don't masquerade real errors as "0 rows".
-    let vroomErr: string | null = null;
-    for (const r of rows) {
-      const resp: any = (r as any).RESPONSE;
-      try {
-        const obj = typeof resp === 'string' ? JSON.parse(resp) : resp;
-        if (obj && (obj.error || (obj.code && obj.message))) {
-          vroomErr = String(obj.error || obj.message);
-          break;
-        }
-      } catch {}
-    }
-    if (vroomErr) {
-      setSolveError(`VROOM rejected the request: ${vroomErr}`);
+    // Surface gateway / VROOM errors verbatim. The most common one this
+    // catches is matrix_precompute_failed (gateway 45 s ORS matrix timeout)
+    // which the old TVF-based path silently dropped to "0 rows".
+    if (vroomError) {
+      setSolveError(`Routing gateway / VROOM error: ${vroomError}`);
     } else if (newAssignments.length === 0 && newUnassigned.length > 0) {
       // Solver responded but couldn't place anything. Aggregate VROOM's
       // per-shipment reasons so the user knows which lever to loosen.
@@ -863,9 +883,9 @@ export default function BackloadMatching() {
         `VROOM placed 0 shipments out of ${newUnassigned.length}. Top reasons: ${summary}. ` +
         `Tweak: raise deviation %, raise detour budget, widen window slack, or relax skill requirements.`
       );
-    } else if (rows.length === 0 && vrpShipments.length > 0) {
+    } else if (vroomRoutes.length === 0 && vrpShipments.length > 0) {
       setSolveError(
-        `OPTIMIZATION returned 0 rows. ` +
+        `OPTIMIZATION returned no routes and no unassigned. ` +
         `Per-vehicle limits sent to VROOM: ` +
         `max_travel_time≈${Math.round(worstTourHrs + detourSlackHrs)}h, ` +
         `max_distance≈${Math.round(worstTourKm * (1 + deviationPct / 100))}km ` +

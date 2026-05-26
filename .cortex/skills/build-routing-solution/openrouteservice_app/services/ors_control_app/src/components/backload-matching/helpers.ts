@@ -184,6 +184,16 @@ export async function buildVroomMatrix(
   const raw = rows?.[0]?.M;
   if (!raw) return null;
   const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  // ORS surfaces structured failures (e.g. maximum_routes_exceeded) as
+  // { error: { code, message } } with no durations/distances. Throw so the
+  // caller can surface the reason in matrixNote and fall back to the
+  // gateway-side pre-compute path (options.g=true).
+  if (obj?.error) {
+    const msg = typeof obj.error === 'string'
+      ? obj.error
+      : (obj.error.message || JSON.stringify(obj.error));
+    throw new Error(`MATRIX rejected: ${msg}`);
+  }
   const dur = obj?.durations;
   const dist = obj?.distances;
   if (!Array.isArray(dur) || !Array.isArray(dist)) return null;
