@@ -872,15 +872,40 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: 1, minWidth: 300 }}>
-          {chartData && (
-            <AgentChart chart={chartData} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
-          )}
-          {(!chartData || !chartExpanded) && (
-            <div style={{ height: chartData ? 280 : 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-              <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-            </div>
-          )}
+        <div style={{ flex: 1, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {(() => {
+            const hasChart = !!chartData;
+            const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
+            if (hasChart && hasMap) {
+              return (
+                <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+                  <div style={{ flex: 1 }}><AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} /></div>
+                  <div style={{ flex: 1, height: 320, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                    <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+                  </div>
+                </div>
+              );
+            }
+            if (hasChart && !hasMap) {
+              return <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />;
+            }
+            if (hasMap && !hasChart) {
+              return (
+                <div style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                  <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+                </div>
+              );
+            }
+            const sc = scenarios.find(s => s.id === activeScenario);
+            return (
+              <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 380, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
+                <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', opacity: 0.6 }}>Select a prompt above or type your own question below.</p>
+              </div>
+            );
+          })()}
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {poiLegend.map(entry => (

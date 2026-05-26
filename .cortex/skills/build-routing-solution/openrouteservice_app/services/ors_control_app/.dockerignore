@@ -1,9 +1,8 @@
-# Build artifacts — compiled inside multi-stage Dockerfile.runtime, never needed in build context.
-# Do NOT remove these entries. For ARM Mac/Podman prebuilt flow, use --ignorefile .dockerignore.prebuilt instead.
+# For prebuilt ARM Mac flow: allows dist/ and dist-server/ into build context.
+# Usage: podman build --ignorefile .dockerignore.prebuilt ...
 node_modules
-dist
-dist-server
 .git
 .env
 *.md
 .dockerignore
+.dockerignore.prebuilt
