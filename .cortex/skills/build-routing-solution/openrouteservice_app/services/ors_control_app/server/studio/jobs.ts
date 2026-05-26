@@ -166,16 +166,130 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   return { deleted };
 }
 
-// Make Data Studio runs idempotent on natural-key tables. Re-running for the
-// same (REGION, VEHICLE_TYPE) MUST replace prior rows in DIM_POIS / DIM_FLEET /
-// FACT_FREIGHT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY because their
-// natural keys (LOCATION_ID, VEHICLE_ID, OFFER_ID, PARTNER_ID, ...) are
-// deterministic per scope and would otherwise stack across runs, producing the
-// row multiplication that surfaces as duplicate trailers / pickups / dropoffs
-// in the Backload Matching UI.
+// Make Data Studio runs non-destructive on natural-key tables. Each run is
+// recorded as an immutable dataset in FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+// keyed by JOB_ID; at most one row per (REGION, VEHICLE_TYPE) is IS_ACTIVE.
+// Downstream consumers read from V_*_CURRENT views which join to
+// DIM_DATASETS and filter on IS_ACTIVE = TRUE — so prior runs stay queryable
+// by JOB_ID without polluting the live UI.
 //
-// FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_TRIP_SCHEDULE are intentionally NOT
-// cleared — they use random IDs per run and are append-only by design.
+// FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_TRIP_SCHEDULE keep their existing
+// append-only semantics; the *_CURRENT views also filter them by active
+// JOB_ID.
+//
+// archivePriorDatasets is the non-destructive replacement for the legacy
+// clearRegionScope (kept below for use by the explicit
+// DELETE /api/studio/datasets/:id route only).
+async function archivePriorDatasets(
+  snowSql: SnowSqlFn,
+  region: string,
+  vehicleType: string,
+  newJobId: string,
+  label: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = FALSE
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND IS_ACTIVE = TRUE`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets UPDATE failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    await snowSql(
+      `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
+       SELECT ${escVal(newJobId)}, ${escVal(region)}, ${escVal(vehicleType)},
+              ${escVal(label)}, TRUE`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets INSERT failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+}
+
+// Revert archivePriorDatasets when a job fails before producing any data.
+// Removes the just-inserted DIM_DATASETS row for newJobId and re-activates
+// the most recent prior dataset for the same (REGION, VEHICLE_TYPE), so the
+// failed run never appears as the active dataset and the previous active
+// dataset is restored.
+async function revertArchivePriorDatasets(
+  snowSql: SnowSqlFn,
+  region: string,
+  vehicleType: string,
+  newJobId: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE DATASET_ID = ${escVal(newJobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `revertArchivePriorDatasets DELETE failed for ${newJobId} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    // Re-activate the most recent remaining dataset for this scope.
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = TRUE
+       WHERE DATASET_ID = (
+         SELECT DATASET_ID
+         FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         WHERE REGION = ${escVal(region)}
+           AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         ORDER BY CREATED_AT DESC
+         LIMIT 1
+       )`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `revertArchivePriorDatasets restore-prior failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+}
+
+// Recompute ROW_COUNTS on DIM_DATASETS after a job's inserts complete.
+// Best-effort — failure does not affect the job outcome.
+async function updateDatasetRowCounts(
+  snowSql: SnowSqlFn,
+  jobId: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET ROW_COUNTS = OBJECT_CONSTRUCT(
+         'pois',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS              WHERE JOB_ID = ${escVal(jobId)}),
+         'fleet',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET             WHERE JOB_ID = ${escVal(jobId)}),
+         'offers',    (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS   WHERE JOB_ID = ${escVal(jobId)}),
+         'partners',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = ${escVal(jobId)}),
+         'history',   (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = ${escVal(jobId)}),
+         'trips',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = ${escVal(jobId)}),
+         'telemetry', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = ${escVal(jobId)})
+       )
+       WHERE DATASET_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `updateDatasetRowCounts failed for ${jobId} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId });
+  }
+}
+
+// Legacy destructive helper. Used ONLY by the explicit
+// DELETE /api/studio/datasets/:id route to physically purge a dataset.
+// Never called from a generation run — see archivePriorDatasets above.
 async function clearRegionScope(
   snowSql: SnowSqlFn,
   region: string,
@@ -432,12 +546,20 @@ export async function startGeneration(
       });
       broadcast(job, 'progress', { status: `Spatial spread: ${homeSpread.populated_bins} home bins, top_share=${(homeSpread.top_bin_share * 100).toFixed(1)}% (bin=${effBinDeg} deg)` });
 
-      // Idempotency: clear any prior rows for this (region, vehicle_type) on
-      // natural-key tables BEFORE we insert. Without this, re-running Studio
-      // for an already-generated region stacks duplicate LOCATION_ID /
-      // VEHICLE_ID / OFFER_ID rows and breaks Backload Matching downstream.
-      await clearRegionScope(snowSql, config.region, vt, jobId);
-      broadcast(job, 'progress', { status: `Cleared prior dimension/freight rows for ${config.region} / ${vt}` });
+      // Dataset versioning: archive any existing active dataset for this
+      // (REGION, VEHICLE_TYPE) by flipping its IS_ACTIVE flag to FALSE, then
+      // register the new run as the active dataset. Prior rows on the
+      // natural-key tables (DIM_POIS / DIM_FLEET / FACT_FREIGHT_OFFERS /
+      // DIM_PARTNERS / FACT_PARTNER_HISTORY) STAY IN PLACE and remain
+      // queryable by JOB_ID. Downstream consumers see only the active
+      // dataset via SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT views.
+      // To physically purge an old dataset, the user must explicitly call
+      // DELETE /api/studio/datasets/:id.
+      const datasetLabel = `${presetName} @ ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+      await archivePriorDatasets(snowSql, config.region, vt, jobId, datasetLabel);
+      broadcast(job, 'progress', {
+        status: `Archived prior datasets for ${config.region} / ${vt} (kept queryable; new dataset = ${jobId})`,
+      });
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);
@@ -583,12 +705,25 @@ export async function startGeneration(
           log('WARN', 'Studio', `Region sync after completion failed: ${e.message?.slice(0, 200)}`, { jobId });
         }
       }
+      // Always refresh ROW_COUNTS on the dataset registry so the Studio UI
+      // can show row counts per archived dataset (POIs, fleet, offers,
+      // partners, history, trips, telemetry). Best-effort.
+      await updateDatasetRowCounts(snowSql, jobId);
     } catch (e: any) {
       job.status = 'FAILED';
       job.error = e.message;
       job.completedAt = new Date();
       log('ERROR', 'Studio', `Job ${jobId} failed: ${e.message?.slice(0, 300)}`, { jobId });
       broadcast(job, 'error', { error: e.message });
+      // If the job failed before any data was actually written, revert the
+      // archive: remove the new DIM_DATASETS row and re-activate the prior
+      // one so the user is not left with an empty active dataset.
+      if ((job.pointsGenerated || 0) === 0 && (job.tripsGenerated || 0) === 0) {
+        try {
+          await revertArchivePriorDatasets(snowSql, config.region, vt, jobId);
+          log('INFO', 'Studio', `Reverted dataset archive for failed empty job ${jobId}`, { jobId });
+        } catch (_e: any) { /* best-effort */ }
+      }
       try {
         await snowSql(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='FAILED',
