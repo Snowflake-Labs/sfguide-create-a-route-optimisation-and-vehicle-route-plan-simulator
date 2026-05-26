@@ -27,7 +27,7 @@ const SEVERITY_COLORS: [number, number, number, number][] = [
 const SEVERITY_LABELS = ['No Alerts', 'Low', 'Moderate', 'High', 'Critical'];
 const SEVERITY_HEX    = ['#22c55e',   '#eab308', '#f97316', '#ef4444', '#b91c1c'];
 
-const WORLD_VIEW = { longitude: 5, latitude: 45, zoom: 2.5, pitch: 0, bearing: 0 };
+const WORLD_VIEW = { longitude: 20, latitude: 25, zoom: 1.4, pitch: 0, bearing: 0 };
 
 interface PlantStatus {
   PLANT_ID: number; PLANT_NAME: string; PLANT_CODE: string;
@@ -111,11 +111,12 @@ export default function PlantIntelligence() {
       data: plants,
       getPosition: (d: PlantStatus) => [d.LONGITUDE, d.LATITUDE],
       getRadius: (d: PlantStatus) => Math.sqrt(d.CAPACITY_BATCHES_MONTH) * 8000,
-      radiusMinPixels: selected ? 6 : 12,
-      radiusMaxPixels: selected ? 30 : 60,
+      radiusMinPixels: selected ? 6 : 22,
+      radiusMaxPixels: selected ? 40 : 60,
       getFillColor: (d: PlantStatus) => SEVERITY_COLORS[Math.min(4, d.MAX_SEVERITY ?? 0)] as any,
-      getLineColor: [255, 255, 255, 200] as any,
+      getLineColor: [255, 255, 255, 220] as any,
       lineWidthMinPixels: 2,
+      stroked: true,
       pickable: true,
       onClick: ({ object }: any) => object && selectPlant(object),
     } as any),
@@ -123,15 +124,23 @@ export default function PlantIntelligence() {
     ...(!selected ? [new TextLayer<PlantStatus>({
       id: 'plant-labels',
       data: plants,
-      getPosition: (d: PlantStatus) => [d.LONGITUDE, d.LATITUDE - 0.4],
+      getPosition: (d: PlantStatus) => [d.LONGITUDE, d.LATITUDE],
+      getPixelOffset: [0, 26] as any,
       getText: (d: PlantStatus) => d.PLANT_CODE,
-      getSize: 13,
-      getColor: [255, 255, 255, 230] as any,
+      getSize: 12,
+      getColor: [255, 255, 255, 255] as any,
       background: true,
-      getBackgroundColor: [0, 0, 0, 120] as any,
-      backgroundPadding: [4, 2, 4, 2],
+      getBackgroundColor: ((d: PlantStatus) => {
+        const c = SEVERITY_COLORS[Math.min(4, d.MAX_SEVERITY ?? 0)];
+        return [c[0], c[1], c[2], 210];
+      }) as any,
+      backgroundPadding: [6, 3, 6, 3],
       fontFamily: 'monospace',
-      fontWeight: 600 as any,
+      fontWeight: 'bold' as any,
+      getAlignmentBaseline: 'top',
+      getTextAnchor: 'middle',
+      pickable: true,
+      onClick: ({ object }: any) => object && selectPlant(object),
     } as any)] : []),
 
     ...(selected && buildings ? [new GeoJsonLayer({
