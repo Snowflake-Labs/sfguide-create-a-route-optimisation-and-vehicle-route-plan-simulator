@@ -1,7 +1,7 @@
 -- =============================================================================
 -- build-plant-footprints.sql
--- Pre-computes Overture building footprints for each manufacturing plant
--- and creates an alert status view joining supply chain data.
+-- Creates the PLANT_ALERT_STATUS view (always) and pre-computes
+-- Overture building footprints for each manufacturing plant.
 -- Run this BEFORE deploying the Plant Intelligence React module.
 -- =============================================================================
 
@@ -11,59 +11,13 @@ USE DATABASE FLEET_INTELLIGENCE;
 USE SCHEMA PHARMA_SUPPLY_CHAIN;
 
 -- =============================================================================
--- 1. PRE-COMPUTED BUILDING FOOTPRINTS
---    Pulls buildings + building_parts from Overture within ~800m of each plant
--- =============================================================================
-
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS AS
-
--- Main buildings
-SELECT
-    p.PLANT_ID,
-    p.PLANT_NAME,
-    p.PLANT_CODE,
-    b.ID                                                     AS OVERTURE_ID,
-    ST_ASGEOJSON(b.GEOMETRY)                                 AS GEOJSON,
-    TRY_PARSE_JSON(b.NAMES):primary::string                  AS BUILDING_NAME,
-    b.CLASS,
-    b.HEIGHT,
-    'BUILDING'                                               AS FOOTPRINT_TYPE
-FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS p,
-     LATERAL (
-         SELECT * FROM OVERTURE_MAPS__BUILDINGS.BUILDINGS.BUILDING
-         WHERE ST_DWITHIN(GEOMETRY, ST_POINT(p.LONGITUDE, p.LATITUDE), 0.008)
-           AND GEOMETRY IS NOT NULL
-     ) b
-
-UNION ALL
-
--- Building parts (sub-structures within each building complex)
-SELECT
-    p.PLANT_ID,
-    p.PLANT_NAME,
-    p.PLANT_CODE,
-    bp.ID                                                    AS OVERTURE_ID,
-    ST_ASGEOJSON(bp.GEOMETRY)                                AS GEOJSON,
-    NULL                                                     AS BUILDING_NAME,
-    bp.CLASS,
-    NULL                                                     AS HEIGHT,
-    'BUILDING_PART'                                          AS FOOTPRINT_TYPE
-FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS p,
-     LATERAL (
-         SELECT bp.*
-         FROM OVERTURE_MAPS__BUILDINGS.BUILDINGS.BUILDING_PART bp
-         JOIN OVERTURE_MAPS__BUILDINGS.BUILDINGS.BUILDING b2
-              ON bp.BUILDING_ID = b2.ID
-         WHERE ST_DWITHIN(b2.GEOMETRY, ST_POINT(p.LONGITUDE, p.LATITUDE), 0.008)
-           AND bp.GEOMETRY IS NOT NULL
-     ) bp;
-
--- =============================================================================
--- 2. PLANT ALERT STATUS VIEW
+-- 1. PLANT ALERT STATUS VIEW (no external dependencies)
 --    Aggregates supply chain alerts per plant for color-coding the map
 -- =============================================================================
 
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-plant-map","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 SELECT
     pl.PLANT_ID,
     pl.PLANT_NAME,
@@ -76,7 +30,6 @@ SELECT
     pl.LATITUDE,
     pl.LONGITUDE,
 
-    -- Severity per category (4=critical, 3=high, 2=medium, 1=low, 0=none)
     MAX(CASE
         WHEN b.STATUS = 'ON_HOLD'   AND b.DEVIATION_SEVERITY = 'CRITICAL' THEN 4
         WHEN b.STATUS = 'REJECTED'                                         THEN 4
@@ -103,7 +56,6 @@ SELECT
         ELSE 0
     END) AS SHIPMENT_SEVERITY,
 
-    -- Overall worst severity
     GREATEST(
         MAX(CASE
             WHEN b.STATUS = 'ON_HOLD'   AND b.DEVIATION_SEVERITY = 'CRITICAL' THEN 4
@@ -119,7 +71,6 @@ SELECT
                  WHEN sh.STATUS IN ('DELAYED', 'CUSTOMS') THEN 1 ELSE 0 END)
     ) AS MAX_SEVERITY,
 
-    -- Alert counts
     COUNT(DISTINCT CASE WHEN b.STATUS IN ('ON_HOLD', 'REJECTED') THEN b.BATCH_ID END) AS CRITICAL_BATCHES,
     COUNT(DISTINCT CASE WHEN mi.TEMP_EXCURSION_FLAG = TRUE THEN mi.INVENTORY_ID END)   AS TEMP_EXCURSIONS,
     COUNT(DISTINCT CASE WHEN mi.STOCK_STATUS = 'CRITICAL'   THEN mi.INVENTORY_ID END)  AS CRITICAL_STOCK_ITEMS,
@@ -138,15 +89,54 @@ GROUP BY
     pl.REGION, pl.SPECIALISATION, pl.CAPACITY_BATCHES_MONTH,
     pl.LATITUDE, pl.LONGITUDE;
 
--- =============================================================================
--- VERIFY
--- =============================================================================
-
-SELECT COUNT(*) AS building_footprint_rows,
-       COUNT(DISTINCT PLANT_ID) AS plants_with_footprints
-FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS;
-
+-- Verify alert status
 SELECT PLANT_NAME, MAX_SEVERITY, CRITICAL_BATCHES, TEMP_EXCURSIONS,
        CRITICAL_STOCK_ITEMS, DELAYED_SHIPMENTS
 FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
 ORDER BY MAX_SEVERITY DESC;
+
+-- =============================================================================
+-- 2. PRE-COMPUTED BUILDING FOOTPRINTS (requires OVERTURE_MAPS__BUILDINGS)
+--    Uses BBOX pre-filter for performance on 2.5B row table.
+--    Install from Marketplace: search "Overture Maps - Buildings" by CARTO.
+--    Database name: OVERTURE_MAPS__BUILDINGS, schema: CARTO
+-- =============================================================================
+
+-- Accept terms and install listing (idempotent)
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KN');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__BUILDINGS FROM LISTING 'GZT0Z4CM1E9KN';
+
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-plant-map","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH PLANT_BOUNDS AS (
+    SELECT
+        PLANT_ID, PLANT_NAME, PLANT_CODE, LATITUDE, LONGITUDE,
+        LONGITUDE - 0.008 AS MIN_LON,
+        LONGITUDE + 0.008 AS MAX_LON,
+        LATITUDE  - 0.008 AS MIN_LAT,
+        LATITUDE  + 0.008 AS MAX_LAT
+    FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS
+)
+SELECT
+    p.PLANT_ID,
+    p.PLANT_NAME,
+    p.PLANT_CODE,
+    b.ID                                    AS OVERTURE_ID,
+    ST_ASGEOJSON(b.GEOMETRY)                AS GEOJSON,
+    TRY_PARSE_JSON(b.NAMES):primary::string AS BUILDING_NAME,
+    b.CLASS,
+    b.HEIGHT,
+    'BUILDING'                              AS FOOTPRINT_TYPE
+FROM PLANT_BOUNDS p
+JOIN OVERTURE_MAPS__BUILDINGS.CARTO.BUILDING b
+  ON b.BBOX:xmin::FLOAT >= p.MIN_LON
+ AND b.BBOX:xmax::FLOAT <= p.MAX_LON
+ AND b.BBOX:ymin::FLOAT >= p.MIN_LAT
+ AND b.BBOX:ymax::FLOAT <= p.MAX_LAT
+ AND b.GEOMETRY IS NOT NULL;
+
+-- Verify footprints
+SELECT COUNT(*) AS building_footprint_rows,
+       COUNT(DISTINCT PLANT_ID) AS plants_with_footprints
+FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS;

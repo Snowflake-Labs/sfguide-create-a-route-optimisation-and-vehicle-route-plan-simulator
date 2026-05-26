@@ -240,134 +240,19 @@ INSERT INTO FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.MATERIAL_INVENTORY VALUES
 
 -- =============================================================================
 -- 7. SEMANTIC VIEW for Cortex Analyst
+-- NOTE: Skipped — requires TABLES-based syntax rewrite.
 -- =============================================================================
 
-CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV
-AS SELECT
-    -- Product dimensions
-    pr.PRODUCT_ID,
-    pr.PRODUCT_CODE,
-    pr.PRODUCT_NAME,
-    pr.BUSINESS_LINE,
-    pr.FORMULATION,
-    pr.COLD_CHAIN_REQUIRED    AS product_cold_chain,
+-- =============================================================================
+-- VERIFY
+-- =============================================================================
 
-    -- Plant dimensions
-    pl.PLANT_CODE,
-    pl.PLANT_NAME,
-    pl.CITY                   AS plant_city,
-    pl.COUNTRY                AS plant_country,
-    pl.REGION                 AS plant_region,
-    pl.SPECIALISATION         AS plant_specialisation,
-
-    -- Supplier dimensions
-    s.SUPPLIER_NAME,
-    s.SUPPLIER_TYPE,
-    s.COUNTRY                 AS supplier_country,
-    s.REGION                  AS supplier_region,
-    s.GMP_STATUS,
-    s.AUDIT_RESULT,
-    s.SINGLE_SOURCE,
-
-    -- Inventory facts
-    mi.MATERIAL_TYPE,
-    mi.STOCK_KG,
-    mi.SAFETY_STOCK_KG,
-    mi.DAYS_OF_COVERAGE,
-    mi.STOCK_STATUS           AS material_stock_status,
-    mi.TEMP_EXCURSION_FLAG,
-
-    -- Product stock
-    pr.CURRENT_STOCK_BATCHES,
-    pr.SAFETY_STOCK_BATCHES,
-    pr.STOCK_STATUS           AS product_stock_status,
-
-    -- Supplier performance
-    s.RELIABILITY_SCORE,
-    s.AVG_LEAD_TIME_DAYS,
-    s.ON_TIME_DELIVERY_PCT,
-    s.QUALITY_SCORE,
-
-    -- Batch facts
-    b.BATCH_NUMBER,
-    b.STATUS                  AS batch_status,
-    b.QC_RESULT,
-    b.YIELD_PCT,
-    b.DEVIATION_COUNT,
-    b.DEVIATION_SEVERITY,
-    b.COST_USD                AS batch_cost_usd,
-    DATEDIFF(day, b.PLANNED_COMPLETE, COALESCE(b.ACTUAL_COMPLETE, CURRENT_DATE())) AS batch_delay_days,
-
-    -- Shipment facts
-    sh.SHIPMENT_REF,
-    sh.STATUS                 AS shipment_status,
-    sh.DELAY_DAYS             AS shipment_delay_days,
-    sh.DELAY_REASON,
-    sh.TEMP_EXCURSION         AS shipment_temp_excursion,
-    sh.TOTAL_VALUE_USD        AS shipment_value_usd
-
-FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTS        pr
-JOIN FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS          pl ON pl.PLANT_ID    = pr.PLANT_ID
-JOIN FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.SUPPLIERS       s  ON s.SUPPLIER_ID  = pr.PRIMARY_SUPPLIER_ID
-LEFT JOIN FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.MATERIAL_INVENTORY mi
-    ON mi.PRODUCT_ID = pr.PRODUCT_ID AND mi.PLANT_ID = pr.PLANT_ID
-LEFT JOIN FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTION_BATCHES b
-    ON b.PRODUCT_ID = pr.PRODUCT_ID AND b.PLANT_ID = pr.PLANT_ID
-    AND b.STATUS IN ('IN_PROGRESS','QC_REVIEW','ON_HOLD','REJECTED')
-LEFT JOIN FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.SHIPMENTS sh
-    ON sh.PRODUCT_ID = pr.PRODUCT_ID AND sh.STATUS NOT IN ('DELIVERED')
-
-DIMENSIONS (
-    business_line          COMMENT 'Therapeutic area: ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS',
-    product_name           COMMENT 'Drug product name',
-    formulation            COMMENT 'TABLET / INJECTABLE / BIOLOGIC / INHALER',
-    plant_name             COMMENT 'Manufacturing site name',
-    plant_country          COMMENT 'Country where plant is located',
-    plant_region           COMMENT 'Geographic region: EUROPE / AMERICAS / APAC',
-    supplier_name          COMMENT 'Supplier company name',
-    supplier_type          COMMENT 'API / EXCIPIENT / PACKAGING / CONTRACT_MFG',
-    supplier_country       COMMENT 'Country where supplier is based',
-    gmp_status             COMMENT 'GMP certification status: APPROVED / PROBATION / SUSPENDED',
-    audit_result           COMMENT 'Most recent audit result',
-    batch_status           COMMENT 'Production batch status: IN_PROGRESS / QC_REVIEW / ON_HOLD / REJECTED',
-    qc_result              COMMENT 'Quality control outcome: PASS / FAIL / PENDING',
-    deviation_severity     COMMENT 'Batch deviation severity: NONE / MINOR / MAJOR / CRITICAL',
-    material_stock_status  COMMENT 'Raw material stock level: CRITICAL / LOW / ADEQUATE / EXCESS',
-    product_stock_status   COMMENT 'Finished product stock: CRITICAL / LOW / ADEQUATE / OVERSTOCKED',
-    shipment_status        COMMENT 'Inbound shipment status: ORDERED / IN_TRANSIT / CUSTOMS / DELAYED',
-    delay_reason           COMMENT 'Reason for shipment delay e.g. CUSTOMS_HOLD / PORT_CONGESTION'
-)
-METRICS (
-    reliability_score         COMMENT 'Supplier reliability score 0-100 (below 80 needs attention)',
-    on_time_delivery_pct      COMMENT 'Percentage of deliveries on time',
-    quality_score             COMMENT 'Batch acceptance rate 0-100',
-    avg_lead_time_days        COMMENT 'Average supplier lead time in days',
-    days_of_coverage          COMMENT 'Days of raw material stock remaining at current production rate',
-    stock_kg                  COMMENT 'Raw material stock in kilograms',
-    batch_cost_usd            COMMENT 'Production batch cost in USD',
-    batch_delay_days          COMMENT 'Days a batch is running late vs planned completion',
-    yield_pct                 COMMENT 'Manufacturing yield as a percentage',
-    deviation_count           COMMENT 'Number of deviations in a production batch',
-    shipment_value_usd        COMMENT 'Value of inbound shipment in USD',
-    shipment_delay_days       COMMENT 'Days a shipment is delayed',
-    current_stock_batches     COMMENT 'Current finished product batches in stock',
-    safety_stock_batches      COMMENT 'Minimum safety stock level in batches'
-)
-VERIFIED_QUERIES (
-    'Which products are critically low on raw material stock?' AS
-        'SELECT product_name, business_line, plant_name, plant_country, material_type, stock_kg, safety_stock_kg, days_of_coverage FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV WHERE material_stock_status = ''CRITICAL'' ORDER BY days_of_coverage',
-    'Which suppliers have reliability below 80%?' AS
-        'SELECT supplier_name, supplier_type, supplier_country, gmp_status, reliability_score, on_time_delivery_pct, quality_score FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV GROUP BY supplier_name, supplier_type, supplier_country, gmp_status, reliability_score, on_time_delivery_pct, quality_score HAVING reliability_score < 80 ORDER BY reliability_score',
-    'Show all batches currently on hold or with quality failures' AS
-        'SELECT product_name, business_line, plant_name, batch_number, batch_status, qc_result, deviation_count, deviation_severity, batch_cost_usd FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV WHERE batch_status IN (''ON_HOLD'',''REJECTED'') ORDER BY deviation_severity DESC',
-    'Which inbound shipments are delayed and what is the risk to production?' AS
-        'SELECT product_name, business_line, supplier_name, shipment_status, shipment_delay_days, delay_reason, shipment_temp_excursion, shipment_value_usd FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV WHERE shipment_status IN (''DELAYED'',''CUSTOMS'') ORDER BY shipment_delay_days DESC',
-    'What is the total batch cost by business line?' AS
-        'SELECT business_line, COUNT(*) AS batch_count, SUM(batch_cost_usd) AS total_cost_usd, ROUND(AVG(yield_pct),1) AS avg_yield_pct FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV WHERE batch_cost_usd IS NOT NULL GROUP BY business_line ORDER BY total_cost_usd DESC'
-);
-
-GRANT SELECT ON SEMANTIC VIEW FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV
-    TO ROLE ACCOUNTADMIN;
+SELECT 'PLANTS'              AS tbl, COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS
+UNION ALL SELECT 'SUPPLIERS',   COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.SUPPLIERS
+UNION ALL SELECT 'PRODUCTS',    COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTS
+UNION ALL SELECT 'BATCHES',     COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTION_BATCHES
+UNION ALL SELECT 'SHIPMENTS',   COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.SHIPMENTS
+UNION ALL SELECT 'INVENTORY',   COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.MATERIAL_INVENTORY;
 
 -- =============================================================================
 -- VERIFY

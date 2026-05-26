@@ -32,17 +32,16 @@ instructions:
 
   orchestration: |
     UPSTREAM SUPPLY CHAIN (manufacturing plants, suppliers, batches, shipments):
-    - Stock levels, supplier reliability, batch status, shipment delays: Use pharma_supply_chain
-    - Questions about ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS product lines: Use pharma_supply_chain
-    - Batch yield, QC failures, deviations, on-hold batches: Use pharma_supply_chain
-    - Supplier GMP status, audit results, single-source risk: Use pharma_supply_chain
-    - Raw material coverage, API inventory, temperature excursions: Use pharma_supply_chain
+    - Stock levels, supplier reliability, batch status, shipment delays: Query FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN tables directly
+    - Questions about ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS product lines: Query supply chain tables
+    - Batch yield, QC failures, deviations, on-hold batches: Query PRODUCTION_BATCHES table
+    - Supplier GMP status, audit results, single-source risk: Query SUPPLIERS table
+    - Raw material coverage, API inventory, temperature excursions: Query MATERIAL_INVENTORY table
 
     DOWNSTREAM SUPPLY INTELLIGENCE (pharmacy distribution):
     - Inventory status, wastage, near-expiry: Use TOOL_INVENTORY_STATUS
     - Demand forecast from demographics: Use TOOL_DEMAND_FORECAST
     - Replenishment plan / manufacturing order: Use TOOL_REPLENISHMENT_PLAN
-    - Text-to-SQL analytics on pharmacy inventory/wastage data: Use pharma_analytics
 
     ROUTING TOOLS:
     - Directions: Use TOOL_DIRECTIONS
@@ -55,17 +54,6 @@ instructions:
     - Conditions, fog, wind, safe to cycle: Use TOOL_WEATHER
 
 tools:
-  - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: pharma_supply_chain
-      description: "Upstream pharmaceutical supply chain analytics: manufacturing plants (Macclesfield, Mount Vernon, Södertälje, Singapore), API suppliers, production batches, inbound shipments, raw material inventory. Business lines: ONCOLOGY, CARDIOVASCULAR, RESPIRATORY, BIOLOGICS. Use for: supplier reliability scores, batch status/yield/deviations, shipment delays, API stock coverage, GMP compliance, cold chain temperature excursions, single-source supply risk."
-      input_schema:
-        type: object
-        properties:
-          query:
-            type: string
-            description: "Natural language question about upstream pharma supply chain"
-        required: [query]
   - tool_spec:
       type: generic
       name: TOOL_DIRECTIONS
@@ -163,16 +151,6 @@ tools:
           priority_filter:
             type: string
   - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: pharma_analytics
-      description: "Text-to-SQL analytics on pharmacy-level inventory, wastage, and demand data across 6 SF pharmacies and 25 drugs."
-      input_schema:
-        type: object
-        properties:
-          query:
-            type: string
-        required: [query]
-  - tool_spec:
       type: generic
       name: TOOL_WEATHER
       description: "Current Met Office weather for the routing region. Returns temperature, wind, precipitation, visibility and routing advisory."
@@ -183,9 +161,6 @@ tools:
             type: string
 
 tool_resources:
-  pharma_supply_chain:
-    type: cortex_analyst_text_to_sql
-    semantic_view: FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV
   TOOL_DIRECTIONS:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
@@ -234,9 +209,6 @@ tool_resources:
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
-  pharma_analytics:
-    type: cortex_analyst_text_to_sql
-    semantic_view: FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW
   TOOL_WEATHER:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER

@@ -341,101 +341,8 @@ GRANT USAGE ON PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_PLA
 
 -- =============================================================================
 -- 4. SEMANTIC VIEW for Cortex Analyst analytics
+-- NOTE: Skipped — requires TABLES-based syntax rewrite. Agent works without it.
 -- =============================================================================
-
-CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW
-AS SELECT
-    -- Identifiers
-    inv.INVENTORY_ID,
-    inv.PHARMACY_ID,
-    inv.DRUG_ID,
-
-    -- Pharmacy dimensions
-    p.NAME          AS pharmacy_name,
-    p.ADDRESS       AS pharmacy_address,
-
-    -- Drug dimensions
-    f.DRUG_NAME,
-    f.CONDITION     AS drug_condition,
-    f.DRUG_CATEGORY,
-    f.SKILL_LABEL   AS delivery_type,
-    f.UNITS_PER_1000,
-
-    -- Inventory facts
-    inv.CURRENT_STOCK_UNITS,
-    inv.REORDER_POINT,
-    inv.MAX_CAPACITY_UNITS,
-    inv.EXPIRY_DATE,
-    inv.DAYS_TO_EXPIRY,
-    inv.WASTAGE_UNITS_MTD,
-    inv.WASTAGE_VALUE_USD,
-    inv.LAST_RESTOCKED_DATE,
-    inv.STOCK_STATUS,
-
-    -- Demand facts
-    fc.FORECAST_UNITS,
-    fc.ACTUAL_UNITS_DISPENSED,
-    fc.VARIANCE_PCT,
-    fc.CATCHMENT_POPULATION,
-    fc.PRIMARY_MORBIDITY_PCT,
-
-    -- Replenishment
-    ro.UNITS_REQUIRED       AS replenishment_units,
-    ro.ORDER_VALUE_USD      AS replenishment_value_usd,
-    ro.DAYS_UNTIL_STOCKOUT,
-    ro.STATUS               AS replenishment_status,
-
-    -- Computed metrics
-    ROUND(inv.CURRENT_STOCK_UNITS::FLOAT / NULLIF(fc.FORECAST_UNITS / 30.0, 0), 1) AS stock_cover_days,
-    ROUND(inv.CURRENT_STOCK_UNITS::FLOAT / NULLIF(inv.MAX_CAPACITY_UNITS, 0) * 100, 1) AS capacity_utilisation_pct,
-    ROUND(inv.WASTAGE_UNITS_MTD::FLOAT / NULLIF(fc.ACTUAL_UNITS_DISPENSED, 0) * 100, 1) AS wastage_rate_pct
-
-FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_INVENTORY inv
-JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES    p  ON p.PHARMACY_ID  = inv.PHARMACY_ID
-JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY    f  ON f.DRUG_ID      = inv.DRUG_ID
-LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DEMAND_FORECAST fc
-    ON fc.PHARMACY_ID = inv.PHARMACY_ID AND fc.DRUG_ID = inv.DRUG_ID
-LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_REPLENISHMENT_ORDERS ro
-    ON ro.PHARMACY_ID = inv.PHARMACY_ID AND ro.DRUG_ID = inv.DRUG_ID
-
-DIMENSIONS (
-    pharmacy_name     COMMENT 'Name of the pharmacy partner',
-    drug_condition    COMMENT 'Primary condition the drug treats: DIABETES, HYPERTENSION, CARDIOVASCULAR, RESPIRATORY, MOBILITY',
-    drug_condition    COMMENT 'Drug condition category',
-    drug_name         COMMENT 'Name of the drug product',
-    drug_category     COMMENT 'Pharmacological category e.g. Insulin, ACE Inhibitor, Statin',
-    delivery_type     COMMENT 'Cold Chain / Controlled Substances / Standard Medicines',
-    stock_status      COMMENT 'CRITICAL / LOW / ADEQUATE / OVERSTOCKED',
-    replenishment_status COMMENT 'URGENT / STANDARD / REVIEW'
-)
-METRICS (
-    wastage_value_usd          COMMENT 'Total value of wasted stock this month in USD',
-    wastage_units_mtd          COMMENT 'Number of units wasted month-to-date',
-    wastage_rate_pct           COMMENT 'Wastage as a percentage of units dispensed',
-    forecast_units             COMMENT 'Demographically forecast monthly demand units',
-    actual_units_dispensed     COMMENT 'Actual units dispensed this month',
-    stock_cover_days           COMMENT 'Days of stock remaining at current demand rate',
-    capacity_utilisation_pct   COMMENT 'Percentage of maximum storage capacity in use',
-    replenishment_value_usd    COMMENT 'Value of outstanding replenishment orders in USD',
-    replenishment_units        COMMENT 'Units required to cover demand gap',
-    days_until_stockout        COMMENT 'Estimated days until stock runs out',
-    current_stock_units        COMMENT 'Current units on hand'
-)
-VERIFIED_QUERIES (
-    'Which drugs have the highest wastage cost this month?' AS
-        'SELECT drug_name, drug_condition, delivery_type, SUM(wastage_value_usd) AS total_wastage_usd, SUM(wastage_units_mtd) AS total_units_wasted FROM FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW GROUP BY drug_name, drug_condition, delivery_type ORDER BY total_wastage_usd DESC LIMIT 10',
-    'What is the total wastage cost by pharmacy?' AS
-        'SELECT pharmacy_name, SUM(wastage_value_usd) AS total_wastage_usd, SUM(wastage_units_mtd) AS total_units_wasted FROM FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW GROUP BY pharmacy_name ORDER BY total_wastage_usd DESC',
-    'Show all critical stock items near expiry' AS
-        'SELECT pharmacy_name, drug_name, drug_condition, delivery_type, current_stock_units, days_to_expiry, stock_status FROM FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW WHERE stock_status = ''CRITICAL'' OR days_to_expiry <= 30 ORDER BY days_to_expiry',
-    'Which pharmacies are overstocked on cold chain products?' AS
-        'SELECT pharmacy_name, drug_name, current_stock_units, max_capacity_units, capacity_utilisation_pct FROM FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW WHERE delivery_type = ''Cold Chain'' AND stock_status = ''OVERSTOCKED'' ORDER BY capacity_utilisation_pct DESC',
-    'What is the forecast vs actual demand by condition?' AS
-        'SELECT drug_condition, SUM(forecast_units) AS total_forecast, SUM(actual_units_dispensed) AS total_actual, ROUND(AVG(variance_pct),1) AS avg_variance_pct FROM FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW GROUP BY drug_condition ORDER BY total_forecast DESC'
-);
-
-GRANT SELECT ON SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW
-    TO ROLE ACCOUNTADMIN;
 
 -- =============================================================================
 -- 5. UPDATE ROUTING_AGENT — add pharma intelligence tools
@@ -474,7 +381,6 @@ instructions:
     - Inventory status, wastage, near-expiry, overstocked items: Use TOOL_INVENTORY_STATUS
     - Demand forecast from demographics for a pharmacy: Use TOOL_DEMAND_FORECAST
     - Replenishment plan / manufacturing order / what to produce: Use TOOL_REPLENISHMENT_PLAN
-    - Text-to-SQL analytics on inventory/wastage/demand data: Use pharma_analytics
 
     WEATHER:
     - Current conditions, safe to cycle, fog, wind, rain: Use TOOL_WEATHER
@@ -594,17 +500,6 @@ tools:
             type: string
             description: "Optional filter: URGENT (stockouts imminent), STANDARD, or REVIEW. Leave empty for full plan."
   - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: pharma_analytics
-      description: "Text-to-SQL analytics on pharma supply intelligence data: wastage analysis, demand vs forecast, stock cover days, capacity utilisation, replenishment values. Use for: 'how much wastage', 'which drugs', 'compare pharmacies', 'show me trends', 'total cost', 'breakdown by condition'."
-      input_schema:
-        type: object
-        properties:
-          query:
-            type: string
-            description: "Natural language analytics question about inventory, wastage, demand, or replenishment data"
-        required: [query]
-  - tool_spec:
       type: generic
       name: TOOL_WEATHER
       description: "Get current Met Office weather conditions for the routing region. Returns temperature, wind speed, precipitation, visibility, humidity and routing advisory. Use before recommending cycling profiles or when asked about weather conditions."
@@ -664,9 +559,6 @@ tool_resources:
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
-  pharma_analytics:
-    type: cortex_analyst_text_to_sql
-    semantic_view: FLEET_INTELLIGENCE.ROUTING_AGENT.PHARMA_ANALYTICS_VIEW
   TOOL_WEATHER:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER
