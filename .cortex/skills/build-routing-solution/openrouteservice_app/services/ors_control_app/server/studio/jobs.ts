@@ -166,6 +166,46 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   return { deleted };
 }
 
+// Make Data Studio runs idempotent on natural-key tables. Re-running for the
+// same (REGION, VEHICLE_TYPE) MUST replace prior rows in DIM_POIS / DIM_FLEET /
+// FACT_FREIGHT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY because their
+// natural keys (LOCATION_ID, VEHICLE_ID, OFFER_ID, PARTNER_ID, ...) are
+// deterministic per scope and would otherwise stack across runs, producing the
+// row multiplication that surfaces as duplicate trailers / pickups / dropoffs
+// in the Backload Matching UI.
+//
+// FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_TRIP_SCHEDULE are intentionally NOT
+// cleared — they use random IDs per run and are append-only by design.
+async function clearRegionScope(
+  snowSql: SnowSqlFn,
+  region: string,
+  vehicleType: string,
+  jobId: string,
+): Promise<void> {
+  const targets: { name: string; scope: 'REGION' | 'REGION_VT' }[] = [
+    { name: 'DIM_POIS',             scope: 'REGION' },
+    { name: 'DIM_FLEET',            scope: 'REGION_VT' },
+    { name: 'FACT_FREIGHT_OFFERS',  scope: 'REGION_VT' },
+    { name: 'DIM_PARTNERS',         scope: 'REGION_VT' },
+    { name: 'FACT_PARTNER_HISTORY', scope: 'REGION_VT' },
+  ];
+  for (const t of targets) {
+    const where = t.scope === 'REGION_VT'
+      ? `REGION = ${escVal(region)} AND VEHICLE_TYPE = ${escVal(vehicleType)}`
+      : `REGION = ${escVal(region)}`;
+    try {
+      await snowSql(
+        `DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.${t.name} WHERE ${where}`,
+        UNIFIED_DB, UNIFIED_SCHEMA,
+      );
+    } catch (e: any) {
+      log('WARN', 'Studio',
+          `Pre-run clear of ${t.name} for ${region}/${vehicleType} failed (non-fatal): ${e.message?.slice(0, 200)}`,
+          { jobId });
+    }
+  }
+}
+
 function broadcast(job: Job, event: string, data: any) {
   job.events.push({ event, data, ts: Date.now() });
   if (job.events.length > EVENT_BUFFER_CAP) {
@@ -210,32 +250,15 @@ export function subscribeJob(jobId: string, cb: SseCallback): () => void {
 
 // escVal, UNIFIED_DB, UNIFIED_SCHEMA moved to ./sql-helpers.ts
 
-async function disableOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 0',
-    // v1.1.0: bare ORS_SERVICE has been removed; the per-region default is
-    // ORS_SERVICE_SANFRANCISCO. Both lines here are best-effort and survive a
-    // mid-migration window where either name might still be present.
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 0',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 0',
-  ];
-  for (const sql of stmts) {
-    try { await snowSql(sql); } catch (_) { /* best-effort */ }
-  }
-  log('INFO', 'Studio', 'Disabled ORS auto-suspend for generation');
-}
-
-async function restoreOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 14400',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 14400',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 14400',
-  ];
-  for (const sql of stmts) {
-    try { await snowSql(sql); } catch (_) { /* best-effort */ }
-  }
-  log('INFO', 'Studio', 'Restored ORS auto-suspend after generation');
-}
+// AUTO_SUSPEND pinning for the active studio job is now performed inside
+// captureAndScaleUp() / scaleDown() (see ./scaling.ts) so it is region-aware
+// and uses captured baselines for symmetric restore. The previous hardcoded
+// disableOrsAutoSuspend / restoreOrsAutoSuspend helpers only pinned the
+// gateway, the legacy ORS_SERVICE name, and ORS_SERVICE_SANFRANCISCO — they
+// never touched the active job's per-region ORS_SERVICE_<REGION>,
+// VROOM_SERVICE_<REGION>, or ORS_POOL_<REGION>, which is why ORS could
+// auto-suspend mid-run. The new flow guarantees pin and unpin always travel
+// together with capture/restore (single source of truth, no drift).
 
 // ===== Compute pool / service scale-up for synthetic data generation =====
 // Mirrors the matrix-build pattern in app/modules/05_matrix_pipeline.sql.
@@ -348,7 +371,6 @@ export async function startGeneration(
     }, JOB_LOG_FLUSH_MS);
     try {
       await ensureTables(snowSql);
-      await disableOrsAutoSuspend(snowSql);
       try {
         scalingState = await captureAndScaleUp(snowSql, config.region);
       } catch (e: any) {
@@ -409,6 +431,13 @@ export async function startGeneration(
         },
       });
       broadcast(job, 'progress', { status: `Spatial spread: ${homeSpread.populated_bins} home bins, top_share=${(homeSpread.top_bin_share * 100).toFixed(1)}% (bin=${effBinDeg} deg)` });
+
+      // Idempotency: clear any prior rows for this (region, vehicle_type) on
+      // natural-key tables BEFORE we insert. Without this, re-running Studio
+      // for an already-generated region stacks duplicate LOCATION_ID /
+      // VEHICLE_ID / OFFER_ID rows and breaks Backload Matching downstream.
+      await clearRegionScope(snowSql, config.region, vt, jobId);
+      broadcast(job, 'progress', { status: `Cleared prior dimension/freight rows for ${config.region} / ${vt}` });
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);
@@ -575,7 +604,6 @@ export async function startGeneration(
     } finally {
       clearInterval(flushTimer);
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
-      await restoreOrsAutoSuspend(snowSql);
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
     }
   })();
