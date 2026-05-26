@@ -84,6 +84,19 @@
       ]
     },
     {
+      "id": "plant_intel",
+      "label": "Plant Intelligence",
+      "icon": "🏗️",
+      "description": "Manufacturing plant operations — batch hold alerts, temperature excursions, critical stock, shipment delays. Open Plant Intelligence map alongside to see buildings light up by severity.",
+      "prompts": [
+        { "label": "1. Plant alert status", "icon": "🔴", "prompt": "Which of our manufacturing plants are in a critical state right now? Show me the alert severity for each plant, including batch holds, temperature excursions, and delayed shipments." },
+        { "label": "2. Batch holds at risk", "icon": "🔬", "prompt": "Show me all production batches currently on hold or rejected across our plants. Which plant has the most value at risk and what are the root causes?" },
+        { "label": "3. Cold chain excursions", "icon": "🌡️", "prompt": "Are there any active temperature excursions across our manufacturing plants? Which products are affected and what is the risk to batch integrity?" },
+        { "label": "4. Material shortages", "icon": "📦", "prompt": "Which plants have critical raw material shortages that could halt production? Show me the days of coverage remaining for each critical material." },
+        { "label": "5. Mount Vernon deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Mount Vernon plant — active batches, quality deviations, material stock levels, and any inbound shipment delays." }
+      ]
+    },
+    {
       "id": "logistics",
       "label": "Fleet Logistics",
       "icon": "🚛",

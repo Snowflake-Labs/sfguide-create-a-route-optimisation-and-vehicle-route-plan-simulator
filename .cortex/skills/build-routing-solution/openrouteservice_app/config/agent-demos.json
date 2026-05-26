@@ -17,6 +17,21 @@
       ]
     },
     {
+      "id": "analytics",
+      "label": "Fleet Analytics",
+      "icon": "📊",
+      "description": "Fleet performance analytics — trips, speed, compliance, dwell time, battery, vehicle comparison",
+      "prompts": [
+        { "label": "1. Fleet overview", "icon": "📈", "prompt": "Give me an overview of the fleet: total trips, average distance, average duration, and number of active vehicles" },
+        { "label": "2. Top performers", "icon": "🏆", "prompt": "Which vehicles completed the most trips and what was their average distance and duration?" },
+        { "label": "3. Speed & compliance", "icon": "🚨", "prompt": "What is the speeding rate by vehicle? Which couriers have the most speed violations?" },
+        { "label": "4. Dwell & idle time", "icon": "⏸️", "prompt": "What percentage of time do vehicles spend moving vs dwelling vs idle?" },
+        { "label": "5. Battery health", "icon": "🔋", "prompt": "Which vehicles have the lowest battery levels? Show average and minimum battery by courier." },
+        { "label": "6. Busiest locations", "icon": "📍", "prompt": "Which pickup locations have the most orders? What are the top 10 busiest restaurants?" },
+        { "label": "7. Hourly patterns", "icon": "🕐", "prompt": "What is the trip distribution by hour of day? When is peak demand?" }
+      ]
+    },
+    {
       "id": "retail",
       "label": "Retail & Catchment",
       "icon": "🏪",
@@ -30,6 +45,58 @@
       ]
     },
     {
+      "id": "upstream_supply",
+      "label": "Pharma Manufacturing",
+      "icon": "🏭",
+      "description": "Upstream supply chain intelligence — API suppliers, manufacturing plants, batch production, shipment delays, cold chain risk",
+      "prompts": [
+        { "label": "1. Supply chain status", "icon": "🌍", "prompt": "Give me an overview of our manufacturing supply chain status. Which products are critically low on raw materials and which batches are currently on hold or have quality failures?" },
+        { "label": "2. Supplier risk", "icon": "⚠️", "prompt": "Which suppliers have a reliability score below 80% or are on GMP probation? What products do they supply and what is the single-source risk?" },
+        { "label": "3. Batch quality", "icon": "🔬", "prompt": "Show me all production batches with critical or major deviations, quality failures, or that are currently on hold. What is the total batch cost at risk?" },
+        { "label": "4. Shipment delays", "icon": "🚢", "prompt": "Which inbound API shipments are currently delayed or held in customs? Are any cold chain shipments at risk of temperature excursion? What is the total value at risk?" },
+        { "label": "5. End-to-end risk", "icon": "🔗", "prompt": "Identify the highest-risk product in our portfolio — low stock at both manufacturing and pharmacy level, with supplier reliability concerns. Which patients could be affected and what should we do?" }
+      ]
+    },
+    {
+      "id": "pharma_supply",
+      "label": "Pharma Supply Intelligence",
+      "icon": "🏭",
+      "description": "Manufacturing & supply analytics — wastage, demand forecasting from demographics, replenishment planning, stock redistribution",
+      "prompts": [
+        { "label": "1. Wastage alert", "icon": "⚠️", "prompt": "Show me the current inventory status across all pharmacies. Which drugs are critically low or near expiry, and what is the total wastage cost this month?" },
+        { "label": "2. Cold chain wastage", "icon": "🧊", "prompt": "Which cold chain products have the highest wastage? Show me the drugs with less than 30 days until expiry and the cost of stock we are likely to waste." },
+        { "label": "3. Demand forecast", "icon": "📊", "prompt": "Based on the demographics around Walgreens Mission District, what are the top drugs needed and how does the current stock compare to forecast demand?" },
+        { "label": "4. Replenishment plan", "icon": "🏭", "prompt": "Generate an urgent replenishment plan. Which pharmacies need immediate restocking, starting with cold chain products first? Show units required and total order value." },
+        { "label": "5. Redistribute stock", "icon": "🚚", "prompt": "Identify which pharmacies are overstocked on insulin and cold chain products with less than 30 days expiry. Then optimise a redistribution route from the overstocked pharmacies to the ones that are critically low." }
+      ]
+    },
+    {
+      "id": "weather",
+      "label": "Weather-Aware Routing",
+      "icon": "🌤️",
+      "description": "Real-time Met Office weather — check conditions before deploying cyclists, adjust routes for fog, wind and rain",
+      "prompts": [
+        { "label": "1. Current conditions", "icon": "🌡️", "prompt": "What are the current weather conditions in San Francisco? Is it safe to send out e-bike couriers?" },
+        { "label": "2. Visibility check", "icon": "🌫️", "prompt": "Check the visibility in San Francisco. Should we avoid cycling routes today?" },
+        { "label": "3. Wind impact", "icon": "💨", "prompt": "What is the wind speed in San Francisco right now? Which vehicle profiles are safe to use?" },
+        { "label": "4. Weather + routing", "icon": "🗺️", "prompt": "Check the weather first, then plan the best route from 1 Market Street to 498 Castro Street using the safest vehicle profile for today's conditions" },
+        { "label": "5. Delivery planning", "icon": "🚚", "prompt": "Given today's weather in San Francisco, optimise a delivery route from the depot at 1 Market Street to Walgreens 498 Castro St, CVS 2676 Geary Blvd, and Rite Aid 801 Clement St. Recommend the safest vehicle type." }
+      ]
+    },
+    {
+      "id": "plant_intel",
+      "label": "Plant Intelligence",
+      "icon": "🏗️",
+      "description": "Manufacturing plant operations — batch hold alerts, temperature excursions, critical stock, shipment delays. Open Plant Intelligence map alongside to see buildings light up by severity.",
+      "prompts": [
+        { "label": "1. Plant alert status", "icon": "🔴", "prompt": "Which of our manufacturing plants are in a critical state right now? Show me the alert severity for each plant, including batch holds, temperature excursions, and delayed shipments." },
+        { "label": "2. Batch holds at risk", "icon": "🔬", "prompt": "Show me all production batches currently on hold or rejected across our plants. Which plant has the most value at risk and what are the root causes?" },
+        { "label": "3. Cold chain excursions", "icon": "🌡️", "prompt": "Are there any active temperature excursions across our manufacturing plants? Which products are affected and what is the risk to batch integrity?" },
+        { "label": "4. Material shortages", "icon": "📦", "prompt": "Which plants have critical raw material shortages that could halt production? Show me the days of coverage remaining for each critical material." },
+        { "label": "5. Mount Vernon deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Mount Vernon plant — active batches, quality deviations, material stock levels, and any inbound shipment delays." }
+      ]
+    },
+    {
       "id": "logistics",
       "label": "Fleet Logistics",
       "icon": "🚛",
@@ -40,19 +107,6 @@
         { "label": "3. Bike courier", "icon": "🚲", "prompt": "Get cycling directions from 1 Market Street to 498 Castro Street, San Francisco" },
         { "label": "4. Reachability", "icon": "⏱️", "prompt": "Show me the area reachable within 20 minutes by HGV from the Port of San Francisco" },
         { "label": "5. Custom route", "icon": "📍", "prompt": "I have 2 vehicles starting from 1 Market Street, San Francisco. Optimise routes to deliver to: Walgreens 498 Castro St, CVS 2676 Geary Blvd, Rite Aid 801 Clement St, and Walgreens 2690 Mission St" }
-      ]
-    },
-    {
-      "id": "weather",
-      "label": "Weather-Aware Routing",
-      "icon": "🌦️",
-      "description": "Check real-time Met Office weather conditions before routing — fog, wind, rain advisories",
-      "prompts": [
-        { "label": "1. Current conditions", "icon": "🌡️", "prompt": "What are the current weather conditions in San Francisco?" },
-        { "label": "2. Cycling safety", "icon": "🚲", "prompt": "Is it safe to send e-bike couriers out today? Check the wind and visibility." },
-        { "label": "3. Weather + directions", "icon": "🗺️", "prompt": "Check the weather, then give me cycling directions from Union Square to the Ferry Building if conditions are safe" },
-        { "label": "4. Delivery planning", "icon": "🚚", "prompt": "Check today's weather and plan deliveries for 3 vehicles from 1 Market Street to 5 pharmacies. If it's raining, use driving-car instead of cycling." },
-        { "label": "5. Fog check", "icon": "🌫️", "prompt": "Is there fog in San Francisco right now? Should I avoid sending walking couriers?" }
       ]
     }
   ]
