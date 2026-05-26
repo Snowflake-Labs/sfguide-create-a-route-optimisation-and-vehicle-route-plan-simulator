@@ -55,14 +55,17 @@ function clampPayload(
   };
 }
 // Hard ceiling on the unique-location count we'll try to precompute a matrix
-// for. ORS default is max 3500 cells = sqrt(3500) ≈ 59 locations.
-// Cap for the UI-side MATRIX pre-compute path. Raised from 50 → 200 because
-// the gateway-side fallback has a 45 s ceiling (services/gateway/routing_service.py)
-// that times out on continental graphs (Germany ~120 locs), returning
-// matrix_precompute_failed which the OPTIMIZATION TVF then strips because
-// LATERAL FLATTEN(resp:routes) yields 0 rows when routes is absent. Direct
-// MATRIX('driving-hgv', 90 locs, 'Germany') returns instantly via SQL.
-const BM_MAX_MATRIX_LOCATIONS = 200;
+// for. The gateway pre-compute path has a 45 s timeout
+// (ORS_TIMEOUT_MATRIX_PRECOMPUTE in services/gateway/routing_service.py).
+// Empirical sweep on Germany continental driving-hgv
+// (.snowflake/cortex/plans/benchmark-bm-matrix-cap.plan.md, 2026-05-26):
+//   N=400  -> p95  6.1 s
+//   N=500  -> p95  9.7 s   <- chosen cap (35 s headroom under 45 s timeout)
+//   N=600  -> p95 13.9 s
+//   N=750  -> p95 20.3 s
+//   N=1000 -> p95 34.1 s   (would breach 45 s under load jitter)
+// 500 also comfortably covers the BM slider-max payload of 2*60+2*80+2*60=400.
+const BM_MAX_MATRIX_LOCATIONS = 500;
 // Wall-clock budget for the whole solve, including the in-gateway matrix
 // pre-compute and the VROOM call. Past this we abort the fetch and surface
 // a precise error instead of an open-ended spinner.
