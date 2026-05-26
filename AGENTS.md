@@ -55,6 +55,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
 | `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
+| `freight-exchange` | demo | Dispatcher-grade marketplace cockpit (parallel page to Backload Matching). Browse + filter + map of synthesized freight offers per active preset, with trust-score (credit/KYC/blacklist) and market-rate (vs. weekly p25/p50/p75 USD/km RATE_INDEX dynamic table) badges. Powered by FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data. |
 | `emergency-response` | demo | 5-page Emergency Response Intelligence dashboard + 6-step Dynamic Table pipeline. Automates participant-impact assessment for wildfire/hurricane/flood/tornado/snow events using free Marketplace hazard data (NWS Alerts, FEMA, Census, FEMA NRI) plus ORS isochrones and OPTIMIZATION with `avoid_polygons` for hazard-aware reachability and dispatch routing. |
 
 ## Skill Conventions (Quick Reference)
@@ -280,6 +281,8 @@ graph TD
     RA --> SAP[setup-agent-playground]
     RO --> BM[backload-matching]
     BRS --> BM
+    BM --> FX[freight-exchange]
+    BRS --> FX
     RC --> FIT
     RC --> FIFD
     RC --> RD
