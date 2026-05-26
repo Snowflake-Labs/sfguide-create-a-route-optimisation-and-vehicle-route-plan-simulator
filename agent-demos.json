@@ -45,6 +45,19 @@
       ]
     },
     {
+      "id": "pharma_supply",
+      "label": "Pharma Supply Intelligence",
+      "icon": "🏭",
+      "description": "Manufacturing & supply analytics — wastage, demand forecasting from demographics, replenishment planning, stock redistribution",
+      "prompts": [
+        { "label": "1. Wastage alert", "icon": "⚠️", "prompt": "Show me the current inventory status across all pharmacies. Which drugs are critically low or near expiry, and what is the total wastage cost this month?" },
+        { "label": "2. Cold chain wastage", "icon": "🧊", "prompt": "Which cold chain products have the highest wastage? Show me the drugs with less than 30 days until expiry and the cost of stock we are likely to waste." },
+        { "label": "3. Demand forecast", "icon": "📊", "prompt": "Based on the demographics around Walgreens Mission District, what are the top drugs needed and how does the current stock compare to forecast demand?" },
+        { "label": "4. Replenishment plan", "icon": "🏭", "prompt": "Generate an urgent replenishment plan. Which pharmacies need immediate restocking, starting with cold chain products first? Show units required and total order value." },
+        { "label": "5. Redistribute stock", "icon": "🚚", "prompt": "Identify which pharmacies are overstocked on insulin and cold chain products with less than 30 days expiry. Then optimise a redistribution route from the overstocked pharmacies to the ones that are critically low." }
+      ]
+    },
+    {
       "id": "weather",
       "label": "Weather-Aware Routing",
       "icon": "🌤️",
