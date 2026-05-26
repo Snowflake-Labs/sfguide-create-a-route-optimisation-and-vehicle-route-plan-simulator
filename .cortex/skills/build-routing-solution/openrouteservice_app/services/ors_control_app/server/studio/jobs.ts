@@ -6,7 +6,7 @@ import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers.js';
 import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './scaling.js';
 import { ensureTables } from './ensure-tables.js';
 import { syncRegionRegistryAndConfig } from './region-sync.js';
-import { insertTelemetryBatch, insertTripBatch, insertDimFleet, insertDimPois, insertFactFreightOffers } from './inserters.js';
+import { insertTelemetryBatch, insertTripBatch, insertDimFleet, insertDimPois, insertFactFreightOffers, insertDimPartners, insertFactPartnerHistory } from './inserters.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -139,6 +139,7 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
 export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
   const tables = [
     'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_FREIGHT_OFFERS',
+    'DIM_PARTNERS', 'FACT_PARTNER_HISTORY',
   ];
   const deleted: Record<string, number> = {};
   for (const tbl of tables) {
@@ -374,13 +375,15 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory } = await import('./engine.js');
       const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
       const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
-      const offers = generateFreightOffers(pois, config, 300);
+      const partners = generatePartners(config, 80);
+      const partnerHistory = generatePartnerHistory(partners, config, 6);
+      const offers = generateFreightOffers(pois, config, 300, partners);
 
       // Region-agnostic spatial spread diagnostics. Logged once at fleet build
       // time so users can verify on any of the 5,194 regions in REGION_CATALOG
@@ -426,6 +429,22 @@ export async function startGeneration(
       } catch (e: any) {
         log('WARN', 'Studio', `FACT_FREIGHT_OFFERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `FACT_FREIGHT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
+      }
+      try {
+        const n = await insertDimPartners(partners, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} partners`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} partners` });
+      } catch (e: any) {
+        log('WARN', 'Studio', `DIM_PARTNERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `DIM_PARTNERS insert failed: ${e.message?.slice(0, 150)}` });
+      }
+      try {
+        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} partner-history rows`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} partner-history rows` });
+      } catch (e: any) {
+        log('WARN', 'Studio', `FACT_PARTNER_HISTORY insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `FACT_PARTNER_HISTORY insert failed: ${e.message?.slice(0, 150)}` });
       }
 
       const catCounts: Record<string, number> = {};

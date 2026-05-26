@@ -14,6 +14,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
 ): Promise<void> {
   const TRACK = `'{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
+  const TRACK_FX = `'{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const stmts: { sql: string; db?: string; schema?: string }[] = [
     {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING COMMENT = ${TRACK}`,
@@ -414,6 +415,210 @@ export async function ensureBackloadAndAssetVelocityObjects(
                            MAX(AVOID_FEATURES)               AS AVOID_FEATURES
                     FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG) c`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    // ---------------------------------------------------------------
+    // Freight Exchange (Phase A/B): MARKETPLACE schema + projection views
+    // over SYNTHETIC_DATASETS.UNIFIED.{FACT_FREIGHT_OFFERS, DIM_PARTNERS,
+    // FACT_PARTNER_HISTORY} filtered by MARKETPLACE.CONFIG. Also creates a
+    // RATE_INDEX dynamic table at 15-minute lag and a denormalized
+    // VW_OFFER_ENRICHED that the React page reads.
+    // ---------------------------------------------------------------
+    {
+      sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE COMMENT = ${TRACK_FX}`,
+      db: 'FLEET_INTELLIGENCE',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG (
+        VEHICLE_TYPE VARCHAR NOT NULL,
+        REGION       VARCHAR NOT NULL
+      ) COMMENT = ${TRACK_FX}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.CONFIG tgt
+            USING (SELECT 'hgv' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+            ON TRUE
+            WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    // Idempotent ALTERs in case the page is deployed against an older
+    // FACT_FREIGHT_OFFERS that pre-dates the Phase-A enrichment columns.
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS EQUIPMENT VARCHAR(20)`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS ADR_CLASS VARCHAR(8)`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS LDM FLOAT`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS (
+        PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
+        NAME VARCHAR, COUNTRY VARCHAR(4),
+        CREDIT_SCORE NUMBER, PAYMENT_DAYS_AVG NUMBER, KYC_STATUS VARCHAR(20),
+        BLACKLIST_FLAG BOOLEAN, FOUNDED_YEAR NUMBER,
+        JOB_ID VARCHAR
+      ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY (
+        PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
+        ORIGIN_COUNTRY VARCHAR(4), DEST_COUNTRY VARCHAR(4),
+        EQUIPMENT VARCHAR(20),
+        SHIPPED_AT TIMESTAMP_NTZ, EUR_PER_KM FLOAT,
+        OUTCOME VARCHAR(20),
+        JOB_ID VARCHAR
+      ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT
+          f.OFFER_ID,
+          f.SOURCE,
+          f.PARTNER_ID,
+          COALESCE(p.NAME, 'Pickup')              AS PICKUP_CITY,
+          f.PICKUP_LON, f.PICKUP_LAT, f.PICKUP_GEOM,
+          COALESCE(d.NAME, 'Dropoff')             AS DROPOFF_CITY,
+          f.DROPOFF_LON, f.DROPOFF_LAT, f.DROPOFF_GEOM,
+          f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
+          f.WEIGHT_KG, f.PRODUCT, f.PRICE_USD, f.HAZMAT,
+          f.LISTING_TEXT, f.POSTED_AT,
+          f.EQUIPMENT, f.ADR_CLASS, f.LDM,
+          f.DISTANCE_KM, f.PRICE_PER_KM_USD,
+          COALESCE(f.STATUS, 'OPEN')              AS STATUS,
+          DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+        WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
+          AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT PARTNER_ID, NAME, COUNTRY,
+               CREDIT_SCORE, PAYMENT_DAYS_AVG, KYC_STATUS,
+               BLACKLIST_FLAG, FOUNDED_YEAR,
+               CASE
+                 WHEN BLACKLIST_FLAG THEN 'RED'
+                 WHEN CREDIT_SCORE < 40 OR KYC_STATUS = 'REJECTED' THEN 'RED'
+                 WHEN CREDIT_SCORE < 70 OR KYC_STATUS = 'PENDING' THEN 'YELLOW'
+                 ELSE 'GREEN'
+               END AS TRUST_BADGE
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS
+        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
+          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT PARTNER_ID, ORIGIN_COUNTRY, DEST_COUNTRY,
+               EQUIPMENT, SHIPPED_AT, EUR_PER_KM, OUTCOME
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY
+        WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
+          AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT
+          PARTNER_ID, ORIGIN_COUNTRY, DEST_COUNTRY, EQUIPMENT,
+          COUNT(*)                                                AS SHIPMENTS,
+          SUM(CASE WHEN OUTCOME = 'DELIVERED' THEN 1 ELSE 0 END)  AS ON_TIME,
+          SUM(CASE WHEN OUTCOME = 'LATE' THEN 1 ELSE 0 END)       AS LATE_CNT,
+          SUM(CASE WHEN OUTCOME = 'DAMAGED' THEN 1 ELSE 0 END)    AS DAMAGED_CNT,
+          ROUND(AVG(EUR_PER_KM), 2)                               AS AVG_EUR_PER_KM
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY
+        GROUP BY 1,2,3,4`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX
+        TARGET_LAG = '15 minutes'
+        WAREHOUSE = ROUTING_ANALYTICS
+        COMMENT = ${TRACK_FX}
+        AS
+        WITH base AS (
+          SELECT
+            EQUIPMENT,
+            DATE_TRUNC('week', POSTED_AT)        AS WEEK,
+            PRICE_PER_KM_USD
+          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+          WHERE PRICE_PER_KM_USD IS NOT NULL
+            AND EQUIPMENT IS NOT NULL
+        )
+        SELECT
+          EQUIPMENT, WEEK,
+          COUNT(*)                                              AS SAMPLES,
+          ROUND(APPROX_PERCENTILE(PRICE_PER_KM_USD, 0.25), 2)   AS P25_USD_PER_KM,
+          ROUND(APPROX_PERCENTILE(PRICE_PER_KM_USD, 0.50), 2)   AS P50_USD_PER_KM,
+          ROUND(APPROX_PERCENTILE(PRICE_PER_KM_USD, 0.75), 2)   AS P75_USD_PER_KM
+        FROM base
+        GROUP BY 1, 2`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT
+          o.*,
+          p.NAME             AS PARTNER_NAME,
+          p.COUNTRY          AS PARTNER_COUNTRY,
+          p.CREDIT_SCORE     AS PARTNER_CREDIT_SCORE,
+          p.PAYMENT_DAYS_AVG AS PARTNER_PAYMENT_DAYS,
+          p.KYC_STATUS       AS PARTNER_KYC,
+          p.BLACKLIST_FLAG   AS PARTNER_BLACKLIST,
+          p.TRUST_BADGE      AS TRUST_BADGE,
+          ri.P25_USD_PER_KM  AS MARKET_P25,
+          ri.P50_USD_PER_KM  AS MARKET_P50,
+          ri.P75_USD_PER_KM  AS MARKET_P75,
+          CASE
+            WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN NULL
+            ELSE ROUND((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM * 100, 1)
+          END AS PRICE_DELTA_PCT,
+          CASE
+            WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN 'UNKNOWN'
+            WHEN ABS((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM) <= 0.05 THEN 'AT_MARKET'
+            WHEN o.PRICE_PER_KM_USD < ri.P50_USD_PER_KM THEN 'BELOW_MARKET'
+            ELSE 'ABOVE_MARKET'
+          END AS MARKET_BADGE
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS p ON p.PARTNER_ID = o.PARTNER_ID
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX ri
+          ON ri.EQUIPMENT = o.EQUIPMENT
+         AND ri.WEEK = DATE_TRUNC('week', o.POSTED_AT)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
   ];
   for (const { sql, db, schema } of stmts) {

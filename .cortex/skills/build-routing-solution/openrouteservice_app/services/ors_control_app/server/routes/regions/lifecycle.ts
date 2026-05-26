@@ -240,6 +240,7 @@ export function createRegionsLifecycleRouter(): Router {
         'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
         'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
         'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
+        'FLEET_INTELLIGENCE.MARKETPLACE',
       ];
       for (const schema of CONFIG_SCHEMAS) {
         try {
