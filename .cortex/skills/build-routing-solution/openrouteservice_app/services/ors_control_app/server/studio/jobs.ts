@@ -346,9 +346,17 @@ export async function deleteDataset(
 // append-only semantics; the *_CURRENT views also filter them by active
 // JOB_ID.
 //
-// archivePriorDatasets is the non-destructive replacement for the legacy
-// clearRegionScope (kept below for use by the explicit
-// DELETE /api/studio/datasets/:id route only).
+// archivePriorDatasets is the non-destructive replacement for legacy
+// region-scoped DELETEs that used to wipe DIM_POIS / DIM_FLEET /
+// FACT_FREIGHT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY across ALL
+// datasets in a region.
+//
+// INVARIANT: All destructive cleanup of fact/dim rows MUST be scoped by
+// JOB_ID — never by REGION or (REGION, VEHICLE_TYPE). Each preset /
+// generation run is an independent dataset keyed by JOB_ID; deleting one
+// preset's data must never touch another preset's rows. The only
+// JOB_ID-scoped destructive helper is deleteJobData() above. Do not add
+// region-wide DELETE helpers here without changing the data model.
 async function archivePriorDatasets(
   snowSql: SnowSqlFn,
   region: string,
@@ -456,38 +464,13 @@ async function updateDatasetRowCounts(
   }
 }
 
-// Legacy destructive helper. Used ONLY by the explicit
-// DELETE /api/studio/datasets/:id route to physically purge a dataset.
-// Never called from a generation run — see archivePriorDatasets above.
-async function clearRegionScope(
-  snowSql: SnowSqlFn,
-  region: string,
-  vehicleType: string,
-  jobId: string,
-): Promise<void> {
-  const targets: { name: string; scope: 'REGION' | 'REGION_VT' }[] = [
-    { name: 'DIM_POIS',             scope: 'REGION' },
-    { name: 'DIM_FLEET',            scope: 'REGION_VT' },
-    { name: 'FACT_FREIGHT_OFFERS',  scope: 'REGION_VT' },
-    { name: 'DIM_PARTNERS',         scope: 'REGION_VT' },
-    { name: 'FACT_PARTNER_HISTORY', scope: 'REGION_VT' },
-  ];
-  for (const t of targets) {
-    const where = t.scope === 'REGION_VT'
-      ? `REGION = ${escVal(region)} AND VEHICLE_TYPE = ${escVal(vehicleType)}`
-      : `REGION = ${escVal(region)}`;
-    try {
-      await snowSql(
-        `DELETE FROM ${UNIFIED_DB}.${UNIFIED_SCHEMA}.${t.name} WHERE ${where}`,
-        UNIFIED_DB, UNIFIED_SCHEMA,
-      );
-    } catch (e: any) {
-      log('WARN', 'Studio',
-          `Pre-run clear of ${t.name} for ${region}/${vehicleType} failed (non-fatal): ${e.message?.slice(0, 200)}`,
-          { jobId });
-    }
-  }
-}
+// NOTE: A region-scoped clearRegionScope() helper used to live here. It
+// was removed because (a) it was already unused (deleteDataset() route
+// calls deleteJobData() which is JOB_ID-scoped) and (b) its REGION-scoped
+// DELETEs would have wiped data across ALL datasets in a region, breaking
+// per-preset independence. See the INVARIANT comment above
+// archivePriorDatasets. If you need to physically purge a single dataset,
+// use deleteJobData(jobId) — it is the only sanctioned destructive helper.
 
 function broadcast(job: Job, event: string, data: any) {
   job.events.push({ event, data, ts: Date.now() });
