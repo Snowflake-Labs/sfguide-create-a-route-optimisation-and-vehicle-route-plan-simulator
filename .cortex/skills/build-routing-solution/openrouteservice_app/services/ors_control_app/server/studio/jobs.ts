@@ -166,6 +166,175 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   return { deleted };
 }
 
+// -------------------------------------------------------------------------
+// Dataset registry CRUD (used by /api/studio/datasets/* endpoints).
+// All operations target FLEET_INTELLIGENCE.CORE.DIM_DATASETS plus the
+// SYNTHETIC_DATASETS.UNIFIED.* fact/dim tables when physically deleting.
+// -------------------------------------------------------------------------
+
+export interface DatasetRow {
+  datasetId: string;
+  region: string;
+  vehicleType: string;
+  label: string | null;
+  isActive: boolean;
+  createdAt: string;
+  rowCounts: Record<string, number> | null;
+  notes: string | null;
+}
+
+export async function listDatasets(
+  snowSql: SnowSqlFn,
+  filter: { region?: string; vehicleType?: string } = {},
+): Promise<DatasetRow[]> {
+  const where: string[] = [];
+  if (filter.region)       where.push(`REGION = ${escVal(filter.region)}`);
+  if (filter.vehicleType)  where.push(`VEHICLE_TYPE = ${escVal(filter.vehicleType)}`);
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await snowSql(
+    `SELECT DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE,
+            TO_VARCHAR(CONVERT_TIMEZONE('UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS CREATED_AT,
+            ROW_COUNTS, NOTES
+     FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     ${whereClause}
+     ORDER BY REGION, VEHICLE_TYPE, IS_ACTIVE DESC, CREATED_AT DESC`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return rows.map((r: any) => {
+    let rowCounts: Record<string, number> | null = null;
+    if (r.ROW_COUNTS) {
+      try {
+        rowCounts = typeof r.ROW_COUNTS === 'string' ? JSON.parse(r.ROW_COUNTS) : r.ROW_COUNTS;
+      } catch (_) { rowCounts = null; }
+    }
+    return {
+      datasetId: r.DATASET_ID,
+      region: r.REGION,
+      vehicleType: r.VEHICLE_TYPE,
+      label: r.LABEL ?? null,
+      isActive: r.IS_ACTIVE === true || r.IS_ACTIVE === 'true',
+      createdAt: r.CREATED_AT,
+      rowCounts,
+      notes: r.NOTES ?? null,
+    };
+  });
+}
+
+export async function activateDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+): Promise<{ activated: string; deactivated: number; region: string; vehicleType: string }> {
+  // Look up scope first so we know which siblings to deactivate.
+  const rows = await snowSql(
+    `SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)} LIMIT 1`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  if (!rows.length) {
+    throw new Error(`Dataset ${datasetId} not found in DIM_DATASETS`);
+  }
+  const region = (rows[0] as any).REGION as string;
+  const vehicleType = (rows[0] as any).VEHICLE_TYPE as string;
+  // Atomic-ish: deactivate other siblings, then activate this one.
+  const deact = await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET IS_ACTIVE = FALSE
+     WHERE REGION = ${escVal(region)}
+       AND VEHICLE_TYPE = ${escVal(vehicleType)}
+       AND DATASET_ID <> ${escVal(datasetId)}
+       AND IS_ACTIVE = TRUE`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET IS_ACTIVE = TRUE
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return {
+    activated: datasetId,
+    deactivated: (deact[0] as any)?.['number of rows updated'] ?? 0,
+    region,
+    vehicleType,
+  };
+}
+
+export async function renameDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+  label: string,
+): Promise<{ datasetId: string; label: string }> {
+  const trimmed = label.trim().slice(0, 200);
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET LABEL = ${escVal(trimmed)}
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return { datasetId, label: trimmed };
+}
+
+export async function deleteDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+): Promise<{ datasetId: string; deleted: Record<string, number>; activeReassigned: boolean }> {
+  // Read the dataset row first so we can refuse-delete on the only-active
+  // case and know the (region, vehicle_type) for re-activation logic.
+  const rows = await snowSql(
+    `SELECT REGION, VEHICLE_TYPE, IS_ACTIVE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)} LIMIT 1`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  if (!rows.length) {
+    throw new Error(`Dataset ${datasetId} not found in DIM_DATASETS`);
+  }
+  const region = (rows[0] as any).REGION as string;
+  const vehicleType = (rows[0] as any).VEHICLE_TYPE as string;
+  const wasActive = (rows[0] as any).IS_ACTIVE === true || (rows[0] as any).IS_ACTIVE === 'true';
+  if (wasActive) {
+    const others = await snowSql(
+      `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND DATASET_ID <> ${escVal(datasetId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const otherCount = Number((others[0] as any)?.N ?? 0);
+    if (otherCount === 0) {
+      throw new Error(
+        `Refusing to delete the only dataset for ${region} / ${vehicleType}. ` +
+        `Generate a new one (or pick another) and re-try.`,
+      );
+    }
+  }
+  // Physical purge of fact/dim rows for this JOB_ID.
+  const { deleted } = await deleteJobData(datasetId, snowSql);
+  // Remove the registry row.
+  await snowSql(
+    `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  // If we just removed the active row, promote the most recent remaining.
+  let activeReassigned = false;
+  if (wasActive) {
+    const upd = await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = TRUE
+       WHERE DATASET_ID = (
+         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         WHERE REGION = ${escVal(region)}
+           AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         ORDER BY CREATED_AT DESC
+         LIMIT 1
+       )`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    activeReassigned = Number((upd[0] as any)?.['number of rows updated'] ?? 0) > 0;
+  }
+  return { datasetId, deleted, activeReassigned };
+}
+
 // Make Data Studio runs non-destructive on natural-key tables. Each run is
 // recorded as an immutable dataset in FLEET_INTELLIGENCE.CORE.DIM_DATASETS
 // keyed by JOB_ID; at most one row per (REGION, VEHICLE_TYPE) is IS_ACTIVE.

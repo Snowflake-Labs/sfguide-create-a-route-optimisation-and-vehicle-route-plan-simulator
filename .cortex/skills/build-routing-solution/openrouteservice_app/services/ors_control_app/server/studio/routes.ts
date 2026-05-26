@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents } from './jobs.js';
+import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents,
+         listDatasets, activateDataset, renameDataset, deleteDataset } from './jobs.js';
 import { GenerationConfig, PROFILE_TEMPLATES, defaultDistanceDistributionForArea } from './profiles.js';
 import { log } from '../diagnostics.js';
 import { normalizeRegion } from '../lib/region.js';
@@ -480,6 +481,58 @@ export function createStudioRouter(snowSql: SnowSqlFn): Router {
     } catch (e: any) {
       log('WARN', 'Studio', `Failed to load stats: ${e.message?.slice(0, 200)}`);
       res.json([]);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Dataset versioning endpoints (FLEET_INTELLIGENCE.CORE.DIM_DATASETS)
+  // -------------------------------------------------------------------------
+  router.get('/datasets', async (req, res) => {
+    try {
+      const region = typeof req.query.region === 'string' ? req.query.region : undefined;
+      const vehicle = typeof req.query.vehicle === 'string'
+        ? req.query.vehicle
+        : (typeof req.query.vehicleType === 'string' ? req.query.vehicleType : undefined);
+      const rows = await listDatasets(snowSql, { region, vehicleType: vehicle });
+      res.json(rows);
+    } catch (e: any) {
+      log('WARN', 'Studio', `Failed to list datasets: ${e.message?.slice(0, 200)}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/datasets/:id/activate', async (req, res) => {
+    try {
+      const result = await activateDataset(snowSql, req.params.id);
+      res.json(result);
+    } catch (e: any) {
+      const status = /not found/i.test(e.message) ? 404 : 500;
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  router.patch('/datasets/:id', async (req, res) => {
+    try {
+      const label = typeof req.body?.label === 'string' ? req.body.label : '';
+      if (!label.trim()) return res.status(400).json({ error: 'label required' });
+      const result = await renameDataset(snowSql, req.params.id, label);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.delete('/datasets/:id', async (req, res) => {
+    try {
+      const result = await deleteDataset(snowSql, req.params.id);
+      res.json(result);
+    } catch (e: any) {
+      const msg = e.message || '';
+      if (/Refusing to delete/i.test(msg)) {
+        return res.status(409).json({ error: msg });
+      }
+      const status = /not found/i.test(msg) ? 404 : 500;
+      res.status(status).json({ error: msg });
     }
   });
 
