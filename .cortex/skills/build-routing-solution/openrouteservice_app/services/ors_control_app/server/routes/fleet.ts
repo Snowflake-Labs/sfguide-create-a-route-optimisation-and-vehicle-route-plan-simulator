@@ -41,7 +41,7 @@ export function createFleetRouter(): Router {
       let availableTypes: string[] = [];
       let datasetPairs: { vehicleType: string; region: string }[] = [];
       try {
-        const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ORDER BY VEHICLE_TYPE, REGION');
+        const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT ORDER BY VEHICLE_TYPE, REGION');
         datasetPairs = rows.map((r: any) => ({ vehicleType: r.VEHICLE_TYPE, region: r.REGION })).filter((p: any) => p.vehicleType && p.region);
         availableTypes = [...new Set(datasetPairs.map(p => p.vehicleType))];
       } catch {}
@@ -201,7 +201,7 @@ export function createFleetRouter(): Router {
       const region = String(req.body?.region || '').replace(/'/g, "''");
       if (!region) return res.status(400).json({ error: 'region required' });
       const vtRows = await runSql(
-        `SELECT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+        `SELECT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
          WHERE REGION = '${region}' GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1`,
         'SYNTHETIC_DATASETS', 'UNIFIED',
       );
@@ -228,16 +228,16 @@ export function createFleetRouter(): Router {
              p.REGION,
              COALESCE(t.VEHICLE_TYPE, '${vt}') AS VEHICLE_TYPE,
              p.JOB_ID
-           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
-           LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t ON t.JOB_ID = p.JOB_ID
+           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
+           LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t ON t.JOB_ID = p.JOB_ID
            WHERE p.REGION = '${region}'
-             AND p.REGION NOT IN (SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS WHERE REGION IS NOT NULL)
+             AND p.REGION NOT IN (SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT WHERE REGION IS NOT NULL)
          ),
          pois_numbered AS (
            SELECT p.REGION, p.JOB_ID, p.LOCATION_ID, p.NAME, p.LAT, p.LNG, p.POINT_GEOM,
                   ROW_NUMBER() OVER (PARTITION BY p.REGION ORDER BY p.LOCATION_ID) AS RN,
                   COUNT(*)   OVER (PARTITION BY p.REGION) AS C
-           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
            JOIN targets t ON t.REGION = p.REGION
          ),
          seq AS (

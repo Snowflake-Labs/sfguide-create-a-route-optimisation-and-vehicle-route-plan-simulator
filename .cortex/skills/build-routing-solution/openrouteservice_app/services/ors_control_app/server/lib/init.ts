@@ -58,14 +58,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
                  MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
                  MAX(TRIP_END) AS LAST_TRIP_END
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
           WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
         ),
         home_anchor AS (
           SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
         ),
         -- Collapse DIM_POIS to one row per LOCATION_ID. The base table can have
@@ -77,7 +77,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  ANY_VALUE(NAME) AS NAME,
                  ANY_VALUE(LAT)  AS LAT,
                  ANY_VALUE(LNG)  AS LNG
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
@@ -89,7 +89,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  ANY_VALUE(VEHICLE_TYPE)       AS VEHICLE_TYPE,
                  ANY_VALUE(HOME_LOCATION_ID)   AS HOME_LOCATION_ID,
                  ANY_VALUE(BATTERY_RANGE_KM)   AS BATTERY_RANGE_KM
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
           WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
@@ -125,7 +125,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- re-runs, which would otherwise multiply trip rows here.
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
@@ -139,7 +139,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  t.ORIGIN_LON, t.ORIGIN_LAT,
                  t.DESTINATION_LON, t.DESTINATION_LAT,
                  t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
           WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
@@ -187,7 +187,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- the view robust to that.
           SELECT LOCATION_ID,
                  ANY_VALUE(NAME) AS NAME
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           GROUP BY LOCATION_ID
         ),
@@ -196,7 +196,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           -- accumulate multiple rows per OFFER_ID across runs; keep the
           -- newest by POSTED_AT (and PICKUP_FROM_TS as tiebreaker).
           SELECT *
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           QUALIFY ROW_NUMBER() OVER (
             PARTITION BY OFFER_ID
@@ -323,7 +323,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         ),
         fleet AS (
           SELECT f.VEHICLE_ID, f.REGION, f.HOME_LOCATION_ID, f.DRIVER_PROFILE
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f, cfg
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
           WHERE f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
             AND f.REGION       = cfg.REGION
         )
@@ -356,13 +356,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
         ),
         window_bounds AS (
           SELECT MAX(t.TRIP_START) AS MAX_TS
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, cfg
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, cfg
           WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
             AND t.REGION       = cfg.REGION
         ),
         recent_trips AS (
           SELECT t.*
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, window_bounds w, cfg
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, window_bounds w, cfg
           WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
             AND t.REGION       = cfg.REGION
             AND t.TRIP_START   >= DATEADD('day', -30, w.MAX_TS)
@@ -391,7 +391,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           GREATEST(0, a.OUTBOUND - a.INBOUND)
             + ROUND(GREATEST(0, a.OUTBOUND - a.INBOUND) * 0.25, 0) AS DEMAND_SCORE
         FROM agg a
-        JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+        JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
           ON p.LOCATION_ID = a.POI_ID
         WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','STORE','RESTAURANT')
           AND (a.OUTBOUND - a.INBOUND) > 0`,
@@ -406,7 +406,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         ),
         filtered AS (
           SELECT f.*, MOD(ABS(HASH(f.VEHICLE_ID)), 100) AS BKT
-          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f, cfg
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
           WHERE f.REGION = cfg.REGION AND f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
           QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
         )
@@ -660,9 +660,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.DISTANCE_KM, f.PRICE_PER_KM_USD,
           COALESCE(f.STATUS, 'OPEN')              AS STATUS,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT f
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
         WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
           AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
@@ -680,7 +680,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
                  WHEN CREDIT_SCORE < 70 OR KYC_STATUS = 'PENDING' THEN 'YELLOW'
                  ELSE 'GREEN'
                END AS TRUST_BADGE
-        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
         WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
           AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
@@ -691,7 +691,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         AS
         SELECT PARTNER_ID, ORIGIN_COUNTRY, DEST_COUNTRY,
                EQUIPMENT, SHIPPED_AT, EUR_PER_KM, OUTCOME
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
         WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
           AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
