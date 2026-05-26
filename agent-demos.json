@@ -45,6 +45,19 @@
       ]
     },
     {
+      "id": "weather",
+      "label": "Weather-Aware Routing",
+      "icon": "🌤️",
+      "description": "Real-time Met Office weather — check conditions before deploying cyclists, adjust routes for fog, wind and rain",
+      "prompts": [
+        { "label": "1. Current conditions", "icon": "🌡️", "prompt": "What are the current weather conditions in San Francisco? Is it safe to send out e-bike couriers?" },
+        { "label": "2. Visibility check", "icon": "🌫️", "prompt": "Check the visibility in San Francisco. Should we avoid cycling routes today?" },
+        { "label": "3. Wind impact", "icon": "💨", "prompt": "What is the wind speed in San Francisco right now? Which vehicle profiles are safe to use?" },
+        { "label": "4. Weather + routing", "icon": "🗺️", "prompt": "Check the weather first, then plan the best route from 1 Market Street to 498 Castro Street using the safest vehicle profile for today's conditions" },
+        { "label": "5. Delivery planning", "icon": "🚚", "prompt": "Given today's weather in San Francisco, optimise a delivery route from the depot at 1 Market Street to Walgreens 498 Castro St, CVS 2676 Geary Blvd, and Rite Aid 801 Clement St. Recommend the safest vehicle type." }
+      ]
+    },
+    {
       "id": "logistics",
       "label": "Fleet Logistics",
       "icon": "🚛",
