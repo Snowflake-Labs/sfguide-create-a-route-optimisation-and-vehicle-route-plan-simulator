@@ -262,7 +262,35 @@ export default function BackloadMatching() {
       POLYGON_GEOJSON: typeof r.POLYGON_GEOJSON === 'string' ? JSON.parse(r.POLYGON_GEOJSON) : r.POLYGON_GEOJSON,
     })));
     if (!tRows.length || !iRows.length || !eRows.length) {
-      setSeedHint(`Tables are empty for region "${regionName}". Click "Generate seed data" to populate them, or run a Data Studio job for this region.`);
+      // Probe upstream coverage so the operator can see exactly which dim/fact
+      // is missing (instead of just "Tables are empty"). This identifies the
+      // common cause: an active dataset that was generated before
+      // DIM_FLEET / DIM_POIS / FACT_FREIGHT_OFFERS were added to Data Studio
+      // (so V_FACT_TRIPS_CURRENT is populated but the others are zero).
+      const safeRegion = (regionName || '').replace(/'/g, "''");
+      let upstreamHint = '';
+      try {
+        const cov = await sfQuery(
+          `SELECT
+             (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT          WHERE REGION = '${safeRegion}') AS TRIPS,
+             (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT           WHERE REGION = '${safeRegion}') AS FLEET,
+             (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT            WHERE REGION = '${safeRegion}') AS POIS,
+             (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT WHERE REGION = '${safeRegion}') AS OFFERS`,
+          'SYNTHETIC_DATASETS', 'UNIFIED',
+        );
+        const c = (cov[0] as any) || {};
+        upstreamHint =
+          ` Active dataset coverage \u2014 trips: ${c.TRIPS ?? 0}, fleet: ${c.FLEET ?? 0}, ` +
+          `POIs: ${c.POIS ?? 0}, offers: ${c.OFFERS ?? 0}.`;
+      } catch {
+        // best-effort; fall back to the basic hint
+      }
+      const baseHint =
+        `Tables are empty for region "${regionName}" \u2014 trailers: ${tRows.length}, internal: ${iRows.length}, external: ${eRows.length}.`;
+      const action = upstreamHint && /fleet:\s*0|POIs:\s*0/.test(upstreamHint)
+        ? ' The active dataset is missing fleet or POIs \u2014 the "Generate seed data" button can only fill freight offers, so run a Data Studio job for this region to create a complete dataset.'
+        : ' Click "Generate seed data" to populate freight offers, or run a Data Studio job for this region.';
+      setSeedHint(baseHint + upstreamHint + action);
     } else {
       setSeedHint(null);
     }
