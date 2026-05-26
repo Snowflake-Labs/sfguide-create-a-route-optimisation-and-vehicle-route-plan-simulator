@@ -414,6 +414,22 @@ BEGIN
     END;
     IF (active_matrix > 0) THEN gateway_busy := TRUE; END IF;
 
+    -- Any Data Studio synthetic-generation job currently running also means
+    -- the gateway and the active region's ORS/VROOM/pool must stay pinned at
+    -- AUTO_SUSPEND_SECS=0. The control-app's captureAndScaleUp() already pins
+    -- these in-process; this branch is the global safety net for cases where
+    -- the control-app container restarts mid-run and the in-process finally
+    -- block never executes. The table lives in FLEET_INTELLIGENCE.CORE and is
+    -- created lazily by the control-app, so we tolerate it being absent.
+    LET active_studio INTEGER := 0;
+    BEGIN
+        SELECT COUNT(*) INTO :active_studio
+        FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING');
+    EXCEPTION WHEN OTHER THEN active_studio := 0;
+    END;
+    IF (active_studio > 0) THEN gateway_busy := TRUE; END IF;
+
     -- Reconcile the gateway service.
     BEGIN
         IF (gateway_busy) THEN
@@ -463,6 +479,17 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
+        -- Active Data Studio generation job targeting this region?
+        BEGIN
+            LET sc INTEGER := 0;
+            SELECT COUNT(*) INTO :sc
+            FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+            WHERE UPPER(REGION) = :region_key
+              AND STATUS IN ('PENDING','RUNNING');
+            IF (sc > 0) THEN busy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
         BEGIN
             IF (busy) THEN
                 EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 0';
@@ -496,6 +523,18 @@ BEGIN
               AND STATUS IN ('PENDING','RUNNING')
               AND STAGE NOT IN ('COMPLETE','ERROR');
             IF (vmc > 0) THEN vbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        -- Studio jobs also drive VROOM_SERVICE_<REGION> through the gateway's
+        -- /optimization route, so pin the per-region VROOM while a generation
+        -- job is in flight for this region.
+        BEGIN
+            LET vsc INTEGER := 0;
+            SELECT COUNT(*) INTO :vsc
+            FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+            WHERE UPPER(REGION) = :vregion_key
+              AND STATUS IN ('PENDING','RUNNING');
+            IF (vsc > 0) THEN vbusy := TRUE; END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
@@ -566,6 +605,18 @@ BEGIN
               AND STATUS IN ('PENDING','RUNNING')
               AND STAGE NOT IN ('COMPLETE','ERROR');
             IF (pmc > 0) THEN pbusy := TRUE; END IF;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        -- Active Data Studio generation job targeting this region pins the
+        -- pool to 0 too — without this, the pool can auto-suspend mid-run
+        -- (default 3600s) and bring ORS_SERVICE_<REGION> down with it.
+        BEGIN
+            LET psc INTEGER := 0;
+            SELECT COUNT(*) INTO :psc
+            FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS
+            WHERE UPPER(REGION) = :pregion_key
+              AND STATUS IN ('PENDING','RUNNING');
+            IF (psc > 0) THEN pbusy := TRUE; END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
         BEGIN
