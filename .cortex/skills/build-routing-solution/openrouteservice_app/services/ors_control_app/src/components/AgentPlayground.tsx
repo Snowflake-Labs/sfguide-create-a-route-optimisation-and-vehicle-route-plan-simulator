@@ -394,6 +394,7 @@ export default function AgentPlayground() {
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [chartExpanded, setChartExpanded] = useState(false);
+  const [tokenPaneOpen, setTokenPaneOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(380);
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
@@ -951,8 +952,11 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: '0 0 220px', marginLeft: 12, display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11 }}>
-          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, color: 'var(--text)' }}>Token Workflow</div>
+        <div style={{ flex: tokenPaneOpen ? '0 0 220px' : '0 0 28px', marginLeft: 12, display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11, overflow: 'hidden', transition: 'flex-basis 0.2s' }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: tokenPaneOpen ? 8 : 0, color: 'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', whiteSpace: 'nowrap' }}>
+            {tokenPaneOpen && <span>Token Workflow</span>}
+            <button onClick={() => setTokenPaneOpen(o => !o)} title={tokenPaneOpen ? 'Collapse' : 'Token Workflow'} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 14, padding: '0 2px', lineHeight: 1 }}>{tokenPaneOpen ? '›' : '‹'}</button>
+          </div>
 
           <div style={{ marginBottom: 10 }}>
             <label style={{ fontSize: 10, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>Max token limit: {maxTokenLimit.toLocaleString()}</label>

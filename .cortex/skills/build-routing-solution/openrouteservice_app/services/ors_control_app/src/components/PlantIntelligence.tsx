@@ -69,7 +69,23 @@ export default function PlantIntelligence() {
   useEffect(() => {
     fetch('/api/plant-intel/plants')
       .then(r => r.json())
-      .then((data: any) => setPlants(Array.isArray(data) ? data : []))
+      .then((data: any) => setPlants(Array.isArray(data) ? data.map((r: any) => ({
+        ...r,
+        LATITUDE:               Number(r.LATITUDE),
+        LONGITUDE:              Number(r.LONGITUDE),
+        PLANT_ID:               Number(r.PLANT_ID),
+        CAPACITY_BATCHES_MONTH: Number(r.CAPACITY_BATCHES_MONTH ?? 0),
+        MAX_SEVERITY:           Number(r.MAX_SEVERITY ?? 0),
+        BATCH_SEVERITY:         Number(r.BATCH_SEVERITY ?? 0),
+        TEMP_SEVERITY:          Number(r.TEMP_SEVERITY ?? 0),
+        STOCK_SEVERITY:         Number(r.STOCK_SEVERITY ?? 0),
+        SHIPMENT_SEVERITY:      Number(r.SHIPMENT_SEVERITY ?? 0),
+        CRITICAL_BATCHES:       Number(r.CRITICAL_BATCHES ?? 0),
+        TEMP_EXCURSIONS:        Number(r.TEMP_EXCURSIONS ?? 0),
+        CRITICAL_STOCK_ITEMS:   Number(r.CRITICAL_STOCK_ITEMS ?? 0),
+        DELAYED_SHIPMENTS:      Number(r.DELAYED_SHIPMENTS ?? 0),
+        BATCHES_IN_PROGRESS:    Number(r.BATCHES_IN_PROGRESS ?? 0),
+      })) : []))
       .catch(console.error);
   }, []);
 
