@@ -119,6 +119,31 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
         COMMENT = ${TRACK}
         AS
+        WITH poi AS (
+          -- Same pre-aggregation as VW_EXTERNAL_OFFERS / VW_TRAILERS:
+          -- DIM_POIS may have multiple rows per LOCATION_ID after Studio
+          -- re-runs, which would otherwise multiply trip rows here.
+          SELECT LOCATION_ID,
+                 ANY_VALUE(NAME) AS NAME
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          GROUP BY LOCATION_ID
+        ),
+        trips AS (
+          -- Defence-in-depth: even though FACT_TRIPS uses random TRIP_IDs
+          -- per Studio run (so source dedupe is normally a no-op), keep
+          -- one row per TRIP_ID so a future regression cannot multiply
+          -- VROOM shipments under different INT-NNNNN ids.
+          SELECT t.TRIP_ID,
+                 t.TRIP_START,
+                 t.ORIGIN_LON, t.ORIGIN_LAT,
+                 t.DESTINATION_LON, t.DESTINATION_LAT,
+                 t.ORIGIN_POI_ID, t.DESTINATION_POI_ID
+          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+          WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
+            AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
+        )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
           COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
@@ -132,11 +157,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           (1000 + ABS(HASH(t.TRIP_ID)) % 24000)::NUMBER                               AS WEIGHT_KG,
           'B2B pallets'                                                               AS PRODUCT,
           FALSE                                                                       AS HAZMAT
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS o ON o.LOCATION_ID = t.ORIGIN_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION_POI_ID
-        WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
-          AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+        FROM trips t
+        LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
+        LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
         QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -157,6 +180,29 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
         COMMENT = ${TRACK}
         AS
+        WITH poi AS (
+          -- Collapse DIM_POIS to one row per LOCATION_ID. Re-running Data
+          -- Studio for the same region used to compound rows, so the LEFT
+          -- JOINs below would multiply offers; pre-aggregating here makes
+          -- the view robust to that.
+          SELECT LOCATION_ID,
+                 ANY_VALUE(NAME) AS NAME
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
+          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          GROUP BY LOCATION_ID
+        ),
+        offers AS (
+          -- Dedupe FACT_FREIGHT_OFFERS by OFFER_ID. The seed pipeline can
+          -- accumulate multiple rows per OFFER_ID across runs; keep the
+          -- newest by POSTED_AT (and PICKUP_FROM_TS as tiebreaker).
+          SELECT *
+          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+          WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
+          QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY OFFER_ID
+            ORDER BY POSTED_AT DESC NULLS LAST, PICKUP_FROM_TS DESC NULLS LAST
+          ) = 1
+        )
         SELECT
           f.OFFER_ID,
           f.SOURCE,
@@ -175,10 +221,9 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.PRICE_USD                              AS PRICE_EUR,
           f.HAZMAT,
           f.LISTING_TEXT
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-        WHERE f.REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}`,
+        FROM offers f
+        LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
+        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------
@@ -490,6 +535,110 @@ export async function ensureBackloadAndAssetVelocityObjects(
         OUTCOME VARCHAR(20),
         JOB_ID VARCHAR
       ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    // -----------------------------------------------------------------
+    // Dataset-versioning projection views ("CURRENT" = active dataset only)
+    // -----------------------------------------------------------------
+    // These views filter each base table to rows whose JOB_ID matches the
+    // currently-active dataset for their (REGION, VEHICLE_TYPE) per
+    // FLEET_INTELLIGENCE.CORE.DIM_DATASETS. Downstream consumers should
+    // ALWAYS read from V_*_CURRENT (not the base table) so old datasets
+    // remain queryable by JOB_ID without polluting the active view.
+    //
+    // DIM_POIS has no VEHICLE_TYPE column — a POI dataset is identified
+    // purely by (REGION, JOB_ID). Joining on JOB_ID = DATASET_ID with
+    // IS_ACTIVE = TRUE returns POIs from any active dataset whose JOB_ID
+    // matches, which is exactly what we want when multiple vehicle types
+    // are active in the same region.
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT f.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = f.JOB_ID
+         AND d.REGION = f.REGION
+         AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT p.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = p.JOB_ID
+         AND d.REGION = p.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT f.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = f.JOB_ID
+         AND d.REGION = f.REGION
+         AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTNERS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT p.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS p
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = p.JOB_ID
+         AND d.REGION = p.REGION
+         AND d.VEHICLE_TYPE = p.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_PARTNER_HISTORY_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT h.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY h
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = h.JOB_ID
+         AND d.REGION = h.REGION
+         AND d.VEHICLE_TYPE = h.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT t.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = t.JOB_ID
+         AND d.REGION = t.REGION
+         AND d.VEHICLE_TYPE = t.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT t.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = t.JOB_ID
+         AND d.REGION = t.REGION
+         AND d.VEHICLE_TYPE = t.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
