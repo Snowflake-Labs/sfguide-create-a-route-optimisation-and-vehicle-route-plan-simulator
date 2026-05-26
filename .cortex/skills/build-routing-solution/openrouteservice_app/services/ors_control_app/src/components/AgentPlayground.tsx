@@ -453,7 +453,11 @@ export default function AgentPlayground() {
     const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content && !m.streaming);
     if (lastAssistant?.content) {
       const chart = detectChartFromMarkdown(lastAssistant.content);
-      setChartData(chart);
+      if (chart && chart.type === 'pie') {
+        setChartData(null);
+      } else {
+        setChartData(chart);
+      }
     }
   }, [messages]);
 
@@ -880,27 +884,38 @@ export default function AgentPlayground() {
           {(() => {
             const hasChart = !!chartData;
             const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
-            if (hasChart && hasMap) {
+            if (hasMap) {
               return (
                 <div style={{ display: 'flex', gap: 8, flex: 1 }}>
-                  <div style={{ flex: 1 }}><AgentChart chart={chartData!} /></div>
-                  <div style={{ flex: 1, height: 320, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                  {hasChart && <div style={{ flex: 1, minWidth: 0 }}><AgentChart chart={chartData!} /></div>}
+                  <div style={{ flex: hasChart ? 1 : 'auto', width: hasChart ? undefined : '100%', height: hasChart ? 320 : 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
                     <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
                   </div>
                 </div>
               );
             }
-            if (hasChart && !hasMap) {
+            if (hasChart) {
               return <AgentChart chart={chartData!} />;
             }
-            if (hasMap && !hasChart) {
-              return (
-                <div style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-                  <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+            return (
+              <div style={{ padding: 24, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', height: 380, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <div style={{ fontSize: 28, marginBottom: 12 }}>🗺️</div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Routing Agent Playground</h3>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 16 }}>
+                  Ask questions about directions, travel times, delivery optimisation, or reachability — the agent will call OpenRouteService tools and render results here.
+                </p>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                  <div><strong>🧭 Directions</strong> — "Drive from Union Square to Fisherman's Wharf"</div>
+                  <div><strong>⏱️ Isochrones</strong> — "Show me areas within 10 min drive of SFO"</div>
+                  <div><strong>🚚 Optimisation</strong> — "Optimise deliveries to 5 pharmacies with 2 vehicles"</div>
+                  <div><strong>💊 Supply Chain</strong> — "Run the pharma fleet delivery demo"</div>
+                  <div><strong>🏥 Catchment</strong> — "Health profile within 10 min of 498 Castro St"</div>
                 </div>
-              );
-            }
-            return null;
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 16, opacity: 0.7 }}>
+                  Select a scenario from the left panel, or type your own question below.
+                </p>
+              </div>
+            );
           })()}
           {poiLegend && poiLegend.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
