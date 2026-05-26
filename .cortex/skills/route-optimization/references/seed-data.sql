@@ -61,17 +61,16 @@ WHEN MATCHED THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = s
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
 --------------------------------------------------------------------
--- REGION_DATA (staging table from Overture Maps)
+-- NOTE: Previous versions used a REGION_DATA staging table from
+-- OVERTURE_MAPS__PLACES. This is no longer needed since PLACES
+-- reads directly from the Overture listing.
 --------------------------------------------------------------------
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA AS
-SELECT * FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-WHERE ST_GEOHASH(GEOMETRY, 2) = $REGION_GEOHASH;
-
-ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
--- PLACES (from staging, with search optimization)
+-- PLACES (from Overture Maps, with search optimization)
+-- CRITICAL: Must include schools for SEN Transport depot selection.
+-- The React app queries PLACES with DEPOT_CTYPE categories to find
+-- origin/depot locations (schools for SEN, warehouses for food, etc.)
 --------------------------------------------------------------------
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES AS
 SELECT
@@ -82,8 +81,9 @@ SELECT
     NAMES:primary::TEXT AS NAME,
     ADDRESSES[0] AS ADDRESS,
     COALESCE(CATEGORIES:alternate:list, ARRAY_CONSTRUCT()) AS ALTERNATE
-FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA
-WHERE CATEGORIES:primary IS NOT NULL;
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+WHERE ST_GEOHASH(GEOMETRY, 2) = $REGION_GEOHASH
+  AND CATEGORIES:primary IS NOT NULL;
 
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES SET
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -228,40 +228,43 @@ SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)',
 
 --------------------------------------------------------------------
 -- SEN_STUDENTS (override table for SEN Transport industry)
--- Synthetic student pickup addresses from real SF street locations
+-- Real residential addresses from Overture Maps near SF schools.
+-- SOURCE_TABLE in LOOKUP points here so the app loads students
+-- as delivery points (not POIs). Schools serve as depots.
+--
+-- Prerequisites:
+--   - OVERTURE_MAPS__ADDRESSES database (from Marketplace listing GZT0Z4CM1E9NQ)
+--   - OVERTURE_MAPS__PLACES database (from Marketplace listing GZT0Z4CM1E9KR)
 --------------------------------------------------------------------
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (
-    REGION STRING,
-    NAME STRING,
-    CATEGORY STRING DEFAULT 'student_pickup',
-    LNG FLOAT,
-    LAT FLOAT,
-    ADDRESS VARIANT,
-    DISPLAY_ADDRESS STRING
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH sf_school_centroid AS (
+    SELECT ST_CENTROID(ST_COLLECT(GEOMETRY)) AS CENTER
+    FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
+    WHERE ST_GEOHASH(GEOMETRY, 2) = $REGION_GEOHASH
+      AND CATEGORIES:primary::TEXT IN ('school', 'elementary_school', 'high_school', 'middle_school')
+    LIMIT 100
 )
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (REGION, NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS)
 SELECT
-    $REGION_NAME,
-    'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()),
-    'student_pickup',
-    ST_X(GEOMETRY),
-    ST_Y(GEOMETRY),
-    ADDRESS,
-    ADDRESS:freeform::VARCHAR || ', ' || ADDRESS:locality::VARCHAR
-FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
-WHERE REGION = $REGION_NAME
-  AND ADDRESS:freeform IS NOT NULL
-  AND ADDRESS:locality::VARCHAR IS NOT NULL
-  AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits','home_health_care','professional_services')
-  AND ST_DWITHIN(GEOMETRY, (SELECT ST_COLLECT(GEOMETRY) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE REGION = $REGION_NAME AND CATEGORY = 'school' LIMIT 1), 15000)
+    $REGION_NAME AS REGION,
+    'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()) AS NAME,
+    'student_pickup' AS CATEGORY,
+    ST_X(a.GEOMETRY) AS LNG,
+    ST_Y(a.GEOMETRY) AS LAT,
+    OBJECT_CONSTRUCT('freeform', a.NUMBER || ' ' || a.STREET, 'locality', COALESCE(a.POSTAL_CITY, 'San Francisco')) AS ADDRESS,
+    a.NUMBER || ' ' || a.STREET || ', ' || COALESCE(a.POSTAL_CITY, 'San Francisco') AS DISPLAY_ADDRESS
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a, sf_school_centroid c
+WHERE ST_GEOHASH(a.GEOMETRY, 2) = $REGION_GEOHASH
+  AND a.STREET IS NOT NULL
+  AND a.NUMBER IS NOT NULL
+  AND a.COUNTRY = 'US'
+  AND ST_DWITHIN(a.GEOMETRY, c.CENTER, 5000)
 ORDER BY RANDOM()
 LIMIT 60;
 
 --------------------------------------------------------------------
--- DROP STAGING TABLE
+-- DONE
 --------------------------------------------------------------------
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA;
 
 

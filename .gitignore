@@ -44,3 +44,13 @@ build-routing-solution/Native_app/output/
 
 # Cortex Code session artifacts
 .snowflake/cortex/plans/
+
+# Temp files from build-routing-solution stage uploads
+/tmp_stage_upload/
+/downloader_spec.yaml
+/openrouteservice.yaml
+/ors-config.yml
+/ors_control_app_service.yaml
+/routing-gateway-service.yaml
+/vroom-service.yaml
+/agent-demos.json
