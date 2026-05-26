@@ -62,15 +62,17 @@ export default function DatasetPicker() {
     setOpen(false);
     setSwitching(true);
     try {
-      // Atomic server-side activation: updates VEHICLE_TYPE + REGION on all
-      // demo CONFIG tables in one round-trip BEFORE we touch React state.
-      // This guarantees that when contexts refresh and the App.tsx dataKey
-      // flips, every projection view (e.g. VW_TRIP_SUMMARY) already reads
-      // the new (region, vehicleType) from CONFIG.
+      // Atomic server-side activation: resolves (region, vehicleType) from
+      // DIM_DATASETS for the picked jobId, flips IS_ACTIVE, then updates
+      // VEHICLE_TYPE + REGION on all 8 demo CONFIG tables in one round-trip
+      // BEFORE we touch React state. This guarantees that when contexts
+      // refresh and the App.tsx dataKey flips, every projection view (e.g.
+      // VW_TRIP_SUMMARY) already reads the new (region, vehicleType) from
+      // CONFIG and the V_*_CURRENT views project the picked dataset.
       await fetch('/api/datasets/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: ds.region, vehicleType: ds.vehicleType }),
+        body: JSON.stringify({ jobId: ds.jobId }),
       });
       // Re-sync React state from server (single dataKey change -> single
       // remount of demos, with CONFIG already consistent).

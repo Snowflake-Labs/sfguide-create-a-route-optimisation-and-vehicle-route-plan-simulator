@@ -715,20 +715,18 @@ export async function startGeneration(
       });
       broadcast(job, 'progress', { status: `Spatial spread: ${homeSpread.populated_bins} home bins, top_share=${(homeSpread.top_bin_share * 100).toFixed(1)}% (bin=${effBinDeg} deg)` });
 
-      // Dataset versioning: archive any existing active dataset for this
-      // (REGION, VEHICLE_TYPE) by flipping its IS_ACTIVE flag to FALSE, then
-      // register the new run as the active dataset. Prior rows on the
-      // natural-key tables (DIM_POIS / DIM_FLEET / FACT_FREIGHT_OFFERS /
-      // DIM_PARTNERS / FACT_PARTNER_HISTORY) STAY IN PLACE and remain
-      // queryable by JOB_ID. Downstream consumers see only the active
-      // dataset via SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT views.
-      // To physically purge an old dataset, the user must explicitly call
-      // DELETE /api/studio/datasets/:id.
+      // Dataset versioning (FLIP-LAST):
+      // We INSERT all dimension/freight rows under the new JOB_ID FIRST, then
+      // flip DIM_DATASETS.IS_ACTIVE at the very end of this block. This keeps
+      // the previously-active dataset visible to downstream demos (Backload
+      // Matching, Freight Exchange, Fleet Intelligence, Asset Velocity) for
+      // the entire ~5-30s window during which the new data is being inserted,
+      // and switches them atomically to the new dataset only once it is fully
+      // populated. The new JOB_ID's rows live in the base tables but are
+      // invisible to V_*_CURRENT views until the flip happens.
+      // Old rows STAY IN PLACE forever and remain queryable by JOB_ID via the
+      // bottom Datasets panel. Physical purge is via DELETE /api/studio/datasets/:id.
       const datasetLabel = `${presetName} @ ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-      await archivePriorDatasets(snowSql, config.region, vt, jobId, datasetLabel);
-      broadcast(job, 'progress', {
-        status: `Archived prior datasets for ${config.region} / ${vt} (kept queryable; new dataset = ${jobId})`,
-      });
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);
@@ -766,6 +764,14 @@ export async function startGeneration(
         log('WARN', 'Studio', `FACT_PARTNER_HISTORY insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `FACT_PARTNER_HISTORY insert failed: ${e.message?.slice(0, 150)}` });
       }
+
+      // Atomic switchover: now that all dimension/freight tables for this run
+      // are fully populated, flip the active dataset pointer. From this
+      // millisecond onwards, V_*_CURRENT views project the new dataset.
+      await archivePriorDatasets(snowSql, config.region, vt, jobId, datasetLabel);
+      broadcast(job, 'progress', {
+        status: `Activated new dataset for ${config.region} / ${vt} (prior datasets kept queryable; jobId = ${jobId})`,
+      });
 
       const catCounts: Record<string, number> = {};
       for (const p of pois) catCounts[p.category || p.location_type] = (catCounts[p.category || p.location_type] || 0) + 1;

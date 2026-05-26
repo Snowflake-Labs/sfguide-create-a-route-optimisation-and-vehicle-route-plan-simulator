@@ -6,6 +6,7 @@ import { runSql } from '../lib/sql.js';
 import { escapeString } from '../lib/sanitize.js';
 import { setActiveRegionOverride } from '../lib/state.js';
 import { ensureBackloadAndAssetVelocityObjects } from '../lib/init.js';
+import { activateDataset } from '../studio/jobs.js';
 import { log } from '../diagnostics.js';
 
 const FLEET_CONFIG_SCHEMAS = [
@@ -99,9 +100,11 @@ export function createFleetRouter(): Router {
           j.POINTS_GENERATED AS POINT_COUNT,
           j.COMPLETED_AT,
           j.CONFIG:vehicleType::STRING AS CFG_VEHICLE_TYPE,
-          COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY
+          COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY,
+          COALESCE(d.IS_ACTIVE, FALSE) AS DATASET_IS_ACTIVE
         FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
         LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
+        LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d ON d.DATASET_ID = j.JOB_ID
         WHERE j.STATUS IN ('COMPLETED', 'STOPPED')
           AND j.TRIPS_GENERATED > 0
         ORDER BY j.COMPLETED_AT DESC
@@ -109,6 +112,10 @@ export function createFleetRouter(): Router {
 
       const datasets = (rows || []).map((r: any) => {
         const vehicleType = r.CFG_VEHICLE_TYPE || ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
+        // isActive is derived from DIM_DATASETS.IS_ACTIVE, NOT from
+        // a region+vehicle equality check, so at most ONE dataset per
+        // (region, vehicle) shows the Active badge — the one whose
+        // JOB_ID matches the current DIM_DATASETS row with IS_ACTIVE=TRUE.
         return {
           jobId: r.JOB_ID,
           presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
@@ -119,7 +126,7 @@ export function createFleetRouter(): Router {
           tripCount: r.TRIP_COUNT ?? 0,
           pointCount: r.POINT_COUNT ?? 0,
           completedAt: r.COMPLETED_AT,
-          isActive: r.REGION === currentRegion && vehicleType === currentVehicleType,
+          isActive: r.DATASET_IS_ACTIVE === true || r.DATASET_IS_ACTIVE === 'true',
         };
       });
 
@@ -141,12 +148,62 @@ export function createFleetRouter(): Router {
   // ---------------------------------------------------------------------------
   router.post('/api/datasets/activate', async (req, res) => {
     try {
-      const { region, vehicleType } = req.body || {};
-      if (!region || !vehicleType) {
-        return res.status(400).json({ error: 'region and vehicleType required' });
+      const { jobId, region: bodyRegion, vehicleType: bodyVt } = req.body || {};
+      let region = bodyRegion as string | undefined;
+      let vehicleType = bodyVt as string | undefined;
+
+      // Per-dataset path: jobId provided. Resolve scope from DIM_DATASETS
+      // and atomically flip IS_ACTIVE for that (region, vehicle) so the
+      // V_*_CURRENT views immediately project the picked dataset.
+      if (jobId) {
+        try {
+          const result = await activateDataset(runSql, String(jobId));
+          region = result.region;
+          vehicleType = result.vehicleType;
+        } catch (e: any) {
+          // Fallback: if DIM_DATASETS row is missing (legacy backfill miss),
+          // create one from GENERATION_JOBS so this and future picks work.
+          if (/not found/i.test(e.message || '')) {
+            const rows = await runSql(
+              `SELECT j.REGION, j.ORS_PROFILE, j.CONFIG:vehicleType::STRING AS CFG_VT
+               FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+               WHERE j.JOB_ID = '${escapeString(String(jobId))}' LIMIT 1`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            if (!rows.length) {
+              return res.status(404).json({ error: `Job ${jobId} not found` });
+            }
+            const row = rows[0] as any;
+            const vt = row.CFG_VT || ORS_PROFILE_TO_VEHICLE_TYPE[row.ORS_PROFILE] || 'car';
+            // Insert a DIM_DATASETS row and mark active in scope.
+            await runSql(
+              `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+               SET IS_ACTIVE = FALSE
+               WHERE REGION = '${escapeString(row.REGION)}'
+                 AND VEHICLE_TYPE = '${escapeString(vt)}' AND IS_ACTIVE = TRUE`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            await runSql(
+              `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+                 (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
+               SELECT '${escapeString(String(jobId))}', '${escapeString(row.REGION)}',
+                      '${escapeString(vt)}',
+                      'recovered @ ' || TO_VARCHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI'),
+                      TRUE`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            region = row.REGION;
+            vehicleType = vt;
+          } else {
+            throw e;
+          }
+        }
+      } else if (!region || !vehicleType) {
+        return res.status(400).json({ error: 'jobId or (region+vehicleType) required' });
       }
-      const safeRegion = escapeString(region);
-      const safeVehicleType = escapeString(vehicleType);
+
+      const safeRegion = escapeString(region!);
+      const safeVehicleType = escapeString(vehicleType!);
 
       // 1. Flip IS_DEFAULT in REGION_REGISTRY (best-effort).
       try {
@@ -157,7 +214,7 @@ export function createFleetRouter(): Router {
       } catch (e: any) {
         log('WARN', 'Datasets', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
       }
-      setActiveRegionOverride(region);
+      setActiveRegionOverride(region!);
 
       // 2. Update VEHICLE_TYPE + REGION on every demo CONFIG. We use the
       // union of the two schema lists (BACKLOAD_MATCHING is in CONFIG_SCHEMAS
@@ -190,7 +247,7 @@ export function createFleetRouter(): Router {
         'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
       ).catch((e: any) => log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`));
 
-      res.json({ ok: true, region, vehicleType });
+      res.json({ ok: true, region, vehicleType, jobId: jobId ?? null });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
