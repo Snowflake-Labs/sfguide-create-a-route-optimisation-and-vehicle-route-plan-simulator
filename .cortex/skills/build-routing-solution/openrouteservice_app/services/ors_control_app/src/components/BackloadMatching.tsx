@@ -1166,12 +1166,13 @@ export default function BackloadMatching() {
       },
     }));
     visibleAssignments.forEach((a, i) => {
+      if (!a.EMPTY_GEOJSON) return;
       const isSel = a.ASSIGNMENT_ID === selectedAssignment;
       const emptyW = isSel ? 6 : (hasSel ? 2 : 4);
       const emptyAlpha = isSel ? 255 : (hasSel ? 140 : 255);
       result.push(new GeoJsonLayer({
         id: `empty-${i}`,
-        data: (a.EMPTY_GEOJSON ? a.EMPTY_GEOJSON : { type:'Feature', geometry:{ type:'LineString', coordinates:[[a.TRAILER_DROPOFF_LON,a.TRAILER_DROPOFF_LAT],[a.PICKUP_LON,a.PICKUP_LAT]] } }) as any,
+        data: a.EMPTY_GEOJSON as any,
         stroked: true, getLineColor: [110, 110, 110, emptyAlpha], getDashArray: [10, 6], lineWidthMinPixels: emptyW,
         extensions: [new PathStyleExtension({ dash: true })],
         parameters: { depthTest: false },
