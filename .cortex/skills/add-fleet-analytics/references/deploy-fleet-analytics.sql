@@ -135,7 +135,7 @@ verified_queries:
   - question: "Which pickup locations have the most orders?"
     sql: "SELECT p.NAME, p.LOCATION_TYPE, COUNT(t.TRIP_ID) AS ORDERS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON t.ORIGIN_POI_ID = p.LOCATION_ID GROUP BY p.NAME, p.LOCATION_TYPE ORDER BY ORDERS DESC LIMIT 10"
   - question: "What is the fleet overview: total trips, average distance, average duration, and active vehicles?"
-    sql: "SELECT COUNT(TRIP_ID) AS TOTAL_TRIPS, ROUND(AVG(DISTANCE_KM), 2) AS AVG_DISTANCE_KM, ROUND(AVG(DURATION_MINUTES), 1) AS AVG_DURATION_MINS, COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS WHERE STATUS = ''COMPLETED''"
+    sql: "SELECT COUNT(TRIP_ID) AS TOTAL_TRIPS, ROUND(AVG(DISTANCE_KM), 2) AS AVG_DISTANCE_KM, ROUND(AVG(DURATION_MINUTES), 1) AS AVG_DURATION_MINS, COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS"
 '
     );
 
@@ -229,15 +229,6 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TELEMETRY_SV
         AVG_BATTERY_PCT AS AVG(telemetry.BATTERY_PCT)
             WITH SYNONYMS = ('average battery', 'mean battery level', 'typical charge')
             COMMENT = 'Average battery level across all readings as a percentage',
-        DWELL_READINGS AS SUM(CASE WHEN telemetry.STATUS LIKE 'DWELL%' THEN 1 ELSE 0 END)
-            WITH SYNONYMS = ('dwell count', 'stopped count', 'stationary readings', 'dwell events')
-            COMMENT = 'Number of readings where vehicle was dwelling (at origin, destination, or recharge)',
-        IDLE_READINGS AS SUM(CASE WHEN telemetry.STATUS = 'IDLE' THEN 1 ELSE 0 END)
-            WITH SYNONYMS = ('idle count', 'idle time', 'how much idle', 'idling events')
-            COMMENT = 'Number of readings where vehicle was idle',
-        MOVING_READINGS AS SUM(CASE WHEN telemetry.STATUS = 'MOVING' THEN 1 ELSE 0 END)
-            WITH SYNONYMS = ('moving count', 'in transit', 'driving time')
-            COMMENT = 'Number of readings where vehicle was actively moving',
         ACTIVE_VEHICLES AS COUNT(DISTINCT telemetry.VEHICLE_ID)
             WITH SYNONYMS = ('vehicles tracked', 'number of vehicles', 'fleet size')
             COMMENT = 'Number of distinct vehicles with telemetry data'
@@ -250,8 +241,6 @@ verified_queries:
     sql: "SELECT VEHICLE_TYPE, SUM(CASE WHEN IS_SPEEDING THEN 1 ELSE 0 END) AS SPEEDING_EVENTS, COUNT(*) AS TOTAL_READINGS, ROUND(100.0 * SUM(CASE WHEN IS_SPEEDING THEN 1 ELSE 0 END) / COUNT(*), 1) AS SPEEDING_RATE_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_TYPE ORDER BY SPEEDING_EVENTS DESC"
   - question: "What is the average battery level by vehicle?"
     sql: "SELECT VEHICLE_ID, VEHICLE_TYPE, ROUND(AVG(BATTERY_PCT), 1) AS AVG_BATTERY_PCT, MIN(BATTERY_PCT) AS MIN_BATTERY_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_ID, VEHICLE_TYPE ORDER BY AVG_BATTERY_PCT ASC LIMIT 10"
-  - question: "What percentage of time do vehicles spend moving vs dwell vs idle?"
-    sql: "SELECT VEHICLE_TYPE, ROUND(100.0 * SUM(CASE WHEN STATUS = ''MOVING'' THEN 1 ELSE 0 END) / COUNT(*), 1) AS MOVING_PCT, ROUND(100.0 * SUM(CASE WHEN STATUS LIKE ''DWELL%'' THEN 1 ELSE 0 END) / COUNT(*), 1) AS DWELL_PCT, ROUND(100.0 * SUM(CASE WHEN STATUS = ''IDLE'' THEN 1 ELSE 0 END) / COUNT(*), 1) AS IDLE_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_TYPE"
   - question: "What is the speeding rate by vehicle?"
     sql: "SELECT VEHICLE_ID, VEHICLE_TYPE, ROUND(100.0 * SUM(CASE WHEN IS_SPEEDING THEN 1 ELSE 0 END) / COUNT(*), 1) AS SPEEDING_RATE_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_ID, VEHICLE_TYPE ORDER BY SPEEDING_RATE_PCT DESC LIMIT 10"
 '
