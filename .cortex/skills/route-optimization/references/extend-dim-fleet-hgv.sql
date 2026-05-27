@@ -7,6 +7,13 @@
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- Friction-log F4 (secondary): drop the dependent view BEFORE adding columns
+-- to the underlying table. Without this, the next ors_control_app boot
+-- fails with `View definition for V_DIM_FLEET_CURRENT declared 13 column(s),
+-- but view query produces 20 column(s)`. init.ts will recreate the view
+-- with the correct shape on its next run.
+DROP VIEW IF EXISTS SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT;
+
 ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS    NUMBER(6,2);
 ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M       NUMBER(4,2);
 ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS LENGTH_M       NUMBER(4,2);
