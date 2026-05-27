@@ -104,4 +104,31 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_control_app
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI, ORS_CARTO_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
 
+-- =============================================================================
+-- VERSION_INFO
+-- Component -> version registry surfaced by the control-app /api/health endpoint.
+-- Pre-existing installs polled this table inside an empty try/catch which spammed
+-- 002003 SQL compilation errors into QUERY_HISTORY because the table was never
+-- created. Seed values mirror image-versions.env at install time; the
+-- control-app deploy procedure (or a follow-up MERGE) refreshes them when the
+-- image tags advance.
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VERSION_INFO (
+    COMPONENT VARCHAR NOT NULL,
+    VERSION   VARCHAR NOT NULL,
+    UPDATED_AT TIMESTAMP_LTZ DEFAULT SYSDATE(),
+    CONSTRAINT PK_VERSION_INFO PRIMARY KEY (COMPONENT)
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO OPENROUTESERVICE_APP.CORE.VERSION_INFO t USING (
+    SELECT 'openrouteservice'      AS COMPONENT, 'v9.0.0'  AS VERSION UNION ALL
+    SELECT 'downloader'             AS COMPONENT, 'v0.0.3'  AS VERSION UNION ALL
+    SELECT 'routing_reverse_proxy'  AS COMPONENT, 'v1.1.2'  AS VERSION UNION ALL
+    SELECT 'vroom_docker'           AS COMPONENT, 'v1.0.4'  AS VERSION UNION ALL
+    SELECT 'ors_control_app'        AS COMPONENT, 'v1.1.54' AS VERSION
+) s ON t.COMPONENT = s.COMPONENT
+WHEN NOT MATCHED THEN INSERT (COMPONENT, VERSION) VALUES (s.COMPONENT, s.VERSION)
+WHEN MATCHED AND t.VERSION <> s.VERSION THEN UPDATE SET t.VERSION = s.VERSION, t.UPDATED_AT = SYSDATE();
+
 
