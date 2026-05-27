@@ -115,7 +115,7 @@ export async function fetchMatrix(
     const sql = `
       SELECT OPENROUTESERVICE_APP.CORE.MATRIX(
         '${profile.replace(/'/g, "''")}',
-        ${asSqlJsonLiteral(opts)},
+        PARSE_JSON(${asSqlJsonLiteral(opts)}),
         '${region.replace(/'/g, "''")}'
       ) AS RESP`;
     const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });

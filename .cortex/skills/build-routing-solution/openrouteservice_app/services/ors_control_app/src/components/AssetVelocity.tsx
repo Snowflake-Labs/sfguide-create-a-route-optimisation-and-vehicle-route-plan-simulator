@@ -24,7 +24,7 @@ const VRP_TOP_N = 8;
 
 export default function AssetVelocity() {
   const { regionName, center, zoom } = useRegion();
-  const [idleHourThreshold, setIdleHourThreshold] = useState(4);
+  const [idleHourThreshold, setIdleHourThreshold] = useState(1);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [terminals, setTerminals] = useState<Terminal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -422,7 +422,7 @@ export default function AssetVelocity() {
             ? `${Math.round(idleHourThreshold * 60)} min`
             : `${idleHourThreshold.toFixed(2)}h (${(idleHourThreshold / 24).toFixed(2)}d)`}</label>
           <input type="range" min={0.0833} max={336} step={0.0833} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 72h (3d) surfaces ghost trailers. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 1h surfaces idle vehicles on fresh installs. Raise to 72h+ for ghost trailers only. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
         </div>
         <div style={{ minWidth: 200 }}>
           <label className="range-label">Reposition shift cap: {maxRepositionMinutes} min ({(maxRepositionMinutes / 60).toFixed(1)}h)</label>
