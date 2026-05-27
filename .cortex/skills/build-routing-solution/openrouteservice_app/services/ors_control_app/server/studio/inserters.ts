@@ -11,7 +11,8 @@ type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<an
 
 export async function insertTelemetryBatch(points: TelemetryPoint[], snowSql: SnowSqlFn, jobId: string): Promise<number> {
   if (points.length === 0) return 0;
-  const batchSize = 500;
+  // 2000 keeps SQL under Snowflake parser limits while cutting round trips ~4x vs 500.
+  const batchSize = 2000;
   let inserted = 0;
   for (let i = 0; i < points.length; i += batchSize) {
     const chunk = points.slice(i, i + batchSize);
