@@ -78,8 +78,6 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS
     telemetry.total_readings AS COUNT(telemetry.TELEMETRY_ID) WITH SYNONYMS = ('GPS points', 'telemetry count') COMMENT = 'Total telemetry readings',
     telemetry.avg_speed AS AVG(telemetry.speed) WITH SYNONYMS = ('average speed', 'mean speed') COMMENT = 'Average vehicle speed km/h',
     telemetry.speeding_events AS SUM(CASE WHEN telemetry.IS_SPEEDING THEN 1 ELSE 0 END) WITH SYNONYMS = ('speed violations', 'speeding count') COMMENT = 'Number of speeding events',
-    telemetry.idle_pct AS AVG(CASE WHEN telemetry.STATUS = 'IDLE' THEN 1.0 ELSE 0.0 END) WITH SYNONYMS = ('idle rate', 'downtime') COMMENT = 'Fraction of time idle',
-    telemetry.dwell_pct AS AVG(CASE WHEN telemetry.STATUS LIKE 'DWELL%' THEN 1.0 ELSE 0.0 END) WITH SYNONYMS = ('dwell rate', 'time at stops') COMMENT = 'Fraction of time at dwell locations',
     telemetry.avg_battery AS AVG(telemetry.battery) WITH SYNONYMS = ('average battery', 'mean charge') COMMENT = 'Average battery percentage'
   )
   COMMENT = 'Fleet intelligence analytics covering trips, telemetry, vehicles, and POIs. Supports trip performance, speed/compliance, dwell time, battery monitoring, and delivery metrics across all demos.'
