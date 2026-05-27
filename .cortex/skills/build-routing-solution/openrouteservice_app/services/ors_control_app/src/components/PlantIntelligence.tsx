@@ -32,8 +32,8 @@ function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
 // Produces rack rows, equipment footprints and lab benches for the Level-4 view.
 function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any): any[] {
   const items = zone.contents?.items || [];
-  if (!items.length) return [];
   const poly = zone.polygon;
+  if (!poly?.length) return [];
   const minLon = Math.min(...poly.map((p: any) => p[0])), maxLon = Math.max(...poly.map((p: any) => p[0]));
   const minLat = Math.min(...poly.map((p: any) => p[1])), maxLat = Math.max(...poly.map((p: any) => p[1]));
   const type = zone.type || 'warehouse';
@@ -41,11 +41,10 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
   const La = (y: number) => lerp2(minLat, maxLat, y);
   const R = (x0: number, x1: number, y0: number, y1: number): [number, number][] => [[L(x0),La(y0)],[L(x1),La(y0)],[L(x1),La(y1)],[L(x0),La(y1)],[L(x0),La(y0)]];
 
-  const isRacking = ['warehouse','chill','deep_freeze','freezer','storage','quarantine','dispensary'].includes(type);
-  const isProduction = ['reactor','process','aseptic','packaging','granulation'].includes(type);
-  const isLab = ['lab','analytical','precision','qc'].includes(type);
-  const isUtility = ['utility','hvac','electrical','control'].includes(type);
-  const isDock = ['dock'].includes(type);
+  const isRacking = ['warehouse','chill','deep_freeze','freezer','storage','quarantine','dispensary','hazardous'].includes(type);
+  const isProduction = ['reactor','process','aseptic','packaging','granulation','dock'].includes(type);
+  const isLab = ['lab','analytical','precision','qc','utility','hvac','electrical','control','cleanroom'].includes(type);
+  const isDock = false;
 
   const polys: any[] = [];
   const labels: any[] = [];
@@ -57,7 +56,7 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
   }
 
   // ── Aisle floor ──────────────────────────────────────────────────
-  if (isRacking || isDock) {
+  if (isRacking) {
     // dark floor tile covering whole zone
     p(R(0,1,0,1), 0.1, [30,30,30,120]);
     // bright yellow aisle strips (2 aisles)
@@ -68,27 +67,28 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
   // ── Rack rows (for storage zones) ───────────────────────────────
   if (isRacking) {
     const RACK_ROWS = [[0.02,0.98,0.05,0.27],[0.02,0.98,0.33,0.58],[0.02,0.98,0.65,0.90]];
-    const slotsPerRow = Math.ceil(items.length / 3) || 4;
-    items.forEach((item: any, idx: number) => {
-      const rowIdx = Math.floor(idx / slotsPerRow);
-      const colIdx = idx % slotsPerRow;
-      if (rowIdx >= 3) return;
-      const [rx0, rx1, ry0, ry1] = RACK_ROWS[rowIdx];
-      const slotW = (rx1 - rx0) / slotsPerRow;
-      const gx0 = rx0 + colIdx * slotW + 0.004;
-      const gx1 = rx0 + (colIdx + 1) * slotW - 0.004;
-      const status = item.expiryStatus || item.status || 'ok';
-      const c: [number,number,number,number] = status === 'critical' ? [239,68,68,220] : status === 'warning' ? [249,115,22,200] : [41,181,232,180];
-      const elev = status === 'critical' ? 4.5 : status === 'warning' ? 3 : 2;
-      // rack slot (tall = pallet stack)
-      p(R(gx0,gx1,ry0+0.02,ry1-0.02), elev, c, true, item);
-      // rack upright bars
-      p(R(gx0,gx0+0.003,ry0,ry1), elev+0.5, [60,60,60,200]);
-      p(R(gx1-0.003,gx1,ry0,ry1), elev+0.5, [60,60,60,200]);
-      // label
-      const cx = L((gx0+gx1)/2), cy = La((ry0+ry1)/2);
-      lbl(cx, cy, (item.name||item.id||'').slice(0,10), 8, elev+0.6);
-    });
+    const slotsPerRow = Math.max(4, Math.ceil(items.length / 3));
+    if (items.length > 0) {
+      items.forEach((item: any, idx: number) => {
+        const rowIdx = Math.floor(idx / slotsPerRow);
+        const colIdx = idx % slotsPerRow;
+        if (rowIdx >= 3) return;
+        const [rx0, rx1, ry0, ry1] = RACK_ROWS[rowIdx];
+        const slotW = (rx1 - rx0) / slotsPerRow;
+        const gx0 = rx0 + colIdx * slotW + 0.004;
+        const gx1 = rx0 + (colIdx + 1) * slotW - 0.004;
+        const status = item.expiryStatus || item.status || 'ok';
+        const c: [number,number,number,number] = status === 'critical' ? [239,68,68,220] : status === 'warning' ? [249,115,22,200] : [41,181,232,180];
+        const elev = status === 'critical' ? 4.5 : status === 'warning' ? 3 : 2;
+        p(R(gx0,gx1,ry0+0.02,ry1-0.02), elev, c, true, item);
+        p(R(gx0,gx0+0.003,ry0,ry1), elev+0.5, [60,60,60,200]);
+        p(R(gx1-0.003,gx1,ry0,ry1), elev+0.5, [60,60,60,200]);
+        const cx = L((gx0+gx1)/2), cy = La((ry0+ry1)/2);
+        lbl(cx, cy, (item.name||item.id||'').slice(0,10), 8, elev+0.6);
+      });
+    } else {
+      RACK_ROWS.forEach(([rx0,rx1,ry0,ry1]) => p(R(rx0,rx1,ry0,ry1), 2, [41,181,232,80]));
+    }
     // loading/staging area at front
     p(R(0.02,0.98,0.92,0.98), 1, [70,90,70,160]);
     lbl(L(0.5), La(0.95), 'STAGING', 9, 1.5);
@@ -104,20 +104,21 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
       [0.55,0.95,0.55,0.92],
       [0.05,0.45,0.65,0.92],
     ];
-    items.slice(0, 4).forEach((item: any, idx: number) => {
+    const renderItems = items.length > 0 ? items : [null,null,null,null];
+    renderItems.slice(0, 4).forEach((item: any, idx: number) => {
       const [ex0,ex1,ey0,ey1] = equipLayout[idx] || equipLayout[0];
-      const s = item.status==='Fault'?'critical':item.status==='Maintenance'?'warning':'ok';
+      const s = item ? (item.status==='Fault'?'critical':item.status==='Maintenance'||item.status==='Changeover'?'warning':'ok') : 'ok';
       const c: [number,number,number,number] = s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[107,114,128,200];
       const elev = idx===0?8:idx===1?6:idx===2?5:4;
-      p(R(ex0+0.02,ex1-0.02,ey0+0.02,ey1-0.02), elev, c, true, item);
-      // access zone around equipment (lighter)
+      p(R(ex0+0.02,ex1-0.02,ey0+0.02,ey1-0.02), elev, c, true, item||{});
       p(R(ex0,ex1,ey0,ey1), 0.2, [255,255,255,20]);
-      // equipment outline (darker shell)
       p(R(ex0+0.02,ex1-0.02,ey0+0.02,ey0+0.025), elev+0.3, [40,40,40,200]);
       p(R(ex0+0.02,ex1-0.02,ey1-0.025,ey1-0.02), elev+0.3, [40,40,40,200]);
-      const cx=L((ex0+ex1)/2), cy=La((ey0+ey1)/2);
-      lbl(cx, cy, item.name||item.id, 9, elev+1);
-      if (item.status) lbl(cx, cy, item.status, 7, elev+0.4);
+      if (item) {
+        const cx=L((ex0+ex1)/2), cy=La((ey0+ey1)/2);
+        lbl(cx, cy, (item.name||item.id||'').slice(0,12), 9, elev+1);
+        if (item.status) lbl(cx, cy, item.status, 7, elev+0.4);
+      }
     });
     // central walkway
     p(R(0.46,0.54,0.05,0.95), 0.15, [200,180,0,80]);
@@ -125,7 +126,7 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
   }
 
   // ── Lab benches ───────────────────────────────────────────────────
-  if (isLab || isUtility) {
+  if (isLab) {
     p(R(0,1,0,1), 0.1, [20,30,40,160]); // floor
     // perimeter benches
     p(R(0.02,0.98,0.03,0.14), 1.5, [59,130,246,180]); // top bench
@@ -135,13 +136,13 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
     // central island
     p(R(0.30,0.70,0.30,0.70), 1.2, [41,181,232,160]);
     // instruments on benches
-    items.slice(0, 4).forEach((item: any, idx: number) => {
-      const positions = [[0.15,0.35,0.04,0.13],[0.40,0.60,0.04,0.13],[0.15,0.35,0.87,0.96],[0.65,0.80,0.04,0.13]];
+    const positions = [[0.15,0.35,0.04,0.13],[0.40,0.60,0.04,0.13],[0.15,0.35,0.87,0.96],[0.65,0.80,0.04,0.13]];
+    const renderItems = items.length > 0 ? items : [null,null,null,null];
+    renderItems.slice(0, 4).forEach((item: any, idx: number) => {
       const [ix0,ix1,iy0,iy1] = positions[idx] || positions[0];
-      const s = item.status==='Maintenance'?'warning':'ok';
-      const c: [number,number,number,number] = [234,179,8,200];
-      p(R(ix0,ix1,iy0,iy1), 2.5, c, true, item);
-      lbl(L((ix0+ix1)/2), La((iy0+iy1)/2), (item.name||item.id||'').slice(0,10), 7, 3);
+      const c: [number,number,number,number] = item && item.status==='Maintenance' ? [249,115,22,200] : [234,179,8,200];
+      p(R(ix0,ix1,iy0,iy1), 2.5, c, true, item||{});
+      if (item) lbl(L((ix0+ix1)/2), La((iy0+iy1)/2), (item.name||item.id||'').slice(0,10), 7, 3);
     });
     lbl(L(0.5), La(0.5), 'WORKSPACE', 9, 1.5);
     return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
@@ -149,15 +150,20 @@ function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any
 
   // ── Fallback: improved grid ───────────────────────────────────────
   p(R(0,1,0,1), 0.1, [30,30,30,120]);
-  const gc = Math.ceil(Math.sqrt(items.length)), gr = Math.ceil(items.length/gc);
-  items.forEach((item: any, i: number) => {
-    const row=Math.floor(i/gc), col=i%gc, pad=0.06;
-    const x0=col/gc+pad/gc, x1=(col+1)/gc-pad/gc, y0=row/gr+pad/gr, y1=(row+1)/gr-pad/gr;
-    const s = item.expiryStatus||item.status||'ok';
-    const c: [number,number,number,number] = s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[41,181,232,160];
-    p(R(x0,x1,y0,y1), 2, c, true, item);
-    lbl(L((x0+x1)/2), La((y0+y1)/2), (item.name||item.id||'').slice(0,10), 8, 2.5);
-  });
+  if (items.length > 0) {
+    const gc = Math.ceil(Math.sqrt(items.length)), gr = Math.ceil(items.length/gc);
+    items.forEach((item: any, i: number) => {
+      const row=Math.floor(i/gc), col=i%gc, pad=0.06;
+      const x0=col/gc+pad/gc, x1=(col+1)/gc-pad/gc, y0=row/gr+pad/gr, y1=(row+1)/gr-pad/gr;
+      const s = item.expiryStatus||item.status||'ok';
+      const c: [number,number,number,number] = s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[41,181,232,160];
+      p(R(x0,x1,y0,y1), 2, c, true, item);
+      lbl(L((x0+x1)/2), La((y0+y1)/2), (item.name||item.id||'').slice(0,10), 8, 2.5);
+    });
+  } else {
+    p(R(0.05,0.95,0.05,0.95), 1, [41,181,232,60]);
+    lbl(L(0.5), La(0.5), zone.name||zone.type||'ZONE', 11, 1.5);
+  }
   return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
 }
 

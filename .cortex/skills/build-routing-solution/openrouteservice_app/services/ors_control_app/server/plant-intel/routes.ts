@@ -191,7 +191,7 @@ function buildContents(zoneType: string, zoneName: string, plantId: number, zone
       };
     })};
   }
-  if (type === 'analytical' || type === 'lab') {
+  if (type === 'analytical' || type === 'lab' || type === 'precision') {
     return { contentType: 'instruments', items: [
       { id:'HPLC-01', name:'HPLC System 1', model:'Agilent 1260', status:rng()<0.2?'Maintenance':'Idle', lastRun:new Date(Date.now()-Math.round(rng()*7)*86400000).toISOString().slice(0,10) },
       { id:'DISS-01', name:'Dissolution Bath', model:'Distek 2100C', status:'Running', method:`Method ${Math.round(10+rng()*90)}`, samples:`${Math.round(6+rng()*6)} vessels` },
@@ -199,10 +199,89 @@ function buildContents(zoneType: string, zoneName: string, plantId: number, zone
       { id:'BAL-01', name:'Analytical Balance', model:'Mettler Toledo XPE', status:'Calibrated', lastCal:new Date(Date.now()-Math.round(rng()*30)*86400000).toISOString().slice(0,10) },
     ]};
   }
+  if (type === 'process') {
+    return { contentType: 'equipment', items: [
+      { id:`PMP-${plantId}01`, name:'Transfer Pump 1', role:'Centrifugal Pump', status:rng()<0.1?'Fault':'Running', flowRate:`${Math.round(50+rng()*150)} L/hr`, pressure:`${Math.round(10+rng()*20)/10} bar` },
+      { id:`HEX-${plantId}02`, name:'Heat Exchanger 02', role:'Shell & Tube', status:rng()<0.15?'Maintenance':'Running', temperature:`${Math.round(40+rng()*40)}°C`, duty:`${Math.round(100+rng()*400)} kW` },
+      { id:`FLT-${plantId}01`, name:'Filter Housing 1', role:'0.2µm Cartridge', status:rng()<0.2?'Change Required':'OK', dP:`${Math.round(1+rng()*4)/10} bar`, installed:new Date(Date.now()-Math.round(rng()*60)*86400000).toISOString().slice(0,10) },
+      { id:`TNK-${plantId}03`, name:'Buffer Tank', role:'Hold Vessel', status:'Running', volume:`${Math.round(500+rng()*1500)} L`, fill:`${Math.round(30+rng()*65)}%` },
+    ]};
+  }
+  if (type === 'hazardous') {
+    const solvents = ['Acetonitrile','Ethanol 96%','Isopropanol','Methanol','Dichloromethane','Ethyl Acetate','Acetone','Toluene'];
+    const count = Math.round(3 + rng() * 5);
+    return { contentType: 'racking', items: Array.from({length: count}, (_, i) => {
+      const solvent = solvents[Math.floor(rng() * solvents.length)];
+      const daysLeft = Math.round(30 + rng() * 180);
+      return {
+        id:`SOL-${String.fromCharCode(65+i)}`, name:`Bay ${String.fromCharCode(65+i)}`,
+        product: solvent, batchNo:`DR-${Math.round(1000+rng()*8000)}`,
+        pallets:`${Math.round(1+rng()*4)} drums`, stockKg:`${Math.round(25+rng()*200)} kg`,
+        expiryDate: new Date(Date.now()+daysLeft*86400000).toISOString().slice(0,10),
+        daysLeft, expiryStatus: daysLeft<30?'critical':daysLeft<90?'warning':'ok',
+        temperature:`${Math.round(15+rng()*10)}°C`,
+      };
+    })};
+  }
+  if (type === 'cleanroom') {
+    return { contentType: 'equipment', items: [
+      { id:`BSC-${plantId}01`, name:'Biosafety Cabinet 1', role:'Class II Type A2', status:rng()<0.1?'Maintenance':'Certified', lastCert:new Date(Date.now()-Math.round(rng()*180)*86400000).toISOString().slice(0,10) },
+      { id:`LAF-${plantId}01`, name:'LAF Workstation', role:'Horizontal Laminar Flow', status:'Running', filterStatus:rng()<0.15?'Replace Soon':'OK' },
+      { id:`GWN-${plantId}01`, name:'Gowning Station', role:'Personnel Airlock', status:'Operational', occupancy:`${Math.round(rng()*4)} persons` },
+      { id:`SSK-${plantId}01`, name:'Sink Station', role:'Stainless Steel Wash', status:'Operational' },
+    ]};
+  }
+  if (type === 'quarantine') {
+    const count = Math.round(3 + rng() * 6);
+    return { contentType: 'racking', items: Array.from({length: count}, (_, i) => {
+      const daysLeft = Math.round(5 + rng() * 60);
+      const products = ['Bulk API','Finished Goods','Raw Material','Excipient','Packaging'];
+      return {
+        id:`QH-${String.fromCharCode(65+i)}${Math.round(rng()*9)}`, name:`Hold ${String.fromCharCode(65+i)}`,
+        product: products[Math.floor(rng() * products.length)],
+        batchNo:`B-${2100+Math.round(rng()*400)}`, pallets:`${Math.round(1+rng()*6)} units`,
+        stockKg:`${Math.round(10+rng()*500)} kg`,
+        expiryDate: new Date(Date.now()+daysLeft*86400000).toISOString().slice(0,10),
+        daysLeft, expiryStatus: daysLeft<14?'critical':daysLeft<30?'warning':'ok',
+        temperature:`${Math.round(18+rng()*6)}°C`,
+      };
+    })};
+  }
+  if (type === 'dock') {
+    return { contentType: 'equipment', items: [
+      { id:`BCK-${plantId}01`, name:'Loading Bay 1', role:'Temperature-Controlled', status:rng()<0.2?'Occupied':'Available', truck:rng()<0.4?`TRK-${Math.round(100+rng()*900)}`:'Empty', tempZone:`${Math.round(2+rng()*6)}°C` },
+      { id:`BCK-${plantId}02`, name:'Loading Bay 2', role:'Ambient', status:rng()<0.3?'Occupied':'Available', truck:rng()<0.3?`TRK-${Math.round(100+rng()*900)}`:'Empty' },
+      { id:`CNV-${plantId}01`, name:'Conveyor System', role:'Roller Conveyor', status:rng()<0.1?'Fault':'Running', speed:`${Math.round(0.2+rng()*0.8)} m/s` },
+      { id:`SLR-${plantId}01`, name:'Stretch Wrap Station', role:'Pallet Wrapper', status:'Standby' },
+    ]};
+  }
+  if (type === 'hvac') {
+    return { contentType: 'equipment', items: [
+      { id:`AHU-${plantId}01`, name:`AHU-${plantId}-01`, role:'Air Handling Unit', status:rng()<0.1?'Alarm':'Running', airflow:`${Math.round(5000+rng()*10000)} m³/hr`, filterDP:`${Math.round(80+rng()*150)} Pa` },
+      { id:`AHU-${plantId}02`, name:`AHU-${plantId}-02`, role:'Air Handling Unit', status:'Running', airflow:`${Math.round(3000+rng()*8000)} m³/hr`, filterDP:`${Math.round(60+rng()*120)} Pa` },
+      { id:`CHW-${plantId}01`, name:'Chilled Water Coil', role:'Cooling Coil', status:'Running', supplyTemp:`${Math.round(6+rng()*4)}°C`, returnTemp:`${Math.round(11+rng()*3)}°C` },
+    ]};
+  }
+  if (type === 'electrical') {
+    return { contentType: 'equipment', items: [
+      { id:`UPS-${plantId}01`, name:'UPS Unit 1', role:'400kVA UPS', status:rng()<0.1?'On Battery':'On Mains', batteryHealth:`${Math.round(75+rng()*25)}%`, load:`${Math.round(30+rng()*60)}%` },
+      { id:`SWB-${plantId}01`, name:'Main Switchboard', role:'MV/LV Panel', status:'Energised', voltage:'415V AC', current:`${Math.round(100+rng()*300)} A` },
+      { id:`GEN-${plantId}01`, name:'Standby Generator', role:'500kVA Diesel', status:rng()<0.1?'Running':'Standby', fuelLevel:`${Math.round(40+rng()*60)}%` },
+    ]};
+  }
+  if (type === 'control') {
+    return { contentType: 'equipment', items: [
+      { id:`WS-${plantId}01`, name:'SCADA Workstation 1', role:'Process Control', status:'Running', activeAlarms:`${Math.round(rng()*5)}`, lastAck:new Date(Date.now()-Math.round(rng()*120)*60000).toISOString().slice(11,19) },
+      { id:`WS-${plantId}02`, name:'SCADA Workstation 2', role:'Historian', status:'Running' },
+      { id:`SRV-${plantId}01`, name:'Application Server', role:'DCS Server', status:rng()<0.05?'Fault':'Running', cpu:`${Math.round(10+rng()*60)}%`, memory:`${Math.round(40+rng()*40)}%` },
+      { id:`PLC-${plantId}01`, name:'PLC Cabinet 1', role:'Siemens S7-400', status:'Running', program:'v4.2.1' },
+    ]};
+  }
   if (type === 'utility') {
     return { contentType: 'plant', items: [
-      { id:'PW-01', name:'Purified Water Plant', capacity:'10,000 L/day', status:'Running', toc:`${Math.round(50+rng()*200)} ppb`, conductivity:`${Math.round(5+rng()*8)/10} µS/cm` },
-      { id:'WFI-01', name:'WFI Still', capacity:'3,000 L/day', status:rng()<0.1?'Maintenance':'Running', temperature:`${Math.round(80+rng()*5)}°C` },
+      { id:`PW-${plantId}01`, name:'Purified Water Plant', capacity:'10,000 L/day', status:'Running', toc:`${Math.round(50+rng()*200)} ppb`, conductivity:`${Math.round(5+rng()*8)/10} µS/cm` },
+      { id:`WFI-${plantId}01`, name:'WFI Still', capacity:'3,000 L/day', status:rng()<0.1?'Maintenance':'Running', temperature:`${Math.round(80+rng()*5)}°C` },
+      { id:`STM-${plantId}01`, name:'Clean Steam Generator', capacity:'500 kg/hr', status:'Running', pressure:`${Math.round(3+rng()*2)/10} bar` },
     ]};
   }
   return { contentType: 'general', items: [] };
