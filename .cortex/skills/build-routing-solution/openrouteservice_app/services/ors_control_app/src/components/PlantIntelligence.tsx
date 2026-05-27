@@ -8,7 +8,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 function cartoBasemap() {
   return new TileLayer({
-    id: 'carto-basemap', data: CARTO_LIGHT, minZoom: 0, maxZoom: 19, tileSize: 256,
+    id: 'carto-pi-main', data: CARTO_LIGHT, minZoom: 0, maxZoom: 19, tileSize: 256,
     renderSubLayers: (props: any) => {
       const { boundingBox } = props.tile;
       return new BitmapLayer(props, { data: undefined, image: props.data, bounds: [boundingBox[0][0], boundingBox[0][1], boundingBox[1][0], boundingBox[1][1]] });
@@ -16,583 +16,386 @@ function cartoBasemap() {
   });
 }
 
-const SEVERITY_COLORS: [number, number, number, number][] = [
-  [34,  197, 94,  220],
-  [234, 179, 8,   220],
-  [249, 115, 22,  220],
-  [239, 68,  68,  220],
-  [185, 28,  28,  220],
-];
-const SEVERITY_LABELS = ['No Alerts', 'Low', 'Moderate', 'High', 'Critical'];
-const SEVERITY_HEX    = ['#22c55e', '#eab308', '#f97316', '#ef4444', '#b91c1c'];
+const SEVERITY_COLORS: [number,number,number,number][] = [[34,197,94,220],[234,179,8,220],[249,115,22,220],[239,68,68,220],[185,28,28,220]];
+const SEVERITY_HEX = ['#22c55e','#eab308','#f97316','#ef4444','#b91c1c'];
+const SEVERITY_LABELS = ['No Alerts','Low','Moderate','High','Critical'];
 const WORLD_VIEW = { longitude: 20, latitude: 25, zoom: 1.4, pitch: 0, bearing: 0 };
 
-interface PlantStatus {
-  PLANT_ID: number; PLANT_NAME: string; PLANT_CODE: string;
-  CITY: string; COUNTRY: string; REGION: string;
-  SPECIALISATION: string; CAPACITY_BATCHES_MONTH: number;
-  LATITUDE: number; LONGITUDE: number;
-  MAX_SEVERITY: number; BATCH_SEVERITY: number; TEMP_SEVERITY: number;
-  STOCK_SEVERITY: number; SHIPMENT_SEVERITY: number;
-  CRITICAL_BATCHES: number; TEMP_EXCURSIONS: number;
-  CRITICAL_STOCK_ITEMS: number; DELAYED_SHIPMENTS: number;
-  BATCHES_IN_PROGRESS: number;
+function alertColor(s: string) { return s==='critical'?'#ef4444':s==='warning'?'#f97316':'#22c55e'; }
+function alertRgba(s: string): [number,number,number,number] { return s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[34,197,94,160]; }
+function polyCenter(polygon: [number,number][]): [number,number] {
+  return [polygon.reduce((s,p)=>s+p[0],0)/polygon.length, polygon.reduce((s,p)=>s+p[1],0)/polygon.length];
 }
-interface BatchRow {
-  BATCH_NUMBER: string; PRODUCT_NAME: string; BUSINESS_LINE: string;
-  STATUS: string; QC_RESULT: string; YIELD_PCT: number;
-  DEVIATION_COUNT: number; DEVIATION_SEVERITY: string;
-  PLANNED_COMPLETE: string; COST_USD_M: number;
-}
-interface InventoryRow {
-  PRODUCT_NAME: string; BUSINESS_LINE: string;
-  MATERIAL_TYPE: string; STOCK_KG: number; SAFETY_STOCK_KG: number;
-  DAYS_OF_COVERAGE: number; STOCK_STATUS: string;
-  TEMP_EXCURSION_FLAG: boolean; EXPIRY_DATE: string;
-}
-interface WarehouseZone {
-  id: string; name: string; type: string;
-  polygon: [number, number][];
-  elevation: number;
-  alertStatus: 'critical' | 'warning' | 'ok';
-  temperature: number; targetTemp: number | null;
-  humidity: number;
-  color: [number, number, number, number];
-  inventory: { name: string; expiryDate: string; daysLeft: number; status: string }[];
-}
-interface WarehouseSensor {
-  id: string; name: string; zoneId: string;
-  position: [number, number];
-  type: string; value: number; unit: string;
-  status: 'critical' | 'warning' | 'ok';
-  alert: string | null;
-}
-interface WarehouseData {
-  zones: WarehouseZone[];
-  sensors: WarehouseSensor[];
-  sensorTimeline: Record<string, any>[];
-  areaSqm: number;
-}
+function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
+
+interface PlantStatus { PLANT_ID:number; PLANT_NAME:string; PLANT_CODE:string; CITY:string; COUNTRY:string; LATITUDE:number; LONGITUDE:number; MAX_SEVERITY:number; CAPACITY_BATCHES_MONTH:number; CRITICAL_BATCHES:number; TEMP_EXCURSIONS:number; CRITICAL_STOCK_ITEMS:number; DELAYED_SHIPMENTS:number; BATCHES_IN_PROGRESS:number; }
+
+type NavLevel = 1 | 2 | 3 | 4;
 
 export default function PlantIntelligence() {
-  const [plants, setPlants]           = useState<PlantStatus[]>([]);
-  const [selected, setSelected]       = useState<PlantStatus | null>(null);
-  const [buildings, setBuildings]     = useState<any>(null);
-  const [batches, setBatches]         = useState<BatchRow[]>([]);
-  const [inventory, setInventory]     = useState<InventoryRow[]>([]);
-  const [activeTab, setActiveTab]     = useState<'batches' | 'inventory'>('batches');
-  const [loadingBuildings, setLoadingBuildings] = useState(false);
-  const [viewState, setViewState]     = useState<any>(WORLD_VIEW);
-
-  // Warehouse drill-down state
-  const [warehouseMode, setWarehouseMode]   = useState(false);
-  const [warehouseData, setWarehouseData]   = useState<WarehouseData | null>(null);
-  const [selectedZone, setSelectedZone]     = useState<string | null>(null);
-  const [loadingWarehouse, setLoadingWarehouse] = useState(false);
-  const [warehouseTab, setWarehouseTab]     = useState<'zones' | 'sensors' | 'timeline'>('zones');
+  const [plants, setPlants] = useState<PlantStatus[]>([]);
+  const [navLevel, setNavLevel] = useState<NavLevel>(1);
+  const [selectedPlant, setSelectedPlant] = useState<PlantStatus | null>(null);
+  const [campus, setCampus] = useState<any[]>([]);
+  const [selectedBuilding, setSelectedBuilding] = useState<any|null>(null);
+  const [selectedFloor, setSelectedFloor] = useState(0);
+  const [selectedRoom, setSelectedRoom] = useState<any|null>(null);
+  const [sidebarTab, setSidebarTab] = useState<'overview'|'sensors'|'timeline'>('overview');
+  const [loading, setLoading] = useState(false);
+  const [viewState, setViewState] = useState<any>(WORLD_VIEW);
 
   useEffect(() => {
     fetch('/api/plant-intel/plants')
-      .then(r => r.json())
-      .then((data: any) => setPlants(Array.isArray(data) ? data.map((r: any) => ({
-        ...r,
-        LATITUDE:               Number(r.LATITUDE),
-        LONGITUDE:              Number(r.LONGITUDE),
-        PLANT_ID:               Number(r.PLANT_ID),
-        CAPACITY_BATCHES_MONTH: Number(r.CAPACITY_BATCHES_MONTH ?? 0),
-        MAX_SEVERITY:           Number(r.MAX_SEVERITY ?? 0),
-        BATCH_SEVERITY:         Number(r.BATCH_SEVERITY ?? 0),
-        TEMP_SEVERITY:          Number(r.TEMP_SEVERITY ?? 0),
-        STOCK_SEVERITY:         Number(r.STOCK_SEVERITY ?? 0),
-        SHIPMENT_SEVERITY:      Number(r.SHIPMENT_SEVERITY ?? 0),
-        CRITICAL_BATCHES:       Number(r.CRITICAL_BATCHES ?? 0),
-        TEMP_EXCURSIONS:        Number(r.TEMP_EXCURSIONS ?? 0),
-        CRITICAL_STOCK_ITEMS:   Number(r.CRITICAL_STOCK_ITEMS ?? 0),
-        DELAYED_SHIPMENTS:      Number(r.DELAYED_SHIPMENTS ?? 0),
-        BATCHES_IN_PROGRESS:    Number(r.BATCHES_IN_PROGRESS ?? 0),
-      })) : []))
+      .then(r=>r.json())
+      .then((d:any) => setPlants(Array.isArray(d)?d.map((r:any)=>({ ...r, LATITUDE:Number(r.LATITUDE), LONGITUDE:Number(r.LONGITUDE), PLANT_ID:Number(r.PLANT_ID), MAX_SEVERITY:Number(r.MAX_SEVERITY??0), CAPACITY_BATCHES_MONTH:Number(r.CAPACITY_BATCHES_MONTH??0), CRITICAL_BATCHES:Number(r.CRITICAL_BATCHES??0), TEMP_EXCURSIONS:Number(r.TEMP_EXCURSIONS??0), CRITICAL_STOCK_ITEMS:Number(r.CRITICAL_STOCK_ITEMS??0), DELAYED_SHIPMENTS:Number(r.DELAYED_SHIPMENTS??0), BATCHES_IN_PROGRESS:Number(r.BATCHES_IN_PROGRESS??0), })):[]))
       .catch(console.error);
   }, []);
 
-  const selectPlant = useCallback(async (plant: PlantStatus) => {
-    setSelected(plant);
-    setBuildings(null);
-    setBatches([]);
-    setInventory([]);
-    setWarehouseMode(false);
-    setWarehouseData(null);
-    setSelectedZone(null);
-    setActiveTab('batches');
-    setViewState({ longitude: plant.LONGITUDE, latitude: plant.LATITUDE, zoom: 15, pitch: 45, bearing: -15, transitionDuration: 1200 });
-
-    setLoadingBuildings(true);
+  const goToCampus = useCallback(async (plant: PlantStatus) => {
+    setSelectedPlant(plant); setSelectedBuilding(null); setSelectedRoom(null); setSidebarTab('overview');
+    setViewState({ longitude:plant.LONGITUDE, latitude:plant.LATITUDE, zoom:15, pitch:45, bearing:-15, transitionDuration:1200 });
+    setLoading(true);
     try {
-      const [bldResp, batchResp, invResp] = await Promise.all([
-        fetch(`/api/plant-intel/buildings?plant_id=${plant.PLANT_ID}`).then(r => r.json()),
-        fetch(`/api/plant-intel/batches?plant_id=${plant.PLANT_ID}`).then(r => r.json()),
-        fetch(`/api/plant-intel/inventory?plant_id=${plant.PLANT_ID}`).then(r => r.json()),
-      ]);
-      setBuildings(bldResp);
-      setBatches(Array.isArray(batchResp) ? batchResp : []);
-      setInventory(Array.isArray(invResp) ? invResp : []);
-    } catch (e) { console.error(e); }
-    setLoadingBuildings(false);
+      const d = await fetch(`/api/plant-intel/campus?plant_id=${plant.PLANT_ID}`).then(r=>r.json());
+      setCampus(Array.isArray(d.campus)?d.campus:[]); setNavLevel(2);
+    } catch(e) { console.error(e); }
+    setLoading(false);
   }, []);
 
-  const drillIntoWarehouse = useCallback(async (plant: PlantStatus, buildingFeature: any) => {
-    // Zoom into the building centroid at very high zoom
-    const coords: [number, number][] = [];
-    const extract = (c: any) => { if (typeof c[0] === 'number') coords.push(c as [number, number]); else c.forEach(extract); };
-    try { extract(buildingFeature.geometry?.coordinates || []); } catch {}
-    if (coords.length > 0) {
-      const lon = coords.reduce((s, c) => s + c[0], 0) / coords.length;
-      const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length;
-      setViewState({ longitude: lon, latitude: lat, zoom: 19, pitch: 60, bearing: -20, transitionDuration: 1500 });
+  const goToBuilding = useCallback((bldg: any) => {
+    if (!bldg.geojson) return;
+    const coords: [number,number][] = [];
+    const ex = (c:any) => { if(typeof c[0]==='number') coords.push(c); else c.forEach(ex); };
+    try { ex(bldg.geojson.coordinates||[]); } catch {}
+    if (coords.length) {
+      const lon = coords.reduce((s,c)=>s+c[0],0)/coords.length;
+      const lat = coords.reduce((s,c)=>s+c[1],0)/coords.length;
+      setViewState({ longitude:lon, latitude:lat, zoom:18.5, pitch:55, bearing:-20, transitionDuration:1200 });
     }
-
-    setLoadingWarehouse(true);
-    try {
-      const data = await fetch(`/api/plant-intel/warehouse?plant_id=${plant.PLANT_ID}`).then(r => r.json());
-      setWarehouseData(data);
-      setWarehouseMode(true);
-      setWarehouseTab('zones');
-      setSelectedZone(null);
-    } catch (e) { console.error(e); }
-    setLoadingWarehouse(false);
+    setSelectedBuilding(bldg); setSelectedFloor(0); setSelectedRoom(null); setSidebarTab('overview'); setNavLevel(3);
   }, []);
 
-  const resetView = useCallback(() => {
-    setSelected(null); setBuildings(null); setBatches([]); setInventory([]);
-    setWarehouseMode(false); setWarehouseData(null); setSelectedZone(null);
-    setViewState({ ...WORLD_VIEW, transitionDuration: 800 });
+  const goToRoom = useCallback((zone: any) => {
+    if (!zone.polygon?.length) return;
+    const [lon, lat] = polyCenter(zone.polygon);
+    setViewState({ longitude:lon, latitude:lat, zoom:20, pitch:0, bearing:0, transitionDuration:800 });
+    setSelectedRoom(zone); setNavLevel(4);
   }, []);
 
-  const exitWarehouse = useCallback(() => {
-    if (!selected) return;
-    setWarehouseMode(false);
-    setWarehouseData(null);
-    setSelectedZone(null);
-    setViewState({ longitude: selected.LONGITUDE, latitude: selected.LATITUDE, zoom: 15, pitch: 45, bearing: -15, transitionDuration: 800 });
-  }, [selected]);
+  const goBack = useCallback(() => {
+    if (navLevel===4) { setSelectedRoom(null); setNavLevel(3); setViewState((v:any)=>({...v,pitch:55,zoom:18.5,transitionDuration:600})); }
+    else if (navLevel===3) { setSelectedBuilding(null); setNavLevel(2); if(selectedPlant) setViewState({longitude:selectedPlant.LONGITUDE,latitude:selectedPlant.LATITUDE,zoom:15,pitch:45,bearing:-15,transitionDuration:800}); }
+    else if (navLevel===2) { setSelectedPlant(null); setCampus([]); setNavLevel(1); setViewState({...WORLD_VIEW,transitionDuration:800}); }
+  }, [navLevel, selectedPlant]);
 
-  const severity = selected ? Math.min(4, Math.max(0, selected.MAX_SEVERITY ?? 0)) : 0;
-  const buildingFillColor: [number, number, number, number] = [41, 181, 232, 200];
-
-  // Sensor status colors
-  const sensorColor = (status: string): [number, number, number, number] =>
-    status === 'critical' ? [239, 68, 68, 255] : status === 'warning' ? [249, 115, 22, 255] : [34, 197, 94, 255];
+  const currentFloorZones = useMemo(() => {
+    if (!selectedBuilding) return [];
+    return selectedBuilding.floors?.[selectedFloor]?.zones || [];
+  }, [selectedBuilding, selectedFloor]);
 
   const layers: any[] = useMemo(() => [
     cartoBasemap(),
-
-    // Plant markers
-    new ScatterplotLayer<PlantStatus>({
-      id: 'plants-scatter',
-      data: plants,
-      getPosition: (d: PlantStatus) => [d.LONGITUDE, d.LATITUDE],
-      getRadius: (d: PlantStatus) => Math.sqrt(d.CAPACITY_BATCHES_MONTH) * 8000,
-      radiusMinPixels: selected ? 6 : 22,
-      radiusMaxPixels: selected ? 40 : 60,
-      getFillColor: (d: PlantStatus) => SEVERITY_COLORS[Math.min(4, d.MAX_SEVERITY ?? 0)] as any,
-      getLineColor: [255, 255, 255, 220] as any,
-      lineWidthMinPixels: 2,
-      stroked: true,
-      pickable: true,
-      onClick: ({ object }: any) => object && selectPlant(object),
+    new ScatterplotLayer<PlantStatus>({ id:'pi-plants', data:plants,
+      getPosition:(d:PlantStatus)=>[d.LONGITUDE,d.LATITUDE],
+      getRadius:(d:PlantStatus)=>Math.sqrt(d.CAPACITY_BATCHES_MONTH)*8000,
+      radiusMinPixels:navLevel===1?20:6, radiusMaxPixels:navLevel===1?55:40,
+      getFillColor:(d:PlantStatus)=>SEVERITY_COLORS[Math.min(4,d.MAX_SEVERITY)] as any,
+      getLineColor:[255,255,255,220] as any, lineWidthMinPixels:2, stroked:true, pickable:true,
+      onClick:({object}:any)=>object&&navLevel===1&&goToCampus(object),
     } as any),
-
-    ...(!selected ? [new TextLayer<PlantStatus>({
-      id: 'plant-labels',
-      data: plants,
-      getPosition: (d: PlantStatus) => [d.LONGITUDE, d.LATITUDE],
-      getPixelOffset: [0, 26] as any,
-      getText: (d: PlantStatus) => d.PLANT_CODE,
-      getSize: 12,
-      getColor: [255, 255, 255, 255] as any,
-      background: true,
-      getBackgroundColor: ((d: PlantStatus) => { const c = SEVERITY_COLORS[Math.min(4, d.MAX_SEVERITY ?? 0)]; return [c[0], c[1], c[2], 210]; }) as any,
-      backgroundPadding: [6, 3, 6, 3],
-      fontFamily: 'monospace', fontWeight: 'bold' as any,
-      getAlignmentBaseline: 'top', getTextAnchor: 'middle',
-      pickable: true,
-      onClick: ({ object }: any) => object && selectPlant(object),
-    } as any)] : []),
-
-    // Primary building — shown when plant is selected and NOT in warehouse mode
-    ...(selected && buildings && !warehouseMode ? [new GeoJsonLayer({
-      id: 'plant-building-primary',
-      data: buildings,
-      filled: true, extruded: true, wireframe: true,
-      getFillColor: buildingFillColor as any,
-      getLineColor: [255, 255, 255, 200] as any,
-      lineWidthMinPixels: 2,
-      getElevation: (f: any) => (f.properties?.height ? Number(f.properties.height) * 1.5 : 15),
-      elevationScale: 1,
-      pickable: true,
-      onClick: ({ object }: any) => object && selected && drillIntoWarehouse(selected, object),
-    } as any)] : []),
-
-    // Warehouse zones — 3D extruded polygons
-    ...(warehouseMode && warehouseData ? [new PolygonLayer({
-      id: 'warehouse-zones',
-      data: warehouseData.zones,
-      getPolygon: (z: WarehouseZone) => z.polygon,
-      getElevation: (z: WarehouseZone) => z.elevation,
-      getFillColor: (z: WarehouseZone) => {
-        const base = z.color;
-        const isSelected = z.id === selectedZone;
-        return isSelected ? [Math.min(255, base[0] + 60), Math.min(255, base[1] + 60), Math.min(255, base[2] + 60), 230] : base;
-      },
-      getLineColor: [255, 255, 255, 80] as any,
-      lineWidthMinPixels: 1,
-      extruded: true,
-      wireframe: true,
-      pickable: true,
-      onClick: ({ object }: any) => object && setSelectedZone((prev: string | null) => prev === object.id ? null : object.id),
-    } as any)] : []),
-
-    // Zone labels
-    ...(warehouseMode && warehouseData ? [new TextLayer({
-      id: 'zone-labels',
-      data: warehouseData.zones,
-      getPosition: (z: WarehouseZone) => {
-        const c = z.polygon;
-        const lon = c.reduce((s, p) => s + p[0], 0) / c.length;
-        const lat = c.reduce((s, p) => s + p[1], 0) / c.length;
-        return [lon, lat, z.elevation];
-      },
-      getText: (z: WarehouseZone) => `${z.name}\n${z.targetTemp != null ? `${z.temperature}°C` : ''}`,
-      getSize: 10,
-      getColor: [255, 255, 255, 230] as any,
-      getTextAnchor: 'middle' as any,
-      getAlignmentBaseline: 'center' as any,
-      fontFamily: 'monospace',
-      background: true,
-      getBackgroundColor: (z: WarehouseZone) => {
-        const base = z.color;
-        return [Math.floor(base[0] * 0.3), Math.floor(base[1] * 0.3), Math.floor(base[2] * 0.3), 180];
-      },
-      backgroundPadding: [4, 2, 4, 2],
-      billboard: true,
-    } as any)] : []),
-
-    // Sensor markers
-    ...(warehouseMode && warehouseData ? [new ScatterplotLayer({
-      id: 'sensors',
-      data: warehouseData.sensors,
-      getPosition: (s: WarehouseSensor) => [...s.position, 0.5] as any,
-      getFillColor: (s: WarehouseSensor) => sensorColor(s.status),
-      getRadius: 2,
-      radiusMinPixels: 8,
-      radiusMaxPixels: 14,
-      getLineColor: [255, 255, 255, 200] as any,
-      lineWidthMinPixels: 2,
-      stroked: true,
-      pickable: true,
-    } as any)] : []),
+    ...(navLevel===1?[new TextLayer<PlantStatus>({ id:'pi-labels', data:plants,
+      getPosition:(d:PlantStatus)=>[d.LONGITUDE,d.LATITUDE], getPixelOffset:[0,22] as any,
+      getText:(d:PlantStatus)=>d.PLANT_CODE, getSize:11, getColor:[255,255,255,255] as any,
+      background:true, getBackgroundColor:((d:PlantStatus)=>{const c=SEVERITY_COLORS[Math.min(4,d.MAX_SEVERITY)];return[c[0],c[1],c[2],200];}) as any,
+      backgroundPadding:[5,2,5,2], fontFamily:'monospace', getAlignmentBaseline:'top', getTextAnchor:'middle',
+      pickable:true, onClick:({object}:any)=>object&&goToCampus(object),
+    } as any)]:[]),
+    ...(navLevel>=2&&campus.length>0?[new GeoJsonLayer({ id:'pi-campus',
+      data:{type:'FeatureCollection',features:campus.map(b=>({type:'Feature',geometry:b.geojson,properties:{roleId:b.roleId,role:b.role,id:b.id,alertStatus:b.alertStatus,floorCount:b.floorCount}}))},
+      filled:true, extruded:true, wireframe:true,
+      getFillColor:(f:any)=>{const b=campus.find((x:any)=>x.id===f.properties?.id);if(!b)return[100,100,100,180];const base=b.color as [number,number,number,number];const isSel=selectedBuilding?.id===b.id;return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;},
+      getLineColor:[255,255,255,120] as any, lineWidthMinPixels:2,
+      getElevation:(f:any)=>{const b=campus.find((x:any)=>x.id===f.properties?.id);return b?b.floorCount*5:8;},
+      pickable:true, onClick:({object}:any)=>{if(object&&navLevel===2){const b=campus.find((x:any)=>x.id===object.properties?.id);if(b)goToBuilding(b);}},
+    } as any)]:[]),
+    ...(navLevel===2&&campus.length>0?[new TextLayer({ id:'pi-bldg-labels', data:campus,
+      getPosition:(b:any)=>{const c:[number,number][]=[];const ex=(x:any)=>{if(typeof x[0]==='number')c.push(x);else x.forEach(ex);};try{ex(b.geojson?.coordinates||[]);}catch{}return c.length?[c.reduce((s:number,p:[number,number])=>s+p[0],0)/c.length,c.reduce((s:number,p:[number,number])=>s+p[1],0)/c.length,b.floorCount*5+1]:[0,0,10];},
+      getText:(b:any)=>b.roleShort, getSize:13, getColor:[255,255,255,230] as any,
+      getTextAnchor:'middle' as any, getAlignmentBaseline:'center' as any,
+      background:true, getBackgroundColor:(b:any)=>{const c=b.color;return[Math.floor(c[0]*.4),Math.floor(c[1]*.4),Math.floor(c[2]*.4),180];},
+      backgroundPadding:[5,2,5,2], fontFamily:'monospace', fontWeight:'bold' as any, billboard:true,
+    } as any)]:[]),
+    ...(navLevel>=3&&currentFloorZones.length>0?[
+      new PolygonLayer({ id:'pi-zones', data:currentFloorZones,
+        getPolygon:(z:any)=>z.polygon, getElevation:(z:any)=>z.elevation,
+        getFillColor:(z:any)=>{const isSel=selectedRoom?.id===z.id;const base=alertRgba(z.alertStatus);return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;},
+        getLineColor:[255,255,255,100] as any, lineWidthMinPixels:1,
+        extruded:true, wireframe:true, pickable:true,
+        onClick:({object}:any)=>{if(object&&navLevel===3)goToRoom(object);else if(object&&navLevel===4)setSelectedRoom(object);},
+      } as any),
+      new TextLayer({ id:'pi-zone-labels', data:currentFloorZones,
+        getPosition:(z:any)=>[...polyCenter(z.polygon),z.elevation+0.5],
+        getText:(z:any)=>z.name, getSize:9, getColor:[255,255,255,210] as any,
+        getTextAnchor:'middle' as any, getAlignmentBaseline:'center' as any,
+        background:true, getBackgroundColor:(z:any)=>{const c=alertRgba(z.alertStatus);return[Math.floor(c[0]*.3),Math.floor(c[1]*.3),Math.floor(c[2]*.3),180];},
+        backgroundPadding:[3,1,3,1], billboard:true, fontFamily:'monospace',
+      } as any),
+      new ScatterplotLayer({ id:'pi-sensors',
+        data:currentFloorZones.flatMap((z:any)=>z.sensors?.map((s:any)=>({...s,zoneId:z.id,_center:polyCenter(z.polygon)}))||[]),
+        getPosition:(s:any)=>[...(s._center||[0,0]),0.3] as any,
+        getFillColor:(s:any)=>(s.status==='critical'?[239,68,68,255]:s.status==='warning'?[249,115,22,255]:[34,197,94,255]),
+        getRadius:1.5, radiusMinPixels:6, radiusMaxPixels:10,
+        getLineColor:[255,255,255,180] as any, lineWidthMinPixels:1.5, stroked:true, pickable:true,
+      } as any),
+    ]:[]),
+    ...(navLevel===4&&selectedRoom?(() => {
+      const items = selectedRoom.contents?.items||[];
+      if(!items.length) return [];
+      const poly = selectedRoom.polygon;
+      const minLon=Math.min(...poly.map((p:any)=>p[0])),maxLon=Math.max(...poly.map((p:any)=>p[0]));
+      const minLat=Math.min(...poly.map((p:any)=>p[1])),maxLat=Math.max(...poly.map((p:any)=>p[1]));
+      const cols=Math.ceil(Math.sqrt(items.length));
+      const rows=Math.ceil(items.length/cols);
+      const itemPolys = items.map((item:any,i:number)=>{
+        const row=Math.floor(i/cols),col=i%cols,pad=0.08;
+        const x0=lerp2(minLon,maxLon,(col+pad)/cols),x1=lerp2(minLon,maxLon,(col+1-pad)/cols);
+        const y0=lerp2(minLat,maxLat,(row+pad)/rows),y1=lerp2(minLat,maxLat,(row+1-pad)/rows);
+        return {...item,polygon:[[x0,y0],[x1,y0],[x1,y1],[x0,y1],[x0,y0]] as [number,number][],alertStatus:item.expiryStatus||item.status||'ok'};
+      });
+      return [
+        new PolygonLayer({ id:'pi-contents', data:itemPolys,
+          getPolygon:(d:any)=>d.polygon, getElevation:()=>0.5,
+          getFillColor:(d:any)=>alertRgba(d.alertStatus),
+          getLineColor:[255,255,255,80] as any, lineWidthMinPixels:1,
+          extruded:false, filled:true, stroked:true, pickable:true,
+        } as any),
+        new TextLayer({ id:'pi-content-labels', data:itemPolys,
+          getPosition:(d:any)=>polyCenter(d.polygon),
+          getText:(d:any)=>(d.name||d.id||'').slice(0,12),
+          getSize:8, getColor:[255,255,255,220] as any,
+          getTextAnchor:'middle' as any, getAlignmentBaseline:'center' as any,
+          fontFamily:'monospace', billboard:true,
+        } as any),
+      ];
+    })():[]),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [plants, selected, buildings, warehouseMode, warehouseData, selectedZone]);
+  ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom]);
 
-  function AlertBadge({ label, count, color }: { label: string; count: number; color: string }) {
-    if (count === 0) return null;
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 6, background: color + '22', border: `1px solid ${color}55`, marginBottom: 4 }}>
-        <span style={{ color, fontWeight: 700, fontSize: 18 }}>{count}</span>
-        <span style={{ color: 'var(--text)', fontSize: 12 }}>{label}</span>
-      </div>
-    );
+  function Chip({ label, count, color }: { label: string; count: number; color: string }) {
+    if (!count) return null;
+    return <div style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, background:`${color}22`, border:`1px solid ${color}55`, marginBottom:3 }}>
+      <span style={{ color, fontWeight:700, fontSize:16 }}>{count}</span>
+      <span style={{ color:'var(--text)', fontSize:11 }}>{label}</span>
+    </div>;
   }
 
   function StatusBadge({ label, status }: { label: string; status: string }) {
-    const c = status === 'critical' ? '#ef4444' : status === 'warning' ? '#f97316' : '#22c55e';
-    return <span style={{ background: c + '22', color: c, border: `1px solid ${c}55`, borderRadius: 4, padding: '2px 6px', fontSize: 11, fontWeight: 600 }}>{label}</span>;
+    const c = alertColor(status);
+    return <span style={{ background:`${c}22`, color:c, border:`1px solid ${c}55`, borderRadius:4, padding:'2px 6px', fontSize:10, fontWeight:600 }}>{label}</span>;
   }
 
-  const selZoneData = selectedZone ? warehouseData?.zones.find(z => z.id === selectedZone) : null;
-  const zoneSensors = selZoneData ? warehouseData?.sensors.filter(s => s.zoneId === selectedZone) : [];
+  const timelineKeys = useMemo(() => {
+    const tl = selectedBuilding?.timeline;
+    if (!tl?.length) return [];
+    return Object.keys(tl[0]).filter(k=>k!=='hour');
+  }, [selectedBuilding]);
+
+  const allSensors = useMemo(() => currentFloorZones.flatMap((z:any) => z.sensors?.map((s:any)=>({...s,zoneName:z.name}))||[]), [currentFloorZones]);
+  const criticalSensors = allSensors.filter((s:any)=>s.status==='critical');
+  const warnSensors = allSensors.filter((s:any)=>s.status==='warning');
 
   return (
-    <div style={{ display: 'flex', height: '100%', background: 'var(--bg, #0f1117)' }}>
+    <div style={{ display:'flex', height:'100%', background:'var(--bg, #0f1117)' }}>
       {/* MAP */}
-      <div style={{ flex: 1, position: 'relative' }}>
-        <DeckGL
-          viewState={viewState}
-          onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
-          controller
-          layers={layers}
-          getTooltip={({ object }: any) => {
-            if (!object) return null;
-            if (object.PLANT_NAME) {
-              const s = Math.min(4, object.MAX_SEVERITY ?? 0);
-              return { html: `<div style="font-size:13px;padding:6px 10px"><b>${object.PLANT_NAME}</b><br/>${object.CITY}, ${object.COUNTRY}<br/><span style="color:${SEVERITY_HEX[s]}">${SEVERITY_LABELS[s]}</span></div>` };
-            }
-            if (object.polygon) {
-              const z = object as WarehouseZone;
-              const alertColor = z.alertStatus === 'critical' ? '#ef4444' : z.alertStatus === 'warning' ? '#f97316' : '#22c55e';
-              return { html: `<div style="font-size:12px;padding:6px 10px"><b>${z.name}</b><br/>${z.targetTemp != null ? `Temp: ${z.temperature}°C (target ${z.targetTemp}°C)<br/>` : ''}Humidity: ${z.humidity}%<br/><span style="color:${alertColor}">${z.alertStatus.toUpperCase()}</span><br/><i>Click to inspect</i></div>` };
-            }
-            if (object.properties?.is_plant_building) {
-              return { html: `<div style="font-size:12px;padding:6px 10px"><b>🏭 Plant Building</b><br/>Area: ${object.properties.area_sqm?.toLocaleString()} m²<br/><i>Click to enter warehouse view</i></div>` };
-            }
-            if (object.zoneId) {
-              const s = object as WarehouseSensor;
-              const c = s.status === 'critical' ? '#ef4444' : s.status === 'warning' ? '#f97316' : '#22c55e';
-              return { html: `<div style="font-size:12px;padding:6px 10px"><b>${s.name}</b><br/>Value: <span style="color:${c};font-weight:700">${s.value}${s.unit}</span><br/>${s.alert ? `<span style="color:${c}">⚠ ${s.alert}</span>` : '<span style="color:#22c55e">✓ Normal</span>'}</div>` };
-            }
+      <div style={{ flex:1, position:'relative' }}>
+        <DeckGL viewState={viewState} onViewStateChange={({viewState:vs}:any)=>setViewState(vs)} controller layers={layers}
+          getTooltip={({object}:any) => {
+            if(!object) return null;
+            if(object.PLANT_NAME){const s=Math.min(4,object.MAX_SEVERITY??0);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.PLANT_NAME}</b><br/>${object.CITY},${object.COUNTRY}<br/><span style="color:${SEVERITY_HEX[s]}">${SEVERITY_LABELS[s]}</span></div>`};}
+            if(object.properties?.roleId){const b=campus.find((x:any)=>x.id===object.properties?.id);const c=alertColor(b?.alertStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.properties.role}</b><br/>${b?.floorCount} floor(s)<br/><span style="color:${c}">${b?.alertStatus?.toUpperCase()}</span><br/><i>Click to inspect</i></div>`};}
+            if(object.polygon&&object.name){const c=alertColor(object.alertStatus);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c}">${object.alertStatus?.toUpperCase()}</span>${navLevel===3?'<br/><i>Click to enter room</i>':''}</div>`};}
+            if(object.expiryDate){const c=alertColor(object.expiryStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b><br/>${object.product||''}<br/>Expires: ${object.expiryDate} · <span style="color:${c}">${object.daysLeft}d</span></div>`};}
+            if(object.status!==undefined&&object.zoneId!==undefined){const c=alertColor(object.status);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c};font-weight:700">${object.value}${object.unit}</span>${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`};}
             return null;
           }}
         />
-
-        {/* Navigation buttons */}
-        {selected && !warehouseMode && (
-          <button onClick={resetView} style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(0,0,0,0.75)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 13, backdropFilter: 'blur(8px)' }}>
-            ← All Plants
-          </button>
-        )}
-        {warehouseMode && (
-          <>
-            <button onClick={exitWarehouse} style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(0,0,0,0.75)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', fontSize: 13, backdropFilter: 'blur(8px)' }}>
-              ← Plant View
-            </button>
-            <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.75)', color: '#fff', padding: '6px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, backdropFilter: 'blur(8px)' }}>
-              🏭 {selected?.PLANT_NAME} — Warehouse Interior
-            </div>
-          </>
-        )}
-
-        {(loadingBuildings || loadingWarehouse) && (
-          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'rgba(0,0,0,0.85)', color: '#fff', padding: '14px 28px', borderRadius: 10, fontSize: 14 }}>
-            {loadingWarehouse ? 'Generating warehouse floor plan…' : 'Loading plant building…'}
+        {navLevel>1&&<button onClick={goBack} style={{ position:'absolute', top:12, left:12, background:'rgba(0,0,0,0.78)', color:'#fff', border:'1px solid rgba(255,255,255,0.2)', borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:13, backdropFilter:'blur(8px)' }}>← {navLevel===4?'Room List':navLevel===3?'Campus':navLevel===2?'All Plants':''}</button>}
+        {navLevel===3&&selectedBuilding&&(
+          <div style={{ position:'absolute', top:12, right:12, background:'rgba(0,0,0,0.78)', borderRadius:8, padding:'8px 10px', backdropFilter:'blur(8px)' }}>
+            <div style={{ fontSize:9, color:'#888', marginBottom:4, textTransform:'uppercase', letterSpacing:0.5 }}>Floor</div>
+            {selectedBuilding.floors?.map((f:any,i:number)=>(
+              <button key={i} onClick={()=>setSelectedFloor(i)} style={{ display:'block', width:'100%', padding:'4px 10px', marginBottom:2, borderRadius:4, border:'none', background:selectedFloor===i?'#29b5e8':'rgba(255,255,255,0.08)', color:selectedFloor===i?'#fff':'#aaa', cursor:'pointer', fontSize:10, textAlign:'left', whiteSpace:'nowrap' }}>
+                {f.label}
+              </button>
+            ))}
           </div>
         )}
-
-        {/* Hint: click building */}
-        {selected && !warehouseMode && buildings && !loadingBuildings && (
-          <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: 'rgba(41,181,232,0.9)', color: '#fff', padding: '6px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, pointerEvents: 'none' }}>
-            Click the highlighted building to enter warehouse view
-          </div>
-        )}
+        {navLevel===2&&!loading&&<div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%)', background:'rgba(41,181,232,0.9)', color:'#fff', padding:'6px 16px', borderRadius:20, fontSize:12, fontWeight:600, pointerEvents:'none' }}>Click a building to enter</div>}
+        {navLevel===3&&!loading&&<div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%)', background:'rgba(41,181,232,0.9)', color:'#fff', padding:'6px 16px', borderRadius:20, fontSize:12, fontWeight:600, pointerEvents:'none' }}>Click a room to inspect contents</div>}
+        {loading&&<div style={{ position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', background:'rgba(0,0,0,0.85)', color:'#fff', padding:'14px 28px', borderRadius:10, fontSize:14 }}>Loading campus…</div>}
       </div>
 
       {/* SIDEBAR */}
-      <div style={{ width: 360, background: 'var(--surface, rgba(0,0,0,0.5))', borderLeft: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', overflowY: 'auto', color: 'var(--text, #fff)' }}>
+      <div style={{ width:360, background:'var(--surface, rgba(0,0,0,0.5))', borderLeft:'1px solid rgba(255,255,255,0.08)', display:'flex', flexDirection:'column', overflowY:'auto', color:'var(--text,#fff)', fontSize:13 }}>
 
-        {/* ─── World view: plant list ─── */}
-        {!selected && (
+        {/* Level 1: plant list */}
+        {navLevel===1&&(
           <>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Manufacturing Plants</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted, #888)' }}>Click a plant to view its primary building and enter the warehouse</div>
+            <div style={{ padding:'16px 20px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ fontWeight:700, fontSize:16, marginBottom:4 }}>Pharma Manufacturing Plants</div>
+              <div style={{ fontSize:12, color:'#888' }}>6 global manufacturing sites — click to explore campus</div>
             </div>
-            {plants.map(p => {
-              const s = Math.min(4, p.MAX_SEVERITY ?? 0);
-              return (
-                <div key={p.PLANT_ID} onClick={() => selectPlant(p)} style={{ padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: SEVERITY_HEX[s], flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{p.PLANT_NAME}</div>
-                    <div style={{ fontSize: 11, color: '#888' }}>{p.CITY}, {p.COUNTRY} · {p.PLANT_CODE}</div>
-                  </div>
-                  <span style={{ fontSize: 11, color: SEVERITY_HEX[s], fontWeight: 600 }}>{SEVERITY_LABELS[s]}</span>
+            {plants.map(p=>{const s=Math.min(4,p.MAX_SEVERITY??0);return(
+              <div key={p.PLANT_ID} onClick={()=>goToCampus(p)} style={{ padding:'12px 20px', borderBottom:'1px solid rgba(255,255,255,0.06)', cursor:'pointer', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ width:10, height:10, borderRadius:'50%', background:SEVERITY_HEX[s], flexShrink:0 }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:600 }}>{p.PLANT_NAME}</div>
+                  <div style={{ fontSize:11, color:'#888' }}>{p.CITY}, {p.COUNTRY} · {p.PLANT_CODE}</div>
                 </div>
-              );
-            })}
+                <span style={{ fontSize:11, color:SEVERITY_HEX[s], fontWeight:600 }}>{SEVERITY_LABELS[s]}</span>
+              </div>
+            );})}
           </>
         )}
 
-        {/* ─── Plant view: batches / inventory ─── */}
-        {selected && !warehouseMode && (
+        {/* Level 2: campus overview */}
+        {navLevel===2&&selectedPlant&&(
           <>
-            <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>{selected.PLANT_NAME}</div>
-              <div style={{ fontSize: 11, color: '#888' }}>{selected.CITY}, {selected.COUNTRY} · {selected.PLANT_CODE}</div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                {selected.CRITICAL_BATCHES > 0 && <AlertBadge label="Critical Batches" count={selected.CRITICAL_BATCHES} color="#ef4444" />}
-                {selected.TEMP_EXCURSIONS > 0 && <AlertBadge label="Temp Excursions" count={selected.TEMP_EXCURSIONS} color="#f97316" />}
-                {selected.CRITICAL_STOCK_ITEMS > 0 && <AlertBadge label="Critical Stock" count={selected.CRITICAL_STOCK_ITEMS} color="#eab308" />}
-                {selected.DELAYED_SHIPMENTS > 0 && <AlertBadge label="Delayed Shipments" count={selected.DELAYED_SHIPMENTS} color="#64748b" />}
+            <div style={{ padding:'14px 20px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ fontWeight:700, fontSize:16 }}>{selectedPlant.PLANT_NAME} Campus</div>
+              <div style={{ fontSize:11, color:'#888', marginBottom:10 }}>{selectedPlant.CITY}, {selectedPlant.COUNTRY}</div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {selectedPlant.CRITICAL_BATCHES>0&&<Chip label="Critical Batches" count={selectedPlant.CRITICAL_BATCHES} color="#ef4444"/>}
+                {selectedPlant.TEMP_EXCURSIONS>0&&<Chip label="Temp Excursions" count={selectedPlant.TEMP_EXCURSIONS} color="#f97316"/>}
+                {selectedPlant.CRITICAL_STOCK_ITEMS>0&&<Chip label="Critical Stock" count={selectedPlant.CRITICAL_STOCK_ITEMS} color="#eab308"/>}
               </div>
             </div>
-            <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              {(['batches', 'inventory'] as const).map(t => (
-                <button key={t} onClick={() => setActiveTab(t)} style={{ flex: 1, padding: '10px 0', background: 'transparent', border: 'none', borderBottom: activeTab === t ? '2px solid #29b5e8' : '2px solid transparent', color: activeTab === t ? '#29b5e8' : '#888', cursor: 'pointer', fontSize: 12, fontWeight: activeTab === t ? 600 : 400 }}>
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                </button>
-              ))}
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              {activeTab === 'batches' ? batches.map((b, i) => {
-                const c = b.STATUS === 'ON_HOLD' || b.STATUS === 'REJECTED' ? '#ef4444' : b.STATUS === 'QC_REVIEW' ? '#f97316' : b.STATUS === 'IN_PROGRESS' ? '#3b82f6' : '#22c55e';
-                return (
-                  <div key={i} style={{ padding: '10px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{b.BATCH_NUMBER}</span>
-                      <span style={{ background: c + '22', color: c, border: `1px solid ${c}55`, borderRadius: 4, padding: '2px 6px', fontSize: 11, fontWeight: 600 }}>{b.STATUS}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: '#aaa' }}>{b.PRODUCT_NAME}</div>
-                    <div style={{ fontSize: 11, color: '#666', marginTop: 3 }}>Yield: {b.YIELD_PCT ?? '--'}% · Due: {b.PLANNED_COMPLETE ?? '--'}</div>
-                  </div>
-                );
-              }) : inventory.map((inv, i) => {
-                const c = inv.STOCK_STATUS === 'CRITICAL' ? '#ef4444' : inv.STOCK_STATUS === 'LOW' ? '#f97316' : '#22c55e';
-                return (
-                  <div key={i} style={{ padding: '10px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{inv.PRODUCT_NAME}</span>
-                      <span style={{ background: c + '22', color: c, border: `1px solid ${c}55`, borderRadius: 4, padding: '2px 5px', fontSize: 11 }}>{inv.STOCK_STATUS}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: '#888' }}>{inv.MATERIAL_TYPE} · {inv.DAYS_OF_COVERAGE ?? '--'}d coverage</div>
-                    {inv.TEMP_EXCURSION_FLAG && <div style={{ fontSize: 11, color: '#f97316', marginTop: 2 }}>⚠ Temperature excursion</div>}
-                  </div>
-                );
-              })}
-            </div>
+            {campus.map((b:any)=>(
+              <div key={b.id} onClick={()=>goToBuilding(b)} style={{ padding:'11px 20px', borderBottom:'1px solid rgba(255,255,255,0.05)', cursor:'pointer', display:'flex', alignItems:'center', gap:12 }}>
+                <div style={{ width:12, height:12, borderRadius:3, background:`rgb(${b.color[0]},${b.color[1]},${b.color[2]})`, flexShrink:0 }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:600, fontSize:13 }}>{b.role}</div>
+                  <div style={{ fontSize:11, color:'#888' }}>{b.floorCount} floor{b.floorCount>1?'s':''} · {Math.round(b.areaSqm).toLocaleString()} m²</div>
+                </div>
+                <StatusBadge label={b.alertStatus} status={b.alertStatus} />
+              </div>
+            ))}
           </>
         )}
 
-        {/* ─── Warehouse view ─── */}
-        {selected && warehouseMode && warehouseData && (
+        {/* Level 3: building / floor view */}
+        {navLevel===3&&selectedBuilding&&(
           <>
-            <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>🏭 Warehouse Interior</div>
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>{selected.PLANT_NAME} · {Math.round(warehouseData.areaSqm).toLocaleString()} m²</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {(['zones', 'sensors', 'timeline'] as const).map(t => (
-                  <button key={t} onClick={() => setWarehouseTab(t)} style={{ padding: '4px 12px', borderRadius: 14, border: 'none', background: warehouseTab === t ? '#29b5e8' : 'rgba(255,255,255,0.1)', color: warehouseTab === t ? '#fff' : '#aaa', cursor: 'pointer', fontSize: 12, fontWeight: warehouseTab === t ? 600 : 400 }}>
-                    {t.charAt(0).toUpperCase() + t.slice(1)}
+            <div style={{ padding:'14px 20px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                <div style={{ width:12, height:12, borderRadius:3, background:`rgb(${selectedBuilding.color[0]},${selectedBuilding.color[1]},${selectedBuilding.color[2]})` }} />
+                <div style={{ fontWeight:700, fontSize:15 }}>{selectedBuilding.role}</div>
+              </div>
+              <div style={{ fontSize:11, color:'#888', marginBottom:10 }}>{selectedBuilding.floors?.[selectedFloor]?.label} · {Math.round(selectedBuilding.areaSqm).toLocaleString()} m²</div>
+              {criticalSensors.length>0&&<div style={{ color:'#ef4444', fontSize:12, marginBottom:4 }}>🔴 {criticalSensors.length} critical sensor{criticalSensors.length>1?'s':''}</div>}
+              {warnSensors.length>0&&<div style={{ color:'#f97316', fontSize:12 }}>🟠 {warnSensors.length} warning{warnSensors.length>1?'s':''}</div>}
+              <div style={{ display:'flex', gap:5, marginTop:10 }}>
+                {(['overview','sensors','timeline'] as const).map(t=>(
+                  <button key={t} onClick={()=>setSidebarTab(t)} style={{ padding:'4px 10px', borderRadius:12, border:'none', background:sidebarTab===t?'#29b5e8':'rgba(255,255,255,0.09)', color:sidebarTab===t?'#fff':'#aaa', cursor:'pointer', fontSize:11, fontWeight:sidebarTab===t?600:400 }}>
+                    {t.charAt(0).toUpperCase()+t.slice(1)}
                   </button>
                 ))}
               </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div style={{ flex:1, overflowY:'auto' }}>
+              {sidebarTab==='overview'&&currentFloorZones.map((z:any)=>(
+                <div key={z.id} onClick={()=>goToRoom(z)} style={{ padding:'10px 20px', borderBottom:'1px solid rgba(255,255,255,0.05)', cursor:'pointer', display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ width:10, height:10, borderRadius:2, background:alertColor(z.alertStatus), flexShrink:0 }} />
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:600, fontSize:12 }}>{z.name}</div>
+                    <div style={{ fontSize:11, color:'#888', marginTop:2 }}>{z.sensors?.length||0} sensors · {z.contents?.items?.length||0} items</div>
+                  </div>
+                  <StatusBadge label={z.alertStatus} status={z.alertStatus} />
+                </div>
+              ))}
 
-              {/* ZONES tab */}
-              {warehouseTab === 'zones' && (
-                <>
-                  {selZoneData ? (
-                    <div style={{ padding: 16 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>{selZoneData.name}</div>
-                        <StatusBadge label={selZoneData.alertStatus.toUpperCase()} status={selZoneData.alertStatus} />
+              {sidebarTab==='sensors'&&(
+                <div style={{ padding:'4px 0' }}>
+                  {allSensors.map((s:any,i:number)=>(
+                    <div key={i} style={{ padding:'8px 20px', borderBottom:'1px solid rgba(255,255,255,0.04)', display:'flex', alignItems:'center', gap:9 }}>
+                      <div style={{ width:8, height:8, borderRadius:'50%', background:alertColor(s.status), flexShrink:0 }} />
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:11, fontWeight:600 }}>{s.name}</div>
+                        <div style={{ fontSize:10, color:'#666' }}>{s.zoneName}</div>
+                        {s.alert&&<div style={{ fontSize:10, color:'#f97316', marginTop:1 }}>⚠ {s.alert}</div>}
                       </div>
-                      <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
-                        {selZoneData.targetTemp != null && (
-                          <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 8, padding: '8px 12px', flex: 1 }}>
-                            <div style={{ fontSize: 10, color: '#888', marginBottom: 2 }}>TEMPERATURE</div>
-                            <div style={{ fontSize: 22, fontWeight: 700, color: selZoneData.alertStatus === 'critical' ? '#ef4444' : selZoneData.alertStatus === 'warning' ? '#f97316' : '#22c55e' }}>{selZoneData.temperature}°C</div>
-                            <div style={{ fontSize: 10, color: '#888' }}>Target: {selZoneData.targetTemp}°C</div>
-                          </div>
-                        )}
-                        <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 8, padding: '8px 12px', flex: 1 }}>
-                          <div style={{ fontSize: 10, color: '#888', marginBottom: 2 }}>HUMIDITY</div>
-                          <div style={{ fontSize: 22, fontWeight: 700, color: '#29b5e8' }}>{selZoneData.humidity}%</div>
-                        </div>
-                      </div>
-                      {selZoneData.inventory.length > 0 && (
-                        <>
-                          <div style={{ fontSize: 11, color: '#888', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Inventory</div>
-                          {selZoneData.inventory.map((item, i) => (
-                            <div key={i} style={{ padding: '7px 10px', marginBottom: 6, borderRadius: 6, background: 'rgba(255,255,255,0.04)', border: `1px solid ${item.status === 'critical' ? '#ef444433' : item.status === 'warning' ? '#f9731633' : 'rgba(255,255,255,0.08)'}` }}>
-                              <div style={{ fontSize: 13, fontWeight: 600 }}>{item.name}</div>
-                              <div style={{ fontSize: 11, marginTop: 3, display: 'flex', justifyContent: 'space-between' }}>
-                                <span style={{ color: '#888' }}>Expires: {item.expiryDate}</span>
-                                <StatusBadge label={`${item.daysLeft}d`} status={item.status} />
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {zoneSensors && zoneSensors.length > 0 && (
-                        <>
-                          <div style={{ fontSize: 11, color: '#888', marginTop: 12, marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Sensors</div>
-                          {zoneSensors.map((s: any) => (
-                            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', marginBottom: 4, borderRadius: 6, background: 'rgba(255,255,255,0.04)' }}>
-                              <div>
-                                <div style={{ fontSize: 12, fontWeight: 600 }}>{s.name}</div>
-                                {s.alert && <div style={{ fontSize: 11, color: '#f97316' }}>⚠ {s.alert}</div>}
-                              </div>
-                              <div style={{ textAlign: 'right' }}>
-                                <div style={{ fontWeight: 700, color: s.status === 'critical' ? '#ef4444' : s.status === 'warning' ? '#f97316' : '#22c55e' }}>{s.value}{s.unit}</div>
-                                <StatusBadge label={s.status} status={s.status} />
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      <button onClick={() => setSelectedZone(null)} style={{ marginTop: 12, width: '100%', padding: '8px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, color: '#aaa', cursor: 'pointer', fontSize: 12 }}>
-                        ← All Zones
-                      </button>
-                    </div>
-                  ) : (
-                    warehouseData.zones.map(z => (
-                      <div key={z.id} onClick={() => setSelectedZone(z.id)} style={{ padding: '11px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{ width: 12, height: 12, borderRadius: 3, background: `rgb(${z.color[0]},${z.color[1]},${z.color[2]})`, flexShrink: 0 }} />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600, fontSize: 13 }}>{z.name}</div>
-                          <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
-                            {z.targetTemp != null && `${z.temperature}°C · `}Humidity {z.humidity}%
-                          </div>
-                        </div>
-                        <StatusBadge label={z.alertStatus} status={z.alertStatus} />
-                      </div>
-                    ))
-                  )}
-                </>
-              )}
-
-              {/* SENSORS tab */}
-              {warehouseTab === 'sensors' && (
-                <div style={{ padding: '8px 0' }}>
-                  {warehouseData.sensors.map(s => (
-                    <div key={s.id} style={{ padding: '9px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: s.status === 'critical' ? '#ef4444' : s.status === 'warning' ? '#f97316' : '#22c55e', flexShrink: 0 }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600 }}>{s.name}</div>
-                        {s.alert && <div style={{ fontSize: 11, color: '#f97316' }}>⚠ {s.alert}</div>}
-                      </div>
-                      <div style={{ fontWeight: 700, fontSize: 14, color: s.status === 'critical' ? '#ef4444' : s.status === 'warning' ? '#f97316' : '#22c55e' }}>
-                        {s.value}{s.unit}
-                      </div>
+                      <div style={{ fontWeight:700, fontSize:13, color:alertColor(s.status) }}>{s.value}{s.unit}</div>
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* TIMELINE tab */}
-              {warehouseTab === 'timeline' && (
-                <div style={{ padding: 16 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>24-Hour Sensor Readings</div>
-                  <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>Temperature (°C)</div>
-                    <ResponsiveContainer width="100%" height={160}>
-                      <AreaChart data={warehouseData.sensorTimeline} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                        <XAxis dataKey="hour" tick={{ fontSize: 9, fill: '#666' }} interval={5} />
-                        <YAxis tick={{ fontSize: 9, fill: '#666' }} />
-                        <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', fontSize: 11 }} />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Area type="monotone" dataKey="Cold A (°C)" stroke="#3b82f6" fill="#3b82f620" strokeWidth={2} dot={false} />
-                        <Area type="monotone" dataKey="Cold B (°C)" stroke="#06b6d4" fill="#06b6d420" strokeWidth={2} dot={false} />
-                        <Area type="monotone" dataKey="Controlled (°C)" stroke="#8b5cf6" fill="#8b5cf620" strokeWidth={2} dot={false} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>Humidity & CO₂</div>
-                    <ResponsiveContainer width="100%" height={140}>
-                      <AreaChart data={warehouseData.sensorTimeline} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                        <XAxis dataKey="hour" tick={{ fontSize: 9, fill: '#666' }} interval={5} />
-                        <YAxis tick={{ fontSize: 9, fill: '#666' }} />
-                        <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', fontSize: 11 }} />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Area type="monotone" dataKey="Humidity (%)" stroke="#22c55e" fill="#22c55e20" strokeWidth={2} dot={false} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
+              {sidebarTab==='timeline'&&selectedBuilding.timeline&&(
+                <div style={{ padding:14 }}>
+                  <div style={{ fontSize:12, fontWeight:600, marginBottom:10 }}>24-Hour Readings — {selectedBuilding.role}</div>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <AreaChart data={selectedBuilding.timeline} margin={{top:4,right:4,left:-20,bottom:0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)"/>
+                      <XAxis dataKey="hour" tick={{fontSize:8,fill:'#666'}} interval={5}/>
+                      <YAxis tick={{fontSize:8,fill:'#666'}}/>
+                      <Tooltip contentStyle={{background:'#1a1a2e',border:'1px solid #333',fontSize:10}}/>
+                      <Legend wrapperStyle={{fontSize:9}}/>
+                      {timelineKeys.slice(0,4).map((k,i)=>(
+                        <Area key={k} type="monotone" dataKey={k} stroke={['#3b82f6','#06b6d4','#8b5cf6','#22c55e'][i%4]} fill={['#3b82f620','#06b6d420','#8b5cf620','#22c55e20'][i%4]} strokeWidth={2} dot={false}/>
+                      ))}
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               )}
+            </div>
+          </>
+        )}
+
+        {/* Level 4: room contents */}
+        {navLevel===4&&selectedRoom&&(
+          <>
+            <div style={{ padding:'14px 20px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ fontWeight:700, fontSize:15, marginBottom:4 }}>{selectedRoom.name}</div>
+              <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap', marginBottom:8 }}>
+                <StatusBadge label={selectedRoom.alertStatus} status={selectedRoom.alertStatus}/>
+                <span style={{ fontSize:11, color:'#888' }}>{selectedRoom.contents?.items?.length||0} items · {selectedRoom.sensors?.length||0} sensors</span>
+              </div>
+              {selectedRoom.sensors?.filter((s:any)=>s.status!=='ok').map((s:any,i:number)=>(
+                <div key={i} style={{ padding:'4px 8px', marginBottom:3, borderRadius:5, background:`${alertColor(s.status)}22`, fontSize:11 }}>
+                  <span style={{ color:alertColor(s.status), fontWeight:700 }}>{s.value}{s.unit}</span> — {s.name}{s.alert?` (${s.alert})`:''}
+                </div>
+              ))}
+            </div>
+            <div style={{ flex:1, overflowY:'auto' }}>
+              {(selectedRoom.contents?.items||[]).map((item:any,i:number)=>(
+                <div key={i} style={{ padding:'10px 20px', borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                    <span style={{ fontWeight:600, fontSize:12 }}>{item.name||item.id}</span>
+                    {item.expiryStatus&&<StatusBadge label={item.expiryStatus} status={item.expiryStatus}/>}
+                    {item.status&&!item.expiryDate&&<StatusBadge label={item.status} status={item.status==='Running'?'ok':item.status==='Fault'?'critical':'warning'}/>}
+                  </div>
+                  {item.product&&<div style={{ fontSize:11, color:'#aaa' }}>{item.product}</div>}
+                  {item.batchNo&&<div style={{ fontSize:11, color:'#888' }}>Batch: {item.batchNo}</div>}
+                  {item.expiryDate&&<div style={{ fontSize:11, color:'#888' }}>Expires: {item.expiryDate} · <span style={{ color:alertColor(item.expiryStatus||'ok') }}>{item.daysLeft}d remaining</span></div>}
+                  {item.stockKg&&<div style={{ fontSize:11, color:'#888' }}>Stock: {item.stockKg} · {item.pallets}</div>}
+                  {item.temperature&&<div style={{ fontSize:11, color:'#888' }}>Temp: {item.temperature}</div>}
+                  {item.speed&&<div style={{ fontSize:11, color:'#aaa' }}>{item.speed}{item.compression?` · ${item.compression}`:''}</div>}
+                  {item.capacity&&<div style={{ fontSize:11, color:'#aaa' }}>Capacity: {item.capacity}{item.batch?` · Batch: ${item.batch}`:''}</div>}
+                </div>
+              ))}
+              <div style={{ padding:'10px 20px', borderTop:'1px solid rgba(255,255,255,0.08)', marginTop:4 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:'#888', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5 }}>Sensors in this room</div>
+                {(selectedRoom.sensors||[]).map((s:any,i:number)=>(
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:600 }}>{s.name}</div>
+                      {s.alert&&<div style={{ fontSize:10, color:'#f97316' }}>⚠ {s.alert}</div>}
+                    </div>
+                    <div style={{ fontWeight:700, color:alertColor(s.status), fontSize:13 }}>{s.value}{s.unit}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </>
         )}
