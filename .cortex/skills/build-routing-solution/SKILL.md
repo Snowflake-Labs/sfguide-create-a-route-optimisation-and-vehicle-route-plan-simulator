@@ -226,7 +226,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
    | downloader | v0.0.3 |
    | routing_reverse_proxy | v1.0.0 |
    | vroom-docker | v1.0.1 |
-   | ors_control_app | v1.0.154 |
+   | ors_control_app | v1.0.200 |
 
 3. **Decision:**
    - If **all 5 images exist with correct tags** → Report to user that images are already present, **skip Step 5**, proceed directly to Step 4

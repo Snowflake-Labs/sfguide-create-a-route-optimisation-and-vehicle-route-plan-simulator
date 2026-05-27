@@ -1,6 +1,6 @@
 ---
 name: add-plant-map
-description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 manufacturing plants, color-coded by live supply chain alerts (batch holds, temp excursions, low stock, delayed shipments). New React page with 3D DeckGL map, side panel with batch/inventory details. Requires running build-plant-footprints.sql FIRST. Image v1.0.199 already deployed. Triggers: plant map, building footprints, manufacturing map, plant intelligence, Overture buildings."
+description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 manufacturing plants, color-coded by live supply chain alerts (batch holds, temp excursions, low stock, delayed shipments). New React page with 3D DeckGL map, side panel with batch/inventory details. Requires running build-plant-footprints.sql FIRST. Image v1.0.200 already deployed. Triggers: plant map, building footprints, manufacturing map, plant intelligence, Overture buildings."
 depends_on:
   - add-pharma-supply-chain
 metadata:
@@ -13,9 +13,9 @@ metadata:
 
 Adds a **Plant Intelligence** page to the ORS Control App showing Overture Maps building footprints for each manufacturing plant, color-coded by real-time supply chain alerts.
 
-**Image v1.0.199 is already deployed** to the publisher registry. The React module, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create the pre-computed footprints table.
+**Image v1.0.200 is already deployed** to the publisher registry. The React module, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create the pre-computed footprints table.
 
-## What's in the Image (v1.0.199)
+## What's in the Image (v1.0.200)
 
 - `PlantIntelligence.tsx` — DeckGL map with ScatterplotLayer (world view) + GeoJsonLayer (building footprints, extruded 3D)
 - `server/plant-intel/routes.ts` — 4 API endpoints: `/plants`, `/buildings`, `/batches`, `/inventory`
@@ -63,14 +63,14 @@ Expected: Mount Vernon and Macclesfield show MAX_SEVERITY = 4 (crimson — criti
 
 ### Step 2: Upgrade SPCS Service
 
-The ORS Control App SPCS service needs to be updated to use image v1.0.199:
+The ORS Control App SPCS service needs to be updated to use image v1.0.200:
 
 ```sql
 ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
   FROM SPECIFICATION_FILE = '@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml';
 ```
 
-Or redeploy with: `$build-routing-solution` (which will pick up v1.0.199 automatically from `image-versions.env`).
+Or redeploy with: `$build-routing-solution` (which will pick up v1.0.200 automatically from `image-versions.env`).
 
 ## Alert Color Legend
 
