@@ -1,6 +1,6 @@
 ---
 name: add-plant-map
-description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), animated robot tracking (AGV, Inspection, Cleaning), GMP sensors, 24-hour timeline, agent click integration. Image v1.0.212 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus, robot tracking, AGV, autonomous robots."
+description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), animated robot tracking with BFS corridor pathfinding (AGV, Inspection, Cleaning), GMP sensors, 24-hour timeline, agent click integration. Image v1.0.214 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus, robot tracking, AGV, autonomous robots."
 depends_on:
   - add-pharma-supply-chain
 metadata:
@@ -13,11 +13,11 @@ metadata:
 
 Adds a **Plant Intelligence** page to the ORS Control App showing real Overture Maps building footprints for each pharma manufacturing plant with a 4-level interactive drill-down into campus buildings, floor plans, and room-level contents.
 
-**Image v1.0.212 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
+**Image v1.0.214 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
 
 ---
 
-## What's in the Image (v1.0.212)
+## What's in the Image (v1.0.214)
 
 ### React Components
 
@@ -74,6 +74,7 @@ Three robot types appear on every floor plan, animated at 10fps between zone cen
 | Cleaning Robot | Grey | 1/floor | Sanitisation patrol |
 
 - Robots are **seeded per plant + building + floor** — deterministic, same routes every demo session
+- Navigation uses **BFS corridor pathfinding** through zone shared boundaries — robots follow the actual doors between rooms, never cutting through walls or racking
 - At **Level 4** only robots whose path passes through the selected room are shown
 - **Hover tooltip** shows robot ID, current task, and battery % (colour-coded)
 - **Legend overlay** bottom-right shows robot types present on current floor
@@ -160,7 +161,7 @@ If a plant has `< 6` Overture buildings ≥500 sqm nearby, the `/campus` endpoin
 
 ### Step 2: Upgrade SPCS Service
 
-If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.212` automatically from `image-versions.env`.
+If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.214` automatically from `image-versions.env`.
 
 If already deployed and just need to update:
 ```sql
