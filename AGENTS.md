@@ -57,6 +57,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
 | `freight-exchange` | demo | Dispatcher-grade marketplace cockpit (parallel page to Backload Matching). Browse + filter + map of synthesized freight offers per active preset, with trust-score (credit/KYC/blacklist) and market-rate (vs. weekly p25/p50/p75 USD/km RATE_INDEX dynamic table) badges. Powered by FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data. |
 | `emergency-response` | demo | 5-page Emergency Response Intelligence dashboard + 6-step Dynamic Table pipeline. Automates participant-impact assessment for wildfire/hurricane/flood/tornado/snow events using free Marketplace hazard data (NWS Alerts, FEMA, Census, FEMA NRI) plus ORS isochrones and OPTIMIZATION with `avoid_polygons` for hazard-aware reachability and dispatch routing. |
+| `traffic-calibration` | advanced | Calibrates ORS travel-time predictions against observed GPS telemetry to produce per-(profile, region, hour, road_class) speed factors. Publishes a `CALIBRATED_DURATION()` SQL function and an evaluation notebook that asserts >=10% MAPE reduction on a held-out window (issue #64). |
 
 ## Skill Conventions (Quick Reference)
 
@@ -286,11 +287,14 @@ graph TD
     RC --> FIT
     RC --> FIFD
     RC --> RD
-    RD --> DA[dwell-analysis]
+ RD --> DA[dwell-analysis]
+ FIT --> TC[traffic-calibration]
+ FIFD --> TC
+ BRS --> TC
 
-    style BRS fill:#f96,stroke:#333
-    style RP fill:#9cf,stroke:#333
-    style RC fill:#9cf,stroke:#333
+ style BRS fill:#f96,stroke:#333
+ style RP fill:#9cf,stroke:#333
+ style RC fill:#9cf,stroke:#333
 ```
 
 **Legend:** Orange = core infrastructure. Blue = configuration/prerequisites. White = demo/feature skills.
