@@ -1,6 +1,6 @@
 ---
 name: setup-agent-playground
-description: "Deploy the Agent Playground: semantic view, demo data, stored procedures, agent config. Run AFTER build-routing-solution and routing-agent. Triggers: setup agent playground, deploy agent demos, configure agent playground, install agent tools."
+description: "Deploy the Agent Playground: semantic view, demo data, stored procedures, agent config with 13 tools including pharma supply chain and plant intelligence. Run AFTER build-routing-solution and routing-agent. Triggers: setup agent playground, deploy agent demos, configure agent playground, install agent tools, plant intel scenario, agent click integration."
 depends_on:
   - build-routing-solution
   - routing-agent
@@ -168,9 +168,6 @@ SELECT PARSE_JSON($1):scenarios[1]:id::VARCHAR FROM @OPENROUTESERVICE_APP.CORE.O
 Expected: `analytics`
 
 ## Step 5: Configure Demo Defaults
-
-```sql
-UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 UPDATE FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
@@ -178,14 +175,63 @@ UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET VEHICLE_TYPE = 'ebike', 
 UPDATE FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
 ```
 
+## Step 6: Plant Intelligence Scenario + Agent Click Integration
+
+> **Requires:** `$add-plant-map` must be deployed first (creates `PLANT_ALERT_STATUS`, `PLANT_CAMPUS_BUILDINGS` views and the Overture footprints table).
+
+The `agent-demos.json` uploaded in Step 4 already includes the `plant_intel` scenario. Once `$add-plant-map` SQL is run, the Plant Intelligence tab becomes fully functional in the Agent Playground.
+
+### What the plant_intel scenario provides
+
+The **Plant Intel** scenario in the Agent Playground shows an embedded interactive campus map (4-level drill-down) instead of the static intro card. When the user navigates the map and clicks a building or room, the chat input is **automatically pre-filled** with a contextual message:
+
+**Building click → agent receives:**
+- Building role (e.g. "API Manufacturing")
+- Floor count and area
+- Number of GMP sensors + alert summary (critical/warning counts with values)
+- Suggested prompt: analyse facility + check supply chain / batch issues
+
+**Room click → agent receives:**
+- Zone name and type (e.g. "Reactor Hall — reactor")
+- All active sensor alerts with readings and alert text
+- Contents summary (up to 4 items: batch numbers, expiry dates, equipment status)
+- Suggested prompt: analyse zone + suggest next steps using available tools
+
+### Agent tools used for plant intel
+
+The agent's `pharma_supply_chain` semantic view tool (already in the spec) can answer follow-up questions about the clicked facility:
+
+```
+User clicks "API Manufacturing" at Mount Vernon → agent asked:
+"Can you check batch status and supply chain risks for this facility?"
+
+Agent uses pharma_supply_chain tool → returns:
+- Active batches, on-hold counts, deviation details
+- Inventory levels for the plant
+- Shipment delays affecting supply
+```
+
+The agent can also chain to routing tools — e.g. "Find the fastest route to the nearest API supplier" after identifying a supply issue.
+
+### Verify plant_intel scenario loads
+
+```sql
+-- Check agent-demos.json has plant_intel scenario
+SELECT PARSE_JSON($1):scenarios[4]:id::VARCHAR AS scenario_id
+FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json
+(FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT');
+-- Expected: plant_intel
+```
+
 ## Verification Summary
 
 | Check | Expected |
 |-------|----------|
 | `SHOW SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT` | FLEET_ANALYTICS_VIEW |
-| `DESCRIBE AGENT ...ROUTING_AGENT` | 4 tools (3 generic + 1 cortex_analyst) |
+| `DESCRIBE AGENT ...ROUTING_AGENT` | 13 tools (routing + analytics + pharma supply chain) |
 | `SELECT COUNT(*) FROM ...SF_HEALTH_DEMOGRAPHICS` | 55 |
-| Config loads from stage | JSON with "analytics" scenario |
+| Config loads from stage | JSON with "analytics", "pharma", "plant_intel" scenarios |
+| Plant Intel tab shows campus map | Requires `$add-plant-map` SQL deployed |
 
 ## Agent Spec Rules
 
