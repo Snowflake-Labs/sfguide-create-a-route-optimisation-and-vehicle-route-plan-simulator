@@ -279,9 +279,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    MODULES_DIR=".cortex/skills/build-routing-solution/openrouteservice_app/app/modules"
 
    for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
-            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql; do
+            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql \
+            07_studio_jobs.sql 08_observability.sql 15_route_optimization_seed.sql; do
      bash "$RUN_SQL" <connection> "$MODULES_DIR/$m" || exit 1
    done
+
+   # Resume the observability ingest + retention tasks created (suspended) by
+   # module 08. Without this the Observability page in the control app stays
+   # empty even though the schema exists. Safe to run repeatedly — ALTER TASK
+   # RESUME is idempotent.
+   snow sql -c <connection> -q "
+     ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK RESUME;
+     ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK RESUME;
+   "
    ```
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.

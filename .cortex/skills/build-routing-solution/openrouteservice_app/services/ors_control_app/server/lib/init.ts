@@ -884,4 +884,103 @@ export async function ensureBackloadAndAssetVelocityObjects(
       log('WARN', 'Init', `boot init step failed: ${e?.message?.slice(0, 200)}`);
     }
   }
+
+  // -----------------------------------------------------------------
+  // Defensive Observability bootstrap.
+  //
+  // The Observability page hits OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY,
+  // which is created by app/modules/08_observability.sql. If that module was
+  // skipped (older deploy script, manual partial install, etc.) the page
+  // returns SQL 422 "schema does not exist". Mirror the schema/table/view
+  // here so the page always renders, even on accounts where module 08 was
+  // never applied. The full ingest procedure + scheduled tasks remain owned
+  // by module 08 — without them the table is empty and the page shows zero
+  // rows (which is preferable to a SQL error). Operators who want live data
+  // should still apply module 08 and `ALTER TASK ... RESUME` the ingest task.
+  //
+  // Mirrors the contents of:
+  //   .cortex/skills/build-routing-solution/openrouteservice_app/app/modules/08_observability.sql
+  // Edit both together. (Same convention used elsewhere in this file.)
+  // -----------------------------------------------------------------
+  await ensureObservabilityObjects(sqlFn);
+}
+
+export async function ensureObservabilityObjects(
+  sqlFn: (sql: string, db?: string, schema?: string) => Promise<any[]>,
+): Promise<void> {
+  const TRACK_OBS = `'{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
+  const stmts: { sql: string; db?: string; schema?: string }[] = [
+    {
+      sql: `CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.OBSERVABILITY COMMENT = ${TRACK_OBS}`,
+      db: 'OPENROUTESERVICE_APP',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG (
+        REQUEST_TS       TIMESTAMP_LTZ NOT NULL,
+        REQUEST_ID       VARCHAR,
+        ENDPOINT         VARCHAR NOT NULL,
+        PROFILE          VARCHAR,
+        REGION           VARCHAR,
+        ORS_HOST         VARCHAR,
+        STATUS_CODE      NUMBER,
+        ERROR_CODE       VARCHAR,
+        LATENCY_MS       NUMBER,
+        REQUEST_BYTES    NUMBER,
+        RESPONSE_BYTES   NUMBER,
+        CALLER           VARCHAR
+      )
+      CLUSTER BY (DATE_TRUNC('hour', REQUEST_TS))
+      DATA_RETENTION_TIME_IN_DAYS = 1
+      COMMENT = ${TRACK_OBS}`,
+      db: 'OPENROUTESERVICE_APP', schema: 'OBSERVABILITY',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY
+        COMMENT = ${TRACK_OBS}
+        AS
+        WITH events AS (
+          SELECT
+            REQUEST_TS,
+            ENDPOINT,
+            PROFILE,
+            REGION,
+            STATUS_CODE,
+            ERROR_CODE,
+            LATENCY_MS,
+            REQUEST_BYTES,
+            RESPONSE_BYTES,
+            IFF(STATUS_CODE >= 400 OR ERROR_CODE IS NOT NULL, 1, 0) AS IS_ERROR
+          FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
+        ),
+        windowed AS (
+          SELECT '1h'  AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -1, SYSDATE())
+          UNION ALL
+          SELECT '24h' AS WINDOW_NAME, e.* FROM events e WHERE e.REQUEST_TS >= DATEADD(hour, -24, SYSDATE())
+        )
+        SELECT
+          WINDOW_NAME,
+          ENDPOINT,
+          COUNT(*)                                     AS REQ_COUNT,
+          SUM(IS_ERROR)                                AS ERROR_COUNT,
+          ROUND(100.0 * SUM(IS_ERROR) / NULLIF(COUNT(*), 0), 2) AS ERROR_RATE_PCT,
+          APPROX_PERCENTILE(LATENCY_MS, 0.5)           AS P50_MS,
+          APPROX_PERCENTILE(LATENCY_MS, 0.95)          AS P95_MS,
+          MAX(LATENCY_MS)                              AS MAX_MS,
+          AVG(LATENCY_MS)                              AS AVG_MS,
+          ROUND(AVG(REQUEST_BYTES), 0)                 AS AVG_REQ_BYTES,
+          ROUND(AVG(RESPONSE_BYTES), 0)                AS AVG_RESP_BYTES,
+          MAX(REQUEST_TS)                              AS LAST_EVENT_TS
+        FROM windowed
+        GROUP BY WINDOW_NAME, ENDPOINT
+        ORDER BY WINDOW_NAME, ENDPOINT`,
+      db: 'OPENROUTESERVICE_APP', schema: 'OBSERVABILITY',
+    },
+  ];
+  for (const { sql, db, schema } of stmts) {
+    try {
+      await sqlFn(sql, db, schema);
+    } catch (e: any) {
+      log('WARN', 'Init', `observability bootstrap step failed: ${e?.message?.slice(0, 200)}`);
+    }
+  }
 }
