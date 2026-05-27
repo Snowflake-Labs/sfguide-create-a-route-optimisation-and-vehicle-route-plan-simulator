@@ -235,6 +235,25 @@ export async function activateDataset(
   }
   const region = (rows[0] as any).REGION as string;
   const vehicleType = (rows[0] as any).VEHICLE_TYPE as string;
+  // Refuse activation when the target DATASET_ID has 0 rows in DIM_FLEET.
+  // Without this, a placeholder DIM_DATASETS row (e.g. legacy '-seed'
+  // recovery rows or rows whose base data was deleted out-of-band) can be
+  // activated and the V_*_CURRENT views silently return zero, leaving
+  // every fleet/freight page empty with no diagnostic. (#audit-pr-120)
+  const probe = await snowSql(
+    `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+     WHERE JOB_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  const probeCount = Number((probe[0] as any)?.N ?? 0);
+  if (probeCount === 0) {
+    throw new Error(
+      `Dataset ${datasetId} has 0 rows in DIM_FLEET; refusing to activate ` +
+      `(would leave V_*_CURRENT views empty for ${region}/${vehicleType}). ` +
+      `Re-run Data Studio for this scope to materialize fresh data, or pick ` +
+      `a different dataset from the panel.`,
+    );
+  }
   // Atomic-ish: deactivate other siblings, then activate this one.
   const deact = await snowSql(
     `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
