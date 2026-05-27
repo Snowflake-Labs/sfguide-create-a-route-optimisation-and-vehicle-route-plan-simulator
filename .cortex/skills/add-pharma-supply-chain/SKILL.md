@@ -19,7 +19,7 @@ Extends the Routing Agent with upstream pharmaceutical manufacturing analytics �
 
 | Object | Description |
 |--------|-------------|
-| `PLANTS` | 6 manufacturing sites: Macclesfield UK, Mount Vernon US, Södertälje SE, Singapore, Dunboyne IE, Lubbock US |
+| `PLANTS` | 6 manufacturing sites: Northshire UK, Hudson Valley US, Nordic Biologics SE, Asia Pacific SG, Dublin Biologics IE, South Plains US |
 | `SUPPLIERS` | 12 API/excipient/contract suppliers with reliability scores, lead times, GMP status |
 | `PRODUCTS` | 17 branded products across ONCOLOGY, CARDIOVASCULAR, RESPIRATORY, BIOLOGICS |
 | `PRODUCTION_BATCHES` | 15 recent batches including on-hold and rejected batches |
@@ -84,17 +84,17 @@ FILES=('agent-demos.json');
 
 | Issue | Product | Detail |
 |-------|---------|--------|
-| Batch on critical hold | Enhertu (T-DXd) | MVI-2024-002 — 4 critical deviations, $2.35M at risk |
+| Batch on critical hold | Hertivex (T-DXd) | MVI-2024-002 — 4 critical deviations, $2.35M at risk |
 | Temperature excursion | Fasenra (Benralizumab) | Inbound shipment temp breach — batch may need rejection |
-| Probation supplier | Wuxi Biologics | Supplies Imfinzi (Durvalumab) — critical oncology biologic |
+| Probation supplier | Wuxi Biologics | Supplies Imvecta (Durvalumab) — critical oncology biologic |
 | Single-source risk | Soliris (Eculizumab) | Only Lonza as supplier — no backup for $5.8M shipment |
-| API critically low | Tagrisso (Osimertinib) | Only 18 days coverage at Macclesfield |
-| Customs hold | Enhertu API | 12-day delay — already critically low stock |
+| API critically low | Zenoptima (Osimertinib) | Only 18 days coverage at Northshire Site |
+| Customs hold | Hertivex API | 12-day delay — already critically low stock |
 
 ## End-to-End Demo Story
 
 Prompt 5 ("End-to-end risk") connects both layers:
-1. **Upstream**: Enhertu API delayed in customs, batch on hold at Mount Vernon, Wuxi Biologics on probation
+1. **Upstream**: Hertivex API delayed in customs, batch on hold at Hudson Valley Site, Wuxi Biologics on probation
 2. **Downstream**: Injectable products critically low at Walgreens Mission (pharmacy inventory)
 3. **Result**: Agent identifies patient impact risk and recommends urgent actions across both layers
 

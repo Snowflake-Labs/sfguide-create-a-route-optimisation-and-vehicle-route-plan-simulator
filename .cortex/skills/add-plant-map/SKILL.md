@@ -137,7 +137,7 @@ FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS
 ORDER BY MAX_SEVERITY DESC;
 ```
 
-Expected: Mount Vernon and Macclesfield show `MAX_SEVERITY = 4` (Critical).
+Expected: Northshire Site and Hudson Valley Site show `MAX_SEVERITY = 4` (Critical).
 
 If a plant has `< 6` Overture buildings ≥500 sqm nearby, the `/campus` endpoint falls back to as many buildings as available (can be 1–5). Plants still show on the world map; they just have fewer campus buildings to drill into.
 
@@ -156,7 +156,7 @@ ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
 ## Demo Flow
 
 1. Open **Plant Intelligence** → world map shows 6 colour-coded plant dots
-2. **Macclesfield (UK)** and **Mount Vernon (US)** = crimson (Critical)
+2. **Northshire Site (UK)** and **Hudson Valley Site (US)** = crimson (Critical)
 3. Click a plant → zooms to campus, shows 5–6 real buildings colour-coded by pharma role
 4. Click **API Manufacturing** building → floor plan appears with 3 floors
 5. Switch floors using floor selector → different zone layouts per floor

@@ -5,7 +5,7 @@
 --   API Suppliers → Manufacturing Plants → Batch Production → Distribution
 --
 -- Business lines: ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS
--- Plants: Macclesfield UK, Mount Vernon US, Södertälje SE, Singapore SG
+-- Plants: Northshire UK, Hudson Valley US, Nordic Biologics SE, Asia Pacific SG, Dublin IE, South Plains US
 -- Mirrors the structure of the manufacturing supply chain listing but
 -- tailored entirely to pharmaceutical manufacturing context.
 -- =============================================================================
@@ -37,12 +37,12 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS (
 );
 
 INSERT INTO FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS VALUES
-(1, 'MCF', 'Macclesfield',     'Macclesfield', 'United Kingdom', 'EUROPE',   'ORAL_SOLIDS',  320, TRUE, TRUE,  53.2583, -2.1236),
-(2, 'MVI', 'Mount Vernon',     'Mount Vernon', 'United States',  'AMERICAS', 'INJECTABLES',  180, TRUE, TRUE,  40.9126, -73.8370),
-(3, 'SOD', 'Södertälje',       'Södertälje',   'Sweden',         'EUROPE',   'BIOLOGICS',     95, TRUE, TRUE,  59.1955,  17.6253),
-(4, 'SIN', 'Singapore',        'Singapore',    'Singapore',      'APAC',     'FILL_FINISH',  140, TRUE, TRUE,   1.3521, 103.8198),
-(5, 'DUN', 'Dunboyne',         'Dunboyne',     'Ireland',        'EUROPE',   'BIOLOGICS',     80, TRUE, TRUE,  53.4192,  -6.4756),
-(6, 'LUB', 'Lubbock',          'Lubbock',      'United States',  'AMERICAS', 'ORAL_SOLIDS',  210, TRUE, TRUE,  33.5779, -101.8552);
+(1, 'MCF', 'Northshire Site',       'Macclesfield', 'United Kingdom', 'EUROPE',   'ORAL_SOLIDS',  320, TRUE, TRUE,  53.2583,  -2.1236),
+(2, 'MVI', 'Hudson Valley Site',   'Mount Vernon', 'United States',  'AMERICAS', 'INJECTABLES',  180, TRUE, TRUE,  40.9126, -73.8370),
+(3, 'SOD', 'Nordic Biologics Site','Södertälje',   'Sweden',         'EUROPE',   'BIOLOGICS',     95, TRUE, TRUE,  59.1955,  17.6253),
+(4, 'SIN', 'Asia Pacific Hub',     'Singapore',    'Singapore',      'APAC',     'FILL_FINISH',  140, TRUE, TRUE,   1.3521, 103.8198),
+(5, 'DUN', 'Dublin Biologics Site','Dunboyne',     'Ireland',        'EUROPE',   'BIOLOGICS',     80, TRUE, TRUE,  53.4192,  -6.4756),
+(6, 'LUB', 'South Plains Site',    'Lubbock',      'United States',  'AMERICAS', 'ORAL_SOLIDS',  210, TRUE, TRUE,  33.5779, -101.8552);
 
 -- =============================================================================
 -- 2. SUPPLIERS — API and excipient manufacturers
@@ -101,26 +101,26 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTS (
 
 INSERT INTO FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PRODUCTS VALUES
 -- ONCOLOGY
-(1,  'ONC-001', 'Tagrisso (Osimertinib)',     'ONCOLOGY',      'TABLET',    1, 1,  2,  36, FALSE, 8,  6,  10, 'LOW'),
-(2,  'ONC-002', 'Imfinzi (Durvalumab)',       'ONCOLOGY',      'INJECTABLE',2, 3,  NULL,24, TRUE,  4,  2,  5,  'CRITICAL'),
-(3,  'ONC-003', 'Calquence (Acalabrutinib)',  'ONCOLOGY',      'TABLET',    1, 7,  9,  30, FALSE, 6,  9,  8,  'ADEQUATE'),
-(4,  'ONC-004', 'Lynparza (Olaparib)',        'ONCOLOGY',      'TABLET',    6, 9,  1,  30, FALSE, 5,  3,  6,  'CRITICAL'),
-(5,  'ONC-005', 'Enhertu (T-DXd)',           'ONCOLOGY',      'INJECTABLE',2, 8,  NULL,18, TRUE,  3,  1,  4,  'CRITICAL'),
+(1,  'ONC-001', 'Zenoptima (Osimertinib)',    'ONCOLOGY',      'TABLET',    1, 1,  2,  36, FALSE, 8,  6,  10, 'LOW'),
+(2,  'ONC-002', 'Imvecta (Durvalumab)',       'ONCOLOGY',      'INJECTABLE',2, 3,  NULL,24, TRUE,  4,  2,  5,  'CRITICAL'),
+(3,  'ONC-003', 'Calavex (Acalabrutinib)',    'ONCOLOGY',      'TABLET',    1, 7,  9,  30, FALSE, 6,  9,  8,  'ADEQUATE'),
+(4,  'ONC-004', 'Lynozar (Olaparib)',          'ONCOLOGY',      'TABLET',    6, 9,  1,  30, FALSE, 5,  3,  6,  'CRITICAL'),
+(5,  'ONC-005', 'Hertivex (T-DXd)',            'ONCOLOGY',      'INJECTABLE',2, 8,  NULL,18, TRUE,  3,  1,  4,  'CRITICAL'),
 -- CARDIOVASCULAR
-(6,  'CVS-001', 'Farxiga (Dapagliflozin)',   'CARDIOVASCULAR','TABLET',    1, 2,  7,  36, FALSE, 10, 14, 12, 'ADEQUATE'),
-(7,  'CVS-002', 'Brilinta (Ticagrelor)',      'CARDIOVASCULAR','TABLET',    6, 7,  9,  30, FALSE, 8,  5,  9,  'LOW'),
-(8,  'CVS-003', 'Lokelma (Sodium Zirconium)','CARDIOVASCULAR','TABLET',    1, 5,  6,  24, FALSE, 6,  18, 7,  'OVERSTOCKED'),
-(9,  'CVS-004', 'Onglyza (Saxagliptin)',      'CARDIOVASCULAR','TABLET',    6, 9,  2,  30, FALSE, 7,  4,  8,  'LOW'),
+(6,  'CVS-001', 'Daparix (Dapagliflozin)',    'CARDIOVASCULAR','TABLET',    1, 2,  7,  36, FALSE, 10, 14, 12, 'ADEQUATE'),
+(7,  'CVS-002', 'Ticarell (Ticagrelor)',       'CARDIOVASCULAR','TABLET',    6, 7,  9,  30, FALSE, 8,  5,  9,  'LOW'),
+(8,  'CVS-003', 'Zircalex (Sodium Zirconium)', 'CARDIOVASCULAR','TABLET',    1, 5,  6,  24, FALSE, 6,  18, 7,  'OVERSTOCKED'),
+(9,  'CVS-004', 'Saxivex (Saxagliptin)',        'CARDIOVASCULAR','TABLET',    6, 9,  2,  30, FALSE, 7,  4,  8,  'LOW'),
 -- RESPIRATORY
-(10, 'RSP-001', 'Symbicort (Budesonide)',     'RESPIRATORY',   'INHALER',   4, 5,  6,  24, FALSE, 12, 8,  14, 'LOW'),
-(11, 'RSP-002', 'Breztri (BGF Inhaler)',      'RESPIRATORY',   'INHALER',   4, 6,  5,  24, FALSE, 8,  22, 10, 'OVERSTOCKED'),
-(12, 'RSP-003', 'Fasenra (Benralizumab)',     'RESPIRATORY',   'INJECTABLE',2, 3,  8,  18, TRUE,  4,  2,  5,  'CRITICAL'),
-(13, 'RSP-004', 'Tezspire (Tezepelumab)',     'RESPIRATORY',   'INJECTABLE',5, 3,  NULL,18, TRUE,  3,  1,  4,  'CRITICAL'),
+(10, 'RSP-001', 'Breathora (Budesonide)',       'RESPIRATORY',   'INHALER',   4, 5,  6,  24, FALSE, 12, 8,  14, 'LOW'),
+(11, 'RSP-002', 'Trivent (BGF Inhaler)',         'RESPIRATORY',   'INHALER',   4, 6,  5,  24, FALSE, 8,  22, 10, 'OVERSTOCKED'),
+(12, 'RSP-003', 'Benrixel (Benralizumab)',       'RESPIRATORY',   'INJECTABLE',2, 3,  8,  18, TRUE,  4,  2,  5,  'CRITICAL'),
+(13, 'RSP-004', 'Tezivex (Tezepelumab)',         'RESPIRATORY',   'INJECTABLE',5, 3,  NULL,18, TRUE,  3,  1,  4,  'CRITICAL'),
 -- BIOLOGICS
-(14, 'BIO-001', 'Soliris (Eculizumab)',       'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,24, TRUE,  2,  1,  3,  'CRITICAL'),
-(15, 'BIO-002', 'Ultomiris (Ravulizumab)',    'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,18, TRUE,  2,  2,  3,  'ADEQUATE'),
-(16, 'BIO-003', 'Synagis (Palivizumab)',      'BIOLOGICS',     'BIOLOGIC',  5, 8,  3,  18, TRUE,  3,  3,  4,  'ADEQUATE'),
-(17, 'BIO-004', 'FluMist (LAIV)',             'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,12, TRUE,  4,  1,  5,  'CRITICAL');
+(14, 'BIO-001', 'Ecuvax (Eculizumab)',            'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,24, TRUE,  2,  1,  3,  'CRITICAL'),
+(15, 'BIO-002', 'Ravivex (Ravulizumab)',          'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,18, TRUE,  2,  2,  3,  'ADEQUATE'),
+(16, 'BIO-003', 'Palimab (Palivizumab)',          'BIOLOGICS',     'BIOLOGIC',  5, 8,  3,  18, TRUE,  3,  3,  4,  'ADEQUATE'),
+(17, 'BIO-004', 'FluVira (LAIV)',                 'BIOLOGICS',     'BIOLOGIC',  3, 3,  NULL,12, TRUE,  4,  1,  5,  'CRITICAL');
 
 -- =============================================================================
 -- 4. PRODUCTION BATCHES — recent batch history

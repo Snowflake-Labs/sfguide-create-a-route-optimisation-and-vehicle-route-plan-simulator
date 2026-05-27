@@ -93,7 +93,7 @@
         { "label": "2. Batch holds at risk", "icon": "🔬", "prompt": "Show me all production batches currently on hold or rejected across our plants. Which plant has the most value at risk and what are the root causes?" },
         { "label": "3. Cold chain excursions", "icon": "🌡️", "prompt": "Are there any active temperature excursions across our manufacturing plants? Which products are affected and what is the risk to batch integrity?" },
         { "label": "4. Material shortages", "icon": "📦", "prompt": "Which plants have critical raw material shortages that could halt production? Show me the days of coverage remaining for each critical material." },
-        { "label": "5. Mount Vernon deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Mount Vernon plant — active batches, quality deviations, material stock levels, and any inbound shipment delays." }
+        { "label": "5. Hudson Valley deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Hudson Valley Site — active batches, quality deviations, material stock levels, and any inbound shipment delays." }
       ]
     },
     {
