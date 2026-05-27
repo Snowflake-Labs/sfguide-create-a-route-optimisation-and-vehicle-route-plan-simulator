@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
-import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 const CURSOR_BLINK_CSS = `
 @keyframes agent-cursor-blink {
@@ -292,7 +292,7 @@ const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: n
 
 const CHART_COLORS = ['#29B5E8', '#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4', '#FF5722', '#607D8B'];
 
-interface ChartData { type: 'bar' | 'line' | 'pie' | 'table'; data: any[]; labelKey: string; valueKeys: string[]; title: string; }
+interface ChartData { type: 'bar' | 'line' | 'stacked_bar'; data: any[]; labelKey: string; valueKeys: string[]; title: string; }
 
 function detectChartFromMarkdown(content: string): ChartData | null {
   const tableMatch = content.match(/\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)+)/);
@@ -322,17 +322,16 @@ function detectChartFromMarkdown(content: string): ChartData | null {
   const valueKeys = numericCols.slice(0, 3);
 
   const isTimeSeries = labelKey.toLowerCase().includes('date') || labelKey.toLowerCase().includes('day') || labelKey.toLowerCase().includes('hour');
-  const isPieCandidate = data.length <= 6 && valueKeys.length === 1;
 
-  let type: 'bar' | 'line' | 'pie' = 'bar';
+  let type: 'bar' | 'line' | 'stacked_bar' = 'bar';
   if (isTimeSeries) type = 'line';
-  else if (isPieCandidate) type = 'pie';
+  else if (valueKeys.length > 1) type = 'stacked_bar';
 
   return { type, data, labelKey, valueKeys, title: '' };
 }
 
 function AgentChart({ chart, expanded, onToggle }: { chart: ChartData; expanded: boolean; onToggle: () => void }) {
-  const height = expanded ? 360 : 200;
+  const height = expanded ? 480 : 280;
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)', marginBottom: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
@@ -368,14 +367,18 @@ function AgentChart({ chart, expanded, onToggle }: { chart: ChartData; expanded:
             </LineChart>
           </ResponsiveContainer>
         )}
-        {chart.type === 'pie' && (
+        {chart.type === 'stacked_bar' && (
           <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie data={chart.data} dataKey={chart.valueKeys[0]} nameKey={chart.labelKey} cx="50%" cy="50%" outerRadius={expanded ? 130 : 70} label={(e: any) => e[chart.labelKey]?.toString().slice(0, 15)} labelLine={false}>
-                {chart.data.map((_: any, i: number) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-              </Pie>
+            <BarChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey={chart.labelKey} tick={{ fontSize: 10 }} angle={-30} textAnchor="end" height={50} />
+              <YAxis tick={{ fontSize: 10 }} />
               <Tooltip contentStyle={{ fontSize: 12, borderRadius: 6 }} />
-            </PieChart>
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {chart.valueKeys.map((key, i) => (
+                <Bar key={key} dataKey={key} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} />
+              ))}
+            </BarChart>
           </ResponsiveContainer>
         )}
       </div>
@@ -394,6 +397,7 @@ export default function AgentPlayground() {
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [chartExpanded, setChartExpanded] = useState(false);
+  const [activeVisualTab, setActiveVisualTab] = useState<'chart' | 'map'>('chart');
   const [tokenPaneOpen, setTokenPaneOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(380);
   const isDragging = useRef(false);
@@ -444,6 +448,7 @@ export default function AgentPlayground() {
     setWorkflowSteps([]);
     setChartData(null);
     setChartExpanded(false);
+    setActiveVisualTab('chart');
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
   }, []);
@@ -808,7 +813,7 @@ export default function AgentPlayground() {
       )}
 
       <div style={{ display: 'flex', gap: 0, alignItems: 'stretch' }}>
-        <div style={{ flex: `0 0 ${leftWidth}px`, display: 'flex', flexDirection: 'column', maxHeight: 540, minWidth: 240 }}>
+        <div style={{ flex: `0 0 ${leftWidth}px`, display: 'flex', flexDirection: 'column', maxHeight: 660, minWidth: 240 }}>
           <div style={{ flex: 1, overflowY: 'auto', marginBottom: 8, padding: 8, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(0,0,0,0.02)', minHeight: 200 }}>
             {messages.length === 0 && (
               <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: 16, textAlign: 'center' }}>Select an example above or type your own question</div>
@@ -902,11 +907,29 @@ export default function AgentPlayground() {
             const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
             if (hasChart && hasMap) {
               return (
-                <div style={{ display: 'flex', gap: 8, flex: 1 }}>
-                  <div style={{ flex: 1 }}><AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} /></div>
-                  <div style={{ flex: 1, height: 320, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-                    <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+                  <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+                    {(['chart', 'map'] as const).map(tab => (
+                      <button key={tab} onClick={() => setActiveVisualTab(tab)} style={{
+                        padding: '6px 18px', border: 'none',
+                        borderBottom: activeVisualTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+                        background: 'transparent', cursor: 'pointer',
+                        fontWeight: activeVisualTab === tab ? 600 : 400,
+                        color: activeVisualTab === tab ? 'var(--accent)' : 'var(--text-secondary)',
+                        fontSize: 12,
+                      }}>
+                        {tab === 'chart' ? '📊 Analytics' : '🗺️ Map'}
+                      </button>
+                    ))}
                   </div>
+                  {activeVisualTab === 'chart' && (
+                    <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
+                  )}
+                  {activeVisualTab === 'map' && (
+                    <div style={{ height: 480, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                      <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -915,14 +938,14 @@ export default function AgentPlayground() {
             }
             if (hasMap && !hasChart) {
               return (
-                <div style={{ height: 400, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                <div style={{ height: 520, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
                   <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
                 </div>
               );
             }
             const sc = scenarios.find(s => s.id === activeScenario);
             return (
-              <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 380, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
                 <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
@@ -952,7 +975,7 @@ export default function AgentPlayground() {
           )}
         </div>
 
-        <div style={{ flex: tokenPaneOpen ? '0 0 220px' : '0 0 28px', marginLeft: 12, display: 'flex', flexDirection: 'column', maxHeight: 560, fontSize: 11, overflow: 'hidden', transition: 'flex-basis 0.2s' }}>
+        <div style={{ flex: tokenPaneOpen ? '0 0 220px' : '0 0 28px', marginLeft: 12, display: 'flex', flexDirection: 'column', maxHeight: 660, fontSize: 11, overflow: 'hidden', transition: 'flex-basis 0.2s' }}>
           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: tokenPaneOpen ? 8 : 0, color: 'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', whiteSpace: 'nowrap' }}>
             {tokenPaneOpen && <span>Token Workflow</span>}
             <button onClick={() => setTokenPaneOpen(o => !o)} title={tokenPaneOpen ? 'Collapse' : 'Token Workflow'} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 14, padding: '0 2px', lineHeight: 1 }}>{tokenPaneOpen ? '›' : '‹'}</button>
