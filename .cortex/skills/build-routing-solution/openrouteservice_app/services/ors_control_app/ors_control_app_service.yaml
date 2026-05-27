@@ -10,11 +10,11 @@ spec:
         APP_VERSION: "1.1.60"
       resources:
         requests:
-          cpu: "0.5"
-          memory: "512Mi"
-        limits:
           cpu: "1"
           memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
   endpoints:
     - name: ors-control-app
       port: 3001
