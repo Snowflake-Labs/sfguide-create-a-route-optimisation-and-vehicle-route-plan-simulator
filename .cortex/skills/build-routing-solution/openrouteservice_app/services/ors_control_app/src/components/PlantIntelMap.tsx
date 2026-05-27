@@ -391,11 +391,12 @@ function initRobots(plantId: number, buildingKey: string, floorIdx: number, zone
       const ti = Math.floor(r() * zones.length);
       const fromZ = zones[fi];
       const toZ   = zones[ti];
+      const wpts  = robotWaypoints(fromZ.id, toZ.id, zones);
       robots.push({
         id: `${type}-${String.fromCharCode(65 + robots.length)}`,
         type, color, elev,
         fromZone: fromZ.id, toZone: toZ.id,
-        progress: r(),
+        waypoints: wpts, wpIdx: 0, segProg: r(),
         speed: speed * (0.8 + r() * 0.4),
         battery: Math.round(25 + r() * 75),
         status: 'moving',
@@ -406,37 +407,69 @@ function initRobots(plantId: number, buildingKey: string, floorIdx: number, zone
   return robots;
 }
 
-function getRobotPos(robot: any, zones: any[]): [number, number] {
-  const fromZ = zones.find((z:any) => z.id === robot.fromZone);
-  const toZ   = zones.find((z:any) => z.id === robot.toZone);
-  if (!fromZ || !toZ) return [0, 0];
-  const [fx, fy] = polyCenter(fromZ.polygon);
-  const [tx, ty] = polyCenter(toZ.polygon);
-  const t = robot.progress;
-  // L-shaped corridor routing: first half moves along one axis, second half along the other.
-  // Alternate which axis goes first based on robot id to vary the corner point.
-  const horizFirst = robot.id.charCodeAt(robot.id.length - 1) % 2 === 0;
-  if (t < 0.5) {
-    const p = t / 0.5;
-    return horizFirst ? [lerp2(fx, tx, p), fy] : [fx, lerp2(fy, ty, p)];
-  } else {
-    const p = (t - 0.5) / 0.5;
-    return horizFirst ? [tx, lerp2(fy, ty, p)] : [lerp2(fx, tx, p), ty];
+// Zone bounding box
+function zbb(zone: any) {
+  const xs = zone.polygon.map((p:any)=>p[0]), ys = zone.polygon.map((p:any)=>p[1]);
+  return { x0:Math.min(...xs), x1:Math.max(...xs), y0:Math.min(...ys), y1:Math.max(...ys) };
+}
+
+// Midpoint of the corridor gap between two adjacent zones (null if not adjacent)
+function corridorMid(a:any, b:any): [number,number]|null {
+  const ba=zbb(a), bb=zbb(b), EPS=0.0001;
+  if (Math.abs(ba.x1-bb.x0)<EPS) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(ba.x1+bb.x0)/2,(oy0+oy1)/2]; }
+  if (Math.abs(bb.x1-ba.x0)<EPS) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(bb.x1+ba.x0)/2,(oy0+oy1)/2]; }
+  if (Math.abs(ba.y1-bb.y0)<EPS) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(ba.y1+bb.y0)/2]; }
+  if (Math.abs(bb.y1-ba.y0)<EPS) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(bb.y1+ba.y0)/2]; }
+  return null;
+}
+
+// BFS to find corridor waypoints between two zones (no wall-cutting)
+function robotWaypoints(fromId:string, toId:string, zones:any[]): [number,number][] {
+  const fz=zones.find(z=>z.id===fromId), tz=zones.find(z=>z.id===toId);
+  if (!fz||!tz) return [[0,0]];
+  if (fromId===toId) return [polyCenter(fz.polygon)];
+  const adj: Record<string,[string,[number,number]][]>={};
+  for (const z of zones) adj[z.id]=[];
+  for (let i=0;i<zones.length;i++) for (let j=i+1;j<zones.length;j++) {
+    const mid=corridorMid(zones[i],zones[j]);
+    if (mid) { adj[zones[i].id].push([zones[j].id,mid]); adj[zones[j].id].push([zones[i].id,mid]); }
   }
+  const prev: Record<string,{from:string,wp:[number,number]}|null>={[fromId]:null};
+  const queue=[fromId];
+  while (queue.length) {
+    const cur=queue.shift()!; if (cur===toId) break;
+    for (const [nxt,wp] of (adj[cur]||[])) { if (!(nxt in prev)) { prev[nxt]={from:cur,wp}; queue.push(nxt); } }
+  }
+  if (!(toId in prev)) return [polyCenter(fz.polygon), polyCenter(tz.polygon)];
+  const pts:[number,number][]=[];
+  let cur=toId;
+  while (prev[cur]) { pts.unshift(prev[cur]!.wp); cur=prev[cur]!.from; }
+  return [polyCenter(fz.polygon), ...pts, polyCenter(tz.polygon)];
+}
+
+function getRobotPos(robot: any, zones: any[]): [number, number] {
+  const wp: [number,number][] = robot.waypoints;
+  if (!wp||wp.length<2) { const z=zones.find((z:any)=>z.id===robot.toZone); return z?polyCenter(z.polygon):[0,0]; }
+  const i=Math.min(robot.wpIdx||0, wp.length-2);
+  const [fx,fy]=wp[i], [tx,ty]=wp[i+1];
+  return [lerp2(fx,tx,robot.segProg||0), lerp2(fy,ty,robot.segProg||0)];
 }
 
 function advanceRobots(robots: any[], zones: any[], r: () => number): any[] {
   return robots.map(rb => {
-    const np = rb.progress + rb.speed;
+    const np = (rb.segProg||0) + rb.speed;
     if (np >= 1) {
-      const nextIdx = Math.floor(r() * zones.length);
-      const nz = zones[nextIdx];
-      return { ...rb, fromZone: rb.toZone, toZone: nz.id, progress: 0,
-        battery: Math.max(5, rb.battery - 0.05),
-        status: rb.battery < 10 ? 'charging' : 'moving',
-        task: ROBOT_TASKS[rb.type](zones.find((z:any)=>z.id===rb.toZone)?.name||'', nz.name) };
+      const newIdx = (rb.wpIdx||0) + 1;
+      if (newIdx >= (rb.waypoints?.length||1) - 1) {
+        const nz = zones[Math.floor(r()*zones.length)];
+        return { ...rb, fromZone:rb.toZone, toZone:nz.id,
+          waypoints:robotWaypoints(rb.toZone,nz.id,zones), wpIdx:0, segProg:0,
+          battery:Math.max(5,rb.battery-0.05), status:rb.battery<10?'charging':'moving',
+          task:ROBOT_TASKS[rb.type](zones.find((z:any)=>z.id===rb.toZone)?.name||'',nz.name) };
+      }
+      return { ...rb, wpIdx:newIdx, segProg:0 };
     }
-    return { ...rb, progress: np };
+    return { ...rb, segProg:np };
   });
 }
 
