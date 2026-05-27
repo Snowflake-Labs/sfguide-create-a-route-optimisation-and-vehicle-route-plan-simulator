@@ -345,68 +345,19 @@ GRANT USAGE ON PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_PLA
 -- =============================================================================
 
 -- =============================================================================
--- 5. UPDATE ROUTING_AGENT — add pharma intelligence tools
+-- 5. AGENT — deployed via add-pharma-supply-chain/references/update-agent-supply-chain.sql
+--    That file is the authoritative agent spec with all tools including
+--    pharma_supply_chain semantic view.
 -- =============================================================================
 
-CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
-FROM SPECIFICATION $$
-models:
-  orchestration: auto
+-- =============================================================================
+-- VERIFY
+-- =============================================================================
 
-instructions:
-  response: |
-    You are a routing, fleet intelligence, and pharma supply chain assistant for the San Francisco Bay Area.
-    Present distances in km, durations in minutes, costs in USD.
+SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
+CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS(NULL);
 
-    VISUALIZATION RULES:
-    - When presenting ranked lists, ALWAYS include a numeric column with values.
-    - Do NOT use bold/italic inside table cells.
-    - For route optimization: present | Vehicle | Stops | Distance km | Duration min |
-    - For catchment: present | Neighborhood | Population | Diabetes % | Risk Score |
-    - For inventory: present | Pharmacy | Drug | Stock | Status | Days to Expiry |
-    - For wastage: present | Drug | Category | Wastage Units | Wastage USD |
-    - For replenishment: present | Priority | Pharmacy | Drug | Units Required | Value USD |
-    - For weather: present | Parameter | Value | Unit | Advisory |
 
-  orchestration: |
-    ROUTING TOOLS:
-    - Directions: Use TOOL_DIRECTIONS
-    - Reachability/isochrone: Use TOOL_ISOCHRONES
-    - Multi-stop optimization (user locations): Use TOOL_ROUTE_OPTIMIZATION
-    - Population health catchment: Use TOOL_PHARMA_CATCHMENT
-    - Full pharma supply chain delivery (route optimisation): Use TOOL_SUPPLY_CHAIN
-
-    PHARMA SUPPLY INTELLIGENCE TOOLS:
-    - Inventory status, wastage, near-expiry, overstocked items: Use TOOL_INVENTORY_STATUS
-    - Demand forecast from demographics for a pharmacy: Use TOOL_DEMAND_FORECAST
-    - Replenishment plan / manufacturing order / what to produce: Use TOOL_REPLENISHMENT_PLAN
-
-    WEATHER:
-    - Current conditions, safe to cycle, fog, wind, rain: Use TOOL_WEATHER
-
-    DECISION RULES:
-    - For "which drugs are wasting" / "wastage" / "expiry" questions: Use TOOL_INVENTORY_STATUS
-    - For "what does pharmacy X need" / "demand forecast" / "demographics" questions: Use TOOL_DEMAND_FORECAST
-    - For "what to manufacture" / "replenishment" / "production plan" questions: Use TOOL_REPLENISHMENT_PLAN
-    - For "redistribute expiring stock" scenarios: Use TOOL_REPLENISHMENT_PLAN to identify items, then TOOL_ROUTE_OPTIMIZATION to plan the transfer route
-    - ALWAYS use a tool for routing or supply intelligence questions.
-
-tools:
-  - tool_spec:
-      type: generic
-      name: TOOL_DIRECTIONS
-      description: "Calculate driving directions between locations."
-      input_schema:
-        type: object
-        properties:
-          locations_description:
-            type: string
-            description: "Natural language start and end locations"
-          profile:
-            type: string
-            description: "driving-car, driving-hgv, or cycling-electric"
-        required: [locations_description]
   - tool_spec:
       type: generic
       name: TOOL_ISOCHRONES

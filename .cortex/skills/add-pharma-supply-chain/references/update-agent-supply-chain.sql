@@ -32,11 +32,11 @@ instructions:
 
   orchestration: |
     UPSTREAM SUPPLY CHAIN (manufacturing plants, suppliers, batches, shipments):
-    - Stock levels, supplier reliability, batch status, shipment delays: Query FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN tables directly
-    - Questions about ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS product lines: Query supply chain tables
-    - Batch yield, QC failures, deviations, on-hold batches: Query PRODUCTION_BATCHES table
-    - Supplier GMP status, audit results, single-source risk: Query SUPPLIERS table
-    - Raw material coverage, API inventory, temperature excursions: Query MATERIAL_INVENTORY table
+    - Stock levels, supplier reliability, batch status, shipment delays: Use pharma_supply_chain
+    - Questions about ONCOLOGY / CARDIOVASCULAR / RESPIRATORY / BIOLOGICS product lines: Use pharma_supply_chain
+    - Batch yield, QC failures, deviations, on-hold batches: Use pharma_supply_chain
+    - Supplier GMP status, audit results, single-source risk: Use pharma_supply_chain
+    - Raw material coverage, API inventory, temperature excursions: Use pharma_supply_chain
 
     DOWNSTREAM SUPPLY INTELLIGENCE (pharmacy distribution):
     - Inventory status, wastage, near-expiry: Use TOOL_INVENTORY_STATUS
@@ -159,6 +159,17 @@ tools:
         properties:
           region_name:
             type: string
+  - tool_spec:
+      type: cortex_analyst_text_to_sql
+      name: pharma_supply_chain
+      description: "Upstream pharmaceutical supply chain analytics: manufacturing plants, API suppliers, production batches, inbound shipments, raw material inventory. Query for supplier reliability, batch status/yield/deviations, shipment delays, API stock coverage, GMP compliance, temperature excursions, single-source risk."
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "Natural language question about upstream pharma supply chain"
+        required: [query]
 
 tool_resources:
   TOOL_DIRECTIONS:
@@ -212,6 +223,12 @@ tool_resources:
   TOOL_WEATHER:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
+  pharma_supply_chain:
+    type: cortex_analyst_text_to_sql
+    semantic_view: FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
