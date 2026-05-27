@@ -56,7 +56,7 @@ function initRobots(plantId: number, buildingKey: string, floorIdx: number, zone
 }
 function polyCenter2(polygon: [number,number][]): [number,number] { const lon=polygon.reduce((s,p)=>s+p[0],0)/polygon.length; const lat=polygon.reduce((s,p)=>s+p[1],0)/polygon.length; return [lon,lat]; }
 function zbb2(zone:any){const xs=zone.polygon.map((p:any)=>p[0]),ys=zone.polygon.map((p:any)=>p[1]);return{x0:Math.min(...xs),x1:Math.max(...xs),y0:Math.min(...ys),y1:Math.max(...ys)};}
-function corridorMid2(a:any,b:any):[number,number]|null{const ba=zbb2(a),bb=zbb2(b),EPS=0.0001;if(Math.abs(ba.x1-bb.x0)<EPS){const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1);if(oy1>oy0)return[(ba.x1+bb.x0)/2,(oy0+oy1)/2];}if(Math.abs(bb.x1-ba.x0)<EPS){const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1);if(oy1>oy0)return[(bb.x1+ba.x0)/2,(oy0+oy1)/2];}if(Math.abs(ba.y1-bb.y0)<EPS){const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1);if(ox1>ox0)return[(ox0+ox1)/2,(ba.y1+bb.y0)/2];}if(Math.abs(bb.y1-ba.y0)<EPS){const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1);if(ox1>ox0)return[(ox0+ox1)/2,(bb.y1+ba.y0)/2];}return null;}
+function corridorMid2(a:any,b:any):[number,number]|null{const ba=zbb2(a),bb=zbb2(b);const EPS_X=Math.min(ba.x1-ba.x0,bb.x1-bb.x0)*0.08;const EPS_Y=Math.min(ba.y1-ba.y0,bb.y1-bb.y0)*0.08;if(Math.abs(ba.x1-bb.x0)<EPS_X){const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1);if(oy1>oy0)return[(ba.x1+bb.x0)/2,(oy0+oy1)/2];}if(Math.abs(bb.x1-ba.x0)<EPS_X){const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1);if(oy1>oy0)return[(bb.x1+ba.x0)/2,(oy0+oy1)/2];}if(Math.abs(ba.y1-bb.y0)<EPS_Y){const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1);if(ox1>ox0)return[(ox0+ox1)/2,(ba.y1+bb.y0)/2];}if(Math.abs(bb.y1-ba.y0)<EPS_Y){const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1);if(ox1>ox0)return[(ox0+ox1)/2,(bb.y1+ba.y0)/2];}return null;}
 function robotWaypoints(fromId:string,toId:string,zones:any[]):[number,number][]{const fz=zones.find(z=>z.id===fromId),tz=zones.find(z=>z.id===toId);if(!fz||!tz)return[[0,0]];if(fromId===toId)return[polyCenter2(fz.polygon)];const adj:Record<string,[string,[number,number]][]>={};for(const z of zones)adj[z.id]=[];for(let i=0;i<zones.length;i++)for(let j=i+1;j<zones.length;j++){const mid=corridorMid2(zones[i],zones[j]);if(mid){adj[zones[i].id].push([zones[j].id,mid]);adj[zones[j].id].push([zones[i].id,mid]);}}const prev:Record<string,{from:string,wp:[number,number]}|null>={[fromId]:null};const queue=[fromId];while(queue.length){const cur=queue.shift()!;if(cur===toId)break;for(const[nxt,wp]of(adj[cur]||[])){if(!(nxt in prev)){prev[nxt]={from:cur,wp};queue.push(nxt);}}}if(!(toId in prev))return[polyCenter2(fz.polygon),polyCenter2(tz.polygon)];const pts:[number,number][]=[];let cur=toId;while(prev[cur]){pts.unshift(prev[cur]!.wp);cur=prev[cur]!.from;}return[polyCenter2(fz.polygon),...pts,polyCenter2(tz.polygon)];}
 function getRobotPos(robot: any, zones: any[]): [number,number] {
   const wp:[number,number][]=robot.waypoints;
@@ -68,8 +68,28 @@ function getRobotPos(robot: any, zones: any[]): [number,number] {
 function advanceRobots(robots: any[], zones: any[], r: ()=>number): any[] {
   return robots.map(rb=>{
     const np=(rb.segProg||0)+rb.speed;
-    if(np>=1){const newIdx=(rb.wpIdx||0)+1;if(newIdx>=(rb.waypoints?.length||1)-1){const nz=zones[Math.floor(r()*zones.length)];return{...rb,fromZone:rb.toZone,toZone:nz.id,waypoints:robotWaypoints(rb.toZone,nz.id,zones),wpIdx:0,segProg:0,battery:Math.max(5,rb.battery-0.05),status:rb.battery<10?'charging':'moving',task:ROBOT_TASKS[rb.type](zones.find((z:any)=>z.id===rb.toZone)?.name||'',nz.name)};}return{...rb,wpIdx:newIdx,segProg:0};}
-    return{...rb,segProg:np};
+    // Telemetry fields — computed each tick
+    const speedMs = rb.type==='AGV'?1.2+rb.speed*250:rb.type==='INSPECT'?0.6+rb.speed*120:0.3+rb.speed*80;
+    const distPerTick = speedMs * 0.1; // 100ms tick
+    const distTravelled = (rb.distanceTravelled||0) + distPerTick;
+    const uptimeHrs = (rb.uptimeHrs||8) + 0.1/3600;
+    const maintDueHrs = Math.max(0, (rb.maintDueHrs||(rb.id.charCodeAt(rb.id.length-1)*1.7+15)) - 0.1/3600);
+    const vibration = rb.type==='AGV'?1.0+(np%1)*1.2:rb.type==='CLEAN'?1.8+(np%1)*2.0:0;
+    const onboardTemp = 20.5 + (rb.segProg||0)*0.6 + (rb.type==='AGV'?1.2:0);
+    const cargo = rb.type==='AGV'?(rb.cargo||`Batch B-${2400+Math.round(rb.speed*3333)} \u00b7 ${Math.round(60+rb.speed*800)} kg`):null;
+
+    if(np>=1){
+      const newIdx=(rb.wpIdx||0)+1;
+      if(newIdx>=(rb.waypoints?.length||1)-1){
+        const nz=zones[Math.floor(r()*zones.length)];
+        return{...rb,fromZone:rb.toZone,toZone:nz.id,waypoints:robotWaypoints(rb.toZone,nz.id,zones),wpIdx:0,segProg:0,
+          battery:Math.max(5,rb.battery-0.05),status:rb.battery<10?'charging':'moving',
+          task:ROBOT_TASKS[rb.type](zones.find((z:any)=>z.id===rb.toZone)?.name||'',nz.name),
+          speedMs,distanceTravelled:distTravelled,uptimeHrs,maintDueHrs,vibration,onboardTemp,cargo};
+      }
+      return{...rb,wpIdx:newIdx,segProg:0,speedMs,distanceTravelled:distTravelled,uptimeHrs,maintDueHrs,vibration,onboardTemp,cargo};
+    }
+    return{...rb,segProg:np,speedMs,distanceTravelled:distTravelled,uptimeHrs,maintDueHrs,vibration,onboardTemp,cargo};
   });
 }
 
@@ -242,7 +262,9 @@ export default function PlantIntelligence() {
   const [selectedBuilding, setSelectedBuilding] = useState<any|null>(null);
   const [selectedFloor, setSelectedFloor] = useState(0);
   const [selectedRoom, setSelectedRoom] = useState<any|null>(null);
-  const [sidebarTab, setSidebarTab] = useState<'overview'|'sensors'|'timeline'>('overview');
+  const [sidebarTab, setSidebarTab] = useState<'overview'|'sensors'|'timeline'|'robots'>('overview');
+  const [followRobotId, setFollowRobotId] = useState<string|null>(null);
+  const [sidebarRobotId, setSidebarRobotId] = useState<string|null>(null);
   const [loading, setLoading] = useState(false);
   const [viewState, setViewState] = useState<any>(WORLD_VIEW);
 
@@ -289,6 +311,7 @@ export default function PlantIntelligence() {
   }, []);
 
   const goBack = useCallback(() => {
+    setFollowRobotId(null);
     if (navLevel===4) { setSelectedRoom(null); setNavLevel(3); setViewState((v:any)=>({...v,pitch:55,zoom:18.5,transitionDuration:600})); }
     else if (navLevel===3) { setSelectedBuilding(null); setNavLevel(2); if(selectedPlant) setViewState({longitude:selectedPlant.LONGITUDE,latitude:selectedPlant.LATITUDE,zoom:15,pitch:45,bearing:-15,transitionDuration:800}); }
     else if (navLevel===2) { setSelectedPlant(null); setCampus([]); setNavLevel(1); setViewState({...WORLD_VIEW,transitionDuration:800}); }
@@ -313,6 +336,15 @@ export default function PlantIntelligence() {
     const id=setInterval(()=>{ robotsRef.current=advanceRobots(robotsRef.current,currentFloorZones,robotRngRef.current); setRobotPositions([...robotsRef.current]); },100);
     return ()=>clearInterval(id);
   },[navLevel,currentFloorZones]);
+
+  useEffect(()=>{
+    if (!followRobotId || navLevel < 3) return;
+    const rb = robotPositions.find((r:any) => r.id === followRobotId);
+    if (!rb) return;
+    const [lon, lat] = getRobotPos(rb, currentFloorZones);
+    if (lon === 0 && lat === 0) return;
+    setViewState((vs:any) => ({ ...vs, longitude: lon, latitude: lat, zoom: Math.max(vs.zoom, 19.5), transitionDuration: 80 }));
+  }, [robotPositions, followRobotId, navLevel, currentFloorZones]);
 
   const layers: any[] = useMemo(() => [
     cartoBasemap(),
@@ -380,12 +412,14 @@ export default function PlantIntelligence() {
     ...(navLevel>=3&&robotPositions.length>0?[new ScatterplotLayer({
       id:'pi-robots', data:navLevel===4&&selectedRoom?robotPositions.filter((r:any)=>r.fromZone===selectedRoom.id||r.toZone===selectedRoom.id):robotPositions,
       getPosition:(r:any)=>{ const [ln,la]=getRobotPos(r,currentFloorZones); return [ln,la,r.elev]; },
-      getFillColor:(r:any)=>r.status==='charging'?[100,100,100,180]:r.status==='error'?[239,68,68,240]:r.color,
-      getRadius:(r:any)=>r.type==='AGV'?2:1.5, radiusMinPixels:6, radiusMaxPixels:12,
-      getLineColor:[255,255,255,200] as any, lineWidthMinPixels:2, stroked:true, pickable:true,
+      getFillColor:(r:any)=>r.id===followRobotId?[255,255,255,240]:r.status==='charging'?[100,100,100,180]:r.status==='error'?[239,68,68,240]:r.color,
+      getRadius:(r:any)=>r.id===followRobotId?2.5:r.type==='AGV'?2:1.5, radiusMinPixels:6, radiusMaxPixels:14,
+      getLineColor:(r:any)=>r.id===followRobotId?[255,200,0,255]:[255,255,255,200],
+      lineWidthMinPixels:(r:any)=>r.id===followRobotId?3:2, stroked:true, pickable:true,
+      onClick:({object}:any)=>{ if(object?.id){ setFollowRobotId(id=>id===object.id?null:object.id); setSidebarRobotId(object.id); setSidebarTab('robots'); } },
     } as any)]:[]),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom, robotPositions]);
+  ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom, robotPositions, followRobotId]);
 
   function Chip({ label, count, color }: { label: string; count: number; color: string }) {
     if (!count) return null;
@@ -439,6 +473,16 @@ export default function PlantIntelligence() {
           </div>
         )}
         {navLevel>1&&<button onClick={goBack} style={{ position:'absolute', top:12, left:12, background:'rgba(0,0,0,0.78)', color:'#fff', border:'1px solid rgba(255,255,255,0.2)', borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:13, backdropFilter:'blur(8px)' }}>← {navLevel===4?'Room List':navLevel===3?'Campus':navLevel===2?'All Plants':''}</button>}
+
+        {/* Follow mode banner */}
+        {followRobotId && navLevel>=3 && (
+          <div style={{ position:'absolute', top:12, left:'50%', transform:'translateX(-50%)', background:'rgba(0,0,0,0.88)', border:'1px solid rgba(255,200,0,0.5)', color:'#fcc800', padding:'5px 14px', borderRadius:20, fontSize:12, fontWeight:600, backdropFilter:'blur(8px)', display:'flex', alignItems:'center', gap:10, whiteSpace:'nowrap' }}>
+            <span>📍 Following {followRobotId}</span>
+            <button onClick={()=>setFollowRobotId(null)} style={{ background:'rgba(255,200,0,0.2)', border:'1px solid rgba(255,200,0,0.4)', color:'#fcc800', borderRadius:10, padding:'2px 8px', fontSize:11, cursor:'pointer' }}>Unlock</button>
+          </div>
+        )}
+
+        {/* Robot legend */}
         {navLevel===3&&selectedBuilding&&(
           <div style={{ position:'absolute', top:12, right:12, background:'rgba(0,0,0,0.78)', borderRadius:8, padding:'8px 10px', backdropFilter:'blur(8px)' }}>
             <div style={{ fontSize:9, color:'#888', marginBottom:4, textTransform:'uppercase', letterSpacing:0.5 }}>Floor</div>
@@ -513,10 +557,10 @@ export default function PlantIntelligence() {
               <div style={{ fontSize:11, color:'#888', marginBottom:10 }}>{selectedBuilding.floors?.[selectedFloor]?.label} · {Math.round(selectedBuilding.areaSqm).toLocaleString()} m²</div>
               {criticalSensors.length>0&&<div style={{ color:'#ef4444', fontSize:12, marginBottom:4 }}>🔴 {criticalSensors.length} critical sensor{criticalSensors.length>1?'s':''}</div>}
               {warnSensors.length>0&&<div style={{ color:'#f97316', fontSize:12 }}>🟠 {warnSensors.length} warning{warnSensors.length>1?'s':''}</div>}
-              <div style={{ display:'flex', gap:5, marginTop:10 }}>
-                {(['overview','sensors','timeline'] as const).map(t=>(
+              <div style={{ display:'flex', gap:5, marginTop:10, flexWrap:'wrap' }}>
+                {(['overview','sensors','timeline','robots'] as const).map(t=>(
                   <button key={t} onClick={()=>setSidebarTab(t)} style={{ padding:'4px 10px', borderRadius:12, border:'none', background:sidebarTab===t?'#29b5e8':'rgba(255,255,255,0.09)', color:sidebarTab===t?'#fff':'#aaa', cursor:'pointer', fontSize:11, fontWeight:sidebarTab===t?600:400 }}>
-                    {t.charAt(0).toUpperCase()+t.slice(1)}
+                    {t==='robots'?`🤖 Robots (${robotPositions.length})`:t.charAt(0).toUpperCase()+t.slice(1)}
                   </button>
                 ))}
               </div>
@@ -547,6 +591,48 @@ export default function PlantIntelligence() {
                       <div style={{ fontWeight:700, fontSize:13, color:alertColor(s.status) }}>{s.value}{s.unit}</div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {sidebarTab==='robots'&&(
+                <div style={{ padding:'4px 0' }}>
+                  {robotPositions.map((rb:any)=>{
+                    const isSelected = sidebarRobotId===rb.id;
+                    const isFollowing = followRobotId===rb.id;
+                    const bc = rb.battery<20?'#ef4444':rb.battery<50?'#f97316':'#22c55e';
+                    const rt = ROBOT_TYPES.find(x=>x.type===rb.type);
+                    return (
+                      <div key={rb.id} style={{ padding:'10px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', cursor:'pointer', background:isSelected?'rgba(41,181,232,0.08)':'transparent' }}
+                        onClick={()=>{ setSidebarRobotId(rb.id); if(!isFollowing){setFollowRobotId(rb.id);} else {setFollowRobotId(null);} }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                          <div style={{ width:10,height:10,borderRadius:'50%',background:`rgb(${rt?.color[0]},${rt?.color[1]},${rt?.color[2]})`,flexShrink:0 }} />
+                          <div style={{ flex:1 }}>
+                            <span style={{ fontWeight:700, fontSize:12 }}>{rb.id}</span>
+                            <span style={{ fontSize:10, color:'#888', marginLeft:6 }}>{rt?.label}</span>
+                          </div>
+                          <div style={{ fontSize:9, padding:'2px 6px', borderRadius:8, background:isFollowing?'rgba(255,200,0,0.2)':'rgba(41,181,232,0.15)', color:isFollowing?'#fcc800':'#29b5e8', fontWeight:600 }}>{isFollowing?'📍 Following':'Follow'}</div>
+                        </div>
+                        <div style={{ fontSize:10, color:'#999', marginBottom:5, paddingLeft:18 }}>{rb.task}</div>
+                        <div style={{ paddingLeft:18 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:3 }}>
+                            <span style={{ fontSize:9, color:'#666', width:52 }}>Battery</span>
+                            <div style={{ flex:1, height:4, background:'rgba(255,255,255,0.1)', borderRadius:2 }}><div style={{ width:`${Math.round(rb.battery)}%`,height:'100%',borderRadius:2,background:bc,transition:'width 0.3s' }}/></div>
+                            <span style={{ fontSize:10, color:bc, fontWeight:600, minWidth:28 }}>{Math.round(rb.battery)}%</span>
+                          </div>
+                          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'2px 8px' }}>
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Speed </span><span style={{ color:'#e2e8f0' }}>{rb.speedMs?.toFixed(1)||'–'} m/s</span></div>
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Uptime </span><span style={{ color:'#e2e8f0' }}>{rb.uptimeHrs?.toFixed(1)||'–'} h</span></div>
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Vibr </span><span style={{ color:rb.vibration>4?'#f97316':'#e2e8f0' }}>{rb.vibration?.toFixed(1)||'–'} mm/s</span></div>
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Maint </span><span style={{ color:rb.maintDueHrs<2?'#ef4444':rb.maintDueHrs<8?'#f97316':'#22c55e' }}>in {rb.maintDueHrs?.toFixed(1)||'–'} h</span></div>
+                            {rb.cargo&&<div style={{ fontSize:9, gridColumn:'span 2' }}><span style={{ color:'#666' }}>Cargo </span><span style={{ color:'#e2e8f0' }}>{rb.cargo}</span></div>}
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Temp </span><span style={{ color:'#e2e8f0' }}>{rb.onboardTemp?.toFixed(1)||'–'}°C</span></div>
+                            <div style={{ fontSize:9 }}><span style={{ color:'#666' }}>Dist </span><span style={{ color:'#e2e8f0' }}>{rb.distanceTravelled?.toFixed(0)||'0'} m</span></div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {robotPositions.length===0&&<div style={{ padding:'20px', textAlign:'center', color:'#555', fontSize:11 }}>No robots on this floor</div>}
                 </div>
               )}
 

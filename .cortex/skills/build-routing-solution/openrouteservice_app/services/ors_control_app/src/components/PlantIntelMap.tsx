@@ -415,11 +415,14 @@ function zbb(zone: any) {
 
 // Midpoint of the corridor gap between two adjacent zones (null if not adjacent)
 function corridorMid(a:any, b:any): [number,number]|null {
-  const ba=zbb(a), bb=zbb(b), EPS=0.0001;
-  if (Math.abs(ba.x1-bb.x0)<EPS) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(ba.x1+bb.x0)/2,(oy0+oy1)/2]; }
-  if (Math.abs(bb.x1-ba.x0)<EPS) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(bb.x1+ba.x0)/2,(oy0+oy1)/2]; }
-  if (Math.abs(ba.y1-bb.y0)<EPS) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(ba.y1+bb.y0)/2]; }
-  if (Math.abs(bb.y1-ba.y0)<EPS) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(bb.y1+ba.y0)/2]; }
+  const ba=zbb(a), bb=zbb(b);
+  // Relative EPS: 8% of the smaller zone's dimension — scales with building size at all latitudes
+  const EPS_X = Math.min(ba.x1-ba.x0, bb.x1-bb.x0) * 0.08;
+  const EPS_Y = Math.min(ba.y1-ba.y0, bb.y1-bb.y0) * 0.08;
+  if (Math.abs(ba.x1-bb.x0)<EPS_X) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(ba.x1+bb.x0)/2,(oy0+oy1)/2]; }
+  if (Math.abs(bb.x1-ba.x0)<EPS_X) { const oy0=Math.max(ba.y0,bb.y0),oy1=Math.min(ba.y1,bb.y1); if(oy1>oy0) return [(bb.x1+ba.x0)/2,(oy0+oy1)/2]; }
+  if (Math.abs(ba.y1-bb.y0)<EPS_Y) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(ba.y1+bb.y0)/2]; }
+  if (Math.abs(bb.y1-ba.y0)<EPS_Y) { const ox0=Math.max(ba.x0,bb.x0),ox1=Math.min(ba.x1,bb.x1); if(ox1>ox0) return [(ox0+ox1)/2,(bb.y1+ba.y0)/2]; }
   return null;
 }
 
