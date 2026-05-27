@@ -58,7 +58,10 @@ function getRobotPos(robot: any, zones: any[]): [number,number] {
   const fz=zones.find((z:any)=>z.id===robot.fromZone), tz=zones.find((z:any)=>z.id===robot.toZone);
   if(!fz||!tz) return [0,0];
   const [fx,fy]=polyCenter2(fz.polygon), [tx,ty]=polyCenter2(tz.polygon);
-  return [lerp2(fx,tx,robot.progress),lerp2(fy,ty,robot.progress)];
+  const t=robot.progress;
+  const horizFirst=robot.id.charCodeAt(robot.id.length-1)%2===0;
+  if(t<0.5){ const p=t/0.5; return horizFirst?[lerp2(fx,tx,p),fy]:[fx,lerp2(fy,ty,p)]; }
+  else { const p=(t-0.5)/0.5; return horizFirst?[tx,lerp2(fy,ty,p)]:[lerp2(fx,tx,p),ty]; }
 }
 function advanceRobots(robots: any[], zones: any[], r: ()=>number): any[] {
   return robots.map(rb=>{

@@ -412,7 +412,17 @@ function getRobotPos(robot: any, zones: any[]): [number, number] {
   if (!fromZ || !toZ) return [0, 0];
   const [fx, fy] = polyCenter(fromZ.polygon);
   const [tx, ty] = polyCenter(toZ.polygon);
-  return [lerp2(fx, tx, robot.progress), lerp2(fy, ty, robot.progress)];
+  const t = robot.progress;
+  // L-shaped corridor routing: first half moves along one axis, second half along the other.
+  // Alternate which axis goes first based on robot id to vary the corner point.
+  const horizFirst = robot.id.charCodeAt(robot.id.length - 1) % 2 === 0;
+  if (t < 0.5) {
+    const p = t / 0.5;
+    return horizFirst ? [lerp2(fx, tx, p), fy] : [fx, lerp2(fy, ty, p)];
+  } else {
+    const p = (t - 0.5) / 0.5;
+    return horizFirst ? [tx, lerp2(fy, ty, p)] : [lerp2(fx, tx, p), ty];
+  }
 }
 
 function advanceRobots(robots: any[], zones: any[], r: () => number): any[] {
