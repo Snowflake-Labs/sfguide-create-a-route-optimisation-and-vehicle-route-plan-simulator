@@ -28,6 +28,157 @@ function polyCenter(polygon: [number,number][]): [number,number] {
 }
 function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
 
+// ─── Room contents visual generator ──────────────────────────────────────────
+// Produces rack rows, equipment footprints and lab benches for the Level-4 view.
+function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any): any[] {
+  const items = zone.contents?.items || [];
+  if (!items.length) return [];
+  const poly = zone.polygon;
+  const minLon = Math.min(...poly.map((p: any) => p[0])), maxLon = Math.max(...poly.map((p: any) => p[0]));
+  const minLat = Math.min(...poly.map((p: any) => p[1])), maxLat = Math.max(...poly.map((p: any) => p[1]));
+  const type = zone.type || 'warehouse';
+  const L = (x: number) => lerp2(minLon, maxLon, x);
+  const La = (y: number) => lerp2(minLat, maxLat, y);
+  const R = (x0: number, x1: number, y0: number, y1: number): [number, number][] => [[L(x0),La(y0)],[L(x1),La(y0)],[L(x1),La(y1)],[L(x0),La(y1)],[L(x0),La(y0)]];
+
+  const isRacking = ['warehouse','chill','deep_freeze','freezer','storage','quarantine','dispensary'].includes(type);
+  const isProduction = ['reactor','process','aseptic','packaging','granulation'].includes(type);
+  const isLab = ['lab','analytical','precision','qc'].includes(type);
+  const isUtility = ['utility','hvac','electrical','control'].includes(type);
+  const isDock = ['dock'].includes(type);
+
+  const polys: any[] = [];
+  const labels: any[] = [];
+  function p(polygon: [number,number][], elevation: number, color: [number,number,number,number], pickable = false, data = {}) {
+    polys.push({ polygon, elevation, color, ...data });
+  }
+  function lbl(lon: number, lat: number, text: string, size = 8, elevation = 0.5) {
+    labels.push({ position: [lon, lat, elevation], text });
+  }
+
+  // ── Aisle floor ──────────────────────────────────────────────────
+  if (isRacking || isDock) {
+    // dark floor tile covering whole zone
+    p(R(0,1,0,1), 0.1, [30,30,30,120]);
+    // bright yellow aisle strips (2 aisles)
+    p(R(0,1,0.28,0.32), 0.15, [200,180,0,100]);
+    p(R(0,1,0.60,0.64), 0.15, [200,180,0,100]);
+  }
+
+  // ── Rack rows (for storage zones) ───────────────────────────────
+  if (isRacking) {
+    const RACK_ROWS = [[0.02,0.98,0.05,0.27],[0.02,0.98,0.33,0.58],[0.02,0.98,0.65,0.90]];
+    const slotsPerRow = Math.ceil(items.length / 3) || 4;
+    items.forEach((item: any, idx: number) => {
+      const rowIdx = Math.floor(idx / slotsPerRow);
+      const colIdx = idx % slotsPerRow;
+      if (rowIdx >= 3) return;
+      const [rx0, rx1, ry0, ry1] = RACK_ROWS[rowIdx];
+      const slotW = (rx1 - rx0) / slotsPerRow;
+      const gx0 = rx0 + colIdx * slotW + 0.004;
+      const gx1 = rx0 + (colIdx + 1) * slotW - 0.004;
+      const status = item.expiryStatus || item.status || 'ok';
+      const c: [number,number,number,number] = status === 'critical' ? [239,68,68,220] : status === 'warning' ? [249,115,22,200] : [41,181,232,180];
+      const elev = status === 'critical' ? 4.5 : status === 'warning' ? 3 : 2;
+      // rack slot (tall = pallet stack)
+      p(R(gx0,gx1,ry0+0.02,ry1-0.02), elev, c, true, item);
+      // rack upright bars
+      p(R(gx0,gx0+0.003,ry0,ry1), elev+0.5, [60,60,60,200]);
+      p(R(gx1-0.003,gx1,ry0,ry1), elev+0.5, [60,60,60,200]);
+      // label
+      const cx = L((gx0+gx1)/2), cy = La((ry0+ry1)/2);
+      lbl(cx, cy, (item.name||item.id||'').slice(0,10), 8, elev+0.6);
+    });
+    // loading/staging area at front
+    p(R(0.02,0.98,0.92,0.98), 1, [70,90,70,160]);
+    lbl(L(0.5), La(0.95), 'STAGING', 9, 1.5);
+    return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
+  }
+
+  // ── Production equipment ─────────────────────────────────────────
+  if (isProduction) {
+    p(R(0,1,0,1), 0.1, [25,25,35,150]); // floor
+    const equipLayout = [
+      [0.05,0.45,0.08,0.58],
+      [0.55,0.95,0.08,0.48],
+      [0.55,0.95,0.55,0.92],
+      [0.05,0.45,0.65,0.92],
+    ];
+    items.slice(0, 4).forEach((item: any, idx: number) => {
+      const [ex0,ex1,ey0,ey1] = equipLayout[idx] || equipLayout[0];
+      const s = item.status==='Fault'?'critical':item.status==='Maintenance'?'warning':'ok';
+      const c: [number,number,number,number] = s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[107,114,128,200];
+      const elev = idx===0?8:idx===1?6:idx===2?5:4;
+      p(R(ex0+0.02,ex1-0.02,ey0+0.02,ey1-0.02), elev, c, true, item);
+      // access zone around equipment (lighter)
+      p(R(ex0,ex1,ey0,ey1), 0.2, [255,255,255,20]);
+      // equipment outline (darker shell)
+      p(R(ex0+0.02,ex1-0.02,ey0+0.02,ey0+0.025), elev+0.3, [40,40,40,200]);
+      p(R(ex0+0.02,ex1-0.02,ey1-0.025,ey1-0.02), elev+0.3, [40,40,40,200]);
+      const cx=L((ex0+ex1)/2), cy=La((ey0+ey1)/2);
+      lbl(cx, cy, item.name||item.id, 9, elev+1);
+      if (item.status) lbl(cx, cy, item.status, 7, elev+0.4);
+    });
+    // central walkway
+    p(R(0.46,0.54,0.05,0.95), 0.15, [200,180,0,80]);
+    return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
+  }
+
+  // ── Lab benches ───────────────────────────────────────────────────
+  if (isLab || isUtility) {
+    p(R(0,1,0,1), 0.1, [20,30,40,160]); // floor
+    // perimeter benches
+    p(R(0.02,0.98,0.03,0.14), 1.5, [59,130,246,180]); // top bench
+    p(R(0.02,0.98,0.86,0.97), 1.5, [59,130,246,180]); // bottom bench
+    p(R(0.02,0.14,0.15,0.84), 1.5, [59,130,246,180]); // left bench
+    p(R(0.86,0.98,0.15,0.84), 1.5, [59,130,246,180]); // right bench
+    // central island
+    p(R(0.30,0.70,0.30,0.70), 1.2, [41,181,232,160]);
+    // instruments on benches
+    items.slice(0, 4).forEach((item: any, idx: number) => {
+      const positions = [[0.15,0.35,0.04,0.13],[0.40,0.60,0.04,0.13],[0.15,0.35,0.87,0.96],[0.65,0.80,0.04,0.13]];
+      const [ix0,ix1,iy0,iy1] = positions[idx] || positions[0];
+      const s = item.status==='Maintenance'?'warning':'ok';
+      const c: [number,number,number,number] = [234,179,8,200];
+      p(R(ix0,ix1,iy0,iy1), 2.5, c, true, item);
+      lbl(L((ix0+ix1)/2), La((iy0+iy1)/2), (item.name||item.id||'').slice(0,10), 7, 3);
+    });
+    lbl(L(0.5), La(0.5), 'WORKSPACE', 9, 1.5);
+    return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
+  }
+
+  // ── Fallback: improved grid ───────────────────────────────────────
+  p(R(0,1,0,1), 0.1, [30,30,30,120]);
+  const gc = Math.ceil(Math.sqrt(items.length)), gr = Math.ceil(items.length/gc);
+  items.forEach((item: any, i: number) => {
+    const row=Math.floor(i/gc), col=i%gc, pad=0.06;
+    const x0=col/gc+pad/gc, x1=(col+1)/gc-pad/gc, y0=row/gr+pad/gr, y1=(row+1)/gr-pad/gr;
+    const s = item.expiryStatus||item.status||'ok';
+    const c: [number,number,number,number] = s==='critical'?[239,68,68,200]:s==='warning'?[249,115,22,180]:[41,181,232,160];
+    p(R(x0,x1,y0,y1), 2, c, true, item);
+    lbl(L((x0+x1)/2), La((y0+y1)/2), (item.name||item.id||'').slice(0,10), 8, 2.5);
+  });
+  return buildLayers(polys, labels, PolygonLayerClass, TextLayerClass);
+}
+
+function buildLayers(polys: any[], labels: any[], PolygonLayerClass: any, TextLayerClass: any): any[] {
+  return [
+    new PolygonLayerClass({ id:'pi-contents', data:polys,
+      getPolygon:(d:any)=>d.polygon, getElevation:(d:any)=>d.elevation,
+      getFillColor:(d:any)=>d.color,
+      getLineColor:[255,255,255,60] as any, lineWidthMinPixels:1,
+      extruded:true, wireframe:false, filled:true, stroked:true, pickable:true,
+    } as any),
+    new TextLayerClass({ id:'pi-content-labels', data:labels,
+      getPosition:(d:any)=>d.position,
+      getText:(d:any)=>d.text,
+      getSize:(d:any)=>d.size||8, getColor:[255,255,255,230] as any,
+      getTextAnchor:'middle' as any, getAlignmentBaseline:'center' as any,
+      fontFamily:'monospace', billboard:true,
+    } as any),
+  ];
+}
+
 interface PlantStatus { PLANT_ID:number; PLANT_NAME:string; PLANT_CODE:string; CITY:string; COUNTRY:string; LATITUDE:number; LONGITUDE:number; MAX_SEVERITY:number; CAPACITY_BATCHES_MONTH:number; CRITICAL_BATCHES:number; TEMP_EXCURSIONS:number; CRITICAL_STOCK_ITEMS:number; DELAYED_SHIPMENTS:number; BATCHES_IN_PROGRESS:number; }
 
 type NavLevel = 1 | 2 | 3 | 4;
@@ -78,7 +229,7 @@ export default function PlantIntelligence() {
   const goToRoom = useCallback((zone: any) => {
     if (!zone.polygon?.length) return;
     const [lon, lat] = polyCenter(zone.polygon);
-    setViewState({ longitude:lon, latitude:lat, zoom:20, pitch:0, bearing:0, transitionDuration:800 });
+    setViewState({ longitude:lon, latitude:lat, zoom:20, pitch:45, bearing:-10, transitionDuration:800 });
     setSelectedRoom(zone); setNavLevel(4);
   }, []);
 
@@ -148,36 +299,7 @@ export default function PlantIntelligence() {
         getLineColor:[255,255,255,180] as any, lineWidthMinPixels:1.5, stroked:true, pickable:true,
       } as any),
     ]:[]),
-    ...(navLevel===4&&selectedRoom?(() => {
-      const items = selectedRoom.contents?.items||[];
-      if(!items.length) return [];
-      const poly = selectedRoom.polygon;
-      const minLon=Math.min(...poly.map((p:any)=>p[0])),maxLon=Math.max(...poly.map((p:any)=>p[0]));
-      const minLat=Math.min(...poly.map((p:any)=>p[1])),maxLat=Math.max(...poly.map((p:any)=>p[1]));
-      const cols=Math.ceil(Math.sqrt(items.length));
-      const rows=Math.ceil(items.length/cols);
-      const itemPolys = items.map((item:any,i:number)=>{
-        const row=Math.floor(i/cols),col=i%cols,pad=0.08;
-        const x0=lerp2(minLon,maxLon,(col+pad)/cols),x1=lerp2(minLon,maxLon,(col+1-pad)/cols);
-        const y0=lerp2(minLat,maxLat,(row+pad)/rows),y1=lerp2(minLat,maxLat,(row+1-pad)/rows);
-        return {...item,polygon:[[x0,y0],[x1,y0],[x1,y1],[x0,y1],[x0,y0]] as [number,number][],alertStatus:item.expiryStatus||item.status||'ok'};
-      });
-      return [
-        new PolygonLayer({ id:'pi-contents', data:itemPolys,
-          getPolygon:(d:any)=>d.polygon, getElevation:()=>0.5,
-          getFillColor:(d:any)=>alertRgba(d.alertStatus),
-          getLineColor:[255,255,255,80] as any, lineWidthMinPixels:1,
-          extruded:false, filled:true, stroked:true, pickable:true,
-        } as any),
-        new TextLayer({ id:'pi-content-labels', data:itemPolys,
-          getPosition:(d:any)=>polyCenter(d.polygon),
-          getText:(d:any)=>(d.name||d.id||'').slice(0,12),
-          getSize:8, getColor:[255,255,255,220] as any,
-          getTextAnchor:'middle' as any, getAlignmentBaseline:'center' as any,
-          fontFamily:'monospace', billboard:true,
-        } as any),
-      ];
-    })():[]),
+    ...(navLevel===4&&selectedRoom?(() => buildRoomVisuals(selectedRoom, PolygonLayer, TextLayer))():[]),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom]);
 
