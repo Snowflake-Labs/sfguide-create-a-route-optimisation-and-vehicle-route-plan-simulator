@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, TextLayer, PolygonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
@@ -28,7 +28,47 @@ function polyCenter(polygon: [number,number][]): [number,number] {
 }
 function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
 
-// ─── Room contents visual generator ──────────────────────────────────────────
+// ── Robot simulation helpers ──────────────────────────────────────────────────
+const ROBOT_TYPES = [
+  { type:'AGV',     label:'Transport AGV',    color:[59,130,246,240] as [number,number,number,number], elev:0.8, speed:0.006, count:2 },
+  { type:'INSPECT', label:'Inspection Robot', color:[250,204,21,240] as [number,number,number,number], elev:2.5, speed:0.004, count:1 },
+  { type:'CLEAN',   label:'Cleaning Robot',   color:[156,163,175,220] as [number,number,number,number], elev:0.4, speed:0.003, count:1 },
+];
+const ROBOT_TASKS: Record<string, (f:string,t:string)=>string> = {
+  AGV:     (_f,t) => `Transporting batch to ${t}`,
+  INSPECT: (f,_t) => `Sensor patrol — ${f}`,
+  CLEAN:   (f,_t) => `Sanitising ${f}`,
+};
+function rng2(seed: number) { let s=seed|0; return ()=>{ s=(s*1664525+1013904223)|0; return (s>>>0)/0xffffffff; }; }
+function initRobots(plantId: number, buildingKey: string, floorIdx: number, zones: any[]): any[] {
+  if(!zones.length) return [];
+  const r=rng2(plantId*37+(buildingKey.charCodeAt(0)||1)*13+floorIdx*7+999);
+  const robots: any[]=[];
+  ROBOT_TYPES.forEach(({type,color,elev,speed,count})=>{
+    for(let i=0;i<count;i++){
+      const fi=Math.floor(r()*zones.length), ti=Math.floor(r()*zones.length);
+      const fromZ=zones[fi], toZ=zones[ti];
+      robots.push({id:`${type}-${String.fromCharCode(65+robots.length)}`,type,color,elev,fromZone:fromZ.id,toZone:toZ.id,progress:r(),speed:speed*(0.8+r()*0.4),battery:Math.round(25+r()*75),status:'moving',task:ROBOT_TASKS[type](fromZ.name,toZ.name)});
+    }
+  });
+  return robots;
+}
+function polyCenter2(polygon: [number,number][]): [number,number] { const lon=polygon.reduce((s,p)=>s+p[0],0)/polygon.length; const lat=polygon.reduce((s,p)=>s+p[1],0)/polygon.length; return [lon,lat]; }
+function getRobotPos(robot: any, zones: any[]): [number,number] {
+  const fz=zones.find((z:any)=>z.id===robot.fromZone), tz=zones.find((z:any)=>z.id===robot.toZone);
+  if(!fz||!tz) return [0,0];
+  const [fx,fy]=polyCenter2(fz.polygon), [tx,ty]=polyCenter2(tz.polygon);
+  return [lerp2(fx,tx,robot.progress),lerp2(fy,ty,robot.progress)];
+}
+function advanceRobots(robots: any[], zones: any[], r: ()=>number): any[] {
+  return robots.map(rb=>{
+    const np=rb.progress+rb.speed;
+    if(np>=1){ const nz=zones[Math.floor(r()*zones.length)]; return {...rb,fromZone:rb.toZone,toZone:nz.id,progress:0,battery:Math.max(5,rb.battery-0.05),status:rb.battery<10?'charging':'moving',task:ROBOT_TASKS[rb.type](zones.find((z:any)=>z.id===rb.toZone)?.name||'',nz.name)}; }
+    return {...rb,progress:np};
+  });
+}
+
+
 // Produces rack rows, equipment footprints and lab benches for the Level-4 view.
 function buildRoomVisuals(zone: any, PolygonLayerClass: any, TextLayerClass: any): any[] {
   const items = zone.contents?.items || [];
@@ -201,6 +241,10 @@ export default function PlantIntelligence() {
   const [loading, setLoading] = useState(false);
   const [viewState, setViewState] = useState<any>(WORLD_VIEW);
 
+  const robotsRef = useRef<any[]>([]);
+  const robotRngRef = useRef<()=>number>(()=>0);
+  const [robotPositions, setRobotPositions] = useState<any[]>([]);
+
   useEffect(() => {
     fetch('/api/plant-intel/plants')
       .then(r=>r.json())
@@ -249,6 +293,21 @@ export default function PlantIntelligence() {
     if (!selectedBuilding) return [];
     return selectedBuilding.floors?.[selectedFloor]?.zones || [];
   }, [selectedBuilding, selectedFloor]);
+
+  useEffect(()=>{
+    if(navLevel>=3&&currentFloorZones.length>0&&selectedPlant&&selectedBuilding){
+      const seed=selectedPlant.PLANT_ID*37+(selectedBuilding.id?.charCodeAt(0)||1)*13+selectedFloor*7;
+      robotRngRef.current=rng2(seed+1000);
+      robotsRef.current=initRobots(selectedPlant.PLANT_ID,selectedBuilding.id||'',selectedFloor,currentFloorZones);
+      setRobotPositions([...robotsRef.current]);
+    } else { robotsRef.current=[]; setRobotPositions([]); }
+  },[navLevel,selectedFloor,selectedBuilding,selectedPlant,currentFloorZones]);
+
+  useEffect(()=>{
+    if(navLevel<3||currentFloorZones.length===0) return;
+    const id=setInterval(()=>{ robotsRef.current=advanceRobots(robotsRef.current,currentFloorZones,robotRngRef.current); setRobotPositions([...robotsRef.current]); },100);
+    return ()=>clearInterval(id);
+  },[navLevel,currentFloorZones]);
 
   const layers: any[] = useMemo(() => [
     cartoBasemap(),
@@ -313,8 +372,15 @@ export default function PlantIntelligence() {
       } as any),
     ]:[]),
     ...(navLevel===4&&selectedRoom?(() => buildRoomVisuals(selectedRoom, PolygonLayer, TextLayer))():[]),
+    ...(navLevel>=3&&robotPositions.length>0?[new ScatterplotLayer({
+      id:'pi-robots', data:navLevel===4&&selectedRoom?robotPositions.filter((r:any)=>r.fromZone===selectedRoom.id||r.toZone===selectedRoom.id):robotPositions,
+      getPosition:(r:any)=>{ const [ln,la]=getRobotPos(r,currentFloorZones); return [ln,la,r.elev]; },
+      getFillColor:(r:any)=>r.status==='charging'?[100,100,100,180]:r.status==='error'?[239,68,68,240]:r.color,
+      getRadius:(r:any)=>r.type==='AGV'?2:1.5, radiusMinPixels:6, radiusMaxPixels:12,
+      getLineColor:[255,255,255,200] as any, lineWidthMinPixels:2, stroked:true, pickable:true,
+    } as any)]:[]),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom]);
+  ], [plants, navLevel, campus, selectedBuilding, selectedFloor, currentFloorZones, selectedRoom, robotPositions]);
 
   function Chip({ label, count, color }: { label: string; count: number; color: string }) {
     if (!count) return null;
@@ -352,9 +418,21 @@ export default function PlantIntelligence() {
             if(object.expiryDate){const c=alertColor(object.expiryStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b><br/>${object.product||''}<br/>Batch: ${object.batchNo||'-'} · ${object.pallets||''}<br/>Expires: ${object.expiryDate} · <span style="color:${c}">${object.daysLeft}d</span>${object.temperature?`<br/>Temp: ${object.temperature}`:''}</div>`};}
             if(object.id&&!object.alertStatus&&!object.properties){const c=object.status==='Fault'||object.status==='Alarm'?'#ef4444':object.status==='Maintenance'||object.status==='Changeover'||object.status==='On Battery'?'#f97316':'#22c55e';const lines=[object.role&&`Role: ${object.role}`,object.model&&`Model: ${object.model}`,object.status&&`Status: <span style="color:${c}">${object.status}</span>`,object.capacity&&`Capacity: ${object.capacity}`,object.batch&&`Batch: ${object.batch}`,object.temperature&&`Temp: ${object.temperature}`,object.pressure&&`Pressure: ${object.pressure}`,object.airflow&&`Airflow: ${object.airflow}`,object.load&&`Load: ${object.load}`,object.daysLeft!=null&&`${object.daysLeft}d remaining`,].filter(Boolean);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b>${lines.length?`<br/>${lines.join('<br/>')}`:''}${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`};}
             if(object.status!==undefined&&object.zoneId!==undefined){const c=alertColor(object.status);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c};font-weight:700">${object.value}${object.unit}</span>${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`};}
+            if(object.type&&(object.type==='AGV'||object.type==='INSPECT'||object.type==='CLEAN')){const bc=object.battery<20?'#ef4444':object.battery<50?'#f97316':'#22c55e';const rt=ROBOT_TYPES.find((x:any)=>x.type===object.type);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.id}</b> <span style="opacity:0.7">${rt?.label||object.type}</span><br/>${object.task}<br/><span style="color:${bc}">🔋 ${Math.round(object.battery)}%</span>${object.status==='charging'?' <span style="color:#64748b">● Charging</span>':''}</div>`};}
             return null;
           }}
         />
+        {navLevel>=3&&robotPositions.length>0&&(
+          <div style={{ position:'absolute', bottom:10, right:10, background:'rgba(0,0,0,0.75)', backdropFilter:'blur(6px)', borderRadius:8, padding:'7px 11px' }}>
+            <div style={{ fontSize:9, color:'#888', marginBottom:4, textTransform:'uppercase', letterSpacing:0.5 }}>Floor Robots</div>
+            {ROBOT_TYPES.map(rt=>{ const cnt=robotPositions.filter((r:any)=>r.type===rt.type).length; if(!cnt) return null; return (
+              <div key={rt.type} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0' }}>
+                <div style={{ width:8, height:8, borderRadius:'50%', background:`rgb(${rt.color[0]},${rt.color[1]},${rt.color[2]})`, flexShrink:0 }} />
+                <span style={{ fontSize:10, color:'#ddd' }}>{rt.label} ({cnt})</span>
+              </div>
+            ); })}
+          </div>
+        )}
         {navLevel>1&&<button onClick={goBack} style={{ position:'absolute', top:12, left:12, background:'rgba(0,0,0,0.78)', color:'#fff', border:'1px solid rgba(255,255,255,0.2)', borderRadius:8, padding:'6px 14px', cursor:'pointer', fontSize:13, backdropFilter:'blur(8px)' }}>← {navLevel===4?'Room List':navLevel===3?'Campus':navLevel===2?'All Plants':''}</button>}
         {navLevel===3&&selectedBuilding&&(
           <div style={{ position:'absolute', top:12, right:12, background:'rgba(0,0,0,0.78)', borderRadius:8, padding:'8px 10px', backdropFilter:'blur(8px)' }}>
