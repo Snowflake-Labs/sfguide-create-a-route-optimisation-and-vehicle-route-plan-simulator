@@ -430,6 +430,23 @@ BEGIN
     END;
     IF (active_studio > 0) THEN gateway_busy := TRUE; END IF;
 
+    -- A region currently being provisioned needs the gateway alive so the
+    -- control-app's readiness probes (and the /directions canary added by
+    -- #53) can land on a warm proxy when the graph build completes. Without
+    -- this the gateway can auto-suspend during a multi-hour build and the
+    -- post-build probe pays cold-start cost or times out. Per-region ORS
+    -- services + pools are already reconciled per-row below; this pin
+    -- covers the shared gateway. (#44)
+    LET active_provision INTEGER := 0;
+    BEGIN
+        SELECT COUNT(*) INTO :active_provision
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE STATUS IN ('PENDING','RUNNING')
+          AND STAGE IN ('DOWNLOADING','CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH');
+    EXCEPTION WHEN OTHER THEN active_provision := 0;
+    END;
+    IF (active_provision > 0) THEN gateway_busy := TRUE; END IF;
+
     -- Reconcile the gateway service.
     BEGIN
         IF (gateway_busy) THEN
