@@ -99,6 +99,9 @@ instructions:
     UPSTREAM SUPPLY CHAIN (manufacturing plants, suppliers, batches, shipments):
     - Stock levels, supplier reliability, batch status, shipment delays: Use pharma_supply_chain tool
     - Batch yield, QC failures, deviations, on-hold batches: Use pharma_supply_chain tool
+    - When the user clicks a plant building/zone OR provides a plant name with facility context:
+      ALWAYS call TOOL_PLANT_IMPACT immediately with the plant name. Do NOT ask the user to confirm.
+      Then use the result to describe batch risk, inventory gaps, shipment delays, and downstream pharmacy exposure.
 
     DOWNSTREAM SUPPLY INTELLIGENCE (pharmacy distribution):
     - Inventory status, wastage, near-expiry: Use TOOL_INVENTORY_STATUS
@@ -214,6 +217,18 @@ tools:
             type: string
   - tool_spec:
       type: generic
+      name: TOOL_PLANT_IMPACT
+      description: "Complete impact assessment for a manufacturing plant. Returns: active and on-hold production batches with severity, critical/low raw material inventory, delayed or customs-held inbound shipments, and downstream SF pharmacy stock exposure. Call this automatically when the user provides plant facility context (e.g. after clicking a building in the plant map)."
+      input_schema:
+        type: object
+        properties:
+          plant_name:
+            type: string
+            description: "Plant name or code (e.g. 'Hudson Valley Site', 'MVI', 'Northshire')"
+        required:
+          - plant_name
+  - tool_spec:
+      type: generic
       name: TOOL_WEATHER
       description: "Current Met Office weather for the routing region. Returns temperature, wind, precipitation, visibility and routing advisory."
       input_schema:
@@ -290,6 +305,12 @@ tool_resources:
   TOOL_WEATHER:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
+  TOOL_PLANT_IMPACT:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PLANT_IMPACT
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS

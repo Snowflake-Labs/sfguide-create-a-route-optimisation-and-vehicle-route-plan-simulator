@@ -25,6 +25,7 @@ Extends the Routing Agent with pharmaceutical supply chain analytics — linking
 | `TOOL_INVENTORY_STATUS` | Agent tool: stock status, near-expiry, wastage alerts |
 | `TOOL_DEMAND_FORECAST` | Agent tool: demographic demand forecast for a pharmacy |
 | `TOOL_REPLENISHMENT_PLAN` | Agent tool: prioritised replenishment by delivery type |
+| `TOOL_PLANT_IMPACT` | Agent tool: complete plant impact assessment — batch holds, raw material inventory, shipment delays, downstream pharmacy exposure |
 | `PHARMA_ANALYTICS_VIEW` | Cortex Analyst semantic view for text-to-SQL analytics |
 | Updated `ROUTING_AGENT` | Agent with 3 new tools + `pharma_analytics` Cortex Analyst tool |
 | Updated `agent-demos.json` | New "Pharma Supply Intelligence" scenario |
@@ -83,6 +84,7 @@ Execute `references/deploy-pharma-tools.sql` — creates all 3 stored procedures
 CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS(NULL);
 CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DEMAND_FORECAST('Walgreens Castro', NULL);
 CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_PLAN('URGENT');
+CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PLANT_IMPACT('Hudson Valley Site');
 ```
 
 **Verify semantic view:**
@@ -125,6 +127,7 @@ The 5 prompts tell a complete story:
 3. **Demand forecast** → agent calls `TOOL_DEMAND_FORECAST` for Mission → shows demographic mismatch (high need, low stock)
 4. **Replenishment plan** → agent calls `TOOL_REPLENISHMENT_PLAN(URGENT)` → prioritised manufacturing order (cold chain first)
 5. **Redistribute stock** → agent calls `TOOL_REPLENISHMENT_PLAN` then `TOOL_ROUTE_OPTIMIZATION` → plans van route to move expiring stock from CVS Market St (overstocked) to Walgreens Mission (critically low)
+6. **Plant map click** → user clicks Hudson Valley Site reactor zone → agent auto-calls `TOOL_PLANT_IMPACT('Hudson Valley Site')` → returns on-hold batches, critical raw material gaps, delayed API shipments, downstream pharmacy exposure
 
 ## Key Insights in the Data
 
