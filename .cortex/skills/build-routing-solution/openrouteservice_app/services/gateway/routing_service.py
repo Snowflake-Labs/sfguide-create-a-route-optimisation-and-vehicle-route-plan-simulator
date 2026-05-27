@@ -805,6 +805,168 @@ def _annotate_engine_error(resp, host, payload):
     return resp
 
 
+# ---------------------------------------------------------------------------
+# Circuit breaker around per-host ORS calls (#50).
+#
+# State machine:
+#   CLOSED    -- normal, all calls pass through.
+#   OPEN      -- recent error rate exceeded threshold; calls fail fast for
+#                `cooldown_s` seconds without hitting ORS.
+#   HALF_OPEN -- cooldown elapsed; allow the next call as a probe. On success
+#                the breaker closes; on failure it re-opens with a fresh
+#                cooldown timer.
+#
+# Tunables (env-overridable so the operator can match the values to the
+# rolling-window error-rate they see in the #56 observability dashboard):
+#   ORS_BREAKER_FAILURE_THRESHOLD   default 5  consecutive transient failures
+#   ORS_BREAKER_ROLLING_WINDOW_S    default 30 seconds the failure counter
+#                                              accumulates over
+#   ORS_BREAKER_COOLDOWN_S          default 30 seconds OPEN -> HALF_OPEN
+#
+# Per-host -- a single bad region cannot drag down the gateway for healthy
+# regions. Counters held in-process; on container restart we start clean
+# (acceptable; the gateway is stateless by design).
+# ---------------------------------------------------------------------------
+ORS_BREAKER_FAILURE_THRESHOLD = int(os.getenv('ORS_BREAKER_FAILURE_THRESHOLD', '5'))
+ORS_BREAKER_ROLLING_WINDOW_S = int(os.getenv('ORS_BREAKER_ROLLING_WINDOW_S', '30'))
+ORS_BREAKER_COOLDOWN_S = int(os.getenv('ORS_BREAKER_COOLDOWN_S', '30'))
+ORS_RETRY_MAX_ATTEMPTS = int(os.getenv('ORS_RETRY_MAX_ATTEMPTS', '3'))
+ORS_RETRY_BACKOFF_BASE_MS = int(os.getenv('ORS_RETRY_BACKOFF_BASE_MS', '500'))
+
+# ---------------------------------------------------------------------------
+# Request-size guardrails (#51).
+#
+# Reject payloads that would exceed the active ORS preset's caps BEFORE
+# burning the gateway-side timeout budget. Defaults mirror the values in
+# routing-customization/references/ors-config-presets/standard.yml; the
+# continental preset (and any future preset) widens these via env vars,
+# keeping the active ors-config.yml as the single source of truth.
+#
+# Each cap has a matching env-override so the operator can match the cap
+# to the actual preset deployed:
+#   ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS    default 200  (sqrt(2 000 000))
+#   ORS_GUARDRAIL_ISOCHRONES_MAX_LOCATIONS default 2
+#   ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS default 10
+#   ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S  default 18000 (5h, matches engine)
+#   ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS default 1000
+# ---------------------------------------------------------------------------
+GUARDRAIL_MATRIX_MAX_LOCATIONS = int(os.getenv('ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS', '200'))
+GUARDRAIL_ISOCHRONES_MAX_LOCATIONS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_LOCATIONS', '2'))
+GUARDRAIL_ISOCHRONES_MAX_INTERVALS = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS', '10'))
+GUARDRAIL_ISOCHRONES_MAX_RANGE_S = int(os.getenv('ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S', '18000'))
+GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS = int(os.getenv('ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS', '1000'))
+
+
+def _guardrail_response(endpoint, host, message, limits):
+    """Structured 4xx-shaped failure surfaced to the caller. Identical envelope
+    shape to ORS engine errors so SQL callers (which already special-case
+    'error') do not need to learn a new schema."""
+    return {
+        'error': 'request_too_large',
+        'endpoint': endpoint,
+        'message': message,
+        'limits': limits,
+        'ors_host': host,
+        'status': 413,
+    }
+
+
+def _validate_request(endpoint, payload, host=None):
+    """Returns (ok, error_dict). Caller should short-circuit when ok is False.
+
+    Limits are the ones the active ors-config.yml preset would also enforce
+    -- but rejecting Snowflake-side avoids round-tripping a multi-MB body
+    to ORS only to be 4xx'd."""
+    if not isinstance(payload, dict):
+        return True, None
+    locations = payload.get('locations') or []
+    if endpoint == 'matrix':
+        if isinstance(locations, list) and len(locations) > GUARDRAIL_MATRIX_MAX_LOCATIONS:
+            return False, _guardrail_response(
+                endpoint, host,
+                f'Matrix payload has {len(locations)} locations; gateway cap is '
+                f'{GUARDRAIL_MATRIX_MAX_LOCATIONS}. Reduce the request, or chunk via '
+                f'OPTIMIZATION_TABULAR / _retry_matrix_chunked which already splits.',
+                {'max_locations': GUARDRAIL_MATRIX_MAX_LOCATIONS, 'observed_locations': len(locations)},
+            )
+    elif endpoint == 'isochrones':
+        if isinstance(locations, list) and len(locations) > GUARDRAIL_ISOCHRONES_MAX_LOCATIONS:
+            return False, _guardrail_response(
+                endpoint, host,
+                f'Isochrones payload has {len(locations)} locations; ORS engine '
+                f'cap is {GUARDRAIL_ISOCHRONES_MAX_LOCATIONS}. Split into separate calls.',
+                {'max_locations': GUARDRAIL_ISOCHRONES_MAX_LOCATIONS, 'observed_locations': len(locations)},
+            )
+        ranges = payload.get('range') or []
+        if isinstance(ranges, list):
+            if len(ranges) > GUARDRAIL_ISOCHRONES_MAX_INTERVALS:
+                return False, _guardrail_response(
+                    endpoint, host,
+                    f'Isochrones has {len(ranges)} intervals; cap is '
+                    f'{GUARDRAIL_ISOCHRONES_MAX_INTERVALS}.',
+                    {'max_intervals': GUARDRAIL_ISOCHRONES_MAX_INTERVALS, 'observed_intervals': len(ranges)},
+                )
+            range_type = payload.get('range_type', 'time')
+            if range_type == 'time' and ranges and max(ranges) > GUARDRAIL_ISOCHRONES_MAX_RANGE_S:
+                return False, _guardrail_response(
+                    endpoint, host,
+                    f'Isochrones range {max(ranges)}s exceeds {GUARDRAIL_ISOCHRONES_MAX_RANGE_S}s. '
+                    f'For continental reach, deploy the continental preset and widen '
+                    f'ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S to match.',
+                    {'max_range_s': GUARDRAIL_ISOCHRONES_MAX_RANGE_S, 'observed_range_s': max(ranges)},
+                )
+    elif endpoint == 'directions':
+        if isinstance(locations, list) and len(locations) > GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS:
+            return False, _guardrail_response(
+                endpoint, host,
+                f'Directions has {len(locations)} waypoints; cap is '
+                f'{GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS}.',
+                {'max_waypoints': GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS, 'observed_waypoints': len(locations)},
+            )
+    return True, None
+
+_BREAKER_STATE = {}  # host -> {failures: [ts...], open_until: float, state: 'CLOSED'|'OPEN'|'HALF_OPEN'}
+
+
+def _breaker_check(host):
+    """Returns (allow, reason). allow=False means fail fast without calling ORS."""
+    st = _BREAKER_STATE.get(host)
+    if not st:
+        return True, None
+    now = time.monotonic()
+    if st['state'] == 'OPEN':
+        if now >= st.get('open_until', 0):
+            st['state'] = 'HALF_OPEN'
+            logger.warning(f'circuit-breaker HALF_OPEN for {host} after cooldown')
+            return True, None
+        return False, 'circuit_open'
+    return True, None
+
+
+def _breaker_on_success(host):
+    st = _BREAKER_STATE.get(host)
+    if not st:
+        return
+    if st['state'] != 'CLOSED':
+        logger.warning(f'circuit-breaker CLOSED for {host}')
+    st['state'] = 'CLOSED'
+    st['failures'] = []
+    st['open_until'] = 0
+
+
+def _breaker_on_failure(host):
+    now = time.monotonic()
+    st = _BREAKER_STATE.setdefault(host, {'failures': [], 'open_until': 0, 'state': 'CLOSED'})
+    # Drop failures outside the rolling window.
+    cutoff = now - ORS_BREAKER_ROLLING_WINDOW_S
+    st['failures'] = [t for t in st['failures'] if t >= cutoff]
+    st['failures'].append(now)
+    if st['state'] == 'HALF_OPEN' or len(st['failures']) >= ORS_BREAKER_FAILURE_THRESHOLD:
+        st['state'] = 'OPEN'
+        st['open_until'] = now + ORS_BREAKER_COOLDOWN_S
+        logger.error(f'circuit-breaker OPEN for {host} (failures={len(st["failures"])}, cooldown={ORS_BREAKER_COOLDOWN_S}s)')
+
+
 def _emit_metric(endpoint, profile, host, status, latency_ms, req_bytes, resp_bytes,
                  error_code=None, caller=None, region=None, request_id=None):
     """Stream one `[ORS_METRIC] {json}` line to stdout. Picked up by the
@@ -854,64 +1016,119 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
         req_bytes = len(json.dumps(payload).encode('utf-8'))
     except Exception:
         req_bytes = None
-    req_id = uuid.uuid4().hex
-    t0 = time.monotonic()
 
-    try:
-        r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        resp_bytes = len(r.content) if r.content is not None else None
-        resp = r.json()
-        logger.debug(resp)
-        annotated = _annotate_engine_error(resp, host, payload)
-        engine_err = annotated.get('error') if isinstance(annotated, dict) else None
-        _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
-                     error_code=(engine_err if isinstance(engine_err, str) else (engine_err.get('code') if isinstance(engine_err, dict) else None)),
-                     caller=caller, region=region_hint, request_id=req_id)
-        return annotated
-    except requests.exceptions.ConnectionError:
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        region_label = f' (host: {host})' if host != resolve_ors_host(None) else ''
-        # Differentiate warming-up vs suspended/unknown by probing /health separately.
-        state = _probe_ors_state(host)
-        if state == 'warming_up':
-            logger.info(f'ORS{region_label} is warming up - graph still loading')
-            _emit_metric(function, profile, host, 503, latency_ms, req_bytes, None,
-                         error_code='service_warming_up', caller=caller, region=region_hint, request_id=req_id)
-            return {
-                'error': 'service_warming_up',
-                'graph_loading': True,
-                'message': f'ORS{region_label} is warming up: graph is loading from stage. '
-                           f'Typical wait: 1-10 min depending on region size. '
-                           f'Re-poll SELECT CORE.ORS_STATUS(region) until service_ready=true, then retry.',
-                'ors_host': host
-            }
-        logger.error(f'Cannot connect to ORS{region_label} - suspended or not provisioned')
-        _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
-                     error_code='service_unreachable', caller=caller, region=region_hint, request_id=req_id)
+    # Request-size guardrails (#51). Fail fast with a structured 4xx-shape
+    # before burning the gateway timeout budget on a request the engine
+    # will reject anyway.
+    ok, guard_err = _validate_request(function, payload, host)
+    if not ok:
+        req_id = uuid.uuid4().hex
+        _emit_metric(function, profile, host, 413, 0, req_bytes, None,
+                     error_code='request_too_large', caller=caller, region=region_hint, request_id=req_id)
+        return guard_err
+
+    # Circuit breaker (#50). Fail fast without touching ORS while OPEN.
+    allow, breaker_reason = _breaker_check(host)
+    if not allow:
+        req_id = uuid.uuid4().hex
+        _emit_metric(function, profile, host, 503, 0, req_bytes, None,
+                     error_code='circuit_open', caller=caller, region=region_hint, request_id=req_id)
         return {
-            'error': 'service_unreachable',
-            'graph_loading': False,
-            'message': f'Cannot connect to ORS{region_label}. Service appears suspended or region not provisioned. '
-                       f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
-                       f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
-                       f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
-            'ors_host': host
-        }
-    except requests.exceptions.Timeout:
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        logger.error(f'ORS request timed out on {host} after {timeout_s}s')
-        _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
-                     error_code='timeout', caller=caller, region=region_hint, request_id=req_id)
-        return {
-            'error': 'timeout',
-            'message': f'ORS request timed out on {host} after {timeout_s}s. '
-                       f'Possible causes: graphs still loading after resume (~2-3 min), '
-                       f'or request too large (e.g. very large isochrone range on a continental graph). '
-                       f'Try reducing range/batch size, or check ORS_STATUS().',
+            'error': 'circuit_open',
+            'message': f'Circuit breaker is OPEN for {host} after repeated failures. '
+                       f'Calls will resume after the {ORS_BREAKER_COOLDOWN_S}s cooldown. '
+                       f'See the Observability page for the failing endpoint history.',
             'ors_host': host,
-            'timeout_seconds': timeout_s
         }
+
+    last_error_payload = None
+    for attempt in range(1, ORS_RETRY_MAX_ATTEMPTS + 1):
+        req_id = uuid.uuid4().hex
+        t0 = time.monotonic()
+        retried_caller = caller if attempt == 1 else f'{caller}.retry{attempt - 1}'
+        try:
+            r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            resp_bytes = len(r.content) if r.content is not None else None
+            resp = r.json()
+            logger.debug(resp)
+            annotated = _annotate_engine_error(resp, host, payload)
+            engine_err = annotated.get('error') if isinstance(annotated, dict) else None
+            err_code = (engine_err if isinstance(engine_err, str)
+                        else (engine_err.get('code') if isinstance(engine_err, dict) else None))
+            _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
+                         error_code=err_code, caller=retried_caller, region=region_hint, request_id=req_id)
+            # Retry only on server-side transient failures (5xx). 4xx are user errors,
+            # 2xx/3xx are success-shaped, both end the loop here.
+            if 500 <= r.status_code < 600 and attempt < ORS_RETRY_MAX_ATTEMPTS:
+                last_error_payload = annotated
+                _breaker_on_failure(host)
+                backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
+                # 25% jitter so simultaneous callers do not synchronize retries.
+                backoff_s *= (0.75 + 0.5 * (req_id[-2:].count('a') / 2 if req_id else 0.5))
+                logger.warning(f'ORS {r.status_code} on {host}; retry {attempt}/{ORS_RETRY_MAX_ATTEMPTS - 1} after {backoff_s:.2f}s')
+                time.sleep(backoff_s)
+                continue
+            _breaker_on_success(host)
+            return annotated
+        except requests.exceptions.ConnectionError:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            region_label = f' (host: {host})' if host != resolve_ors_host(None) else ''
+            # Differentiate warming-up vs suspended/unknown by probing /health separately.
+            state = _probe_ors_state(host)
+            if state == 'warming_up':
+                logger.info(f'ORS{region_label} is warming up - graph still loading')
+                _emit_metric(function, profile, host, 503, latency_ms, req_bytes, None,
+                             error_code='service_warming_up', caller=retried_caller, region=region_hint, request_id=req_id)
+                # Do not retry warming-up: the graph load takes minutes, not
+                # milliseconds. Surface the wait-and-retry hint to the caller.
+                return {
+                    'error': 'service_warming_up',
+                    'graph_loading': True,
+                    'message': f'ORS{region_label} is warming up: graph is loading from stage. '
+                               f'Typical wait: 1-10 min depending on region size. '
+                               f'Re-poll SELECT CORE.ORS_STATUS(region) until service_ready=true, then retry.',
+                    'ors_host': host
+                }
+            logger.error(f'Cannot connect to ORS{region_label} (attempt {attempt}) - suspended or not provisioned')
+            _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
+                         error_code='service_unreachable', caller=retried_caller, region=region_hint, request_id=req_id)
+            _breaker_on_failure(host)
+            last_error_payload = {
+                'error': 'service_unreachable',
+                'graph_loading': False,
+                'message': f'Cannot connect to ORS{region_label}. Service appears suspended or region not provisioned. '
+                           f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
+                           f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
+                           f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
+                'ors_host': host,
+            }
+            if attempt < ORS_RETRY_MAX_ATTEMPTS:
+                backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
+                logger.warning(f'service_unreachable on {host}; retry {attempt}/{ORS_RETRY_MAX_ATTEMPTS - 1} after {backoff_s:.2f}s')
+                time.sleep(backoff_s)
+                continue
+            return last_error_payload
+        except requests.exceptions.Timeout:
+            # Do not retry on timeout. A timed-out call already burned the full
+            # per-endpoint timeout budget; retrying would multiply load on a
+            # likely-overloaded ORS without improving the outcome.
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            logger.error(f'ORS request timed out on {host} after {timeout_s}s')
+            _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
+                         error_code='timeout', caller=retried_caller, region=region_hint, request_id=req_id)
+            _breaker_on_failure(host)
+            return {
+                'error': 'timeout',
+                'message': f'ORS request timed out on {host} after {timeout_s}s. '
+                           f'Possible causes: graphs still loading after resume (~2-3 min), '
+                           f'or request too large (e.g. very large isochrone range on a continental graph). '
+                           f'Try reducing range/batch size, or check ORS_STATUS().',
+                'ors_host': host,
+                'timeout_seconds': timeout_s
+            }
+
+    return last_error_payload or {'error': 'unknown', 'message': 'no response from ORS', 'ors_host': host}
 
 
 if __name__ == '__main__':
