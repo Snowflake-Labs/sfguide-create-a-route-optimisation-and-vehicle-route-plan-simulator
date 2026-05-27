@@ -345,36 +345,13 @@ export default function BackloadMatching() {
 
   useEffect(() => {
     if (!regionName) return;
-    (async () => {
-      try {
-        const safeRegion = regionName.replace(/'/g, "''");
-        const cfg = await sfQuery(`SELECT REGION, VEHICLE_TYPE FROM ${BM_DB}.${BM_SCHEMA}.CONFIG`);
-        const cur = (cfg[0] as any) || {};
-        const vtRows = await sfQuery(
-          `SELECT VEHICLE_TYPE, COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
-           WHERE REGION = '${safeRegion}' GROUP BY 1 ORDER BY N DESC LIMIT 1`,
-          'SYNTHETIC_DATASETS', 'UNIFIED',
-        );
-        const detectedVt = (vtRows[0] as any)?.VEHICLE_TYPE;
-        const safeVt = (detectedVt && String(detectedVt).replace(/'/g, "''")) || cur.VEHICLE_TYPE || 'hgv';
-        if (cur.REGION !== regionName || (detectedVt && cur.VEHICLE_TYPE !== detectedVt)) {
-          await sfQuery(
-            `UPDATE ${BM_DB}.${BM_SCHEMA}.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
-          );
-        }
-        try {
-          await sfQuery(
-            `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET REGION = '${safeRegion}', VEHICLE_TYPE = '${safeVt}'`,
-            'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
-          );
-        } catch (e) {
-          console.warn('[BM] ROUTE_OPTIMIZATION.CONFIG sync failed', e);
-        }
-      } catch (e) {
-        console.warn('[BM] CONFIG sync failed', e);
-      }
-      await refetch();
-    })();
+    // CONFIG.REGION + CONFIG.VEHICLE_TYPE (on both BACKLOAD_MATCHING.CONFIG and
+    // ROUTE_OPTIMIZATION.CONFIG) are kept in sync atomically by the dataset
+    // picker (`POST /api/datasets/activate`). The page used to issue its own
+    // UPDATEs here, but `/api/query` is read-only (SELECT/SHOW/DESCRIBE/CALL/WITH)
+    // so those UPDATEs 403'd ("Only read-only queries allowed"). Removed in
+    // v1.1 to match the same fix already applied to AssetVelocity.tsx.
+    refetch();
   }, [regionName, refetch]);
 
   const seedData = useCallback(async () => {
