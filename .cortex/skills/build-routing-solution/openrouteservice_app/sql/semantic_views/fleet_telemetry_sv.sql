@@ -79,12 +79,6 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TELEMETRY_SV
         AVG_BATTERY_PCT AS AVG(telemetry.BATTERY_PCT)
             WITH SYNONYMS = ('average battery', 'mean battery level', 'typical charge')
             COMMENT = 'Average battery level across all readings as a percentage',
-        DWELL_READINGS AS SUM(CASE WHEN telemetry.STATUS LIKE 'DWELL%' THEN 1 ELSE 0 END)
-            WITH SYNONYMS = ('dwell count', 'stopped count', 'stationary readings', 'dwell events')
-            COMMENT = 'Number of readings where vehicle was dwelling (at origin, destination, or recharge)',
-        IDLE_READINGS AS SUM(CASE WHEN telemetry.STATUS = 'IDLE' THEN 1 ELSE 0 END)
-            WITH SYNONYMS = ('idle count', 'idle time', 'how much idle', 'idling events')
-            COMMENT = 'Number of readings where vehicle was idle',
         ACTIVE_VEHICLES AS COUNT(DISTINCT telemetry.VEHICLE_ID)
             WITH SYNONYMS = ('vehicles tracked', 'number of vehicles', 'fleet size')
             COMMENT = 'Number of distinct vehicles with telemetry data'
@@ -101,9 +95,5 @@ verified_queries:
     sql: "SELECT f.DRIVER_PROFILE, SUM(CASE WHEN t.IS_HOS_VIOLATION THEN 1 ELSE 0 END) AS HOS_VIOLATIONS, COUNT(t.TELEMETRY_ID) AS TOTAL_READINGS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f ON t.VEHICLE_ID = f.VEHICLE_ID GROUP BY f.DRIVER_PROFILE ORDER BY HOS_VIOLATIONS DESC"
   - question: "What is the breakdown of vehicle status across the fleet?"
     sql: "SELECT STATUS, VEHICLE_TYPE, COUNT(*) AS READINGS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY STATUS, VEHICLE_TYPE ORDER BY READINGS DESC"
-  - question: "What is the average speed by vehicle type and region?"
-    sql: "SELECT VEHICLE_TYPE, REGION, ROUND(AVG(SPEED_KMH), 1) AS AVG_SPEED_KMH FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE STATUS = ''MOVING'' GROUP BY VEHICLE_TYPE, REGION ORDER BY AVG_SPEED_KMH DESC"
-  - question: "Which vehicles have the most idle time?"
-    sql: "SELECT VEHICLE_ID, VEHICLE_TYPE, SUM(CASE WHEN STATUS = ''IDLE'' THEN 1 ELSE 0 END) AS IDLE_READINGS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_ID, VEHICLE_TYPE HAVING IDLE_READINGS > 0 ORDER BY IDLE_READINGS DESC LIMIT 10"
 '
     );
