@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle, ShoppingBasket } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle, ShoppingBasket, LineChart } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -20,6 +20,7 @@ import EmergencyResponseShell from './components/emergency/EmergencyResponseShel
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
+import Observability from './components/Observability';
 import About from './components/About';
 import Intro from './components/Intro';
 import Home from './components/Home';
@@ -95,6 +96,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
 ];
 
 const ADMIN_NAV: NavGroup[] = [
+  { key: 'observability', label: 'Observability', icon: LineChart },
   { key: 'diagnostics', label: 'Diagnostics', icon: Stethoscope },
 ];
 
@@ -306,6 +308,7 @@ export default function App() {
             {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
             {activeCategory === 'emergency' && <EmergencyResponseShell subTab={activeSubTab || 'hazard-ops'} />}
             {activeTab === 'agent' && <AgentPlayground />}
+            {activeTab === 'observability' && <Observability />}
             {activeTab === 'diagnostics' && <Diagnostics />}
             </>); })()}
           </main>

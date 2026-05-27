@@ -7,6 +7,9 @@ import logging
 import json
 import os
 import sys
+import time
+import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 SERVICE_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
@@ -802,7 +805,36 @@ def _annotate_engine_error(resp, host, payload):
     return resp
 
 
-def get_ors_response(function, profile, payload, format, ors_host=None):
+def _emit_metric(endpoint, profile, host, status, latency_ms, req_bytes, resp_bytes,
+                 error_code=None, caller=None, region=None, request_id=None):
+    """Stream one `[ORS_METRIC] {json}` line to stdout. Picked up by the
+    INGEST_ORS_METRICS Snowflake procedure on a 1-minute schedule (see
+    08_observability.sql). Never raise from here -- a logging failure must
+    never break a routing call. (#56)
+    """
+    try:
+        payload = {
+            'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+            'request_id': request_id or uuid.uuid4().hex,
+            'endpoint': endpoint,
+            'profile': profile,
+            'region': region,
+            'ors_host': host,
+            'status': status,
+            'error': error_code,
+            'latency_ms': latency_ms,
+            'req_bytes': req_bytes,
+            'resp_bytes': resp_bytes,
+            'caller': caller,
+        }
+        # Single-line emission so SPLIT_TO_TABLE works cleanly in the ingest proc.
+        sys.stdout.write('[ORS_METRIC] ' + json.dumps(payload, separators=(',', ':')) + '\n')
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def get_ors_response(function, profile, payload, format, ors_host=None, region_hint=None, caller='request'):
     host = ors_host or resolve_ors_host(None)
     endpoint = "/".join(filter(None, [ORS_API_PATH, function, profile, format]))
     if not endpoint.startswith('/'):
@@ -817,37 +849,60 @@ def get_ors_response(function, profile, payload, format, ors_host=None):
     logger.info(f'Calling: {downstream_url} (timeout={timeout_s}s)')
     logger.info(f'Payload: {payload}')
 
+    # Pre-compute payload byte size once for observability.
+    try:
+        req_bytes = len(json.dumps(payload).encode('utf-8'))
+    except Exception:
+        req_bytes = None
+    req_id = uuid.uuid4().hex
+    t0 = time.monotonic()
+
     try:
         r = requests.post(url=downstream_url, headers=downstream_headers, json=payload, timeout=timeout_s)
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        resp_bytes = len(r.content) if r.content is not None else None
         resp = r.json()
         logger.debug(resp)
-        return _annotate_engine_error(resp, host, payload)
+        annotated = _annotate_engine_error(resp, host, payload)
+        engine_err = annotated.get('error') if isinstance(annotated, dict) else None
+        _emit_metric(function, profile, host, r.status_code, latency_ms, req_bytes, resp_bytes,
+                     error_code=(engine_err if isinstance(engine_err, str) else (engine_err.get('code') if isinstance(engine_err, dict) else None)),
+                     caller=caller, region=region_hint, request_id=req_id)
+        return annotated
     except requests.exceptions.ConnectionError:
-        region_hint = f' (host: {host})' if host != resolve_ors_host(None) else ''
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        region_label = f' (host: {host})' if host != resolve_ors_host(None) else ''
         # Differentiate warming-up vs suspended/unknown by probing /health separately.
         state = _probe_ors_state(host)
         if state == 'warming_up':
-            logger.info(f'ORS{region_hint} is warming up - graph still loading')
+            logger.info(f'ORS{region_label} is warming up - graph still loading')
+            _emit_metric(function, profile, host, 503, latency_ms, req_bytes, None,
+                         error_code='service_warming_up', caller=caller, region=region_hint, request_id=req_id)
             return {
                 'error': 'service_warming_up',
                 'graph_loading': True,
-                'message': f'ORS{region_hint} is warming up: graph is loading from stage. '
+                'message': f'ORS{region_label} is warming up: graph is loading from stage. '
                            f'Typical wait: 1-10 min depending on region size. '
                            f'Re-poll SELECT CORE.ORS_STATUS(region) until service_ready=true, then retry.',
                 'ors_host': host
             }
-        logger.error(f'Cannot connect to ORS{region_hint} - suspended or not provisioned')
+        logger.error(f'Cannot connect to ORS{region_label} - suspended or not provisioned')
+        _emit_metric(function, profile, host, 502, latency_ms, req_bytes, None,
+                     error_code='service_unreachable', caller=caller, region=region_hint, request_id=req_id)
         return {
             'error': 'service_unreachable',
             'graph_loading': False,
-            'message': f'Cannot connect to ORS{region_hint}. Service appears suspended or region not provisioned. '
+            'message': f'Cannot connect to ORS{region_label}. Service appears suspended or region not provisioned. '
                        f'Try: 1) CALL CORE.RESUME_ALL_SERVICES() to resume, '
                        f'2) SELECT CORE.ORS_STATUS(region) to check readiness, '
                        f'3) CALL CORE.SETUP_CITY_ORS(region) to provision a new region.',
             'ors_host': host
         }
     except requests.exceptions.Timeout:
+        latency_ms = int((time.monotonic() - t0) * 1000)
         logger.error(f'ORS request timed out on {host} after {timeout_s}s')
+        _emit_metric(function, profile, host, 504, latency_ms, req_bytes, None,
+                     error_code='timeout', caller=caller, region=region_hint, request_id=req_id)
         return {
             'error': 'timeout',
             'message': f'ORS request timed out on {host} after {timeout_s}s. '

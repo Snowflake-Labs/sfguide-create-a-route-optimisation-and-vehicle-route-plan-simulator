@@ -26,6 +26,7 @@ import { createQueryRouter } from './routes/query.js';
 import { createEmergencyRouter } from './routes/emergency.js';
 import { createRouteOptimizationRouter } from './routes/route_optimization.js';
 import { createFreightExchangeRouter } from './routes/freight_exchange.js';
+import { createObservabilityRouter } from './routes/observability.js';
 import { createStaticRouter } from './routes/static.js';
 import { getActiveRegionOverride, setActiveRegionOverride } from './lib/state.js';
 
@@ -53,6 +54,7 @@ app.use(createAgentRouter());
 app.use(createEmergencyRouter());
 app.use(createRouteOptimizationRouter());
 app.use(createFreightExchangeRouter());
+app.use(createObservabilityRouter());
 
 app.use('/api/studio', createStudioRouter(runSql));
 
