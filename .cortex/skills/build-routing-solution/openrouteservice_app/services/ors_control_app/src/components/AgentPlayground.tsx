@@ -565,6 +565,7 @@ export default function AgentPlayground() {
         const geo = extractAgentGeoData(toolResults);
         setGeoData(geo);
         if (geo.center) setViewState(prev => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
+        if (geo.geojson || geo.points.length > 0 || geo.poiPoints.length > 0) setActiveVisualTab('map');
       }
 
       setMessages(prev => {
@@ -905,10 +906,14 @@ export default function AgentPlayground() {
           {(() => {
             const hasChart = !!chartData;
             const hasMap = !!(geoData.geojson || geoData.points.length > 0 || geoData.poiPoints.length > 0);
-            if (hasChart && hasMap) {
-              return (
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-                  <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+            const showMap = hasMap && (!hasChart || activeVisualTab === 'map');
+            const mapH = hasChart ? 480 : 520;
+            const sc = scenarios.find(s => s.id === activeScenario);
+            return (
+              <>
+                {/* Tab headers — only when both chart and map exist */}
+                {hasChart && hasMap && (
+                  <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)' }}>
                     {(['chart', 'map'] as const).map(tab => (
                       <button key={tab} onClick={() => setActiveVisualTab(tab)} style={{
                         padding: '6px 18px', border: 'none',
@@ -922,35 +927,25 @@ export default function AgentPlayground() {
                       </button>
                     ))}
                   </div>
-                  {activeVisualTab === 'chart' && (
-                    <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
-                  )}
-                  {activeVisualTab === 'map' && (
-                    <div style={{ height: 480, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-                      <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
-                    </div>
-                  )}
-                </div>
-              );
-            }
-            if (hasChart && !hasMap) {
-              return <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />;
-            }
-            if (hasMap && !hasChart) {
-              return (
-                <div style={{ height: 520, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+                )}
+                {/* Chart */}
+                {hasChart && (!hasMap || activeVisualTab === 'chart') && (
+                  <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
+                )}
+                {/* DeckGL — single instance, always mounted; height:0 hides without destroying WebGL context */}
+                <div style={{ flexShrink: 0, height: showMap ? mapH : 0, overflow: 'hidden', borderRadius: 8, border: showMap ? '1px solid var(--border)' : 'none', position: 'relative', background: '#e8e8e8' }}>
                   <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
                 </div>
-              );
-            }
-            const sc = scenarios.find(s => s.id === activeScenario);
-            return (
-              <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
-                <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
-                <p style={{ fontSize: 11, color: 'var(--text-secondary)', opacity: 0.6 }}>Select a prompt above or type your own question below.</p>
-              </div>
+                {/* Intro placeholder — neither chart nor map */}
+                {!hasChart && !hasMap && (
+                  <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
+                    <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
+                    <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
+                    <p style={{ fontSize: 11, color: 'var(--text-secondary)', opacity: 0.6 }}>Select a prompt above or type your own question below.</p>
+                  </div>
+                )}
+              </>
             );
           })()}
           {poiLegend && poiLegend.length > 0 && (
