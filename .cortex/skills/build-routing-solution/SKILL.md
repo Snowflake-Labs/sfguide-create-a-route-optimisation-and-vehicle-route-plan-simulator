@@ -161,11 +161,47 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 ### Step 3: Setup Database and Stages
 
-**Goal:** Create required Snowflake infrastructure
+**Goal:** Create required Snowflake infrastructure and install Marketplace datasets
 
 **Actions:**
 
-1. **Execute** environment setup SQL:
+1. **FIRST: Install Overture Maps Marketplace datasets** (required by downstream demos):
+
+   Execute `openrouteservice_app/app/modules/00_marketplace_datasets.sql` — or run these statements:
+   ```sql
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+   CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KN');
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING 'GZT0Z4CM1E9KR';
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING 'GZT0Z4CM1E9NQ';
+   CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__BUILDINGS FROM LISTING 'GZT0Z4CM1E9KN';
+   ```
+
+   > **Why here:** Route Optimization, Retail Catchment, Fleet Intelligence, and Plant Map all query these datasets. Installing upfront avoids blocking downstream steps.
+
+2. **Validate image tags** — the service spec YAMLs must reference images that actually exist:
+   ```sql
+   SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
+   ```
+   Compare the `ors_control_app` tag against `ors_control_app_service.yaml`. The **source of truth** is `openrouteservice_app/image-versions.env`:
+   - `ORS_CONTROL_APP_TAG=v1.0.216`
+   - `OPENROUTESERVICE_TAG=v9.0.0`
+   - `DOWNLOADER_TAG=v0.0.3`
+   - `ROUTING_REVERSE_PROXY_TAG=v1.0.0`
+   - `VROOM_DOCKER_TAG=v1.0.1`
+
+   If the workspace root `ors_control_app_service.yaml` has an **older tag**, update it to match the latest available image before uploading to stage. This avoids "Image not found" errors during service creation.
+
+3. **Compute pool specifications** (do not change without testing):
+
+   | Pool | Instance Family | Nodes | Why |
+   |------|----------------|-------|-----|
+   | `OPENROUTESERVICE_APP_COMPUTE_POOL` | `HIGHMEM_X64_S` | 5 | ORS JVM needs 20GB heap per instance; runs ORS×3 + Gateway×3 + VROOM + Downloader |
+   | `ORS_CONTROL_APP_COMPUTE_POOL` | `CPU_X64_XS` | 1 | Lightweight Node.js React app, always-on (no auto-suspend) |
+
+   > **Do NOT use** `CPU_X64_S` or `CPU_X64_M` for the main pool — ORS will OOM during graph build.
+
+4. **Execute** environment setup SQL:
    ```sql
    CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
       COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
@@ -721,14 +757,30 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - **Then:** Route Deviation (needs SYNTHETIC_DATASETS data)
    - **Then:** Dwell Analysis (needs SYNTHETIC_DATASETS data)
 
-3. **For each selected demo**, invoke the corresponding skill:
-   - Fleet Intelligence: Food Delivery -> Read and follow `.cortex/skills/fleet-intelligence-food-delivery/SKILL.md`
-   - Fleet Intelligence: Taxis -> Read and follow `.cortex/skills/fleet-intelligence-taxis/SKILL.md`
-   - Route Deviation -> Read and follow `.cortex/skills/route-deviation/SKILL.md`
-   - Dwell Analysis -> Read and follow `.cortex/skills/dwell-analysis/SKILL.md`
-   - Retail Catchment -> Read and follow `.cortex/skills/retail-catchment/SKILL.md`
-   - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
-   - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
+3. **For each selected demo**, execute its `references/seed-data.sql` script **verbatim**:
+
+   > **CRITICAL RULE: Execute seed-data.sql verbatim — NEVER create views or tables manually.**
+   >
+   > Each skill's `references/seed-data.sql` defines the exact table schemas, column names, and view
+   > definitions that the React ORS Control App components query. The React code uses hardcoded SQL
+   > with specific view names (`TRIP_SUMMARY`, `DRIVER_LOCATIONS_V`, etc.) and column names
+   > (`ROUTE_DISTANCE_METERS`, `TRIP_START_TIME`, `LOCATION_ID`, etc.).
+   >
+   > If you create views manually instead of running the script, column names WILL be wrong and the
+   > React app WILL show empty pages or errors. The seed-data.sql files are the SINGLE SOURCE OF TRUTH.
+   >
+   > **Execution pattern (workspace — no `snow sql -f`):** Read the seed-data.sql file, then execute
+   > each SQL statement from it one-by-one via `snowflake_sql_execute`. Copy statements exactly as written.
+   > Do NOT rename columns, do NOT change table schemas, do NOT omit wrapper views.
+
+   Skill reference files to execute:
+   - Fleet Intelligence: Taxis -> `.cortex/skills/fleet-intelligence-taxis/references/seed-data.sql`
+   - Fleet Intelligence: Food Delivery -> `.cortex/skills/fleet-intelligence-food-delivery/references/sql-projection-views.sql`
+   - Route Deviation -> `.cortex/skills/route-deviation/references/seed-data.sql`
+   - Dwell Analysis -> `.cortex/skills/dwell-analysis/references/sql-pipeline.sql`
+   - Retail Catchment -> `.cortex/skills/retail-catchment/references/seed-data.sql`
+   - Route Optimization -> `.cortex/skills/route-optimization/references/seed-data.sql`
+   - Routing Agent -> `.cortex/skills/routing-agent/references/deploy-agent.sql`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 

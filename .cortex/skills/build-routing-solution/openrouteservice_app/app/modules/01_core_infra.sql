@@ -1,3 +1,26 @@
+-- =============================================================================
+-- 01_core_infra.sql
+-- Creates databases, schemas, network rules, EAIs, compute pools, and services.
+-- Run AFTER: 00_marketplace_datasets.sql
+--
+-- IMPORTANT — Image Tag Source of Truth:
+--   openrouteservice_app/image-versions.env defines all image tags.
+--   Service spec YAMLs (workspace root) must match these tags.
+--   If CREATE SERVICE fails with "Image not found", run:
+--     SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY;
+--   Then update the spec YAML to match the available tag.
+--
+-- IMPORTANT — Compute Pool Specs:
+--   OPENROUTESERVICE_APP_COMPUTE_POOL: HIGHMEM_X64_S, 5 nodes (ORS needs 20GB heap)
+--   ORS_CONTROL_APP_COMPUTE_POOL: CPU_X64_XS, 1 node (lightweight React app)
+--   These are the TESTED configurations. Do not reduce without verifying ORS starts.
+--
+-- IMPORTANT — Session Context:
+--   This file uses fully-qualified names (no USE DATABASE/SCHEMA) so it works
+--   in workspace environments where context doesn't persist between calls.
+--   Exception: the initial USE SCHEMA is for service creation (relative stage refs).
+-- =============================================================================
+
 -- Data Studio and demo databases required by load-seed-data.sql and all demo skills.
 -- Created here so module execution order is self-contained.
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
@@ -9,8 +32,16 @@ CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-   USE SCHEMA OPENROUTESERVICE_APP.CORE;   
-   
+   -- NOTE: USE SCHEMA required here because CREATE SERVICE uses relative stage refs
+   -- (e.g. FROM @ORS_SPCS_STAGE/... resolves against current schema context).
+   -- All other statements use fully-qualified names.
+   USE SCHEMA OPENROUTESERVICE_APP.CORE;
+
+   -- Pre-flight: verify ors_control_app image exists with expected tag
+   -- If this fails, update ors_control_app_service.yaml to match available tag.
+   -- SELECT * FROM (SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY)
+   -- WHERE "image_name" = 'ors_control_app';
+
    CREATE OR REPLACE NETWORK RULE OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE
      TYPE = HOST_PORT  MODE = EGRESS
      VALUE_LIST = ('0.0.0.0:443','0.0.0.0:80','snowflakecomputing.com','download.bbbike.org:443','download.geofabrik.de:443')
