@@ -8,19 +8,69 @@ import { safeRegionIdent, normalizeRegion, isDefaultRegion } from './region.js';
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
 
+// Issue a minimal /directions canary against the per-region ORS service.
+// ORS_STATUS reports service_ready=true the instant the engine accepts
+// connections, but the very first /directions call after RESUME can still
+// race with the in-memory graph load (~5-30s window) and surface as
+// `connection_failed` to downstream callers. This canary forces that
+// transient failure to land HERE, inside the wait loop, instead of in
+// the first real query. (#53)
+//
+// Picks a tiny ~500m segment near the region's bbox centroid so the call
+// is cheap, succeeds on any graph topology, and never hits per-profile
+// extremes. Returns true iff the call returned a non-error response.
+async function _canaryDirections(region: string, profile: string): Promise<boolean> {
+  try {
+    const safeRegion = safeRegionIdent(normalizeRegion(region));
+    const bboxRows = await runSql(
+      `SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE UPPER(REGION) = UPPER('${escapeString(safeRegion)}') LIMIT 1`,
+    );
+    const row = bboxRows?.[0];
+    if (!row) return false;
+    const midLat = (Number(row.MIN_LAT) + Number(row.MAX_LAT)) / 2;
+    const midLon = (Number(row.MIN_LON) + Number(row.MAX_LON)) / 2;
+    if (!Number.isFinite(midLat) || !Number.isFinite(midLon)) return false;
+    // ~500m offset in lon (works near every populated latitude). Pairs the
+    // centroid with a point slightly east; both should snap onto roads in
+    // any non-trivial extract.
+    const lon2 = midLon + 0.005;
+    const safeProfile = profile.replace(/[^a-z-]/gi, '');
+    const sql = `SELECT ${SF_DATABASE}.CORE.DIRECTIONS('${safeProfile}', ${midLon}, ${midLat}, ${lon2}, ${midLat}, '${escapeString(safeRegion)}') AS R`;
+    const rows = await runSql(sql);
+    const raw = rows?.[0]?.R;
+    if (!raw) return false;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // The DIRECTIONS SQL wrapper returns an object with `RESPONSE` (JSON
+    // string) -- when ORS returned `error`, the wrapper surfaces that text.
+    const inner = parsed.RESPONSE ?? parsed.response ?? parsed;
+    const innerObj = typeof inner === 'string' ? (() => { try { return JSON.parse(inner); } catch { return null; } })() : inner;
+    if (!innerObj) return false;
+    return !innerObj.error;
+  } catch {
+    return false;
+  }
+}
+
 // Poll ORS_STATUS until the graph for `region` reports ready (service_ready &
 // at least one profile loaded), or maxWaitSecs is exceeded. Returns the
 // final state. Used by region provisioning + diagnose endpoints to gate
 // follow-on operations on a fully warmed-up ORS.
+//
+// After ORS_STATUS reports ready, additionally fire a /directions canary
+// (#53) to confirm the engine can actually answer routing calls. The
+// canary is best-effort: a failed canary keeps the loop polling rather
+// than returning false immediately, because the engine occasionally
+// reports ready 1-2 polls before the first /directions succeeds.
 export async function waitForOrsGraphReady(
   region: string,
   maxWaitSecs: number = 600,
-): Promise<{ ready: boolean; elapsed: number; profiles: string[] }> {
+): Promise<{ ready: boolean; elapsed: number; profiles: string[]; canary?: 'ok' | 'failed' | 'skipped' }> {
   const start = Date.now();
   const interval = 15000;
   const maxAttempts = Math.ceil((maxWaitSecs * 1000) / interval);
   const safeRegion = safeRegionIdent(normalizeRegion(region));
   const statusSql = `SELECT ${SF_DATABASE}.CORE.ORS_STATUS('${safeRegion}') AS S`;
+  let lastCanary: 'ok' | 'failed' | 'skipped' = 'skipped';
 
   for (let i = 0; i < maxAttempts; i++) {
     try {
@@ -31,14 +81,26 @@ export async function waitForOrsGraphReady(
         if (status.service_ready === true && status.profiles) {
           const profileNames = Object.keys(status.profiles);
           if (profileNames.length > 0) {
-            return { ready: true, elapsed: Math.round((Date.now() - start) / 1000), profiles: profileNames };
+            // ORS engine accepts connections; verify it can actually answer
+            // routing calls before declaring the region ready. Pick the first
+            // profile the engine reports as loaded -- which is necessarily
+            // one of the profiles a follow-on caller will use.
+            const probeProfile = profileNames.find((p) => /^(driving|cycling|foot)/.test(p)) || profileNames[0];
+            const canaryOk = await _canaryDirections(region, probeProfile);
+            lastCanary = canaryOk ? 'ok' : 'failed';
+            if (canaryOk) {
+              return { ready: true, elapsed: Math.round((Date.now() - start) / 1000), profiles: profileNames, canary: 'ok' };
+            }
+            // Canary failed: graph is loaded but first-call race not yet
+            // settled. Continue the poll loop; do NOT short-circuit to
+            // ready, even though ORS_STATUS says yes.
           }
         }
       }
     } catch {}
     await new Promise((r) => setTimeout(r, interval));
   }
-  return { ready: false, elapsed: Math.round((Date.now() - start) / 1000), profiles: [] };
+  return { ready: false, elapsed: Math.round((Date.now() - start) / 1000), profiles: [], canary: lastCanary };
 }
 
 // Return the list of routing profiles expected to be loaded for the given

@@ -1246,25 +1246,75 @@ BEGIN
     -- Block until ORS is actually warmed up, so the very next user query is not
     -- exposed to the connection_failed race during graph load. Caller can disable
     -- the wait with P_WAIT_FOR_READY = FALSE to retain legacy fire-and-forget.
+    --
+    -- ORS_STATUS reports service_ready=true the instant the engine accepts
+    -- connections, but the very first /directions call after RESUME can still
+    -- race with the in-memory graph load. After service_ready=true, fire one
+    -- minimal DIRECTIONS canary via the gateway. If it returns an error, the
+    -- loop keeps polling -- so the wrapper only returns success once the
+    -- engine has demonstrably answered a routing call. (#53)
     IF (:P_WAIT_FOR_READY) THEN
         WHILE (NOT :ready AND :elapsed < :P_TIMEOUT_SECONDS) DO
+            LET status_ready BOOLEAN := FALSE;
+            LET mid_lat FLOAT := NULL;
+            LET mid_lon FLOAT := NULL;
             BEGIN
                 rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
                     || :P_REGION || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
                 LET c CURSOR FOR rs;
-                FOR r IN c DO ready := COALESCE(r.R, FALSE); END FOR;
-            EXCEPTION WHEN OTHER THEN ready := FALSE;
+                FOR r IN c DO status_ready := COALESCE(r.R, FALSE); END FOR;
+            EXCEPTION WHEN OTHER THEN status_ready := FALSE;
             END;
+
+            IF (:status_ready) THEN
+                -- Look up bbox centroid for the canary call. If the region is
+                -- not in REGION_ORS_MAP yet (race during bootstrap), fall
+                -- through and trust ORS_STATUS.
+                BEGIN
+                    rs := (EXECUTE IMMEDIATE 'SELECT (MIN_LAT + MAX_LAT) / 2 AS MLAT, '
+                        || '(MIN_LON + MAX_LON) / 2 AS MLON FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP '
+                        || 'WHERE UPPER(REGION) = UPPER(''' || :P_REGION || ''') LIMIT 1');
+                    LET cm CURSOR FOR rs;
+                    FOR r IN cm DO mid_lat := r.MLAT; mid_lon := r.MLON; END FOR;
+                EXCEPTION WHEN OTHER THEN mid_lat := NULL; mid_lon := NULL;
+                END;
+
+                IF (:mid_lat IS NULL OR :mid_lon IS NULL) THEN
+                    ready := TRUE;
+                ELSE
+                    BEGIN
+                        -- Cheap 500m segment near the centroid; driving-car
+                        -- is guaranteed present on every region we provision.
+                        rs := (EXECUTE IMMEDIATE 'SELECT COALESCE('
+                            || 'TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                            || '''driving-car'', ' || :mid_lon || ', ' || :mid_lat || ', '
+                            || ((:mid_lon)::FLOAT + 0.005) || ', ' || :mid_lat || ', '
+                            || '''' || :P_REGION || ''')::VARCHAR):"RESPONSE"::VARCHAR, '''') AS R');
+                        LET cd CURSOR FOR rs;
+                        LET response_str VARCHAR := '';
+                        FOR r IN cd DO response_str := COALESCE(r.R, ''); END FOR;
+                        -- If the response embeds an `error` key, the gateway
+                        -- propagated an ORS engine error. Treat as not-ready.
+                        IF (POSITION('"error"', :response_str) > 0 OR :response_str = '') THEN
+                            ready := FALSE;
+                        ELSE
+                            ready := TRUE;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN ready := FALSE;
+                    END;
+                END IF;
+            END IF;
+
             IF (NOT :ready) THEN
                 CALL SYSTEM$WAIT(:poll_secs);
                 elapsed := TIMESTAMPDIFF(SECOND, :started_at, SYSDATE());
             END IF;
         END WHILE;
         IF (:ready) THEN
-            RETURN 'Resumed ORS services for ' || :P_REGION || ' (ready in ' || :elapsed || 's)';
+            RETURN 'Resumed ORS services for ' || :P_REGION || ' (ready+canary_ok in ' || :elapsed || 's)';
         ELSE
             RETURN 'Resumed ORS services for ' || :P_REGION ||
-                   ' but service_ready=false after ' || :elapsed ||
+                   ' but readiness canary did not pass after ' || :elapsed ||
                    's. Re-poll ORS_STATUS(region) - graph may still be loading.';
         END IF;
     END IF;
