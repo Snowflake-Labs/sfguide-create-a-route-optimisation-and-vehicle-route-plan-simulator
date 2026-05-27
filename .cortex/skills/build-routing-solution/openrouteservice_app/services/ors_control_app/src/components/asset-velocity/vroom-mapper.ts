@@ -56,12 +56,19 @@ export function serviceSecondsForTerminal(t: Terminal): number {
   return 900;
 }
 
-// Default opening hours (06:00 -> 22:00 today, in epoch seconds).
-// DIM_POIS has no OPEN_FROM/OPEN_TO column today; once it's added, replace
-// this with the real values.
+// Local-day window 06:00-22:00. If the current time is already past close,
+// roll forward to tomorrow's window so the solver always has a feasible day
+// (otherwise VROOM silently returns routes:[] and the page shows 0 results).
 export function terminalTimeWindow(_t: Terminal, baseEpoch: number): [number, number] {
-  const dayStart = Math.floor(baseEpoch / 86400) * 86400; // UTC midnight
-  return [dayStart + 6 * 3600, dayStart + 22 * 3600];
+  const offsetSec = new Date().getTimezoneOffset() * -60; // local - UTC, in seconds
+  const localMidnight = Math.floor((baseEpoch + offsetSec) / 86400) * 86400 - offsetSec;
+  let open  = localMidnight + 6 * 3600;
+  let close = localMidnight + 22 * 3600;
+  if (baseEpoch >= close) {
+    open  += 86400;
+    close += 86400;
+  }
+  return [open, close];
 }
 
 export interface VrpPayloadInput {
@@ -104,7 +111,17 @@ export interface VrpChallenge {
 
 export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
   const { trailers, terminals, profile, maxRepositionMinutes, nowEpoch } = input;
-  const shiftEnd = nowEpoch + maxRepositionMinutes * 60;
+  // If terminals are closed for the rest of today, roll the shift to tomorrow's
+  // 06:00 local so the vehicle window aligns with the (rolled-forward) terminal
+  // windows. Otherwise the solver gets vehicle [now, now+cap] but every job's
+  // window is in the future -> all unassigned -> 0 routes.
+  const tomorrowOpen = terminals.length
+    ? terminalTimeWindow(terminals[0], nowEpoch)[0]
+    : nowEpoch;
+  const shiftStart = Math.max(nowEpoch, tomorrowOpen);
+  const shiftEnd = shiftStart + maxRepositionMinutes * 60;
+  const isHgv = profile === 'driving-hgv';
+  const maxStops = Math.max(1, terminals.length);
 
   const jobs: VrpJob[] = terminals.map((t, i) => {
     const skillReq = skillsForTerminal(t);
@@ -127,7 +144,7 @@ export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
   });
 
   const vehicles: VrpVehicle[] = trailers.map((tr, i) => {
-    // Multi-dim capacity: [units (1 trailer-load), weight tons (rounded), axleload tons (rounded)].
+    // Multi-dim capacity: [units (trailer-loads), weight tons (rounded), axleload tons (rounded)].
     // VROOM expects integers per dimension, so multiply tonnages by 100 to keep 2 decimals.
     const w = Math.round((tr.WEIGHT_TONS ?? 40) * 100);
     const a = Math.round((tr.AXLELOAD_T ?? 11.5) * 100);
@@ -136,15 +153,18 @@ export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
       description: `${safeText(tr.VEHICLE_ID, 32)} (${tr.VEHICLE_SUBTYPE ?? 'DRY'})`,
       profile,
       start: [Number(tr.LAST_LNG), Number(tr.LAST_LAT)],
-      capacity: [1, w, a],
+      capacity: [maxStops, w, a],
       skills: skillsForTrailer(tr),
-      time_window: [nowEpoch, shiftEnd],
+      time_window: [shiftStart, shiftEnd],
       max_travel_time: maxRepositionMinutes * 60,
-      breaks: [{
+      // EU 561/2006 mandatory 45-min break after 4.5h driving applies to HGVs only.
+      // Cyclists, taxis, and ebikes don't have that rule, and forcing the break
+      // window inside the shift can make VROOM drop the vehicle entirely.
+      breaks: isHgv ? [{
         id: 1000 + i,
-        service: 2700, // 45 min (EU 561/2006)
-        time_windows: [[nowEpoch + 4 * 3600, nowEpoch + 5 * 3600]],
-      }],
+        service: 2700,
+        time_windows: [[shiftStart + 4 * 3600, shiftStart + 5 * 3600]],
+      }] : [],
       // VROOM in this app's vroom-docker:v1.0.4 build does NOT accept the
       // {fixed, per_hour} pair (errors with "Custom costs are incompatible
       // with using a per_hour value"). We use only `fixed` to bias the solver

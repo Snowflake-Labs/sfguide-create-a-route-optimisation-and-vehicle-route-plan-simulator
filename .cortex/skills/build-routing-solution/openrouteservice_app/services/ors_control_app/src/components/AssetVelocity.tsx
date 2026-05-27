@@ -295,7 +295,33 @@ export default function AssetVelocity() {
           : null,
       });
     } else {
-      setVrpResult({ warning: `Solver returned no rows. Profile '${profile}' may not be available for region '${regionName}'.` });
+      // OPTIMIZATION TVF flattens resp:routes; routes:[] yields 0 rows even on
+      // a successful VROOM call. Re-query _OPTIMIZATION_RAW so we can show the
+      // actual unassigned reason (skills, capacity, time-window, etc.) instead
+      // of falsely blaming the ORS profile.
+      let warning = `Solver returned no rows for profile '${profile}' / region '${regionName}'.`;
+      try {
+        const diag = await sfQuery(
+          `SELECT OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${regionName}') AS RESP`,
+          'OPENROUTESERVICE_APP', 'CORE',
+        );
+        const resp = diag[0]?.RESP;
+        const obj = typeof resp === 'string' ? JSON.parse(resp) : resp;
+        const unassigned = Number(obj?.summary?.unassigned ?? 0);
+        const routes = Number(obj?.summary?.routes ?? 0);
+        const total = routes + unassigned;
+        const reasons = Array.isArray(obj?.unassigned)
+          ? obj.unassigned.map((u: any) => u?.description || u?.id).filter(Boolean).slice(0, 3).join(', ')
+          : '';
+        if (unassigned > 0 && routes === 0) {
+          warning = `Solver assigned 0 of ${total} jobs (all unassigned). First few: ${reasons || 'no reason supplied'}.`;
+        } else if (obj?.error) {
+          warning = `ORS optimization error: ${String(obj.error).slice(0, 200)}.`;
+        }
+      } catch (diagErr: any) {
+        warning = `Solver returned no rows. Diagnostic call failed: ${(diagErr?.message ?? 'unknown').toString().slice(0, 200)}.`;
+      }
+      setVrpResult({ warning });
     }
     setSolving(false);
   }, [trailers, terminals, sortedTrailers, regionName, maxRepositionMinutes]);
