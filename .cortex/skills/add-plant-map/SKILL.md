@@ -1,6 +1,6 @@
 ---
 name: add-plant-map
-description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), GMP sensors, 24-hour timeline, agent click integration. Image v1.0.211 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus."
+description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), animated robot tracking (AGV, Inspection, Cleaning), GMP sensors, 24-hour timeline, agent click integration. Image v1.0.212 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus, robot tracking, AGV, autonomous robots."
 depends_on:
   - add-pharma-supply-chain
 metadata:
@@ -13,21 +13,21 @@ metadata:
 
 Adds a **Plant Intelligence** page to the ORS Control App showing real Overture Maps building footprints for each pharma manufacturing plant with a 4-level interactive drill-down into campus buildings, floor plans, and room-level contents.
 
-**Image v1.0.211 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
+**Image v1.0.212 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
 
 ---
 
-## What's in the Image (v1.0.211)
+## What's in the Image (v1.0.212)
 
 ### React Components
 
 - **`PlantIntelligence.tsx`** — Full Plant Intelligence page with sidebar:
   - **Level 1 — World view**: severity-colored plant markers (zoom 1.4)
   - **Level 2 — Campus view**: 5–6 real Overture buildings per plant, each assigned a pharma role and color (zoom 15, pitch 45)
-  - **Level 3 — Floor plan**: extruded 3D zones for the selected building + floor, with GMP sensors and 24-hour timeline chart in sidebar (zoom 18.5, pitch 55)
-  - **Level 4 — Room contents**: racks/pallets, equipment footprints, or lab benches depending on zone type (zoom 20, pitch 45)
+  - **Level 3 — Floor plan**: extruded 3D zones for the selected building + floor, with GMP sensors and 24-hour timeline chart in sidebar, and **animated robots moving between zones** (zoom 18.5, pitch 55)
+  - **Level 4 — Room contents**: racks/pallets, equipment footprints, or lab benches depending on zone type; robots filtered to current room (zoom 20, pitch 45)
 
-- **`PlantIntelMap.tsx`** — Map-only version embedded in Agent Playground (no sidebar). Supports the same 4-level navigation with `onBuildingSelect` / `onRoomSelect` callback props for agent integration.
+- **`PlantIntelMap.tsx`** — Map-only version embedded in Agent Playground (no sidebar). Supports the same 4-level navigation with robot tracking and `onBuildingSelect` / `onRoomSelect` callback props for agent integration.
 
 ### API Endpoints (`server/plant-intel/routes.ts`)
 
@@ -63,7 +63,24 @@ Room contents are generated server-side per zone type. All types now produce vis
 | `lab`, `analytical`, `precision` | Perimeter benches + central island | HPLC, dissolution, FTIR, balances |
 | `utility`, `hvac`, `electrical`, `control`, `cleanroom` | Lab bench layout | AHUs, UPS, SCADA workstations, PW systems |
 
-### GMP Sensors (per zone type)
+### Animated Robot Tracking (Level 3+)
+
+Three robot types appear on every floor plan, animated at 10fps between zone centroids:
+
+| Robot | Colour | Count | Role |
+|-------|--------|-------|------|
+| Transport AGV | Blue | 2/floor | Moves batch material between storage and production zones |
+| Inspection Robot | Yellow (elevated 2.5m) | 1/floor | Sensor patrol sweep across all zones |
+| Cleaning Robot | Grey | 1/floor | Sanitisation patrol |
+
+- Robots are **seeded per plant + building + floor** — deterministic, same routes every demo session
+- At **Level 4** only robots whose path passes through the selected room are shown
+- **Hover tooltip** shows robot ID, current task, and battery % (colour-coded)
+- **Legend overlay** bottom-right shows robot types present on current floor
+- Battery drains slowly; robots enter `charging` state below 10%
+- No backend required — all synthetic, purely client-side animation
+
+
 
 Zones have 3–5 sensors each, type-appropriate for GMP pharma:
 - **Temperature, humidity, differential pressure** (all zones)
@@ -143,7 +160,7 @@ If a plant has `< 6` Overture buildings ≥500 sqm nearby, the `/campus` endpoin
 
 ### Step 2: Upgrade SPCS Service
 
-If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.211` automatically from `image-versions.env`.
+If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.212` automatically from `image-versions.env`.
 
 If already deployed and just need to update:
 ```sql
@@ -159,8 +176,10 @@ ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
 2. **Northshire Site (UK)** and **Hudson Valley Site (US)** = crimson (Critical)
 3. Click a plant → zooms to campus, shows 5–6 real buildings colour-coded by pharma role
 4. Click **API Manufacturing** building → floor plan appears with 3 floors
-5. Switch floors using floor selector → different zone layouts per floor
-6. Click **Reactor Hall** zone → zooms in, shows 3D reactor vessels + pumps + walkway
+5. Switch floors using floor selector → different zone layouts per floor, new robots initialise
+6. **Robots animate** between zones — blue AGVs carry batches, yellow inspection bot hovers at 2.5m, grey cleaner patrols
+7. Hover a robot → tooltip shows ID, task, battery level
+8. Click **Reactor Hall** zone → zooms in, shows 3D reactor vessels + pumps + walkway + robots in that room
 7. Hover over a reactor → tooltip shows batch, temperature, pressure, status
 8. In **Agent Playground** with Plant Intel tab: click a building → chat pre-fills with context → send → agent analyses facility
 
