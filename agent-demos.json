@@ -93,7 +93,10 @@
         { "label": "2. Batch holds at risk", "icon": "🔬", "prompt": "Show me all production batches currently on hold or rejected across our plants. Which plant has the most value at risk and what are the root causes?" },
         { "label": "3. Cold chain excursions", "icon": "🌡️", "prompt": "Are there any active temperature excursions across our manufacturing plants? Which products are affected and what is the risk to batch integrity?" },
         { "label": "4. Material shortages", "icon": "📦", "prompt": "Which plants have critical raw material shortages that could halt production? Show me the days of coverage remaining for each critical material." },
-        { "label": "5. Hudson Valley deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Hudson Valley Site — active batches, quality deviations, material stock levels, and any inbound shipment delays." }
+        { "label": "5. Hudson Valley deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Hudson Valley Site — active batches, quality deviations, material stock levels, and any inbound shipment delays." },
+        { "label": "6. Robot maintenance alerts", "icon": "🤖", "prompt": "Which robots across our manufacturing plants need maintenance in the next 4 hours? Show me by plant and building, and flag any that are also low on battery." },
+        { "label": "7. AGV cargo tracking", "icon": "🔄", "prompt": "Show me all Transport AGVs currently moving batches across our plants. Which batches are in transit, where are they going, and are any of those batches currently on hold or at risk?" },
+        { "label": "8. Robot fleet health", "icon": "📊", "prompt": "Give me a summary of robot fleet health across all plants — how many robots are active vs charging, average battery levels by plant, and which buildings have the most robot alerts." }
       ]
     },
     {
