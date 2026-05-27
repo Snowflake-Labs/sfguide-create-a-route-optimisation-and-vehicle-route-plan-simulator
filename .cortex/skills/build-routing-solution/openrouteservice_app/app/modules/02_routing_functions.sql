@@ -58,7 +58,19 @@
       MAX_BATCH_ROWS = 1000
       AS '/directions';
 
+   -- Legacy 5-arg form retained for any caller that does not opt into
+   -- smoothing yet. The gateway treats the missing smoothing as omitted
+   -- (engine default, no smoothing pass). (#113)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 1000
+      AS '/isochrones_tabular';
+
+   -- 6-arg form: caller-supplied smoothing. 0 = no smoothing (fastest);
+   -- 10 = the legacy hard-coded value; 50 = engine maximum. (#113)
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method TEXT, lon FLOAT, lat FLOAT, range INT, smoothing INT, region VARCHAR)
       RETURNS VARIANT
       SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
       ENDPOINT='gateway'
@@ -140,7 +152,7 @@
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
          FROM (SELECT OPENROUTESERVICE_APP.CORE._DIRECTIONS_RAW(method, locations, region) AS resp)';
 
-   -- ISOCHRONES
+   -- ISOCHRONES (5-arg, legacy default: smoothing=0 i.e. engine default)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
@@ -149,6 +161,18 @@
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
          FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, region) AS resp)';
+
+   -- ISOCHRONES (6-arg with smoothing). 0 = engine default (fastest);
+   -- 10 matches the previously hard-coded gateway value; 50 = engine max
+   -- (slowest, smoothest polygon). Caller-controlled per #113. (#113)
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, smoothing INT, region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.1","attributes":{"component":"routing","feature":"smoothing"}}'
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, smoothing, region) AS resp)';
 
    -- ISOCHRONES_CLIPPED: same as ISOCHRONES but clips the returned polygon
    -- to the named region's actual boundary so catchment zones don't claim

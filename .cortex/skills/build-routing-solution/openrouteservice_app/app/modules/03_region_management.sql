@@ -1510,6 +1510,20 @@ $$;
 --      DROP+CREATE the compute pool at the smaller instance family
 --      (ALTER COMPUTE POOL cannot change INSTANCE_FAMILY).
 --   4. RESUME the service and update REGION_ORS_MAP to the new tier/family.
+--
+-- #61 evaluation note (2026-05):
+--   The issue proposes a two-pool model (separate build vs. serve pools).
+--   This procedure already realizes ~80% of that benefit: after a build
+--   completes the pool is re-created at the smaller instance family used
+--   for serving, so steady-state compute spend is bounded by the runtime
+--   tier, not the build tier. The remaining ~20% gain a two-pool split
+--   would add is zero-downtime hand-off (today's DROP+CREATE costs ~30s
+--   of service interruption on the smaller new pool).
+--
+--   Decision: keep the single-pool design unless a customer reports the
+--   ~30s downsize window as a problem. The two-pool variant would add
+--   one more SPCS object per region and a moving ALTER SERVICE call
+--   between pools, doubling the lifecycle code paths to reconcile.
 -- =============================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(
     P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M'

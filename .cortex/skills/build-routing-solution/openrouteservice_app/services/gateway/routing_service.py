@@ -527,17 +527,34 @@ def post_directions_with_format(format="geojson"):
     return _make_response(output_rows)
 
 
+def _isochrone_body(method_row, smoothing=None):
+    """Build the ORS isochrones request body. (#113)
+
+    `smoothing` is omitted from the payload when None / 0 so ORS skips the
+    post-Dijkstra densification pass entirely (the engine default is to
+    skip when the key is absent). Continental HGV isochrones at range=120
+    spent a measurable slice of the 300s timeout budget on smoothing=10;
+    callers that want polished polygons opt in explicitly.
+    """
+    body = {
+        'locations': [[method_row[2], method_row[3]]],
+        'range': [method_row[4] * 60],
+        'location_type': 'start',
+        'range_type': 'time',
+    }
+    if smoothing is not None and int(smoothing) > 0:
+        body['smoothing'] = int(smoothing)
+    return body
+
+
 def _handle_isochrones_tabular(input_rows, format, ors_host=None):
     host = ors_host or resolve_ors_host(None)
     output_rows = []
     for row in input_rows:
-        output_rows.append([row[0], get_ors_response('isochrones', row[1], {
-            'locations': [[row[2], row[3]]],
-            'range': [row[4] * 60],
-            'location_type': 'start',
-            'range_type': 'time',
-            'smoothing': 10
-        }, format, host)])
+        # Optional caller-supplied smoothing at position 5 (TABULAR caller).
+        smoothing = row[5] if len(row) > 5 else None
+        body = _isochrone_body(row, smoothing)
+        output_rows.append([row[0], get_ors_response('isochrones', row[1], body, format, host)])
     return output_rows
 
 
@@ -545,8 +562,10 @@ def _handle_isochrones_tabular(input_rows, format, ors_host=None):
 @app.post("/isochrones_tabular/<format>")
 def post_isochrones_tabular(format="geojson"):
     """
-    row = [id, method, lon, lat, range, region]
-    region is the LAST column and can be NULL.
+    row = [id, method, lon, lat, range, region]                (5-arg, legacy)
+    row = [id, method, lon, lat, range, smoothing, region]     (6-arg, with smoothing)
+    region is the LAST column and can be NULL. smoothing is optional and
+    defaults to omitted (ORS engine default, equivalent to 0).
     """
     message = request.json
     logger.debug(f'Received request: {message}')
@@ -555,15 +574,17 @@ def post_isochrones_tabular(format="geojson"):
         return {}
     output_rows = []
     for row in input_rows:
-        region = _extract_region(row, 5)
+        # 6-arg form has region at index 6, smoothing at index 5;
+        # legacy 5-arg form has region at index 5, no smoothing.
+        if len(row) >= 7:
+            smoothing = row[5]
+            region = _extract_region(row, 6)
+        else:
+            smoothing = None
+            region = _extract_region(row, 5)
         ors_host = resolve_ors_host(region)
-        output_rows.append([row[0], get_ors_response('isochrones', row[1], {
-            'locations': [[row[2], row[3]]],
-            'range': [row[4] * 60],
-            'location_type': 'start',
-            'range_type': 'time',
-            'smoothing': 10
-        }, format, ors_host)])
+        body = _isochrone_body(row, smoothing)
+        output_rows.append([row[0], get_ors_response('isochrones', row[1], body, format, ors_host)])
     logger.info(f'Produced {len(output_rows)} rows')
     return _make_response(output_rows)
 
