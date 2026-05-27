@@ -269,10 +269,11 @@ export default function PlantIntelligence() {
     } as any)]:[]),
     ...(navLevel>=2&&campus.length>0?[new GeoJsonLayer({ id:'pi-campus',
       data:{type:'FeatureCollection',features:campus.map(b=>({type:'Feature',geometry:b.geojson,properties:{roleId:b.roleId,role:b.role,id:b.id,alertStatus:b.alertStatus,floorCount:b.floorCount}}))},
-      filled:true, extruded:true, wireframe:true,
-      getFillColor:(f:any)=>{const b=campus.find((x:any)=>x.id===f.properties?.id);if(!b)return[100,100,100,180];const base=b.color as [number,number,number,number];const isSel=selectedBuilding?.id===b.id;return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;},
-      getLineColor:[255,255,255,120] as any, lineWidthMinPixels:2,
-      getElevation:(f:any)=>{const b=campus.find((x:any)=>x.id===f.properties?.id);return b?b.floorCount*5:8;},
+      filled:true, extruded:navLevel===2, wireframe:navLevel===2,
+      getFillColor:(f:any)=>{const b=campus.find((x:any)=>x.id===f.properties?.id);if(!b)return[100,100,100,navLevel===2?180:15];if(navLevel>=3){const isSel=selectedBuilding?.id===b.id;return isSel?[255,255,255,15]:[60,60,60,10];}const base=b.color as [number,number,number,number];const isSel=selectedBuilding?.id===b.id;return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;},
+      getLineColor:(f:any)=>{if(navLevel>=3){const b=campus.find((x:any)=>x.id===f.properties?.id);return selectedBuilding?.id===b?.id?[255,200,0,200] as any:[255,255,255,40] as any;}return[255,255,255,120] as any;},
+      lineWidthMinPixels:2,
+      getElevation:(f:any)=>{if(navLevel>=3)return 0;const b=campus.find((x:any)=>x.id===f.properties?.id);return b?b.floorCount*5:8;},
       pickable:true, onClick:({object}:any)=>{if(object&&navLevel===2){const b=campus.find((x:any)=>x.id===object.properties?.id);if(b)goToBuilding(b);}},
     } as any)]:[]),
     ...(navLevel===2&&campus.length>0?[new TextLayer({ id:'pi-bldg-labels', data:campus,
@@ -348,7 +349,8 @@ export default function PlantIntelligence() {
             if(object.PLANT_NAME){const s=Math.min(4,object.MAX_SEVERITY??0);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.PLANT_NAME}</b><br/>${object.CITY},${object.COUNTRY}<br/><span style="color:${SEVERITY_HEX[s]}">${SEVERITY_LABELS[s]}</span></div>`};}
             if(object.properties?.roleId){const b=campus.find((x:any)=>x.id===object.properties?.id);const c=alertColor(b?.alertStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.properties.role}</b><br/>${b?.floorCount} floor(s)<br/><span style="color:${c}">${b?.alertStatus?.toUpperCase()}</span><br/><i>Click to inspect</i></div>`};}
             if(object.polygon&&object.name){const c=alertColor(object.alertStatus);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c}">${object.alertStatus?.toUpperCase()}</span>${navLevel===3?'<br/><i>Click to enter room</i>':''}</div>`};}
-            if(object.expiryDate){const c=alertColor(object.expiryStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b><br/>${object.product||''}<br/>Expires: ${object.expiryDate} · <span style="color:${c}">${object.daysLeft}d</span></div>`};}
+            if(object.expiryDate){const c=alertColor(object.expiryStatus||'ok');return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b><br/>${object.product||''}<br/>Batch: ${object.batchNo||'-'} · ${object.pallets||''}<br/>Expires: ${object.expiryDate} · <span style="color:${c}">${object.daysLeft}d</span>${object.temperature?`<br/>Temp: ${object.temperature}`:''}</div>`};}
+            if(object.id&&!object.alertStatus&&!object.properties){const c=object.status==='Fault'||object.status==='Alarm'?'#ef4444':object.status==='Maintenance'||object.status==='Changeover'||object.status==='On Battery'?'#f97316':'#22c55e';const lines=[object.role&&`Role: ${object.role}`,object.model&&`Model: ${object.model}`,object.status&&`Status: <span style="color:${c}">${object.status}</span>`,object.capacity&&`Capacity: ${object.capacity}`,object.batch&&`Batch: ${object.batch}`,object.temperature&&`Temp: ${object.temperature}`,object.pressure&&`Pressure: ${object.pressure}`,object.airflow&&`Airflow: ${object.airflow}`,object.load&&`Load: ${object.load}`,object.daysLeft!=null&&`${object.daysLeft}d remaining`,].filter(Boolean);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b>${lines.length?`<br/>${lines.join('<br/>')}`:''}${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`};}
             if(object.status!==undefined&&object.zoneId!==undefined){const c=alertColor(object.status);return{html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c};font-weight:700">${object.value}${object.unit}</span>${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`};}
             return null;
           }}
