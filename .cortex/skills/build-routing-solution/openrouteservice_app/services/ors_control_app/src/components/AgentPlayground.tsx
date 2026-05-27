@@ -582,6 +582,52 @@ export default function AgentPlayground() {
     setStreaming(false);
   }, [input, streaming, messages]);
 
+  const handlePlantBuildingSelect = useCallback((building: any, plant: any) => {
+    const criticals = (building.sensors || []).filter((s: any) => s.status === 'critical');
+    const warnings = (building.sensors || []).filter((s: any) => s.status === 'warning');
+    const alertLines = [
+      ...criticals.slice(0, 3).map((s: any) => `  • 🔴 ${s.name}: ${s.value}${s.unit}${s.alert ? ` — ${s.alert}` : ''}`),
+      ...warnings.slice(0, 2).map((s: any) => `  • 🟡 ${s.name}: ${s.value}${s.unit}${s.alert ? ` — ${s.alert}` : ''}`),
+    ].join('\n');
+    const sensorSummary = criticals.length || warnings.length
+      ? `\n\nActive sensor alerts:\n${alertLines}`
+      : '\n\nAll sensors nominal.';
+    setInput(
+      `I'm viewing the **${building.role}** building at **${plant?.PLANT_NAME || 'this plant'}**. ` +
+      `This building has ${building.floorCount} floor(s), ${building.areaSqm ? Math.round(building.areaSqm).toLocaleString() + ' m², ' : ''}` +
+      `and ${(building.sensors || []).length} GMP sensors.` +
+      sensorSummary +
+      `\n\nCan you analyse this facility and check for any related supply chain or batch issues?`
+    );
+  }, []);
+
+  const handlePlantRoomSelect = useCallback((room: any, building: any, plant: any) => {
+    const criticalSensors = (room.sensors || []).filter((s: any) => s.status === 'critical');
+    const warnSensors = (room.sensors || []).filter((s: any) => s.status === 'warning');
+    const alertLines = [
+      ...criticalSensors.slice(0, 3).map((s: any) => `  • 🔴 ${s.name}: ${s.value}${s.unit}${s.alert ? ` — ${s.alert}` : ''}`),
+      ...warnSensors.slice(0, 2).map((s: any) => `  • 🟡 ${s.name}: ${s.value}${s.unit}${s.alert ? ` — ${s.alert}` : ''}`),
+    ].join('\n');
+    const items = room.contents?.items || [];
+    const itemLines = items.slice(0, 4).map((it: any) =>
+      it.expiryDate
+        ? `  • ${it.name || it.id}${it.product ? ` (${it.product})` : ''} — expires ${it.expiryDate}${it.daysLeft != null ? `, ${it.daysLeft}d remaining` : ''}${it.expiryStatus === 'critical' ? ' 🔴' : it.expiryStatus === 'warning' ? ' 🟡' : ''}`
+        : `  • ${it.name || it.id}${it.status ? ` — ${it.status}` : ''}`
+    ).join('\n');
+    const alertSection = (criticalSensors.length || warnSensors.length)
+      ? `\n\nActive sensor alerts:\n${alertLines}`
+      : '\n\nAll sensors nominal.';
+    const contentsSection = items.length
+      ? `\n\nZone contents (${items.length} items):\n${itemLines}${items.length > 4 ? `\n  ... and ${items.length - 4} more` : ''}`
+      : '';
+    setInput(
+      `I've selected the **${room.name}** zone (${room.type || 'general'}) in the **${building?.role || 'building'}** at **${plant?.PLANT_NAME || 'this plant'}**.` +
+      alertSection +
+      contentsSection +
+      `\n\nPlease analyse this zone, explain any issues, and suggest what I should investigate next using the available tools.`
+    );
+  }, []);
+
   const basemap = useMemo(() => cartoBasemap(), []);
 
   const geojsonLayer = useMemo(() => {
@@ -936,7 +982,7 @@ export default function AgentPlayground() {
                 {!hasChart && !hasMap && (
                   sc?.id === 'plant_intel' ? (
                     <div style={{ flex: 1, minHeight: 480 }}>
-                      <PlantIntelMap />
+                      <PlantIntelMap onBuildingSelect={handlePlantBuildingSelect} onRoomSelect={handlePlantRoomSelect} />
                     </div>
                   ) : (
                     <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>

@@ -36,7 +36,12 @@ function polyCenter(polygon: [number,number][]): [number,number] {
   return [lon,lat];
 }
 
-export default function PlantIntelMap() {
+interface PlantIntelMapProps {
+  onBuildingSelect?: (building: any, plant: any) => void;
+  onRoomSelect?: (room: any, building: any, plant: any) => void;
+}
+
+export default function PlantIntelMap({ onBuildingSelect, onRoomSelect }: PlantIntelMapProps = {}) {
   const [plants, setPlants] = useState<PlantRow[]>([]);
   const [navLevel, setNavLevel] = useState<NavLevel>(1);
   const [selectedPlant, setSelectedPlant] = useState<PlantRow | null>(null);
@@ -79,7 +84,8 @@ export default function PlantIntelMap() {
       setViewState({ longitude: lon, latitude: lat, zoom: 18.5, pitch: 55, bearing: -20, transitionDuration: 1200 });
     }
     setSelectedBuilding(bldg); setSelectedFloor(0); setSelectedRoom(null); setNavLevel(3);
-  }, []);
+    onBuildingSelect?.(bldg, selectedPlant);
+  }, [selectedPlant, onBuildingSelect]);
 
   // Level 3 → 4: drill into room
   const goToRoom = useCallback((zone: any) => {
@@ -87,7 +93,8 @@ export default function PlantIntelMap() {
     const [lon, lat] = polyCenter(zone.polygon);
     setViewState({ longitude: lon, latitude: lat, zoom: 20, pitch: 45, bearing: -10, transitionDuration: 800 });
     setSelectedRoom(zone); setNavLevel(4);
-  }, []);
+    onRoomSelect?.(zone, selectedBuilding, selectedPlant);
+  }, [selectedBuilding, selectedPlant, onRoomSelect]);
 
   const goBack = useCallback(() => {
     if (navLevel === 4) { setSelectedRoom(null); setNavLevel(3); setViewState((v:any)=>({...v, pitch:55, zoom:18.5, transitionDuration:600})); }
@@ -272,6 +279,16 @@ export default function PlantIntelMap() {
       {navLevel===3 && !loading && (
         <div style={{ position:'absolute', bottom:10, left:'50%', transform:'translateX(-50%)', background:'rgba(41,181,232,0.85)', color:'#fff', padding:'5px 14px', borderRadius:14, fontSize:11, fontWeight:600, pointerEvents:'none', whiteSpace:'nowrap' }}>
           Click a room to see contents &amp; sensors
+        </div>
+      )}
+      {onBuildingSelect && navLevel===2 && (
+        <div style={{ position:'absolute', bottom:36, left:'50%', transform:'translateX(-50%)', background:'rgba(168,85,247,0.85)', color:'#fff', padding:'4px 12px', borderRadius:14, fontSize:11, fontWeight:600, pointerEvents:'none', whiteSpace:'nowrap' }}>
+          🤖 Click a building to ask the agent
+        </div>
+      )}
+      {onRoomSelect && navLevel===3 && (
+        <div style={{ position:'absolute', bottom:36, left:'50%', transform:'translateX(-50%)', background:'rgba(168,85,247,0.85)', color:'#fff', padding:'4px 12px', borderRadius:14, fontSize:11, fontWeight:600, pointerEvents:'none', whiteSpace:'nowrap' }}>
+          🤖 Click a room to ask the agent
         </div>
       )}
 
