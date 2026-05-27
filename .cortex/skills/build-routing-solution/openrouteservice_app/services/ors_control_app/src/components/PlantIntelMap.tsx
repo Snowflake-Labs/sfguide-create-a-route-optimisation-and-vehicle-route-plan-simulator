@@ -161,9 +161,12 @@ export default function PlantIntelMap({ onBuildingSelect, onRoomSelect }: PlantI
     ...(navLevel>=3 && currentFloorZones.length>0 ? [new PolygonLayer({ id:'pi-zones',
       data: currentFloorZones,
       getPolygon: (z:any) => z.polygon,
-      getElevation: (z:any) => z.elevation,
+      getElevation: (z:any) => navLevel===4 ? 0.15 : z.elevation,
       getFillColor: (z:any) => {
         const isSelected = selectedRoom?.id===z.id;
+        if (navLevel===4) {
+          return isSelected ? [255,255,255,30] : [40,40,40,20];
+        }
         const base = alertRgba(z.alertStatus);
         return isSelected ? [Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240] : base;
       },

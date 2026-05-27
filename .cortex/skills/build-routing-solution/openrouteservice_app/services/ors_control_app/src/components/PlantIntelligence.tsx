@@ -284,8 +284,13 @@ export default function PlantIntelligence() {
     } as any)]:[]),
     ...(navLevel>=3&&currentFloorZones.length>0?[
       new PolygonLayer({ id:'pi-zones', data:currentFloorZones,
-        getPolygon:(z:any)=>z.polygon, getElevation:(z:any)=>z.elevation,
-        getFillColor:(z:any)=>{const isSel=selectedRoom?.id===z.id;const base=alertRgba(z.alertStatus);return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;},
+        getPolygon:(z:any)=>z.polygon,
+        getElevation:(z:any)=>navLevel===4?0.15:z.elevation,
+        getFillColor:(z:any)=>{
+          const isSel=selectedRoom?.id===z.id;
+          if(navLevel===4) return isSel?[255,255,255,30]:[40,40,40,20];
+          const base=alertRgba(z.alertStatus);return isSel?[Math.min(255,base[0]+60),Math.min(255,base[1]+60),Math.min(255,base[2]+60),240]:base;
+        },
         getLineColor:[255,255,255,100] as any, lineWidthMinPixels:1,
         extruded:true, wireframe:true, pickable:true,
         onClick:({object}:any)=>{if(object&&navLevel===3)goToRoom(object);else if(object&&navLevel===4)setSelectedRoom(object);},
