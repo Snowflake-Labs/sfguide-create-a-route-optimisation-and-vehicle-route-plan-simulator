@@ -28,6 +28,11 @@ export const postRefreshRoutes = (body: { batchSize?: number; maxAgeHours?: numb
 export const postEta = (body: { trailerLon: number; trailerLat: number; offerId: string; vehicleType?: string }) =>
   postJson<{ offerId: string; roadKm: number | null; roadMin: number | null; geometry: any }>('/api/fx/eta', body);
 
+// Pickup -> Dropoff route for the selected offer (used by the map to show
+// origin, destination, and travel path under the active region/preset).
+export const postOfferRoute = (body: { offerId: string; vehicleType?: string }) =>
+  postJson<{ offerId: string; roadKm: number | null; roadMin: number | null; geometry: any; region: string; profile: string }>('/api/fx/offer-route', body);
+
 // Phase E2
 export const postIsochrone = (body: { trailerLon: number; trailerLat: number; rangeSeconds?: number; vehicleType?: string }) =>
   postJson<{ isochrone: any; rangeSeconds: number; profile: string }>('/api/fx/isochrone', body);

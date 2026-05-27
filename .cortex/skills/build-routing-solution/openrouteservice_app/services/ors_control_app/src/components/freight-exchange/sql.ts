@@ -3,13 +3,17 @@
 // (e.g. useDeadhead, useTrailers) is a single new function here — UI files
 // import the hook and never touch the query string.
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { sfQuery } from '../../lib/sfQuery';
 import { FX_DB, FX_SCHEMA } from './constants';
+import { postOfferRoute } from './api';
+import { parseRouteGeometry } from './helpers';
 import type { Offer, LaneRow, Trailer } from './types';
 
-/** Loads VW_OFFER_ENRICHED. Switch to VW_OFFER_ENRICHED_V2 in a follow-up
- *  enrichment turn — single-line change here, no other file touched. */
+/** Loads VW_OFFER_ENRICHED_V2 — same shape as V1 plus ROAD_KM/ROAD_MIN/
+ *  ROUTE_GEOMETRY/ROUTE_DETOUR_BADGE for offers that have been batch-routed
+ *  via POST /api/fx/refresh-routes. Optional columns stay null for offers
+ *  that haven't been routed yet. */
 export function useOffers() {
   const [rows, setRows] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +25,7 @@ export function useOffers() {
     let cancelled = false;
     setLoading(true);
     sfQuery(
-      `SELECT * FROM ${FX_DB}.${FX_SCHEMA}.VW_OFFER_ENRICHED ORDER BY POSTED_AT DESC LIMIT 500`,
+      `SELECT * FROM ${FX_DB}.${FX_SCHEMA}.VW_OFFER_ENRICHED_V2 ORDER BY POSTED_AT DESC LIMIT 500`,
       FX_DB, FX_SCHEMA,
     ).then(r => {
       if (cancelled) return;
@@ -77,4 +81,85 @@ export function useTrailers() {
     return () => { cancelled = true; };
   }, []);
   return rows;
+}
+
+export interface SelectedOfferRoute {
+  coords: [number, number][] | null;
+  roadKm: number | null;
+  roadMin: number | null;
+  loading: boolean;
+  source: 'cache' | 'live' | 'none';
+}
+
+/** Resolves the pickup -> dropoff travel path + road km/min for the selected
+ *  offer. Prefers the V2 cache (selected.ROUTE_GEOMETRY) when present, falls
+ *  back to a live POST /api/fx/offer-route call. Component-level Map keyed by
+ *  OFFER_ID caches live responses so reselecting an offer is free. On ORS
+ *  failure returns null coords/roadKm/roadMin with source='live' so the map
+ *  keeps the markers but drops the path. */
+export function useSelectedOfferRoute(
+  selected: Offer | null,
+  vehicleType: string | undefined,
+): SelectedOfferRoute {
+  const liveCacheRef = useRef<Map<string, { coords: [number, number][] | null; roadKm: number | null; roadMin: number | null }>>(new Map());
+  const [, forceRender] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const offerId = selected?.OFFER_ID ?? null;
+
+  useEffect(() => {
+    if (!selected || !offerId) { setLoading(false); return; }
+    if (parseRouteGeometry(selected.ROUTE_GEOMETRY) !== null) { setLoading(false); return; }
+    if (liveCacheRef.current.has(offerId)) { setLoading(false); return; }
+
+    let cancelled = false;
+    setLoading(true);
+    postOfferRoute({ offerId, vehicleType })
+      .then(res => {
+        if (cancelled) return;
+        const coords = parseRouteGeometry(res?.geometry ?? null);
+        liveCacheRef.current.set(offerId, {
+          coords,
+          roadKm: res?.roadKm ?? null,
+          roadMin: res?.roadMin ?? null,
+        });
+        setLoading(false);
+        forceRender(v => v + 1);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        liveCacheRef.current.set(offerId, { coords: null, roadKm: null, roadMin: null });
+        setLoading(false);
+        forceRender(v => v + 1);
+      });
+    return () => { cancelled = true; };
+  }, [offerId, vehicleType, selected?.ROUTE_GEOMETRY]);
+
+  if (!selected || !offerId) {
+    return { coords: null, roadKm: null, roadMin: null, loading: false, source: 'none' };
+  }
+
+  const cachedCoords = parseRouteGeometry(selected.ROUTE_GEOMETRY);
+  if (cachedCoords) {
+    return {
+      coords: cachedCoords,
+      roadKm: selected.ROAD_KM ?? null,
+      roadMin: selected.ROAD_MIN ?? null,
+      loading: false,
+      source: 'cache',
+    };
+  }
+
+  const live = liveCacheRef.current.get(offerId);
+  if (live) {
+    return {
+      coords: live.coords,
+      roadKm: live.roadKm,
+      roadMin: live.roadMin,
+      loading: false,
+      source: 'live',
+    };
+  }
+
+  return { coords: null, roadKm: null, roadMin: null, loading, source: 'live' };
 }

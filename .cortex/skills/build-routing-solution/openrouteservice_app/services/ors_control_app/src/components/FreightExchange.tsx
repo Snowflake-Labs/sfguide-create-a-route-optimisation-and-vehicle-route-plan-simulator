@@ -17,8 +17,9 @@ import FilterBar from './freight-exchange/FilterBar';
 import OffersGrid from './freight-exchange/OffersGrid';
 import OffersMap from './freight-exchange/OffersMap';
 import OfferDrawer from './freight-exchange/OfferDrawer';
-import { useOffers, useLaneHistory } from './freight-exchange/sql';
+import { useOffers, useLaneHistory, useSelectedOfferRoute } from './freight-exchange/sql';
 import { EQUIPMENTS, TRUST_RANK, MARKET_RANK } from './freight-exchange/constants';
+import { useVehicleType } from '../hooks/useVehicleType';
 import type { Offer, FilterState, SortKey, SortDir } from './freight-exchange/types';
 
 const INITIAL_FILTERS: FilterState = {
@@ -34,11 +35,13 @@ const INITIAL_FILTERS: FilterState = {
 
 export default function FreightExchange() {
   const { rows: offers, loading } = useOffers();
+  const { vehicleType } = useVehicleType();
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
   const [selected, setSelected] = useState<Offer | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('POSTED_AGE_MIN');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const laneHistory = useLaneHistory(selected?.PARTNER_ID, selected?.EQUIPMENT);
+  const route = useSelectedOfferRoute(selected, vehicleType);
 
   // Seed source toggles once when offers first arrive. The guard preserves
   // any subsequent user toggles — without it, a re-fetch would wipe the
@@ -106,8 +109,8 @@ export default function FreightExchange() {
           onSort={onSort}
         />
         <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 8, minHeight: 0 }}>
-          <OffersMap rows={filtered} selected={selected} onSelect={setSelected} />
-          <OfferDrawer selected={selected} laneHistory={laneHistory} />
+          <OffersMap rows={filtered} selected={selected} onSelect={setSelected} route={route} />
+          <OfferDrawer selected={selected} laneHistory={laneHistory} route={route} />
         </div>
       </div>
     </div>

@@ -7,6 +7,7 @@
 //   GET    /api/fx/enriched-offers     — VW_OFFER_ENRICHED_V2 with road km/min
 //   POST   /api/fx/refresh-routes      — Batch DIRECTIONS for OPEN offers, populates FACT_OFFER_ROUTES (Phase E1)
 //   POST   /api/fx/eta                 — On-demand DIRECTIONS for trailer -> offer pickup (Phase E1/E2)
+//   POST   /api/fx/offer-route         — On-demand DIRECTIONS for offer pickup -> offer dropoff (map preview)
 //   POST   /api/fx/isochrone           — ISOCHRONES from trailer for reachability filter (Phase E2)
 //   POST   /api/fx/refresh-deadhead    — Batch MATRIX trailer.last_drop -> offer.pickup, populates FACT_DEADHEAD_MATRIX (Phase E3)
 //   GET    /api/fx/deadhead            — VW_OFFER_DEADHEAD read for active region
@@ -193,6 +194,62 @@ export function createFreightExchangeRouter(): Router {
       });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `eta: ${e?.message || e}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/fx/offer-route — Pickup -> Dropoff DIRECTIONS for the selected offer
+  // Body: { offerId, vehicleType? }
+  // Returns the road geometry between PICKUP and DROPOFF using the active
+  // region preset and a profile derived from the requested vehicleType. Used
+  // by the Freight Exchange map to draw origin/destination markers and the
+  // travel path when an offer is selected.
+  // -------------------------------------------------------------------------
+  router.post('/api/fx/offer-route', async (req, res) => {
+    try {
+      await setQueryTag();
+      const offerId = escapeString(String(req.body?.offerId ?? ''));
+      if (!offerId) return res.status(400).json({ error: 'offerId required' });
+
+      const offerRows = await runSql(`
+        SELECT PICKUP_LON, PICKUP_LAT, DROPOFF_LON, DROPOFF_LAT
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS
+        WHERE OFFER_ID = '${offerId}' LIMIT 1
+      `);
+      const o: any = offerRows?.[0];
+      if (!o) return res.status(404).json({ error: 'offer not found' });
+      if (o.PICKUP_LON == null || o.PICKUP_LAT == null || o.DROPOFF_LON == null || o.DROPOFF_LAT == null) {
+        return res.status(422).json({ error: 'offer is missing pickup or dropoff coordinates' });
+      }
+
+      const region = await activeRegion();
+      const safeRegion = safeRegionIdent(normalizeRegion(region));
+      const profile = profileFor(region, req.body?.vehicleType);
+
+      const rows = await runSql(`
+        SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+          ARRAY_CONSTRUCT(
+            ARRAY_CONSTRUCT(${sanitizeFloat(String(o.PICKUP_LON))}, ${sanitizeFloat(String(o.PICKUP_LAT))}),
+            ARRAY_CONSTRUCT(${sanitizeFloat(String(o.DROPOFF_LON))}, ${sanitizeFloat(String(o.DROPOFF_LAT))})
+          ),
+          '${escapeString(profile)}',
+          '${safeRegion}'
+        ) AS D
+      `);
+      const raw = rows?.[0]?.D;
+      const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const route = d?.routes?.[0];
+      res.json({
+        offerId: req.body?.offerId,
+        roadKm: route ? Number(route.summary?.distance ?? 0) / 1000 : null,
+        roadMin: route ? Number(route.summary?.duration ?? 0) / 60 : null,
+        geometry: route?.geometry ?? null,
+        region,
+        profile,
+      });
+    } catch (e: any) {
+      log('ERROR', 'FreightExchange', `offer-route: ${e?.message || e}`);
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
