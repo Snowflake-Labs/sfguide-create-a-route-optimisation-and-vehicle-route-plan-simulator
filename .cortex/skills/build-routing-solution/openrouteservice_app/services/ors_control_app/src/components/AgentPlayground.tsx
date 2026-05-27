@@ -330,17 +330,13 @@ function detectChartFromMarkdown(content: string): ChartData | null {
   return { type, data, labelKey, valueKeys, title: '' };
 }
 
-function AgentChart({ chart, expanded, onToggle }: { chart: ChartData; expanded: boolean; onToggle: () => void }) {
-  const height = expanded ? 480 : 280;
+function AgentChart({ chart }: { chart: ChartData }) {
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)', marginBottom: 8 }}>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface, #fff)', flex: 1, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>📊 Analytics Visualization</span>
-        <button onClick={onToggle} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-          {expanded ? '↙ Collapse' : '↗ Expand'}
-        </button>
       </div>
-      <div style={{ padding: 12, height }}>
+      <div style={{ padding: 12, flex: 1, minHeight: 200 }}>
         {chart.type === 'bar' && (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chart.data} margin={{ top: 5, right: 20, left: 10, bottom: 40 }}>
@@ -396,7 +392,6 @@ export default function AgentPlayground() {
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [scenarios, setScenarios] = useState<DemoScenario[]>(FALLBACK_SCENARIOS);
   const [chartData, setChartData] = useState<ChartData | null>(null);
-  const [chartExpanded, setChartExpanded] = useState(false);
   const [activeVisualTab, setActiveVisualTab] = useState<'chart' | 'map'>('chart');
   const [tokenPaneOpen, setTokenPaneOpen] = useState(true);
   const [leftWidth, setLeftWidth] = useState(380);
@@ -447,7 +442,6 @@ export default function AgentPlayground() {
     setTokenUsage(null);
     setWorkflowSteps([]);
     setChartData(null);
-    setChartExpanded(false);
     setActiveVisualTab('chart');
     streamingTextRef.current = '';
     setViewState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
@@ -928,9 +922,10 @@ export default function AgentPlayground() {
                     ))}
                   </div>
                 )}
-                {/* Chart */}
                 {hasChart && (!hasMap || activeVisualTab === 'chart') && (
-                  <AgentChart chart={chartData!} expanded={chartExpanded} onToggle={() => setChartExpanded(!chartExpanded)} />
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <AgentChart chart={chartData!} />
+                  </div>
                 )}
                 {/* DeckGL — single instance, always mounted; height:0 hides without destroying WebGL context */}
                 <div style={{ flexShrink: 0, height: showMap ? mapH : 0, overflow: 'hidden', borderRadius: 8, border: showMap ? '1px solid var(--border)' : 'none', position: 'relative', background: '#e8e8e8' }}>
