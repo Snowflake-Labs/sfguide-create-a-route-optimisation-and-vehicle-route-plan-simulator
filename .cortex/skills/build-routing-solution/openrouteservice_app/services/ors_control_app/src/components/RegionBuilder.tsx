@@ -15,6 +15,7 @@ import { useDiagnostics } from './region-builder/hooks/useDiagnostics';
 
 import HealthBanner from './region-builder/sections/HealthBanner';
 import ActiveJobsTable from './region-builder/sections/ActiveJobsTable';
+import BuildSummaryCard from './region-builder/sections/BuildSummaryCard';
 import ProvisionedRegionsTable from './region-builder/sections/ProvisionedRegionsTable';
 import BuildHistoryTable from './region-builder/sections/BuildHistoryTable';
 import ProvisionForm from './region-builder/sections/ProvisionForm';
@@ -124,6 +125,12 @@ export default function RegionBuilder() {
       <p className="subtitle">Deploy per-region ORS instances from OSM map data (Geofabrik + BBBike)</p>
 
       <HealthBanner health={health} />
+
+      {jobs.activeJobs
+        .filter((j) => (j.stage || '').toLowerCase() === 'building_graph')
+        .map((j) => (
+          <BuildSummaryCard key={`summary-${j.job_id}`} job={j} buildProgress={buildProgress[j.region]} />
+        ))}
 
       <ActiveJobsTable
         jobs={jobs.activeJobs}
