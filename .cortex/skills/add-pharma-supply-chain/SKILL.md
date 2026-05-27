@@ -1,6 +1,6 @@
 ---
 name: add-pharma-supply-chain
-description: "Add upstream pharmaceutical manufacturing supply chain intelligence to the Routing Agent. Creates 6 tables (plants, suppliers, products, batches, shipments, material inventory), a Cortex Analyst semantic view, and adds a pharma_supply_chain tool to the ROUTING_AGENT. Business lines: ONCOLOGY, CARDIOVASCULAR, RESPIRATORY, BIOLOGICS. Manufacturing plants in UK, US, Sweden, Singapore, Ireland. Use when: adding upstream supply chain, manufacturing intelligence, supplier reliability, batch analytics, shipment tracking. Prerequisites: routing-agent deployed. Triggers: supply chain, manufacturing, supplier, batch, API, upstream, plants, shipments."
+description: "Add upstream pharmaceutical manufacturing supply chain intelligence to the Routing Agent. Creates 7 tables (plants, suppliers, products, batches, shipments, material inventory, robot telemetry), a Cortex Analyst semantic view with robot entity and 4 VQRs, and adds a pharma_supply_chain tool to the ROUTING_AGENT. Business lines: ONCOLOGY, CARDIOVASCULAR, RESPIRATORY, BIOLOGICS. Manufacturing plants in UK, US, Sweden, Singapore, Ireland. Use when: adding upstream supply chain, manufacturing intelligence, supplier reliability, batch analytics, shipment tracking, robot telemetry, asset tracking. Prerequisites: routing-agent deployed. Triggers: supply chain, manufacturing, supplier, batch, API, upstream, plants, shipments, robots, AGV, asset tracking."
 depends_on:
   - routing-agent
 metadata:
@@ -25,7 +25,8 @@ Extends the Routing Agent with upstream pharmaceutical manufacturing analytics �
 | `PRODUCTION_BATCHES` | 15 recent batches including on-hold and rejected batches |
 | `SHIPMENTS` | 13 inbound shipments with delays, customs holds, and temperature excursions |
 | `MATERIAL_INVENTORY` | Raw material/API stock at each plant with days of coverage |
-| `PHARMA_SUPPLY_CHAIN_SV` | Cortex Analyst semantic view joining all tables |
+| `ROBOT_TELEMETRY` | 144 robot readings (6 plants × 6 buildings × 4 robots). Types: Transport AGV, Inspection, Cleaning. Fields: battery, speed, vibration, temp, cargo batch/kg, uptime, maintenance due hours |
+| `PHARMA_SUPPLY_CHAIN_SV` | Cortex Analyst semantic view joining all 7 tables including ROBOTS entity with 4 verified queries (maintenance alerts, active robots per plant, AGV cargo, low battery) |
 | Updated `ROUTING_AGENT` | `pharma_supply_chain` Cortex Analyst tool added |
 | Updated `agent-demos.json` | "Pharma Manufacturing" scenario with 5 prompts |
 
@@ -58,7 +59,21 @@ UNION ALL SELECT 'INVENTORY', COUNT(*) FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHA
 
 Expected: 6 / 12 / 17 / 15 / 13 / 17
 
-### Step 2: Update ROUTING_AGENT
+### Step 1b: Deploy Robot Telemetry (required for plant map integration)
+
+Execute `references/deploy-robot-telemetry.sql` — creates the `ROBOT_TELEMETRY` table (144 rows) and recreates `PHARMA_SUPPLY_CHAIN_SV` with the ROBOTS entity and 4 verified queries.
+
+```sql
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE ROUTING_ANALYTICS;
+```
+
+The agent can then answer questions like:
+- *"Which robots need maintenance in the next 4 hours?"*
+- *"Show me all AGVs transporting batches across all plants"*
+- *"How many robots are active per plant?"*
+
+
 
 Execute `references/update-agent-supply-chain.sql` — adds `pharma_supply_chain` Cortex Analyst tool to the agent alongside all existing tools.
 
