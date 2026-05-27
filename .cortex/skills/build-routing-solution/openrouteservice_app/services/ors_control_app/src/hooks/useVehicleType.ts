@@ -6,6 +6,7 @@ interface VehicleTypeContextValue {
   vehicleType: string;
   availableTypes: string[];
   datasetPairs: DatasetPair[];
+  activeDatasetId: string | null;
   loading: boolean;
   switchVehicleType: (type: string) => Promise<void>;
   regionsForType: (type: string) => string[];
@@ -17,6 +18,7 @@ const defaults: VehicleTypeContextValue = {
   vehicleType: 'ebike',
   availableTypes: [],
   datasetPairs: [],
+  activeDatasetId: null,
   loading: true,
   switchVehicleType: async () => {},
   regionsForType: () => [],
@@ -34,6 +36,7 @@ export function useVehicleTypeProvider() {
   const [vehicleType, setVehicleType] = useState(defaults.vehicleType);
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
   const [datasetPairs, setDatasetPairs] = useState<DatasetPair[]>([]);
+  const [activeDatasetId, setActiveDatasetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchConfig = useCallback(async () => {
@@ -44,6 +47,7 @@ export function useVehicleTypeProvider() {
         if (data.vehicleType) setVehicleType(data.vehicleType);
         if (data.availableTypes) setAvailableTypes(data.availableTypes);
         if (data.datasetPairs) setDatasetPairs(data.datasetPairs);
+        setActiveDatasetId(data.activeDatasetId ?? null);
       }
     } catch {
     } finally {
@@ -76,6 +80,7 @@ export function useVehicleTypeProvider() {
     vehicleType,
     availableTypes,
     datasetPairs,
+    activeDatasetId,
     loading,
     switchVehicleType,
     regionsForType,

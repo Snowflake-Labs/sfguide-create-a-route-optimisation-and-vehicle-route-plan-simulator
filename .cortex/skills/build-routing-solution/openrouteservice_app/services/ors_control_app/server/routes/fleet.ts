@@ -39,6 +39,16 @@ export function createFleetRouter(): Router {
           region = rows[0].REGION || region;
         }
       } catch {}
+      let activeDatasetId: string | null = null;
+      try {
+        const dsRows = await runSql(
+          `SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           WHERE REGION = '${escapeString(region)}' AND VEHICLE_TYPE = '${escapeString(vehicleType)}'
+             AND IS_ACTIVE = TRUE LIMIT 1`,
+          'FLEET_INTELLIGENCE', 'CORE',
+        );
+        if (dsRows?.[0]) activeDatasetId = (dsRows[0] as any).DATASET_ID;
+      } catch {}
       let availableTypes: string[] = [];
       let datasetPairs: { vehicleType: string; region: string }[] = [];
       try {
@@ -48,7 +58,7 @@ export function createFleetRouter(): Router {
       } catch {}
       if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
       if (availableTypes.length === 0) availableTypes = [vehicleType];
-      res.json({ vehicleType, region, availableTypes, datasetPairs });
+      res.json({ vehicleType, region, availableTypes, datasetPairs, activeDatasetId });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

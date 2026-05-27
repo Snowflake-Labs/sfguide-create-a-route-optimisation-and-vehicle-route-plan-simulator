@@ -286,7 +286,7 @@ export default function App() {
               Remount is cheap for these pages and guarantees a clean
               fetch + map reset on every (region, vehicleType) change.
             */}
-            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}`; return (<>
+            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}|${vehicleTypeCtx.value.activeDatasetId ?? ''}`; return (<>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
             {activeTab === 'intro' && <Intro />}
