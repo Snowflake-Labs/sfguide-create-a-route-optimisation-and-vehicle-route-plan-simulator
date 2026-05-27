@@ -1,6 +1,6 @@
 ---
 name: add-plant-map
-description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 manufacturing plants, color-coded by live supply chain alerts (batch holds, temp excursions, low stock, delayed shipments). New React page with 3D DeckGL map, side panel with batch/inventory details. Requires running build-plant-footprints.sql FIRST. Image v1.0.200 already deployed. Triggers: plant map, building footprints, manufacturing map, plant intelligence, Overture buildings."
+description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 manufacturing plants, color-coded by live supply chain alerts (batch holds, temp excursions, low stock, delayed shipments). 3-level drill-down: world → plant building → interactive 3D warehouse floor plan with zones, sensors, and 24-hour timeline. Image v1.0.203 already deployed. Triggers: plant map, building footprints, manufacturing map, plant intelligence, Overture buildings, warehouse floor plan, sensor data."
 depends_on:
   - add-pharma-supply-chain
 metadata:
@@ -13,12 +13,18 @@ metadata:
 
 Adds a **Plant Intelligence** page to the ORS Control App showing Overture Maps building footprints for each manufacturing plant, color-coded by real-time supply chain alerts.
 
-**Image v1.0.200 is already deployed** to the publisher registry. The React module, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create the pre-computed footprints table.
+**Image v1.0.203 is already deployed** to the publisher registry. The React module, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create the pre-computed footprints table.
 
-## What's in the Image (v1.0.200)
+## What's in the Image (v1.0.203)
 
-- `PlantIntelligence.tsx` — DeckGL map with ScatterplotLayer (world view) + GeoJsonLayer (building footprints, extruded 3D)
-- `server/plant-intel/routes.ts` — 4 API endpoints: `/plants`, `/buildings`, `/batches`, `/inventory`
+- `PlantIntelligence.tsx` — 3-level DeckGL navigation:
+  1. **World view** — severity-colored plant markers
+  2. **Plant view** (zoom 15) — single largest building per plant highlighted, click to enter warehouse
+  3. **Warehouse view** (zoom 19, pitch 60) — synthetic 3D floor plan with 7 zones:
+     Cold Storage −20°C, Cold Storage +4°C, Controlled Substances, Production Floor, QC Lab, Loading Dock, General Warehouse
+- `server/plant-intel/routes.ts` — 5 API endpoints: `/plants`, `/buildings`, `/batches`, `/inventory`, `/warehouse`
+  - `/buildings` returns single largest building (via `PLANT_PRIMARY_BUILDING` view)
+  - `/warehouse` generates synthetic floor plan zones, sensor readings, 24h timeline
 - `App.tsx` — "Plant Intelligence" nav entry in Solution Accelerators
 - `Home.tsx` — Plant Intelligence home card
 
@@ -42,6 +48,7 @@ USE WAREHOUSE ROUTING_ANALYTICS;
 This creates:
 - `FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS` — Overture building polygons per plant
 - `FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_ALERT_STATUS` — aggregated alert severity view
+- `FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_PRIMARY_BUILDING` — largest building per plant (used by warehouse drill-down)
 
 **Expected output:**
 ```
@@ -70,7 +77,7 @@ ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
   FROM SPECIFICATION_FILE = '@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml';
 ```
 
-Or redeploy with: `$build-routing-solution` (which will pick up v1.0.200 automatically from `image-versions.env`).
+Or redeploy with: `$build-routing-solution` (which will pick up v1.0.203 automatically from `image-versions.env`).
 
 ## Alert Color Legend
 

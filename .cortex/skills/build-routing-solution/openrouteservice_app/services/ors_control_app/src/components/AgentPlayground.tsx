@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import PlantIntelMap from './PlantIntelMap';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 const CURSOR_BLINK_CSS = `
@@ -933,12 +934,18 @@ export default function AgentPlayground() {
                 </div>
                 {/* Intro placeholder — neither chart nor map */}
                 {!hasChart && !hasMap && (
-                  <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                    <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
-                    <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
-                    <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
-                    <p style={{ fontSize: 11, color: 'var(--text-secondary)', opacity: 0.6 }}>Select a prompt above or type your own question below.</p>
-                  </div>
+                  sc?.id === 'plant_intel' ? (
+                    <div style={{ flex: 1, minHeight: 480 }}>
+                      <PlantIntelMap />
+                    </div>
+                  ) : (
+                    <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                      <div style={{ fontSize: 36, marginBottom: 14 }}>{sc?.icon || '🗺️'}</div>
+                      <h3 style={{ fontSize: 17, fontWeight: 700, marginBottom: 10, color: 'var(--text)' }}>{sc?.label || 'Agent Playground'}</h3>
+                      <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 18, maxWidth: 480 }}>{sc?.description}</p>
+                      <p style={{ fontSize: 11, color: 'var(--text-secondary)', opacity: 0.6 }}>Select a prompt above or type your own question below.</p>
+                    </div>
+                  )
                 )}
               </>
             );
