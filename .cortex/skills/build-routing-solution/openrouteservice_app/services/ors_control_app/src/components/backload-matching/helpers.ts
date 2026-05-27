@@ -119,13 +119,53 @@ export function haversineKm(lon1: number, lat1: number, lon2: number, lat2: numb
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-export function profileForVehicleType(vt: string): string {
-  switch ((vt || '').toLowerCase()) {
-    case 'ebike': case 'bicycle': case 'bike': return 'cycling-electric';
-    case 'car':                                return 'driving-car';
-    case 'hgv': case 'truck':                  return 'driving-hgv';
-    default:                                   return 'driving-hgv';
-  }
+// Per-vehicle-class profile loaded from OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE.
+// Single source of truth for capacity, costs, ORS profile, and UI label.
+// Replaces the legacy hardcoded HGV constants and profileForVehicleType().
+export type VehicleClass = {
+  VEHICLE_TYPE: string;
+  ORS_PROFILE: string;
+  PAYLOAD_KG_TYP: number;
+  PAYLOAD_KG_MAX: number;
+  SHIPMENT_KG_MIN: number;
+  SHIPMENT_KG_MAX: number;
+  AVG_SPEED_KMH: number;
+  COST_EUR_PER_KM: number;
+  COST_EUR_PER_HR: number;
+  ENFORCE_BREAK: boolean;
+  HOME_RANGE_KM: number;
+  LABEL_NOUN: string;
+};
+
+export async function fetchVehicleClass(vt: string): Promise<VehicleClass | null> {
+  if (!vt) return null;
+  const safe = vt.replace(/'/g, "''");
+  const rows = await sfQuery(
+    `SELECT VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX,
+            SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH,
+            COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK,
+            HOME_RANGE_KM, LABEL_NOUN
+       FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
+      WHERE VEHICLE_TYPE = '${safe}'
+      LIMIT 1`,
+    'OPENROUTESERVICE_APP', 'CORE',
+  );
+  if (!rows.length) return null;
+  const r: any = rows[0];
+  return {
+    VEHICLE_TYPE: String(r.VEHICLE_TYPE),
+    ORS_PROFILE: String(r.ORS_PROFILE),
+    PAYLOAD_KG_TYP: Number(r.PAYLOAD_KG_TYP),
+    PAYLOAD_KG_MAX: Number(r.PAYLOAD_KG_MAX),
+    SHIPMENT_KG_MIN: Number(r.SHIPMENT_KG_MIN),
+    SHIPMENT_KG_MAX: Number(r.SHIPMENT_KG_MAX),
+    AVG_SPEED_KMH: Number(r.AVG_SPEED_KMH),
+    COST_EUR_PER_KM: Number(r.COST_EUR_PER_KM),
+    COST_EUR_PER_HR: Number(r.COST_EUR_PER_HR),
+    ENFORCE_BREAK: !!r.ENFORCE_BREAK,
+    HOME_RANGE_KM: Number(r.HOME_RANGE_KM),
+    LABEL_NOUN: String(r.LABEL_NOUN),
+  };
 }
 
 // Synthesize multi-dim capacity for vehicles/shipments when source data only
@@ -226,10 +266,12 @@ export type EmptyLegBaseline = {
 
 const FIXED_OPEN_KM = 200;
 
-function fixedOpenBaseline(): EmptyLegBaseline {
+function fixedOpenBaseline(kmh: number = KMH_HGV, homeRangeKm: number = FIXED_OPEN_KM): EmptyLegBaseline {
+  const km = homeRangeKm > 0 ? homeRangeKm : FIXED_OPEN_KM;
+  const speed = kmh > 0 ? kmh : KMH_HGV;
   return {
-    durSec:     Math.round((FIXED_OPEN_KM / KMH_HGV) * 3600),
-    distMeters: FIXED_OPEN_KM * 1000,
+    durSec:     Math.round((km / speed) * 3600),
+    distMeters: km * 1000,
     source:     'fixed-open',
   };
 }
@@ -237,10 +279,12 @@ function fixedOpenBaseline(): EmptyLegBaseline {
 function haversineBaseline(
   startLon: number, startLat: number,
   endLon: number,   endLat: number,
+  kmh: number = KMH_HGV,
 ): EmptyLegBaseline {
   const meters = haversineKm(startLon, startLat, endLon, endLat) * 1000;
+  const speed = kmh > 0 ? kmh : KMH_HGV;
   return {
-    durSec:     Math.max(1, Math.round((meters / 1000) / KMH_HGV * 3600)),
+    durSec:     Math.max(1, Math.round((meters / 1000) / speed * 3600)),
     distMeters: Math.max(1, Math.round(meters)),
     source:     'haversine',
   };
@@ -251,15 +295,18 @@ export async function computeEmptyLegBaselines(
   trailers: Trailer[],
   trailerEnd: (t: Trailer) => [number, number] | null,
   region: string | null | undefined,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; kmh?: number; homeRangeKm?: number } = {},
 ): Promise<Map<Trailer, EmptyLegBaseline>> {
   const out = new Map<Trailer, EmptyLegBaseline>();
   if (!trailers.length) return out;
 
+  const kmh = opts.kmh ?? KMH_HGV;
+  const homeRangeKm = opts.homeRangeKm ?? FIXED_OPEN_KM;
+
   // Open-end short-circuit: if no trailer has an end point, no MATRIX call.
   const anyEnd = trailers.some(t => trailerEnd(t) !== null);
   if (!anyEnd) {
-    for (const t of trailers) out.set(t, fixedOpenBaseline());
+    for (const t of trailers) out.set(t, fixedOpenBaseline(kmh, homeRangeKm));
     return out;
   }
 
@@ -309,12 +356,12 @@ export async function computeEmptyLegBaselines(
   for (const spec of specs) {
     if (spec.endIdx === null || spec.endLon === null || spec.endLat === null) {
       // Trailer has no end point even though some others do - treat as open.
-      out.set(spec.trailer, fixedOpenBaseline());
+      out.set(spec.trailer, fixedOpenBaseline(kmh, homeRangeKm));
       continue;
     }
     if (!matrix) {
       out.set(spec.trailer,
-        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat));
+        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat, kmh));
       continue;
     }
     const durRow = matrix.durations[spec.startIdx];
@@ -329,7 +376,7 @@ export async function computeEmptyLegBaselines(
       });
     } else {
       out.set(spec.trailer,
-        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat));
+        haversineBaseline(spec.startLon, spec.startLat, spec.endLon, spec.endLat, kmh));
     }
   }
 

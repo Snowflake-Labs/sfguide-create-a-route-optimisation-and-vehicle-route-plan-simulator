@@ -56,15 +56,13 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | SCHEMA | `BACKLOAD_MATCHING` | Schema for backload tables and views |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
 | REGION | (active preset) | Auto-derived from `BACKLOAD_MATCHING.CONFIG`, which mirrors the active Control App region/vehicle. No hardcoded city. |
-| HOME_REGION | `Nordics` | Country group counted as "back-to-home" |
-| HOME_LAT / HOME_LON | `55.6759 / 12.5655` | Anchor (Copenhagen) used as vehicle `end` |
-| TRAILER_COUNT | `80` | Idle-bound trailers seeded |
-| INTERNAL_VOLUMES_COUNT | `120` | Internal waiting loads seeded |
-| EXTERNAL_OFFERS_COUNT | `300` | Synthetic external offers seeded |
+| VEHICLE_CLASS_PROFILE | `OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE` | Single source of truth for per-vehicle-class capacity (`PAYLOAD_KG_TYP`), shipment-weight band, ORS profile, costs (€/km, €/hr), and UI label. The skill is transport-type agnostic — no HGV-specific constants. Seeded with 8 classes (`bicycle`, `ebike`, `foot`, `motorcycle`, `car`, `van`, `hgv`, `truck`). Unknown `vehicle_type` → bootstrap and React both fail loudly so a custom preset never silently runs with wrong-class defaults. |
+| TRAILER_COUNT | up to ~80 (driven by Data Studio dataset) | Idle-bound trailers for the active preset |
+| INTERNAL_VOLUMES_COUNT | 120 | Internal waiting loads (most-recent FACT_TRIPS) |
+| EXTERNAL_OFFERS_COUNT | 300 | Synthetic external offers per region |
 | INTERNAL_PRIORITY | `100` | VROOM `priority` on internal jobs |
 | EXTERNAL_PRIORITY | `10` | VROOM `priority` on external offers |
 | TIME_WINDOW_TOLERANCE_HRS | `4` | Pickup-window slack added to jobs |
-| MAX_EMPTY_KM_PER_LEG | `200` | Hard skip in candidate pre-filter |
 | MAX_VEHICLES_PER_SOLVE | `30` | Solver caps vehicles per call to keep ORS responsive |
 | EUR_PER_EMPTY_KM | `1.20` | Used for KPI ("EUR/day reclaimed") |
 | IDLE_COST_EUR_PER_DAY | `650` | Used for KPI ("EUR/day reclaimed") |

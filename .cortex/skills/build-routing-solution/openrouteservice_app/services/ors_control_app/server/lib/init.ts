@@ -8,14 +8,69 @@
 
 import { currentRegionScalar } from './region.js';
 import { log } from '../diagnostics.js';
+import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables.js';
 
 export async function ensureBackloadAndAssetVelocityObjects(
   sqlFn: (sql: string, db?: string, schema?: string) => Promise<any[]>,
 ): Promise<void> {
+  // -----------------------------------------------------------------
+  // Bootstrap fix for friction-log F4: ensure FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+  // (and the UNIFIED base tables) exist BEFORE we try to create the
+  // V_*_CURRENT projection views below. Otherwise on a fresh install — where
+  // no Studio job has ever run — DIM_DATASETS does not exist and every
+  // CREATE OR REPLACE VIEW V_*_CURRENT fails with "object does not exist",
+  // breaking every demo that reads through these views.
+  // ensureUnifiedTables() is idempotent: CREATE TABLE IF NOT EXISTS + an
+  // INSERT ... WHERE NOT EXISTS backfill, so calling it on every boot is safe.
+  // -----------------------------------------------------------------
+  try {
+    await ensureUnifiedTables(sqlFn);
+  } catch (e: any) {
+    log('WARN', 'Init', `ensureUnifiedTables failed: ${e?.message?.slice(0, 200)}`);
+  }
   const TRACK = `'{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_FX = `'{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const stmts: { sql: string; db?: string; schema?: string }[] = [
+    // VEHICLE_CLASS_PROFILE — single source of truth for per-vehicle-class
+    // capacity, costs, ORS profile, and UI label. Lives in
+    // OPENROUTESERVICE_APP.CORE so any page on any preset can read it.
+    {
+      sql: `CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE (
+        VEHICLE_TYPE      VARCHAR PRIMARY KEY,
+        ORS_PROFILE       VARCHAR  NOT NULL,
+        PAYLOAD_KG_TYP    NUMBER   NOT NULL,
+        PAYLOAD_KG_MAX    NUMBER   NOT NULL,
+        SHIPMENT_KG_MIN   NUMBER   NOT NULL,
+        SHIPMENT_KG_MAX   NUMBER   NOT NULL,
+        AVG_SPEED_KMH     NUMBER   NOT NULL,
+        COST_EUR_PER_KM   FLOAT    NOT NULL,
+        COST_EUR_PER_HR   FLOAT    NOT NULL,
+        ENFORCE_BREAK     BOOLEAN  NOT NULL,
+        HOME_RANGE_KM     NUMBER   NOT NULL,
+        LABEL_NOUN        VARCHAR  NOT NULL
+      ) COMMENT = ${TRACK}`,
+      db: 'OPENROUTESERVICE_APP', schema: 'CORE',
+    },
+    {
+      sql: `MERGE INTO OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE tgt
+        USING (
+          SELECT * FROM VALUES
+            ('bicycle',    'cycling-regular',     15,    25,    1,    15,  18,  0.05,  8.0, FALSE,  15, 'bicycle'),
+            ('ebike',      'cycling-electric',    25,    40,    2,    25,  22,  0.08, 10.0, FALSE,  25, 'ebike'),
+            ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0, FALSE,   5, 'courier'),
+            ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0, FALSE,  80, 'motorcycle'),
+            ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0, FALSE,  80, 'car'),
+            ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, FALSE, 150, 'van'),
+            ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'trailer'),
+            ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'truck')
+          AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
+        ) src
+        ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE
+        WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
+          VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.PAYLOAD_KG_TYP, src.PAYLOAD_KG_MAX, src.SHIPMENT_KG_MIN, src.SHIPMENT_KG_MAX, src.AVG_SPEED_KMH, src.COST_EUR_PER_KM, src.COST_EUR_PER_HR, src.ENFORCE_BREAK, src.HOME_RANGE_KM, src.LABEL_NOUN)`,
+      db: 'OPENROUTESERVICE_APP', schema: 'CORE',
+    },
     {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING COMMENT = ${TRACK}`,
       db: 'FLEET_INTELLIGENCE',
@@ -93,6 +148,15 @@ export async function ensureBackloadAndAssetVelocityObjects(
           WHERE REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           GROUP BY VEHICLE_ID
+        ),
+        -- Resolve the active vehicle_type to its class profile. If the
+        -- vehicle_type isn't in VEHICLE_CLASS_PROFILE the JOIN returns 0 rows
+        -- so the view is empty — the React page surfaces this as a precise
+        -- "Unknown vehicle_type — add a row to VEHICLE_CLASS_PROFILE" error.
+        cls AS (
+          SELECT vcp.*
+          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         )
         SELECT
           f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -108,11 +172,13 @@ export async function ensureBackloadAndAssetVelocityObjects(
           DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
           'IN_TRANSIT'                                        AS STATUS,
           FALSE                                               AS HAZMAT_CERT,
-          COALESCE(NULLIF(f.BATTERY_RANGE_KM, 0), 24000)::NUMBER AS MAX_PAYLOAD_KG
+          (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+          NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
         FROM fleet f
         JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
         LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID`,
+        LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
+        WHERE EXISTS (SELECT 1 FROM cls)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
@@ -143,6 +209,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
           WHERE t.REGION       = ${currentRegionScalar('BACKLOAD_MATCHING')}
             AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
           QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRIP_ID ORDER BY t.TRIP_START DESC) = 1
+        ),
+        cls AS (
+          SELECT vcp.*
+          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         )
         SELECT
           'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
@@ -152,14 +223,31 @@ export async function ensureBackloadAndAssetVelocityObjects(
           COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
           t.DESTINATION_LON                                                           AS DROPOFF_LON,
           t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-          t.TRIP_START                                                                AS PICKUP_FROM_TS,
-          DATEADD(hour, 4, t.TRIP_START)                                              AS PICKUP_TO_TS,
-          (1000 + ABS(HASH(t.TRIP_ID)) % 24000)::NUMBER                               AS WEIGHT_KG,
+          -- Future-aware pickup window: anchor at "now + 30..630 min" so the
+          -- vehicle's shift (which can never start in the past) can always
+          -- overlap. Old behaviour anchored at TRIP_START which is in the past
+          -- on fresh installs and produced no overlap with the shift window.
+          GREATEST(
+            t.TRIP_START,
+            DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+          )                                                                           AS PICKUP_FROM_TS,
+          DATEADD(hour, 4,
+            GREATEST(
+              t.TRIP_START,
+              DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+            )
+          )                                                                           AS PICKUP_TO_TS,
+          -- Class-aware weight clamp: random weight in [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX].
+          (
+            (SELECT SHIPMENT_KG_MIN FROM cls)
+            + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
+          )::NUMBER                                                                   AS WEIGHT_KG,
           'B2B pallets'                                                               AS PRODUCT,
           FALSE                                                                       AS HAZMAT
         FROM trips t
         LEFT JOIN poi o ON o.LOCATION_ID = t.ORIGIN_POI_ID
         LEFT JOIN poi d ON d.LOCATION_ID = t.DESTINATION_POI_ID
+        WHERE EXISTS (SELECT 1 FROM cls)
         QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -202,6 +290,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
             PARTITION BY OFFER_ID
             ORDER BY POSTED_AT DESC NULLS LAST, PICKUP_FROM_TS DESC NULLS LAST
           ) = 1
+        ),
+        cls AS (
+          SELECT vcp.*
+          FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+          WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
         )
         SELECT
           f.OFFER_ID,
@@ -216,14 +309,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.DROPOFF_LAT,
           f.PICKUP_FROM_TS,
           f.PICKUP_TO_TS,
-          f.WEIGHT_KG,
+          -- Class-aware weight clamp: rescale FACT_FREIGHT_OFFERS.WEIGHT_KG
+          -- (which is HGV-shaped at the table level) into the active class's
+          -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
+          -- never gets 25t shipments.
+          LEAST(
+            (SELECT SHIPMENT_KG_MAX FROM cls),
+            GREATEST(
+              (SELECT SHIPMENT_KG_MIN FROM cls),
+              ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+            )
+          )                                       AS WEIGHT_KG,
           f.PRODUCT,
           f.PRICE_USD                              AS PRICE_EUR,
           f.HAZMAT,
           f.LISTING_TEXT
         FROM offers f
         LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
-        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID`,
+        LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+        WHERE EXISTS (SELECT 1 FROM cls)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     // ---------------------------------------------------------------

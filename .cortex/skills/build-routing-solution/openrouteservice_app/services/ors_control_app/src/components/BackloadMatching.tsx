@@ -17,8 +17,9 @@ import PageContainer from '../shared/PageContainer';
 import {
   BM_DB, BM_SCHEMA, CARTO_LIGHT, EUR_PER_LOADED_KM, KMH_HGV, COST_SCALE, ROUTE_COLORS,
   Trailer, Volume, Offer, Assignment, Stop, SvcStatus, AvoidZone,
-  sfQuery, haversineKm, profileForVehicleType, synthPallets, synthVolumeM3,
+  sfQuery, haversineKm, synthPallets, synthVolumeM3,
   isOrsRegionReady, buildVroomMatrix, computeEmptyLegBaselines,
+  fetchVehicleClass, type VehicleClass,
   type EmptyLegBaseline,
 } from './backload-matching/helpers';
 
@@ -89,6 +90,8 @@ export default function BackloadMatching() {
   const [internal, setInternal] = useState<Volume[]>([]);
   const [external, setExternal] = useState<Offer[]>([]);
   const [vehicleType, setVehicleType] = useState<string>('hgv');
+  const [vehicleClass, setVehicleClass] = useState<VehicleClass | null>(null);
+  const [vehicleClassError, setVehicleClassError] = useState<string | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
   const [avoidZones, setAvoidZones] = useState<AvoidZone[]>([]);
 
@@ -155,7 +158,7 @@ export default function BackloadMatching() {
            `VROOM_SERVICE_${(regionName || '').toUpperCase()}`],
     [regionName]
   );
-  const [orsProfile, setOrsProfile] = useState<string>('driving-car');
+  const [orsProfile, setOrsProfile] = useState<string>('');
   const [svcStatus, setSvcStatus] = useState<SvcStatus[]>([]);
   const [wakingUp, setWakingUp] = useState(false);
 
@@ -254,9 +257,53 @@ export default function BackloadMatching() {
     });
     setExternal(eDeduped);
     const cfg: Record<string, any> = (cRows[0] as any) || {};
-    if (cfg.VEHICLE_TYPE != null) setVehicleType(String(cfg.VEHICLE_TYPE));
-    const provProfile = (profRows[0] as any)?.PROFILES;
-    if (provProfile) setOrsProfile(provProfile.split(',')[0].trim());
+    const activeVT = cfg.VEHICLE_TYPE != null ? String(cfg.VEHICLE_TYPE) : '';
+    if (activeVT) setVehicleType(activeVT);
+
+    // Load the per-vehicle-class profile (capacity, costs, ORS profile, label).
+    // Decision #2 in plan: fail loudly when the active vehicle_type isn't in
+    // VEHICLE_CLASS_PROFILE so a custom preset never silently runs with
+    // wrong-class defaults.
+    let cls: VehicleClass | null = null;
+    if (activeVT) {
+      try {
+        cls = await fetchVehicleClass(activeVT);
+      } catch (e: any) {
+        cls = null;
+        setVehicleClassError(`Failed to load VEHICLE_CLASS_PROFILE: ${e?.message || e}`);
+      }
+    }
+    if (activeVT && !cls) {
+      setVehicleClass(null);
+      setVehicleClassError(
+        `Unknown vehicle_type "${activeVT}". Add a row to ` +
+        `OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE before solving.`
+      );
+      setOrsProfile('');
+    } else {
+      setVehicleClass(cls);
+      setVehicleClassError(null);
+      // Bind ORS profile to the active vehicle_type. If the region wasn't
+      // provisioned with that profile, refuse to solve and surface the
+      // re-provision instruction (was: blindly pick provisioned[0], which
+      // is the bug that produced profile=driving-car for an ebike preset).
+      const provisionedList = String((profRows[0] as any)?.PROFILES || '')
+        .split(',').map(s => s.trim()).filter(Boolean);
+      if (cls) {
+        const desired = cls.ORS_PROFILE;
+        if (provisionedList.length === 0 || provisionedList.includes(desired)) {
+          setOrsProfile(desired);
+        } else {
+          setOrsProfile('');
+          setVehicleClassError(
+            `Active preset uses vehicle_type='${activeVT}' which requires ORS ` +
+            `profile '${desired}', but region '${regionName}' is provisioned ` +
+            `only with [${provisionedList.join(', ')}]. Re-provision the ` +
+            `region with the missing profile, or switch the active preset.`
+          );
+        }
+      }
+    }
     setAvoidZones((azRows as any[]).map(r => ({
       ZONE_ID: r.ZONE_ID, NAME: r.NAME, CATEGORY: r.CATEGORY,
       POLYGON_GEOJSON: typeof r.POLYGON_GEOJSON === 'string' ? JSON.parse(r.POLYGON_GEOJSON) : r.POLYGON_GEOJSON,
@@ -393,7 +440,25 @@ export default function BackloadMatching() {
       }
     }
 
-    const profile = orsProfile || profileForVehicleType(vehicleType);
+    // Refuse to solve if vehicleClass isn't loaded — every solver constant
+    // (capacity, costs, ORS profile, baseline) is class-derived now.
+    if (!vehicleClass) {
+      setSolveError(vehicleClassError ||
+        `Vehicle class profile not loaded for vehicle_type='${vehicleType}'. ` +
+        `Add a row to OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE.`);
+      setSolving(false);
+      return;
+    }
+    const cls = vehicleClass;
+    const profile = orsProfile || cls.ORS_PROFILE;
+    if (!orsProfile) {
+      setSolveError(`ORS profile '${cls.ORS_PROFILE}' is not provisioned for region '${regionName}'. Re-provision or switch preset.`);
+      setSolving(false);
+      return;
+    }
+    const speedKmh = cls.AVG_SPEED_KMH;
+    const homeRangeKm = cls.HOME_RANGE_KM;
+    const classCapacityKg = cls.PAYLOAD_KG_MAX;
     const firstTrailer = trailers[0];
     const fallbackLon = firstTrailer ? Number(firstTrailer.HOME_LON) : null;
     const fallbackLat = firstTrailer ? Number(firstTrailer.HOME_LAT) : null;
@@ -414,7 +479,7 @@ export default function BackloadMatching() {
     // the gateway upgrades VROOM, we fold the user's €/h slider into an
     // equivalent €/km via the assumed average HGV speed (60 km/h) and send
     // costs.per_km, which v1.0.4 does honour.
-    const effPerKmEur = costPerKmEur + costPerHourEur / KMH_HGV;
+    const effPerKmEur = costPerKmEur + costPerHourEur / speedKmh;
     // Avoid-polygon GeoJSON list (Card F).
     const avoidGeoJSON = selectedAvoidZoneIds
       .map(id => avoidZones.find(z => z.ZONE_ID === id)?.POLYGON_GEOJSON)
@@ -425,7 +490,12 @@ export default function BackloadMatching() {
     const etaSeconds = trailers
       .map(t => Math.floor(new Date(t.ETA_TS || 0).getTime() / 1000))
       .filter(s => Number.isFinite(s) && s > 0);
-    const shiftStartSec = etaSeconds.length ? Math.min(...etaSeconds) : nowSec;
+    // Vehicle shift starts NOW at the earliest, even if the trailer's ETA is
+    // in the past (synthetic data routinely backdates LAST_TRIP_END).
+    const shiftStartSec = Math.max(
+      etaSeconds.length ? Math.min(...etaSeconds) : nowSec,
+      nowSec,
+    );
     const shiftEndSec   = shiftStartSec + Math.round(shiftLengthHrs * 3600);
 
     // Score every shipment by haversine distance to the NEAREST idle trailer
@@ -491,6 +561,7 @@ export default function BackloadMatching() {
         trailers.slice(0, effMaxVehicles),
         trailerEnd,
         regionName,
+        { kmh: speedKmh, homeRangeKm },
       );
     } catch (e: any) {
       console.warn('[BM] computeEmptyLegBaselines threw, using haversine for all trailers', e);
@@ -506,8 +577,8 @@ export default function BackloadMatching() {
     }
 
     const FALLBACK_BASELINE: EmptyLegBaseline = {
-      durSec:     Math.round((200 / KMH_HGV) * 3600),
-      distMeters: 200_000,
+      durSec:     Math.round((homeRangeKm / speedKmh) * 3600),
+      distMeters: homeRangeKm * 1000,
       source:     'fixed-open',
     };
 
@@ -515,7 +586,7 @@ export default function BackloadMatching() {
       const id = i + 1;
       trailerById.set(id, t);
       const endPt = trailerEnd(t);
-      const capacityKg = Number(t.MAX_PAYLOAD_KG) || 24000;
+      const capacityKg = Number(t.MAX_PAYLOAD_KG) || cls.PAYLOAD_KG_TYP;
       const base = baselines.get(t) ?? FALLBACK_BASELINE;
 
       const veh: any = {
@@ -599,7 +670,7 @@ export default function BackloadMatching() {
     for (const v of internalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: 'INTERNAL', row: v });
-      const kg = Math.min(Number(v.WEIGHT_KG), 24000);
+      const kg = Math.min(Number(v.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity
         ? [kg, Number(v.PALLETS) || synthPallets(kg), Number(v.VOLUME_M3) || synthVolumeM3(kg)]
         : [kg];
@@ -615,7 +686,7 @@ export default function BackloadMatching() {
     for (const o of externalSubset) {
       const id = nextId++;
       offerById.set(id, { kind: o.SOURCE, row: o });
-      const kg = Math.min(Number(o.WEIGHT_KG), 24000);
+      const kg = Math.min(Number(o.WEIGHT_KG), classCapacityKg);
       const amount = useMultiDimCapacity
         ? [kg, Number(o.PALLETS) || synthPallets(kg), Number(o.VOLUME_M3) || synthVolumeM3(kg)]
         : [kg];
@@ -627,6 +698,52 @@ export default function BackloadMatching() {
         skills: o.HAZMAT ? [2, 3] : [2],
         priority: Math.max(0, 100 - internalFirstWeight),
       });
+    }
+
+    // Pre-flight feasibility check (Decision: refuse before VROOM if the
+    // payload is structurally infeasible). Catches the two failure modes
+    // that historically returned "90x unknown" with no actionable hint:
+    //   (a) every shipment exceeds vehicle capacity (wrong-class data); and
+    //   (b) no shipment pickup window overlaps the vehicle shift window.
+    const median = (arr: number[]): number => {
+      if (!arr.length) return 0;
+      const s = [...arr].sort((a, b) => a - b);
+      const m = Math.floor(s.length / 2);
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    if (vrpVehicles.length > 0 && vrpShipments.length > 0) {
+      const medTrailer = median(trailers.slice(0, effMaxVehicles).map(t => Number(t.MAX_PAYLOAD_KG)));
+      const medShip    = median([
+        ...internalSubset.map(v => Number(v.WEIGHT_KG)),
+        ...externalSubset.map(o => Number(o.WEIGHT_KG)),
+      ]);
+      if (medTrailer > 0 && medShip > medTrailer * 1.05) {
+        setSolveError(
+          `Pre-flight: median shipment weight (${Math.round(medShip)} kg) ` +
+          `exceeds median ${cls.LABEL_NOUN} capacity (${Math.round(medTrailer)} kg) ` +
+          `for vehicle_type='${vehicleType}'. The active preset's shipments don't ` +
+          `fit this vehicle class. Switch to a heavier-class preset or wait for ` +
+          `class-aware re-seeding.`
+        );
+        setSolving(false);
+        return;
+      }
+      const anyOverlap = vrpShipments.some(sh => {
+        const wins: number[][] | undefined = sh?.pickup?.time_windows;
+        if (!Array.isArray(wins) || !wins.length) return true; // no window = always ok
+        return wins.some(([a, b]) => Number(b) >= shiftStartSec && Number(a) <= shiftEndSec);
+      });
+      if (!anyOverlap) {
+        const shiftFromIso = new Date(shiftStartSec * 1000).toISOString().slice(11, 16);
+        const shiftToIso   = new Date(shiftEndSec   * 1000).toISOString().slice(11, 16);
+        setSolveError(
+          `Pre-flight: no shipment pickup window overlaps the ${cls.LABEL_NOUN} shift ` +
+          `(${shiftFromIso}-${shiftToIso} UTC). Increase "Window slack" hours, ` +
+          `enable Multi-window pickups, or extend "Shift length".`
+        );
+        setSolving(false);
+        return;
+      }
     }
 
     // (3) Build a setup an AbortController + wall-clock deadline so the user
@@ -783,7 +900,11 @@ export default function BackloadMatching() {
     const newUnassigned: { id: number; reason?: string }[] = [];
     for (const u of vroomUnassigned) {
       const id = Number(u?.id);
-      if (Number.isFinite(id)) newUnassigned.push({ id, reason: u?.reason });
+      // VROOM v1.14 returns { id, type, location, description } in unassigned[].
+      // Older builds used `reason`; accept both, fall back to type only as
+      // last resort. The pre-fix code only read `reason` and produced a
+      // useless "90x unknown" message on every fresh install.
+      if (Number.isFinite(id)) newUnassigned.push({ id, reason: u?.description ?? u?.reason ?? u?.type ?? null });
     }
     for (const route of vroomRoutes) {
       const vehId = Number(route?.vehicle);
@@ -914,7 +1035,7 @@ export default function BackloadMatching() {
       // present as meters depending on solver version.
       const tourSec   = Number(route?.duration) || 0;
       const tourHrs   = tourSec / 3600;
-      const tourKmReal = (Number(route?.distance) || (tourSec * KMH_HGV / 3600 * 1000)) / 1000;
+      const tourKmReal = (Number(route?.distance) || (tourSec * speedKmh / 3600 * 1000)) / 1000;
       const waitSec   = taskSteps.reduce((s: number, ts: any) => s + (Number(ts.waiting_time) || 0), 0);
       const nDeliv    = taskSteps.filter((s: any) => s.type === 'delivery' || s.type === 'job').length;
 
@@ -1004,21 +1125,29 @@ export default function BackloadMatching() {
         .sort((a, b) => b[1] - a[1])
         .map(([r, n]) => `${n}× ${r}`)
         .join(', ');
+      // Class-aware post-mortem: when 100% of shipments fail and the
+      // median shipment weight exceeds the median trailer capacity, the
+      // root cause is a class mismatch (preset shipments don't fit the
+      // active vehicle class). When time windows don't overlap the shift,
+      // surface that. Otherwise hint at the standard sliders.
+      const medTrailer = median(trailers.slice(0, effMaxVehicles).map(t => Number(t.MAX_PAYLOAD_KG)));
+      const medShip    = median([
+        ...internalSubset.map(v => Number(v.WEIGHT_KG)),
+        ...externalSubset.map(o => Number(o.WEIGHT_KG)),
+      ]);
+      const classDiag = (medTrailer > 0 && medShip > medTrailer)
+        ? ` Median shipment weight ${Math.round(medShip)} kg > ${cls.LABEL_NOUN} capacity ${Math.round(medTrailer)} kg — wrong vehicle class for this preset's payload.`
+        : '';
       setSolveError(
-        `VROOM placed 0 shipments out of ${newUnassigned.length}. Top reasons: ${summary}. ` +
-        `Tweak: raise deviation %, raise detour budget, widen window slack, or relax skill requirements.`
+        `VROOM placed 0 shipments out of ${newUnassigned.length}. Top reasons: ${summary}.${classDiag} ` +
+        `Tweak: raise deviation %, raise detour budget, widen window slack, or relax skill requirements. ` +
+        `(profile=${profile} for vehicle_type=${vehicleType})`
       );
     } else if (vroomRoutes.length === 0 && vrpShipments.length > 0) {
       // Compute median per-vehicle bounds for diagnostics, using the same
       // baseline + slider math the vehicles were built with.
       const baseDurArr  = Array.from(baselines.values()).map(b => b.durSec);
       const baseDistArr = Array.from(baselines.values()).map(b => b.distMeters);
-      const median = (arr: number[]): number => {
-        if (!arr.length) return 0;
-        const s = [...arr].sort((a, b) => a - b);
-        const m = Math.floor(s.length / 2);
-        return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
-      };
       const medDurH  = (median(baseDurArr) / 3600);
       const medDistKm = (median(baseDistArr) / 1000);
       const medMaxTravelH = medDurH + detourSlackHrs;
@@ -1488,7 +1617,7 @@ export default function BackloadMatching() {
           <input type="checkbox" checked={hideUnprofitable} onChange={e => setHideUnprofitable(e.target.checked)} />
           Hide unprofitable
         </label>
-        <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length} style={{ background: '#0DB048', minWidth: 140 }}>
+        <button className="btn-primary" onClick={solve} disabled={solving || !trailers.length || !vehicleClass || !orsProfile} style={{ background: '#0DB048', minWidth: 140 }} title={!vehicleClass ? (vehicleClassError || 'Vehicle class profile not loaded') : (!orsProfile ? 'ORS profile not provisioned for this region' : '')}>
           {solving ? 'Solving...' : 'Solve Backloads'}
         </button>
         {solving && (
@@ -1605,6 +1734,7 @@ export default function BackloadMatching() {
 
       {confirmMsg && (<div className="info-box success" style={{ marginBottom: 12 }}>{confirmMsg}</div>)}
       {solverLog && (<div style={{ marginBottom: 12, fontSize: 11, fontFamily: 'monospace', padding: '6px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 4, color: 'var(--text-secondary)' }}>{solverLog}</div>)}
+      {vehicleClassError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Vehicle class issue.</b> {vehicleClassError}</div>)}
       {solveError && (<div style={{ marginBottom: 12, fontSize: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.45)', borderRadius: 4, color: '#b91c1c' }}><b>Solve returned no assignments.</b> {solveError}</div>)}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 12 }}>
