@@ -11,6 +11,7 @@ import {
   RO_DB, RO_SCHEMA,
   sfQuery, cartoBasemap, SEVERITY_COLOR, asSqlJsonLiteral,
   Trailer, Terminal, MatrixCache, ExclusionReason,
+  fetchVehicleClass, type VehicleClass,
 } from './asset-velocity/helpers';
 import {
   profileForFleet, fleetEnvelope, avoidFeaturesArr,
@@ -38,6 +39,8 @@ export default function AssetVelocity() {
   const [sortBy, setSortBy] = useState<keyof Trailer>('COST_OF_IDLENESS_USD');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [orsProfile, setOrsProfile] = useState<string>('driving-car');
+  const [vehicleClass, setVehicleClass] = useState<VehicleClass | null>(null);
+  const [vehicleClassError, setVehicleClassError] = useState<string | null>(null);
   const [matrix, setMatrix] = useState<MatrixCache>({});
   const [matrixError, setMatrixError] = useState<string | null>(null);
   const [maxRepositionMinutes, setMaxRepositionMinutes] = useState<number>(600);
@@ -95,12 +98,42 @@ export default function AssetVelocity() {
         AND STATUS IN ('COMPLETED','STOPPED')
       ORDER BY STARTED_AT DESC
       LIMIT 1`;
-    const [t, tm, pr] = await Promise.all([sfQuery(trailerSql), sfQuery(terminalSql), sfQuery(profileSql, 'FLEET_INTELLIGENCE', 'CORE')]);
+    const cfgSql = `SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1`;
+    const [t, tm, pr, cfg] = await Promise.all([
+      sfQuery(trailerSql),
+      sfQuery(terminalSql),
+      sfQuery(profileSql, 'FLEET_INTELLIGENCE', 'CORE'),
+      sfQuery(cfgSql),
+    ]);
     const trailerRows = t as Trailer[];
     setTrailers(trailerRows);
     setTerminals(tm as Terminal[]);
-    const fleetProfile = profileForFleet(trailerRows);
-    setOrsProfile((pr[0]?.ORS_PROFILE as string) || fleetProfile || 'driving-car');
+
+    // VEHICLE_CLASS_PROFILE row drives capacity/skills/break/profile for the
+    // solver. Without it we refuse to optimize and surface a friendly error.
+    const vt = String(cfg[0]?.VEHICLE_TYPE ?? '').trim();
+    if (vt) {
+      try {
+        const klass = await fetchVehicleClass(vt);
+        if (klass) {
+          setVehicleClass(klass);
+          setVehicleClassError(null);
+          setOrsProfile(klass.ORS_PROFILE);
+        } else {
+          setVehicleClass(null);
+          setVehicleClassError(`No VEHICLE_CLASS_PROFILE row for vehicle_type='${vt}'. Add a row in OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE.`);
+          setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+        }
+      } catch (err: any) {
+        setVehicleClass(null);
+        setVehicleClassError(`Failed to load VEHICLE_CLASS_PROFILE: ${(err?.message ?? 'unknown').toString().slice(0, 200)}`);
+        setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+      }
+    } else {
+      setVehicleClass(null);
+      setVehicleClassError('CONFIG.VEHICLE_TYPE is empty; cannot resolve vehicle class.');
+      setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+    }
     if (trailerRows.length) {
       setMaxRepositionMinutes(Number(trailerRows[0].MAX_REPOSITION_MINUTES) || 600);
       setAvoidFeatures(String(trailerRows[0].AVOID_FEATURES || 'tollways,ferries'));
@@ -120,7 +153,7 @@ export default function AssetVelocity() {
     try {
       const cappedTrailers = forTrailers.slice(0, MATRIX_TRAILER_CAP);
       const cappedTerminals = forTerminals.slice(0, MATRIX_TERMINAL_CAP);
-      const profile = profileForFleet(cappedTrailers);
+      const profile = vehicleClass?.ORS_PROFILE || profileForFleet(cappedTrailers);
       const envelope = fleetEnvelope(cappedTrailers);
       const avoid = avoidFeaturesArr(avoidFeatures);
       const cache = await fetchMatrix(cappedTrailers, cappedTerminals, profile, envelope, avoid, regionName, maxRepositionMinutes);
@@ -133,7 +166,7 @@ export default function AssetVelocity() {
     } finally {
       setMatrixLoading(false);
     }
-  }, [regionName, avoidFeatures, maxRepositionMinutes]);
+  }, [regionName, avoidFeatures, maxRepositionMinutes, vehicleClass]);
 
   useEffect(() => {
     if (trailers.length && terminals.length) refreshMatrix(trailers, terminals);
@@ -163,9 +196,10 @@ export default function AssetVelocity() {
       if (cell.durationSec == null) return 'NOT_ROUTABLE';
       if (!cell.reachable) return 'OUT_OF_SHIFT';
     }
-    // Skill check: terminal demands skill X but trailer doesn't have it
-    const need = skillsForTerminal(terminal);
-    const have = skillsForTrailer(trailer);
+    // Skill check: terminal demands skill X but trailer doesn't have it.
+    // Class-aware so non-trucking fleets aren't bogus-excluded.
+    const need = skillsForTerminal(terminal, vehicleClass);
+    const have = skillsForTrailer(trailer, vehicleClass);
     if (need.length && !need.every(s => have.includes(s))) return 'INCOMPATIBLE_SKILL';
     return null;
   }
@@ -190,12 +224,12 @@ export default function AssetVelocity() {
     mapContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     if (tr.VEHICLE_ID !== lastIsoRef.current && !isoByVehicle[tr.VEHICLE_ID]) {
       lastIsoRef.current = tr.VEHICLE_ID;
-      const profile = profileForFleet([tr]);
+      const profile = vehicleClass?.ORS_PROFILE || profileForFleet([tr]);
       fetchTrailerIsochrone(tr, profile, regionName, maxRepositionMinutes * 60).then(geo => {
         if (geo) setIsoByVehicle(prev => ({ ...prev, [tr.VEHICLE_ID]: geo }));
       }).catch(e => console.warn('[AV] iso fetch failed', e));
     }
-  }, [isoByVehicle, regionName, maxRepositionMinutes]);
+  }, [isoByVehicle, regionName, maxRepositionMinutes, vehicleClass]);
 
   const selectedTrailer = useMemo(() => trailers.find(t => t.VEHICLE_ID === selectedVehicleId) || null, [trailers, selectedVehicleId]);
   const selectedReachability = useMemo(() => selectedTrailer ? reachabilityForTrailer(selectedTrailer) : null, [selectedTrailer, matrix, terminals]);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -219,7 +253,7 @@ export default function AssetVelocity() {
       near.forEach((t, i) => {
         const minutes = Math.round((t.durationSec || 0) / 60);
         const km = t.distanceM != null ? (t.distanceM / 1000).toFixed(1) : '?';
-        const need = skillsForTerminal(t);
+        const need = skillsForTerminal(t, vehicleClass);
         const skillLabel = need.includes(1) ? ' (REEFER lane)' : '';
         lines.push(`${i + 1}. ${t.TERMINAL_NAME} - ${minutes} min / ${km} km, demand_score ${t.DEMAND_SCORE}, ${t.NET_OUTBOUND_TRIPS} net outbound${skillLabel}`);
       });
@@ -231,7 +265,7 @@ export default function AssetVelocity() {
     const text = (rows[0]?.R || '').toString().trim();
     setRationale({ vehicleId: tr.VEHICLE_ID, text: text || '(no response)' });
     setRationaleLoading(false);
-  }, [terminals, matrix, maxRepositionMinutes]);
+  }, [terminals, matrix, maxRepositionMinutes, vehicleClass]);
 
   // ----- VROOM Optimize Repositioning (U3 + U4) -----
   const optimizeRepositioning = useCallback(async () => {
@@ -242,11 +276,17 @@ export default function AssetVelocity() {
 
     const topTrailers = sortedTrailers.slice(0, Math.min(VRP_TOP_N, sortedTrailers.length));
     const topTerminals = terminals.slice(0, Math.min(topTrailers.length, terminals.length));
-    const profile = profileForFleet(topTrailers);
+    if (!vehicleClass) {
+      setVrpResult({ warning: vehicleClassError || 'No VEHICLE_CLASS_PROFILE row loaded; cannot optimize.' });
+      setSolving(false);
+      return;
+    }
+    const profile = vehicleClass.ORS_PROFILE;
     const challenge = buildChallenge({
       trailers: topTrailers,
       terminals: topTerminals,
       profile,
+      vehicleClass,
       maxRepositionMinutes,
       nowEpoch: Math.floor(Date.now() / 1000),
     });
@@ -324,7 +364,7 @@ export default function AssetVelocity() {
       setVrpResult({ warning });
     }
     setSolving(false);
-  }, [trailers, terminals, sortedTrailers, regionName, maxRepositionMinutes]);
+  }, [trailers, terminals, sortedTrailers, regionName, maxRepositionMinutes, vehicleClass, vehicleClassError]);
 
   const basemap = useMemo(() => cartoBasemap(), []);
 

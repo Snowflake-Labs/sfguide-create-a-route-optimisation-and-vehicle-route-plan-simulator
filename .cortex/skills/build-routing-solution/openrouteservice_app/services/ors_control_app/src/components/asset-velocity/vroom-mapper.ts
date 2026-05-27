@@ -1,46 +1,41 @@
 // VROOM payload builder for AssetVelocity smart-reposition (Optimize Repositioning button).
-// Translates trailer/terminal selections into a fully-constrained VROOM challenge:
-//   - per-vehicle skills derived from VEHICLE_SUBTYPE
-//   - per-job skills derived from terminal LOCATION_TYPE (heuristic)
-//   - multi-dimensional capacity (units, weight tons, axleload tons)
-//   - time_windows (driver shift cap and terminal opening hours)
-//   - service times by location type
-//   - mandatory 45-min break after 4.5h driving (EU 561/2006)
-//   - costs.fixed + costs.per_hour so the solver weighs $ properly
-//   - max_travel_time per vehicle = MAX_REPOSITION_MINUTES * 60
+// All capacity/cost/break/profile semantics are driven by the VEHICLE_CLASS_PROFILE row
+// for CONFIG.VEHICLE_TYPE so the page works for any class (bicycle, ebike, foot,
+// motorcycle, car, van, hgv, truck) without code changes.
 //
 // Returns the raw VROOM challenge object. The caller wraps it in
 // OPENROUTESERVICE_APP.CORE.OPTIMIZATION(challenge, region).
 
-import type { Trailer, Terminal, VehicleSubtype } from './helpers';
+import type { Trailer, Terminal, VehicleClass } from './helpers';
 import { safeText } from './helpers';
 
 // Skill IDs (arbitrary but stable):
 //   1 = REEFER required, 2 = FLAT required, 3 = TANKER required, 4 = HAZMAT-capable
-// A trailer offers all skills it satisfies; a job demands the skill it needs.
-export function skillsForTrailer(t: Trailer): number[] {
+// Only emitted when the active class is a trucking class (ENFORCE_BREAK = true).
+// For couriers/cars/ebikes there is no subtype, so no skill is emitted on either
+// side and assignment is purely geographic / time-window driven.
+export function skillsForTrailer(t: Trailer, klass: VehicleClass | null): number[] {
+  if (!klass?.ENFORCE_BREAK) return [];
   const out: number[] = [];
   switch (t.VEHICLE_SUBTYPE) {
     case 'REEFER': out.push(1); break;
     case 'FLAT':   out.push(2); break;
     case 'TANKER': out.push(3); break;
-    default: break; // DRY trailers offer no specialised skill
+    default: break;
   }
-  // A DRY trailer can also serve REEFER/FLAT loads in a pinch when not
-  // mandated; here we keep it strict so REEFER demand truly needs a REEFER.
   if (t.HAZMAT) out.push(4);
   return out;
 }
 
-// Heuristic terminal-skill mapping from LOCATION_TYPE.
-// Synthetic data has no LANE_PROFILE column; this deliberately treats most
-// terminals as DRY-friendly so the assignment doesn't starve. Add a real
-// LANE_PROFILE join once it lands.
-export function skillsForTerminal(t: Terminal): number[] {
+// Heuristic terminal-skill mapping. RESTAURANT -> REEFER is a trucking-only
+// heuristic (chilled food trade), so disable it for non-trucking classes
+// otherwise an ebike fleet can never serve a RESTAURANT terminal.
+export function skillsForTerminal(t: Terminal, klass: VehicleClass | null): number[] {
+  if (!klass?.ENFORCE_BREAK) return [];
   switch (t.LOCATION_TYPE) {
-    case 'RESTAURANT': return [1]; // food trade -> REEFER
-    case 'STORE':      return [];  // dry-goods retail -> any
-    case 'WAREHOUSE':  return [];  // mixed -> any
+    case 'RESTAURANT': return [1];
+    case 'STORE':      return [];
+    case 'WAREHOUSE':  return [];
     case 'LOGISTICS':  return [];
     case 'DEPOT':      return [];
     case 'TERMINAL':   return [];
@@ -48,12 +43,15 @@ export function skillsForTerminal(t: Terminal): number[] {
   }
 }
 
-// Service time by terminal type (seconds). Drop-and-hook is fast (~10 min);
-// live-unload at a warehouse takes ~30 min.
-export function serviceSecondsForTerminal(t: Terminal): number {
-  if (t.LOCATION_TYPE === 'WAREHOUSE' || t.LOCATION_TYPE === 'LOGISTICS') return 1800;
-  if (t.LOCATION_TYPE === 'DEPOT' || t.LOCATION_TYPE === 'TERMINAL') return 600;
-  return 900;
+// Service time per terminal scales with class. Trucking drop-and-hook is
+// 10-30 min; courier/car stops are ~5 min.
+export function serviceSecondsForTerminal(t: Terminal, klass: VehicleClass | null): number {
+  if (klass?.ENFORCE_BREAK) {
+    if (t.LOCATION_TYPE === 'WAREHOUSE' || t.LOCATION_TYPE === 'LOGISTICS') return 1800;
+    if (t.LOCATION_TYPE === 'DEPOT' || t.LOCATION_TYPE === 'TERMINAL') return 600;
+    return 900;
+  }
+  return 300;
 }
 
 // Local-day window 06:00-22:00. If the current time is already past close,
@@ -75,6 +73,7 @@ export interface VrpPayloadInput {
   trailers: Trailer[];
   terminals: Terminal[];
   profile: string;
+  vehicleClass: VehicleClass | null;
   maxRepositionMinutes: number;
   nowEpoch: number;
 }
@@ -110,7 +109,7 @@ export interface VrpChallenge {
 }
 
 export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
-  const { trailers, terminals, profile, maxRepositionMinutes, nowEpoch } = input;
+  const { trailers, terminals, profile, vehicleClass, maxRepositionMinutes, nowEpoch } = input;
   // If terminals are closed for the rest of today, roll the shift to tomorrow's
   // 06:00 local so the vehicle window aligns with the (rolled-forward) terminal
   // windows. Otherwise the solver gets vehicle [now, now+cap] but every job's
@@ -120,59 +119,57 @@ export function buildChallenge(input: VrpPayloadInput): VrpChallenge {
     : nowEpoch;
   const shiftStart = Math.max(nowEpoch, tomorrowOpen);
   const shiftEnd = shiftStart + maxRepositionMinutes * 60;
-  const isHgv = profile === 'driving-hgv';
+  const enforceBreak = !!vehicleClass?.ENFORCE_BREAK;
   const maxStops = Math.max(1, terminals.length);
+  // Per-vehicle capacity dim 1 = total kg the class can carry on the shift,
+  // dim 2 = max single-shipment kg (informational; jobs deliver dim2=0).
+  // Falls back to HGV-scale defaults if the class row is missing.
+  const payloadKg = Math.max(1, Math.round(vehicleClass?.PAYLOAD_KG_TYP ?? 24000));
+  const payloadMaxKg = Math.max(payloadKg, Math.round(vehicleClass?.PAYLOAD_KG_MAX ?? 26000));
+  const shipmentKg = Math.max(1, Math.round(vehicleClass?.SHIPMENT_KG_MIN ?? 1));
 
   const jobs: VrpJob[] = terminals.map((t, i) => {
-    const skillReq = skillsForTerminal(t);
-    // delivery dimensions MUST match vehicle.capacity dimensions:
-    //   [units, weight_centi_tons, axleload_centi_tons]
-    // Each terminal accepts 1 trailer-load; weight/axleload "consumed" is 0
-    // because we model the trailer's full weight as a fixed vehicle capacity,
-    // not a per-job delta. (Production: derive load weight from terminal lane mix.)
+    const skillReq = skillsForTerminal(t, vehicleClass);
     const job: VrpJob = {
       id: i + 1,
       description: `${safeText(t.TERMINAL_NAME)} (${t.LOCATION_TYPE}) demand ${t.DEMAND_SCORE}`,
       location: [Number(t.TERMINAL_LNG), Number(t.TERMINAL_LAT)],
-      service: serviceSecondsForTerminal(t),
+      service: serviceSecondsForTerminal(t, vehicleClass),
       priority: Math.min(100, Math.max(1, Math.round(Number(t.DEMAND_SCORE) || 1))),
-      delivery: [1, 0, 0],
+      // delivery: [units consumed, payload_kg consumed, payload_max_kg consumed]
+      // Each stop consumes 1 of `maxStops` units. Per-stop kg consumption is
+      // intentionally tiny so the per-vehicle payload dim acts as a soft cap
+      // on total stops, not a hard "drop after one delivery" constraint.
+      delivery: [1, shipmentKg, 0],
       time_windows: [terminalTimeWindow(t, nowEpoch)],
     };
     if (skillReq.length) job.skills = skillReq;
     return job;
   });
 
-  const vehicles: VrpVehicle[] = trailers.map((tr, i) => {
-    // Multi-dim capacity: [units (trailer-loads), weight tons (rounded), axleload tons (rounded)].
-    // VROOM expects integers per dimension, so multiply tonnages by 100 to keep 2 decimals.
-    const w = Math.round((tr.WEIGHT_TONS ?? 40) * 100);
-    const a = Math.round((tr.AXLELOAD_T ?? 11.5) * 100);
-    return {
-      id: i + 1,
-      description: `${safeText(tr.VEHICLE_ID, 32)} (${tr.VEHICLE_SUBTYPE ?? 'DRY'})`,
-      profile,
-      start: [Number(tr.LAST_LNG), Number(tr.LAST_LAT)],
-      capacity: [maxStops, w, a],
-      skills: skillsForTrailer(tr),
-      time_window: [shiftStart, shiftEnd],
-      max_travel_time: maxRepositionMinutes * 60,
-      // EU 561/2006 mandatory 45-min break after 4.5h driving applies to HGVs only.
-      // Cyclists, taxis, and ebikes don't have that rule, and forcing the break
-      // window inside the shift can make VROOM drop the vehicle entirely.
-      breaks: isHgv ? [{
-        id: 1000 + i,
-        service: 2700,
-        time_windows: [[shiftStart + 4 * 3600, shiftStart + 5 * 3600]],
-      }] : [],
-      // VROOM in this app's vroom-docker:v1.0.4 build does NOT accept the
-      // {fixed, per_hour} pair (errors with "Custom costs are incompatible
-      // with using a per_hour value"). We use only `fixed` to bias the solver
-      // toward fewer-trailer plans; per-hour cost is left as the VROOM default.
-      // The DAILY_RENTAL_RATE_AVOIDED_USD scoring still appears in KPIs.
-      costs: { fixed: 0 },
-    };
-  });
+  const vehicles: VrpVehicle[] = trailers.map((tr, i) => ({
+    id: i + 1,
+    description: `${safeText(tr.VEHICLE_ID, 32)} (${vehicleClass?.LABEL_NOUN ?? tr.VEHICLE_SUBTYPE ?? 'unit'})`,
+    profile,
+    start: [Number(tr.LAST_LNG), Number(tr.LAST_LAT)],
+    // capacity: [stop slots, total payload kg, max-shipment kg]
+    capacity: [maxStops, payloadKg, payloadMaxKg],
+    skills: skillsForTrailer(tr, vehicleClass),
+    time_window: [shiftStart, shiftEnd],
+    max_travel_time: maxRepositionMinutes * 60,
+    // EU 561/2006 mandatory 45-min break after 4.5h driving applies to HGVs
+    // only. VEHICLE_CLASS_PROFILE.ENFORCE_BREAK is the canonical flag.
+    breaks: enforceBreak ? [{
+      id: 1000 + i,
+      service: 2700,
+      time_windows: [[shiftStart + 4 * 3600, shiftStart + 5 * 3600]],
+    }] : [],
+    // VROOM in this app's vroom-docker:v1.0.4 build does NOT accept the
+    // {fixed, per_hour} pair (errors with "Custom costs are incompatible
+    // with using a per_hour value"). We use only `fixed` to bias the solver
+    // toward fewer-vehicle plans; per-hour cost is left as the VROOM default.
+    costs: { fixed: 0 },
+  }));
 
   return { jobs, vehicles };
 }

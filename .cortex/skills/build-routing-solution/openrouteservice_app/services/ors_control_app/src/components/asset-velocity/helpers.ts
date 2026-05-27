@@ -10,6 +10,12 @@ import { sfQuery as sharedSfQuery, asSqlJsonLiteral, safeText, type SfQueryOpts 
 export { asSqlJsonLiteral, safeText };
 export type { SfQueryOpts };
 
+// VEHICLE_CLASS_PROFILE is the single source of truth for capacity, costs, ORS
+// profile, and break enforcement across the routing UI. Backload Matching owns
+// the loader; we re-export so Asset Velocity stays in lock-step (no fork).
+export { fetchVehicleClass } from '../backload-matching/helpers';
+export type { VehicleClass } from '../backload-matching/helpers';
+
 export const RO_DB = 'FLEET_INTELLIGENCE';
 export const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
