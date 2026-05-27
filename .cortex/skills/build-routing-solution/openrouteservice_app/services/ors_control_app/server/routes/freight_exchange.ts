@@ -17,6 +17,9 @@
 //   POST   /api/fx/draft-counter       — Cortex Complete negotiation draft + suggested USD (Phase E8)
 //   POST   /api/fx/decisions           — Write accepted decision to PROPOSAL_DECISIONS with SOURCE_PAGE='FREIGHT_EXCHANGE'
 //
+// ORS routing profile is resolved from MARKETPLACE.CONFIG joined to the active
+// DIM_DATASETS row — not from the React vehicle-type switcher.
+//
 // Tracking: every SQL call sets query_tag = oss-freight-exchange v1.1.
 
 import { Router } from 'express';
@@ -35,29 +38,75 @@ async function setQueryTag(): Promise<void> {
   }
 }
 
-// Resolve the active region from MARKETPLACE.CONFIG (kept in sync with the
-// Control App's preset by region-sync.ts).
-async function activeRegion(): Promise<string> {
-  const rows = await runSql(`SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1`);
-  return String(rows?.[0]?.REGION ?? 'SanFrancisco');
+/** Active marketplace preset: region + vehicle from CONFIG x DIM_DATASETS. */
+async function activePresetContext(): Promise<{ region: string; vehicleType: string | null }> {
+  const rows = await runSql(`
+    SELECT c.REGION, d.VEHICLE_TYPE
+    FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG c
+    LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+      ON UPPER(d.REGION) = UPPER(c.REGION) AND d.IS_ACTIVE = TRUE
+    LIMIT 1
+  `);
+  const r: any = rows?.[0];
+  return {
+    region: String(r?.REGION ?? 'SanFrancisco'),
+    vehicleType: r?.VEHICLE_TYPE ? String(r.VEHICLE_TYPE) : null,
+  };
 }
 
-// Pick HGV profile for heavy presets, fall back to driving-car otherwise.
-// Phase E6 will branch this on EQUIPMENT/HAZMAT.
-function profileFor(_region: string, vehicleType?: string, explicitProfile?: string): string {
-  if (explicitProfile) return explicitProfile;
-  if (!vehicleType) return 'driving-hgv';
-  const v = vehicleType.toLowerCase();
-  if (v.includes('truck') || v.includes('hgv') || v.includes('lorry')) return 'driving-hgv';
-  if (v.includes('bike') || v.includes('cycle')) return 'cycling-electric';
+function profileFor(_region: string, vehicleType?: string | null): string {
+  const v = (vehicleType ?? '').toLowerCase();
+  if (!v) return 'driving-car';
+  if (v.includes('truck') || v.includes('hgv') || v.includes('lorry') || v.includes('van')) return 'driving-hgv';
+  if (v.includes('ebike') || v.includes('bike') || v.includes('cycle')) return 'cycling-electric';
+  if (v.includes('walk') || v.includes('foot')) return 'foot-walking';
   return 'driving-car';
 }
 
-function resolveFxRegion(bodyRegion: unknown): Promise<string> {
-  if (typeof bodyRegion === 'string' && bodyRegion.trim()) {
-    return Promise.resolve(normalizeRegion(bodyRegion.trim()));
+function directionsSql(
+  profile: string,
+  startLon: number,
+  startLat: number,
+  endLon: number,
+  endLat: number,
+  region: string,
+): string {
+  const safeRegion = safeRegionIdent(normalizeRegion(region));
+  return `
+    SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, DISTANCE, DURATION
+    FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+      '${escapeString(profile)}',
+      ARRAY_CONSTRUCT(${sanitizeFloat(String(startLon))}, ${sanitizeFloat(String(startLat))}),
+      ARRAY_CONSTRUCT(${sanitizeFloat(String(endLon))}, ${sanitizeFloat(String(endLat))}),
+      '${safeRegion}'
+    ))`;
+}
+
+function parseDirectionsRow(rows: any[]): {
+  geometry: Record<string, unknown> | null;
+  roadKm: number | null;
+  roadMin: number | null;
+} {
+  const row = rows?.[0];
+  if (!row) return { geometry: null, roadKm: null, roadMin: null };
+  let geometry: Record<string, unknown> | null = null;
+  try {
+    const geoStr = row.GEO_STR;
+    geometry = typeof geoStr === 'string' ? JSON.parse(geoStr) : geoStr;
+  } catch {
+    geometry = null;
   }
-  return activeRegion();
+  return {
+    geometry,
+    roadKm: row.DISTANCE != null ? Number(row.DISTANCE) / 1000 : null,
+    roadMin: row.DURATION != null ? Number(row.DURATION) / 60 : null,
+  };
+}
+
+function parseOptimizationResult(rows: any[]): any {
+  if (!rows?.length) return null;
+  const raw = rows[0].RESPONSE;
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
 }
 
 export function createFreightExchangeRouter(): Router {
@@ -86,15 +135,16 @@ export function createFreightExchangeRouter(): Router {
 
   // -------------------------------------------------------------------------
   // POST /api/fx/refresh-routes — Phase E1
-  // Body: { batchSize?: number, maxAgeHours?: number, vehicleType?: string }
+  // Body: { batchSize?: number, maxAgeHours?: number }
   // -------------------------------------------------------------------------
   router.post('/api/fx/refresh-routes', async (req, res) => {
     try {
       await setQueryTag();
       const batchSize = sanitizeInt(req.body?.batchSize ?? 50);
       const maxAgeHours = sanitizeInt(req.body?.maxAgeHours ?? 6);
-      const region = await resolveFxRegion(req.body?.region);
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const { region, vehicleType } = await activePresetContext();
+      const safeRegion = safeRegionIdent(normalizeRegion(region));
+      const profile = profileFor(region, vehicleType);
 
       const stale = await runSql(`
         SELECT o.OFFER_ID, o.PICKUP_LON, o.PICKUP_LAT, o.DROPOFF_LON, o.DROPOFF_LAT
@@ -107,43 +157,32 @@ export function createFreightExchangeRouter(): Router {
       `);
 
       let processed = 0, failed = 0;
-      const safeRegion = safeRegionIdent(normalizeRegion(region));
 
       for (const r of stale as any[]) {
         try {
-          const sql = `
-            SELECT
-              OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-                ARRAY_CONSTRUCT(
-                  ARRAY_CONSTRUCT(${sanitizeFloat(String(r.PICKUP_LON))},  ${sanitizeFloat(String(r.PICKUP_LAT))}),
-                  ARRAY_CONSTRUCT(${sanitizeFloat(String(r.DROPOFF_LON))}, ${sanitizeFloat(String(r.DROPOFF_LAT))})
-                ),
-                '${escapeString(profile)}',
-                '${safeRegion}'
-              ) AS D
-          `;
-          const rows = await runSql(sql);
-          const raw = rows?.[0]?.D;
-          const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          const route = d?.routes?.[0];
-          if (!route) {
+          const rows = await runSql(directionsSql(
+            profile,
+            Number(r.PICKUP_LON), Number(r.PICKUP_LAT),
+            Number(r.DROPOFF_LON), Number(r.DROPOFF_LAT),
+            region,
+          ));
+          const { geometry, roadKm, roadMin } = parseDirectionsRow(rows);
+          if (!geometry || roadKm == null) {
             failed++;
             continue;
           }
-          const km = Number(route.summary?.distance ?? 0) / 1000;
-          const min = Number(route.summary?.duration ?? 0) / 60;
-          const geom = JSON.stringify(route.geometry ?? null);
+          const geom = JSON.stringify(geometry);
           await runSql(`
             MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
             USING (SELECT '${escapeString(String(r.OFFER_ID))}' AS OFFER_ID) src
               ON tgt.OFFER_ID = src.OFFER_ID
             WHEN MATCHED THEN UPDATE SET
-              ROAD_KM = ${km}, ROAD_MIN = ${min},
+              ROAD_KM = ${roadKm}, ROAD_MIN = ${roadMin ?? 'NULL'},
               GEOMETRY = $$${geom}$$,
               PROFILE = '${escapeString(profile)}',
               COMPUTED_AT = CURRENT_TIMESTAMP()
             WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
-              VALUES ('${escapeString(String(r.OFFER_ID))}', ${km}, ${min}, $$${geom}$$, '${escapeString(profile)}', CURRENT_TIMESTAMP())
+              VALUES ('${escapeString(String(r.OFFER_ID))}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geom}$$, '${escapeString(profile)}', CURRENT_TIMESTAMP())
           `);
           processed++;
         } catch (e: any) {
@@ -177,28 +216,22 @@ export function createFreightExchangeRouter(): Router {
       const o: any = offerRows?.[0];
       if (!o) return res.status(404).json({ error: 'offer not found' });
 
-      const region = await resolveFxRegion(req.body?.region);
-      const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const { region, vehicleType } = await activePresetContext();
+      const profile = profileFor(region, vehicleType);
 
-      const rows = await runSql(`
-        SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-          ARRAY_CONSTRUCT(
-            ARRAY_CONSTRUCT(${tLon}, ${tLat}),
-            ARRAY_CONSTRUCT(${sanitizeFloat(String(o.PICKUP_LON))}, ${sanitizeFloat(String(o.PICKUP_LAT))})
-          ),
-          '${escapeString(profile)}',
-          '${safeRegion}'
-        ) AS D
-      `);
-      const raw = rows?.[0]?.D;
-      const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const route = d?.routes?.[0];
+      const rows = await runSql(directionsSql(
+        profile, tLon, tLat,
+        Number(o.PICKUP_LON), Number(o.PICKUP_LAT),
+        region,
+      ));
+      const { geometry, roadKm, roadMin } = parseDirectionsRow(rows);
       res.json({
         offerId: req.body?.offerId,
-        roadKm: route ? Number(route.summary?.distance ?? 0) / 1000 : null,
-        roadMin: route ? Number(route.summary?.duration ?? 0) / 60 : null,
-        geometry: route?.geometry ?? null,
+        roadKm,
+        roadMin,
+        geometry,
+        region,
+        profile,
       });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `eta: ${e?.message || e}`);
@@ -208,11 +241,7 @@ export function createFreightExchangeRouter(): Router {
 
   // -------------------------------------------------------------------------
   // POST /api/fx/offer-route — Pickup -> Dropoff DIRECTIONS for the selected offer
-  // Body: { offerId, vehicleType? }
-  // Returns the road geometry between PICKUP and DROPOFF using the active
-  // region preset and a profile derived from the requested vehicleType. Used
-  // by the Freight Exchange map to draw origin/destination markers and the
-  // travel path when an offer is selected.
+  // Body: { offerId }
   // -------------------------------------------------------------------------
   router.post('/api/fx/offer-route', async (req, res) => {
     try {
@@ -231,31 +260,34 @@ export function createFreightExchangeRouter(): Router {
         return res.status(422).json({ error: 'offer is missing pickup or dropoff coordinates' });
       }
 
-      const region = await resolveFxRegion(req.body?.region);
-      const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const { region, vehicleType } = await activePresetContext();
+      const profile = profileFor(region, vehicleType);
 
-      const rows = await runSql(`
-        SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-          ARRAY_CONSTRUCT(
-            ARRAY_CONSTRUCT(${sanitizeFloat(String(o.PICKUP_LON))}, ${sanitizeFloat(String(o.PICKUP_LAT))}),
-            ARRAY_CONSTRUCT(${sanitizeFloat(String(o.DROPOFF_LON))}, ${sanitizeFloat(String(o.DROPOFF_LAT))})
-          ),
-          '${escapeString(profile)}',
-          '${safeRegion}'
-        ) AS D
-      `);
-      const raw = rows?.[0]?.D;
-      const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      const route = d?.routes?.[0];
-      res.json({
-        offerId: req.body?.offerId,
-        roadKm: route ? Number(route.summary?.distance ?? 0) / 1000 : null,
-        roadMin: route ? Number(route.summary?.duration ?? 0) / 60 : null,
-        geometry: route?.geometry ?? null,
-        region,
-        profile,
-      });
+      try {
+        const rows = await runSql(directionsSql(
+          profile,
+          Number(o.PICKUP_LON), Number(o.PICKUP_LAT),
+          Number(o.DROPOFF_LON), Number(o.DROPOFF_LAT),
+          region,
+        ));
+        const { geometry, roadKm, roadMin } = parseDirectionsRow(rows);
+        res.json({
+          offerId: req.body?.offerId,
+          roadKm,
+          roadMin,
+          geometry,
+          region,
+          profile,
+        });
+      } catch (e: any) {
+        log('ERROR', 'FreightExchange', `offer-route: region=${region} profile=${profile} err=${e?.message || e}`);
+        return res.status(502).json({
+          error: 'ORS routing failed',
+          region,
+          profile,
+          detail: String(e?.message || e),
+        });
+      }
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `offer-route: ${e?.message || e}`);
       res.status(500).json({ error: String(e?.message || e) });
@@ -264,30 +296,43 @@ export function createFreightExchangeRouter(): Router {
 
   // -------------------------------------------------------------------------
   // POST /api/fx/isochrone — Phase E2
-  // Body: { trailerLon, trailerLat, rangeSeconds }
+  // Body: { trailerLon, trailerLat, rangeSeconds?: number | number[] }
   // -------------------------------------------------------------------------
   router.post('/api/fx/isochrone', async (req, res) => {
     try {
       await setQueryTag();
       const tLon = sanitizeFloat(String(req.body?.trailerLon));
       const tLat = sanitizeFloat(String(req.body?.trailerLat));
-      const rangeSec = sanitizeInt(req.body?.rangeSeconds ?? 14400);
-      const region = await resolveFxRegion(req.body?.region);
+      const rawRange = req.body?.rangeSeconds ?? 3600;
+      const rangesArr = Array.isArray(rawRange)
+        ? rawRange.map((x: unknown) => sanitizeInt(x))
+        : [sanitizeInt(rawRange)];
+      const { region, vehicleType } = await activePresetContext();
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const profile = profileFor(region, vehicleType);
+      const rangesSql = rangesArr.join(',');
 
       const rows = await runSql(`
-        SELECT OPENROUTESERVICE_APP.CORE.ISOCHRONES(
-          ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${tLon}, ${tLat})),
+        SELECT TO_VARCHAR(ST_ASGEOJSON(GEOJSON)) AS GEO_STR, RESPONSE
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(
           '${escapeString(profile)}',
-          ARRAY_CONSTRUCT(${rangeSec}),
+          ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${tLon}, ${tLat})),
+          ARRAY_CONSTRUCT(${rangesSql}),
           'time',
           '${safeRegion}'
-        ) AS ISO
+        ))
       `);
-      const raw = rows?.[0]?.ISO;
-      const iso = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      res.json({ isochrone: iso, rangeSeconds: rangeSec, profile, region });
+      const row: any = rows?.[0];
+      let isochrone: any = null;
+      if (row?.RESPONSE) {
+        isochrone = typeof row.RESPONSE === 'string' ? JSON.parse(row.RESPONSE) : row.RESPONSE;
+      } else if (row?.GEO_STR) {
+        try {
+          const geom = typeof row.GEO_STR === 'string' ? JSON.parse(row.GEO_STR) : row.GEO_STR;
+          isochrone = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: geom }] };
+        } catch { /* ignore */ }
+      }
+      res.json({ isochrone, rangeSeconds: rangesArr, profile, region });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `isochrone: ${e?.message || e}`);
       res.status(500).json({ error: String(e?.message || e) });
@@ -316,17 +361,15 @@ export function createFreightExchangeRouter(): Router {
 
   // -------------------------------------------------------------------------
   // POST /api/fx/refresh-deadhead — Phase E3
-  // Body: { topNTrailers?: number, topNOffers?: number }
-  // Computes a small MATRIX trailer.last_drop -> offer.pickup, persists.
   // -------------------------------------------------------------------------
   router.post('/api/fx/refresh-deadhead', async (req, res) => {
     try {
       await setQueryTag();
       const topT = sanitizeInt(req.body?.topNTrailers ?? 10);
       const topO = sanitizeInt(req.body?.topNOffers ?? 30);
-      const region = await resolveFxRegion(req.body?.region);
+      const { region, vehicleType } = await activePresetContext();
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const profile = profileFor(region, vehicleType);
 
       const trailers = await runSql(`
         SELECT TRAILER_ID, DROPOFF_LON AS LON, DROPOFF_LAT AS LAT
@@ -354,11 +397,13 @@ export function createFreightExchangeRouter(): Router {
 
       const sql = `
         SELECT OPENROUTESERVICE_APP.CORE.MATRIX(
-          ARRAY_CONSTRUCT(${tCoords}, ${oCoords}),
           '${escapeString(profile)}',
-          ARRAY_CONSTRUCT(${tIdx}),
-          ARRAY_CONSTRUCT(${oIdx}),
-          ARRAY_CONSTRUCT('distance','duration'),
+          OBJECT_CONSTRUCT(
+            'locations', ARRAY_CONSTRUCT(${tCoords}, ${oCoords}),
+            'sources', ARRAY_CONSTRUCT(${tIdx}),
+            'destinations', ARRAY_CONSTRUCT(${oIdx}),
+            'metrics', ARRAY_CONSTRUCT('distance', 'duration')
+          )::VARIANT,
           '${safeRegion}'
         ) AS M
       `;
@@ -388,7 +433,7 @@ export function createFreightExchangeRouter(): Router {
           written++;
         }
       }
-      res.json({ trailers: trailers.length, offers: offers.length, matrix: written });
+      res.json({ trailers: trailers.length, offers: offers.length, matrix: written, region, profile });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `refresh-deadhead: ${e?.message || e}`);
       res.status(500).json({ error: String(e?.message || e) });
@@ -397,7 +442,6 @@ export function createFreightExchangeRouter(): Router {
 
   // -------------------------------------------------------------------------
   // POST /api/fx/round-trip — Phase E4
-  // Body: { trailerId, offerId, returnCandidateIds: string[] }
   // -------------------------------------------------------------------------
   router.post('/api/fx/round-trip', async (req, res) => {
     try {
@@ -407,9 +451,9 @@ export function createFreightExchangeRouter(): Router {
       const candidateIds: string[] = Array.isArray(req.body?.returnCandidateIds) ? req.body.returnCandidateIds : [];
       if (!trailerId || !offerId) return res.status(400).json({ error: 'trailerId and offerId required' });
 
-      const region = await resolveFxRegion(req.body?.region);
+      const { region, vehicleType } = await activePresetContext();
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const profile = profileFor(region, vehicleType);
 
       const tRows = await runSql(`
         SELECT TRAILER_ID, DROPOFF_LON, DROPOFF_LAT, HOME_LON, HOME_LAT
@@ -447,11 +491,11 @@ export function createFreightExchangeRouter(): Router {
       const payloadStr = JSON.stringify(payload).replace(/'/g, "''");
 
       const rows = await runSql(`
-        SELECT OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON($$${payloadStr}$$), '${safeRegion}') AS R
+        SELECT RESPONSE, VEHICLE, DURATION, STEPS
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON($$${payloadStr}$$), '${safeRegion}'))
       `);
-      const raw = rows?.[0]?.R;
-      const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      res.json({ vrp: result, primary, candidates });
+      const result = parseOptimizationResult(rows);
+      res.json({ vrp: result, primary, candidates, region, profile });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `round-trip: ${e?.message || e}`);
       res.status(500).json({ error: String(e?.message || e) });
@@ -459,8 +503,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/bundle — Phase E5 (multi-offer solver with EU 561 break)
-  // Body: { trailerId, offerIds: string[] }
+  // POST /api/fx/bundle — Phase E5
   // -------------------------------------------------------------------------
   router.post('/api/fx/bundle', async (req, res) => {
     try {
@@ -469,9 +512,9 @@ export function createFreightExchangeRouter(): Router {
       const offerIds: string[] = Array.isArray(req.body?.offerIds) ? req.body.offerIds : [];
       if (!trailerId || offerIds.length < 2) return res.status(400).json({ error: 'trailerId and >=2 offerIds required' });
 
-      const region = await resolveFxRegion(req.body?.region);
+      const { region, vehicleType } = await activePresetContext();
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
+      const profile = profileFor(region, vehicleType);
 
       const tRows = await runSql(`
         SELECT DROPOFF_LON, DROPOFF_LAT, HOME_LON, HOME_LAT
@@ -495,7 +538,6 @@ export function createFreightExchangeRouter(): Router {
         amount:   [Math.round(Number(o.WEIGHT_KG ?? 12000))],
       }));
 
-      // EU 561/2006: 45-min break after 4.5 hours (16200s) of driving.
       const now = Math.floor(Date.now() / 1000);
       const vehicle: any = {
         id: 1,
@@ -511,7 +553,6 @@ export function createFreightExchangeRouter(): Router {
           time_windows: [[now + 16200, now + 16200 + 5400]],
         }],
       };
-      // Phase E6: ADR-aware routing — avoid ferries + tunnels for hazmat bundles.
       if (anyHazmat) {
         vehicle.profile_options = { avoid_features: ['ferries', 'tunnels'] };
       }
@@ -519,18 +560,18 @@ export function createFreightExchangeRouter(): Router {
       const payloadStr = JSON.stringify(payload).replace(/'/g, "''");
 
       const rows = await runSql(`
-        SELECT OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON($$${payloadStr}$$), '${safeRegion}') AS R
+        SELECT RESPONSE, VEHICLE, DURATION, STEPS
+        FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON($$${payloadStr}$$), '${safeRegion}'))
       `);
-      const raw = rows?.[0]?.R;
-      const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
-
-      // EU compliance flag: at least one break inserted in the route?
+      const result = parseOptimizationResult(rows);
       const route = result?.routes?.[0];
       const breakSteps = (route?.steps ?? []).filter((s: any) => s.type === 'break');
       res.json({
         vrp: result,
         eu561Compliant: breakSteps.length > 0 || (route?.duration ?? 0) <= 16200,
         offers: offerRows,
+        region,
+        profile,
       });
     } catch (e: any) {
       log('ERROR', 'FreightExchange', `bundle: ${e?.message || e}`);
@@ -558,8 +599,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/draft-counter — Phase E8 (Cortex Complete negotiation draft)
-  // Body: { offerId, dispatcherId? }
+  // POST /api/fx/draft-counter — Phase E8
   // -------------------------------------------------------------------------
   router.post('/api/fx/draft-counter', async (req, res) => {
     try {
@@ -616,8 +656,7 @@ export function createFreightExchangeRouter(): Router {
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/fx/decisions — write to shared PROPOSAL_DECISIONS
-  // Body: { trailerId?, offerId?, decisionType, bundleId?, score?, emptyKm?, decidedBy?, rationale?, netBenefitEur? }
+  // POST /api/fx/decisions
   // -------------------------------------------------------------------------
   router.post('/api/fx/decisions', async (req, res) => {
     try {

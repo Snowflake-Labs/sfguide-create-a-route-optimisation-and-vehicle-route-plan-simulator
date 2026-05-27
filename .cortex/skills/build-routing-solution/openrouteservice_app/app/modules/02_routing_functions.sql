@@ -77,6 +77,15 @@
       MAX_BATCH_ROWS = 1000
       AS '/isochrones_tabular';
 
+   -- Multi-point / multi-range isochrones via gateway /isochrones (range in seconds
+   -- when range_type is time). options VARIANT carries locations, range, range_type.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method VARCHAR, options VARIANT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/isochrones';
+
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._OPTIMIZATION_TABULAR_RAW(jobs ARRAY, vehicles ARRAY, matrices ARRAY, region VARCHAR)
       RETURNS VARIANT
       SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
@@ -173,6 +182,27 @@
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
          FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, smoothing, region) AS resp)';
+
+   -- ISOCHRONES (multi-point / multi-range). locations = ARRAY of [lon, lat] pairs;
+   -- ranges = ARRAY of range values (seconds when range_type is time).
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      method VARCHAR, locations ARRAY, ranges ARRAY,
+      range_type VARCHAR DEFAULT 'time', region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.1","attributes":{"component":"routing","feature":"multi-isochrone"}}'
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(
+                  method,
+                  OBJECT_CONSTRUCT(
+                    ''locations'', locations,
+                    ''range'', ranges,
+                    ''range_type'', range_type
+                  ),
+                  region
+                ) AS resp)';
 
    -- ISOCHRONES_CLIPPED: same as ISOCHRONES but clips the returned polygon
    -- to the named region's actual boundary so catchment zones don't claim

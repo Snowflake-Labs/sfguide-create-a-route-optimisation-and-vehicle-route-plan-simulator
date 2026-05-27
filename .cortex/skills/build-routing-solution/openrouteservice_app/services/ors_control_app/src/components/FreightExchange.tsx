@@ -19,7 +19,6 @@ import OffersMap from './freight-exchange/OffersMap';
 import OfferDrawer from './freight-exchange/OfferDrawer';
 import { useOffers, useLaneHistory, useSelectedOfferRoute } from './freight-exchange/sql';
 import { EQUIPMENTS, TRUST_RANK, MARKET_RANK } from './freight-exchange/constants';
-import { useActivePreset } from '../hooks/useActivePreset';
 import type { Offer, FilterState, SortKey, SortDir } from './freight-exchange/types';
 
 const INITIAL_FILTERS: FilterState = {
@@ -35,17 +34,12 @@ const INITIAL_FILTERS: FilterState = {
 
 export default function FreightExchange() {
   const { rows: offers, loading } = useOffers();
-  const preset = useActivePreset();
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
   const [selected, setSelected] = useState<Offer | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('POSTED_AGE_MIN');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const laneHistory = useLaneHistory(selected?.PARTNER_ID, selected?.EQUIPMENT);
-  const route = useSelectedOfferRoute(selected, {
-    vehicleType: preset.vehicleType,
-    region: preset.region,
-    profile: preset.orsProfile,
-  });
+  const route = useSelectedOfferRoute(selected);
 
   // Seed source toggles once when offers first arrive. The guard preserves
   // any subsequent user toggles — without it, a re-fetch would wipe the

@@ -32,7 +32,7 @@ export const postEta = (body: { trailerLon: number; trailerLat: number; offerId:
 
 // Pickup -> Dropoff route for the selected offer (used by the map to show
 // origin, destination, and travel path under the active region/preset).
-export const postOfferRoute = (body: { offerId: string } & FxRoutingContext) =>
+export const postOfferRoute = (body: { offerId: string }) =>
   postJson<{ offerId: string; roadKm: number | null; roadMin: number | null; geometry: any; region: string; profile: string }>('/api/fx/offer-route', body);
 
 // Phase E2

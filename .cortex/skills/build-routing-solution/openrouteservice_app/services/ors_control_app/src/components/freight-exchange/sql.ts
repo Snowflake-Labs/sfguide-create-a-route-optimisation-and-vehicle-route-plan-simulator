@@ -99,9 +99,7 @@ export interface SelectedOfferRoute {
  *  keeps the markers but drops the path. */
 export function useSelectedOfferRoute(
   selected: Offer | null,
-  routing: { vehicleType?: string; region?: string; profile?: string },
 ): SelectedOfferRoute {
-  const { vehicleType, region, profile } = routing;
   const liveCacheRef = useRef<Map<string, { coords: [number, number][] | null; roadKm: number | null; roadMin: number | null }>>(new Map());
   const [, forceRender] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -115,7 +113,7 @@ export function useSelectedOfferRoute(
 
     let cancelled = false;
     setLoading(true);
-    postOfferRoute({ offerId, vehicleType, region, profile })
+    postOfferRoute({ offerId })
       .then(res => {
         if (cancelled) return;
         const coords = parseRouteGeometry(res?.geometry ?? null);
@@ -134,7 +132,7 @@ export function useSelectedOfferRoute(
         forceRender(v => v + 1);
       });
     return () => { cancelled = true; };
-  }, [offerId, vehicleType, region, profile, selected?.ROUTE_GEOMETRY]);
+  }, [offerId, selected?.ROUTE_GEOMETRY]);
 
   if (!selected || !offerId) {
     return { coords: null, roadKm: null, roadMin: null, loading: false, source: 'none' };

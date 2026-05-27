@@ -590,6 +590,46 @@ def post_isochrones_tabular(format="geojson"):
     return _make_response(output_rows)
 
 
+@app.post("/isochrones")
+@app.post("/isochrones/<format>")
+def post_isochrones(format="geojson"):
+    """
+    Snowflake service-function row = [id, method, options, region].
+    options VARIANT: { locations: [[lon, lat], ...], range: [seconds...],
+                       range_type: 'time'|'distance', smoothing?: int }.
+    Forwards locations/range/range_type to ORS isochrones (range in seconds
+    when range_type is time). Unlike /isochrones_tabular, does not multiply
+    range by 60.
+    """
+    message = request.json
+    logger.debug(f'Received isochrones request: {message}')
+    input_rows = _parse_rows(message)
+    if not input_rows:
+        return {}
+    output_rows = []
+    for row in input_rows:
+        region = _extract_region(row, 3)
+        ors_host = resolve_ors_host(region)
+        opts = row[2]
+        if isinstance(opts, str):
+            opts = json.loads(opts)
+        if not isinstance(opts, dict):
+            opts = {}
+        body = {
+            'locations': opts.get('locations', []),
+            'range': opts.get('range', []),
+            'range_type': opts.get('range_type', 'time'),
+            'location_type': 'start',
+        }
+        smoothing = opts.get('smoothing')
+        if smoothing is not None and int(smoothing) > 0:
+            body['smoothing'] = int(smoothing)
+        output_rows.append([row[0], get_ors_response(
+            'isochrones', row[1], body, format, ors_host, region_hint=region)])
+    logger.info(f'Produced {len(output_rows)} isochrone rows')
+    return _make_response(output_rows)
+
+
 def _build_matrix_body(method, row_data, has_destinations):
     if has_destinations:
         origin = row_data[0]
