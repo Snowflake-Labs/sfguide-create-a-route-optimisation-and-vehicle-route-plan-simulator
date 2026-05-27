@@ -125,12 +125,13 @@ BEGIN
     -- Pull the most recent N lines from each gateway container instance.
     -- The gateway runs with MIN_INSTANCES=3, but SYSTEM$GET_SERVICE_LOGS
     -- returns the aggregate stream so a single call suffices.
+    -- Container name 'reverse-proxy' matches routing-gateway-service.yaml. (#audit-pr-120)
     BEGIN
         SELECT SYSTEM$GET_SERVICE_LOGS(
             'OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE',
             0,
-            'routing-gateway',
-            5000
+            'reverse-proxy',
+            1000
         ) INTO :logs_text;
     EXCEPTION WHEN OTHER THEN
         logs_text := '';
@@ -170,7 +171,7 @@ BEGIN
     FROM parsed
     WHERE J IS NOT NULL
       AND J:"endpoint" IS NOT NULL
-      AND TRY_TO_TIMESTAMP_LTZ(J:"ts"::STRING) >= DATEADD(minute, -:cutoff_minutes, SYSDATE());
+      AND TRY_TO_TIMESTAMP_LTZ(J:"ts"::STRING) >= DATEADD(minute, -:cutoff_minutes, CURRENT_TIMESTAMP());
 
     SELECT COUNT(*) INTO :parsed_count FROM _ORS_METRIC_CANDIDATES;
 
