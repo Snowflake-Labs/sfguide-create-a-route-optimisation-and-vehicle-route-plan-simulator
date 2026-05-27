@@ -212,6 +212,11 @@ export interface GenerationConfig {
     min_bins_required: number;    // small regions w/ < N populated bins fall back
   };
   region_area_km2?: number | null; // populated by routes.ts before generation
+  // Per-day fleet parallelism. Up to N vehicles run their ORS calls
+  // concurrently within a single simulated day. Defaults to 8 - safe for the
+  // 4-instance ORS_SERVICE_<REGION> + 8-instance ROUTING_GATEWAY_SERVICE
+  // back-end. Set to 1 for fully sequential / reproducible runs.
+  parallelism?: number;
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {
