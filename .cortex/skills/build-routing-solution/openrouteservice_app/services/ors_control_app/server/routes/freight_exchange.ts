@@ -44,12 +44,20 @@ async function activeRegion(): Promise<string> {
 
 // Pick HGV profile for heavy presets, fall back to driving-car otherwise.
 // Phase E6 will branch this on EQUIPMENT/HAZMAT.
-function profileFor(_region: string, vehicleType?: string): string {
+function profileFor(_region: string, vehicleType?: string, explicitProfile?: string): string {
+  if (explicitProfile) return explicitProfile;
   if (!vehicleType) return 'driving-hgv';
   const v = vehicleType.toLowerCase();
   if (v.includes('truck') || v.includes('hgv') || v.includes('lorry')) return 'driving-hgv';
   if (v.includes('bike') || v.includes('cycle')) return 'cycling-electric';
   return 'driving-car';
+}
+
+function resolveFxRegion(bodyRegion: unknown): Promise<string> {
+  if (typeof bodyRegion === 'string' && bodyRegion.trim()) {
+    return Promise.resolve(normalizeRegion(bodyRegion.trim()));
+  }
+  return activeRegion();
 }
 
 export function createFreightExchangeRouter(): Router {
@@ -85,8 +93,8 @@ export function createFreightExchangeRouter(): Router {
       await setQueryTag();
       const batchSize = sanitizeInt(req.body?.batchSize ?? 50);
       const maxAgeHours = sanitizeInt(req.body?.maxAgeHours ?? 6);
-      const region = await activeRegion();
-      const profile = profileFor(region, req.body?.vehicleType);
+      const region = await resolveFxRegion(req.body?.region);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const stale = await runSql(`
         SELECT o.OFFER_ID, o.PICKUP_LON, o.PICKUP_LAT, o.DROPOFF_LON, o.DROPOFF_LAT
@@ -169,9 +177,9 @@ export function createFreightExchangeRouter(): Router {
       const o: any = offerRows?.[0];
       if (!o) return res.status(404).json({ error: 'offer not found' });
 
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const rows = await runSql(`
         SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
@@ -223,9 +231,9 @@ export function createFreightExchangeRouter(): Router {
         return res.status(422).json({ error: 'offer is missing pickup or dropoff coordinates' });
       }
 
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const rows = await runSql(`
         SELECT OPENROUTESERVICE_APP.CORE.DIRECTIONS(
@@ -264,9 +272,9 @@ export function createFreightExchangeRouter(): Router {
       const tLon = sanitizeFloat(String(req.body?.trailerLon));
       const tLat = sanitizeFloat(String(req.body?.trailerLat));
       const rangeSec = sanitizeInt(req.body?.rangeSeconds ?? 14400);
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const rows = await runSql(`
         SELECT OPENROUTESERVICE_APP.CORE.ISOCHRONES(
@@ -316,9 +324,9 @@ export function createFreightExchangeRouter(): Router {
       await setQueryTag();
       const topT = sanitizeInt(req.body?.topNTrailers ?? 10);
       const topO = sanitizeInt(req.body?.topNOffers ?? 30);
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const trailers = await runSql(`
         SELECT TRAILER_ID, DROPOFF_LON AS LON, DROPOFF_LAT AS LAT
@@ -399,9 +407,9 @@ export function createFreightExchangeRouter(): Router {
       const candidateIds: string[] = Array.isArray(req.body?.returnCandidateIds) ? req.body.returnCandidateIds : [];
       if (!trailerId || !offerId) return res.status(400).json({ error: 'trailerId and offerId required' });
 
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const tRows = await runSql(`
         SELECT TRAILER_ID, DROPOFF_LON, DROPOFF_LAT, HOME_LON, HOME_LAT
@@ -461,9 +469,9 @@ export function createFreightExchangeRouter(): Router {
       const offerIds: string[] = Array.isArray(req.body?.offerIds) ? req.body.offerIds : [];
       if (!trailerId || offerIds.length < 2) return res.status(400).json({ error: 'trailerId and >=2 offerIds required' });
 
-      const region = await activeRegion();
+      const region = await resolveFxRegion(req.body?.region);
       const safeRegion = safeRegionIdent(normalizeRegion(region));
-      const profile = profileFor(region, req.body?.vehicleType);
+      const profile = profileFor(region, req.body?.vehicleType, req.body?.profile);
 
       const tRows = await runSql(`
         SELECT DROPOFF_LON, DROPOFF_LAT, HOME_LON, HOME_LAT

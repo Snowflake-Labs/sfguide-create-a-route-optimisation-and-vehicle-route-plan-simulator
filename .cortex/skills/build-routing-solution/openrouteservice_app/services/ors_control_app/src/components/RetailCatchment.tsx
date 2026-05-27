@@ -4,6 +4,7 @@ import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { H3HexagonLayer, TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
+import { useActivePreset } from '../hooks/useActivePreset';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
@@ -72,13 +73,14 @@ function boundaryJoin(orsKey: string): string {
 const BOUNDARY_FILTER = `ST_WITHIN(p.GEOMETRY, rc.BOUNDARY)`;
 
 export default function RetailCatchment() {
+  const preset = useActivePreset();
   const { regions: globalRegions, center: globalCenter, zoom: globalZoom } = useRegion();
   const [provisionedRegions, setProvisionedRegions] = useState<ProvisionedRegion[]>([]);
   const [selectedRegion, setSelectedRegion] = useState('');
   const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [pois, setPois] = useState<any[]>([]);
   const [selectedStore, setSelectedStore] = useState<any>(null);
-  const [travelMode, setTravelMode] = useState('driving-car');
+  const [travelMode, setTravelMode] = useState(preset.orsProfile);
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
@@ -131,6 +133,14 @@ export default function RetailCatchment() {
     /* viewState now driven by useFitMap below */
   }, [globalCenter.lng, globalCenter.lat, globalZoom, selectedRegion]);
 
+  useEffect(() => {
+    if (preset.loading || !preset.orsProfile) return;
+    setTravelMode((prev) => {
+      if (availableProfiles.length > 0 && !availableProfiles.includes(preset.orsProfile)) return prev;
+      return preset.orsProfile;
+    });
+  }, [preset.orsProfile, preset.loading, availableProfiles]);
+
   // When the local region selection changes: refresh available profiles, reset
   // travel mode if needed, recenter the map onto the region's BOUNDARY centroid
   // (authoritative — always on land, inside the polygon), and load POIs from
@@ -152,8 +162,11 @@ export default function RetailCatchment() {
     if (!region) return;
 
     setAvailableProfiles(region.profiles_loaded);
+    const preferred = region.profiles_loaded.includes(preset.orsProfile)
+      ? preset.orsProfile
+      : region.profiles_loaded[0];
     if (!region.profiles_loaded.includes(travelMode)) {
-      setTravelMode(region.profiles_loaded[0]);
+      setTravelMode(preferred);
     }
 
     // Always recenter on the boundary centroid — even if 0 POIs come back.

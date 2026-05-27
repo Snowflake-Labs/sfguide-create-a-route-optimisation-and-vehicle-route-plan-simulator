@@ -3,6 +3,7 @@ import MetricCard from '../shared/MetricCard';
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { useRegion } from '../hooks/useRegion';
+import { useActivePreset } from '../hooks/useActivePreset';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
@@ -24,6 +25,7 @@ const MATRIX_TERMINAL_CAP = 50;
 const VRP_TOP_N = 8;
 
 export default function AssetVelocity() {
+  const preset = useActivePreset();
   const { regionName, center, zoom } = useRegion();
   const [idleHourThreshold, setIdleHourThreshold] = useState(1);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
@@ -38,7 +40,7 @@ export default function AssetVelocity() {
   const [vrpResult, setVrpResult] = useState<any>(null);
   const [sortBy, setSortBy] = useState<keyof Trailer>('COST_OF_IDLENESS_USD');
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const [orsProfile, setOrsProfile] = useState<string>('driving-car');
+  const [orsProfile, setOrsProfile] = useState<string>(preset.orsProfile);
   const [vehicleClass, setVehicleClass] = useState<VehicleClass | null>(null);
   const [vehicleClassError, setVehicleClassError] = useState<string | null>(null);
   const [matrix, setMatrix] = useState<MatrixCache>({});
@@ -122,17 +124,17 @@ export default function AssetVelocity() {
         } else {
           setVehicleClass(null);
           setVehicleClassError(`No VEHICLE_CLASS_PROFILE row for vehicle_type='${vt}'. Add a row in OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE.`);
-          setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+          setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || preset.orsProfile);
         }
       } catch (err: any) {
         setVehicleClass(null);
         setVehicleClassError(`Failed to load VEHICLE_CLASS_PROFILE: ${(err?.message ?? 'unknown').toString().slice(0, 200)}`);
-        setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+        setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || preset.orsProfile);
       }
     } else {
       setVehicleClass(null);
       setVehicleClassError('CONFIG.VEHICLE_TYPE is empty; cannot resolve vehicle class.');
-      setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || 'driving-car');
+      setOrsProfile((pr[0]?.ORS_PROFILE as string) || profileForFleet(trailerRows) || preset.orsProfile);
     }
     if (trailerRows.length) {
       setMaxRepositionMinutes(Number(trailerRows[0].MAX_REPOSITION_MINUTES) || 600);

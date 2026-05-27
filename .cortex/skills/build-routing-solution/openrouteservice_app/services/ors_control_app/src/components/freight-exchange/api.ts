@@ -21,35 +21,37 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type FxRoutingContext = { region?: string; profile?: string; vehicleType?: string };
+
 // Phase E1
-export const postRefreshRoutes = (body: { batchSize?: number; maxAgeHours?: number; vehicleType?: string }) =>
+export const postRefreshRoutes = (body: { batchSize?: number; maxAgeHours?: number } & FxRoutingContext) =>
   postJson<{ processed: number; failed: number }>('/api/fx/refresh-routes', body);
 
-export const postEta = (body: { trailerLon: number; trailerLat: number; offerId: string; vehicleType?: string }) =>
+export const postEta = (body: { trailerLon: number; trailerLat: number; offerId: string } & FxRoutingContext) =>
   postJson<{ offerId: string; roadKm: number | null; roadMin: number | null; geometry: any }>('/api/fx/eta', body);
 
 // Pickup -> Dropoff route for the selected offer (used by the map to show
 // origin, destination, and travel path under the active region/preset).
-export const postOfferRoute = (body: { offerId: string; vehicleType?: string }) =>
+export const postOfferRoute = (body: { offerId: string } & FxRoutingContext) =>
   postJson<{ offerId: string; roadKm: number | null; roadMin: number | null; geometry: any; region: string; profile: string }>('/api/fx/offer-route', body);
 
 // Phase E2
-export const postIsochrone = (body: { trailerLon: number; trailerLat: number; rangeSeconds?: number; vehicleType?: string }) =>
+export const postIsochrone = (body: { trailerLon: number; trailerLat: number; rangeSeconds?: number } & FxRoutingContext) =>
   postJson<{ isochrone: any; rangeSeconds: number; profile: string }>('/api/fx/isochrone', body);
 
 // Phase E3
 export const getDeadhead = () =>
   getJson<{ rows: Array<{ OFFER_ID: string; BEST_TRAILER_ID: string | null; BEST_DEADHEAD_KM: number | null }> }>('/api/fx/deadhead');
 
-export const postRefreshDeadhead = (body: { topNTrailers?: number; topNOffers?: number; vehicleType?: string }) =>
+export const postRefreshDeadhead = (body: { topNTrailers?: number; topNOffers?: number } & FxRoutingContext) =>
   postJson<{ trailers: number; offers: number; matrix: number }>('/api/fx/refresh-deadhead', body);
 
 // Phase E4
-export const postRoundTrip = (body: { trailerId: string; offerId: string; returnCandidateIds?: string[]; vehicleType?: string }) =>
+export const postRoundTrip = (body: { trailerId: string; offerId: string; returnCandidateIds?: string[] } & FxRoutingContext) =>
   postJson<RoundTripResult>('/api/fx/round-trip', body);
 
 // Phase E5
-export const postBundle = (body: { trailerId: string; offerIds: string[]; vehicleType?: string }) =>
+export const postBundle = (body: { trailerId: string; offerIds: string[] } & FxRoutingContext) =>
   postJson<BundleResult>('/api/fx/bundle', body);
 
 // Phase E7

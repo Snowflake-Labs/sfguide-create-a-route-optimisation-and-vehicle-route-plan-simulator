@@ -4,6 +4,7 @@ export interface DatasetPair { vehicleType: string; region: string; }
 
 interface VehicleTypeContextValue {
   vehicleType: string;
+  orsProfile: string;
   availableTypes: string[];
   datasetPairs: DatasetPair[];
   activeDatasetId: string | null;
@@ -16,6 +17,7 @@ interface VehicleTypeContextValue {
 
 const defaults: VehicleTypeContextValue = {
   vehicleType: 'ebike',
+  orsProfile: 'cycling-electric',
   availableTypes: [],
   datasetPairs: [],
   activeDatasetId: null,
@@ -37,6 +39,7 @@ export function useVehicleTypeProvider() {
   const [availableTypes, setAvailableTypes] = useState<string[]>([]);
   const [datasetPairs, setDatasetPairs] = useState<DatasetPair[]>([]);
   const [activeDatasetId, setActiveDatasetId] = useState<string | null>(null);
+  const [orsProfile, setOrsProfile] = useState(defaults.orsProfile);
   const [loading, setLoading] = useState(true);
 
   const fetchConfig = useCallback(async () => {
@@ -45,6 +48,7 @@ export function useVehicleTypeProvider() {
       if (res.ok) {
         const data = await res.json();
         if (data.vehicleType) setVehicleType(data.vehicleType);
+        if (data.orsProfile) setOrsProfile(data.orsProfile);
         if (data.availableTypes) setAvailableTypes(data.availableTypes);
         if (data.datasetPairs) setDatasetPairs(data.datasetPairs);
         setActiveDatasetId(data.activeDatasetId ?? null);
@@ -78,6 +82,7 @@ export function useVehicleTypeProvider() {
 
   const value: VehicleTypeContextValue = {
     vehicleType,
+    orsProfile,
     availableTypes,
     datasetPairs,
     activeDatasetId,

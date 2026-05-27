@@ -8,12 +8,15 @@ import {
   formatNumber, formatDuration, formatBytes, timeAgo,
   STAGE_STEPS, getStageIndex, RoadFilterBadge,
 } from './matrix-builder/helpers';
+import { useActivePreset } from '../hooks/useActivePreset';
+import PresetRoutingControls from '../shared/PresetRoutingControls';
 
 export default function MatrixBuilder() {
+  const preset = useActivePreset();
   const [regions, setRegions] = useState<RegionInfo[]>([]);
   const [loadingRegions, setLoadingRegions] = useState(true);
   const [selectedRegion, setSelectedRegion] = useState<string>('');
-  const [selectedProfile, setSelectedProfile] = useState<string>('driving-car');
+  const [selectedProfile, setSelectedProfile] = useState<string>(preset.orsProfile);
   const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([7, 8, 9]));
   const [jobs, setJobs] = useState<MatrixJob[]>([]);
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
@@ -36,9 +39,10 @@ export default function MatrixBuilder() {
       const fetched = data.regions || [];
       setRegions(fetched);
       if (fetched.length > 0 && !selectedRegion) {
+        const fromPreset = fetched.find((r) => r.region === preset.region);
         const sf = fetched.find((r) => r.region.toUpperCase() === 'SANFRANCISCO');
         const running = fetched.find((r) => r.serviceStatus === 'RUNNING');
-        setSelectedRegion((sf || running || fetched[0]).region);
+        setSelectedRegion((fromPreset || sf || running || fetched[0]).region);
       }
     }
     setLoadingRegions(false);
@@ -72,6 +76,12 @@ export default function MatrixBuilder() {
     });
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchRegions, fetchJobs, fetchInventory]);
+
+  useEffect(() => {
+    if (preset.loading) return;
+    if (preset.region) setSelectedRegion(preset.region);
+    if (preset.orsProfile) setSelectedProfile(preset.orsProfile);
+  }, [preset.region, preset.orsProfile, preset.loading]);
 
   useEffect(() => {
     if (!roadFilterEnabled || !roadFilterAvailable || !selectedRegion || selectedRes.size === 0) {
@@ -331,6 +341,20 @@ export default function MatrixBuilder() {
       )}
 
       <h3>{inventory.length > 0 || activeJobs.length > 0 ? 'New Build' : '1. Select Region'}</h3>
+      {!loadingRegions && readyRegions.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <PresetRoutingControls
+            region={selectedRegion || preset.region}
+            profile={selectedProfile}
+            onChange={({ region, profile }) => {
+              setSelectedRegion(region);
+              setSelectedProfile(profile);
+            }}
+            regions={readyRegions.map((r) => ({ value: r.region, label: r.label }))}
+            profiles={ROUTING_PROFILES.map((p) => ({ value: p, label: p }))}
+          />
+        </div>
+      )}
       {loadingRegions ? (
         <div className="loading-text">Checking provisioned ORS regions...</div>
       ) : readyRegions.length === 0 ? (

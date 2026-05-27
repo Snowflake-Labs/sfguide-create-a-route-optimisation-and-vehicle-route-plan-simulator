@@ -19,7 +19,7 @@ export function createAgentRouter(): Router {
   // ------------------------------------------------------------------
   type ToolDef = { proc: string; params: string[]; defaults?: Record<string, string> };
   function buildToolProcMap(activeRegion: string, activeProfile: string): Record<string, ToolDef> {
-    const region = activeRegion || 'California';
+    const region = activeRegion || 'SanFrancisco';
     const profile = activeProfile || 'driving-car';
     return {
       tool_directions: {
@@ -279,8 +279,8 @@ export function createAgentRouter(): Router {
   router.post('/api/agent/chat', async (req, res) => {
     const { message, thread_id, parent_message_id, history, region, vehicle_type, profile } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
-    const activeRegion: string = (typeof region === 'string' && region) ? region : '';
-    const activeProfile: string = (typeof profile === 'string' && profile) ? profile : 'driving-car';
+    const activeRegion: string = (typeof region === 'string' && region) ? region : 'SanFrancisco';
+    const activeProfile: string = (typeof profile === 'string' && profile) ? profile : profileFromVehicle(String(vehicle_type || ''));
     const activeVehicle: string = (typeof vehicle_type === 'string' && vehicle_type) ? vehicle_type : '';
     const TOOL_PROC_MAP = buildToolProcMap(activeRegion, activeProfile);
     res.setHeader('Content-Type', 'text/event-stream');
@@ -301,9 +301,9 @@ export function createAgentRouter(): Router {
         const ctx =
           `Context for this conversation: active map region = ${activeRegion || 'unknown'}; ` +
           `active vehicle type = ${activeVehicle || 'unknown'} (ORS profile = ${activeProfile}). ` +
-          `When you call routing tools, default the 'region' argument to "${activeRegion || 'California'}" ` +
+          `When you call routing tools, default the 'region' argument to "${activeRegion}" ` +
           `and the 'profile' argument to "${activeProfile}" unless the user explicitly asks for a different region or transport mode. ` +
-          `Geocode all place names within "${activeRegion || 'California'}" by default.`;
+          `Geocode all place names within "${activeRegion}" by default.`;
         messages.push({ role: 'user', content: [{ type: 'text', text: ctx }] });
         messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Understood. I will default to the active region and profile.' }] });
       }

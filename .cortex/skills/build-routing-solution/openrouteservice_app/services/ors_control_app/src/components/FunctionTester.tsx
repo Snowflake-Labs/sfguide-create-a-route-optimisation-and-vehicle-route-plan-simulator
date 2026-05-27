@@ -12,6 +12,8 @@ import {
   parseMatrixResult, parseOptimizationResult, travelTimeColor, parseIsochroneOrigin,
 } from './function-tester/helpers';
 import { ResultMap } from './function-tester/ResultMap';
+import { useActivePreset } from '../hooks/useActivePreset';
+import PresetRoutingControls from '../shared/PresetRoutingControls';
 
 interface RoadPointsResult {
   points: [number, number][] | null;
@@ -43,12 +45,13 @@ async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: b
 }
 
 export default function FunctionTester() {
+  const preset = useActivePreset();
   const [regions, setRegions] = useState<RegionOption[]>([]);
   const [selectedRegion, setSelectedRegion] = useState<RegionOption | null>(null);
   const [regionsLoading, setRegionsLoading] = useState(true);
   const [regionsError, setRegionsError] = useState<string | null>(null);
   const [selectedFn, setSelectedFn] = useState('ORS_STATUS');
-  const [selectedProfile, setSelectedProfile] = useState('driving-car');
+  const [selectedProfile, setSelectedProfile] = useState(preset.orsProfile);
   const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
   const [sfDatabase, setSfDatabase] = useState('');
@@ -128,17 +131,22 @@ export default function FunctionTester() {
           return reg;
         });
         setRegions(regionList);
-        const def = regionList.find((c) => c.isDefault) || regionList[0];
+        const def =
+          regionList.find((c) => c.region === preset.region) ||
+          regionList.find((c) => c.isDefault) ||
+          regionList[0];
+        const initProfile = preset.orsProfile || 'driving-car';
         if (def) {
           setSelectedRegion(def);
+          setSelectedProfile(initProfile);
           let roads: [number, number][] | null = null;
           if (probeOvertureOk && def.bbox) {
-            const r = await fetchRoadPoints(def.bbox, 'driving-car', { region: def.region });
+            const r = await fetchRoadPoints(def.bbox, initProfile, { region: def.region });
             roads = r.points;
             setRoadPoints(roads);
             setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
           }
-          setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
+          setSqlInput(generateSql('ORS_STATUS', def, initProfile, db));
         }
       } catch (err: any) {
         setRegionsError(err.message || 'Failed to load regions');
@@ -221,6 +229,21 @@ export default function FunctionTester() {
     regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roads);
   }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
 
+  useEffect(() => {
+    if (preset.loading || regions.length === 0) return;
+    const match = regions.find((c) => c.region === preset.region);
+    if (match && selectedRegion?.region !== match.region) {
+      void onRegionChange(match.region);
+    }
+  }, [preset.region, preset.loading, regions.length, onRegionChange, selectedRegion?.region]);
+
+  useEffect(() => {
+    if (preset.loading || !preset.orsProfile) return;
+    if (selectedProfile === preset.orsProfile) return;
+    if (availableProfiles.length > 0 && !availableProfiles.includes(preset.orsProfile)) return;
+    void onProfileChange(preset.orsProfile);
+  }, [preset.orsProfile, preset.loading, availableProfiles, onProfileChange, selectedProfile]);
+
   const handleReshuffle = useCallback(async () => {
     userEditedRef.current = false;
     let roads = roadPoints;
@@ -266,21 +289,32 @@ export default function FunctionTester() {
       <h2>Function Tester</h2>
       <p className="subtitle">Test ORS routing functions against any provisioned region</p>
 
-      <h3>Region</h3>
-      <select
-        className="select"
-        value={selectedRegion?.region || ''}
-        onChange={(e) => onRegionChange(e.target.value)}
-      >
-        {regionsLoading && <option value="">Loading regions...</option>}
-        {!regionsLoading && regions.length === 0 && <option value="">No regions provisioned</option>}
-        {regions.map((c) => (
-          <option key={c.region} value={c.region}>
-            {c.display_name || c.region}
-            {c.isDefault ? '' : ` (${c.region})`}
-          </option>
-        ))}
-      </select>
+      <h3>Region &amp; routing profile</h3>
+      {regionsLoading ? (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading regions...</p>
+      ) : regions.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No regions provisioned</p>
+      ) : (
+        <PresetRoutingControls
+          region={selectedRegion?.region || preset.region}
+          profile={selectedProfile}
+          onChange={({ region, profile }) => {
+            if (region !== selectedRegion?.region) void onRegionChange(region);
+            if (profile !== selectedProfile) void onProfileChange(profile);
+          }}
+          regions={regions.map((c) => ({
+            value: c.region,
+            label: c.display_name || c.region,
+          }))}
+          profiles={
+            profilesLoading
+              ? [{ value: selectedProfile, label: 'Loading...' }]
+              : availableProfiles.length > 0
+                ? availableProfiles.map((p) => ({ value: p, label: PROFILE_LABELS[p] || p }))
+                : [{ value: preset.orsProfile, label: PROFILE_LABELS[preset.orsProfile] || preset.orsProfile }]
+          }
+        />
+      )}
       {regionsError && (
         <p style={{ color: 'var(--error)', fontSize: 13, margin: '4px 0 0' }}>{regionsError}</p>
       )}
@@ -289,20 +323,6 @@ export default function FunctionTester() {
           Bounding box unavailable for this region. Coordinates in generated SQL may be incorrect.
         </p>
       )}
-
-      <h3>Routing Profile</h3>
-      <select
-        className="select"
-        value={selectedProfile}
-        onChange={(e) => onProfileChange(e.target.value)}
-        disabled={profilesLoading}
-      >
-        {profilesLoading && <option value="">Loading profiles...</option>}
-        {!profilesLoading && availableProfiles.length === 0 && <option value="driving-car">driving-car</option>}
-        {!profilesLoading && availableProfiles.map((p) => (
-          <option key={p} value={p}>{PROFILE_LABELS[p] || p}</option>
-        ))}
-      </select>
 
       <h3>Function</h3>
       <div className="fn-grid">

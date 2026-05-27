@@ -6,6 +6,7 @@ import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useActivePreset } from '../../hooks/useActivePreset';
 import { useFitMap } from '../../shared/useFitMap';
 import RecenterButton from '../../shared/RecenterButton';
 import PageContainer from '../../shared/PageContainer';
@@ -15,6 +16,7 @@ const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], 
 const ZONE_MINUTES = [5, 10, 15];
 
 export default function CatchmentPanel() {
+  const preset = useActivePreset();
   const { regionName, center, zoom } = useRegion();
   const { vehicleType } = useVehicleType();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -23,7 +25,7 @@ export default function CatchmentPanel() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
-  const [travelMode, setTravelMode] = useState('cycling-electric');
+  const [travelMode, setTravelMode] = useState(preset.orsProfile);
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
 
@@ -32,6 +34,10 @@ export default function CatchmentPanel() {
     sfQuery(`SELECT RESTAURANT_ID, RESTAURANT_NAME, ST_X(LOCATION) AS LNG, ST_Y(LOCATION) AS LAT, TOTAL_ORDERS, AVG_DELIVERY_TIME_MIN FROM RESTAURANTS_ENRICHED ORDER BY TOTAL_ORDERS DESC LIMIT 100`)
       .then(r => { setRestaurants(r); setLoading(false); });
   }, [regionName, vehicleType]);
+
+  useEffect(() => {
+    if (!preset.loading && preset.orsProfile) setTravelMode(preset.orsProfile);
+  }, [preset.orsProfile, preset.loading]);
 
   const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
 

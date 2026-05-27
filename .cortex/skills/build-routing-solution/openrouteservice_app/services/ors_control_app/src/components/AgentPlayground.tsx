@@ -12,8 +12,8 @@ import {
   SavedPrompt, loadSavedPrompts, persistSavedPrompts,
   WorkflowStep,
   VEHICLE_ROUTE_COLORS,
-  profileFromVehicle,
 } from './agent-playground/helpers';
+import { useActivePreset } from '../hooks/useActivePreset';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { useRegion } from '../hooks/useRegion';
@@ -23,6 +23,7 @@ import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 injectCursorBlinkCss();
 
 export default function AgentPlayground() {
+  const preset = useActivePreset();
   const { regionName } = useRegion();
   const { vehicleType } = useVehicleType();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -147,7 +148,7 @@ export default function AgentPlayground() {
           history: messages,
           region: regionName,
           vehicle_type: vehicleType,
-          profile: profileFromVehicle(vehicleType),
+          profile: preset.orsProfile,
         }),
         signal: controller.signal,
       });

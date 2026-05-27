@@ -5,6 +5,7 @@ import { ScatterplotLayer, GeoJsonLayer } from '@deck.gl/layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { useRegion } from '../hooks/useRegion';
+import { useActivePreset } from '../hooks/useActivePreset';
 import { useFitMap } from '../shared/useFitMap';
 import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
@@ -62,6 +63,7 @@ function hhmmToSecs(s: any): number {
 }
 
 export default function RouteOptimization() {
+  const preset = useActivePreset();
   const { regionName, center, zoom } = useRegion();
   const [searchText, setSearchText] = useState('');
   const [centerCoords, setCenterCoords] = useState<[number, number] | null>(null);
@@ -72,7 +74,7 @@ export default function RouteOptimization() {
   const [places, setPlaces] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [jobTemplates, setJobTemplates] = useState<JobTemplateLocal[]>([]);
-  const [vehicles, setVehicles] = useState<VehicleConfig[]>([{ id: 1, profile: 'driving-car', skills: [1], startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat, capacity: 10 }]);
+  const [vehicles, setVehicles] = useState<VehicleConfig[]>([{ id: 1, profile: preset.orsProfile, skills: [1], startLng: center.lng, startLat: center.lat, endLng: center.lng, endLat: center.lat, capacity: 10 }]);
   const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
   const [isoMinutes, setIsoMinutes] = useState(15);
   const [catchmentGeoJson, setCatchmentGeoJson] = useState<any>(null);
@@ -320,7 +322,7 @@ export default function RouteOptimization() {
     }
     const recommended: VehicleConfig[] = [];
     let id = 1;
-    const baseProfile = availableProfiles[0] || 'driving-car';
+    const baseProfile = availableProfiles.includes(preset.orsProfile) ? preset.orsProfile : (availableProfiles[0] || preset.orsProfile);
     for (const [skillStr, count] of Object.entries(skillCounts)) {
       const skill = Number(skillStr);
       const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10;
@@ -357,7 +359,7 @@ export default function RouteOptimization() {
     const directions: RouteDirections[] = [];
     for (const row of vrpRows) {
       const vIdx = (row.VEHICLE || 1) - 1;
-      const profile = vehicleConfigs[vIdx]?.profile || 'driving-car';
+      const profile = vehicleConfigs[vIdx]?.profile || preset.orsProfile;
       let steps: any[] = [];
       try { steps = typeof row.STEPS === 'string' ? JSON.parse(row.STEPS) : row.STEPS; } catch {}
       if (!Array.isArray(steps) || steps.length < 2) continue;
@@ -412,7 +414,7 @@ export default function RouteOptimization() {
     const vrpVehicles = vehicles.map((v, i) => {
       const veh: any = {
         id: i + 1,
-        profile: v.profile || 'driving-car',
+        profile: v.profile || preset.orsProfile,
         start: [v.startLng, v.startLat],
         end: [v.endLng, v.endLat],
         capacity: [Number(v.capacity)],
@@ -780,7 +782,7 @@ export default function RouteOptimization() {
         <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(0,0,0,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <h3 style={{ fontSize: 13, margin: 0 }}>Vehicle Builder</h3>
-            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: availableProfiles[0] || 'driving-car', skills: [1], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add Vehicle</button>
+            <button onClick={() => setVehicles(prev => [...prev, { id: prev.length + 1, profile: availableProfiles.includes(preset.orsProfile) ? preset.orsProfile : (availableProfiles[0] || preset.orsProfile), skills: [1], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: 10 }])} style={{ fontSize: 11, padding: '2px 8px', border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}>+ Add Vehicle</button>
           </div>
           {vehicles.map((v, i) => (
             <div key={v.id} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, fontSize: 12, flexWrap: 'wrap' }}>
@@ -832,7 +834,7 @@ export default function RouteOptimization() {
             ))}
           </div>
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; const baseProfile = availableProfiles[0] || 'driving-car'; for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
+            <button className="btn-primary" onClick={() => { setFleetRecommendation(null); setTimeout(() => { const jobCount = Math.min(places.length, maxJobs); const skillCounts: Record<number, number> = {}; for (let i = 0; i < jobCount; i++) { const jt = jobTemplates[i % jobTemplates.length]; jt.skills.forEach(s => { skillCounts[s] = (skillCounts[s] || 0) + 1; }); } const recommended: VehicleConfig[] = []; let id = 1; const baseProfile = availableProfiles.includes(preset.orsProfile) ? preset.orsProfile : (availableProfiles[0] || preset.orsProfile); for (const [skillStr, count] of Object.entries(skillCounts)) { const skill = Number(skillStr); const cap = skillCapacity[skill] || SKILL_CAPACITY[skill] || 10; const numVehicles = Math.max(1, Math.ceil(count / cap)); for (let i = 0; i < numVehicles; i++) { recommended.push({ id: id++, profile: baseProfile, skills: [skill], startLng: vehicleHomeCoords[0], startLat: vehicleHomeCoords[1], endLng: vehicleHomeCoords[0], endLat: vehicleHomeCoords[1], capacity: cap }); } } setFleetRecommendation(recommended); }, 0); }} disabled={!jobTemplates.length} style={{ fontSize: 12 }}>Apply Templates</button>
             <span style={{ fontSize: 11, opacity: 0.6 }}>{Math.min(places.length, maxJobs)} jobs will be sent to solver</span>
           </div>
         </div>

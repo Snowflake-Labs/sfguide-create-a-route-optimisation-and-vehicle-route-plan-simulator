@@ -25,6 +25,42 @@ const ORS_PROFILE_TO_VEHICLE_TYPE: Record<string, string> = {
   'cycling-road': 'ebike',
 };
 
+const VEHICLE_TYPE_TO_ORS_PROFILE: Record<string, string> = {
+  ebike: 'cycling-electric',
+  hgv: 'driving-hgv',
+  car: 'driving-car',
+};
+
+/** Hybrid preset profile: GENERATION_JOBS → VEHICLE_CLASS_PROFILE → legacy map. */
+async function resolveOrsProfile(
+  vehicleType: string,
+  activeDatasetId: string | null,
+): Promise<string> {
+  if (activeDatasetId) {
+    try {
+      const rows = await runSql(
+        `SELECT j.ORS_PROFILE
+           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+          WHERE j.JOB_ID = '${escapeString(activeDatasetId)}'
+          LIMIT 1`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      const fromJob = (rows[0] as any)?.ORS_PROFILE;
+      if (fromJob) return String(fromJob);
+    } catch {}
+  }
+  try {
+    const rows = await runSql(
+      `SELECT ORS_PROFILE FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
+        WHERE VEHICLE_TYPE = '${escapeString(vehicleType)}' LIMIT 1`,
+      'OPENROUTESERVICE_APP', 'CORE',
+    );
+    const fromClass = (rows[0] as any)?.ORS_PROFILE;
+    if (fromClass) return String(fromClass);
+  } catch {}
+  return VEHICLE_TYPE_TO_ORS_PROFILE[vehicleType] || 'driving-car';
+}
+
 export function createFleetRouter(): Router {
   const router = Router();
 
@@ -58,7 +94,8 @@ export function createFleetRouter(): Router {
       } catch {}
       if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
       if (availableTypes.length === 0) availableTypes = [vehicleType];
-      res.json({ vehicleType, region, availableTypes, datasetPairs, activeDatasetId });
+      const orsProfile = await resolveOrsProfile(vehicleType, activeDatasetId);
+      res.json({ vehicleType, region, orsProfile, availableTypes, datasetPairs, activeDatasetId });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
