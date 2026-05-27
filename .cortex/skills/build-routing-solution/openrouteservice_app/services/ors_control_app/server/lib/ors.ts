@@ -82,9 +82,21 @@ export async function waitForOrsGraphReady(
           const profileNames = Object.keys(status.profiles);
           if (profileNames.length > 0) {
             // ORS engine accepts connections; verify it can actually answer
-            // routing calls before declaring the region ready. Pick the first
-            // profile the engine reports as loaded -- which is necessarily
-            // one of the profiles a follow-on caller will use.
+            // routing calls before declaring the region ready.
+            //
+            // KNOWN LIMITATION (#audit-pr-120): the canary probes only ONE
+            // profile (the first 'driving|cycling|foot' match). If a region
+            // has multiple profiles loaded but a second profile is still
+            // warming JVM classes, this loop returns ready=true and the
+            // first call against the second profile may still 502.
+            //
+            // Mitigation: ORS_STATUS already lists ALL loaded profiles in
+            // status.profiles, and only profiles that finished CH/LM build
+            // appear in that map -- so a profile being in profileNames is
+            // a strong signal it is also serviceable. The canary is a
+            // belt-and-suspenders engine-liveness check, not a per-profile
+            // SLO. Probing all N profiles each poll-iteration would add
+            // ~N*200ms to graph-ready latency for marginal coverage gain.
             const probeProfile = profileNames.find((p) => /^(driving|cycling|foot)/.test(p)) || profileNames[0];
             const canaryOk = await _canaryDirections(region, probeProfile);
             lastCanary = canaryOk ? 'ok' : 'failed';

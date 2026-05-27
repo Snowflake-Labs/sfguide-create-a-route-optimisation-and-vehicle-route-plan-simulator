@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import uuid
+import random
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -611,9 +612,17 @@ def _build_matrix_body(method, row_data, has_destinations):
         }
 
 
-def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, format, ors_host, chunk_size=50):
+def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, format, ors_host, chunk_size=50, _depth=0):
+    # Depth guard (#audit-pr-120): the original implementation would silently
+    # `continue` past failed chunks at the smallest chunk_size, returning a
+    # stitched matrix with missing destination columns and no signal to the
+    # caller that the result was incomplete. We now (a) cap recursion at
+    # depth 2 (50 -> 10 -> stop) and (b) record per-chunk failures so the
+    # response carries a `_partial` marker plus a `failed_destinations` list.
+    MAX_DEPTH = 2
     all_durations = None
     all_distances = None
+    failed_destinations = []
 
     for i in range(0, len(destinations_idx), chunk_size):
         chunk_dests = destinations_idx[i:i + chunk_size]
@@ -626,8 +635,11 @@ def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, for
         }
         resp = get_ors_response('matrix', profile, body, format, ors_host)
         if 'error' in resp:
-            if chunk_size > 10:
-                partial = _retry_matrix_chunked(profile, locations, sources_idx, chunk_dests, format, ors_host, 10)
+            if chunk_size > 10 and _depth < MAX_DEPTH:
+                partial = _retry_matrix_chunked(
+                    profile, locations, sources_idx, chunk_dests, format, ors_host, 10,
+                    _depth=_depth + 1,
+                )
                 if partial and 'error' not in partial:
                     if all_durations is None:
                         all_durations = [[] for _ in partial.get('durations', [])]
@@ -636,6 +648,14 @@ def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, for
                         all_durations[r_idx].extend(dur_row)
                     for r_idx, dist_row in enumerate(partial.get('distances', [])):
                         all_distances[r_idx].extend(dist_row)
+                    # Propagate any partial markers from the inner call.
+                    if partial.get('_partial'):
+                        failed_destinations.extend(partial.get('failed_destinations', []))
+                    continue
+            # Either we are at the smallest chunk_size or recursion is
+            # exhausted: record the failed destination indices instead of
+            # silently dropping them.
+            failed_destinations.extend(chunk_dests)
             continue
 
         if all_durations is None:
@@ -649,12 +669,16 @@ def _retry_matrix_chunked(profile, locations, sources_idx, destinations_idx, for
     if all_durations is None:
         return {'error': 'all_chunks_failed', 'message': 'All matrix chunks failed'}
 
-    return {
+    result = {
         'durations': all_durations,
         'distances': all_distances,
         'sources': sources_idx,
         'destinations': destinations_idx
     }
+    if failed_destinations:
+        result['_partial'] = True
+        result['failed_destinations'] = failed_destinations
+    return result
 
 
 @app.post("/matrix_tabular")
@@ -1085,8 +1109,11 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
                 last_error_payload = annotated
                 _breaker_on_failure(host)
                 backoff_s = (ORS_RETRY_BACKOFF_BASE_MS * (2 ** (attempt - 1))) / 1000.0
-                # 25% jitter so simultaneous callers do not synchronize retries.
-                backoff_s *= (0.75 + 0.5 * (req_id[-2:].count('a') / 2 if req_id else 0.5))
+                # +/-25% jitter (full random distribution) so simultaneous
+                # callers do not synchronize retries. Using random.uniform
+                # avoids the previous deterministic-per-req_id pattern that
+                # only produced 3 distinct jitter values.
+                backoff_s *= random.uniform(0.75, 1.25)
                 logger.warning(f'ORS {r.status_code} on {host}; retry {attempt}/{ORS_RETRY_MAX_ATTEMPTS - 1} after {backoff_s:.2f}s')
                 time.sleep(backoff_s)
                 continue

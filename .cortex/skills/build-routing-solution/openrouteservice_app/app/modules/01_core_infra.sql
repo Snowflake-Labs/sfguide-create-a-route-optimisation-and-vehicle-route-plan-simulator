@@ -1,5 +1,6 @@
 -- Data Studio and demo databases required by load-seed-data.sql and all demo skills.
 -- Created here so module execution order is self-contained.
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"01_core_infra"}}';
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED

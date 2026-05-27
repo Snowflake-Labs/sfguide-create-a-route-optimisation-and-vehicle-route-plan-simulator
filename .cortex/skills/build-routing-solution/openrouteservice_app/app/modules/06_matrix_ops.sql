@@ -1,3 +1,4 @@
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"06_matrix_ops"}}';
 USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_BUILD_STATUS()
@@ -381,15 +382,20 @@ DECLARE
     minutes            FLOAT DEFAULT 0;
     credits            FLOAT DEFAULT 0;
     dollars            FLOAT DEFAULT 0;
+    safe_region        VARCHAR DEFAULT '';
     rs RESULTSET;
 BEGIN
+    -- Escape single quotes in P_REGION to prevent SQL injection via the
+    -- EXECUTE IMMEDIATE string concatenations below. (#audit-pr-120)
+    safe_region := REPLACE(:P_REGION, '''', '''''');
+
     -- Prefer the polygon area for parity with BUILD_HEXAGONS / the JS estimator.
     BEGIN
         rs := (EXECUTE IMMEDIATE
             'SELECT BOUNDARY_AREA_KM2 FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG '
             || 'WHERE BOUNDARY IS NOT NULL '
-            || 'AND (UPPER(LOOKUP_NAME) = UPPER(''' || :P_REGION || ''') '
-            || 'OR UPPER(REGION_KEY) = UPPER(''' || :P_REGION || ''')) '
+            || 'AND (UPPER(LOOKUP_NAME) = UPPER(''' || :safe_region || ''') '
+            || 'OR UPPER(REGION_KEY) = UPPER(''' || :safe_region || ''')) '
             || 'ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1');
         LET cp CURSOR FOR rs;
         FOR r IN cp DO poly_area := r.BOUNDARY_AREA_KM2; END FOR;
@@ -401,7 +407,7 @@ BEGIN
             'SELECT ABS((MAX_LON - MIN_LON) * (MAX_LAT - MIN_LAT)) * 111.0 * 111.0 '
             || '* COS(((MIN_LAT + MAX_LAT) / 2) * 0.01745329) AS BBOX_AREA '
             || 'FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP '
-            || 'WHERE UPPER(REGION) = UPPER(''' || :P_REGION || ''') LIMIT 1');
+            || 'WHERE UPPER(REGION) = UPPER(''' || :safe_region || ''') LIMIT 1');
         LET cb CURSOR FOR rs;
         FOR r IN cb DO bbox_area := r.BBOX_AREA; END FOR;
     EXCEPTION WHEN OTHER THEN bbox_area := NULL;

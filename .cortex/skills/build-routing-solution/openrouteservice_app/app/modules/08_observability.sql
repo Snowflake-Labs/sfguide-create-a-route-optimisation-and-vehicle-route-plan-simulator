@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG (
     CALLER           VARCHAR              -- 'tabular' | 'post' | 'matrix_chunked' | etc.
 )
 CLUSTER BY (DATE_TRUNC('hour', REQUEST_TS))
+DATA_RETENTION_TIME_IN_DAYS = 1
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- Aggregation view used by /api/observability/ors-metrics. Returns one row
@@ -219,3 +220,17 @@ AS
     CALL OPENROUTESERVICE_APP.OBSERVABILITY.INGEST_ORS_METRICS(5);
 
 ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK SUSPEND;
+
+-- Retention purge: keep 30 days of request-log history. Without this the
+-- table grows unbounded (5000-line/min ingest) and the V_ORS_METRICS_SUMMARY
+-- view's APPROX_PERCENTILE scans become increasingly expensive over months.
+-- Created suspended; resume after the ingest task is up. (#audit-pr-120)
+CREATE OR REPLACE TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK
+    WAREHOUSE = ROUTING_ANALYTICS
+    SCHEDULE = 'USING CRON 0 4 * * * UTC'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-observability","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","feature":"retention"}}'
+AS
+    DELETE FROM OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG
+    WHERE REQUEST_TS < DATEADD(day, -30, CURRENT_TIMESTAMP());
+
+ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK SUSPEND;
