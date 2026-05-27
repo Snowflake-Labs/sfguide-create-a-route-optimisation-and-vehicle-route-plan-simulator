@@ -1165,6 +1165,11 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         profile_lines.append('        enabled: ' + enabled)
 
     all_profiles_str = ', '.join(all_profiles)
+    # maximum_snapping_radius is explicit so it survives ORS engine version
+    # changes (the default has drifted between 350 and 400 across versions
+    # and is too small for continental extracts -- see #43 and the
+    # continental.yml preset in #54). 1000m is the safe value for any
+    # single-region build; the continental preset overrides to 5000m.
     lines = [
         'ors:',
         '  engine:',
@@ -1180,6 +1185,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '        maximum_distance_round_trip_routes: 100000000',
         '        maximum_visited_nodes: 100000000',
         '        maximum_waypoints: 1000',
+        '        maximum_snapping_radius: 1000',
         '    profiles:',
     ]
     yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'
@@ -2300,6 +2306,130 @@ CREATE OR REPLACE TASK OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"rescue","action":"task"}}'
 AS
     CALL OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS();
+
+-- ===========================================================================
+-- VALIDATE_REGION_PREFLIGHT (#52)
+-- ---------------------------------------------------------------------------
+-- Estimates a PBF's resource needs from its bounding-box area, compares
+-- against the chosen compute size, and returns a JSON verdict the
+-- control-app uses to warn the user BEFORE starting a build that would
+-- run out of memory or hang for days (the documented 3-day continental
+-- failure mode on borders=true).
+--
+-- Inputs:
+--   P_MIN_LAT, P_MAX_LAT, P_MIN_LON, P_MAX_LON  -- region bounding box
+--   P_PROFILES                                  -- comma-separated profile list
+--   P_COMPUTE_SIZE                              -- 'S' | 'L' | 'XXL'
+--
+-- Returns JSON:
+--   {
+--     "ok": <bool>,
+--     "estimated_pbf_gib": <float>,
+--     "estimated_graph_gib": <float>,
+--     "recommended_compute_size": "S|L|XXL",
+--     "recommended_instance_family": "HIGHMEM_X64_S|M|L",
+--     "warnings": [...],
+--     "errors": [...]
+--   }
+--
+-- The procedure NEVER mutates state. PROVISION_REGION_WRAPPER and the
+-- control-app are free to call it as a soft check (warn-only) or refuse
+-- the build.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(
+    P_MIN_LAT FLOAT, P_MAX_LAT FLOAT, P_MIN_LON FLOAT, P_MAX_LON FLOAT,
+    P_PROFILES VARCHAR,
+    P_COMPUTE_SIZE VARCHAR
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"preflight"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    bbox_area_sqkm FLOAT DEFAULT 0;
+    est_pbf_gib    FLOAT DEFAULT 0;
+    est_graph_gib  FLOAT DEFAULT 0;
+    profile_count  INTEGER DEFAULT 1;
+    rec_size       VARCHAR DEFAULT 'S';
+    rec_family     VARCHAR DEFAULT 'HIGHMEM_X64_S';
+    compute_rank   INTEGER DEFAULT 1;
+    rec_rank       INTEGER DEFAULT 1;
+    warnings_arr   ARRAY DEFAULT ARRAY_CONSTRUCT();
+    errors_arr     ARRAY DEFAULT ARRAY_CONSTRUCT();
+    ok BOOLEAN DEFAULT TRUE;
+BEGIN
+    bbox_area_sqkm := ABS((P_MAX_LON - P_MIN_LON) * (P_MAX_LAT - P_MIN_LAT)) * 111.0 * 111.0;
+    -- Inhabited-area heuristic: ~0.05 GiB per 2500 km^2 (Berlin / SF / Munich
+    -- city extracts) climbing to ~10 GiB at continental scale. Coastal /
+    -- desert bboxes over-estimate; the procedure errs on the side of warning.
+    est_pbf_gib := GREATEST(0.05, bbox_area_sqkm / 50000.0);
+    profile_count := GREATEST(1, ARRAY_SIZE(SPLIT(:P_PROFILES, ',')));
+    -- Each profile adds ~1.5x of the PBF in graph artefacts (CH + LM landmarks).
+    est_graph_gib := :est_pbf_gib * 1.5 * :profile_count;
+
+    -- Recommended compute_size mapping (matches BUILD_ORS_SERVICE_SPEC heap CASE).
+    rec_size := CASE
+        WHEN :est_graph_gib < 1.0 THEN 'S'
+        WHEN :est_graph_gib < 6.0 THEN 'L'
+        ELSE 'XXL'
+    END;
+    rec_family := CASE :rec_size
+        WHEN 'S'   THEN 'HIGHMEM_X64_S'
+        WHEN 'L'   THEN 'HIGHMEM_X64_M'
+        ELSE             'HIGHMEM_X64_L'
+    END;
+
+    compute_rank := CASE UPPER(NVL(:P_COMPUTE_SIZE, 'S'))
+        WHEN 'S' THEN 1 WHEN 'L' THEN 2 WHEN 'XXL' THEN 3 ELSE 1 END;
+    rec_rank := CASE :rec_size
+        WHEN 'S' THEN 1 WHEN 'L' THEN 2 WHEN 'XXL' THEN 3 END;
+
+    IF (:compute_rank < :rec_rank) THEN
+        warnings_arr := ARRAY_APPEND(
+            :warnings_arr,
+            'Estimated graph size ' || ROUND(:est_graph_gib, 2)
+            || ' GiB exceeds the headroom of compute size '
+            || NVL(:P_COMPUTE_SIZE, 'S')
+            || '. Recommended: ' || :rec_size
+            || ' (' || :rec_family || '). The build may OOM during LM landmark generation.'
+        );
+        ok := FALSE;
+    END IF;
+
+    IF (:est_graph_gib > 5.0) THEN
+        warnings_arr := ARRAY_APPEND(
+            :warnings_arr,
+            'Estimated graph size ' || ROUND(:est_graph_gib, 2)
+            || ' GiB is in the continental range. Apply the continental.yml '
+            || 'preset (graphs_data_access: MMAP, maximum_snapping_radius: 5000) '
+            || 'from .cortex/skills/routing-customization/references/ors-config-presets/ '
+            || 'so the JVM can mmap the graph instead of loading it into RAM.'
+        );
+    END IF;
+
+    IF (:profile_count > 4) THEN
+        warnings_arr := ARRAY_APPEND(
+            :warnings_arr,
+            'Enabled ' || :profile_count || ' profiles. Each profile multiplies LM '
+            || 'preparation time and graph artefact size by roughly 1.5x. '
+            || 'Disable unused profiles to keep build time bounded.'
+        );
+    END IF;
+
+    RETURN OBJECT_CONSTRUCT(
+        'ok', :ok,
+        'estimated_pbf_gib', ROUND(:est_pbf_gib, 2),
+        'estimated_graph_gib', ROUND(:est_graph_gib, 2),
+        'bbox_area_sqkm', ROUND(:bbox_area_sqkm, 0),
+        'recommended_compute_size', :rec_size,
+        'recommended_instance_family', :rec_family,
+        'warnings', :warnings_arr,
+        'errors', :errors_arr
+    )::STRING;
+END;
+$$;
 
 -- Resume the task. CREATE OR REPLACE TASK creates the task in SUSPENDED state
 -- by default; without this RESUME the rescue loop never runs and every

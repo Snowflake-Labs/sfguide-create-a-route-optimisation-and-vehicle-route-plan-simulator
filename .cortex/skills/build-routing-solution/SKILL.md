@@ -55,6 +55,33 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
 | COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
 
+## Sizing
+
+Pre-check before provisioning a new region. The preflight procedure `OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(...)` (added in #52) returns a JSON verdict including the recommended compute size and instance family for any (bounding-box, profiles, compute_size) combination. Call it from the control-app's Region Builder before kicking off `PROVISION_REGION_WRAPPER`, or directly from SQL:
+
+```sql
+CALL OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(
+    36.0, 42.0, -125.0, -114.0,    -- California-sized bbox
+    'driving-car,driving-hgv',
+    'L'
+);
+-- Returns {"ok":true, "estimated_pbf_gib":2.83, "estimated_graph_gib":8.49,
+--          "recommended_compute_size":"XXL", "recommended_instance_family":"HIGHMEM_X64_L",
+--          "warnings":["Estimated graph size 8.49 GiB exceeds the headroom of compute size L. ..."]}
+```
+
+Reference table (typical Geofabrik extracts; one driving profile):
+
+| Region scale | bbox area (km²) | PBF (GiB) | Graph (GiB) | Compute size | Instance family | JVM `-Xmx` | `graphs_data_access` |
+|---|---|---|---|---|---|---|---|
+| Single city (Berlin, SF, Munich) | < 2 500 | < 0.1 | < 0.5 | `S` | HIGHMEM_X64_S | 20 GiB | `RAM_STORE` |
+| State / small country (California, Bavaria) | 2 500 – 50 000 | 0.5 – 3 | 1 – 6 | `L` | HIGHMEM_X64_M | 700 GiB | `RAM_STORE` |
+| Country / region (USA, EU) | > 50 000 | 3 – 15 | 6 – 20+ | `XXL` | HIGHMEM_X64_L | 1100 GiB | `MMAP` |
+
+Each additional enabled profile multiplies the graph size by ~1.5×. Disable unused profiles in the active `ors-config.yml` (or pick a narrower preset from `.cortex/skills/routing-customization/references/ors-config-presets/`) to keep build time bounded.
+
+**MMAP guidance for continental extracts.** Set `ors.engine.graphs_data_access: MMAP` in `ors-config.yml` whenever the estimated graph exceeds ~5 GiB. This trades a small per-query latency increase for the ability to load graphs that do not fit in RAM, and is mandatory for any extract that hits the 3-day silent hang documented at <https://ask.openrouteservice.org/t/ors-stuck-when-creating-graph-with-european-borders-enabled/>. The shipped [`continental.yml`](../routing-customization/references/ors-config-presets/continental.yml) preset enables this automatically.
+
 ## Workflow
 
 > **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` with complete schemas from the start. All columns (JOB_ID, GEOGRAPHY, etc.) are defined in the initial CREATE TABLE statements -- no ALTER TABLE migration steps are needed.
