@@ -137,3 +137,5 @@ The synthetic data is designed to surface realistic supply chain problems:
 | Near-expiry waste | Rite Aid Clement | Budesonide | 5 days to expiry, 14 units wasted |
 | Cold chain overstocked | CVS Market St | Insulin Lispro | 70 units on hand vs ~20 needed, $640 waste |
 | Critically low | Walgreens Mission | Nitroglycerin | 2 units, 8 days to expiry — emergency restock needed |
+
+> **After running this skill**, re-run `$setup-agent-playground` (Step 2: `references/configure-agent.sql`) to register the new tools with the Routing Agent.

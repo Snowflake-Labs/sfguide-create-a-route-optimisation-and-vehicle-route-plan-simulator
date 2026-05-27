@@ -78,3 +78,5 @@ Expected: `FLEET_TRIPS_SV` and `FLEET_TELEMETRY_SV` visible; agent has 13 tools.
 - `DIM_POIS`: origin points of interest — restaurants, warehouses, rest stops
 - Regions: SanFrancisco, Cambridge, Barcelona
 - Vehicle types: ebike (electric bicycle), hgv (heavy goods vehicle)
+
+> **After running this skill**, re-run `$setup-agent-playground` (Step 2: `references/configure-agent.sql`) to register the new tools with the Routing Agent.

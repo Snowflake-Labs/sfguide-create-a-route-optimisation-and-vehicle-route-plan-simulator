@@ -97,3 +97,5 @@ Prompt 5 ("End-to-end risk") connects both layers:
 1. **Upstream**: Enhertu API delayed in customs, batch on hold at Mount Vernon, Wuxi Biologics on probation
 2. **Downstream**: Injectable products critically low at Walgreens Mission (pharmacy inventory)
 3. **Result**: Agent identifies patient impact risk and recommends urgent actions across both layers
+
+> **After running this skill**, re-run `$setup-agent-playground` (Step 2: `references/configure-agent.sql`) to register the new tools with the Routing Agent.

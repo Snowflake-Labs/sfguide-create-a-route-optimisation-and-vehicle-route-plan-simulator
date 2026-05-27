@@ -132,9 +132,11 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS
 
 Verify: `SHOW SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;`
 
-## Step 2: Update Agent with Analytics Tool
+## Step 2: Configure Agent with All Tools
 
-Recreate the agent with all tools including `FLEET_ANALYTICS`. Execute this exact statement:
+This is the **single authoritative agent update** — run it after all desired add-on skills have been installed. It creates the agent with all 13 tools. Any tool whose backing resource doesn't exist yet (because an add-on hasn't been run) is silently skipped at runtime until you deploy that add-on and re-run this step.
+
+Execute `references/configure-agent.sql`, or run this statement directly:
 
 ```sql
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
