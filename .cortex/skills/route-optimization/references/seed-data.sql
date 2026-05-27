@@ -195,9 +195,9 @@ SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Peris
        ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
        ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
        ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
-       NULL,
-       ARRAY_CONSTRUCT('warehouses', 'food_beverage_service_distribution', 'storage_facility'),
-       'Distribution Depot'
+       'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES',
+       ARRAY_CONSTRUCT('restaurant', 'fast_food_restaurant', 'casual_eatery'),
+       'Restaurant Origin'
 UNION ALL
 SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
        ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
@@ -258,6 +258,46 @@ WHERE REGION = $REGION_NAME
   AND ST_DWITHIN(GEOMETRY, (SELECT ST_COLLECT(GEOMETRY) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE REGION = $REGION_NAME AND CATEGORY = 'school' LIMIT 1), 15000)
 ORDER BY RANDOM()
 LIMIT 60;
+
+--------------------------------------------------------------------
+-- CUSTOMER_ADDRESSES (real residential addresses from Overture Maps)
+-- Used by Food industry as delivery destinations (SOURCE_TABLE override)
+-- BBOX covers core San Francisco (~37.71-37.82 lat, -122.52 to -122.36 lon)
+--------------------------------------------------------------------
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES (
+    REGION STRING,
+    ID STRING,
+    NAME STRING,
+    CATEGORY STRING DEFAULT 'customer_address',
+    LNG FLOAT,
+    LAT FLOAT,
+    ADDRESS VARIANT,
+    DISPLAY_ADDRESS STRING,
+    GEOMETRY GEOGRAPHY
+)
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES
+SELECT
+    $REGION_NAME AS REGION,
+    ID,
+    COALESCE(NUMBER || ' ' || STREET, STREET) AS NAME,
+    'customer_address' AS CATEGORY,
+    ST_X(GEOMETRY) AS LNG,
+    ST_Y(GEOMETRY) AS LAT,
+    OBJECT_CONSTRUCT('freeform', COALESCE(NUMBER || ' ' || STREET, STREET), 'postcode', POSTCODE) AS ADDRESS,
+    COALESCE(NUMBER || ' ' || STREET, STREET) || COALESCE(', ' || POSTCODE, '') AS DISPLAY_ADDRESS,
+    GEOMETRY
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS
+WHERE COUNTRY = 'US'
+  AND BBOX:xmin::FLOAT >= -122.52
+  AND BBOX:xmax::FLOAT <= -122.36
+  AND BBOX:ymin::FLOAT >= 37.71
+  AND BBOX:ymax::FLOAT <= 37.82
+  AND STREET IS NOT NULL
+  AND NUMBER IS NOT NULL
+ORDER BY RANDOM()
+LIMIT 500;
 
 --------------------------------------------------------------------
 -- DROP STAGING TABLE

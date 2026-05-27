@@ -96,7 +96,9 @@
         { "label": "5. Hudson Valley deep-dive", "icon": "🏭", "prompt": "Give me a full operational status report for the Hudson Valley Site — active batches, quality deviations, material stock levels, and any inbound shipment delays." },
         { "label": "6. Robot maintenance alerts", "icon": "🤖", "prompt": "Which robots across our manufacturing plants need maintenance in the next 4 hours? Show me by plant and building, and flag any that are also low on battery." },
         { "label": "7. AGV cargo tracking", "icon": "🔄", "prompt": "Show me all Transport AGVs currently moving batches across our plants. Which batches are in transit, where are they going, and are any of those batches currently on hold or at risk?" },
-        { "label": "8. Robot fleet health", "icon": "📊", "prompt": "Give me a summary of robot fleet health across all plants — how many robots are active vs charging, average battery levels by plant, and which buildings have the most robot alerts." }
+        { "label": "8. Robot fleet health", "icon": "📊", "prompt": "Give me a summary of robot fleet health across all plants — how many robots are active vs charging, average battery levels by plant, and which buildings have the most robot alerts." },
+        { "label": "9. Weather at plants", "icon": "🌤️", "prompt": "Check the current weather conditions at all our manufacturing plants. Are there any severe weather events that could impact inbound shipments or cold chain storage? Flag any plant where conditions might delay logistics." },
+        { "label": "10. Create new plant", "icon": "🏗️", "prompt": "We need a new biologics manufacturing facility in Basel, Switzerland (lat 47.5596, lon 7.5886). Create a plant called 'Basel Biologics Centre' with BIOLOGICS specialisation and 120 batches/month capacity. Search within 500m for available buildings." }
       ]
     },
     {
