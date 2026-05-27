@@ -213,7 +213,19 @@ Agent uses pharma_supply_chain tool → returns:
 
 The agent can also chain to routing tools — e.g. "Find the fastest route to the nearest API supplier" after identifying a supply issue.
 
-### Verify plant_intel scenario loads
+### Robot telemetry prompts (8 pre-built)
+
+The `plant_intel` scenario includes 8 prompt buttons. The last 3 query the `ROBOT_TELEMETRY` table via `pharma_supply_chain`:
+
+| Prompt | What the agent does |
+|--------|---------------------|
+| 6. Robot maintenance alerts | Queries `ROBOT_TELEMETRY` for robots with `maint_due_hrs < 4`, groups by plant, flags low-battery robots too |
+| 7. AGV cargo tracking | Lists AGVs in transit with cargo batch + kg, cross-joins with `PRODUCTION_BATCHES` to check if in-transit batches are on hold |
+| 8. Robot fleet health | Summarises active/charging counts, avg battery by plant, buildings with error robots — uses the `ROBOTS` entity metrics |
+
+These use the VQRs in `PHARMA_SUPPLY_CHAIN_SV`. Run `$add-pharma-supply-chain` Step 1b (`deploy-robot-telemetry.sql`) to create the `ROBOT_TELEMETRY` table first.
+
+
 
 ```sql
 -- Check agent-demos.json has plant_intel scenario

@@ -1,6 +1,6 @@
 ---
 name: add-plant-map
-description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), animated robot tracking with BFS corridor pathfinding (AGV, Inspection, Cleaning), GMP sensors, 24-hour timeline, agent click integration. Image v1.0.214 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus, robot tracking, AGV, autonomous robots."
+description: "Add Plant Intelligence module to the ors_control_app React app: Overture Maps building footprints for 6 pharma manufacturing plants, 4-level drill-down (world → campus multi-building → floor plan → room contents), animated robot tracking with BFS corridor pathfinding (AGV, Inspection, Cleaning), robot telemetry sidebar panel with follow-mode, GMP sensors, 24-hour timeline, agent click integration. Image v1.0.216 already deployed. Triggers: plant map, plant intelligence, building footprints, manufacturing map, Overture buildings, warehouse floor plan, campus map, room contents, GMP sensors, pharma campus, robot tracking, AGV, autonomous robots, robot telemetry, follow robot."
 depends_on:
   - add-pharma-supply-chain
 metadata:
@@ -13,11 +13,11 @@ metadata:
 
 Adds a **Plant Intelligence** page to the ORS Control App showing real Overture Maps building footprints for each pharma manufacturing plant with a 4-level interactive drill-down into campus buildings, floor plans, and room-level contents.
 
-**Image v1.0.214 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
+**Image v1.0.216 is already deployed** to the publisher registry. All React components, API routes, and nav entries are already in the image. This skill only needs to run the Snowflake SQL to create views and grant access to the Overture Maps listing.
 
 ---
 
-## What's in the Image (v1.0.214)
+## What's in the Image (v1.0.216)
 
 ### React Components
 
@@ -63,7 +63,16 @@ Room contents are generated server-side per zone type. All types now produce vis
 | `lab`, `analytical`, `precision` | Perimeter benches + central island | HPLC, dissolution, FTIR, balances |
 | `utility`, `hvac`, `electrical`, `control`, `cleanroom` | Lab bench layout | AHUs, UPS, SCADA workstations, PW systems |
 
-### Animated Robot Tracking (Level 3+)
+### Robot Telemetry Sidebar Panel (Level 3+)
+
+A **Robots** tab sits alongside Overview / Sensors / Timeline in the Level 3 sidebar:
+
+- Each robot row shows live-streaming telemetry updating at 10fps: speed (m/s), battery % with drain bar, vibration (mm/s), maintenance due hours, uptime, on-board temperature, cumulative distance, and cargo batch + kg (AGVs)
+- **Follow mode** — click any robot in the sidebar list OR click the dot on the map → camera locks on and smoothly follows the robot at zoom 19.5. A gold `📍 Following AGV-A [Unlock]` banner appears on the map.
+- Selected robot highlighted on map with white ring + gold border
+- Robot telemetry data is also in Snowflake (`ROBOT_TELEMETRY` table) and queryable via the agent's `pharma_supply_chain` tool
+
+
 
 Three robot types appear on every floor plan, animated at 10fps between zone centroids:
 
@@ -161,7 +170,7 @@ If a plant has `< 6` Overture buildings ≥500 sqm nearby, the `/campus` endpoin
 
 ### Step 2: Upgrade SPCS Service
 
-If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.214` automatically from `image-versions.env`.
+If deploying fresh, run `$build-routing-solution` — it picks up `v1.0.216` automatically from `image-versions.env`.
 
 If already deployed and just need to update:
 ```sql
@@ -178,9 +187,11 @@ ALTER SERVICE OPENROUTESERVICE_APP.CORE.ORS_CONTROL_APP
 3. Click a plant → zooms to campus, shows 5–6 real buildings colour-coded by pharma role
 4. Click **API Manufacturing** building → floor plan appears with 3 floors
 5. Switch floors using floor selector → different zone layouts per floor, new robots initialise
-6. **Robots animate** between zones — blue AGVs carry batches, yellow inspection bot hovers at 2.5m, grey cleaner patrols
-7. Hover a robot → tooltip shows ID, task, battery level
-8. Click **Reactor Hall** zone → zooms in, shows 3D reactor vessels + pumps + walkway + robots in that room
+6. **Robots animate** between zones following BFS corridor paths (no wall-cutting)
+7. Click the **Robots tab** in sidebar — live telemetry streams for each robot (speed, battery, vibration, cargo)
+8. Click **Follow** on a robot — camera locks on and tracks it across the floor plan
+9. In **Agent Playground**: click a building → chat pre-fills → send → agent uses `pharma_supply_chain` + `TOOL_PLANT_IMPACT`
+10. Use prompt **"Robot maintenance alerts"** — agent queries `ROBOT_TELEMETRY` via semantic view and lists robots due for service
 7. Hover over a reactor → tooltip shows batch, temperature, pressure, status
 8. In **Agent Playground** with Plant Intel tab: click a building → chat pre-fills with context → send → agent analyses facility
 
