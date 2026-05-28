@@ -141,4 +141,77 @@ FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
 HEADER = TRUE
 OVERWRITE = TRUE;
 
+--------------------------------------------------------------------------------
+-- DIM_TRIP_SCHEDULE
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_trip_schedule/
+FROM (
+  SELECT *
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- PLACES (GEOMETRY=GEOGRAPHY, ADDRESS/ALTERNATE=VARIANT)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/places/
+FROM (
+  SELECT
+    REGION,
+    ST_ASWKT(GEOMETRY) AS GEOMETRY_WKT,
+    PHONES,
+    CATEGORY,
+    NAME,
+    TO_JSON(ADDRESS) AS ADDRESS_JSON,
+    TO_JSON(ALTERNATE) AS ALTERNATE_JSON,
+    JOB_ID
+  FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- LOOKUP (ARRAY columns -> JSON strings)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/lookup/
+FROM (
+  SELECT
+    REGION,
+    INDUSTRY,
+    PA,
+    PB,
+    PC,
+    TO_JSON(IND) AS IND_JSON,
+    TO_JSON(IND2) AS IND2_JSON,
+    TO_JSON(CTYPE) AS CTYPE_JSON,
+    TO_JSON(STYPE) AS STYPE_JSON,
+    SOURCE_TABLE,
+    TO_JSON(DEPOT_CTYPE) AS DEPOT_CTYPE_JSON,
+    DEPOT_LABEL,
+    JOB_ID
+  FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- FACT_OFFER_ROUTES
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offer_routes/
+FROM (
+  SELECT *
+  FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
 SELECT 'Export complete for JOB_ID=' || $JOB_ID AS STATUS;
