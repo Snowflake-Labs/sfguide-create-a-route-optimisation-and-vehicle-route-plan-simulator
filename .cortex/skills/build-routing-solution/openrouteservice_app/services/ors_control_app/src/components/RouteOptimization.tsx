@@ -102,7 +102,7 @@ export default function RouteOptimization() {
   const [unassignedJobIds, setUnassignedJobIds] = useState<Set<number>>(new Set());
   const [unassignedExplanation, setUnassignedExplanation] = useState('');
   const [fleetRecommendation, setFleetRecommendation] = useState<VehicleConfig[] | null>(null);
-  const [seedingRegion, setSeedingRegion] = useState(false);
+  const [loadingPresetData, setLoadingPresetData] = useState(false);
 
   const depotCoords = useMemo<[number, number] | null>(
     () => (selectedSchools[0] ? [Number(selectedSchools[0].LNG), Number(selectedSchools[0].LAT)] : null),
@@ -134,32 +134,16 @@ export default function RouteOptimization() {
     setSelectedSchools([]);
   }, [center.lng, center.lat, zoom]);
 
-  // Self-heal: ensure FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION data exists for the
-  // active region. The endpoint is region-agnostic and idempotent — if LOOKUP
-  // already has rows for the region the call returns instantly. Otherwise it
-  // synchronously seeds PLACES/LOOKUP/JOB_TEMPLATE/SEN_STUDENTS via the
-  // SEED_ROUTE_OPTIMIZATION_REGION procedure. After it resolves we re-query
-  // industries so the dropdown auto-populates with no page reload.
   useEffect(() => {
     if (!regionName) return;
     let cancelled = false;
-    setSeedingRegion(true);
+    setLoadingPresetData(true);
     setIndustries([]);
     (async () => {
-      try {
-        await fetch('/api/route-optimization/ensure-seeded', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ region: regionName }),
-        });
-      } catch (e) {
-        console.warn('[RouteOpt] ensure-seeded failed:', e);
-      }
-      if (cancelled) return;
       const r = await sfQuery(`SELECT DISTINCT INDUSTRY FROM LOOKUP WHERE REGION = '${regionName}' ORDER BY INDUSTRY`);
       if (!cancelled) {
         setIndustries(r);
-        setSeedingRegion(false);
+        setLoadingPresetData(false);
       }
     })();
     return () => { cancelled = true; };
@@ -255,7 +239,7 @@ export default function RouteOptimization() {
            LIMIT 200`;
     } else {
       placesQuery = `SELECT p.NAME, p.CATEGORY, ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT, p.ADDRESS
-           FROM PLACES p, LOOKUP l
+           FROM V_PLACES_CURRENT p, LOOKUP l
            WHERE p.REGION = '${regionName}'
              AND l.REGION = '${regionName}'
              AND l.INDUSTRY = '${selectedIndustry}'
@@ -282,7 +266,7 @@ export default function RouteOptimization() {
       try {
         const cats = (typeof depotCtype === 'string' ? JSON.parse(depotCtype) : depotCtype) as string[];
         const catStr = cats.map((c: string) => `'${c}'`).join(',');
-        const depots = await sfQuery(`SELECT NAME, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM PLACES WHERE REGION = '${regionName}' AND CATEGORY IN (${catStr}) AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) ORDER BY NAME LIMIT 10`);
+        const depots = await sfQuery(`SELECT NAME, ST_X(GEOMETRY) AS LNG, ST_Y(GEOMETRY) AS LAT FROM V_PLACES_CURRENT WHERE REGION = '${regionName}' AND CATEGORY IN (${catStr}) AND ST_DWITHIN(GEOMETRY, ST_MAKEPOINT(${centerCoords[0]}, ${centerCoords[1]}), ${radius * 1000}) ORDER BY NAME LIMIT 10`);
         setNearbySchools(depots);
         if (depots.length > 0 && selectedSchools.length === 0) {
           const first = depots[0];
@@ -691,15 +675,15 @@ export default function RouteOptimization() {
         </div>
       </div>
 
-      {seedingRegion && (
+      {loadingPresetData && (
         <div className="info-box" style={{ background: 'rgba(41,181,232,0.10)', color: '#0e7490', border: '1px solid rgba(41,181,232,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          Preparing data for <b>{regionName}</b>... (one-time seed from Overture Maps; this can take a few minutes for large regions)
+          Loading preset-backed data for <b>{regionName}</b>...
         </div>
       )}
 
-      {centerCoords && !loading && !seedingRegion && industries.length > 0 && places.length === 0 && (
+      {centerCoords && !loading && !loadingPresetData && industries.length > 0 && places.length === 0 && (
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12 }}>
-          No PLACES rows found for region <b>{regionName}</b> within {radius} km of this location. Try increasing the radius or moving the map center.
+          No preset data found for region <b>{regionName}</b> within {radius} km of this location. Run Data Studio for this preset, then retry.
         </div>
       )}
 

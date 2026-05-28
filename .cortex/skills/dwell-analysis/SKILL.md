@@ -11,7 +11,7 @@ metadata:
 
 # Deploy Dwell & Congestion Analysis
 
-Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type. All data sourced from `SYNTHETIC_DATASETS.UNIFIED` via projection views.
+Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type. All data must come from active-dataset projection views (`V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`).
 
 ## Prerequisites
 

@@ -250,7 +250,7 @@ export function createFreightExchangeRouter(): Router {
       if (!offerId) return res.status(400).json({ error: 'offerId required' });
 
       const offerRows = await runSql(`
-        SELECT PICKUP_LON, PICKUP_LAT, DROPOFF_LON, DROPOFF_LAT
+        SELECT OFFER_ID, JOB_ID, PICKUP_LON, PICKUP_LAT, DROPOFF_LON, DROPOFF_LAT
         FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS
         WHERE OFFER_ID = '${offerId}' LIMIT 1
       `);
@@ -263,6 +263,31 @@ export function createFreightExchangeRouter(): Router {
       const { region, vehicleType } = await activePresetContext();
       const profile = profileFor(region, vehicleType);
 
+      const cached = await runSql(`
+        SELECT ROAD_KM, ROAD_MIN, GEOMETRY
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT
+        WHERE OFFER_ID = '${offerId}'
+        LIMIT 1
+      `);
+      if (cached?.length) {
+        const c: any = cached[0];
+        let cachedGeometry: any = null;
+        try {
+          cachedGeometry = c?.GEOMETRY ? JSON.parse(String(c.GEOMETRY)) : null;
+        } catch {
+          cachedGeometry = null;
+        }
+        return res.json({
+          offerId: req.body?.offerId,
+          roadKm: c.ROAD_KM != null ? Number(c.ROAD_KM) : null,
+          roadMin: c.ROAD_MIN != null ? Number(c.ROAD_MIN) : null,
+          geometry: cachedGeometry,
+          region,
+          profile,
+          cached: true,
+        });
+      }
+
       try {
         const rows = await runSql(directionsSql(
           profile,
@@ -271,6 +296,23 @@ export function createFreightExchangeRouter(): Router {
           region,
         ));
         const { geometry, roadKm, roadMin } = parseDirectionsRow(rows);
+        if (geometry && roadKm != null) {
+          const geo = JSON.stringify(geometry);
+          await runSql(`
+            MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
+            USING (SELECT '${offerId}' AS OFFER_ID) src
+              ON tgt.OFFER_ID = src.OFFER_ID
+            WHEN MATCHED THEN UPDATE SET
+              ROAD_KM = ${roadKm},
+              ROAD_MIN = ${roadMin ?? 'NULL'},
+              GEOMETRY = $$${geo}$$,
+              PROFILE = '${escapeString(profile)}',
+              JOB_ID = ${o.JOB_ID ? `'${escapeString(String(o.JOB_ID))}'` : 'NULL'},
+              COMPUTED_AT = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID, COMPUTED_AT)
+              VALUES ('${offerId}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geo}$$, '${escapeString(profile)}', ${o.JOB_ID ? `'${escapeString(String(o.JOB_ID))}'` : 'NULL'}, CURRENT_TIMESTAMP())
+          `);
+        }
         res.json({
           offerId: req.body?.offerId,
           roadKm,
@@ -278,6 +320,7 @@ export function createFreightExchangeRouter(): Router {
           geometry,
           region,
           profile,
+          cached: false,
         });
       } catch (e: any) {
         log('ERROR', 'FreightExchange', `offer-route: region=${region} profile=${profile} err=${e?.message || e}`);

@@ -90,6 +90,45 @@ export async function insertTripBatch(trips: TripRecord[], snowSql: SnowSqlFn, j
   return inserted;
 }
 
+export async function insertTripScheduleBatch(
+  trips: TripRecord[],
+  snowSql: SnowSqlFn,
+  jobId: string,
+): Promise<number> {
+  if (trips.length === 0) return 0;
+  const batchSize = 200;
+  let inserted = 0;
+  for (let i = 0; i < trips.length; i += batchSize) {
+    const chunk = trips.slice(i, i + batchSize);
+    const selects = chunk.map((t, idx) =>
+      `SELECT ${escVal(`${t.trip_id}-sched`)},${escVal(t.vehicle_id)},${escVal(t.driver_id)},` +
+      `${escVal(t.vehicle_type)},${escVal(t.region)},` +
+      `TO_DATE(${escVal(t.trip_start)}),${idx + 1},` +
+      `${escVal(t.origin_poi_id)},${escVal(t.destination_poi_id)},` +
+      `${escVal(t.trip_start)},${escVal(t.trip_end)},` +
+      `${escVal('generated')},${escVal(t.ors_profile)},` +
+      `${t.distance_km ?? 'NULL'},${t.duration_minutes ?? 'NULL'},${escVal(t.status)},` +
+      `${escVal(jobId)}`
+    ).join(' UNION ALL\n');
+
+    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_TRIP_SCHEDULE
+      (SCHEDULE_ID,VEHICLE_ID,DRIVER_ID,VEHICLE_TYPE,REGION,
+       TRIP_DATE,TRIP_SEQ,ORIGIN_POI_ID,DESTINATION_POI_ID,
+       PLANNED_START,PLANNED_END,SHIFT_TYPE,ORS_PROFILE,
+       DISTANCE_KM,DURATION_MINUTES,STATUS,JOB_ID)
+      ${selects}`;
+    try {
+      await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
+      inserted += chunk.length;
+    } catch (e: any) {
+      const msg = `Trip schedule insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+      log('ERROR', 'Studio', msg);
+      throw new Error(msg);
+    }
+  }
+  return inserted;
+}
+
 export async function insertDimFleet(fleet: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<void> {
   if (fleet.length === 0) return;
   const vt = resolveVehicleType(config);

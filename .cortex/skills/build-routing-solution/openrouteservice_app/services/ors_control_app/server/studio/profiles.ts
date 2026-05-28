@@ -217,6 +217,9 @@ export interface GenerationConfig {
   // 4-instance ORS_SERVICE_<REGION> + 8-instance ROUTING_GATEWAY_SERVICE
   // back-end. Set to 1 for fully sequential / reproducible runs.
   parallelism?: number;
+  offers?: {
+    count: number;
+  };
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {

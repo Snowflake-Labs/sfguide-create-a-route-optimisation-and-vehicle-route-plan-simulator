@@ -29,8 +29,9 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 ## Prerequisites
 
 - `build-routing-solution` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
-- `route-optimization` deployed (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES seeded — only used to confirm the OPTIMIZATION function is callable).
+- `route-optimization` deployed.
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) — not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
+- Run Data Studio for the target `(region, vehicle_type)` first so `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, and `V_FACT_FREIGHT_OFFERS_CURRENT` are populated. The page no longer has an in-page "Generate seed data" action.
 
 ## Required Privileges
 
@@ -83,7 +84,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-
 
 ```sql
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;            -- 4 services RUNNING
-SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;  -- > 0
+SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT;  -- > 0
 DESC FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT, VARCHAR);     -- exists
 ```
 

@@ -17,6 +17,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 - OpenRouteService Native App deployed and activated
 - Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
+- For preset-driven demos, run Data Studio for the target `(region, vehicle_type)` first. The Route Optimization page now reads `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT` and the active dataset's UNIFIED `V_*_CURRENT` views.
 
 ## Required Privileges
 

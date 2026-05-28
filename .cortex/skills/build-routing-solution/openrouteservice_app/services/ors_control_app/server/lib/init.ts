@@ -641,6 +641,31 @@ export async function ensureBackloadAndAssetVelocityObjects(
       ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
+        OFFER_ID     VARCHAR    NOT NULL,
+        ROAD_KM      FLOAT,
+        ROAD_MIN     FLOAT,
+        GEOMETRY     VARCHAR,
+        PROFILE      VARCHAR(20),
+        COMPUTED_AT  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        JOB_ID       VARCHAR,
+        CONSTRAINT PK_FACT_OFFER_ROUTES PRIMARY KEY (OFFER_ID)
+      ) COMMENT = ${TRACK_FX}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
     // -----------------------------------------------------------------
     // Dataset-versioning projection views ("CURRENT" = active dataset only)
     // -----------------------------------------------------------------
@@ -733,6 +758,19 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT s.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE s
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = s.JOB_ID
+         AND d.REGION = s.REGION
+         AND d.VEHICLE_TYPE = s.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
@@ -746,11 +784,39 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT
+        COMMENT = ${TRACK_RO}
+        AS
+        WITH cfg AS (
+          SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG LIMIT 1
+        )
+        SELECT p.*
+        FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES p
+        JOIN cfg ON p.REGION = cfg.REGION
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = p.JOB_ID
+         AND d.REGION = cfg.REGION
+         AND d.VEHICLE_TYPE = cfg.VEHICLE_TYPE
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT fr.*
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
+        JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT o
+          ON o.OFFER_ID = fr.OFFER_ID`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS
         COMMENT = ${TRACK_FX}
         AS
         SELECT
           f.OFFER_ID,
+          f.JOB_ID,
           f.SOURCE,
           f.PARTNER_ID,
           COALESCE(p.NAME, 'Pickup')              AS PICKUP_CITY,

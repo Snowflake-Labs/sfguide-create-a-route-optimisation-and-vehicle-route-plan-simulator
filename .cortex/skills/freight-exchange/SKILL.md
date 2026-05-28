@@ -27,6 +27,7 @@ Phases C (action engine: post / chat / bid / saved searches + alerts) and D (com
 - `build-routing-solution` deployed (OPENROUTESERVICE_APP database, all ORS services running). The page reads only from Snowflake; ORS routing functions are not currently called from this page.
 - `backload-matching` deployed (provides the FACT_FREIGHT_OFFERS projection pattern this skill builds on).
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` for at least one preset (`DIM_FLEET`, `FACT_FREIGHT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`). Newly-generated presets after this skill ships populate `DIM_PARTNERS` + `FACT_PARTNER_HISTORY` natively. For older presets, re-run a Data Studio job for that preset to seed them.
+- For route previews, `/api/fx/offer-route` is cache-first on `FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT`; Data Studio precomputes this cache for active presets.
 
 ## Required Privileges
 

@@ -148,7 +148,6 @@ export default function BackloadMatching() {
   const [confirming, setConfirming] = useState(false);
   const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
   const [seedHint, setSeedHint] = useState<string | null>(null);
-  const [seeding, setSeeding] = useState(false);
   const [solverLog, setSolverLog] = useState<string | null>(null);
 
   // ORS service status + wake-up
@@ -335,8 +334,8 @@ export default function BackloadMatching() {
       const baseHint =
         `Tables are empty for region "${regionName}" \u2014 trailers: ${tRows.length}, internal: ${iRows.length}, external: ${eRows.length}.`;
       const action = upstreamHint && /fleet:\s*0|POIs:\s*0/.test(upstreamHint)
-        ? ' The active dataset is missing fleet or POIs \u2014 the "Generate seed data" button can only fill freight offers, so run a Data Studio job for this region to create a complete dataset.'
-        : ' Click "Generate seed data" to populate freight offers, or run a Data Studio job for this region.';
+        ? ' The active dataset is missing fleet or POIs, so run a Data Studio job for this region to create a complete dataset.'
+        : ' Run a Data Studio job for this preset to populate missing freight data.';
       setSeedHint(baseHint + upstreamHint + action);
     } else {
       setSeedHint(null);
@@ -353,26 +352,6 @@ export default function BackloadMatching() {
     // v1.1 to match the same fix already applied to AssetVelocity.tsx.
     refetch();
   }, [regionName, refetch]);
-
-  const seedData = useCallback(async () => {
-    if (!regionName || seeding) return;
-    setSeeding(true);
-    setSeedHint('Generating seed data...');
-    try {
-      const r = await fetch('/api/backload/seed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: regionName }),
-      });
-      const j = await r.json();
-      if (j.status !== 'ok') throw new Error(j.error || 'seed failed');
-      await refetch();
-    } catch (e: any) {
-      setSeedHint(`Seed failed: ${e.message?.slice(0, 200)}`);
-    } finally {
-      setSeeding(false);
-    }
-  }, [regionName, seeding, refetch]);
 
   // -----------------------------------------------------------------
   // Solve — every visible knob lands inside the OPTIMIZATION call.
@@ -1462,11 +1441,7 @@ export default function BackloadMatching() {
         <div className="info-box" style={{ background: 'rgba(245,158,11,0.12)', color: '#a16207', border: '1px solid rgba(245,158,11,0.4)', padding: 8, borderRadius: 6, marginBottom: 12, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{seedHint}</span>
           <span style={{ display: 'flex', gap: 8 }}>
-            <button type="button" disabled={seeding} onClick={seedData}
-                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.6)', background: '#fff', color: '#a16207', cursor: seeding ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
-              {seeding ? 'Generating...' : 'Generate seed data'}
-            </button>
-            <button type="button" disabled={seeding} onClick={() => refetch()}
+            <button type="button" onClick={() => refetch()}
                     style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, border: '1px solid rgba(245,158,11,0.4)', background: 'transparent', color: '#a16207', cursor: 'pointer', whiteSpace: 'nowrap' }}>
               Refresh
             </button>

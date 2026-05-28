@@ -6,7 +6,7 @@ import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers.js';
 import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './scaling.js';
 import { ensureTables } from './ensure-tables.js';
 import { syncRegionRegistryAndConfig } from './region-sync.js';
-import { insertTelemetryBatch, insertTripBatch, insertDimFleet, insertDimPois, insertFactFreightOffers, insertDimPartners, insertFactPartnerHistory } from './inserters.js';
+import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactFreightOffers, insertDimPartners, insertFactPartnerHistory } from './inserters.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -155,6 +155,33 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
     }
   }
   try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+    );
+    deleted['ROUTE_OPTIMIZATION.PLACES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['ROUTE_OPTIMIZATION.PLACES'] = -1;
+  }
+  try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+    );
+    deleted['ROUTE_OPTIMIZATION.LOOKUP'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['ROUTE_OPTIMIZATION.LOOKUP'] = -1;
+  }
+  try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'MARKETPLACE',
+    );
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = -1;
+  }
+  try {
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='DELETED', COMPLETED_AT=SYSDATE() WHERE JOB_ID=${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE'
@@ -164,6 +191,87 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   }
   log('INFO', 'Studio', `Deleted data for job ${jobId}: ${JSON.stringify(deleted)}`);
   return { deleted };
+}
+
+async function ensureRouteOptimizationSeedData(
+  snowSql: SnowSqlFn,
+  region: string,
+  jobId: string,
+): Promise<void> {
+  const safeRegion = region.replace(/'/g, "''");
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+     SET JOB_ID = ${escVal(jobId)}
+     WHERE REGION = ${escVal(region)}`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+     SET JOB_ID = ${escVal(jobId)}
+     WHERE REGION = ${escVal(region)}`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+}
+
+async function precomputeOfferRoutes(
+  snowSql: SnowSqlFn,
+  region: string,
+  profile: string,
+  jobId: string,
+): Promise<void> {
+  const enabled = (process.env.STUDIO_PRECOMPUTE_OFFER_ROUTES ?? 'true').toLowerCase() !== 'false';
+  if (!enabled) return;
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  );
+  await snowSql(
+    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
+     USING (
+       SELECT
+         o.OFFER_ID,
+         ${escVal(jobId)} AS JOB_ID,
+         d.DISTANCE / 1000.0 AS ROAD_KM,
+         d.DURATION / 60.0 AS ROAD_MIN,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS GEOMETRY,
+         ${escVal(profile)} AS PROFILE
+       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS o,
+            TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+              ${escVal(profile)},
+              ARRAY_CONSTRUCT(o.PICKUP_LON, o.PICKUP_LAT),
+              ARRAY_CONSTRUCT(o.DROPOFF_LON, o.DROPOFF_LAT),
+              ${escVal(region)}
+            )) d
+       WHERE o.JOB_ID = ${escVal(jobId)}
+         AND o.PICKUP_LON IS NOT NULL
+         AND o.PICKUP_LAT IS NOT NULL
+         AND o.DROPOFF_LON IS NOT NULL
+         AND o.DROPOFF_LAT IS NOT NULL
+     ) src
+     ON tgt.OFFER_ID = src.OFFER_ID
+     WHEN MATCHED THEN UPDATE SET
+       ROAD_KM = src.ROAD_KM,
+       ROAD_MIN = src.ROAD_MIN,
+       GEOMETRY = src.GEOMETRY,
+       PROFILE = src.PROFILE,
+       JOB_ID = src.JOB_ID,
+       COMPUTED_AT = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT, JOB_ID)
+       VALUES (src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, CURRENT_TIMESTAMP(), src.JOB_ID)`,
+    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  );
 }
 
 // -------------------------------------------------------------------------
@@ -482,6 +590,8 @@ async function updateDatasetRowCounts(
          'offers',    (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS   WHERE JOB_ID = ${escVal(jobId)}),
          'partners',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = ${escVal(jobId)}),
          'history',   (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = ${escVal(jobId)}),
+         'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE WHERE JOB_ID = ${escVal(jobId)}),
+         'places',    (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE JOB_ID = ${escVal(jobId)}),
          'trips',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = ${escVal(jobId)}),
          'telemetry', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = ${escVal(jobId)})
        )
@@ -702,7 +812,8 @@ export async function startGeneration(
       const fleet = fleetResult.fleet;
       const partners = generatePartners(config, 80);
       const partnerHistory = generatePartnerHistory(partners, config, 6);
-      const offers = generateFreightOffers(pois, config, 300, partners);
+      const offerCount = Math.max(1, Math.floor(Number(config.offers?.count ?? 300)));
+      const offers = generateFreightOffers(pois, config, offerCount, partners);
 
       // Region-agnostic spatial spread diagnostics. Logged once at fleet build
       // time so users can verify on any of the 5,194 regions in REGION_CATALOG
@@ -786,6 +897,16 @@ export async function startGeneration(
       broadcast(job, 'progress', {
         status: `Activated new dataset for ${config.region} / ${vt} (prior datasets kept queryable; jobId = ${jobId})`,
       });
+      try {
+        await ensureRouteOptimizationSeedData(snowSql, config.region, jobId);
+      } catch (e: any) {
+        log('WARN', 'Studio', `Route optimization seed failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+      }
+      try {
+        await precomputeOfferRoutes(snowSql, config.region, config.ors_profile, jobId);
+      } catch (e: any) {
+        log('WARN', 'Studio', `Offer-route precompute failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+      }
 
       const catCounts: Record<string, number> = {};
       for (const p of pois) catCounts[p.category || p.location_type] = (catCounts[p.category || p.location_type] || 0) + 1;
@@ -822,7 +943,9 @@ export async function startGeneration(
           pendingTrips.push(event.record);
           if (pendingTrips.length >= 50) {
             try {
-              await insertTripBatch(pendingTrips.splice(0), snowSql, jobId);
+              const batch = pendingTrips.splice(0);
+              await insertTripBatch(batch, snowSql, jobId);
+              await insertTripScheduleBatch(batch, snowSql, jobId);
             } catch (e: any) {
               log('ERROR', 'Studio', `Trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
               broadcast(job, 'warning', { message: `Trip insert failed: ${e.message?.slice(0, 150)}` });
@@ -837,6 +960,7 @@ export async function startGeneration(
       if (pendingTrips.length > 0) {
         try {
           await insertTripBatch(pendingTrips, snowSql, jobId);
+          await insertTripScheduleBatch(pendingTrips, snowSql, jobId);
         } catch (e: any) {
           log('ERROR', 'Studio', `Final trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Final trip insert failed: ${e.message?.slice(0, 150)}` });
