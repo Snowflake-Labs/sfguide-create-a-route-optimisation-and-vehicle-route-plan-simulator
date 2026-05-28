@@ -939,6 +939,35 @@ export async function ensureBackloadAndAssetVelocityObjects(
          AND ri.WEEK = DATE_TRUNC('week', o.POSTED_AT)`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
+    {
+      // Recreated on every boot so the column count stays in sync with any
+      // upstream additions to VW_OFFERS / VW_OFFER_ENRICHED (e.g. JOB_ID).
+      // Original DDL lives in .cortex/skills/freight-exchange/references/
+      // bootstrap-enrichment.sql; mirrored here to self-heal after upstream
+      // ALTERs that would otherwise invalidate the frozen view column list.
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2
+        COMMENT = ${TRACK_FX}
+        AS
+        SELECT
+          e.*,
+          fr.ROAD_KM,
+          fr.ROAD_MIN,
+          fr.GEOMETRY     AS ROUTE_GEOMETRY,
+          fr.PROFILE      AS ROUTE_PROFILE,
+          fr.COMPUTED_AT  AS ROUTE_COMPUTED_AT,
+          CASE WHEN fr.ROAD_KM IS NOT NULL AND e.PRICE_USD IS NOT NULL AND fr.ROAD_KM > 0
+               THEN e.PRICE_USD / fr.ROAD_KM
+               ELSE e.PRICE_PER_KM_USD
+          END AS PRICE_PER_ROAD_KM_USD,
+          CASE WHEN fr.ROAD_KM IS NULL THEN 'PENDING_ROUTE'
+               WHEN fr.ROAD_KM > e.DISTANCE_KM * 1.6 THEN 'DETOUR_HEAVY'
+               WHEN fr.ROAD_KM > e.DISTANCE_KM * 1.3 THEN 'DETOUR_MODERATE'
+               ELSE 'DIRECT'
+          END AS ROUTE_DETOUR_BADGE
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED e
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr USING (OFFER_ID)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
   ];
   for (const { sql, db, schema } of stmts) {
     try {
