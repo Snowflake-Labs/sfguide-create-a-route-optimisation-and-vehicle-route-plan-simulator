@@ -159,52 +159,37 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-rou
 
 **Next:** Proceed to Step 3
 
-> ### ⚠️ MANDATORY MODULE EXECUTION (DO NOT SKIP)
+> ### ⚠️ MANDATORY: USE deploy-all.sql (DO NOT SKIP STEPS)
 >
-> After infrastructure is set up (Step 3) and files are uploaded (Step 4), execute **ALL** SQL modules in order using `EXECUTE IMMEDIATE FROM @stage`:
+> The entire fleet intelligence stack is deployed via a single orchestrator file: **`deploy-all.sql`** (workspace root).
 >
+> **Deployment method:**
 > ```sql
-> -- Upload all modules to stage (one-time)
-> COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/
-> FROM 'snow://workspace/..../versions/live/'
-> FILES=('.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/00_marketplace_datasets.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/07_deploy_demo_views.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/08_route_optimization_data.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/09_weather_tool.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/10_pharma_agent_tools.sql',
->        '.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/11_pharma_supply_chain_data.sql');
+> -- 1. Upload ALL workspace files to the deploy stage (one-time)
+> COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/
+> FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
+> PATTERN='.*\\.sql';
 >
-> -- Execute each in order (EXECUTE IMMEDIATE FROM handles multi-statement files)
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...00_marketplace_datasets.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...01_core_infra.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...02_routing_functions.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...03_region_management.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...04_service_lifecycle.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...05_matrix_pipeline.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...06_matrix_ops.sql;
-> -- then: datasets/load-seed-data.sql (table schemas + parquet)
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...07_deploy_demo_views.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...08_route_optimization_data.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...09_weather_tool.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...10_pharma_agent_tools.sql;
-> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/modules/...11_pharma_supply_chain_data.sql;
+> -- 2. Also upload parquet seed data
+> COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/
+> FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/'
+> PATTERN='.*\\.parquet';
+>
+> -- 3. Execute the master orchestrator
+> EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/deploy-all.sql;
 > ```
 >
-> **Every issue from the initial deployment was caused by skipping modules:**
-> - Skipped 03/04 → health page can't see services, no Resume/Suspend buttons
-> - Skipped 05/06 → matrix builder fails with "table not found"
-> - Skipped 07 → taxi/dwell/deviation pages empty
-> - Skipped 08 → route optimization shows POIs not addresses
-> - Skipped 09 → weather tool "function not found"
-> - Skipped 10 → plant impact "function not found"
+> **`deploy-all.sql` handles everything in dependency order:**
+> - Phase 1: Core infrastructure (modules 00-06)
+> - Phase 2: Seed data load (table schemas + parquet)
+> - Phase 3: Demo skills (taxis, food delivery, deviation, dwell, route optimization, retail)
+> - Phase 4: Agent tools (weather, pharma supply chain, plant map, pharma intelligence, fleet analytics)
+> - Phase 5: Agent creation + Streamlit deployment + agent-demos.json upload
 >
-> **DO NOT cherry-pick modules. DO NOT reimplement SQL from scratch. Run all 12 in order.**
+> **Each SQL file lives with its owning skill** — no duplication, no drift.
+> If a skill's SQL changes, re-running deploy-all.sql picks up the change automatically.
+>
+> **DO NOT cherry-pick steps. DO NOT reimplement SQL manually. Run deploy-all.sql.**
 
 ### Step 3: Setup Database and Stages
 

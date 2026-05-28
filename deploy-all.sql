@@ -1,0 +1,160 @@
+-- =============================================================================
+-- deploy-all.sql
+-- MASTER ORCHESTRATOR: Deploys the full fleet intelligence stack from zero.
+--
+-- Execution method (workspace):
+--   1. Upload this file + all referenced files to stage
+--   2. EXECUTE IMMEDIATE FROM @stage/deploy-all.sql
+--
+-- OR execute each EXECUTE IMMEDIATE FROM line individually via snowflake_sql_execute.
+--
+-- IMPORTANT: This file references skill seed-data.sql files as the SINGLE SOURCE
+-- OF TRUTH. Do NOT maintain separate module copies. If a skill's SQL changes,
+-- it automatically takes effect on next deploy-all run.
+--
+-- Prerequisites:
+--   - OPENROUTESERVICE_APP database exists with images pushed
+--   - All workspace files uploaded to @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/
+--   - ORS map files (SanFrancisco.osm.pbf, ors-config.yml) already on stage
+--
+-- Upload command (run once before deploying):
+--   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/
+--   FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
+--   PATTERN='.*\\.sql';
+-- =============================================================================
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 1: CORE INFRASTRUCTURE (build-routing-solution modules 00-06)        ║
+-- ║ Owner: .cortex/skills/build-routing-solution/                              ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Step 0: Install Overture Maps Marketplace datasets (Places, Addresses, Buildings)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/00_marketplace_datasets.sql;
+
+-- Step 1: Databases, schemas, network rules, EAIs, compute pools, services
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/01_core_infra.sql;
+
+-- Step 2: ORS routing functions (DIRECTIONS, ISOCHRONES, OPTIMIZATION, MATRIX)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/02_routing_functions.sql;
+
+-- Step 3: Multi-region management (SETUP_REGION_ORS, DROP_REGION_ORS, LIST_REGIONS)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql;
+
+-- Step 4: Service lifecycle (GET_STATUS, RESUME_ALL, SUSPEND_ALL, SCALE)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/04_service_lifecycle.sql;
+
+-- Step 5: Travel time matrix pipeline (BUILD_HEXAGONS, BUILD_WORK_QUEUE, etc.)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/05_matrix_pipeline.sql;
+
+-- Step 6: Matrix operations (GET_MATRIX_INVENTORY, LOAD_SEED_MATRIX, LOAD_SEED_CATALOG)
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql;
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 2: SEED DATA (table schemas + parquet load)                          ║
+-- ║ Owner: datasets/load-seed-data.sql                                         ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Creates FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_FLEET, DIM_POIS, INTRO_TRIPS,
+-- REGION_REGISTRY, GENERATION_JOBS + loads parquet from @SEED_DATA_STAGE
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/datasets/load-seed-data.sql;
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 3: DEMO SKILLS (each skill owns its own SQL)                         ║
+-- ║ Execute in dependency order — no skill should be skipped.                  ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Fleet Intelligence: Taxis (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, etc.)
+-- Owner: .cortex/skills/fleet-intelligence-taxis/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/fleet-intelligence-taxis/references/seed-data.sql;
+
+-- Fleet Intelligence: Food Delivery (DELIVERIES, RESTAURANTS_ENRICHED)
+-- Owner: .cortex/skills/fleet-intelligence-food-delivery/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/fleet-intelligence-food-delivery/references/sql-projection-views.sql;
+
+-- Route Deviation (TRIP_DEVIATION_ANALYSIS, DRIVER_DEVIATION_SUMMARY, DAILY_DEVIATION_TRENDS)
+-- Owner: .cortex/skills/route-deviation/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/route-deviation/references/seed-data.sql;
+
+-- Dwell Analysis (8 Dynamic Tables + force refresh)
+-- Owner: .cortex/skills/dwell-analysis/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/dwell-analysis/references/sql-pipeline.sql;
+
+-- Route Optimization (PLACES from Overture, LOOKUP+CAPACITY, JOB_TEMPLATE, SEN_STUDENTS)
+-- Owner: .cortex/skills/route-optimization/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/route-optimization/references/seed-data.sql;
+
+-- Retail Catchment (RETAIL_POIS from Overture, CITIES_BY_STATE)
+-- Owner: .cortex/skills/retail-catchment/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/retail-catchment/references/seed-data.sql;
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 4: AGENT TOOLS & INTELLIGENCE                                        ║
+-- ║ Tools must be created BEFORE the agent (agent references them).            ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Weather Routing (network rule + EAI + GET_WEATHER_AT_POINT UDF + TOOL_WEATHER)
+-- Owner: .cortex/skills/add-weather-routing/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-weather-routing/references/deploy-weather-tool.sql;
+
+-- Pharma Supply Chain (PLANTS, SUPPLIERS, PRODUCTS, BATCHES, SHIPMENTS, INVENTORY)
+-- Owner: .cortex/skills/add-pharma-supply-chain/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-supply-chain/references/deploy-pharma-supply-chain.sql;
+
+-- Robot Telemetry (capacity-scaled robots + PHARMA_SUPPLY_CHAIN_SV)
+-- Owner: .cortex/skills/add-pharma-supply-chain/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-supply-chain/references/deploy-robot-telemetry.sql;
+
+-- Plant Map (building footprints from Overture Maps Buildings + campus views)
+-- Owner: .cortex/skills/add-plant-map/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-plant-map/references/build-plant-footprints.sql;
+
+-- Pharma Intelligence (SF_INVENTORY, SF_DEMAND_FORECAST, tool procedures)
+-- Owner: .cortex/skills/add-pharma-intelligence/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-data.sql;
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-tools.sql;
+
+-- Fleet Analytics (FLEET_TRIPS_SV, FLEET_TELEMETRY_SV semantic views)
+-- Owner: .cortex/skills/add-fleet-analytics/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-fleet-analytics/references/deploy-fleet-analytics.sql;
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 5: AGENT + STREAMLIT (created LAST — references all tools/views)     ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Agent Playground data (SF_PHARMA_JOBS, SF_HEALTH_DEMOGRAPHICS, CONFIG updates)
+-- Owner: .cortex/skills/setup-agent-playground/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-demo-data.sql;
+
+-- Semantic View for Cortex Analyst
+-- Owner: .cortex/skills/setup-agent-playground/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-semantic-view.sql;
+
+-- Routing Agent (CREATE AGENT with all 10 tools)
+-- Owner: .cortex/skills/setup-agent-playground/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/configure-agent.sql;
+
+-- Fleet Explorer Streamlit App
+-- Owner: .cortex/skills/fleet-explorer-app/
+CREATE OR REPLACE STREAMLIT SYNTHETIC_DATASETS.UNIFIED.FLEET_MAP
+  FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/fleet-map'
+  MAIN_FILE = 'streamlit_app.py'
+  QUERY_WAREHOUSE = DEFAULT_WH
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-explorer-app","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
+-- Upload agent-demos.json to stage for React Agent Playground
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
+FILES=('agent-demos.json');
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ DEPLOYMENT COMPLETE                                                         ║
+-- ║                                                                             ║
+-- ║ Verify:                                                                     ║
+-- ║   SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;  (5 services RUNNING)    ║
+-- ║   SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;                  ║
+-- ║   SHOW STREAMLITS IN SCHEMA SYNTHETIC_DATASETS.UNIFIED;                    ║
+-- ║   SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;  (6008)      ║
+-- ║   SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;       ║
+-- ║   CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER('SanFrancisco');      ║
+-- ║   CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PLANT_IMPACT('ALL');          ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
