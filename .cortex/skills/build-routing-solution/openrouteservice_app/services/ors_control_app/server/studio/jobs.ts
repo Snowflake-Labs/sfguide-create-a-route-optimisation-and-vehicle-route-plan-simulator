@@ -240,19 +240,31 @@ export async function activateDataset(
   // recovery rows or rows whose base data was deleted out-of-band) can be
   // activated and the V_*_CURRENT views silently return zero, leaving
   // every fleet/freight page empty with no diagnostic. (#audit-pr-120)
-  const probe = await snowSql(
-    `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-     WHERE JOB_ID = ${escVal(datasetId)}`,
-    'FLEET_INTELLIGENCE', 'CORE',
-  );
-  const probeCount = Number((probe[0] as any)?.N ?? 0);
-  if (probeCount === 0) {
-    throw new Error(
-      `Dataset ${datasetId} has 0 rows in DIM_FLEET; refusing to activate ` +
-      `(would leave V_*_CURRENT views empty for ${region}/${vehicleType}). ` +
-      `Re-run Data Studio for this scope to materialize fresh data, or pick ` +
-      `a different dataset from the panel.`,
+  let probeCount = 0;
+  try {
+    const probe = await snowSql(
+      `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+       WHERE JOB_ID = ${escVal(datasetId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
     );
+    probeCount = Number((probe[0] as any)?.N ?? 0);
+  } catch (e: any) {
+    const err: any = new Error(
+      `DIM_FLEET probe failed (${e.message?.slice(0, 150)}). ` +
+      `Control-app boot likely didn't finish initialising tables; restart the service.`,
+    );
+    err.code = 'BOOT_INCOMPLETE';
+    throw err;
+  }
+  if (probeCount === 0) {
+    const err: any = new Error(
+      `Dataset ${datasetId} has 0 rows in DIM_FLEET; ` +
+      `re-run Data Studio for ${region} / ${vehicleType} to materialise data.`,
+    );
+    err.code = 'DATASET_EMPTY';
+    err.region = region;
+    err.vehicleType = vehicleType;
+    throw err;
   }
   // Atomic-ish: deactivate other siblings, then activate this one.
   const deact = await snowSql(

@@ -148,7 +148,9 @@ export function createFleetRouter(): Router {
           j.COMPLETED_AT,
           j.CONFIG:vehicleType::STRING AS CFG_VEHICLE_TYPE,
           COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY,
-          COALESCE(d.IS_ACTIVE, FALSE) AS DATASET_IS_ACTIVE
+          COALESCE(d.IS_ACTIVE, FALSE) AS DATASET_IS_ACTIVE,
+          (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+           WHERE f.JOB_ID = j.JOB_ID) AS FLEET_ROW_COUNT
         FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
         LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
         LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d ON d.DATASET_ID = j.JOB_ID
@@ -163,6 +165,7 @@ export function createFleetRouter(): Router {
         // a region+vehicle equality check, so at most ONE dataset per
         // (region, vehicle) shows the Active badge — the one whose
         // JOB_ID matches the current DIM_DATASETS row with IS_ACTIVE=TRUE.
+        const fleetRowCount = Number(r.FLEET_ROW_COUNT ?? 0);
         return {
           jobId: r.JOB_ID,
           presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
@@ -174,6 +177,8 @@ export function createFleetRouter(): Router {
           pointCount: r.POINT_COUNT ?? 0,
           completedAt: r.COMPLETED_AT,
           isActive: r.DATASET_IS_ACTIVE === true || r.DATASET_IS_ACTIVE === 'true',
+          fleetRowCount,
+          isAvailable: fleetRowCount > 0,
         };
       });
 
@@ -208,6 +213,17 @@ export function createFleetRouter(): Router {
           region = result.region;
           vehicleType = result.vehicleType;
         } catch (e: any) {
+          if (e.code === 'DATASET_EMPTY') {
+            return res.status(409).json({
+              code: 'DATASET_EMPTY',
+              error: e.message,
+              region: e.region,
+              vehicleType: e.vehicleType,
+            });
+          }
+          if (e.code === 'BOOT_INCOMPLETE') {
+            return res.status(503).json({ code: 'BOOT_INCOMPLETE', error: e.message });
+          }
           // Fallback: if DIM_DATASETS row is missing (legacy backfill miss),
           // create one from GENERATION_JOBS so this and future picks work.
           if (/not found/i.test(e.message || '')) {
@@ -222,6 +238,19 @@ export function createFleetRouter(): Router {
             }
             const row = rows[0] as any;
             const vt = row.CFG_VT || ORS_PROFILE_TO_VEHICLE_TYPE[row.ORS_PROFILE] || 'car';
+            const fleetProbe = await runSql(
+              `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+               WHERE JOB_ID = '${escapeString(String(jobId))}'`,
+              'SYNTHETIC_DATASETS', 'UNIFIED',
+            );
+            if (Number((fleetProbe[0] as any)?.N ?? 0) === 0) {
+              return res.status(409).json({
+                code: 'DATASET_EMPTY',
+                error: `Dataset ${jobId} has 0 rows in DIM_FLEET; re-run Data Studio.`,
+                region: row.REGION,
+                vehicleType: vt,
+              });
+            }
             // Insert a DIM_DATASETS row and mark active in scope.
             await runSql(
               `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
