@@ -49,9 +49,10 @@ export default function PresetRoutingControls({
       <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <MapPin size={compact ? 12 : 14} />
         <select
+          className="select"
           value={region}
           onChange={(e) => onChange({ region: e.target.value, profile })}
-          style={{ minWidth: compact ? 120 : 140 }}
+          style={{ minWidth: compact ? 120 : 140, width: 'auto' }}
         >
           {(regions ?? [{ value: preset.region, label: preset.regionDisplay }]).map((r) => (
             <option key={r.value} value={r.value}>{r.label}</option>
@@ -61,9 +62,10 @@ export default function PresetRoutingControls({
       <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <Route size={compact ? 12 : 14} />
         <select
+          className="select"
           value={profile}
           onChange={(e) => onChange({ region, profile: e.target.value })}
-          style={{ minWidth: compact ? 110 : 130 }}
+          style={{ minWidth: compact ? 110 : 130, width: 'auto' }}
         >
           {profiles.map((p) => (
             <option key={p.value} value={p.value}>{p.label}</option>
