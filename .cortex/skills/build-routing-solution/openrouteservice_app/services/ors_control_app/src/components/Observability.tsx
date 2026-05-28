@@ -87,125 +87,160 @@ export default function Observability() {
   const filtered = metrics.filter(m => m.WINDOW_NAME === windowKey);
 
   return (
-    <div style={{ padding: '24px', color: '#e5e7eb', maxWidth: 1400 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 6 }}>ORS Observability</h1>
-      <p style={{ color: '#9ca3af', fontSize: 13, marginBottom: 16 }}>
+    <div className="panel" style={{ maxWidth: 1400 }}>
+      <h2>ORS Observability</h2>
+      <p className="subtitle">
         Per-endpoint latency and error metrics, sampled from the routing gateway via the <code>ORS_METRICS_INGEST_TASK</code> task (1-minute cadence).
         Click <strong>Ingest now</strong> to force a refresh between scheduled runs.
       </p>
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {WINDOWS.map(w => (
-            <button key={w} onClick={() => setWindowKey(w)}
-              style={{
-                background: windowKey === w ? '#1f2937' : 'transparent',
-                color: windowKey === w ? '#fff' : '#9ca3af',
-                border: '1px solid #374151',
-                padding: '6px 14px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                fontSize: 13,
-              }}
-            >Last {w}</button>
+            <button
+              key={w}
+              className={`tab ${windowKey === w ? 'active' : ''}`}
+              onClick={() => setWindowKey(w)}
+            >
+              Last {w}
+            </button>
           ))}
         </div>
-        <button onClick={fetchMetrics} disabled={loading}
-          style={{ background: '#374151', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          className="btn secondary"
+          onClick={fetchMetrics}
+          disabled={loading}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+        >
           <RefreshCw size={14} /> Refresh
         </button>
-        <button onClick={ingestNow} disabled={loading}
-          style={{ background: '#1e40af', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}>
+        <button
+          className="btn primary"
+          onClick={ingestNow}
+          disabled={loading}
+        >
           Ingest now
         </button>
-        <span style={{ color: '#9ca3af', fontSize: 12 }}>{loading ? 'Loading...' : ''}</span>
+        <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{loading ? 'Loading...' : ''}</span>
       </div>
 
       {error && (
-        <div style={{ background: '#7f1d1d', color: '#fecaca', padding: 12, borderRadius: 6, marginBottom: 16, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <div
+          style={{
+            background: 'rgba(229,72,77,0.1)',
+            color: 'var(--red)',
+            border: '1px solid var(--red)',
+            padding: 12,
+            borderRadius: 6,
+            marginBottom: 16,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'flex-start',
+          }}
+        >
           <AlertTriangle size={16} />
           <div style={{ fontSize: 13 }}>{error}</div>
         </div>
       )}
 
-      <h2 style={{ fontSize: 15, marginBottom: 8 }}>Summary by endpoint</h2>
+      <h3>Summary by endpoint</h3>
       <div style={{ overflowX: 'auto', marginBottom: 28 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table className="services-table">
           <thead>
-            <tr style={{ borderBottom: '1px solid #374151', color: '#9ca3af', textAlign: 'left' }}>
-              <th style={{ padding: '8px 12px' }}>Endpoint</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Requests</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Errors</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>Error %</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>p50 ms</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>p95 ms</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>max ms</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>avg req KB</th>
-              <th style={{ padding: '8px 12px', textAlign: 'right' }}>avg resp KB</th>
-              <th style={{ padding: '8px 12px' }}>Last event</th>
+            <tr>
+              <th>Endpoint</th>
+              <th style={{ textAlign: 'right' }}>Requests</th>
+              <th style={{ textAlign: 'right' }}>Errors</th>
+              <th style={{ textAlign: 'right' }}>Error %</th>
+              <th style={{ textAlign: 'right' }}>p50 ms</th>
+              <th style={{ textAlign: 'right' }}>p95 ms</th>
+              <th style={{ textAlign: 'right' }}>max ms</th>
+              <th style={{ textAlign: 'right' }}>avg req KB</th>
+              <th style={{ textAlign: 'right' }}>avg resp KB</th>
+              <th>Last event</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: '#6b7280' }}>
-                No metrics yet. Make a few routing / matrix calls, then click <strong>Ingest now</strong>.
-              </td></tr>
+              <tr>
+                <td colSpan={10} style={{ padding: 24, textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  No metrics yet. Make a few routing / matrix calls, then click <strong>Ingest now</strong>.
+                </td>
+              </tr>
             )}
             {filtered.map((m, i) => (
-              <tr key={`${m.ENDPOINT}-${i}`} style={{ borderBottom: '1px solid #1f2937' }}>
-                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{m.ENDPOINT}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.REQ_COUNT}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right', color: m.ERROR_COUNT > 0 ? '#fca5a5' : '#9ca3af' }}>{m.ERROR_COUNT}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right', color: (m.ERROR_RATE_PCT || 0) > 5 ? '#fca5a5' : '#9ca3af' }}>{m.ERROR_RATE_PCT?.toFixed(1) || '0.0'}%</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.P50_MS ?? '—'}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.P95_MS ?? '—'}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.MAX_MS ?? '—'}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.AVG_REQ_BYTES ? (m.AVG_REQ_BYTES / 1024).toFixed(1) : '—'}</td>
-                <td style={{ padding: '8px 12px', textAlign: 'right' }}>{m.AVG_RESP_BYTES ? (m.AVG_RESP_BYTES / 1024).toFixed(1) : '—'}</td>
-                <td style={{ padding: '8px 12px', color: '#9ca3af' }}>{m.LAST_EVENT_TS || '—'}</td>
+              <tr key={`${m.ENDPOINT}-${i}`}>
+                <td style={{ fontWeight: 600 }}>{m.ENDPOINT}</td>
+                <td style={{ textAlign: 'right' }}>{m.REQ_COUNT}</td>
+                <td style={{ textAlign: 'right', color: m.ERROR_COUNT > 0 ? 'var(--red)' : 'var(--text-secondary)' }}>{m.ERROR_COUNT}</td>
+                <td style={{ textAlign: 'right', color: (m.ERROR_RATE_PCT || 0) > 5 ? 'var(--red)' : 'var(--text-secondary)' }}>{m.ERROR_RATE_PCT?.toFixed(1) || '0.0'}%</td>
+                <td style={{ textAlign: 'right' }}>{m.P50_MS ?? '—'}</td>
+                <td style={{ textAlign: 'right' }}>{m.P95_MS ?? '—'}</td>
+                <td style={{ textAlign: 'right' }}>{m.MAX_MS ?? '—'}</td>
+                <td style={{ textAlign: 'right' }}>{m.AVG_REQ_BYTES ? (m.AVG_REQ_BYTES / 1024).toFixed(1) : '—'}</td>
+                <td style={{ textAlign: 'right' }}>{m.AVG_RESP_BYTES ? (m.AVG_RESP_BYTES / 1024).toFixed(1) : '—'}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{m.LAST_EVENT_TS || '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>Recent events (last 24h)</h2>
-        <label style={{ fontSize: 12, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={onlyErrors} onChange={e => setOnlyErrors(e.target.checked)} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0 }}>Recent events (last 24h)</h3>
+        <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={onlyErrors}
+            onChange={e => setOnlyErrors(e.target.checked)}
+            style={{ accentColor: 'var(--accent)' }}
+          />
           Errors only
         </label>
       </div>
-      <div style={{ overflowX: 'auto', maxHeight: 480, overflowY: 'auto', border: '1px solid #1f2937', borderRadius: 6 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead style={{ position: 'sticky', top: 0, background: '#111827' }}>
-            <tr style={{ borderBottom: '1px solid #374151', color: '#9ca3af', textAlign: 'left' }}>
-              <th style={{ padding: '6px 10px' }}>Time</th>
-              <th style={{ padding: '6px 10px' }}>Endpoint</th>
-              <th style={{ padding: '6px 10px' }}>Profile</th>
-              <th style={{ padding: '6px 10px' }}>Status</th>
-              <th style={{ padding: '6px 10px' }}>Error</th>
-              <th style={{ padding: '6px 10px', textAlign: 'right' }}>Latency ms</th>
-              <th style={{ padding: '6px 10px', textAlign: 'right' }}>req B</th>
-              <th style={{ padding: '6px 10px', textAlign: 'right' }}>resp B</th>
-              <th style={{ padding: '6px 10px' }}>Host</th>
+      <div
+        style={{
+          overflowX: 'auto',
+          maxHeight: 480,
+          overflowY: 'auto',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          background: 'var(--bg)',
+        }}
+      >
+        <table className="services-table" style={{ fontSize: 12 }}>
+          <thead style={{ position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 1 }}>
+            <tr>
+              <th>Time</th>
+              <th>Endpoint</th>
+              <th>Profile</th>
+              <th>Status</th>
+              <th>Error</th>
+              <th style={{ textAlign: 'right' }}>Latency ms</th>
+              <th style={{ textAlign: 'right' }}>req B</th>
+              <th style={{ textAlign: 'right' }}>resp B</th>
+              <th>Host</th>
             </tr>
           </thead>
           <tbody>
             {events.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 20, textAlign: 'center', color: '#6b7280' }}>No events.</td></tr>
+              <tr>
+                <td colSpan={9} style={{ padding: 20, textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  No events.
+                </td>
+              </tr>
             )}
             {events.map(ev => (
-              <tr key={ev.REQUEST_ID} style={{ borderBottom: '1px solid #1f2937' }}>
-                <td style={{ padding: '4px 10px', color: '#9ca3af' }}>{ev.REQUEST_TS}</td>
-                <td style={{ padding: '4px 10px' }}>{ev.ENDPOINT}</td>
-                <td style={{ padding: '4px 10px', color: '#9ca3af' }}>{ev.PROFILE || '—'}</td>
-                <td style={{ padding: '4px 10px', color: (ev.STATUS_CODE || 0) >= 400 ? '#fca5a5' : '#9ca3af' }}>{ev.STATUS_CODE ?? '—'}</td>
-                <td style={{ padding: '4px 10px', color: '#fca5a5' }}>{ev.ERROR_CODE || ''}</td>
-                <td style={{ padding: '4px 10px', textAlign: 'right' }}>{ev.LATENCY_MS ?? '—'}</td>
-                <td style={{ padding: '4px 10px', textAlign: 'right', color: '#9ca3af' }}>{ev.REQUEST_BYTES ?? '—'}</td>
-                <td style={{ padding: '4px 10px', textAlign: 'right', color: '#9ca3af' }}>{ev.RESPONSE_BYTES ?? '—'}</td>
-                <td style={{ padding: '4px 10px', color: '#9ca3af' }}>{ev.ORS_HOST || '—'}</td>
+              <tr key={ev.REQUEST_ID}>
+                <td style={{ color: 'var(--text-secondary)' }}>{ev.REQUEST_TS}</td>
+                <td>{ev.ENDPOINT}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{ev.PROFILE || '—'}</td>
+                <td style={{ color: (ev.STATUS_CODE || 0) >= 400 ? 'var(--red)' : 'var(--text-secondary)' }}>{ev.STATUS_CODE ?? '—'}</td>
+                <td style={{ color: 'var(--red)' }}>{ev.ERROR_CODE || ''}</td>
+                <td style={{ textAlign: 'right' }}>{ev.LATENCY_MS ?? '—'}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.REQUEST_BYTES ?? '—'}</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{ev.RESPONSE_BYTES ?? '—'}</td>
+                <td style={{ color: 'var(--text-secondary)' }}>{ev.ORS_HOST || '—'}</td>
               </tr>
             ))}
           </tbody>
