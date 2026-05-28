@@ -88,7 +88,7 @@ ALTER COMPUTE POOL ORS_CONTROL_APP_COMPUTE_POOL SET COMMENT = '{"origin":"sf_sit
 
 -- Verify compute pool is ACTIVE before creating services.
 -- State must be ACTIVE; if STARTING wait ~2 minutes and re-run this module.
-SHOW COMPUTE POOLS LIKE '%OPENROUTESERVICE_APP%' OR LIKE '%ORS_CONTROL_APP%';
+SHOW COMPUTE POOLS LIKE '%ORS%';
 SELECT
     "name",
     "state",
@@ -98,6 +98,17 @@ SELECT
     END AS POOL_STATUS_CHECK
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" IN ('OPENROUTESERVICE_APP_COMPUTE_POOL', 'ORS_CONTROL_APP_COMPUTE_POOL');
+
+-- Stages required by service volume mounts (ORS graphs cache + elevation data)
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE
+    DIRECTORY = (ENABLE = TRUE)
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_STAGE
+    DIRECTORY = (ENABLE = TRUE)
+    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL

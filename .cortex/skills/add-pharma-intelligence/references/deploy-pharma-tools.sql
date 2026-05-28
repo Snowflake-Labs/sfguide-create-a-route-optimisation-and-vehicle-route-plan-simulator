@@ -19,7 +19,7 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STAT
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
-COMMENT = 'Pharma Supply Intelligence: inventory status, wastage, near-expiry alerts'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-pharma-intelligence","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 try {
@@ -117,7 +117,7 @@ GRANT USAGE ON PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS(
 -- =============================================================================
 -- 2. TOOL_DEMAND_FORECAST
 --    Demographic-driven demand forecast for a pharmacy.
---    Uses catchment population × morbidity rates × units_per_1000.
+--    Uses catchment population x morbidity rates x units_per_1000.
 -- =============================================================================
 
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DEMAND_FORECAST(
@@ -126,7 +126,7 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DEMAND_FORECAS
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
-COMMENT = 'Pharma Supply Intelligence: demographic demand forecast for a pharmacy'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-pharma-intelligence","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 try {
@@ -245,7 +245,7 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
-COMMENT = 'Pharma Supply Intelligence: prioritised replenishment and manufacturing plan'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-pharma-intelligence","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
 try {
@@ -338,191 +338,3 @@ $$;
 
 GRANT USAGE ON PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_PLAN(VARCHAR)
     TO ROLE ACCOUNTADMIN;
-
--- =============================================================================
--- 4. SEMANTIC VIEW for Cortex Analyst analytics
--- NOTE: Skipped — requires TABLES-based syntax rewrite. Agent works without it.
--- =============================================================================
-
--- =============================================================================
--- 5. AGENT — deployed via add-pharma-supply-chain/references/update-agent-supply-chain.sql
---    That file is the authoritative agent spec with all tools including
---    pharma_supply_chain semantic view.
--- =============================================================================
-
--- =============================================================================
--- VERIFY
--- =============================================================================
-
-SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
-CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS(NULL);
-
-
-  - tool_spec:
-      type: generic
-      name: TOOL_ISOCHRONES
-      description: "Generate reachability polygon from a location."
-      input_schema:
-        type: object
-        properties:
-          location_description:
-            type: string
-            description: "Center location description"
-          minutes:
-            type: integer
-            description: "Travel time in minutes"
-          profile:
-            type: string
-        required: [location_description, minutes]
-  - tool_spec:
-      type: generic
-      name: TOOL_ROUTE_OPTIMIZATION
-      description: "Optimize multi-stop delivery route (VRP) for user-specified locations."
-      input_schema:
-        type: object
-        properties:
-          description:
-            type: string
-            description: "Depot and delivery locations"
-          num_vehicles:
-            type: number
-            description: "Number of vehicles"
-          profile:
-            type: string
-        required: [description]
-  - tool_spec:
-      type: generic
-      name: TOOL_PHARMA_CATCHMENT
-      description: "Analyse population health demographics within drive-time catchment of a pharmacy."
-      input_schema:
-        type: object
-        properties:
-          pharmacy_description:
-            type: string
-            description: "Pharmacy location"
-          range_minutes:
-            type: number
-            description: "Drive time minutes (default 10)"
-          profile:
-            type: string
-        required: [pharmacy_description]
-  - tool_spec:
-      type: generic
-      name: TOOL_SUPPLY_CHAIN
-      description: "Run the FULL pre-configured pharmaceutical supply chain delivery route optimisation. Uses ALL pre-loaded data: 6 SF pharmacies, health demographics, drug formulary, and 3 specialist vehicles (cold chain, controlled substances, standard). Depot at 1 Market Street. Do NOT ask for data."
-      input_schema:
-        type: object
-        properties:
-          profile:
-            type: string
-            description: "Transport mode (default driving-car)"
-  - tool_spec:
-      type: generic
-      name: TOOL_INVENTORY_STATUS
-      description: "Get current inventory status across all pharmacies or a specific pharmacy. Returns critical/low stock alerts, near-expiry items (days_to_expiry < 30), overstocked drugs, and wastage analysis. Use for questions about: stock levels, wastage, expiry, critical shortages, overstocking."
-      input_schema:
-        type: object
-        properties:
-          pharmacy_name:
-            type: string
-            description: "Optional pharmacy name filter. Leave empty for all pharmacies."
-  - tool_spec:
-      type: generic
-      name: TOOL_DEMAND_FORECAST
-      description: "Get demographic-driven demand forecast for a specific pharmacy. Uses catchment population health data to calculate expected monthly drug demand. Returns forecast vs actual, stock gaps, days of cover. Use for: demand planning, product mix analysis, which drugs a pharmacy needs based on its local population."
-      input_schema:
-        type: object
-        properties:
-          pharmacy_name:
-            type: string
-            description: "Pharmacy name e.g. 'Walgreens Castro', 'CVS Geary', 'Mission'"
-          condition_filter:
-            type: string
-            description: "Optional condition filter: DIABETES, HYPERTENSION, CARDIOVASCULAR, RESPIRATORY, MOBILITY"
-        required: [pharmacy_name]
-  - tool_spec:
-      type: generic
-      name: TOOL_REPLENISHMENT_PLAN
-      description: "Generate a prioritised pharmaceutical replenishment and manufacturing plan. Groups by delivery type (cold chain first, then controlled, then standard). Returns units required per pharmacy per drug, order values, days until stockout. Use for: production planning, what to manufacture, dispatch orders, redistribution of expiring stock."
-      input_schema:
-        type: object
-        properties:
-          priority_filter:
-            type: string
-            description: "Optional filter: URGENT (stockouts imminent), STANDARD, or REVIEW. Leave empty for full plan."
-  - tool_spec:
-      type: generic
-      name: TOOL_WEATHER
-      description: "Get current Met Office weather conditions for the routing region. Returns temperature, wind speed, precipitation, visibility, humidity and routing advisory. Use before recommending cycling profiles or when asked about weather conditions."
-      input_schema:
-        type: object
-        properties:
-          region_name:
-            type: string
-            description: "Region name (e.g. SanFrancisco). Defaults to SanFrancisco."
-
-tool_resources:
-  TOOL_DIRECTIONS:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_ISOCHRONES:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_ROUTE_OPTIMIZATION:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_PHARMA_CATCHMENT:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_SUPPLY_CHAIN:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_INVENTORY_STATUS:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_DEMAND_FORECAST:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DEMAND_FORECAST
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_REPLENISHMENT_PLAN:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REPLENISHMENT_PLAN
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-  TOOL_WEATHER:
-    type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER
-    execution_environment:
-      type: warehouse
-      warehouse: ROUTING_ANALYTICS
-$$;
-
-GRANT USAGE ON AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT TO ROLE ACCOUNTADMIN;
-
--- =============================================================================
--- VERIFY
--- =============================================================================
-
-SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
-CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_INVENTORY_STATUS(NULL);

@@ -74,6 +74,42 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- ║ Owner: datasets/load-seed-data.sql                                         ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
+-- Populate SEED_DATA_STAGE with parquet files from workspace (required by load-seed-data.sql)
+CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/intro/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/intro/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_vehicle_telemetry/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/synthetic_ebikes/fact_vehicle_telemetry/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_trips/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/synthetic_ebikes/fact_trips/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/synthetic_ebikes/'
+FILES=('dim_fleet_0_0_0.snappy.parquet', 'dim_pois_0_0_0.snappy.parquet');
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/metadata/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/metadata/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/matrix/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/matrix_jobs/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/matrix_jobs/'
+PATTERN='.*\.parquet';
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/region_catalog/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/datasets/region_catalog/'
+PATTERN='.*\.parquet';
+
 -- Creates FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_FLEET, DIM_POIS, INTRO_TRIPS,
 -- REGION_REGISTRY, GENERATION_JOBS + loads parquet from @SEED_DATA_STAGE
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/datasets/load-seed-data.sql;

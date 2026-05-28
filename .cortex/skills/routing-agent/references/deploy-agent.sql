@@ -489,7 +489,12 @@ $$;
 ----------------------------------------------------------------------
 -- Grant access and register with Snowflake Intelligence
 ----------------------------------------------------------------------
-GRANT USAGE ON AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT TO ROLE ALL_AGENTS_ROLE;
+-- Grant to ALL_AGENTS_ROLE if it exists (non-blocking if role missing)
+BEGIN
+    GRANT USAGE ON AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT TO ROLE ALL_AGENTS_ROLE;
+EXCEPTION
+    WHEN OTHER THEN NULL;
+END;
 
 ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
 ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;

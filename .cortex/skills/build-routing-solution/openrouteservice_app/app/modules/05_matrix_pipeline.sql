@@ -1,5 +1,9 @@
 USE SCHEMA OPENROUTESERVICE_APP.CORE;   
 
+-- Schema for travel time matrix data (must exist before table creation)
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.TRAVEL_MATRIX
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR_W(P_REGION VARCHAR, P_PROFILE VARCHAR, P_ORIGIN ARRAY, P_DESTINATIONS ARRAY)
 RETURNS VARIANT
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix"}}'
