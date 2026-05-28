@@ -48,6 +48,12 @@ USE WAREHOUSE ROUTING_DEPLOY;
 -- ║ Owner: .cortex/skills/build-routing-solution/                              ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
+-- CRITICAL: Remove any ors-config.yml files that landed in deploy/ during bulk upload.
+-- The control app scans for *ors-config* and uses the parent folder as a region name.
+-- Only @stage/SanFrancisco/ors-config.yml should exist; stray copies create phantom regions.
+REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/ors-config.yml;
+REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml;
+
 -- Step 0: Install Overture Maps Marketplace datasets (Places, Addresses, Buildings)
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/00_marketplace_datasets.sql;
 
@@ -68,6 +74,13 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 
 -- Step 6: Matrix operations (GET_MATRIX_INVENTORY, LOAD_SEED_MATRIX, LOAD_SEED_CATALOG)
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/06_matrix_ops.sql;
+
+-- Seed REGION_ORS_MAP so the control app resolves SanFrancisco as the active region.
+-- The table is created by module 03 but not populated until a region is provisioned.
+-- Without this, the control app falls back to stage-scan which can pick up phantom regions.
+INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
+SELECT 'SanFrancisco', 'San Francisco', 37.70, 37.82, -122.52, -122.35, 'DEPLOYED'
+WHERE NOT EXISTS (SELECT 1 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = 'SanFrancisco');
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 2: SEED DATA (table schemas + parquet load)                          ║
