@@ -70,7 +70,7 @@ Then in order:
 | Issue | Module | Fix Applied |
 |-------|--------|-------------|
 | `VALUES` + `ARRAY_CONSTRUCT()` fails | 08 | Changed to `INSERT...SELECT...UNION ALL` |
-| Building footprints CTAS scans 2.5B rows (9 min) | 11, add-plant-map | Changed to VIEW + `ST_DWITHIN` (seconds, works globally) |
+| Building footprints CTAS scans 2.5B rows (9 min) | 11, add-plant-map | Changed to CTAS with per-plant UNION ALL + literal ST_MAKEPOINT (~30s). A VIEW with JOIN doesn't push ST_DWITHIN through the spatial index |
 | Correlated subquery not supported | 13 | Rewritten as CTE + `ROW_NUMBER()` |
 | `SELECT...INTO` invalid in SQL scripting | 13 | Changed to `LET v_result := (SELECT...)` |
 | SF_TOP_PHARMACIES not found | 13 | Moved `deploy-demo-data.sql` earlier in execution order |

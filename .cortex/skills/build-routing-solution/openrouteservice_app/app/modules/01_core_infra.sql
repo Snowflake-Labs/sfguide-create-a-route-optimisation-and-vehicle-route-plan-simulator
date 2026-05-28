@@ -37,6 +37,15 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
    -- All other statements use fully-qualified names.
    USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
+   -- File formats required by ORS Control App (agent-demos.json loading) and seed data
+   CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT
+     TYPE = JSON
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+   CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF
+     TYPE = PARQUET
+     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
    -- Pre-flight: verify ors_control_app image exists with expected tag
    -- If this fails, update ors_control_app_service.yaml to match available tag.
    -- SELECT * FROM (SHOW IMAGES IN IMAGE REPOSITORY OPENROUTESERVICE_APP.CORE.IMAGE_REPOSITORY)
