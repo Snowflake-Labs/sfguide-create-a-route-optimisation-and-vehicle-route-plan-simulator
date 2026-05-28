@@ -54,30 +54,9 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","phase":"E1"}}';
 
--- VW_OFFER_ENRICHED_V2 layers cached road-km on top of haversine.
--- Page reads should switch to this view; legacy VW_OFFER_ENRICHED is
--- kept untouched so Phase A/B keeps working until UI is migrated.
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql","phase":"E1"}}'
-AS
-SELECT
-  e.*,
-  fr.ROAD_KM,
-  fr.ROAD_MIN,
-  fr.GEOMETRY  AS ROUTE_GEOMETRY,
-  fr.PROFILE   AS ROUTE_PROFILE,
-  fr.COMPUTED_AT AS ROUTE_COMPUTED_AT,
-  CASE WHEN fr.ROAD_KM IS NOT NULL AND e.PRICE_USD IS NOT NULL AND fr.ROAD_KM > 0
-       THEN e.PRICE_USD / fr.ROAD_KM
-       ELSE e.PRICE_PER_KM_USD
-  END AS PRICE_PER_ROAD_KM_USD,
-  CASE WHEN fr.ROAD_KM IS NULL THEN 'PENDING_ROUTE'
-       WHEN fr.ROAD_KM > e.DISTANCE_KM * 1.6 THEN 'DETOUR_HEAVY'
-       WHEN fr.ROAD_KM > e.DISTANCE_KM * 1.3 THEN 'DETOUR_MODERATE'
-       ELSE 'DIRECT'
-  END AS ROUTE_DETOUR_BADGE
-FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED e
-LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr USING (OFFER_ID);
+-- Routed columns are merged into VW_OFFER_ENRICHED (see bootstrap.sql and
+-- init.ts). Re-run bootstrap.sql or container boot to refresh the view body.
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2;
 
 -- =====================================================================
 -- Phase E3: Deadhead matrix (idle trailer last-drop -> offer pickup)
@@ -183,7 +162,6 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{
 -- DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_DENSITY;
 -- DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_DEADHEAD;
 -- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DEADHEAD_MATRIX;
--- DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2;
 -- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES;
 -- The PROPOSAL_DECISIONS schema additions are not dropped automatically
 -- because backload-matching also reads the new columns.

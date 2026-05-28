@@ -4,7 +4,7 @@
 // existing read-only Freight Exchange page (Phase A/B).
 //
 // Routes:
-//   GET    /api/fx/enriched-offers     — VW_OFFER_ENRICHED_V2 with road km/min
+//   GET    /api/fx/enriched-offers     — VW_OFFER_ENRICHED
 //   POST   /api/fx/refresh-routes      — Batch DIRECTIONS for OPEN offers, populates FACT_OFFER_ROUTES (Phase E1)
 //   POST   /api/fx/eta                 — On-demand DIRECTIONS for trailer -> offer pickup (Phase E1/E2)
 //   POST   /api/fx/offer-route         — On-demand DIRECTIONS for offer pickup -> offer dropoff (map preview)
@@ -113,7 +113,7 @@ export function createFreightExchangeRouter(): Router {
   const router = Router();
 
   // -------------------------------------------------------------------------
-  // GET /api/fx/enriched-offers — read VW_OFFER_ENRICHED_V2
+  // GET /api/fx/enriched-offers — read VW_OFFER_ENRICHED
   // -------------------------------------------------------------------------
   router.get('/api/fx/enriched-offers', async (req, res) => {
     try {
@@ -121,7 +121,7 @@ export function createFreightExchangeRouter(): Router {
       const limit = sanitizeInt(req.query.limit ?? 500);
       const rows = await runSql(`
         SELECT *
-        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
         WHERE STATUS = 'OPEN'
         ORDER BY POSTED_AT DESC
         LIMIT ${limit}

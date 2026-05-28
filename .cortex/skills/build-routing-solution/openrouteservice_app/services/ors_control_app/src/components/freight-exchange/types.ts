@@ -1,7 +1,6 @@
 // Shared types for the Freight Exchange page and its sub-components.
-// Phase A + B fields are required; Phase E1-E8 enrichment fields are optional
-// so the same types work against deployments that haven't yet shipped
-// VW_OFFER_ENRICHED_V2.
+// Phase A + B fields are required; Phase E1 routed columns are optional
+// (null until POST /api/fx/refresh-routes populates FACT_OFFER_ROUTES).
 
 export interface Offer {
   OFFER_ID: string;
@@ -36,8 +35,7 @@ export interface Offer {
   MARKET_P75: number | null;
   PRICE_DELTA_PCT: number | null;
   MARKET_BADGE: 'UNKNOWN' | 'AT_MARKET' | 'BELOW_MARKET' | 'ABOVE_MARKET';
-  // Phase E1 enrichment (VW_OFFER_ENRICHED_V2). Optional — populated only when
-  // FACT_OFFER_ROUTES has a row for this OFFER_ID.
+  // Phase E1 routed columns — null until FACT_OFFER_ROUTES has a row for this OFFER_ID.
   ROAD_KM?: number | null;
   ROAD_MIN?: number | null;
   ROUTE_GEOMETRY?: string | null;

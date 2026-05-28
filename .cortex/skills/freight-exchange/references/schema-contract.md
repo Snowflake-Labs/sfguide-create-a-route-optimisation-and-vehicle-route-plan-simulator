@@ -46,6 +46,20 @@ When you change a column list, change BOTH. The init.ts copy is the authoritativ
 | PRICE_DELTA_PCT | FLOAT | derived | `(PRICE_PER_KM_USD - MARKET_P50) / MARKET_P50 * 100` |
 | **MARKET_BADGE** | VARCHAR | derived | UNKNOWN / AT_MARKET / BELOW_MARKET / ABOVE_MARKET (within +/-5% = AT_MARKET) |
 
+## Routed columns (populated by `POST /api/fx/refresh-routes`)
+
+These columns come from `LEFT JOIN FACT_OFFER_ROUTES` on `OFFER_ID`. They are null until the batch refresh endpoint has cached an ORS DIRECTIONS result for the offer.
+
+| Column | Type | Source | Notes |
+|---|---|---|---|
+| ROAD_KM | FLOAT | FACT_OFFER_ROUTES | ORS road distance (km) |
+| ROAD_MIN | FLOAT | FACT_OFFER_ROUTES | ORS drive time (minutes) |
+| ROUTE_GEOMETRY | VARCHAR | FACT_OFFER_ROUTES.GEOMETRY | GeoJSON LineString |
+| ROUTE_PROFILE | VARCHAR(20) | FACT_OFFER_ROUTES | driving-hgv / driving-car |
+| ROUTE_COMPUTED_AT | TIMESTAMP_NTZ | FACT_OFFER_ROUTES | Last DIRECTIONS cache time |
+| PRICE_PER_ROAD_KM_USD | FLOAT | derived | `PRICE_USD / ROAD_KM` when routed, else `PRICE_PER_KM_USD` |
+| ROUTE_DETOUR_BADGE | VARCHAR | derived | PENDING_ROUTE / DIRECT / DETOUR_MODERATE / DETOUR_HEAVY |
+
 ## Trust badge tier rules
 
 | Badge | Condition |

@@ -374,6 +374,21 @@ export async function ensureBackloadAndAssetVelocityObjects(
               ADD COLUMN IF NOT EXISTS NET_BENEFIT_EUR FLOAT`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+              ADD COLUMN IF NOT EXISTS SOURCE_PAGE VARCHAR(40)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+              ADD COLUMN IF NOT EXISTS DECISION_TYPE VARCHAR(40)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
+    {
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+              ADD COLUMN IF NOT EXISTS BUNDLE_ID VARCHAR`,
+      db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
+    },
     // Asset Velocity views (ROUTE_OPTIMIZATION) — ensure CONFIG has the
     // cost-of-idleness columns then deploy the four vehicle-type-aware views.
     //
@@ -666,6 +681,32 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DEADHEAD_MATRIX (
+        TRAILER_ID   VARCHAR NOT NULL,
+        OFFER_ID     VARCHAR NOT NULL,
+        ROAD_KM      FLOAT,
+        ROAD_MIN     FLOAT,
+        COMPUTED_AT  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        CONSTRAINT PK_FACT_DEADHEAD_MATRIX PRIMARY KEY (TRAILER_ID, OFFER_ID)
+      ) COMMENT = ${TRACK_FX}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.OFFER_DRAFTS (
+        DRAFT_ID         VARCHAR DEFAULT UUID_STRING() NOT NULL,
+        OFFER_ID         VARCHAR NOT NULL,
+        DISPATCHER_ID    VARCHAR,
+        DRAFT_TEXT       VARCHAR,
+        SUGGESTED_USD    FLOAT,
+        PROMPT_CONTEXT   VARIANT,
+        MODEL            VARCHAR(60),
+        CREATED_AT       TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+        ACCEPTED         BOOLEAN DEFAULT FALSE,
+        CONSTRAINT PK_OFFER_DRAFTS PRIMARY KEY (DRAFT_ID)
+      ) COMMENT = ${TRACK_FX}`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
     // -----------------------------------------------------------------
     // Dataset-versioning projection views ("CURRENT" = active dataset only)
     // -----------------------------------------------------------------
@@ -882,6 +923,33 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_DENSITY
+        COMMENT = ${TRACK_FX}
+        AS
+        WITH lane_midpoints AS (
+          SELECT
+            h.PARTNER_ID,
+            h.EQUIPMENT,
+            h.SHIPPED_AT,
+            o.PICKUP_LON, o.PICKUP_LAT,
+            o.DROPOFF_LON, o.DROPOFF_LAT
+          FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY h
+          LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
+            ON o.PARTNER_ID = h.PARTNER_ID
+        )
+        SELECT
+          H3_POINT_TO_CELL_STRING(
+            ST_MAKEPOINT((PICKUP_LON + DROPOFF_LON) / 2, (PICKUP_LAT + DROPOFF_LAT) / 2),
+            5
+          ) AS H3_CELL,
+          EQUIPMENT,
+          COUNT(*) AS SHIPMENT_COUNT
+        FROM lane_midpoints
+        WHERE PICKUP_LON IS NOT NULL AND DROPOFF_LON IS NOT NULL
+        GROUP BY 1, 2`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
       sql: `CREATE OR REPLACE DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX
         TARGET_LAG = '15 minutes'
         WAREHOUSE = ROUTING_ANALYTICS
@@ -910,44 +978,35 @@ export async function ensureBackloadAndAssetVelocityObjects(
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
         COMMENT = ${TRACK_FX}
         AS
-        SELECT
-          o.*,
-          p.NAME             AS PARTNER_NAME,
-          p.COUNTRY          AS PARTNER_COUNTRY,
-          p.CREDIT_SCORE     AS PARTNER_CREDIT_SCORE,
-          p.PAYMENT_DAYS_AVG AS PARTNER_PAYMENT_DAYS,
-          p.KYC_STATUS       AS PARTNER_KYC,
-          p.BLACKLIST_FLAG   AS PARTNER_BLACKLIST,
-          p.TRUST_BADGE      AS TRUST_BADGE,
-          ri.P25_USD_PER_KM  AS MARKET_P25,
-          ri.P50_USD_PER_KM  AS MARKET_P50,
-          ri.P75_USD_PER_KM  AS MARKET_P75,
-          CASE
-            WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN NULL
-            ELSE ROUND((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM * 100, 1)
-          END AS PRICE_DELTA_PCT,
-          CASE
-            WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN 'UNKNOWN'
-            WHEN ABS((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM) <= 0.05 THEN 'AT_MARKET'
-            WHEN o.PRICE_PER_KM_USD < ri.P50_USD_PER_KM THEN 'BELOW_MARKET'
-            ELSE 'ABOVE_MARKET'
-          END AS MARKET_BADGE
-        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
-        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS p ON p.PARTNER_ID = o.PARTNER_ID
-        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX ri
-          ON ri.EQUIPMENT = o.EQUIPMENT
-         AND ri.WEEK = DATE_TRUNC('week', o.POSTED_AT)`,
-      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
-    },
-    {
-      // Recreated on every boot so the column count stays in sync with any
-      // upstream additions to VW_OFFERS / VW_OFFER_ENRICHED (e.g. JOB_ID).
-      // Original DDL lives in .cortex/skills/freight-exchange/references/
-      // bootstrap-enrichment.sql; mirrored here to self-heal after upstream
-      // ALTERs that would otherwise invalidate the frozen view column list.
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2
-        COMMENT = ${TRACK_FX}
-        AS
+        WITH e AS (
+          SELECT
+            o.*,
+            p.NAME             AS PARTNER_NAME,
+            p.COUNTRY          AS PARTNER_COUNTRY,
+            p.CREDIT_SCORE     AS PARTNER_CREDIT_SCORE,
+            p.PAYMENT_DAYS_AVG AS PARTNER_PAYMENT_DAYS,
+            p.KYC_STATUS       AS PARTNER_KYC,
+            p.BLACKLIST_FLAG   AS PARTNER_BLACKLIST,
+            p.TRUST_BADGE      AS TRUST_BADGE,
+            ri.P25_USD_PER_KM  AS MARKET_P25,
+            ri.P50_USD_PER_KM  AS MARKET_P50,
+            ri.P75_USD_PER_KM  AS MARKET_P75,
+            CASE
+              WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN NULL
+              ELSE ROUND((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM * 100, 1)
+            END AS PRICE_DELTA_PCT,
+            CASE
+              WHEN ri.P50_USD_PER_KM IS NULL OR o.PRICE_PER_KM_USD IS NULL THEN 'UNKNOWN'
+              WHEN ABS((o.PRICE_PER_KM_USD - ri.P50_USD_PER_KM) / ri.P50_USD_PER_KM) <= 0.05 THEN 'AT_MARKET'
+              WHEN o.PRICE_PER_KM_USD < ri.P50_USD_PER_KM THEN 'BELOW_MARKET'
+              ELSE 'ABOVE_MARKET'
+            END AS MARKET_BADGE
+          FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
+          LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS p ON p.PARTNER_ID = o.PARTNER_ID
+          LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX ri
+            ON ri.EQUIPMENT = o.EQUIPMENT
+           AND ri.WEEK = DATE_TRUNC('week', o.POSTED_AT)
+        )
         SELECT
           e.*,
           fr.ROAD_KM,
@@ -964,8 +1023,41 @@ export async function ensureBackloadAndAssetVelocityObjects(
                WHEN fr.ROAD_KM > e.DISTANCE_KM * 1.3 THEN 'DETOUR_MODERATE'
                ELSE 'DIRECT'
           END AS ROUTE_DETOUR_BADGE
-        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED e
+        FROM e
         LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr USING (OFFER_ID)`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_DEADHEAD
+        COMMENT = ${TRACK_FX}
+        AS
+        WITH ranked AS (
+          SELECT
+            dm.OFFER_ID,
+            dm.TRAILER_ID,
+            dm.ROAD_KM   AS DEADHEAD_KM,
+            dm.ROAD_MIN  AS DEADHEAD_MIN,
+            dm.COMPUTED_AT,
+            ROW_NUMBER() OVER (PARTITION BY dm.OFFER_ID ORDER BY dm.ROAD_KM ASC) AS BEST_RANK
+          FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_DEADHEAD_MATRIX dm
+        )
+        SELECT
+          o.OFFER_ID,
+          o.PARTNER_ID,
+          o.PICKUP_CITY,
+          o.DROPOFF_CITY,
+          o.PRICE_USD,
+          r.TRAILER_ID         AS BEST_TRAILER_ID,
+          r.DEADHEAD_KM        AS BEST_DEADHEAD_KM,
+          r.DEADHEAD_MIN       AS BEST_DEADHEAD_MIN,
+          r.COMPUTED_AT        AS BEST_COMPUTED_AT
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED o
+        LEFT JOIN ranked r
+          ON r.OFFER_ID = o.OFFER_ID AND r.BEST_RANK = 1`,
+      db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
+    },
+    {
+      sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
   ];

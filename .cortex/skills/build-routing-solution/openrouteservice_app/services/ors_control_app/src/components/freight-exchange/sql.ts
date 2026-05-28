@@ -10,10 +10,9 @@ import { postOfferRoute } from './api';
 import { parseRouteGeometry } from './helpers';
 import type { Offer, LaneRow, Trailer } from './types';
 
-/** Loads VW_OFFER_ENRICHED_V2 — same shape as V1 plus ROAD_KM/ROAD_MIN/
- *  ROUTE_GEOMETRY/ROUTE_DETOUR_BADGE for offers that have been batch-routed
- *  via POST /api/fx/refresh-routes. Optional columns stay null for offers
- *  that haven't been routed yet. */
+/** Loads VW_OFFER_ENRICHED. Includes ROAD_KM/ROAD_MIN/ROUTE_GEOMETRY/
+ *  ROUTE_DETOUR_BADGE for offers batch-routed via POST /api/fx/refresh-routes;
+ *  those columns stay null for offers that haven't been routed yet. */
 export function useOffers() {
   const [rows, setRows] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -25,7 +24,7 @@ export function useOffers() {
     let cancelled = false;
     setLoading(true);
     sfQuery(
-      `SELECT * FROM ${FX_DB}.${FX_SCHEMA}.VW_OFFER_ENRICHED_V2 ORDER BY POSTED_AT DESC LIMIT 500`,
+      `SELECT * FROM ${FX_DB}.${FX_SCHEMA}.VW_OFFER_ENRICHED ORDER BY POSTED_AT DESC LIMIT 500`,
       FX_DB, FX_SCHEMA,
     ).then(r => {
       if (cancelled) return;

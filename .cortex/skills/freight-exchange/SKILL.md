@@ -114,7 +114,7 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX REFRESH;
 |-------|--------|-------|
 | A     | shipped | Browse + filter shell, grid + map + detail drawer |
 | B     | shipped | Trust badge, market-rate badge, partner lane-history tooltip |
-| E1    | shipped (server) | ORS road km/min cache (`FACT_OFFER_ROUTES`, `VW_OFFER_ENRICHED_V2`); endpoints `POST /api/fx/refresh-routes`, `POST /api/fx/eta` |
+| E1    | shipped (server) | ORS road km/min cache (`FACT_OFFER_ROUTES`, routed columns on `VW_OFFER_ENRICHED`); endpoints `POST /api/fx/refresh-routes`, `POST /api/fx/eta` |
 | E2    | shipped (server) | Reachability isochrone via `POST /api/fx/isochrone` |
 | E3    | shipped (server) | Deadhead matrix vs. `BACKLOAD_MATCHING.VW_TRAILERS` (`FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`); endpoints `GET /api/fx/deadhead`, `POST /api/fx/refresh-deadhead` |
 | E4    | shipped (server) | Round-trip 1-vehicle/2-shipment VROOM via `POST /api/fx/round-trip` |
@@ -130,20 +130,22 @@ ALTER DYNAMIC TABLE FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX REFRESH;
 
 ## Enrichment Bootstrap (E1–E8)
 
-To deploy the new objects:
+Phase E1–E8 MARKETPLACE objects (`FACT_OFFER_ROUTES`, `FACT_DEADHEAD_MATRIX`, `VW_OFFER_DEADHEAD`, `VW_LANE_DENSITY`, `OFFER_DRAFTS`, routed columns on `VW_OFFER_ENRICHED`, and `PROPOSAL_DECISIONS` discriminator columns) are created automatically on every `ors_control_app` container boot via `init.ts`. No manual SQL step is required for a normal deploy.
+
+For greenfield audits or out-of-band rebuilds, run:
 
 ```bash
+snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_CONNECTION>
 snow sql -f .cortex/skills/freight-exchange/references/bootstrap-enrichment.sql -c <ACTIVE_CONNECTION>
 ```
 
-Then rebuild + redeploy the `ors_control_app` image per the `Control App Image Deployment` block in `AGENTS.md` so the new `/api/fx/*` endpoints land.
+Then rebuild + redeploy the `ors_control_app` image per the `Control App Image Deployment` block in `AGENTS.md` so the `/api/fx/*` endpoints land.
 
 ## Cleanup
 
 ```sql
 -- Phase E1-E8 enrichment objects
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.OFFER_DRAFTS;
-DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_COMPLIANCE;
 DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_DENSITY;
 DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_DEADHEAD;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DEADHEAD_MATRIX;
