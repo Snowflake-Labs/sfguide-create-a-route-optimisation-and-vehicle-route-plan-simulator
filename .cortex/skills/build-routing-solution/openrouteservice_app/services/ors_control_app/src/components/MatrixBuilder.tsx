@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { MatrixJob, MatrixInventoryItem, RegionInfo } from '../types';
-import { RES_LABELS, RES_CUTOFFS, ROUTING_PROFILES } from '../types';
+import { RES_LABELS, RES_CUTOFFS } from '../types';
 import { safeFetchJson } from '../utils/safeFetch';
 import {
   RATE_PAIRS_PER_SEC, CREDIT_PER_HOUR_SMALL, ALL_RESOLUTIONS,
@@ -8,6 +8,7 @@ import {
   formatNumber, formatDuration, formatBytes, timeAgo,
   STAGE_STEPS, getStageIndex, RoadFilterBadge,
 } from './matrix-builder/helpers';
+import { PROFILE_LABELS } from './function-tester/helpers';
 import { useActivePreset } from '../hooks/useActivePreset';
 import PresetRoutingControls from '../shared/PresetRoutingControls';
 
@@ -17,6 +18,8 @@ export default function MatrixBuilder() {
   const [loadingRegions, setLoadingRegions] = useState(true);
   const [selectedRegion, setSelectedRegion] = useState<string>('');
   const [selectedProfile, setSelectedProfile] = useState<string>(preset.orsProfile);
+  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
   const [selectedRes, setSelectedRes] = useState<Set<number>>(new Set([7, 8, 9]));
   const [jobs, setJobs] = useState<MatrixJob[]>([]);
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
@@ -58,6 +61,39 @@ export default function MatrixBuilder() {
     if (ok && data) setInventory(data.inventory || []);
   }, []);
 
+  const fetchProfiles = useCallback(async (region: string) => {
+    if (!region) {
+      setAvailableProfiles([]);
+      return;
+    }
+    setProfilesLoading(true);
+    try {
+      const resp = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `SELECT CORE.ORS_STATUS('${region.replace(/'/g, "''")}')` }),
+      });
+      const data = await resp.json();
+      if (data.result?.[0]) {
+        const raw = Object.values(data.result[0])[0];
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed?.profiles && typeof parsed.profiles === 'object') {
+          const names = Object.keys(parsed.profiles).filter((p: string) => parsed.profiles[p]?.encoder_name);
+          if (names.length > 0) {
+            setAvailableProfiles(names);
+            if (!names.includes(selectedProfile)) {
+              setSelectedProfile(names[0]);
+            }
+            setProfilesLoading(false);
+            return;
+          }
+        }
+      }
+    } catch {}
+    setAvailableProfiles([]);
+    setProfilesLoading(false);
+  }, [selectedProfile]);
+
   useEffect(() => {
     fetchRegions();
     fetchJobs();
@@ -82,6 +118,11 @@ export default function MatrixBuilder() {
     if (preset.region) setSelectedRegion(preset.region);
     if (preset.orsProfile) setSelectedProfile(preset.orsProfile);
   }, [preset.region, preset.orsProfile, preset.loading]);
+
+  useEffect(() => {
+    if (!selectedRegion) return;
+    void fetchProfiles(selectedRegion);
+  }, [selectedRegion, fetchProfiles]);
 
   useEffect(() => {
     if (!roadFilterEnabled || !roadFilterAvailable || !selectedRegion || selectedRes.size === 0) {
@@ -340,7 +381,7 @@ export default function MatrixBuilder() {
         </>
       )}
 
-      <h3>{inventory.length > 0 || activeJobs.length > 0 ? 'New Build' : '1. Select Region'}</h3>
+      <h3>{inventory.length > 0 || activeJobs.length > 0 ? 'New Build' : 'Region & Routing Profile'}</h3>
       {!loadingRegions && readyRegions.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <PresetRoutingControls
@@ -351,7 +392,13 @@ export default function MatrixBuilder() {
               setSelectedProfile(profile);
             }}
             regions={readyRegions.map((r) => ({ value: r.region, label: r.label }))}
-            profiles={ROUTING_PROFILES.map((p) => ({ value: p, label: p }))}
+            profiles={
+              profilesLoading
+                ? [{ value: selectedProfile, label: 'Loading...' }]
+                : availableProfiles.length > 0
+                  ? availableProfiles.map((p) => ({ value: p, label: PROFILE_LABELS[p] || p }))
+                  : [{ value: selectedProfile, label: PROFILE_LABELS[selectedProfile] || selectedProfile }]
+            }
           />
         </div>
       )}
@@ -359,35 +406,10 @@ export default function MatrixBuilder() {
         <div className="loading-text">Checking provisioned ORS regions...</div>
       ) : readyRegions.length === 0 ? (
         <div className="empty-state">No ORS regions provisioned. Use the Cities tab to deploy a region first.</div>
-      ) : (
-        <div className="region-grid">
-          {readyRegions.map((r) => (
-            <button key={r.region} className={`region-card ${selectedRegion === r.region ? 'active' : ''}`} onClick={() => setSelectedRegion(r.region)}>
-              <span className={`dot ${r.serviceStatus === 'RUNNING' ? 'green' : 'yellow'}`} />
-              <div>
-                <div className="region-name">{r.label}</div>
-                <div className="region-detail">ORS {r.serviceStatus}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
+      ) : null}
 
       {region && (
         <>
-          <h3>Routing Profile</h3>
-          <div className="region-grid">
-            {ROUTING_PROFILES.map((p) => (
-              <button
-                key={p}
-                className={`region-card ${selectedProfile === p ? 'active' : ''}`}
-                onClick={() => setSelectedProfile(p)}
-              >
-                <div className="region-name">{p}</div>
-              </button>
-            ))}
-          </div>
-
           <h3>Road-Aware Filtering</h3>
           <label
             className={`res-card ${roadFilterEnabled && roadFilterAvailable ? 'active' : ''}`}
