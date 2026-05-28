@@ -148,6 +148,11 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- Owner: .cortex/skills/add-fleet-analytics/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-fleet-analytics/references/deploy-fleet-analytics.sql;
 
+-- Routing Agent tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONES, TOOL_ROUTE_OPTIMIZATION, TOOL_PHARMA_CATCHMENT)
+-- MUST run BEFORE configure-agent.sql (agent references these procedures)
+-- Owner: .cortex/skills/routing-agent/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/routing-agent/references/deploy-agent.sql;
+
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 5: AGENT + STREAMLIT (created LAST — references all tools/views)     ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
