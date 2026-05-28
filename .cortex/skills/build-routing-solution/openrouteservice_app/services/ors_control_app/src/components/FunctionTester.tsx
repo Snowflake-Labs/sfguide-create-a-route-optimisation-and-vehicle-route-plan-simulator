@@ -66,6 +66,8 @@ export default function FunctionTester() {
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
   const userEditedRef = useRef(false);
+  const lastPresetRegionRef = useRef<string | null>(null);
+  const lastPresetProfileRef = useRef<string | null>(null);
 
   const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
     if (!COORD_FUNCTIONS.includes(fnName)) {
@@ -139,6 +141,8 @@ export default function FunctionTester() {
         if (def) {
           setSelectedRegion(def);
           setSelectedProfile(initProfile);
+          lastPresetRegionRef.current = preset.region;
+          lastPresetProfileRef.current = initProfile;
           let roads: [number, number][] | null = null;
           if (probeOvertureOk && def.bbox) {
             const r = await fetchRoadPoints(def.bbox, initProfile, { region: def.region });
@@ -230,19 +234,20 @@ export default function FunctionTester() {
   }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
 
   useEffect(() => {
-    if (preset.loading || regions.length === 0) return;
+    if (preset.loading || regions.length === 0 || !preset.region) return;
+    if (lastPresetRegionRef.current === preset.region) return;
+    lastPresetRegionRef.current = preset.region;
     const match = regions.find((c) => c.region === preset.region);
-    if (match && selectedRegion?.region !== match.region) {
-      void onRegionChange(match.region);
-    }
-  }, [preset.region, preset.loading, regions.length, onRegionChange, selectedRegion?.region]);
+    if (match) void onRegionChange(match.region);
+  }, [preset.region, preset.loading, regions, onRegionChange]);
 
   useEffect(() => {
     if (preset.loading || !preset.orsProfile) return;
-    if (selectedProfile === preset.orsProfile) return;
+    if (lastPresetProfileRef.current === preset.orsProfile) return;
     if (availableProfiles.length > 0 && !availableProfiles.includes(preset.orsProfile)) return;
+    lastPresetProfileRef.current = preset.orsProfile;
     void onProfileChange(preset.orsProfile);
-  }, [preset.orsProfile, preset.loading, availableProfiles, onProfileChange, selectedProfile]);
+  }, [preset.orsProfile, preset.loading, availableProfiles, onProfileChange]);
 
   const handleReshuffle = useCallback(async () => {
     userEditedRef.current = false;
