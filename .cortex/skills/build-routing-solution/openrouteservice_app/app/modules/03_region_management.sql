@@ -1154,6 +1154,17 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     tc = thread_config.get(p_compute_size, thread_config['XXL'])
 
     profiles_list = [p.strip() for p in p_profiles.split(',') if p.strip()]
+    # Parallel graph load on resume: one init thread per enabled profile, capped by
+    # compute tier RAM (S-tier 2G heap OOMs with init_threads=3 — see friction log).
+    profile_count = max(len(profiles_list), 1)
+    cs = (p_compute_size or 'S').upper()
+    if cs == 'S':
+        init_cap = 2
+    elif cs == 'L':
+        init_cap = 4
+    else:
+        init_cap = 8
+    init_threads = min(profile_count, init_cap)
     all_profiles = [
         'driving-car', 'driving-hgv', 'cycling-regular', 'cycling-road',
         'cycling-mountain', 'cycling-electric', 'foot-walking', 'foot-hiking', 'wheelchair'
@@ -1174,6 +1185,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     lines = [
         'ors:',
         '  engine:',
+        '    init_threads: ' + str(init_threads),
         '    profile_default:',
         '      build:',
         '        source_file: /home/ors/files/' + p_pbf_file,
@@ -1220,7 +1232,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         os.unlink(config_path)
         os.rmdir(tmpdir)
 
-    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', threads: init=' + str(tc['init_threads']) + ' ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads'])
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ')'
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
@@ -2507,6 +2519,57 @@ $$;
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK RESUME;
 
 -- ===========================================================================
+-- Idempotent migration: re-stage ors-config.yml with init_threads for every
+-- DEPLOYED region so the next suspend/resume loads profiles in parallel.
+-- Does not ALTER SERVICE — config is picked up on the next container start.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"migration","init_threads":true}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    regions_processed INTEGER DEFAULT 0;
+    msg VARCHAR DEFAULT '';
+    profiles VARCHAR DEFAULT '';
+    pbf_file VARCHAR DEFAULT '';
+BEGIN
+    rs := (
+        SELECT REGION, PBF_URL, COALESCE(COMPUTE_SIZE, 'S') AS COMPUTE_SIZE
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE STATUS = 'DEPLOYED'
+    );
+    LET c_reg CURSOR FOR rs;
+    FOR r IN c_reg DO
+        LET reg VARCHAR := r.REGION;
+        LET reg_pbf_url VARCHAR := r.PBF_URL;
+        LET reg_compute VARCHAR := r.COMPUTE_SIZE;
+        profiles := (
+            SELECT PROFILES
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE REGION = :reg AND STATUS = 'COMPLETE'
+            ORDER BY COMPLETED_AT DESC NULLS LAST
+            LIMIT 1
+        );
+        IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            profiles := 'driving-car,driving-hgv,cycling-electric';
+        END IF;
+        pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
+        IF (pbf_file = '' OR pbf_file IS NULL) THEN
+            pbf_file := :reg || '.osm.pbf';
+        END IF;
+        CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:reg, :pbf_file, :profiles, :reg_compute);
+        regions_processed := regions_processed + 1;
+        msg := msg || :reg || '; ';
+    END FOR;
+    RETURN 'REROLL_ORS_CONFIG_INIT_THREADS: updated ' || regions_processed || ' region(s): ' || msg;
+END;
+$$;
+
+-- ===========================================================================
 -- v1.1.0 — Bootstrap default region (SanFrancisco) using the same per-region
 -- service-creation procs used for every other region. Replaces the legacy
 -- global ORS_SERVICE/VROOM_SERVICE create-statements that lived in
@@ -2540,4 +2603,5 @@ BEGIN
 END;
 $$;
 
+CALL OPENROUTESERVICE_APP.CORE.REROLL_ORS_CONFIG_INIT_THREADS();
 CALL OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION();
