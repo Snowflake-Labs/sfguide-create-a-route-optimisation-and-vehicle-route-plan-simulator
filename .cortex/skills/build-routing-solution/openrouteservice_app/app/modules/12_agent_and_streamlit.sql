@@ -76,8 +76,13 @@ instructions:
     ROUTING: directions=TOOL_DIRECTIONS, isochrone=TOOL_ISOCHRONES, VRP=TOOL_ROUTE_OPTIMIZATION
     WEATHER: conditions=TOOL_WEATHER
     PLANT OPS: single plant or ALL plants=TOOL_PLANT_IMPACT, create=TOOL_CREATE_PLANT, remove=TOOL_REMOVE_PLANT
+    FLEET ANALYTICS: trip counts, distances, speeds, battery, hourly demand = fleet_analytics (Cortex Analyst)
     For robot fleet health across ALL plants, call TOOL_PLANT_IMPACT('ALL')
 tools:
+  - tool_spec:
+      type: cortex_analyst
+      name: fleet_analytics
+      description: "Fleet trip and telemetry analytics — trip counts, distances, durations, speeds, battery levels, vehicle comparison, hourly patterns, busiest POIs. Use for any data/analytics question about the fleet."
   - tool_spec:
       type: generic
       name: TOOL_DIRECTIONS
@@ -179,6 +184,9 @@ tools:
         properties:
           priority_filter: {type: string, description: "URGENT, HIGH, or MEDIUM. Omit for all."}
 tool_resources:
+  fleet_analytics:
+    type: semantic_view
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
   TOOL_DIRECTIONS:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
