@@ -31,8 +31,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TRIPS_SV
     FACTS (
         trips.DISTANCE_KM AS DISTANCE_KM COMMENT = 'Trip distance km',
         trips.DURATION_MINUTES AS DURATION_MINUTES COMMENT = 'Trip duration minutes',
-        trips.DETOUR_DISTANCE_KM AS DETOUR_DISTANCE_KM COMMENT = 'Extra distance from detour km',
-        fleet.CAPACITY_KG AS CAPACITY_KG COMMENT = 'Vehicle capacity kg'
+        trips.DETOUR_DISTANCE_KM AS DETOUR_DISTANCE_KM COMMENT = 'Extra distance from detour km'
     )
     DIMENSIONS (
         trips.TRIP_ID AS TRIP_ID COMMENT = 'Trip identifier',
@@ -43,7 +42,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TRIPS_SV
         trips.ORS_PROFILE AS ORS_PROFILE WITH SYNONYMS = ('routing mode') COMMENT = 'Routing profile',
         trips.TRIP_START AS TRIP_START WITH SYNONYMS = ('start time', 'date', 'when', 'hour of day') COMMENT = 'Trip start timestamp',
         fleet.REGION AS REGION WITH SYNONYMS = ('city', 'area', 'location') COMMENT = 'Geographic region: SanFrancisco Cambridge Barcelona',
-        fleet.VEHICLE_NAME AS VEHICLE_NAME WITH SYNONYMS = ('courier', 'driver', 'vehicle') COMMENT = 'Vehicle name',
+        fleet.DRIVER_PROFILE AS DRIVER_PROFILE WITH SYNONYMS = ('courier', 'driver', 'vehicle') COMMENT = 'Driver profile type',
         pois.NAME AS NAME WITH SYNONYMS = ('pickup', 'restaurant', 'origin', 'start location') COMMENT = 'Origin point of interest name',
         pois.LOCATION_TYPE AS LOCATION_TYPE WITH SYNONYMS = ('pickup type', 'origin type') COMMENT = 'RESTAURANT WAREHOUSE REST_STOP',
         pois.CATEGORY AS CATEGORY WITH SYNONYMS = ('cuisine', 'food type') COMMENT = 'POI category'
@@ -78,7 +77,8 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TRIPS_SV
         QUESTION 'Which pickup locations have the most orders?'
         SQL 'SELECT p.NAME, p.LOCATION_TYPE, COUNT(t.TRIP_ID) AS ORDERS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON t.ORIGIN_POI_ID = p.LOCATION_ID GROUP BY p.NAME, p.LOCATION_TYPE ORDER BY ORDERS DESC LIMIT 10'
       )
-    )
+    );
+
 SELECT 'FLEET_TRIPS_SV created' AS STATUS,
        COUNT(*) AS FACT_TRIP_ROWS
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;
@@ -117,7 +117,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TELEMETRY_SV
         telemetry.IS_HOS_VIOLATION AS IS_HOS_VIOLATION WITH SYNONYMS = ('hos violation', 'hours of service', 'compliance') COMMENT = 'Hours-of-service violation',
         telemetry.IS_DETOUR AS IS_DETOUR WITH SYNONYMS = ('off route', 'deviation') COMMENT = 'Whether off planned route',
         telemetry.TS AS TS WITH SYNONYMS = ('timestamp', 'time', 'when') COMMENT = 'Reading timestamp',
-        fleet.VEHICLE_NAME AS VEHICLE_NAME WITH SYNONYMS = ('courier', 'driver') COMMENT = 'Vehicle name'
+        fleet.DRIVER_PROFILE AS DRIVER_PROFILE WITH SYNONYMS = ('courier', 'driver') COMMENT = 'Driver profile type'
     )
     METRICS (
         TOTAL_READINGS AS COUNT(telemetry.TELEMETRY_ID) WITH SYNONYMS = ('readings', 'records') COMMENT = 'Total telemetry readings',
@@ -143,9 +143,10 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.PUBLIC.FLEET_TELEMETRY_SV
       ),
       speeding_by_vehicle AS (
         QUESTION 'Which couriers have the most speed violations?'
-        SQL 'SELECT t.VEHICLE_ID, f.VEHICLE_NAME, ROUND(100.0*SUM(CASE WHEN t.IS_SPEEDING THEN 1 ELSE 0 END)/COUNT(*),1) AS SPEEDING_RATE_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f ON t.VEHICLE_ID=f.VEHICLE_ID GROUP BY t.VEHICLE_ID, f.VEHICLE_NAME ORDER BY SPEEDING_RATE_PCT DESC LIMIT 10'
+        SQL 'SELECT t.VEHICLE_ID, ROUND(100.0*SUM(CASE WHEN t.IS_SPEEDING THEN 1 ELSE 0 END)/COUNT(*),1) AS SPEEDING_RATE_PCT FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t GROUP BY t.VEHICLE_ID ORDER BY SPEEDING_RATE_PCT DESC LIMIT 10'
       )
-    )
+    );
+
 SELECT 'FLEET_TELEMETRY_SV created' AS STATUS,
        COUNT(*) AS TELEMETRY_ROWS
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;
