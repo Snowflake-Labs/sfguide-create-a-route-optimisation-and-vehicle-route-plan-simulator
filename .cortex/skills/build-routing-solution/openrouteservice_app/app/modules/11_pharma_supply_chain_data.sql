@@ -103,24 +103,20 @@ FROM base;
 
 -- ============================================================
 -- PLANT_BUILDING_FOOTPRINTS (from Overture Maps Buildings)
+-- VIEW using ST_DWITHIN for spatial-index pruning (works globally
+-- for any plant location without re-materialization). 900m radius
+-- matches the original ±0.008° bounding box (~890m at 37°N).
 -- ============================================================
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANT_BUILDING_FOOTPRINTS
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-add-plant-map","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
-WITH PLANT_BOUNDS AS (
-    SELECT PLANT_ID, PLANT_NAME, PLANT_CODE, LATITUDE, LONGITUDE,
-        LONGITUDE - 0.008 AS MIN_LON, LONGITUDE + 0.008 AS MAX_LON,
-        LATITUDE - 0.008 AS MIN_LAT, LATITUDE + 0.008 AS MAX_LAT
-    FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS
-)
 SELECT p.PLANT_ID, p.PLANT_NAME, p.PLANT_CODE, b.ID AS OVERTURE_ID,
     ST_ASGEOJSON(b.GEOMETRY) AS GEOJSON, TRY_PARSE_JSON(b.NAMES):primary::STRING AS BUILDING_NAME,
     b.CLASS, b.HEIGHT, 'BUILDING' AS FOOTPRINT_TYPE
-FROM PLANT_BOUNDS p
+FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PLANTS p
 JOIN OVERTURE_MAPS__BUILDINGS.CARTO.BUILDING b
-  ON b.BBOX:xmin::FLOAT >= p.MIN_LON AND b.BBOX:xmax::FLOAT <= p.MAX_LON
- AND b.BBOX:ymin::FLOAT >= p.MIN_LAT AND b.BBOX:ymax::FLOAT <= p.MAX_LAT
- AND b.GEOMETRY IS NOT NULL;
+  ON ST_DWITHIN(b.GEOMETRY, ST_MAKEPOINT(p.LONGITUDE, p.LATITUDE), 900)
+WHERE b.GEOMETRY IS NOT NULL;
 
 -- ============================================================
 -- VIEWS (depend on footprints + supply chain tables)

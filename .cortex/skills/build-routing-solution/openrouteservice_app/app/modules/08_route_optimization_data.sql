@@ -74,38 +74,38 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     SOURCE_TABLE STRING DEFAULT NULL, DEPOT_CTYPE ARRAY DEFAULT NULL, DEPOT_LABEL STRING DEFAULT NULL,
     CAPACITY ARRAY DEFAULT NULL
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP VALUES
-('SanFrancisco','healthcare','flammable','sharps','temperature-controlled',
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+SELECT 'SanFrancisco','healthcare','flammable','sharps','temperature-controlled',
   ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
   ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
   ARRAY_CONSTRUCT('hospital','family_practice','dentist','pharmacy'),
   ARRAY_CONSTRUCT('Can handle potentially explosive goods','Can handle instruments that could be used as weapons','Has a fridge'),
-  NULL, ARRAY_CONSTRUCT('warehouses','medical_supply','storage_facility'), 'Supplier Depot', ARRAY_CONSTRUCT(10,10,10)),
-('SanFrancisco','Food','Fresh Food Order','Frozen Food Order','Non Perishable Food Order',
+  NULL, ARRAY_CONSTRUCT('warehouses','medical_supply','storage_facility'), 'Supplier Depot', ARRAY_CONSTRUCT(10,10,10)
+UNION ALL SELECT 'SanFrancisco','Food','Fresh Food Order','Frozen Food Order','Non Perishable Food Order',
   ARRAY_CONSTRUCT('food vegatables meat vegatable'),
   ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
   ARRAY_CONSTRUCT('supermarket','restaurant','butcher_shop'),
   ARRAY_CONSTRUCT('Can deliver Fresh Food','Has a Fridge','Premium Delivery'),
-  NULL, ARRAY_CONSTRUCT('warehouses','food_beverage_service_distribution','storage_facility'), 'Distribution Depot', ARRAY_CONSTRUCT(10,10,10)),
-('SanFrancisco','Cosmetics','Hair Products','Electronic Goods','Make-up',
+  NULL, ARRAY_CONSTRUCT('warehouses','food_beverage_service_distribution','storage_facility'), 'Distribution Depot', ARRAY_CONSTRUCT(10,10,10)
+UNION ALL SELECT 'SanFrancisco','Cosmetics','Hair Products','Electronic Goods','Make-up',
   ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
   ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
   ARRAY_CONSTRUCT('supermarket','outlet','fashion'),
   ARRAY_CONSTRUCT('Can deliver Fresh Food','Has a Fridge','Premium Delivery'),
-  NULL, ARRAY_CONSTRUCT('warehouses','distribution_services','storage_facility'), 'Distribution Centre', ARRAY_CONSTRUCT(10,10,10)),
-('SanFrancisco','Beverages','Alcoholic Beverages','Carbonated Drinks','Still Water',
+  NULL, ARRAY_CONSTRUCT('warehouses','distribution_services','storage_facility'), 'Distribution Centre', ARRAY_CONSTRUCT(10,10,10)
+UNION ALL SELECT 'SanFrancisco','Beverages','Alcoholic Beverages','Carbonated Drinks','Still Water',
   ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
   ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
   ARRAY_CONSTRUCT('bar','pub','restaurant','hotel','supermarket','convenience_store'),
   ARRAY_CONSTRUCT('Age Verification Required','Fragile Goods Handler','Heavy Load Capacity'),
-  NULL, ARRAY_CONSTRUCT('warehouses','brewery','distillery','winery'), 'Distribution Depot', ARRAY_CONSTRUCT(10,10,10)),
-('SanFrancisco','SEN Transport','Solo Taxi (1 child, chaperone required)','Shared Taxi (2-3 children)','Minibus (6-8 children)',
+  NULL, ARRAY_CONSTRUCT('warehouses','brewery','distillery','winery'), 'Distribution Depot', ARRAY_CONSTRUCT(10,10,10)
+UNION ALL SELECT 'SanFrancisco','SEN Transport','Solo Taxi (1 child, chaperone required)','Shared Taxi (2-3 children)','Minibus (6-8 children)',
   ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
   ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
   ARRAY_CONSTRUCT('school','elementary_school','high_school','middle_school'),
   ARRAY_CONSTRUCT('Solo Taxi + Chaperone','Shared Taxi (Behavioural)','Accessible Minibus'),
   'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS',
-  ARRAY_CONSTRUCT('school','elementary_school','high_school','middle_school','private_school'), 'School Destinations', ARRAY_CONSTRUCT(1,3,8));
+  ARRAY_CONSTRUCT('school','elementary_school','high_school','middle_school','private_school'), 'School Destinations', ARRAY_CONSTRUCT(1,3,8);
 
 -- SEN_STUDENTS: 60 synthetic student pickup addresses near SF schools
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (

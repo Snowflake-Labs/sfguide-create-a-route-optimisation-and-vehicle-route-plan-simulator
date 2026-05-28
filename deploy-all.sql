@@ -24,6 +24,26 @@
 -- =============================================================================
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 0: WAREHOUSE SETUP                                                    ║
+-- ║ Create a LARGE warehouse for heavy geospatial operations (Overture Maps).  ║
+-- ║ ROUTING_ANALYTICS (XS) is for day-to-day queries after deployment.         ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_DEPLOY
+    WAREHOUSE_SIZE = 'LARGE'
+    AUTO_SUSPEND = 120
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+USE WAREHOUSE ROUTING_DEPLOY;
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 1: CORE INFRASTRUCTURE (build-routing-solution modules 00-06)        ║
 -- ║ Owner: .cortex/skills/build-routing-solution/                              ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -61,7 +81,10 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/datasets
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 3: DEMO SKILLS (each skill owns its own SQL)                         ║
 -- ║ Execute in dependency order — no skill should be skipped.                  ║
+-- ║ Uses ROUTING_DEPLOY (LARGE) for Overture Maps geospatial queries.          ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+USE WAREHOUSE ROUTING_DEPLOY;
 
 -- Fleet Intelligence: Taxis (TRIP_SUMMARY, DRIVER_LOCATIONS_V, ROUTE_NAMES, etc.)
 -- Owner: .cortex/skills/fleet-intelligence-taxis/
@@ -92,6 +115,14 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- ║ Tools must be created BEFORE the agent (agent references them).            ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
+-- Ensure LARGE warehouse is active for Overture Maps geospatial queries
+USE WAREHOUSE ROUTING_DEPLOY;
+
+-- Agent Playground data (SF_TOP_PHARMACIES, SF_DRUG_FORMULARY, SF_HEALTH_DEMOGRAPHICS)
+-- MUST run BEFORE pharma intelligence (provides prerequisite tables)
+-- Owner: .cortex/skills/setup-agent-playground/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-demo-data.sql;
+
 -- Weather Routing (network rule + EAI + GET_WEATHER_AT_POINT UDF + TOOL_WEATHER)
 -- Owner: .cortex/skills/add-weather-routing/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-weather-routing/references/deploy-weather-tool.sql;
@@ -121,10 +152,6 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- ║ PHASE 5: AGENT + STREAMLIT (created LAST — references all tools/views)     ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
--- Agent Playground data (SF_PHARMA_JOBS, SF_HEALTH_DEMOGRAPHICS, CONFIG updates)
--- Owner: .cortex/skills/setup-agent-playground/
-EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-demo-data.sql;
-
 -- Semantic View for Cortex Analyst
 -- Owner: .cortex/skills/setup-agent-playground/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-semantic-view.sql;
@@ -145,6 +172,13 @@ CREATE OR REPLACE STREAMLIT SYNTHETIC_DATASETS.UNIFIED.FLEET_MAP
 COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/
 FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
 FILES=('agent-demos.json');
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║ PHASE 6: CLEANUP — drop deploy warehouse, switch to ROUTING_ANALYTICS      ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+USE WAREHOUSE ROUTING_ANALYTICS;
+DROP WAREHOUSE IF EXISTS ROUTING_DEPLOY;
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ DEPLOYMENT COMPLETE                                                         ║
