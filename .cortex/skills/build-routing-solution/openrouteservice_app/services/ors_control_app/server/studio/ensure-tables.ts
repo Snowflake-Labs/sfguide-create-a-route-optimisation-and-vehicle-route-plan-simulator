@@ -92,7 +92,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
-      JOB_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
+      JOB_ID VARCHAR, PRESET_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
       ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,
       START_DATE VARCHAR, END_DATE VARCHAR,
       STATUS VARCHAR(20), CONFIG VARIANT,
@@ -100,6 +100,13 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       ERROR_MESSAGE VARCHAR, STARTED_AT TIMESTAMP_NTZ DEFAULT SYSDATE(),
       COMPLETED_AT TIMESTAMP_NTZ, LOG_TEXT VARIANT
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS PRESET_ID VARCHAR;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
     { sql: `EXECUTE IMMEDIATE $$
 BEGIN
   ALTER TABLE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS ADD COLUMN IF NOT EXISTS LOG_TEXT VARIANT;
