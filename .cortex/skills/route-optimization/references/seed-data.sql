@@ -187,11 +187,13 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     STYPE ARRAY,
     SOURCE_TABLE STRING DEFAULT NULL,
     DEPOT_CTYPE ARRAY DEFAULT NULL,
-    DEPOT_LABEL STRING DEFAULT NULL
+    DEPOT_LABEL STRING DEFAULT NULL,
+    CAPACITY ARRAY DEFAULT NULL,
+    PLACES_LABEL STRING DEFAULT 'POI Locations'
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL)
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL, CAPACITY, PLACES_LABEL)
 SELECT GETVARIABLE('REGION_NAME'), 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
        ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
        ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
@@ -199,7 +201,9 @@ SELECT GETVARIABLE('REGION_NAME'), 'healthcare', 'flammable', 'sharps', 'tempera
        ARRAY_CONSTRUCT('Can handle potentially explosive goods', 'Can handle instruments that could be used as weapons', 'Has a fridge'),
        NULL,
        ARRAY_CONSTRUCT('warehouses', 'medical_supply', 'storage_facility'),
-       'Supplier Depot'
+       'Supplier Depot',
+       ARRAY_CONSTRUCT(10, 10, 10),
+       'Healthcare Sites'
 UNION ALL
 SELECT GETVARIABLE('REGION_NAME'), 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
        ARRAY_CONSTRUCT('food vegatables meat vegatable'),
@@ -208,7 +212,9 @@ SELECT GETVARIABLE('REGION_NAME'), 'Food', 'Fresh Food Order', 'Frozen Food Orde
        ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
        'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES',
        ARRAY_CONSTRUCT('restaurant', 'fast_food_restaurant', 'casual_eatery'),
-       'Restaurant Origin'
+       'Restaurant Origin',
+       ARRAY_CONSTRUCT(10, 10, 10),
+       'Delivery Addresses'
 UNION ALL
 SELECT GETVARIABLE('REGION_NAME'), 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
        ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
@@ -217,7 +223,9 @@ SELECT GETVARIABLE('REGION_NAME'), 'Cosmetics', 'Hair Products', 'Electronic Goo
        ARRAY_CONSTRUCT('Can deliver Fresh Food', 'Has a Fridge', 'Premium Delivery'),
        NULL,
        ARRAY_CONSTRUCT('warehouses', 'distribution_services', 'storage_facility'),
-       'Distribution Centre'
+       'Distribution Centre',
+       ARRAY_CONSTRUCT(10, 10, 10),
+       'Retail Stores'
 UNION ALL
 SELECT GETVARIABLE('REGION_NAME'), 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
        ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
@@ -226,16 +234,20 @@ SELECT GETVARIABLE('REGION_NAME'), 'Beverages', 'Alcoholic Beverages', 'Carbonat
        ARRAY_CONSTRUCT('Age Verification Required', 'Fragile Goods Handler', 'Heavy Load Capacity'),
        NULL,
        ARRAY_CONSTRUCT('warehouses', 'brewery', 'distillery', 'winery'),
-       'Distribution Depot'
+       'Distribution Depot',
+       ARRAY_CONSTRUCT(10, 10, 10),
+       'Delivery Points'
 UNION ALL
 SELECT GETVARIABLE('REGION_NAME'), 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
        ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
        ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
        ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school'),
        ARRAY_CONSTRUCT('Solo Taxi + Chaperone', 'Shared Taxi (Behavioural)', 'Accessible Minibus'),
-       'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS',
+       'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES',
        ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school', 'private_school'),
-       'School Destinations';
+       'School',
+       ARRAY_CONSTRUCT(1, 3, 8),
+       'Pupils';
 
 --------------------------------------------------------------------
 -- SEN_STUDENTS (override table for SEN Transport industry)

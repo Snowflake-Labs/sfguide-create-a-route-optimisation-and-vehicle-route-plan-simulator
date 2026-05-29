@@ -69,6 +69,7 @@ export default function RouteOptimization() {
   const [nearbySchools, setNearbySchools] = useState<any[]>([]);
   const [selectedSchools, setSelectedSchools] = useState<any[]>([]);
   const [depotLabel, setDepotLabel] = useState('Depot');
+  const [placesLabel, setPlacesLabel] = useState('POI Locations');
   const [skillCapacity, setSkillCapacity] = useState<Record<number, number>>({ 1: 10, 2: 10, 3: 10 });
   const [viewState, setViewState] = useState({ longitude: -122.4194, latitude: 37.7749, zoom: 11, pitch: 0, bearing: 0 });
   const [activeResultTab, setActiveResultTab] = useState<'map' | 'assignments'>('map');
@@ -148,11 +149,13 @@ export default function RouteOptimization() {
   const loadPlaces = useCallback(async () => {
     if (!centerCoords || !selectedIndustry) return;
     setLoading(true);
-    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL, CAPACITY FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
+    const lookupRows = await sfQuery(`SELECT SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL, CAPACITY, PLACES_LABEL FROM LOOKUP WHERE REGION = '${regionName}' AND INDUSTRY = '${selectedIndustry}' LIMIT 1`);
     const sourceTable = lookupRows?.[0]?.SOURCE_TABLE || null;
     const depotCtype = lookupRows?.[0]?.DEPOT_CTYPE;
     const dLabel = lookupRows?.[0]?.DEPOT_LABEL || 'Depot';
     setDepotLabel(dLabel);
+    const pLabel = lookupRows?.[0]?.PLACES_LABEL || 'POI Locations';
+    setPlacesLabel(pLabel);
     const capArr = lookupRows?.[0]?.CAPACITY;
     if (capArr) {
       const caps = typeof capArr === 'string' ? JSON.parse(capArr) : capArr;
@@ -507,7 +510,7 @@ export default function RouteOptimization() {
       </div>
 
       <div className="metric-grid">
-        <MetricCard label="Places" value={places.length} />
+        <MetricCard label={placesLabel} value={places.length} />
         <MetricCard label="Job Templates" value={jobTemplates.length} />
         <MetricCard label="Vehicles" value={vehicles.length} />
         {unassignedJobIds.size > 0 && <MetricCard label="Unassigned" value={unassignedJobIds.size} />}
@@ -655,7 +658,7 @@ export default function RouteOptimization() {
           <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 5, background: 'rgba(20,20,31,0.85)', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#e8e8f0', backdropFilter: 'blur(4px)', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
             <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 10, textTransform: 'uppercase', opacity: 0.6 }}>Layers</div>
             {[
-              { label: 'POI Locations', checked: showPOIs, set: setShowPOIs, color: '#29B5E8' },
+              { label: placesLabel, checked: showPOIs, set: setShowPOIs, color: '#29B5E8' },
               { label: 'Route Lines', checked: showRoutes, set: setShowRoutes, color: '#22C55E' },
               { label: 'Catchment', checked: showCatchment, set: setShowCatchment, color: '#29B5E8' },
               { label: depotLabel, checked: showDepot, set: setShowDepot, color: '#F59E0B' },
