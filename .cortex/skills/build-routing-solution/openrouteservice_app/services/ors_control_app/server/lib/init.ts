@@ -83,9 +83,35 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
+      // Derive the active preset from the most-populated (VEHICLE_TYPE, REGION)
+      // in FACT_TRIPS UNION DIM_FLEET rather than hardcoding 'hgv'. Self-heals a
+      // stale row whenever the current preset has no trips (friction-log F4).
       sql: `MERGE INTO FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG tgt
-            USING (SELECT 'hgv' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+            USING (
+              WITH counts AS (
+                SELECT t.VEHICLE_TYPE, t.REGION, COUNT(*) AS n
+                FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+                WHERE t.VEHICLE_TYPE IS NOT NULL AND t.REGION IS NOT NULL
+                GROUP BY 1, 2
+                UNION ALL
+                SELECT f.VEHICLE_TYPE, f.REGION, COUNT(*) AS n
+                FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+                WHERE f.VEHICLE_TYPE IS NOT NULL AND f.REGION IS NOT NULL
+                GROUP BY 1, 2
+              ),
+              ranked AS (
+                SELECT VEHICLE_TYPE, REGION, SUM(n) AS total_rows
+                FROM counts GROUP BY 1, 2
+                QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(n) DESC) = 1
+              )
+              SELECT VEHICLE_TYPE, REGION FROM ranked
+            ) src
             ON TRUE
+            WHEN MATCHED AND NOT EXISTS (
+              SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ft
+              WHERE ft.VEHICLE_TYPE = tgt.VEHICLE_TYPE AND ft.REGION = tgt.REGION
+            )
+              THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
             WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION)`,
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
@@ -599,9 +625,37 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
+      // Derive the active preset from the most-populated (VEHICLE_TYPE, REGION)
+      // in FACT_TRIPS UNION DIM_FLEET rather than hardcoding 'hgv'. The
+      // self-healing WHEN MATCHED arm re-points a stale row whenever the current
+      // preset has no freight offers, so a fresh ebike-preset install shows data
+      // without a manual UPDATE (friction-log F4).
       sql: `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.CONFIG tgt
-            USING (SELECT 'hgv' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
+            USING (
+              WITH counts AS (
+                SELECT t.VEHICLE_TYPE, t.REGION, COUNT(*) AS n
+                FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
+                WHERE t.VEHICLE_TYPE IS NOT NULL AND t.REGION IS NOT NULL
+                GROUP BY 1, 2
+                UNION ALL
+                SELECT f.VEHICLE_TYPE, f.REGION, COUNT(*) AS n
+                FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+                WHERE f.VEHICLE_TYPE IS NOT NULL AND f.REGION IS NOT NULL
+                GROUP BY 1, 2
+              ),
+              ranked AS (
+                SELECT VEHICLE_TYPE, REGION, SUM(n) AS total_rows
+                FROM counts GROUP BY 1, 2
+                QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(n) DESC) = 1
+              )
+              SELECT VEHICLE_TYPE, REGION FROM ranked
+            ) src
             ON TRUE
+            WHEN MATCHED AND NOT EXISTS (
+              SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS o
+              WHERE o.VEHICLE_TYPE = tgt.VEHICLE_TYPE AND o.REGION = tgt.REGION
+            )
+              THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
             WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION)`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
