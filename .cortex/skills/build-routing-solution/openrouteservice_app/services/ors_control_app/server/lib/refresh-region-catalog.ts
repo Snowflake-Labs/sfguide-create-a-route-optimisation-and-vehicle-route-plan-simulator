@@ -329,17 +329,50 @@ const GEOFABRIK_BASE = 'https://download.geofabrik.de';
       const geofabrikCount = allRows.filter(r => r.source === 'geofabrik').length;
       const bbbikeCount = allRows.filter(r => r.source === 'bbbike').length;
 
+      // Upsert scraped metadata by PBF_URL. Never DELETE — baked BOUNDARY / LOOKUP_NAME /
+      // ISO columns from the seed parquet must survive a catalog refresh.
       if (allRows.length > 0) {
-        await runSql(`DELETE FROM ${SF_DATABASE}.CORE.REGION_CATALOG`);
-        const batchSize = 100;
-        for (let i = 0; i < allRows.length; i += batchSize) {
-          const batch = allRows.slice(i, i + batchSize);
-          const values = batch.map(r => {
-            const esc = (v: string | null) => v === null ? 'NULL' : "'" + v.replace(/'/g, "''") + "'";
-            const num = (v: number | null) => v === null ? 'NULL' : String(v);
-            return `(${esc(r.catalog_id)},${esc(r.source)},${esc(r.region_name)},${esc(r.region_key)},${esc(r.hierarchy)},${esc(r.continent)},${esc(r.country)},${esc(r.pbf_url)},${num(r.pbf_size_mb)},${esc(r.level)},${num(r.min_lat)},${num(r.max_lat)},${num(r.min_lon)},${num(r.max_lon)},SYSDATE())`;
-          }).join(',');
-          await runSql(`INSERT INTO ${SF_DATABASE}.CORE.REGION_CATALOG (CATALOG_ID,SOURCE,REGION_NAME,REGION_KEY,HIERARCHY,CONTINENT,COUNTRY,PBF_URL,PBF_SIZE_MB,LEVEL,MIN_LAT,MAX_LAT,MIN_LON,MAX_LON,UPDATED_AT) VALUES ${values}`);
+        const mergeable = allRows.filter(r => r.pbf_url != null && String(r.pbf_url).trim() !== '');
+        const batchSize = 50;
+        for (let i = 0; i < mergeable.length; i += batchSize) {
+          const batch = mergeable.slice(i, i + batchSize);
+          const esc = (v: string | null) => v === null ? 'NULL' : "'" + v.replace(/'/g, "''") + "'";
+          const num = (v: number | null) => v === null ? 'NULL' : String(v);
+          const selects = batch.map(r => (
+            `SELECT ${esc(r.catalog_id)} AS CATALOG_ID,${esc(r.source)} AS SOURCE,`
+            + `${esc(r.region_name)} AS REGION_NAME,${esc(r.region_key)} AS REGION_KEY,`
+            + `${esc(r.hierarchy)} AS HIERARCHY,${esc(r.continent)} AS CONTINENT,${esc(r.country)} AS COUNTRY,`
+            + `${esc(r.pbf_url)} AS PBF_URL,${num(r.pbf_size_mb)} AS PBF_SIZE_MB,${esc(r.level)} AS LEVEL,`
+            + `${num(r.min_lat)} AS MIN_LAT,${num(r.max_lat)} AS MAX_LAT,`
+            + `${num(r.min_lon)} AS MIN_LON,${num(r.max_lon)} AS MAX_LON`
+          )).join(' UNION ALL ');
+          await runSql(
+            `MERGE INTO ${SF_DATABASE}.CORE.REGION_CATALOG AS tgt
+             USING (${selects}) AS src
+             ON tgt.PBF_URL = src.PBF_URL
+             WHEN MATCHED THEN UPDATE SET
+               REGION_NAME = src.REGION_NAME,
+               HIERARCHY = src.HIERARCHY,
+               CONTINENT = src.CONTINENT,
+               COUNTRY = src.COUNTRY,
+               PBF_SIZE_MB = src.PBF_SIZE_MB,
+               LEVEL = src.LEVEL,
+               MIN_LAT = src.MIN_LAT,
+               MAX_LAT = src.MAX_LAT,
+               MIN_LON = src.MIN_LON,
+               MAX_LON = src.MAX_LON,
+               UPDATED_AT = SYSDATE()
+             WHEN NOT MATCHED THEN INSERT (
+               CATALOG_ID, SOURCE, REGION_NAME, REGION_KEY, HIERARCHY, CONTINENT, COUNTRY,
+               PBF_URL, PBF_SIZE_MB, LEVEL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON,
+               BOUNDARY_SOURCE, UPDATED_AT
+             ) VALUES (
+               src.CATALOG_ID, src.SOURCE, src.REGION_NAME, src.REGION_KEY, src.HIERARCHY,
+               src.CONTINENT, src.COUNTRY, src.PBF_URL, src.PBF_SIZE_MB, src.LEVEL,
+               src.MIN_LAT, src.MAX_LAT, src.MIN_LON, src.MAX_LON,
+               'pending', SYSDATE()
+             )`,
+          );
         }
       }
 
