@@ -80,7 +80,10 @@ DECLARE
 BEGIN
     FOR rec IN c DO
         BEGIN
-            CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION(:rec.REGION);
+            -- Snowflake Scripting does not accept :cursor.column as a bound
+            -- procedure argument; copy the field to a scalar local first.
+            LET reg VARCHAR := rec.REGION;
+            CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION(:reg);
         EXCEPTION WHEN OTHER THEN NULL;
         END;
     END FOR;
