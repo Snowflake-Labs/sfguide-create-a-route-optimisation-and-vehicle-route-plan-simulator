@@ -145,20 +145,29 @@ export default function AssetVelocity() {
 
   useEffect(() => {
     if (preset.loading) return;
-    // Lazy self-heal: ensure the Asset Velocity views exist before the first
-    // query. On a fresh install they may be missing if dwell-analysis was
-    // deployed after the container booted; this (re)creates them server-side.
-    // Best-effort — never block the page if the endpoint errors.
-    let cancelled = false;
+    // Load immediately on mount and whenever region/threshold change. No
+    // cancelled-guard here: loadData must run to completion so the page
+    // populates on open (previously it was gated behind the awaited ensure
+    // POST + a cancelled flag, which skipped the initial load when loadData's
+    // identity changed during render settling -> data only appeared on Refresh).
+    loadData();
+  }, [preset.loading, loadData]);
+
+  // One-time best-effort self-heal: ensure the Asset Velocity views exist
+  // (created server-side if dwell-analysis was deployed after the container
+  // booted), then reload once so the page fills without a manual Refresh.
+  const ensureTriedRef = useRef(false);
+  useEffect(() => {
+    if (preset.loading || ensureTriedRef.current) return;
+    ensureTriedRef.current = true;
     (async () => {
       try {
         await fetch('/api/asset-velocity/ensure', { method: 'POST' });
       } catch {
         /* ignore — page falls back to its empty state */
       }
-      if (!cancelled) loadData();
+      loadData();
     })();
-    return () => { cancelled = true; };
   }, [preset.loading, loadData]);
 
   // ----- Matrix fetch (U1 + U4) -----
