@@ -1,15 +1,9 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
-import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './function-tester/samplePoints';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { samplePoints, COORD_FUNCTIONS, type BBox } from './function-tester/samplePoints';
 
 import {
-  RegionOption, GeoData, OptimizationStop, OptimizationVehicle, OptimizationParsed,
-  CARTO_LIGHT, OPTIMIZATION_PALETTE, PROFILE_LABELS, FUNCTIONS,
-  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion,
-  generateSql, tryParseJson, decodePolyline, extractGeoData,
-  parseMatrixResult, parseOptimizationResult, travelTimeColor, parseIsochroneOrigin,
+  RegionOption, PROFILE_LABELS, FUNCTIONS,
+  bboxCenter, generateSql,
 } from './function-tester/helpers';
 import { ResultMap } from './function-tester/ResultMap';
 import { useActivePreset } from '../hooks/useActivePreset';
@@ -65,48 +59,28 @@ export default function FunctionTester() {
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
+  const [roadNonce, setRoadNonce] = useState(0);
+  const [sampleNonce, setSampleNonce] = useState(0);
   const userEditedRef = useRef(false);
   const lastPresetRegionRef = useRef<string | null>(null);
   const lastPresetProfileRef = useRef<string | null>(null);
-
-  const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
-    if (!COORD_FUNCTIONS.includes(fnName)) {
-      setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
-      return;
-    }
-    const bbox = region?.bbox;
-    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
-      setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
-      return;
-    }
-    const sampled = samplePoints({
-      fnName, bbox, profile,
-      roadPoints: roads || undefined,
-      boundary: region?.boundaryGeoJson || undefined,
-    });
-    setSampleHint(sampled?.hint || null);
-    setSqlInput(generateSql(fnName, region, profile, db, sampled));
-    userEditedRef.current = false;
-  }, []);
+  const roadSeqRef = useRef(0);
+  const profilesSeqRef = useRef(0);
+  const nocacheNextRef = useRef(false);
+  const profilesCacheRef = useRef<Map<string, string[]>>(new Map());
 
   useEffect(() => {
     (async () => {
-      let db = '';
       try {
         const cr = await fetch('/api/config');
         const cfg = await cr.json();
-        db = cfg.database || '';
-        setSfDatabase(db);
+        setSfDatabase(cfg.database || '');
       } catch {}
 
-      let probeOvertureOk = false;
       try {
         const probeResp = await fetch('/api/diagnostics/probe');
         const probeData = await probeResp.json();
-        probeOvertureOk = probeData.overtureTransportation?.ok === true;
-        setOvertureAvailable(probeOvertureOk);
+        setOvertureAvailable(probeData.overtureTransportation?.ok === true);
       } catch {
         setOvertureAvailable(false);
       }
@@ -116,9 +90,6 @@ export default function FunctionTester() {
         const data = await r.json();
         if (data.error) setRegionsError(data.error);
         const regionList: RegionOption[] = (data.regions || []).map((reg: any) => {
-          // Parse boundary GeoJSON string from REGION_CATALOG.BOUNDARY into an
-          // object so samplePoints can run polygon rejection sampling. Skip
-          // silently on parse error — falls back to bbox-only sampling.
           if (reg && typeof reg.boundaryGeoJson === 'string') {
             try {
               const parsed = JSON.parse(reg.boundaryGeoJson);
@@ -143,14 +114,6 @@ export default function FunctionTester() {
           setSelectedProfile(initProfile);
           lastPresetRegionRef.current = preset.region;
           lastPresetProfileRef.current = initProfile;
-          let roads: [number, number][] | null = null;
-          if (probeOvertureOk && def.bbox) {
-            const r = await fetchRoadPoints(def.bbox, initProfile, { region: def.region });
-            roads = r.points;
-            setRoadPoints(roads);
-            setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
-          }
-          setSqlInput(generateSql('ORS_STATUS', def, initProfile, db));
         }
       } catch (err: any) {
         setRegionsError(err.message || 'Failed to load regions');
@@ -159,12 +122,90 @@ export default function FunctionTester() {
     })();
   }, []);
 
+  useEffect(() => {
+    const region = selectedRegion;
+    const profile = selectedProfile;
+    const bbox = region?.bbox;
+
+    if (overtureAvailable !== true || !bbox || !region) {
+      setRoadPoints(null);
+      setRoadPointsReason(null);
+      return;
+    }
+
+    setRoadPoints(null);
+    setRoadPointsReason(null);
+
+    const mySeq = ++roadSeqRef.current;
+    const nocache = nocacheNextRef.current;
+    nocacheNextRef.current = false;
+
+    (async () => {
+      const rp = await fetchRoadPoints(bbox, profile, { region: region.region, nocache });
+      if (mySeq !== roadSeqRef.current) return;
+      setRoadPoints(rp.points);
+      setRoadPointsReason(rp.points ? null : (rp.reason || 'no road points'));
+    })();
+  }, [selectedRegion, selectedProfile, overtureAvailable, roadNonce]);
+
+  useEffect(() => {
+    if (userEditedRef.current) return;
+
+    const fnName = selectedFn;
+    const region = selectedRegion;
+    const profile = selectedProfile;
+    const db = sfDatabase;
+    const roads = roadPoints;
+
+    if (!COORD_FUNCTIONS.includes(fnName)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+
+    const bbox = region?.bbox;
+    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+
+    const sampled = samplePoints({
+      fnName,
+      bbox,
+      profile,
+      roadPoints: roads || undefined,
+      boundary: region?.boundaryGeoJson || undefined,
+      seed: sampleNonce,
+    });
+    setSampleHint(sampled?.hint || null);
+    setSqlInput(generateSql(fnName, region, profile, db, sampled));
+  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, sampleNonce]);
+
   const fetchProfiles = useCallback(async (region: RegionOption | null) => {
+    const regionKey = region?.region;
+    if (!regionKey) {
+      setAvailableProfiles([]);
+      return;
+    }
+
+    const mySeq = ++profilesSeqRef.current;
+
+    const cached = profilesCacheRef.current.get(regionKey);
+    if (cached) {
+      if (mySeq !== profilesSeqRef.current) return;
+      setAvailableProfiles(cached);
+      if (!cached.includes(selectedProfile)) {
+        userEditedRef.current = false;
+        setSelectedProfile(cached[0]);
+      }
+      return;
+    }
+
     setProfilesLoading(true);
     try {
       const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const resolved = region?.region ?? null;
-      const rg = resolved ? `'${resolved}'` : 'NULL::VARCHAR';
+      const rg = `'${regionKey}'`;
       const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
       const resp = await fetch('/api/query', {
         method: 'POST',
@@ -178,10 +219,12 @@ export default function FunctionTester() {
         if (parsed?.profiles && typeof parsed.profiles === 'object') {
           const names = Object.keys(parsed.profiles).filter((p: string) => parsed.profiles[p]?.encoder_name);
           if (names.length > 0) {
+            if (mySeq !== profilesSeqRef.current) return;
+            profilesCacheRef.current.set(regionKey, names);
             setAvailableProfiles(names);
             if (!names.includes(selectedProfile)) {
+              userEditedRef.current = false;
               setSelectedProfile(names[0]);
-              regeneratePoints(selectedFn, region, names[0], sfDatabase, roadPoints);
             }
             setProfilesLoading(false);
             return;
@@ -189,56 +232,37 @@ export default function FunctionTester() {
         }
       }
     } catch {}
+    if (mySeq !== profilesSeqRef.current) return;
     setAvailableProfiles([]);
     setProfilesLoading(false);
-  }, [selectedFn, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+  }, [selectedProfile, sfDatabase]);
 
   useEffect(() => {
     if (selectedRegion) fetchProfiles(selectedRegion);
-  }, [selectedRegion]);
+  }, [selectedRegion, fetchProfiles]);
 
-  const onRegionChange = useCallback(async (regionKey: string) => {
+  const onRegionChange = useCallback((regionKey: string) => {
     const r = regions.find((c) => c.region === regionKey) || null;
-    setSelectedRegion(r);
     userEditedRef.current = false;
-    let roads: [number, number][] | null = null;
-    if (overtureAvailable && r?.bbox) {
-      const rp = await fetchRoadPoints(r.bbox, selectedProfile, { region: r.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    } else {
-      setRoadPoints(null);
-      setRoadPointsReason(null);
-    }
-    regeneratePoints(selectedFn, r, selectedProfile, sfDatabase, roads);
-  }, [regions, selectedFn, selectedProfile, sfDatabase, overtureAvailable, regeneratePoints]);
+    setSelectedRegion(r);
+  }, [regions]);
 
   const onFnChange = useCallback((fnName: string) => {
+    userEditedRef.current = false;
     setSelectedFn(fnName);
-    userEditedRef.current = false;
-    regeneratePoints(fnName, selectedRegion, selectedProfile, sfDatabase, roadPoints);
-  }, [selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+  }, []);
 
-  const onProfileChange = useCallback(async (profile: string) => {
-    setSelectedProfile(profile);
+  const onProfileChange = useCallback((profile: string) => {
     userEditedRef.current = false;
-    let roads: [number, number][] | null = roadPoints;
-    if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, profile, { region: selectedRegion.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    }
-    regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roads);
-  }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
+    setSelectedProfile(profile);
+  }, []);
 
   useEffect(() => {
     if (preset.loading || regions.length === 0 || !preset.region) return;
     if (lastPresetRegionRef.current === preset.region) return;
     lastPresetRegionRef.current = preset.region;
     const match = regions.find((c) => c.region === preset.region);
-    if (match) void onRegionChange(match.region);
+    if (match) onRegionChange(match.region);
   }, [preset.region, preset.loading, regions, onRegionChange]);
 
   useEffect(() => {
@@ -246,20 +270,15 @@ export default function FunctionTester() {
     if (lastPresetProfileRef.current === preset.orsProfile) return;
     if (availableProfiles.length > 0 && !availableProfiles.includes(preset.orsProfile)) return;
     lastPresetProfileRef.current = preset.orsProfile;
-    void onProfileChange(preset.orsProfile);
+    onProfileChange(preset.orsProfile);
   }, [preset.orsProfile, preset.loading, availableProfiles, onProfileChange]);
 
-  const handleReshuffle = useCallback(async () => {
+  const handleReshuffle = useCallback(() => {
     userEditedRef.current = false;
-    let roads = roadPoints;
-    if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, selectedProfile, { nocache: true, region: selectedRegion.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    }
-    regeneratePoints(selectedFn, selectedRegion, selectedProfile, sfDatabase, roads);
-  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
+    nocacheNextRef.current = true;
+    setRoadNonce((n) => n + 1);
+    setSampleNonce((n) => n + 1);
+  }, []);
 
   const handleSqlChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     userEditedRef.current = true;
@@ -304,8 +323,8 @@ export default function FunctionTester() {
           region={selectedRegion?.region || preset.region}
           profile={selectedProfile}
           onChange={({ region, profile }) => {
-            if (region !== selectedRegion?.region) void onRegionChange(region);
-            if (profile !== selectedProfile) void onProfileChange(profile);
+            if (region !== selectedRegion?.region) onRegionChange(region);
+            if (profile !== selectedProfile) onProfileChange(profile);
           }}
           regions={regions.map((c) => ({
             value: c.region,
