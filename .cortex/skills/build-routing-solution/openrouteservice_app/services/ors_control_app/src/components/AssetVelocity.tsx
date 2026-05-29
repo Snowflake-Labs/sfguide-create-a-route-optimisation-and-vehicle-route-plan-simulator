@@ -145,7 +145,20 @@ export default function AssetVelocity() {
 
   useEffect(() => {
     if (preset.loading) return;
-    loadData();
+    // Lazy self-heal: ensure the Asset Velocity views exist before the first
+    // query. On a fresh install they may be missing if dwell-analysis was
+    // deployed after the container booted; this (re)creates them server-side.
+    // Best-effort — never block the page if the endpoint errors.
+    let cancelled = false;
+    (async () => {
+      try {
+        await fetch('/api/asset-velocity/ensure', { method: 'POST' });
+      } catch {
+        /* ignore — page falls back to its empty state */
+      }
+      if (!cancelled) loadData();
+    })();
+    return () => { cancelled = true; };
   }, [preset.loading, loadData]);
 
   // ----- Matrix fetch (U1 + U4) -----

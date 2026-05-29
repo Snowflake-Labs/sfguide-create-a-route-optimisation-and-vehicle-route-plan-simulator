@@ -17,6 +17,7 @@
 import { Router } from 'express';
 import { runSql } from '../lib/sql.js';
 import { escapeString } from '../lib/sanitize.js';
+import { ensureAssetVelocityViews } from '../lib/init.js';
 import { log } from '../diagnostics.js';
 
 interface SeedResult {
@@ -73,6 +74,32 @@ export function createRouteOptimizationRouter(): Router {
     const result = await p;
     if (result.error) return res.status(500).json(result);
     res.json(result);
+  });
+
+  // /api/asset-velocity/ensure — lazy self-heal for the Asset Velocity page.
+  // The four ROUTE_OPTIMIZATION views reference DWELL_ANALYSIS.DT_DWELL_ENRICHED,
+  // which Snowflake validates at CREATE VIEW time, so on a fresh install where
+  // dwell-analysis is deployed AFTER the container booted, the boot-time create
+  // fails silently. The Asset Velocity page calls this on mount; the first call
+  // after dwell exists (re)creates the views with no container restart needed.
+  // Idempotent + de-duped; never 500s the page (returns { ensured:false } with a
+  // reason when dwell is not yet deployed).
+  let avInflight: Promise<{ ensured: boolean; reason?: string }> | null = null;
+  router.post('/api/asset-velocity/ensure', async (_req, res) => {
+    if (!avInflight) {
+      avInflight = ensureAssetVelocityViews(runSql).finally(() => {
+        avInflight = null;
+      });
+    }
+    try {
+      const result = await avInflight;
+      res.json(result);
+    } catch (err: any) {
+      // ensureAssetVelocityViews is log-only and should not throw, but guard
+      // anyway so the page never receives a 500.
+      log('ERROR', 'AssetVelocity', `ensure failed: ${err?.message?.slice(0, 300)}`);
+      res.json({ ensured: false, reason: 'ensure-failed' });
+    }
   });
 
   return router;
