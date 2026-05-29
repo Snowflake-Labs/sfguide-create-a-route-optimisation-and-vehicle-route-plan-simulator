@@ -282,10 +282,10 @@ export default function BackloadMatching() {
     } else {
       setVehicleClass(cls);
       setVehicleClassError(null);
-      // Bind ORS profile to the active vehicle_type. If the region wasn't
-      // provisioned with that profile, refuse to solve and surface the
-      // re-provision instruction (was: blindly pick provisioned[0], which
-      // is the bug that produced profile=driving-car for an ebike preset).
+      // Bind ORS profile: prefer the class's default profile when provisioned,
+      // otherwise fall back to whatever the region has. Class settings
+      // (capacity/cost/speed) come from vehicle_type; routing geometry uses
+      // the provisioned profile.
       const provisionedList = String((profRows[0] as any)?.PROFILES || '')
         .split(',').map(s => s.trim()).filter(Boolean);
       if (cls) {
@@ -293,13 +293,9 @@ export default function BackloadMatching() {
         if (provisionedList.length === 0 || provisionedList.includes(desired)) {
           setOrsProfile(desired);
         } else {
-          setOrsProfile('');
-          setVehicleClassError(
-            `Active preset uses vehicle_type='${activeVT}' which requires ORS ` +
-            `profile '${desired}', but region '${regionName}' is provisioned ` +
-            `only with [${provisionedList.join(', ')}]. Re-provision the ` +
-            `region with the missing profile, or switch the active preset.`
-          );
+          const fallback = provisionedList.includes('driving-car')
+            ? 'driving-car' : provisionedList[0];
+          setOrsProfile(fallback);
         }
       }
     }
