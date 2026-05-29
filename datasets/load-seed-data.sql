@@ -714,6 +714,19 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS
 SET TRIP_START = DATEADD('SECOND', $TS_OFFSET, TRIP_START),
     TRIP_END   = DATEADD('SECOND', $TS_OFFSET, TRIP_END);
 
+-- Freight offers: shift so the newest offer = now. The Freight Exchange page
+-- defaults to a 24h "max age" filter; without this every seeded offer ages out
+-- and the grid renders 0/300.
+SET OFFER_TS_OFFSET = (
+  SELECT TIMESTAMPDIFF('SECOND',
+    (SELECT MAX(POSTED_AT) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS),
+    CURRENT_TIMESTAMP())
+);
+
+UPDATE SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+SET POSTED_AT      = DATEADD('SECOND', $OFFER_TS_OFFSET, POSTED_AT),
+    PICKUP_FROM_TS = DATEADD('SECOND', $OFFER_TS_OFFSET, PICKUP_FROM_TS),
+    PICKUP_TO_TS   = DATEADD('SECOND', $OFFER_TS_OFFSET, PICKUP_TO_TS);
 
 --------------------------------------------------------------------------------
 -- 5. Travel Time Matrix (pre-computed SanFrancisco cycling-electric RES8)
