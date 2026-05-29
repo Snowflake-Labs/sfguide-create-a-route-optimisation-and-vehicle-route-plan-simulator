@@ -1127,6 +1127,38 @@ export async function ensureBackloadAndAssetVelocityObjects(
   }
 
   // -----------------------------------------------------------------
+  // Loud post-init verification (log-only, no throw -> never crash-loop).
+  // The boot loop above logs WARN-and-continues on any failed statement, so a
+  // partial init can leave the app "healthy" with broken pages. These probes
+  // turn the two highest-impact silent failures into diagnosable ERROR lines:
+  //   * Asset Velocity views missing (e.g. CREATE VIEW threw because
+  //     DWELL_ANALYSIS.DT_DWELL_ENRICHED did not exist yet at boot).
+  //   * MARKETPLACE.CONFIG empty -> VW_OFFER_ENRICHED filters to 0 rows.
+  // -----------------------------------------------------------------
+  try {
+    await sqlFn(
+      `SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS LIMIT 1`,
+      'FLEET_INTELLIGENCE',
+      'ROUTE_OPTIMIZATION',
+    );
+  } catch (e: any) {
+    log('ERROR', 'Init', `Asset Velocity views MISSING after boot init -> page will be empty: ${e?.message?.slice(0, 200)}`);
+  }
+  try {
+    const cfgRows = await sqlFn(
+      `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG`,
+      'FLEET_INTELLIGENCE',
+      'MARKETPLACE',
+    );
+    const n = Number(cfgRows?.[0]?.N ?? cfgRows?.[0]?.n ?? 0);
+    if (n === 0) {
+      log('ERROR', 'Init', 'MARKETPLACE.CONFIG empty after boot init -> Freight Exchange VW_OFFER_ENRICHED returns 0 rows. Re-run datasets/load-seed-data.sql or freight-exchange bootstrap.sql post-seed.');
+    }
+  } catch (e: any) {
+    log('ERROR', 'Init', `MARKETPLACE.CONFIG probe failed after boot init: ${e?.message?.slice(0, 200)}`);
+  }
+
+  // -----------------------------------------------------------------
   // Defensive Observability bootstrap.
   //
   // The Observability page hits OPENROUTESERVICE_APP.OBSERVABILITY.V_ORS_METRICS_SUMMARY,
