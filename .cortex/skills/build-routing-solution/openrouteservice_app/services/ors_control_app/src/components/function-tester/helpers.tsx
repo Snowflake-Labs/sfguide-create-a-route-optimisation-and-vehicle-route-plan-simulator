@@ -4,6 +4,13 @@ import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl
 import { TileLayer } from '@deck.gl/geo-layers';
 import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './samplePoints';
 
+export interface GraphReadiness {
+  service_ready: boolean;
+  profiles_loaded: string[];
+  expected_profiles: string[];
+  graphs?: { profile: string; ready: boolean; build_date?: string | null }[];
+}
+
 export interface RegionOption {
   region: string;
   display_name?: string;
@@ -14,6 +21,20 @@ export interface RegionOption {
   // instead of bbox - dramatically reduces ORS PointNotFound for water-bordered
   // regions and shows the real region shape on the map.
   boundaryGeoJson?: any | null;
+  /** From /api/regions/provisioned — configured vs live-loaded profiles. */
+  graphReadiness?: GraphReadiness | null;
+}
+
+export const DEFAULT_EXPECTED_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
+
+export function expectedProfilesForRegion(region: RegionOption | null): string[] {
+  const fromApi = region?.graphReadiness?.expected_profiles;
+  if (fromApi && fromApi.length > 0) return fromApi;
+  return DEFAULT_EXPECTED_PROFILES;
+}
+
+export function loadedProfilesForRegion(region: RegionOption | null): string[] {
+  return region?.graphReadiness?.profiles_loaded ?? [];
 }
 
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';

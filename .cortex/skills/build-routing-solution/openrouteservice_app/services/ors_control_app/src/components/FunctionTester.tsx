@@ -1,9 +1,14 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { samplePoints, COORD_FUNCTIONS, type BBox } from './function-tester/samplePoints';
 
 import {
-  RegionOption, PROFILE_LABELS, FUNCTIONS,
-  bboxCenter, generateSql,
+  RegionOption,
+  PROFILE_LABELS,
+  FUNCTIONS,
+  bboxCenter,
+  generateSql,
+  expectedProfilesForRegion,
+  loadedProfilesForRegion,
 } from './function-tester/helpers';
 import { ResultMap } from './function-tester/ResultMap';
 import { useActivePreset } from '../hooks/useActivePreset';
@@ -13,6 +18,27 @@ interface RoadPointsResult {
   points: [number, number][] | null;
   reason?: string;
   cached?: boolean;
+}
+
+function mapProvisionedRegion(reg: any): RegionOption {
+  let boundaryGeoJson = reg?.boundaryGeoJson ?? null;
+  if (reg && typeof reg.boundaryGeoJson === 'string') {
+    try {
+      const parsed = JSON.parse(reg.boundaryGeoJson);
+      if (parsed && (parsed.type === 'Polygon' || parsed.type === 'MultiPolygon')) {
+        boundaryGeoJson = parsed;
+      } else {
+        boundaryGeoJson = null;
+      }
+    } catch {
+      boundaryGeoJson = null;
+    }
+  }
+  return {
+    ...reg,
+    boundaryGeoJson,
+    graphReadiness: reg?.graphReadiness ?? null,
+  };
 }
 
 async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean; region?: string }): Promise<RoadPointsResult> {
@@ -46,8 +72,6 @@ export default function FunctionTester() {
   const [regionsError, setRegionsError] = useState<string | null>(null);
   const [selectedFn, setSelectedFn] = useState('ORS_STATUS');
   const [selectedProfile, setSelectedProfile] = useState(preset.orsProfile);
-  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
-  const [profilesLoading, setProfilesLoading] = useState(false);
   const [sfDatabase, setSfDatabase] = useState('');
   const [sqlInput, setSqlInput] = useState('SELECT CORE.ORS_STATUS()');
   const [result, setResult] = useState<any>(null);
@@ -65,9 +89,26 @@ export default function FunctionTester() {
   const lastPresetRegionRef = useRef<string | null>(null);
   const lastPresetProfileRef = useRef<string | null>(null);
   const roadSeqRef = useRef(0);
-  const profilesSeqRef = useRef(0);
   const nocacheNextRef = useRef(false);
-  const profilesCacheRef = useRef<Map<string, string[]>>(new Map());
+  const selectedRegionKeyRef = useRef<string | null>(null);
+
+  const refreshRegions = useCallback(async (): Promise<RegionOption[]> => {
+    const r = await fetch('/api/regions/provisioned');
+    const data = await r.json();
+    if (data.error) setRegionsError(data.error);
+    const regionList: RegionOption[] = (data.regions || []).map(mapProvisionedRegion);
+    setRegions(regionList);
+    const key = selectedRegionKeyRef.current;
+    if (key) {
+      const match = regionList.find((c) => c.region === key);
+      if (match) setSelectedRegion(match);
+    }
+    return regionList;
+  }, []);
+
+  useEffect(() => {
+    selectedRegionKeyRef.current = selectedRegion?.region ?? null;
+  }, [selectedRegion]);
 
   useEffect(() => {
     (async () => {
@@ -86,24 +127,7 @@ export default function FunctionTester() {
       }
 
       try {
-        const r = await fetch('/api/regions/provisioned');
-        const data = await r.json();
-        if (data.error) setRegionsError(data.error);
-        const regionList: RegionOption[] = (data.regions || []).map((reg: any) => {
-          if (reg && typeof reg.boundaryGeoJson === 'string') {
-            try {
-              const parsed = JSON.parse(reg.boundaryGeoJson);
-              if (parsed && (parsed.type === 'Polygon' || parsed.type === 'MultiPolygon')) {
-                return { ...reg, boundaryGeoJson: parsed };
-              }
-              return { ...reg, boundaryGeoJson: null };
-            } catch {
-              return { ...reg, boundaryGeoJson: null };
-            }
-          }
-          return reg;
-        });
-        setRegions(regionList);
+        const regionList = await refreshRegions();
         const def =
           regionList.find((c) => c.region === preset.region) ||
           regionList.find((c) => c.isDefault) ||
@@ -120,7 +144,42 @@ export default function FunctionTester() {
       }
       setRegionsLoading(false);
     })();
-  }, []);
+  }, [refreshRegions]);
+
+  useEffect(() => {
+    if (selectedRegion?.graphReadiness?.service_ready !== false) return;
+    const id = window.setInterval(() => {
+      void refreshRegions();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [selectedRegion?.region, selectedRegion?.graphReadiness?.service_ready, refreshRegions]);
+
+  const expectedProfiles = useMemo(
+    () => expectedProfilesForRegion(selectedRegion),
+    [selectedRegion],
+  );
+  const loadedProfiles = useMemo(
+    () => loadedProfilesForRegion(selectedRegion),
+    [selectedRegion],
+  );
+
+  const profileOptions = useMemo(() => {
+    return expectedProfiles.map((p) => {
+      const base = PROFILE_LABELS[p] || p;
+      const loading = loadedProfiles.length > 0 && !loadedProfiles.includes(p);
+      const notReady = selectedRegion?.graphReadiness?.service_ready === false && !loadedProfiles.includes(p);
+      const suffix = loading || notReady ? ' (loading...)' : '';
+      return { value: p, label: `${base}${suffix}` };
+    });
+  }, [expectedProfiles, loadedProfiles, selectedRegion?.graphReadiness?.service_ready]);
+
+  useEffect(() => {
+    if (expectedProfiles.length === 0) return;
+    if (!expectedProfiles.includes(selectedProfile)) {
+      userEditedRef.current = false;
+      setSelectedProfile(expectedProfiles[0]);
+    }
+  }, [expectedProfiles, selectedProfile]);
 
   useEffect(() => {
     const region = selectedRegion;
@@ -182,65 +241,6 @@ export default function FunctionTester() {
     setSqlInput(generateSql(fnName, region, profile, db, sampled));
   }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, sampleNonce]);
 
-  const fetchProfiles = useCallback(async (region: RegionOption | null) => {
-    const regionKey = region?.region;
-    if (!regionKey) {
-      setAvailableProfiles([]);
-      return;
-    }
-
-    const mySeq = ++profilesSeqRef.current;
-
-    const cached = profilesCacheRef.current.get(regionKey);
-    if (cached) {
-      if (mySeq !== profilesSeqRef.current) return;
-      setAvailableProfiles(cached);
-      if (!cached.includes(selectedProfile)) {
-        userEditedRef.current = false;
-        setSelectedProfile(cached[0]);
-      }
-      return;
-    }
-
-    setProfilesLoading(true);
-    try {
-      const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const rg = `'${regionKey}'`;
-      const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
-      const resp = await fetch('/api/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: statusSql }),
-      });
-      const data = await resp.json();
-      if (data.result?.[0]) {
-        const raw = Object.values(data.result[0])[0];
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed?.profiles && typeof parsed.profiles === 'object') {
-          const names = Object.keys(parsed.profiles).filter((p: string) => parsed.profiles[p]?.encoder_name);
-          if (names.length > 0) {
-            if (mySeq !== profilesSeqRef.current) return;
-            profilesCacheRef.current.set(regionKey, names);
-            setAvailableProfiles(names);
-            if (!names.includes(selectedProfile)) {
-              userEditedRef.current = false;
-              setSelectedProfile(names[0]);
-            }
-            setProfilesLoading(false);
-            return;
-          }
-        }
-      }
-    } catch {}
-    if (mySeq !== profilesSeqRef.current) return;
-    setAvailableProfiles([]);
-    setProfilesLoading(false);
-  }, [selectedProfile, sfDatabase]);
-
-  useEffect(() => {
-    if (selectedRegion) fetchProfiles(selectedRegion);
-  }, [selectedRegion, fetchProfiles]);
-
   const onRegionChange = useCallback((regionKey: string) => {
     const r = regions.find((c) => c.region === regionKey) || null;
     userEditedRef.current = false;
@@ -268,10 +268,10 @@ export default function FunctionTester() {
   useEffect(() => {
     if (preset.loading || !preset.orsProfile) return;
     if (lastPresetProfileRef.current === preset.orsProfile) return;
-    if (availableProfiles.length > 0 && !availableProfiles.includes(preset.orsProfile)) return;
+    if (expectedProfiles.length > 0 && !expectedProfiles.includes(preset.orsProfile)) return;
     lastPresetProfileRef.current = preset.orsProfile;
     onProfileChange(preset.orsProfile);
-  }, [preset.orsProfile, preset.loading, availableProfiles, onProfileChange]);
+  }, [preset.orsProfile, preset.loading, expectedProfiles, onProfileChange]);
 
   const handleReshuffle = useCallback(() => {
     userEditedRef.current = false;
@@ -308,6 +308,8 @@ export default function FunctionTester() {
     setRunning(false);
   }, [sqlInput]);
 
+  const graphsLoading = selectedRegion?.graphReadiness?.service_ready === false;
+
   return (
     <div className="panel">
       <h2>Function Tester</h2>
@@ -331,13 +333,16 @@ export default function FunctionTester() {
             label: c.display_name || c.region,
           }))}
           profiles={
-            profilesLoading
-              ? [{ value: selectedProfile, label: 'Loading...' }]
-              : availableProfiles.length > 0
-                ? availableProfiles.map((p) => ({ value: p, label: PROFILE_LABELS[p] || p }))
-                : [{ value: preset.orsProfile, label: PROFILE_LABELS[preset.orsProfile] || preset.orsProfile }]
+            profileOptions.length > 0
+              ? profileOptions
+              : [{ value: preset.orsProfile, label: PROFILE_LABELS[preset.orsProfile] || preset.orsProfile }]
           }
         />
+      )}
+      {graphsLoading && (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 0' }}>
+          ORS graphs are loading for this region — profiles marked &quot;(loading...)&quot; are not yet routable.
+        </p>
       )}
       {regionsError && (
         <p style={{ color: 'var(--error)', fontSize: 13, margin: '4px 0 0' }}>{regionsError}</p>
