@@ -64,7 +64,7 @@ function hhmmToSecs(s: any): number {
 
 export default function RouteOptimization() {
   const preset = useActivePreset();
-  const { regionName, center, zoom } = useRegion();
+  const { regionName, displayName, center, zoom } = useRegion();
   const [searchText, setSearchText] = useState('');
   const [centerCoords, setCenterCoords] = useState<[number, number] | null>(null);
   const [radius, setRadius] = useState(5);
@@ -119,6 +119,7 @@ export default function RouteOptimization() {
     if (Number.isFinite(lng) && Number.isFinite(lat) && (lng !== 0 || lat !== 0)) {
       setVehicles(prev => prev.map(v => ({ ...v, startLng: lng, startLat: lat, endLng: lng, endLat: lat })));
     }
+    setSearchText(displayName);
     setCenterCoords(null);
     setPlaces([]);
     setJobs([]);
@@ -132,7 +133,7 @@ export default function RouteOptimization() {
     setFleetRecommendation(null);
     setNearbySchools([]);
     setSelectedSchools([]);
-  }, [center.lng, center.lat, zoom]);
+  }, [center.lng, center.lat, zoom, displayName]);
 
   useEffect(() => {
     if (!regionName) return;
