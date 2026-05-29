@@ -61,6 +61,7 @@ CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION($REGIO
 -- Per-region try/catch so a failure on one region (missing bbox,
 -- Overture share unmounted, etc.) doesn't abort the loop.
 --------------------------------------------------------------------
+EXECUTE IMMEDIATE $$
 DECLARE
     c CURSOR FOR
         SELECT REGION
@@ -74,3 +75,4 @@ BEGIN
         END;
     END FOR;
 END;
+$$;
