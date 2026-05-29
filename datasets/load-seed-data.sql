@@ -739,4 +739,62 @@ CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(
   'RES8'
 );
 
+--------------------------------------------------------------------------------
+-- 6. Anchor the active-preset CONFIG pointers (Asset Velocity + Freight Exchange)
+--------------------------------------------------------------------------------
+-- Both pages read projection views gated by a single-row CONFIG pointer:
+--   * FLEET_INTELLIGENCE.MARKETPLACE.CONFIG        -> Freight Exchange (VW_OFFER_ENRICHED)
+--   * FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG -> Asset Velocity (VW_IDLE_TRAILERS, etc.)
+-- The control-app's init.ts recreates the views + MERGEs MARKETPLACE.CONFIG on
+-- every boot, but a fresh install boots (Step 6) BEFORE this seed loader runs
+-- (Step 7), so at boot it derives from an empty UNIFIED and leaves both pointers
+-- empty -> both pages render 0 rows. init.ts also never INSERTs the
+-- ROUTE_OPTIMIZATION.CONFIG row at all. We anchor both pointers here, derived
+-- from the active DIM_DATASETS row (configurable, not hardcoded), so the pages
+-- prefill on the next boot regardless of which demo skills are deployed.
+-- Idempotent and conflict-free with init.ts: its boot MERGE re-affirms the same
+-- row (self-heal arm skipped because offers exist) and its cost UPDATE uses
+-- COALESCE, preserving the values seeded below.
+
+-- 6a. MARKETPLACE.CONFIG (guards in case init.ts has not created them yet)
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG;
+INSERT INTO FLEET_INTELLIGENCE.MARKETPLACE.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+WHERE IS_ACTIVE = TRUE
+LIMIT 1;
+
+-- 6b. ROUTE_OPTIMIZATION.CONFIG (guards + cost columns; init.ts is the source of
+-- truth for these column defaults -- see init.ts ~lines 425-443. Keep in sync.)
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS DAILY_RENTAL_RATE_AVOIDED_USD NUMBER(10,2);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS RENTAL_CAPTURE_RATE NUMBER(4,3);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS MAX_REPOSITION_MINUTES NUMBER(6,0);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS AVOID_FEATURES VARCHAR(200);
+
+DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+  (VEHICLE_TYPE, REGION, DAILY_RENTAL_RATE_AVOIDED_USD, RENTAL_CAPTURE_RATE, MAX_REPOSITION_MINUTES, AVOID_FEATURES)
+SELECT VEHICLE_TYPE, REGION, 80.00, 0.600, 600, 'tollways,ferries'
+FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+WHERE IS_ACTIVE = TRUE
+LIMIT 1;
+
 SELECT 'Seed data loaded successfully' AS STATUS;
