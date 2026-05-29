@@ -2555,7 +2555,7 @@ BEGIN
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            profiles := 'driving-car,driving-hgv,cycling-electric';
+            profiles := 'driving-car,cycling-electric';
         END IF;
         pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
         IF (pbf_file = '' OR pbf_file IS NULL) THEN

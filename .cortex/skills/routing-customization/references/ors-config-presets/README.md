@@ -8,7 +8,7 @@ Annotated, validated `ors-config.yml` templates that replace the most common edi
 
 | Preset | Use when | Notes |
 |---|---|---|
-| [`standard.yml`](standard.yml) | Single city / region (San Francisco, Munich, Berlin). Default for new installs. | Mirrors the values baked into `staged_files/ors-config.yml`. Driving + e-bike enabled, isochrone range capped at 5 h / 1 500 km. |
+| [`standard.yml`](standard.yml) | Single city / region (San Francisco, Munich, Berlin). Default for new installs. | Mirrors the values baked into `staged_files/ors-config.yml`. Driving-car + e-bike enabled (HGV opt-in via `hgv.yml`), isochrone range capped at 5 h / 1 500 km. |
 | [`hgv.yml`](hgv.yml) | Trucking-heavy demos with long-distance HGV legs across a single region. | Enables `driving-hgv` with full HGV preparation; relaxes `maximum_distance` to 100M for cross-state trips inside the region. |
 | [`bikes.yml`](bikes.yml) | Cycling, food-delivery e-bike, and last-mile demos. | Enables all four cycling profiles + `foot-walking`. Tightens HGV/car if you do not need them (faster builds, smaller graphs). |
 | [`continental.yml`](continental.yml) | Continental extracts — entire USA, EU, or a multi-country region. **Opt-in only.** | Sets `graphs_data_access: MMAP`, an explicit `maximum_snapping_radius: 5000`, and `maximum_waypoints` raised to 5000. Pair with `INSTANCE_FAMILY = HIGHMEM_X64_M` (or larger) on the per-region compute pool. |

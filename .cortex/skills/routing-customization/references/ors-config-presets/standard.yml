@@ -6,10 +6,10 @@
 #
 # Profiles enabled:
 #   driving-car        -- primary
-#   driving-hgv        -- enabled but not heavily preparation-tuned
 #   cycling-electric   -- secondary (food-delivery use cases)
 #
 # Disabled in this preset to keep graph build fast and small:
+#   driving-hgv
 #   cycling-regular, cycling-road, cycling-mountain
 #   foot-walking, foot-hiking
 #   wheelchair
@@ -43,7 +43,7 @@ ors:
       driving-car:
         enabled: true
       driving-hgv:
-        enabled: true
+        enabled: false
       cycling-regular:
         enabled: false
       cycling-road:

@@ -22,7 +22,7 @@ ors:
       driving-car: 
         enabled: true
       driving-hgv: 
-        enabled: true
+        enabled: false
 ## Cycling profiles
       cycling-regular:
         enabled: false
