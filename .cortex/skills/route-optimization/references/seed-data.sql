@@ -5,6 +5,13 @@
  *
  * To customize for a different region, change the SET variables below.
  * Use the geohash table in references/notebook-deployment.md to find the correct geohash.
+ *
+ * IMPORTANT: All override tables (SEN_STUDENTS, CUSTOMER_ADDRESSES, etc.) MUST constrain
+ * locations to within the ORS routing graph boundary (the loaded PBF area). Locations
+ * outside the graph will cause VROOM optimization to fail silently — no routes will be
+ * returned. For San Francisco (bbbike PBF): -122.54 to -122.32 lng, 37.54 to 37.93 lat.
+ * Use a tighter bbox (e.g. -122.52 to -122.35, 37.70 to 37.82) for reliable results.
+ *
  * Common geohashes:
  *   San Francisco:  9q
  *   New York:       dr
@@ -241,6 +248,9 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (
 )
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- NOTE: Locations MUST be within the ORS routing graph (the loaded PBF area).
+-- For San Francisco, this is approximately -122.52 to -122.35 lng, 37.70 to 37.82 lat.
+-- Locations outside the graph will cause VROOM optimization to fail silently.
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (REGION, NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS)
 SELECT
     $REGION_NAME,
@@ -255,7 +265,8 @@ WHERE REGION = $REGION_NAME
   AND ADDRESS:freeform IS NOT NULL
   AND ADDRESS:locality::VARCHAR IS NOT NULL
   AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits','home_health_care','professional_services')
-  AND ST_DWITHIN(GEOMETRY, (SELECT ST_COLLECT(GEOMETRY) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE REGION = $REGION_NAME AND CATEGORY = 'school' LIMIT 1), 15000)
+  AND ST_X(GEOMETRY) BETWEEN -122.52 AND -122.35
+  AND ST_Y(GEOMETRY) BETWEEN 37.70 AND 37.82
 ORDER BY RANDOM()
 LIMIT 60;
 
