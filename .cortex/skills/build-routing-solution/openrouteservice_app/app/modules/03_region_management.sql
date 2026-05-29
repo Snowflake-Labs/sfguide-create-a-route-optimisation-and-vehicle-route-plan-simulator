@@ -2394,6 +2394,8 @@ DECLARE
     status_raw VARCHAR DEFAULT '';
     status_json VARIANT;
     profile_count INTEGER DEFAULT 0;
+    expected_count INTEGER DEFAULT 0;
+    profiles_csv VARCHAR DEFAULT '';
     is_ready BOOLEAN DEFAULT FALSE;
     has_build_ok BOOLEAN DEFAULT FALSE;
     finalized INTEGER DEFAULT 0;
@@ -2425,6 +2427,30 @@ BEGIN
             CONTINUE;
         END IF;
 
+        profiles_csv := NULL;
+        expected_count := 0;
+        BEGIN
+            rs := (
+                SELECT PROFILES
+                FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                WHERE REGION = :region AND PROFILES IS NOT NULL
+                ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END,
+                         COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+                LIMIT 1
+            );
+            LET c_prof CURSOR FOR rs;
+            FOR rp IN c_prof DO profiles_csv := rp.PROFILES; END FOR;
+        EXCEPTION WHEN OTHER THEN profiles_csv := NULL;
+        END;
+        IF (profiles_csv IS NULL OR TRIM(profiles_csv) = '') THEN
+            IF (UPPER(:region) = 'SANFRANCISCO') THEN
+                profiles_csv := 'driving-car,driving-hgv,cycling-electric';
+            ELSE
+                profiles_csv := 'driving-car,cycling-electric';
+            END IF;
+        END IF;
+        expected_count := ARRAY_SIZE(SPLIT(TRIM(:profiles_csv), ','));
+
         BEGIN
             rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :region || ''')::VARCHAR AS S');
             LET c2 CURSOR FOR rs;
@@ -2432,7 +2458,7 @@ BEGIN
             status_json := TRY_PARSE_JSON(:status_raw);
             IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
                 profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
-                IF (:profile_count > 0) THEN is_ready := TRUE; END IF;
+                IF (:profile_count >= :expected_count AND :expected_count > 0) THEN is_ready := TRUE; END IF;
             END IF;
         EXCEPTION WHEN OTHER THEN is_ready := FALSE;
         END;
@@ -2585,7 +2611,11 @@ BEGIN
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            profiles := 'driving-car,cycling-electric';
+            IF (UPPER(:region) = 'SANFRANCISCO') THEN
+                profiles := 'driving-car,driving-hgv,cycling-electric';
+            ELSE
+                profiles := 'driving-car,cycling-electric';
+            END IF;
         END IF;
 
         BEGIN

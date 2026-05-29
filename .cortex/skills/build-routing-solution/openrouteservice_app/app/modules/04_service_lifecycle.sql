@@ -508,6 +508,27 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
+        -- DEPLOYED region whose graphs were never finalized (_BUILD_OK missing).
+        -- Bootstrap and re-provision paths can leave REBUILD_GRAPHS=true with a
+        -- partial stage; without pinning, auto-suspend interrupts the build before
+        -- FINALIZE_DEFAULT_REGION_IF_READY can flip the flag and write the marker.
+        IF (NOT busy) THEN
+            BEGIN
+                LET deployed_cnt INTEGER := 0;
+                SELECT COUNT(*) INTO :deployed_cnt
+                FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                WHERE UPPER(REGION) = :region_key AND STATUS = 'DEPLOYED';
+                IF (deployed_cnt > 0) THEN
+                    LET has_ok BOOLEAN := FALSE;
+                    EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region_key || '/';
+                    SELECT BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') INTO :has_ok
+                    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+                    IF (NOT COALESCE(has_ok, FALSE)) THEN busy := TRUE; END IF;
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+
         BEGIN
             IF (busy) THEN
                 EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || rec.svc_name || ' SET AUTO_SUSPEND_SECS = 0';
@@ -637,6 +658,23 @@ BEGIN
             IF (psc > 0) THEN pbusy := TRUE; END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Mirror ORS_SERVICE pin: unfinalized DEPLOYED region (no _BUILD_OK).
+        IF (NOT pbusy) THEN
+            BEGIN
+                LET pdeployed INTEGER := 0;
+                SELECT COUNT(*) INTO :pdeployed
+                FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                WHERE UPPER(REGION) = :pregion_key AND STATUS = 'DEPLOYED';
+                IF (pdeployed > 0) THEN
+                    LET phas_ok BOOLEAN := FALSE;
+                    EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :pregion_key || '/';
+                    SELECT BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') INTO :phas_ok
+                    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+                    IF (NOT COALESCE(phas_ok, FALSE)) THEN pbusy := TRUE; END IF;
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
         BEGIN
             IF (pbusy) THEN
                 EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ' || rec.pool_name || ' SET AUTO_SUSPEND_SECS = 0';
