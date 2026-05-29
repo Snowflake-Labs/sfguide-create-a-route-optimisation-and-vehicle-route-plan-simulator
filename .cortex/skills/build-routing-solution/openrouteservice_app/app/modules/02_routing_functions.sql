@@ -37,6 +37,28 @@
    )
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
 
+   -- =============================================================================
+   -- REGION_ORS_MAP bootstrap (Mirror of REGION_ORS_MAP DDL in 03_region_management.sql; keep in sync.)
+   -- REGION_FOR_POINT joins REGION_ORS_MAP. Create it here idempotently so module 02
+   -- compiles standalone — do not rely on 03 having run first.
+   -- =============================================================================
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
+       REGION VARCHAR,
+       DISPLAY_NAME VARCHAR,
+       PBF_URL VARCHAR,
+       MIN_LAT FLOAT,
+       MAX_LAT FLOAT,
+       MIN_LON FLOAT,
+       MAX_LON FLOAT,
+       STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
+       COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
+       INSTANCE_FAMILY VARCHAR,
+       IS_DEFAULT BOOLEAN DEFAULT FALSE,
+       CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
+       UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD (folder VARCHAR, filename VARCHAR, URL VARCHAR)
       RETURNS varchar
       SERVICE=OPENROUTESERVICE_APP.CORE.downloader
