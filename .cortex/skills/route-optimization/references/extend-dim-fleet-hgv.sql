@@ -62,6 +62,19 @@ UPDATE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
        END
  WHERE TRUE;
 
+-- Recreate dataset-scoped projection view immediately (do not rely on the next
+-- ors_control_app boot). extend-dim-fleet-hgv.sql drops this view above.
+CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+AS
+SELECT f.*
+FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+  ON d.DATASET_ID = f.JOB_ID
+ AND d.REGION = f.REGION
+ AND d.VEHICLE_TYPE = f.VEHICLE_TYPE
+ AND d.IS_ACTIVE = TRUE;
+
 -- Resilient view: works even after Data Studio regenerates DIM_FLEET (which
 -- would drop the HGV columns). Uses COALESCE against the same deterministic
 -- formulas as the backfill, so callers always get well-defined values.
