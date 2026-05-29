@@ -22,6 +22,11 @@ Embedded in `deploy-all.sql` — no manual setup needed:
 5. **All objects need COMMENT tracking tags** per AGENTS.md
 6. **Log errors** to `logs/` per error logging convention
 7. **Stage layout is critical** — `ors-config.yml` and map files go ONLY in `@stage/{RegionName}/` (e.g. `SanFrancisco/`). The control app discovers regions by scanning for `*ors-config*` files and uses the parent folder name as the region identifier. A file at `config/ors-config.yml` would create a phantom region called "config".
+8. **Use `snow sql` for EXECUTE IMMEDIATE FROM** — The Cortex Code SQL tool (`snowflake_sql_execute`) returns error `391917` ("Invalid parameter... Allowed formats: jsonv2") for `EXECUTE IMMEDIATE FROM` when the staged file contains SQL scripting blocks (`BEGIN...END`, `$$` procedures). Use `snow sql -q "..."` via the Bash tool instead:
+   ```bash
+   snow sql -q "USE WAREHOUSE ROUTING_DEPLOY; USE SCHEMA OPENROUTESERVICE_APP.CORE; EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/path/to/module.sql;"
+   ```
+   This works reliably for all modules. Simple DDL (CREATE TABLE, CREATE FUNCTION) can still use `snowflake_sql_execute` directly.
 
 ## Execution Order
 
@@ -79,6 +84,11 @@ Then in order:
 | Map tiles not loading (blank map) | 01 | `ORS_CARTO_EAI` must be attached to ORS_CONTROL_APP service |
 | Region catalog empty | 01+seed | `load-seed-data.sql` populates REGION_CATALOG (460 regions) + REGION_ORS_MAP |
 | Region resolves as 'config' (industries empty) | stage layout | `ors-config.yml` must ONLY exist at `@stage/SanFrancisco/ors-config.yml`. NEVER upload to `@stage/config/` — the control app scans for `*ors-config*` and treats each parent folder as a region name |
+| DOWNLOAD function not found | 01 | Module 01 calls `DOWNLOAD()` but it was defined in module 02. Fixed: inline CREATE FUNCTION in 01 before the SELECT call |
+| ROUTING_AGENT schema not found | deploy-demo-data | `deploy-demo-data.sql` creates procs in `FLEET_INTELLIGENCE.ROUTING_AGENT` but didn't create the schema. Fixed: added CREATE SCHEMA IF NOT EXISTS at top |
+| ORS_STATUS returns 404 | 02 | `_ORS_STATUS_RAW` was mapped to `/status` but gateway endpoint is `/ors_status`. Fixed in module 02 |
+| `EXECUTE IMMEDIATE FROM` fails with 391917 | all modules | Cortex Code SQL tool can't handle scripting block results. Use `snow sql -q` via Bash tool instead (see Deployment Rule 8) |
+| VRP industries empty (region mismatch) | route-optimization | `$REGION_NAME` session variables don't resolve in CTAS/INSERT inside `EXECUTE IMMEDIATE FROM`. Fixed: replaced `$VAR` with `GETVARIABLE('VAR')` which works in all contexts |
 
 ## Verification
 

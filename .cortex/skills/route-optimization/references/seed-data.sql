@@ -30,6 +30,10 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-opt
 
 --------------------------------------------------------------------
 -- REGION CONFIGURATION (customize these for your region)
+-- NOTE: Using both SET (for EXECUTE IMMEDIATE FROM compatibility)
+-- and literal fallbacks in queries. SET session variables may not
+-- resolve in CTAS/INSERT when run via EXECUTE IMMEDIATE FROM.
+-- If changing region, update BOTH the SET values AND the defaults below.
 --------------------------------------------------------------------
 SET REGION_GEOHASH = '9q';
 SET REGION_NAME = 'SanFrancisco';
@@ -62,7 +66,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 MERGE INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG tgt
-USING (SELECT 'driving-car' AS VEHICLE_TYPE, $REGION_NAME AS REGION) src
+USING (SELECT 'driving-car' AS VEHICLE_TYPE, GETVARIABLE('REGION_NAME') AS REGION) src
 ON TRUE
 WHEN MATCHED THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
@@ -72,7 +76,7 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, sr
 --------------------------------------------------------------------
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA AS
 SELECT * FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-WHERE ST_GEOHASH(GEOMETRY, 2) = $REGION_GEOHASH;
+WHERE ST_GEOHASH(GEOMETRY, 2) = GETVARIABLE('REGION_GEOHASH');
 
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA SET
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -82,7 +86,7 @@ ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.REGION_DATA SET
 --------------------------------------------------------------------
 CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES AS
 SELECT
-    $REGION_NAME AS REGION,
+    GETVARIABLE('REGION_NAME') AS REGION,
     GEOMETRY,
     PHONES[0]::TEXT AS PHONES,
     CATEGORIES:primary::TEXT AS CATEGORY,
@@ -117,7 +121,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.JOB_TEMPLATE (SLOT_START, SLOT_END, SKILLS, PRODUCT, STATUS, REGION, INDUSTRY)
-SELECT column1, column2, column3, column4, 'active', $REGION_NAME, column5 FROM VALUES
+SELECT column1, column2, column3, column4, 'active', GETVARIABLE('REGION_NAME'), column5 FROM VALUES
 (32400, 36000, 1, 'pa', 'healthcare'),
 (39600, 54000, 2, 'pb', 'healthcare'),
 (57600, 64800, 2, 'pb', 'healthcare'),
@@ -188,7 +192,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (REGION, INDUSTRY, PA, PB, PC, IND, IND2, CTYPE, STYPE, SOURCE_TABLE, DEPOT_CTYPE, DEPOT_LABEL)
-SELECT $REGION_NAME, 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
+SELECT GETVARIABLE('REGION_NAME'), 'healthcare', 'flammable', 'sharps', 'temperature-controlled',
        ARRAY_CONSTRUCT('hospital health pharmaceutical drug healthcare pharmacy surgical'),
        ARRAY_CONSTRUCT('supplies warehouse depot distribution wholesaler distributors'),
        ARRAY_CONSTRUCT('hospital', 'family_practice', 'dentist', 'pharmacy'),
@@ -197,7 +201,7 @@ SELECT $REGION_NAME, 'healthcare', 'flammable', 'sharps', 'temperature-controlle
        ARRAY_CONSTRUCT('warehouses', 'medical_supply', 'storage_facility'),
        'Supplier Depot'
 UNION ALL
-SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
+SELECT GETVARIABLE('REGION_NAME'), 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Perishable Food Order',
        ARRAY_CONSTRUCT('food vegatables meat vegatable'),
        ARRAY_CONSTRUCT('wholesaler warehouse factory processing distribution distributors'),
        ARRAY_CONSTRUCT('supermarket', 'restaurant', 'butcher_shop'),
@@ -206,7 +210,7 @@ SELECT $REGION_NAME, 'Food', 'Fresh Food Order', 'Frozen Food Order', 'Non Peris
        ARRAY_CONSTRUCT('restaurant', 'fast_food_restaurant', 'casual_eatery'),
        'Restaurant Origin'
 UNION ALL
-SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
+SELECT GETVARIABLE('REGION_NAME'), 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up',
        ARRAY_CONSTRUCT('hair cosmetics make-up beauty'),
        ARRAY_CONSTRUCT('wholesaler warehouse factory supplies distribution distributors'),
        ARRAY_CONSTRUCT('supermarket', 'outlet', 'fashion'),
@@ -215,7 +219,7 @@ SELECT $REGION_NAME, 'Cosmetics', 'Hair Products', 'Electronic Goods', 'Make-up'
        ARRAY_CONSTRUCT('warehouses', 'distribution_services', 'storage_facility'),
        'Distribution Centre'
 UNION ALL
-SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
+SELECT GETVARIABLE('REGION_NAME'), 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'Still Water',
        ARRAY_CONSTRUCT('beverage drink brewery distillery bottling winery'),
        ARRAY_CONSTRUCT('warehouse distribution depot factory wholesaler'),
        ARRAY_CONSTRUCT('bar', 'pub', 'restaurant', 'hotel', 'supermarket', 'convenience_store'),
@@ -224,7 +228,7 @@ SELECT $REGION_NAME, 'Beverages', 'Alcoholic Beverages', 'Carbonated Drinks', 'S
        ARRAY_CONSTRUCT('warehouses', 'brewery', 'distillery', 'winery'),
        'Distribution Depot'
 UNION ALL
-SELECT $REGION_NAME, 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
+SELECT GETVARIABLE('REGION_NAME'), 'SEN Transport', 'Solo Taxi (1 child, chaperone required)', 'Shared Taxi (2-3 children)', 'Minibus (6-8 children)',
        ARRAY_CONSTRUCT('special needs school education SEN disability autism ADHD'),
        ARRAY_CONSTRUCT('school academy college nursery pupil referral unit'),
        ARRAY_CONSTRUCT('school', 'elementary_school', 'high_school', 'middle_school'),
@@ -253,7 +257,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (
 -- Locations outside the graph will cause VROOM optimization to fail silently.
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEN_STUDENTS (REGION, NAME, CATEGORY, LNG, LAT, ADDRESS, DISPLAY_ADDRESS)
 SELECT
-    $REGION_NAME,
+    GETVARIABLE('REGION_NAME'),
     'Student ' || ROW_NUMBER() OVER (ORDER BY RANDOM()),
     'student_pickup',
     ST_X(GEOMETRY),
@@ -261,7 +265,7 @@ SELECT
     ADDRESS,
     ADDRESS:freeform::VARCHAR || ', ' || ADDRESS:locality::VARCHAR
 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
-WHERE REGION = $REGION_NAME
+WHERE REGION = GETVARIABLE('REGION_NAME')
   AND ADDRESS:freeform IS NOT NULL
   AND ADDRESS:locality::VARCHAR IS NOT NULL
   AND CATEGORY IN ('real_estate_agent','landmark_and_historical_building','community_services_non_profits','home_health_care','professional_services')
@@ -290,7 +294,7 @@ CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES
 
 INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CUSTOMER_ADDRESSES
 SELECT
-    $REGION_NAME AS REGION,
+    GETVARIABLE('REGION_NAME') AS REGION,
     ID,
     COALESCE(NUMBER || ' ' || STREET, STREET) AS NAME,
     'customer_address' AS CATEGORY,

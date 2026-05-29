@@ -43,6 +43,11 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
 
 USE WAREHOUSE ROUTING_DEPLOY;
 
+-- Set schema context required by modules that create EAIs and services.
+-- EXECUTE IMMEDIATE FROM inherits the caller's session context; some DDL (EAI, service)
+-- requires schema to be set BEFORE the module runs even though modules use USE SCHEMA internally.
+USE SCHEMA OPENROUTESERVICE_APP.CORE;
+
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 1: CORE INFRASTRUCTURE (build-routing-solution modules 00-06)        ║
 -- ║ Owner: .cortex/skills/build-routing-solution/                              ║

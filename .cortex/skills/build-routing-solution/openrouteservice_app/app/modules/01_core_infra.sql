@@ -131,6 +131,16 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
    EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
 
+-- Step 1b: Create the DOWNLOAD service function so we can call it below.
+-- NOTE: The function is also created in 02_routing_functions.sql, but we need it here
+-- because module 01 must download the PBF BEFORE starting ORS (which reads it on startup).
+-- Service functions don't support COMMENT — tracked via session query_tag.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD(folder VARCHAR, filename VARCHAR, url VARCHAR)
+   RETURNS VARCHAR
+   SERVICE = OPENROUTESERVICE_APP.CORE.DOWNLOADER
+   ENDPOINT = 'downloader'
+   AS '/download_to_stage';
+
 -- Step 2: Download the real San Francisco OSM PBF (~32MB).
 -- The DOWNLOAD function calls the downloader service which saves to its volume mount
 -- at /downloads/ors_spcs_stage/ → maps to @ORS_SPCS_STAGE on the stage.

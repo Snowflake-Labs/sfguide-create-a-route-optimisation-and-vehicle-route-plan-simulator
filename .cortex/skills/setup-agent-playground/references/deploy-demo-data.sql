@@ -7,6 +7,10 @@
 USE ROLE ACCOUNTADMIN;
 USE WAREHOUSE ROUTING_ANALYTICS;
 
+-- Ensure ROUTING_AGENT schema exists (required by TOOL_SUPPLY_CHAIN and other procedures below)
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- ===================== STEP 1: Configure Demo Defaults =====================
 
 UPDATE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG SET VEHICLE_TYPE = 'ebike', REGION = 'SanFrancisco';
