@@ -29,27 +29,39 @@ export default function DatasetPicker() {
   const region = useRegion();
   const vehicleTypeCtx = useVehicleType();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [currentRegion, setCurrentRegion] = useState<string | null>(null);
+  const [currentVehicleType, setCurrentVehicleType] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState('Loading...');
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
+  const isSelected = useCallback((ds: Dataset, region: string | null, vehicleType: string | null) => {
+    return region != null && vehicleType != null
+      && ds.region === region && ds.vehicleType === vehicleType;
+  }, []);
+
   const fetchDatasets = useCallback(async () => {
     try {
       const res = await fetch('/api/datasets');
       if (res.ok) {
         const data = await res.json();
-        setDatasets(data.datasets || []);
-        const active = (data.datasets || []).find((d: Dataset) => d.isActive);
-        if (active) setActiveLabel(active.presetName);
-        else if (data.datasets?.length) setActiveLabel(data.datasets[0].presetName);
+        const list: Dataset[] = data.datasets || [];
+        const region = data.currentRegion ?? null;
+        const vehicleType = data.currentVehicleType ?? null;
+        setDatasets(list);
+        setCurrentRegion(region);
+        setCurrentVehicleType(vehicleType);
+        const selected = list.find((d) => isSelected(d, region, vehicleType));
+        if (selected) setActiveLabel(selected.presetName);
+        else if (list.length) setActiveLabel(list[0].presetName);
         else setActiveLabel('No datasets');
       }
     } catch {
       setActiveLabel('No datasets');
     }
-  }, []);
+  }, [isSelected]);
 
   useEffect(() => { fetchDatasets(); }, [fetchDatasets]);
 
@@ -62,7 +74,7 @@ export default function DatasetPicker() {
   }, []);
 
   const handlePick = async (ds: Dataset) => {
-    if (ds.isActive) {
+    if (isSelected(ds, currentRegion, currentVehicleType)) {
       setOpen(false);
       return;
     }
@@ -141,11 +153,12 @@ export default function DatasetPicker() {
           )}
           {datasets.map((ds) => {
             const unavailable = ds.isAvailable === false;
+            const selected = isSelected(ds, currentRegion, currentVehicleType);
             return (
               <button
                 key={ds.jobId}
                 type="button"
-                className={`region-option ${ds.isActive ? 'active' : ''}`}
+                className={`region-option ${selected ? 'active' : ''}`}
                 onClick={() => handlePick(ds)}
                 style={{
                   flexDirection: 'column',
@@ -158,7 +171,7 @@ export default function DatasetPicker() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
                   <Database size={12} />
                   <span style={{ fontWeight: 500, flex: 1 }}>{ds.presetName}</span>
-                  {ds.isActive && <span className="region-tag seed">Active</span>}
+                  {selected && <span className="region-tag seed">Active</span>}
                   {unavailable && (
                     <span className="region-tag" style={{ fontSize: 10, opacity: 0.9 }}>
                       no fleet data
