@@ -147,7 +147,7 @@ This creates:
 
 ### Step 5: Register Agent with Snowflake Intelligence (Optional)
 
-> **Note:** This step requires Snowflake Intelligence to be configured on the account. The agent is fully functional via direct `INVOKE_AGENT` calls without SI registration.
+> **Note:** This step requires Snowflake Intelligence to be enabled on the account. On accounts where it is not provisioned, `SHOW SNOWFLAKE INTELLIGENCE` / the `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` below fail with `002003 ... 'SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT' does not exist or not authorized` (observed on tib85385, friction-log F5). This is expected and non-blocking: the agent is fully functional via the control-app **Agent Playground** and via direct `INVOKE_AGENT` REST/SQL calls without SI registration. Skip the rest of this step if SI is not enabled.
 
 1. **Check** if Snowflake Intelligence is available:
    ```sql
