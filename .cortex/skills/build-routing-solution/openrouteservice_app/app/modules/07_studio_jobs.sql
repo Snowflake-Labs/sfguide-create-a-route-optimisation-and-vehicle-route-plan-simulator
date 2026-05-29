@@ -93,7 +93,7 @@ BEGIN
         ' QUERY_WAREHOUSE = ROUTING_ANALYTICS' ||
         ' ASYNC = TRUE' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"oss-studio-job","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}''' ||
-        ' FROM SPECIFICATION $$' || :spec_yaml || '$$';
+        ' FROM SPECIFICATION ' || CHR(36) || CHR(36) || :spec_yaml || CHR(36) || CHR(36);
 
     RETURN OBJECT_CONSTRUCT('status', 'launched', 'service', :svc_name, 'pool', :pool_name)::STRING;
 END;
