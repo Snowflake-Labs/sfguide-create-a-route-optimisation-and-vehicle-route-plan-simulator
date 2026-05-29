@@ -458,6 +458,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
    | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers. **Best with HGV preset** (typically `region=Germany`, `vehicle_type=hgv`); on default SanFrancisco/ebike presets the trailer + internal-volume views render empty (the bootstrap prints a `STATUS` warning row in that case). | ~3 min | Seed data (Step 8) + Route Optimization deployed; ideally Germany/HGV preset generated via Data Studio |
+   | **Asset Velocity (page views)** | Idle-vehicle detection + reposition Action Engine page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install), NOT HGV-only. Created by `route-optimization/references/extend-dim-fleet-hgv.sql` + `asset-velocity-views.sql`. | ~1 min | Route Optimization seed (CONFIG) **and** Dwell Analysis (`DT_DWELL_ENRICHED`) deployed first |
+   | **Freight Exchange** | Dispatcher freight-marketplace cockpit (offers, trust/rate badges, lane history). Reads `FLEET_INTELLIGENCE.MARKETPLACE.*` projection views over the active preset. Page ships in the control-app image (>= v1.1.78) — only `bootstrap.sql` is needed, no rebuild. | ~2 min | Seed data (Step 8) populated **before** this runs; Backload Matching deployed |
+
+   > **Why Asset Velocity / Freight Exchange must run in Step 8 (after seed load):** their active-preset filter rows (`ROUTE_OPTIMIZATION.CONFIG`, `MARKETPLACE.CONFIG`) are **data-derived** from `SYNTHETIC_DATASETS.UNIFIED`. The control-app's `init.ts` seeds `MARKETPLACE.CONFIG` at container boot (Step 6), which is BEFORE seed data loads (Step 7), so it derives nothing and the page stays empty. Running `freight-exchange/references/bootstrap.sql` here (Step 8, post-seed) re-derives `MARKETPLACE.CONFIG` correctly. The same applies to Asset Velocity, whose views depend on Dwell Analysis being deployed first.
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
@@ -468,6 +472,11 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
    - **Then:** Route Deviation (needs SYNTHETIC_DATASETS data)
    - **Then:** Dwell Analysis (needs SYNTHETIC_DATASETS data)
+   - **Then:** Asset Velocity page views — run `route-optimization/references/extend-dim-fleet-hgv.sql` then `asset-velocity-views.sql` (must be AFTER both Route Optimization seed and Dwell Analysis, because the views reference `DWELL_ANALYSIS.DT_DWELL_ENRICHED`).
+   - **Then:** Backload Matching (needs Route Optimization)
+   - **Then:** Freight Exchange (run `freight-exchange/references/bootstrap.sql`; must be AFTER seed data so `MARKETPLACE.CONFIG` data-derives correctly)
+
+   > **"All demos" means all of the above**, including Asset Velocity and Freight Exchange. Do NOT stop at the first 8 rows — those two pages exist in the control-app sidebar and render empty unless these final steps run.
 
 3. **For each selected demo**, invoke the corresponding skill:
    - Fleet Intelligence: Food Delivery -> Read and follow `.cortex/skills/fleet-intelligence-food-delivery/SKILL.md`
@@ -478,6 +487,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
    - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
    - Backload Matching -> Read and follow `.cortex/skills/backload-matching/SKILL.md`
+   - Asset Velocity page views -> covered by `.cortex/skills/route-optimization/SKILL.md` (Step 5b). Requires Dwell Analysis deployed first.
+   - Freight Exchange -> Read and follow `.cortex/skills/freight-exchange/SKILL.md`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 

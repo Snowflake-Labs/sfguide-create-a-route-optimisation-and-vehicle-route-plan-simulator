@@ -85,11 +85,15 @@ If `DIM_PARTNERS` or `FACT_PARTNER_HISTORY` are empty, run a Data Studio job for
 snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_CONNECTION>
 ```
 
-This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `services/ors_control_app/server/lib/init.ts` and runs on every container start, so a fresh deploy already has these objects without this manual step. Use the script for greenfield install audits or out-of-band rebuilds.
+This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `services/ors_control_app/server/lib/init.ts` and runs on every container start.
 
-### Step 4: Rebuild and Redeploy ORS Control App
+> **CRITICAL on a fresh `build-routing-solution` install — run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (build-routing-solution Step 6) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a Step 8 item in build-routing-solution, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
 
-The new page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`.
+### Step 4: Rebuild and Redeploy ORS Control App (only for page source changes)
+
+> **Not required in the standard build-routing-solution flow.** The Freight Exchange page already ships in the control-app image (>= v1.1.78), so a fresh install only needs Step 3 (`bootstrap.sql`). Rebuild only when you have changed the page's React/server source.
+
+The page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`.
 
 ### Step 5: Verify
 

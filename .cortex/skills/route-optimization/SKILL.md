@@ -77,7 +77,9 @@ Known limitations (synthetic data):
 
 ### Deploy the Asset Velocity views
 
-Prerequisites: `dwell-analysis` skill deployed.
+> **This is a REQUIRED step of the standard workflow** (see **Step 5b** below), not an optional aside. Without it the Asset Velocity page in the control-app sidebar renders empty. It is preset-agnostic: `VW_IDLE_TRAILERS` pulls `VEHICLE_TYPE` from `ROUTE_OPTIMIZATION.CONFIG`, so on the default SanFrancisco/ebike install it surfaces idle **ebikes** (no HGV data required).
+
+Prerequisites: `dwell-analysis` skill deployed (the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time).
 
 ```bash
 snow sql -f .cortex/skills/route-optimization/references/extend-dim-fleet-hgv.sql -c <connection>
@@ -203,6 +205,28 @@ CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
    Expected: PLACES 50K-500K, LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
 
 **Output:** Standing data populated for `<REGION_NAME>`.
+
+### Step 5b: Deploy Asset Velocity Page Views (required for the Asset Velocity page)
+
+**Goal:** Create the Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_TRAILER_COST_OF_IDLENESS`, `VW_FLEET_HGV_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
+
+**Dependency:** `dwell-analysis` must be deployed first — the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
+
+> **Runtime owner:** the control-app `init.ts` is the source of truth for these four views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) and `CREATE OR REPLACE`s them on every container boot. The `.sql` files below are the keep-in-sync source and the manual-repair path (run them when a boot recreate failed silently, e.g. `DT_DWELL_ENRICHED` was absent at boot). The active-preset pointer they filter on lives in `ROUTE_OPTIMIZATION.CONFIG`, seeded by `datasets/load-seed-data.sql` and by this skill's `seed-data.sql`.
+
+```bash
+snow sql -f .cortex/skills/route-optimization/references/extend-dim-fleet-hgv.sql -c <connection>
+snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sql -c <connection>
+```
+
+Verify (all should return > 0 on a seeded install):
+```sql
+SELECT 'VW_IDLE_TRAILERS' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+UNION ALL SELECT 'VW_LANE_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
+UNION ALL SELECT 'VW_TRAILER_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+```
+
+**Output:** Asset Velocity page views created and populated for the active preset.
 
 ### Step 6: Check Claude Model
 
