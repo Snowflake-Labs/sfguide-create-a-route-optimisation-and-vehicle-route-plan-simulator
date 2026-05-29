@@ -167,11 +167,13 @@ tools:
           location_description:
             type: string
             description: "Center location description"
-          minutes:
+          range_minutes:
             type: integer
+            description: "Travel time in minutes (e.g. 5, 10, 15)"
           profile:
             type: string
-        required: [location_description, minutes]
+            description: "driving-car, driving-hgv, or cycling-electric"
+        required: [location_description, range_minutes]
   - tool_spec:
       type: generic
       name: TOOL_ROUTE_OPTIMIZATION
