@@ -119,16 +119,19 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, sr
 -- Pre-flight: fail loudly if the active vehicle_type is not in
 -- VEHICLE_CLASS_PROFILE (Decision #2 in plan). This catches custom presets
 -- before they silently produce empty views.
+EXECUTE IMMEDIATE $$
 DECLARE
   vt VARCHAR;
   hits NUMBER;
+  unknown_vt EXCEPTION (-20001, 'Unknown vehicle_type in CONFIG. Add a row to OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE before running backload-matching.');
 BEGIN
   vt := (SELECT VEHICLE_TYPE FROM CONFIG LIMIT 1);
   hits := (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE WHERE VEHICLE_TYPE = :vt);
   IF (hits = 0) THEN
-    RAISE STATEMENT_ERROR USING MESSAGE = 'Unknown vehicle_type "' || vt || '" in CONFIG. Add a row to OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE before running backload-matching.';
+    RAISE unknown_vt;
   END IF;
 END;
+$$;
 
 -- ----------------------------------------------------------------------------
 -- 2. PROPOSAL_DECISIONS (write-back; real table)
