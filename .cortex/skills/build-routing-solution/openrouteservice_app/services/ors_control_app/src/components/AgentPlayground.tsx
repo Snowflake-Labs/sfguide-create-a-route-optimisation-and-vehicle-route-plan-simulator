@@ -412,6 +412,7 @@ export default function AgentPlayground() {
   const [geoData, setGeoData] = useState<GeoData>(EMPTY_GEO);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 11, pitch: 0, bearing: 0 });
+  const [plantNavTarget, setPlantNavTarget] = useState<{ plant?: string; building?: string; room?: string } | null>(null);
   const streamingTextRef = useRef('');
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(loadSavedPrompts);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -561,6 +562,18 @@ export default function AgentPlayground() {
         setGeoData(geo);
         if (geo.center) setViewState(prev => ({ ...prev, longitude: geo.center![0], latitude: geo.center![1], zoom: geo.zoom }));
         if (geo.geojson || geo.points.length > 0 || geo.poiPoints.length > 0) setActiveVisualTab('map');
+
+        // Check tool results for plant navigation targets (from TOOL_PLANT_IMPACT or pharma_supply_chain)
+        for (const tr of toolResults) {
+          if (tr?.navigate_to) {
+            setPlantNavTarget(tr.navigate_to);
+            break;
+          }
+          // Auto-navigate when TOOL_PLANT_IMPACT returns a plant name
+          if (tr?.plant?.name && tr?.status === 'SUCCESS') {
+            setPlantNavTarget({ plant: tr.plant.name });
+          }
+        }
       }
 
       setMessages(prev => {
@@ -982,7 +995,7 @@ export default function AgentPlayground() {
                 {!hasChart && !hasMap && (
                   sc?.id === 'plant_intel' ? (
                     <div style={{ flex: 1, minHeight: 480 }}>
-                      <PlantIntelMap onBuildingSelect={handlePlantBuildingSelect} onRoomSelect={handlePlantRoomSelect} />
+                      <PlantIntelMap onBuildingSelect={handlePlantBuildingSelect} onRoomSelect={handlePlantRoomSelect} navigateTo={plantNavTarget} />
                     </div>
                   ) : (
                     <div style={{ padding: 28, borderRadius: 8, border: '1px solid var(--border)', background: 'linear-gradient(135deg, rgba(41,181,232,0.03) 0%, rgba(41,181,232,0.08) 100%)', minHeight: 480, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>

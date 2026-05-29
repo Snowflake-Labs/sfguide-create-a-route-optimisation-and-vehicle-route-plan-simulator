@@ -197,15 +197,17 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- Owner: .cortex/skills/add-pharma-intelligence/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-data.sql;
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-tools.sql;
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-plant-impact-tool.sql;
 
 -- Fleet Analytics (FLEET_TRIPS_SV, FLEET_TELEMETRY_SV semantic views)
 -- Owner: .cortex/skills/add-fleet-analytics/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-fleet-analytics/references/deploy-fleet-analytics.sql;
 
--- Routing Agent tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONES, TOOL_ROUTE_OPTIMIZATION, TOOL_PHARMA_CATCHMENT)
+-- Routing Agent tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION, TOOL_PHARMA_CATCHMENT)
 -- MUST run BEFORE configure-agent.sql (agent references these procedures)
--- Owner: .cortex/skills/routing-agent/
+-- Owner: .cortex/skills/routing-agent/ + build-routing-solution stored_procedures/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/routing-agent/references/deploy-agent.sql;
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/sql/stored_procedures/tool_pharma_catchment.sql;
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║ PHASE 5: AGENT + STREAMLIT (created LAST — references all tools/views)     ║

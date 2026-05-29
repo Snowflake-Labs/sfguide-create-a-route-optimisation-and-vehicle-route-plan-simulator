@@ -61,7 +61,8 @@ Then in order:
 4. `add-plant-map/references/build-plant-footprints.sql` (VIEW + ST_DWITHIN, not CTAS)
 5. `add-pharma-intelligence/references/deploy-pharma-data.sql`
 6. `add-pharma-intelligence/references/deploy-pharma-tools.sql`
-7. `add-fleet-analytics/references/deploy-fleet-analytics.sql`
+7. `add-pharma-intelligence/references/deploy-plant-impact-tool.sql` (TOOL_PLANT_IMPACT procedure)
+8. `add-fleet-analytics/references/deploy-fleet-analytics.sql`
 
 ### Phase 5: Agent + Streamlit
 
@@ -89,6 +90,7 @@ Then in order:
 | ORS_STATUS returns 404 | 02 | `_ORS_STATUS_RAW` was mapped to `/status` but gateway endpoint is `/ors_status`. Fixed in module 02 |
 | `EXECUTE IMMEDIATE FROM` fails with 391917 | all modules | Cortex Code SQL tool can't handle scripting block results. Use `snow sql -q` via Bash tool instead (see Deployment Rule 8) |
 | VRP industries empty (region mismatch) | route-optimization | `$REGION_NAME` session variables don't resolve in CTAS/INSERT inside `EXECUTE IMMEDIATE FROM`. Fixed: replaced `$VAR` with `GETVARIABLE('VAR')` which works in all contexts |
+| Agent tool identifiers mismatch | configure-agent | Agent spec referenced `TOOL_ISOCHRONES` and `TOOL_ROUTE_OPTIMIZATION` but actual procs are `TOOL_ISOCHRONE` and `TOOL_OPTIMIZATION`. Also `TOOL_PHARMA_CATCHMENT` and `TOOL_PLANT_IMPACT` weren't being deployed. Fixed: corrected identifiers and added missing deploy steps |
 
 ## Verification
 

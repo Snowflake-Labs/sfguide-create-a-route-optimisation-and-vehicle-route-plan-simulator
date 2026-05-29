@@ -39,9 +39,10 @@ function polyCenter(polygon: [number,number][]): [number,number] {
 interface PlantIntelMapProps {
   onBuildingSelect?: (building: any, plant: any) => void;
   onRoomSelect?: (room: any, building: any, plant: any) => void;
+  navigateTo?: { plant?: string; building?: string; room?: string } | null;
 }
 
-export default function PlantIntelMap({ onBuildingSelect, onRoomSelect }: PlantIntelMapProps = {}) {
+export default function PlantIntelMap({ onBuildingSelect, onRoomSelect, navigateTo }: PlantIntelMapProps = {}) {
   const [plants, setPlants] = useState<PlantRow[]>([]);
   const [navLevel, setNavLevel] = useState<NavLevel>(1);
   const [selectedPlant, setSelectedPlant] = useState<PlantRow | null>(null);
@@ -105,6 +106,48 @@ export default function PlantIntelMap({ onBuildingSelect, onRoomSelect }: PlantI
     else if (navLevel === 3) { setSelectedBuilding(null); setNavLevel(2); if(selectedPlant) setViewState({ longitude:selectedPlant.LONGITUDE, latitude:selectedPlant.LATITUDE, zoom:15, pitch:45, bearing:-15, transitionDuration:800 }); }
     else if (navLevel === 2) { setSelectedPlant(null); setCampus([]); setNavLevel(1); setViewState({...WORLD_VIEW, transitionDuration:800}); }
   }, [navLevel, selectedPlant]);
+
+  // Agent-driven navigation: when navigateTo prop changes, drill down to the target
+  useEffect(() => {
+    if (!navigateTo || !plants.length) return;
+    const target = navigateTo;
+    const matchPlant = target.plant
+      ? plants.find(p => p.PLANT_NAME.toLowerCase().includes(target.plant!.toLowerCase()) || p.PLANT_CODE.toLowerCase() === target.plant!.toLowerCase())
+      : null;
+    if (matchPlant && (!selectedPlant || selectedPlant.PLANT_ID !== matchPlant.PLANT_ID)) {
+      goToCampus(matchPlant).then(() => {
+        // After campus loads, try to navigate deeper if building/room specified
+        // Building/room matching happens in next effect cycle after campus state updates
+      });
+    }
+  }, [navigateTo, plants]);
+
+  // Second-level navigation after campus loads
+  useEffect(() => {
+    if (!navigateTo || !campus.length || navLevel < 2) return;
+    const target = navigateTo;
+    if (target.building && (!selectedBuilding || !selectedBuilding.role?.toLowerCase().includes(target.building.toLowerCase()))) {
+      const matchBldg = campus.find(b =>
+        b.role?.toLowerCase().includes(target.building!.toLowerCase()) ||
+        b.name?.toLowerCase().includes(target.building!.toLowerCase())
+      );
+      if (matchBldg) goToBuilding(matchBldg);
+    }
+  }, [navigateTo, campus, navLevel]);
+
+  // Third-level navigation after building loads
+  useEffect(() => {
+    if (!navigateTo || !selectedBuilding || navLevel < 3) return;
+    const target = navigateTo;
+    if (target.room) {
+      const zones = selectedBuilding.floors?.[selectedFloor]?.zones || [];
+      const matchRoom = zones.find((z: any) =>
+        z.name?.toLowerCase().includes(target.room!.toLowerCase()) ||
+        z.type?.toLowerCase().includes(target.room!.toLowerCase())
+      );
+      if (matchRoom && (!selectedRoom || selectedRoom.name !== matchRoom.name)) goToRoom(matchRoom);
+    }
+  }, [navigateTo, selectedBuilding, navLevel, selectedFloor]);
 
   const currentFloorZones = useMemo(() => {
     if (!selectedBuilding) return [];

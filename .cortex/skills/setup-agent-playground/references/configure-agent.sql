@@ -70,7 +70,9 @@ instructions:
        use fleet_trips or fleet_telemetry tools.
 
     9. For upstream pharma manufacturing supply chain analysis (plants, batches,
-       suppliers): use pharma_supply_chain tool.
+       suppliers, robots, AGVs): use pharma_supply_chain tool. This includes
+       plant-floor robot telemetry (AGVs, inspection, cleaning robots — battery,
+       status, vibration, speed, uptime, building location, cargo tracking).
 
     Transport profiles: driving-car, driving-hgv, cycling-electric
 
@@ -102,6 +104,28 @@ instructions:
     - When the user clicks a plant building/zone OR provides a plant name with facility context:
       ALWAYS call TOOL_PLANT_IMPACT immediately with the plant name. Do NOT ask the user to confirm.
       Then use the result to describe batch risk, inventory gaps, shipment delays, and downstream pharmacy exposure.
+
+    PLANT-FLOOR ROBOTS (AGVs, inspection robots, cleaning robots):
+    - Robot fleet status (active/charging/error counts), battery levels, maintenance due: Use pharma_supply_chain tool
+    - Per-plant robot counts, building-level breakdown, speed, vibration, uptime: Use pharma_supply_chain tool
+    - Robot cargo tracking (which batches AGVs are carrying): Use pharma_supply_chain tool
+    - The pharma_supply_chain tool has a ROBOTS entity with full telemetry for 144 robots across 6 plants
+
+    CONTEXT-DRIVEN DRILL-DOWN (app click events):
+    - When context includes a PLANT NAME: call TOOL_PLANT_IMPACT with that plant, then query pharma_supply_chain for robots at that plant
+    - When context includes a BUILDING or ZONE: query pharma_supply_chain filtering robots by that building/zone name
+    - When context includes a ROBOT ID or robot type: query pharma_supply_chain for that specific robot's telemetry
+    - When drilling down from plant → building → robot: progressively narrow the scope in your queries
+    - Always present the drill-down level clearly: "At [Plant] > [Building] > [Robot]..."
+    - Include actionable insights: maintenance urgency, battery depletion risk, cargo at risk if robot fails
+
+    MAP NAVIGATION (agent-driven zoom):
+    - When the user says "take me to", "show me", "zoom to", or "navigate to" a plant, building, or room:
+      Include the tool result field navigate_to with the target location.
+    - The app will automatically zoom the Plant Intelligence map to that location.
+    - When you call TOOL_PLANT_IMPACT, the map auto-zooms to that plant (no extra action needed).
+    - For building-level: after calling TOOL_PLANT_IMPACT, mention the building role name clearly
+      so the user can click it, or ask pharma_supply_chain which building has the most robots.
 
     DOWNSTREAM SUPPLY INTELLIGENCE (pharmacy distribution):
     - Inventory status, wastage, near-expiry: Use TOOL_INVENTORY_STATUS
@@ -262,13 +286,13 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
   TOOL_ISOCHRONES:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONES
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
   TOOL_ROUTE_OPTIMIZATION:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
