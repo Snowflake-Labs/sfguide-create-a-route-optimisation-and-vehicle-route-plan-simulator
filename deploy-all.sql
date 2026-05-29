@@ -21,6 +21,11 @@
 --   COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/
 --   FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
 --   PATTERN='.*\\.sql';
+--
+--   ⚠️  DO NOT use PATTERN='.*\\.(yaml|yml)' — this uploads ors-config.yml to deploy/
+--   which creates phantom regions. Upload YAML service specs individually to their
+--   correct @ORS_SPCS_STAGE/services/{name}/ paths. Upload ors-config.yml ONLY to
+--   @ORS_SPCS_STAGE/SanFrancisco/ors-config.yml.
 -- =============================================================================
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -53,11 +58,27 @@ USE SCHEMA OPENROUTESERVICE_APP.CORE;
 -- ║ Owner: .cortex/skills/build-routing-solution/                              ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
--- CRITICAL: Remove any ors-config.yml files that landed in deploy/ during bulk upload.
--- The control app scans for *ors-config* and uses the parent folder as a region name.
--- Only @stage/SanFrancisco/ors-config.yml should exist; stray copies create phantom regions.
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- CRITICAL STAGE HYGIENE: Remove any ors-config.yml files from deploy/ paths.
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WHY: The ORS Control App scans the ENTIRE @ORS_SPCS_STAGE for files matching
+-- *ors-config* and uses the PARENT FOLDER NAME as a region identifier.
+-- If ors-config.yml exists at deploy/ors-config.yml, a phantom region called
+-- "deploy" is created. If at deploy/.../staged_files/ors-config.yml, a phantom
+-- region "staged_files" is created. This breaks Retail Catchment (empty city
+-- dropdown) and Route Optimization (wrong region context).
+--
+-- RULE: ors-config.yml must ONLY exist at @ORS_SPCS_STAGE/{RegionName}/ors-config.yml
+-- (e.g. @ORS_SPCS_STAGE/SanFrancisco/ors-config.yml)
+--
+-- These REMOVE statements are idempotent — safe to run even if files don't exist.
+-- ═══════════════════════════════════════════════════════════════════════════════
 REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/ors-config.yml;
 REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/ors-config.yml;
+
+-- VERIFICATION: After removal, this must return EXACTLY 1 row (SanFrancisco/ors-config.yml).
+-- If it returns more, there are additional stray copies that need manual removal.
+-- LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE PATTERN='.*ors-config.*';
 
 -- Step 0: Install Overture Maps Marketplace datasets (Places, Addresses, Buildings)
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/00_marketplace_datasets.sql;

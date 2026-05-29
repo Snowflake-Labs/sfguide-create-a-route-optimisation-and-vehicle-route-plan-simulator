@@ -12,6 +12,12 @@ import { IS_SPCS, SF_DATABASE, SF_WAREHOUSE, setWarehouse, CONN, SNOWFLAKE_HOST,
 
 config();
 
+// Stage directories that contain infrastructure files (not ORS region data).
+// Used to filter phantom regions from LIST @ORS_SPCS_STAGE scans.
+const NON_REGION_STAGE_DIRS = new Set([
+  'deploy', 'staged_files', 'services', 'config', 'maps', 'graphs',
+]);
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -1059,6 +1065,7 @@ app.get('/api/matrix/regions', async (_req, res) => {
           const match = path.match(/ors_spcs_stage\/([^/]+)\/ors-config/i);
           if (match) {
             const stageRegion = match[1];
+            if (NON_REGION_STAGE_DIRS.has(stageRegion.toLowerCase())) continue;
             if (!knownRegions.has(stageRegion.toUpperCase())) {
               defaultRegion = stageRegion;
               defaultLabel = stageRegion.replace(/([a-z])([A-Z])/g, '$1 $2');
@@ -1608,6 +1615,7 @@ app.get('/api/regions', async (_req, res) => {
           const match = path.match(/ors_spcs_stage\/([^/]+)\/ors-config/i);
           if (match) {
             const stageRegion = match[1];
+            if (NON_REGION_STAGE_DIRS.has(stageRegion.toLowerCase())) continue;
             if (!knownNames.has(stageRegion)) {
               const mapRow = (await runSql(`SELECT * FROM ${SF_DATABASE}.CORE.REGION_ORS_MAP WHERE REGION = '${escapeString(stageRegion)}'`).catch(() => []))?.[0];
               regions.unshift({

@@ -32,7 +32,33 @@ Embedded in `deploy-all.sql` — no manual setup needed:
 
 ### Phase 1: Core Infrastructure (modules 00-06)
 
-Upload all workspace files to `@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/`, then execute modules 00→06 sequentially. This installs Overture Maps (Places, Addresses, Buildings), creates compute pool, starts 5 SPCS services, and deploys routing functions (DIRECTIONS, ISOCHRONES, MATRIX, OPTIMIZE).
+**Upload workspace files to stage — TWO SEPARATE COMMANDS:**
+
+```sql
+-- 1. Upload SQL files only to deploy/ (safe — no ors-config contamination)
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/
+FROM 'snow://workspace/.../versions/live/'
+PATTERN='.*\.sql';
+
+-- 2. Upload parquet data to SEED_DATA_STAGE (separate stage, no conflicts)
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/
+FROM 'snow://workspace/.../versions/live/datasets/'
+PATTERN='.*\.parquet';
+
+-- 3. Upload service specs INDIVIDUALLY to their correct paths:
+--    @ORS_SPCS_STAGE/services/downloader/downloader_spec.yaml
+--    @ORS_SPCS_STAGE/services/openrouteservice/openrouteservice.yaml
+--    @ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml
+--    @ORS_SPCS_STAGE/services/vroom/vroom-service.yaml
+--    @ORS_SPCS_STAGE/services/gateway/routing-gateway-service.yaml
+
+-- 4. Upload ors-config.yml ONLY to the region folder:
+--    @ORS_SPCS_STAGE/SanFrancisco/ors-config.yml
+```
+
+Then execute modules 00→06 sequentially. This installs Overture Maps (Places, Addresses, Buildings), creates compute pool, starts 5 SPCS services, and deploys routing functions (DIRECTIONS, ISOCHRONES, MATRIX, OPTIMIZE).
+
+> **WARNING:** Do NOT use `PATTERN='.*\.(yaml|yml)'` — this uploads `ors-config.yml` to `deploy/` which creates phantom regions that break Retail Catchment (empty city dropdown) and Route Optimization (wrong region context).
 
 Wait for all 5 services to reach RUNNING before proceeding.
 
