@@ -124,7 +124,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","vers
 
 MERGE INTO OPENROUTESERVICE_APP.CORE.VERSION_INFO t USING (
     SELECT 'openrouteservice'      AS COMPONENT, 'v9.0.0'  AS VERSION UNION ALL
-    SELECT 'downloader'             AS COMPONENT, 'v0.0.3'  AS VERSION UNION ALL
+    SELECT 'downloader'             AS COMPONENT, 'v0.0.4'  AS VERSION UNION ALL
     SELECT 'routing_reverse_proxy'  AS COMPONENT, 'v1.1.2'  AS VERSION UNION ALL
     SELECT 'vroom_docker'           AS COMPONENT, 'v1.0.4'  AS VERSION UNION ALL
     SELECT 'ors_control_app'        AS COMPONENT, 'v1.1.54' AS VERSION

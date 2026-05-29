@@ -166,6 +166,8 @@ DECLARE
     graph_gib FLOAT DEFAULT NULL;
     resolved_family VARCHAR DEFAULT '';
     pbf_gib FLOAT DEFAULT NULL;
+    pbf_dl_status VARCHAR DEFAULT '';
+    dl_failed BOOLEAN DEFAULT FALSE;
 BEGIN
     -- JVM heap mirrors the BUILD_ORS_SERVICE_SPEC heap CASE so build history
     -- captures the actual headroom the JVM was given.
@@ -252,10 +254,44 @@ BEGIN
         EXCEPTION WHEN OTHER THEN NULL;
         END;
     ELSE
+        dl_failed := FALSE;
         BEGIN
+            pbf_dl_status := '';
             EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
+
+            FOR poll_i IN 1 TO 720 DO
+                rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD_STATUS(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''')::VARCHAR AS S');
+                pbf_dl_status := '';
+                FOR r IN rs DO
+                    pbf_dl_status := COALESCE(r.S, '');
+                END FOR;
+
+                IF (LOWER(TRIM(:pbf_dl_status)) = 'success') THEN
+                    BREAK;
+                ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')) THEN
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/720)...'
+                    WHERE JOB_ID = :P_JOB_ID;
+                    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
+                ELSE
+                    BREAK;
+                END IF;
+            END FOR;
+
+            IF (LOWER(TRIM(:pbf_dl_status)) <> 'success') THEN
+                dl_failed := TRUE;
+            END IF;
         EXCEPTION WHEN OTHER THEN
-            LET dl_err STRING := 'PBF download failed: ' || SQLERRM;
+            dl_failed := TRUE;
+            pbf_dl_status := SQLERRM;
+        END;
+
+        IF (:dl_failed) THEN
+            LET dl_err STRING := CASE
+                WHEN LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')
+                    THEN 'PBF download timed out after 720 polls (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
+                ELSE 'PBF download failed: ' || COALESCE(:pbf_dl_status, 'unknown status')
+            END;
             SYSTEM$LOG_INFO(dl_err);
             BEGIN
                 ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.downloader SET AUTO_SUSPEND_SECS = 14400;
@@ -302,7 +338,7 @@ BEGIN
                 LOG_URI = :dl_err
             WHERE BUILD_ID = :build_id;
             RETURN OBJECT_CONSTRUCT('status', 'FAILED', 'error', :dl_err)::VARCHAR;
-        END;
+        END IF;
     END IF;
 
     BEGIN
