@@ -152,8 +152,9 @@ Default thresholds in SLA_THRESHOLDS table:
 | REST_STOP | 5 | 12 |
 | STORE | 2 | 8 |
 | DETOUR | 2 | 5 |
+| IDLE | 120 | 240 |
 
-> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min).
+> **Demo note:** The default thresholds above are tuned for synthetic seed data so that DT_SLA_ALERTS populates immediately. `seed-data.sql` and `sql-pipeline.sql` ship the SAME values (single source of truth) — keep them in sync if you change either. The `IDLE` row makes the long ghost-idle sessions surface as "asset idle too long" alerts; DT_SLA_ALERTS includes both `DWELL_*` and `IDLE` statuses. For production, increase to realistic values (e.g., WAREHOUSE: 60/120 min, DESTINATION: 30/60 min, IDLE: 240/480 min).
 
 Update thresholds by modifying the SLA_THRESHOLDS table directly. DT_SLA_ALERTS will refresh automatically.
 
