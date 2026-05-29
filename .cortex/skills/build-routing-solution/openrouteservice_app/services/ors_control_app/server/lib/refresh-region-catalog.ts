@@ -157,13 +157,13 @@ const GEOFABRIK_BASE = 'https://download.geofabrik.de';
 
         let link = '';
         let name = '';
-        const subregionMatch = block.match(/<td[^>]*class="subregion"[^>]*>\s*<a\s+href="([^"]+)"[^>]*>([^<]+)<\/a>/i);
+        const subregionMatch = block.match(/<td[^>]*class="subregion"[^>]*>\s*<a\s+href="([^"]+)"[^>]*>([^<]+)[\s\S]*?<\/a>/i);
         if (subregionMatch) { link = subregionMatch[1]; name = subregionMatch[2].trim(); }
         else {
-          const dirMatch = block.match(/<td[^>]*>\s*<a\s+href="([^"]+\/)"[^>]*>([^<]+)<\/a>/i);
+          const dirMatch = block.match(/<td[^>]*>\s*<a\s+href="([^"]+\/)"[^>]*>([^<]+)[\s\S]*?<\/a>/i);
           if (dirMatch) { link = dirMatch[1]; name = dirMatch[2].trim(); }
           else {
-            const nameMatch = block.match(/<td[^>]*>\s*<a\s+href="[^"]*"[^>]*>([^<]+)<\/a>/i);
+            const nameMatch = block.match(/<td[^>]*>\s*<a\s+href="[^"]*"[^>]*>([^<]+)[\s\S]*?<\/a>/i);
             if (nameMatch) { name = nameMatch[1].trim(); }
             else continue;
           }
