@@ -2337,6 +2337,102 @@ BEGIN
 END;
 $$;
 
+-- Idempotent finalizer for bootstrapped default regions (e.g. SanFrancisco) that
+-- never run through PROVISION_REGION_WRAPPER and therefore never get
+-- REBUILD_GRAPHS=false or _BUILD_OK from the wrapper/rescue job paths.
+-- Wired into RESCUE_PENDING_PROVISIONS_TASK (*/2 min). Safe to call every cycle.
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.FINALIZE_DEFAULT_REGION_IF_READY()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"bootstrap","action":"finalize-default"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    region VARCHAR DEFAULT '';
+    svc_name VARCHAR DEFAULT '';
+    status_raw VARCHAR DEFAULT '';
+    status_json VARIANT;
+    profile_count INTEGER DEFAULT 0;
+    is_ready BOOLEAN DEFAULT FALSE;
+    has_build_ok BOOLEAN DEFAULT FALSE;
+    finalized INTEGER DEFAULT 0;
+    skipped INTEGER DEFAULT 0;
+BEGIN
+    rs := (
+        SELECT REGION
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE COALESCE(IS_DEFAULT, FALSE) = TRUE
+    );
+    LET c_def CURSOR FOR rs;
+    FOR r IN c_def DO
+        region := r.REGION;
+        has_build_ok := FALSE;
+        is_ready := FALSE;
+        profile_count := 0;
+
+        BEGIN
+            EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region || '/';
+            LET rs_ok RESULTSET := (SELECT BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') AS HAS_OK
+                                    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+            LET c_ok CURSOR FOR rs_ok;
+            FOR ro IN c_ok DO has_build_ok := COALESCE(ro.HAS_OK, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN has_build_ok := FALSE;
+        END;
+
+        IF (:has_build_ok) THEN
+            skipped := :skipped + 1;
+            CONTINUE;
+        END IF;
+
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :region || ''')::VARCHAR AS S');
+            LET c2 CURSOR FOR rs;
+            FOR rs_row IN c2 DO status_raw := rs_row.S; END FOR;
+            status_json := TRY_PARSE_JSON(:status_raw);
+            IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
+                profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
+                IF (:profile_count > 0) THEN is_ready := TRUE; END IF;
+            END IF;
+        EXCEPTION WHEN OTHER THEN is_ready := FALSE;
+        END;
+
+        IF (NOT :is_ready) THEN
+            CONTINUE;
+        END IF;
+
+        svc_name := 'ORS_SERVICE_' || UPPER(:region);
+
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:region, 'false');
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region ||
+                '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:region) || ' SET AUTO_SUSPEND_SECS = 3600';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:region);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
+        finalized := :finalized + 1;
+    END FOR;
+
+    RETURN 'finalized=' || :finalized || ' skipped=' || :skipped;
+END;
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS()
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -2351,6 +2447,11 @@ DECLARE
     msg VARCHAR DEFAULT '';
     region VARCHAR DEFAULT '';
 BEGIN
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.FINALIZE_DEFAULT_REGION_IF_READY();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     rs := (
         SELECT DISTINCT REGION
         FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
@@ -2582,12 +2683,13 @@ $$;
 -- create_region_ors_service probes @ORS_GRAPHS_SPCS_STAGE/SanFrancisco/ for
 -- graph build markers; on first install no markers are present so it sets
 -- REBUILD_GRAPHS=true. ORS then builds graphs from the staged PBF on first
--- boot. After a successful build the proc auto-flips REBUILD_GRAPHS back to
--- false for fast resume on subsequent suspend/resume cycles.
+-- boot. FINALIZE_DEFAULT_REGION_IF_READY (via RESCUE_PENDING_PROVISIONS_TASK,
+-- */2 min) flips REBUILD_GRAPHS=false and writes _BUILD_OK once ORS_STATUS
+-- reports service_ready so subsequent suspend/resume cycles reuse graphs.
 --
--- Idempotent: CREATE COMPUTE POOL IF NOT EXISTS + CREATE SERVICE IF NOT EXISTS
--- everywhere downstream. Re-running on an already-provisioned default region
--- is a no-op.
+-- Idempotent: skips create_region_ors_service when ORS_SERVICE_SANFRANCISCO
+-- already exists (avoids drop/recreate on module redeploy). VROOM is always
+-- ensured via create_region_vroom_service (CREATE IF NOT EXISTS).
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.BOOTSTRAP_DEFAULT_REGION()
 RETURNS STRING
@@ -2596,10 +2698,29 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version"
 EXECUTE AS OWNER
 AS
 $$
+DECLARE
+    svc_exists INTEGER DEFAULT 0;
+    rs RESULTSET;
 BEGIN
+  LET svc_name VARCHAR := 'ORS_SERVICE_SANFRANCISCO';
+  BEGIN
+    EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+    rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+    LET c_svc CURSOR FOR rs;
+    FOR r IN c_svc DO svc_exists := r.C; END FOR;
+  EXCEPTION WHEN OTHER THEN svc_exists := 0;
+  END;
+
+  IF (:svc_exists = 0) THEN
     CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service('SanFrancisco', 'S');
-    CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service('SanFrancisco');
-    RETURN 'BOOTSTRAP_DEFAULT_REGION: created ORS_SERVICE_SANFRANCISCO + VROOM_SERVICE_SANFRANCISCO in ORS_POOL_SANFRANCISCO. Graphs build from staged PBF on first boot.';
+  END IF;
+
+  CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service('SanFrancisco');
+
+  IF (:svc_exists > 0) THEN
+    RETURN 'BOOTSTRAP_DEFAULT_REGION: ORS_SERVICE_SANFRANCISCO already exists; ensured VROOM only.';
+  END IF;
+  RETURN 'BOOTSTRAP_DEFAULT_REGION: created ORS_SERVICE_SANFRANCISCO + VROOM_SERVICE_SANFRANCISCO in ORS_POOL_SANFRANCISCO. Graphs build from staged PBF on first boot.';
 END;
 $$;
 
