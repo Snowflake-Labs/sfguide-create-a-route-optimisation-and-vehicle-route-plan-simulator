@@ -70,103 +70,97 @@ export default function BuildSummaryCard({ job, buildProgress }: Props) {
     : null;
 
   return (
-    <div style={{
-      background: '#0f172a',
-      border: '1px solid #1f2937',
-      borderRadius: 8,
-      padding: 16,
-      marginBottom: 16,
-      color: '#e5e7eb',
-    }}>
+    <div
+      className="status-card"
+      style={{
+        marginBottom: 16,
+      }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
         <div>
-          <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 1 }}>Building region</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{job.display_name || job.region}</div>
+          <div className="metric-label">Building region</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>{job.display_name || job.region}</div>
         </div>
-        <div style={{ textAlign: 'right', fontSize: 12, color: '#9ca3af' }}>
+        <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>
           {elapsed && <div>Elapsed {elapsed}</div>}
-          {eta && <div style={{ color: '#a5b4fc' }}>{eta}</div>}
+          {eta && <div style={{ color: 'var(--accent)' }}>{eta}</div>}
         </div>
       </div>
 
       <div style={{ marginBottom: 10 }}>
-        <div style={{ height: 8, background: '#1f2937', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{
-            width: `${Math.min(progressPct, 100)}%`,
-            height: '100%',
-            background: 'linear-gradient(90deg, #6366f1 0%, #a78bfa 100%)',
-            transition: 'width 1s ease-out',
-          }} />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 11, color: '#9ca3af' }}>
-          <span>{progressPct}%</span>
-          {profileStrip && <span>{profileStrip}</span>}
+        <div className="build-progress">
+          <div className="progress-bar-track">
+            <div
+              className="progress-bar-fill"
+              style={{ width: `${Math.min(progressPct, 100)}%` }}
+            />
+          </div>
+          <div className="progress-stats">
+            <span>{progressPct}%</span>
+            {profileStrip && <span>{profileStrip}</span>}
+          </div>
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, fontSize: 12 }}>
         {bp?.currentProfile && (
           <div>
-            <div style={{ color: '#9ca3af' }}>Current profile</div>
-            <div style={{ fontFamily: 'monospace' }}>{bp.currentProfile}</div>
+            <div style={{ color: 'var(--text-secondary)' }}>Current profile</div>
+            <div style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{bp.currentProfile}</div>
           </div>
         )}
         {bp?.detail && (
           <div>
-            <div style={{ color: '#9ca3af' }}>Phase</div>
-            <div>{bp.detail}</div>
+            <div style={{ color: 'var(--text-secondary)' }}>Phase</div>
+            <div style={{ color: 'var(--text)' }}>{bp.detail}</div>
           </div>
         )}
         {bp?.lmCurrent !== undefined && bp?.lmTotal !== undefined && (
           <div>
-            <div style={{ color: '#9ca3af' }}>LM sets</div>
-            <div>{bp.lmCurrent} / {bp.lmTotal}</div>
+            <div style={{ color: 'var(--text-secondary)' }}>LM sets</div>
+            <div style={{ color: 'var(--text)' }}>{bp.lmCurrent} / {bp.lmTotal}</div>
           </div>
         )}
         {bp?.nodesRemaining !== undefined && bp?.nodesTotal !== undefined && bp.nodesTotal > 0 && (
           <div>
-            <div style={{ color: '#9ca3af' }}>CH nodes left</div>
-            <div>{(bp.nodesRemaining / 1000).toFixed(0)}K / {(bp.nodesTotal / 1000).toFixed(0)}K</div>
+            <div style={{ color: 'var(--text-secondary)' }}>CH nodes left</div>
+            <div style={{ color: 'var(--text)' }}>
+              {(bp.nodesRemaining / 1000).toFixed(0)}K / {(bp.nodesTotal / 1000).toFixed(0)}K
+            </div>
           </div>
         )}
       </div>
 
-      <div style={{ marginTop: 12, borderTop: '1px solid #1f2937', paddingTop: 10 }}>
+      <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
         <button
+          type="button"
+          className="btn small secondary"
           onClick={() => setLogsExpanded(v => !v)}
-          style={{
-            background: 'transparent',
-            color: '#a5b4fc',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: 12,
-            padding: 0,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
+          style={{ display: 'flex', alignItems: 'center', gap: 4 }}
         >
           {logsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           {logsExpanded ? 'Hide log tail' : 'Show log tail (last 30 lines)'}
           {logsExpanded && (
-            <span onClick={(e) => { e.stopPropagation(); fetchLogs(); }} style={{ marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            <span
+              onClick={(e) => { e.stopPropagation(); fetchLogs(); }}
+              style={{ marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 2 }}
+            >
               <RefreshCw size={11} /> {logsLoading ? '...' : 'refresh'}
             </span>
           )}
         </button>
         {logsExpanded && (
-          <pre style={{
-            background: '#020617',
-            color: '#94a3b8',
-            padding: 10,
-            borderRadius: 4,
-            marginTop: 8,
-            fontSize: 11,
-            maxHeight: 220,
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-          }}>{logs || (logsLoading ? 'loading...' : '(no logs yet)')}</pre>
+          <pre
+            className="result-json"
+            style={{
+              marginTop: 8,
+              maxHeight: 220,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}
+          >
+            {logs || (logsLoading ? 'loading...' : '(no logs yet)')}
+          </pre>
         )}
       </div>
     </div>

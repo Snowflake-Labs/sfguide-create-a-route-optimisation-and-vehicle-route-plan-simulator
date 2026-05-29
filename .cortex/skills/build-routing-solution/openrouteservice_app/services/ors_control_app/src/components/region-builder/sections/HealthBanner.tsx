@@ -8,15 +8,8 @@ export default function HealthBanner({ health }: { health: HealthStatus | null }
   return (
     <div
       role="alert"
-      style={{
-        background: 'rgba(234,179,8,0.15)',
-        border: '1px solid rgba(234,179,8,0.5)',
-        color: '#854d0e',
-        padding: '0.5rem 0.75rem',
-        borderRadius: 6,
-        marginBottom: '0.75rem',
-        fontSize: 12,
-      }}
+      className="warning-banner"
+      style={{ marginBottom: '0.75rem' }}
     >
       <strong>Partial deploy detected.</strong>{' '}
       The following back-end pieces are missing or returned an error; the UI may be falling back to hardcoded defaults:

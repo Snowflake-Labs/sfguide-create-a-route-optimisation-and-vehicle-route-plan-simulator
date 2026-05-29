@@ -80,7 +80,7 @@ export default function ActiveJobsTable({
                       )}
                       {isFirst && (
                         <td rowSpan={profileRows.length}>
-                          <span className="badge running">{job.status}</span>
+                          <span className="badge warn">{job.status}</span>
                         </td>
                       )}
                       <td style={{ fontSize: 12 }}>
