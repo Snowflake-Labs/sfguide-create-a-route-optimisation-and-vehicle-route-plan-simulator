@@ -4,7 +4,7 @@
 ################################################################################################
 ors:
   engine:
-    init_threads: 2
+    init_threads: 1
     profile_default:
       build:
         source_file: /home/ors/files/SanFrancisco.osm.pbf

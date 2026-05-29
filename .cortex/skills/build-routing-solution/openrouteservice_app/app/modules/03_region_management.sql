@@ -1190,12 +1190,12 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     tc = thread_config.get(p_compute_size, thread_config['XXL'])
 
     profiles_list = [p.strip() for p in p_profiles.split(',') if p.strip()]
-    # Parallel graph load on resume: one init thread per enabled profile, capped by
-    # compute tier RAM (S-tier 2G heap OOMs with init_threads=3 — see friction log).
+    # init_threads>1 triggers ORS #2180 (parallel PBF-parse race -> profile build crash).
+    # S-tier must stay at 1 for reliable city builds; L/XXL cap resume-load parallelism.
     profile_count = max(len(profiles_list), 1)
     cs = (p_compute_size or 'S').upper()
     if cs == 'S':
-        init_cap = 2
+        init_cap = 1
     elif cs == 'L':
         init_cap = 4
     else:
@@ -2123,10 +2123,13 @@ BEGIN
 '   Recommend: wait briefly; UI will flip green automatically.' || CHR(10) ||
 '3. ors_status.service_ready = false AND service_status.status = READY -> container alive, ' ||
 '   building the graph. Sub-cases by log_chars + service_age_seconds:' || CHR(10) ||
-'   3a. log_chars > 0 -> NEVER say "logs are empty". Quote latest log line; report current_phase.' || CHR(10) ||
-'   3b. log_chars = 0 AND service_age_seconds < 60   -> "container booting; logs flushing in <1 min".' || CHR(10) ||
-'   3c. log_chars = 0 AND service_age_seconds < 600  -> "Spring Boot still initialising; check again in 1-2 min".' || CHR(10) ||
-'   3d. log_chars = 0 AND service_age_seconds >= 600 -> escalate as a logging issue.' || CHR(10) ||
+'   3a. log_chars > 0 AND logs contain "Index N out of bounds for length 0" -> ORS #2180 ' ||
+'       init_threads race (parallel PBF parse). Recommend: rewrite ors-config with init_threads=1 ' ||
+'       and CALL REBUILD_REGION_GRAPHS(region); REPAIR_STUCK_REGION_BUILDS auto-triggers after 15 min.' || CHR(10) ||
+'   3b. log_chars > 0 -> NEVER say "logs are empty". Quote latest log line; report current_phase.' || CHR(10) ||
+'   3c. log_chars = 0 AND service_age_seconds < 60   -> "container booting; logs flushing in <1 min".' || CHR(10) ||
+'   3d. log_chars = 0 AND service_age_seconds < 600  -> "Spring Boot still initialising; check again in 1-2 min".' || CHR(10) ||
+'   3e. log_chars = 0 AND service_age_seconds >= 600 -> escalate as a logging issue.' || CHR(10) ||
 '4. ETA bands (already computed in eta_remaining_minutes; report and contextualize):' || CHR(10) ||
 '   pbf<0.5GiB city ~10 min base; pbf<3GiB country ~75 min; pbf<8GiB ~4 h; pbf>=8GiB continent ~8 h. ' ||
 '   profile_factor: driving-hgv 2.0x, driving-car 1.0x, cycling/foot 0.5x. ' ||
@@ -2469,6 +2472,144 @@ BEGIN
 END;
 $$;
 
+-- Auto-repair DEPLOYED regions stuck with container READY but service_ready=false
+-- and no _BUILD_OK (typical when init_threads>1 triggers ORS #2180 PBF-parse race).
+-- Runs at most once per region (guarded by _REPAIR_INIT_THREADS marker on graph stage).
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS()
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"rescue","action":"repair-stuck-build"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    region VARCHAR DEFAULT '';
+    svc_name VARCHAR DEFAULT '';
+    svc_full VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT 'S';
+    pbf_file VARCHAR DEFAULT '';
+    profiles VARCHAR DEFAULT '';
+    status_raw VARCHAR DEFAULT '';
+    status_json VARIANT;
+    service_status VARIANT;
+    service_age_seconds INTEGER DEFAULT 0;
+    container_ready BOOLEAN DEFAULT FALSE;
+    service_ready BOOLEAN DEFAULT FALSE;
+    has_build_ok BOOLEAN DEFAULT FALSE;
+    has_repair_marker BOOLEAN DEFAULT FALSE;
+    repaired INTEGER DEFAULT 0;
+    scanned INTEGER DEFAULT 0;
+    repair_msg VARCHAR DEFAULT '';
+BEGIN
+    rs := (
+        SELECT REGION, COALESCE(COMPUTE_SIZE, 'S') AS COMPUTE_SIZE, PBF_URL
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        WHERE STATUS = 'DEPLOYED'
+    );
+    LET c_reg CURSOR FOR rs;
+    FOR r IN c_reg DO
+        scanned := :scanned + 1;
+        region := r.REGION;
+        compute_size := r.COMPUTE_SIZE;
+        has_build_ok := FALSE;
+        has_repair_marker := FALSE;
+        container_ready := FALSE;
+        service_ready := FALSE;
+        service_age_seconds := 0;
+        profiles := NULL;
+        pbf_file := SPLIT_PART(COALESCE(r.PBF_URL, ''), '/', -1);
+        IF (pbf_file = '' OR pbf_file IS NULL) THEN
+            pbf_file := :region || '.osm.pbf';
+        END IF;
+
+        BEGIN
+            EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region || '/';
+            LET rs_mark RESULTSET := (
+                SELECT
+                    BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') AS HAS_OK,
+                    BOOLOR_AGG("name" ILIKE '%/_REPAIR_INIT_THREADS%') AS HAS_REPAIR
+                FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+            );
+            LET c_mark CURSOR FOR rs_mark;
+            FOR rm IN c_mark DO
+                has_build_ok := COALESCE(rm.HAS_OK, FALSE);
+                has_repair_marker := COALESCE(rm.HAS_REPAIR, FALSE);
+            END FOR;
+        EXCEPTION WHEN OTHER THEN
+            has_build_ok := FALSE;
+            has_repair_marker := FALSE;
+        END;
+
+        IF (:has_build_ok OR :has_repair_marker) THEN
+            CONTINUE;
+        END IF;
+
+        svc_name := 'ORS_SERVICE_' || UPPER(:region);
+        svc_full := 'OPENROUTESERVICE_APP.CORE.' || :svc_name;
+
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT TRY_PARSE_JSON(SYSTEM$GET_SERVICE_STATUS(''' || :svc_full || '''))[0] AS S');
+            LET cs CURSOR FOR rs;
+            FOR rs_row IN cs DO service_status := rs_row.S; END FOR;
+            IF (service_status:status::VARCHAR = 'READY') THEN container_ready := TRUE; END IF;
+            service_age_seconds := COALESCE(DATEDIFF('second',
+                TO_TIMESTAMP_TZ(service_status:startTime::VARCHAR), SYSDATE()), 0);
+        EXCEPTION WHEN OTHER THEN
+            container_ready := FALSE;
+            service_age_seconds := 0;
+        END;
+
+        IF (NOT :container_ready OR :service_age_seconds < 900) THEN
+            CONTINUE;
+        END IF;
+
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :region || ''')::VARCHAR AS S');
+            LET c2 CURSOR FOR rs;
+            FOR rs_row IN c2 DO status_raw := rs_row.S; END FOR;
+            status_json := TRY_PARSE_JSON(:status_raw);
+            service_ready := COALESCE(status_json:service_ready::BOOLEAN, FALSE);
+        EXCEPTION WHEN OTHER THEN service_ready := FALSE;
+        END;
+
+        IF (:service_ready) THEN
+            CONTINUE;
+        END IF;
+
+        profiles := (
+            SELECT PROFILES
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE REGION = :region AND STATUS = 'COMPLETE'
+            ORDER BY COMPLETED_AT DESC NULLS LAST
+            LIMIT 1
+        );
+        IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            profiles := 'driving-car,cycling-electric';
+        END IF;
+
+        BEGIN
+            EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region ||
+                '/_REPAIR_INIT_THREADS FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:region, :pbf_file, :profiles, :compute_size) INTO :repair_msg;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS(:region) INTO :repair_msg;
+            repaired := :repaired + 1;
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END FOR;
+
+    RETURN 'scanned=' || :scanned || ' repaired=' || :repaired;
+END;
+$$;
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS()
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -2485,6 +2626,11 @@ DECLARE
 BEGIN
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.FINALIZE_DEFAULT_REGION_IF_READY();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS();
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
