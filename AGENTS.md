@@ -31,8 +31,18 @@ python3 .cortex/skills/evals/run_evals.py
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
+# Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
+bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
+```
+
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift):
+
+```bash
+chmod +x .githooks/pre-commit
+git config core.hooksPath .githooks
 ```
 
 No global build/lint step — each skill is independently deployable via its own SKILL.md workflow.
