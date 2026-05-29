@@ -27,7 +27,7 @@ const VRP_TOP_N = 8;
 export default function AssetVelocity() {
   const preset = useActivePreset();
   const { regionName, center, zoom } = useRegion();
-  const [idleHourThreshold, setIdleHourThreshold] = useState(1);
+  const [idleHourThreshold, setIdleHourThreshold] = useState(0.0833);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [terminals, setTerminals] = useState<Terminal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -143,7 +143,10 @@ export default function AssetVelocity() {
     setLoading(false);
   }, [regionName, idleHourThreshold]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    if (preset.loading) return;
+    loadData();
+  }, [preset.loading, loadData]);
 
   // ----- Matrix fetch (U1 + U4) -----
   const refreshMatrix = useCallback(async (forTrailers: Trailer[], forTerminals: Terminal[]) => {
@@ -490,7 +493,7 @@ export default function AssetVelocity() {
             ? `${Math.round(idleHourThreshold * 60)} min`
             : `${idleHourThreshold.toFixed(2)}h (${(idleHourThreshold / 24).toFixed(2)}d)`}</label>
           <input type="range" min={0.0833} max={336} step={0.0833} value={idleHourThreshold} onChange={e => setIdleHourThreshold(Number(e.target.value))} style={{ width: '100%' }} />
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 1h surfaces idle vehicles on fresh installs. Raise to 72h+ for ghost trailers only. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Default 5 min surfaces idle vehicles on fresh installs. Raise to 72h+ for ghost trailers only. Severity bands: WATCH 3d, WARNING 7d, CRITICAL 14d.</div>
         </div>
         <div style={{ minWidth: 200 }}>
           <label className="range-label">Reposition shift cap: {maxRepositionMinutes} min ({(maxRepositionMinutes / 60).toFixed(1)}h)</label>
