@@ -110,6 +110,41 @@ CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_ELEVATION_CACHE_SPCS_ST
     ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- SERVICE CREATION ORDER:
+--   1. Downloader (starts fast, needed to fetch real map data)
+--   2. Download San Francisco PBF from bbbike.org (~32MB real OSM extract)
+--   3. ORS Service (builds routing graph from PBF on startup)
+--   4. Vroom, Gateway, Control App (depend on ORS being available)
+--
+-- WHY: The workspace bundles a small test PBF for offline development.
+-- Production deploys MUST download the full regional extract before ORS starts.
+-- The downloader writes directly to the stage mount that ORS reads from.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Step 1: Start the downloader service first (lightweight, starts in ~20s)
+CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
+   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
+   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader
+   SPECIFICATION_FILE = 'downloader_spec.yaml'
+   AUTO_SUSPEND_SECS = 14400
+   EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
+
+-- Step 2: Download the real San Francisco OSM PBF (~32MB).
+-- The DOWNLOAD function calls the downloader service which saves to its volume mount
+-- at /downloads/ors_spcs_stage/ → maps to @ORS_SPCS_STAGE on the stage.
+-- Folder arg = 'ors_spcs_stage/SanFrancisco' so file lands at @stage/SanFrancisco/
+-- This overwrites any bundled test PBF (e.g. the small Heidelberg extract).
+SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(
+    'ors_spcs_stage/SanFrancisco',
+    'SanFrancisco.osm.pbf',
+    'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf'
+) AS map_download_status;
+
+-- Step 3: Start ORS service — it will build the routing graph from the freshly
+-- downloaded PBF. Graph build takes ~20s for SF. The openrouteservice.yaml spec
+-- must have REBUILD_GRAPHS=true on first deploy (or when the PBF changes).
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
    FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice
@@ -119,14 +154,7 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_service
    AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
-CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.downloader
-   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader
-   SPECIFICATION_FILE = 'downloader_spec.yaml'
-   AUTO_SUSPEND_SECS = 14400
-   EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI)
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"core"}}';
-
+-- Step 4: Remaining services (can start in parallel with ORS graph build)
 CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.vroom_service
    IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
    FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom
