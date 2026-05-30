@@ -1792,6 +1792,11 @@ DECLARE
     current_phase VARCHAR DEFAULT 'UNKNOWN';
     container_start VARCHAR DEFAULT NULL;
     service_age_seconds NUMBER DEFAULT 0;
+    -- Profile attribution: requested (from job) vs actually building (from logs)
+    requested_profiles VARCHAR DEFAULT '';
+    building_profiles VARCHAR DEFAULT '';
+    eta_profiles VARCHAR DEFAULT '';
+    profile_mismatch BOOLEAN DEFAULT FALSE;
     -- ETA inputs / outputs
     pbf_gib_resolved FLOAT DEFAULT NULL;
     profiles_str VARCHAR DEFAULT '';
@@ -1925,6 +1930,49 @@ BEGIN
     EXCEPTION WHEN OTHER THEN current_phase := 'UNKNOWN';
     END;
 
+    -- 4b. Profile attribution from log tags (ground truth) vs the job's
+    -- requested profiles. ORS spawns one loader thread "ORS-pl-<profile>" per
+    -- ENABLED profile in the running config, so these names reflect what the
+    -- engine is ACTUALLY building -- not what the job asked for. A divergence
+    -- (e.g. job requested driving-hgv but logs show driving-car) is the
+    -- signature of a config hijack and must be surfaced, not masked.
+    BEGIN
+        rs := (SELECT LISTAGG(DISTINCT prof, ',') WITHIN GROUP (ORDER BY prof) AS BP
+               FROM (SELECT LOWER(REPLACE(VALUE::VARCHAR, 'ORS-pl-', '')) AS prof
+                     FROM TABLE(FLATTEN(input => REGEXP_SUBSTR_ALL(:service_logs, 'ORS-pl-[A-Za-z-]+'))))
+               WHERE prof IS NOT NULL AND prof <> '');
+        LET cbp CURSOR FOR rs;
+        FOR r IN cbp DO building_profiles := COALESCE(r.BP, ''); END FOR;
+    EXCEPTION WHEN OTHER THEN building_profiles := '';
+    END;
+
+    BEGIN
+        LET jj_str0 VARCHAR := TO_VARCHAR(:job_json);
+        rs := (SELECT COALESCE(j:profiles::VARCHAR, '') AS RP FROM (SELECT TRY_PARSE_JSON(:jj_str0) AS j));
+        LET crp CURSOR FOR rs;
+        FOR r IN crp DO requested_profiles := COALESCE(r.RP, ''); END FOR;
+    EXCEPTION WHEN OTHER THEN requested_profiles := '';
+    END;
+
+    -- ETA profile basis = what is actually building; fall back to requested
+    -- only when the engine has not yet spawned any loader thread.
+    eta_profiles := COALESCE(NULLIF(:building_profiles, ''), :requested_profiles);
+
+    -- Mismatch alarm: any profile the engine is actually building that the user
+    -- did NOT request. (The reverse -- requested but not yet started -- is
+    -- normal early in a sequential build and is NOT flagged.)
+    IF (TRIM(:building_profiles) <> '' AND TRIM(:requested_profiles) <> '') THEN
+        BEGIN
+            rs := (SELECT BOOLOR_AGG(:requested_profiles NOT ILIKE '%' || bp || '%') AS MM
+                   FROM (SELECT TRIM(VALUE::VARCHAR) AS bp
+                         FROM TABLE(FLATTEN(input => SPLIT(:building_profiles, ','))))
+                   WHERE bp <> '');
+            LET cmm CURSOR FOR rs;
+            FOR r IN cmm DO profile_mismatch := COALESCE(r.MM, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN profile_mismatch := FALSE;
+        END;
+    END IF;
+
     -- 5. ORS_STATUS UDF
     BEGIN
         rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' ||
@@ -2000,13 +2048,12 @@ BEGIN
 
     -- 10. ETA computation: bands by pbf size * profile factor * (1 - phase_done_pct) - elapsed
     BEGIN
-        LET jj_str2 VARCHAR := TO_VARCHAR(:job_json);
         rs := (SELECT
-                   COALESCE(j:profiles::VARCHAR, '')                                       AS PRF,
+                   :eta_profiles                                                            AS PRF,
                    CASE
-                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%driving-hgv%' THEN 2.0
-                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%cycling%'     THEN 0.5
-                       WHEN COALESCE(j:profiles::VARCHAR, '') ILIKE '%foot%'        THEN 0.5
+                       WHEN :eta_profiles ILIKE '%driving-hgv%' THEN 2.0
+                       WHEN :eta_profiles ILIKE '%cycling%'     THEN 0.5
+                       WHEN :eta_profiles ILIKE '%foot%'        THEN 0.5
                        ELSE 1.0
                    END                                                                              AS PF,
                    CASE
@@ -2025,7 +2072,7 @@ BEGIN
                        WHEN 'SERVICE_READY'     THEN 1.00
                        ELSE 0.00
                    END                                                                              AS PD
-               FROM (SELECT TRY_PARSE_JSON(:jj_str2) AS j, :pbf_gib_resolved AS p, :current_phase AS ph));
+               FROM (SELECT :pbf_gib_resolved AS p, :current_phase AS ph));
         LET ceta CURSOR FOR rs;
         FOR r IN ceta DO
             profiles_str   := r.PRF;
@@ -2062,6 +2109,9 @@ BEGIN
         'last_log_ts', :last_log_ts,
         'current_phase', :current_phase,
         'pbf_size_gib_resolved', :pbf_gib_resolved,
+        'requested_profiles', :requested_profiles,
+        'building_profiles', :building_profiles,
+        'profile_mismatch', :profile_mismatch,
         'profiles_str', :profiles_str,
         'profile_factor', :profile_factor,
         'phase_done_pct', :phase_done_pct,
@@ -2091,6 +2141,9 @@ BEGIN
         '| log_lines | ' || COALESCE(:log_lines::VARCHAR, '0') || ' |' || CHR(10) ||
         '| last_log_ts | ' || COALESCE(:last_log_ts, 'n/a') || ' |' || CHR(10) ||
         '| pbf_size_gib | ' || COALESCE(ROUND(:pbf_gib_resolved, 2)::VARCHAR, 'unknown') || ' |' || CHR(10) ||
+        '| requested_profiles | `' || COALESCE(NULLIF(:requested_profiles, ''), 'unknown') || '` |' || CHR(10) ||
+        '| building_profiles | `' || COALESCE(NULLIF(:building_profiles, ''), 'unknown') || '` |' || CHR(10) ||
+        '| profile_mismatch | ' || IFF(:profile_mismatch, '**YES - engine building a profile that was not requested**', 'no') || ' |' || CHR(10) ||
         '| profile_factor | ' || COALESCE(:profile_factor::VARCHAR, '1.0') || ' |' || CHR(10) ||
         '| eta_total_min | ' || COALESCE(:eta_total_minutes::VARCHAR, 'unknown') || ' |' || CHR(10) ||
         '| eta_remaining_min | ' || COALESCE(:eta_remaining_minutes::VARCHAR, 'unknown') || ' |' || CHR(10) ||
@@ -2112,9 +2165,16 @@ BEGIN
 'HARD RULES (violations = wrong answer):' || CHR(10) ||
 '  R1. NEVER claim "logs are empty" if log_chars > 0. Quote actual log content.' || CHR(10) ||
 '  R2. NEVER invent ETA numbers. Use eta_remaining_minutes from the snapshot. ' ||
-       'If pbf_size_gib_resolved is null, say "size unknown; cannot estimate ETA".' || CHR(10) ||
+       'If eta_remaining_minutes is null OR pbf_size_gib_resolved is null, say ' ||
+       '"ETA unavailable (size/profile unknown)" - do NOT estimate or guess a range.' || CHR(10) ||
 '  R3. NEVER substitute or guess container names. The container is "ors".' || CHR(10) ||
 '  R4. ALWAYS quote pbf_size_gib_resolved and profile_factor in the ETA line.' || CHR(10) ||
+'  R5. The profile being built is building_profiles (parsed from the live logs), ' ||
+       'NOT requested_profiles (job intent). Report building_profiles as the profile(s) ' ||
+       'in progress. NEVER name a profile that is absent from building_profiles.' || CHR(10) ||
+'  R6. If profile_mismatch = true, OPEN with a prominent warning: the build is producing ' ||
+       'profile(s) the user did NOT request (requested_profiles vs building_profiles). ' ||
+       'Recommend cancelling and relaunching with the intended profiles; do NOT reassure.' || CHR(10) ||
 'Decision tree:' || CHR(10) ||
 '1. service_status.restartCount > 0 -> container has crashed (likely OOM if exitCode 137). ' ||
 '   Recommend: dismiss the job and retry on a smaller compute size, or split profiles.' || CHR(10) ||
@@ -2527,6 +2587,7 @@ DECLARE
     repaired INTEGER DEFAULT 0;
     scanned INTEGER DEFAULT 0;
     repair_msg VARCHAR DEFAULT '';
+    active_job_cnt INTEGER DEFAULT 0;
 BEGIN
     rs := (
         SELECT REGION, COALESCE(COMPUTE_SIZE, 'S') AS COMPUTE_SIZE, PBF_URL
@@ -2547,6 +2608,24 @@ BEGIN
         pbf_file := SPLIT_PART(COALESCE(r.PBF_URL, ''), '/', -1);
         IF (pbf_file = '' OR pbf_file IS NULL) THEN
             pbf_file := :region || '.osm.pbf';
+        END IF;
+
+        -- Never touch a region that still has an in-flight provision job. A
+        -- legitimately slow build (e.g. a continental XXL extract) is NOT
+        -- "stuck"; repair is only for genuinely crashed/abandoned containers.
+        -- Without this guard, REPAIR rewrites the ORS config with a fallback
+        -- profile set (driving-car,cycling-electric) and restarts the graph
+        -- build mid-flight, silently switching e.g. a driving-hgv build to the
+        -- wrong profiles.
+        active_job_cnt := 0;
+        BEGIN
+            SELECT COUNT(*) INTO :active_job_cnt
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE REGION = :region AND STATUS IN ('RUNNING','PENDING');
+        EXCEPTION WHEN OTHER THEN active_job_cnt := 0;
+        END;
+        IF (:active_job_cnt > 0) THEN
+            CONTINUE;
         END IF;
 
         BEGIN
@@ -2603,19 +2682,33 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Honor the profiles the user actually requested. Prefer the most
+        -- recent non-failed job (the pattern FINALIZE_PROVISION_ITER uses);
+        -- only COMPLETE-job lookups would miss an in-progress build and force
+        -- the hardcoded fallback below, silently changing the built profiles.
         profiles := (
             SELECT PROFILES
             FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-            WHERE REGION = :region AND STATUS = 'COMPLETE'
-            ORDER BY COMPLETED_AT DESC NULLS LAST
+            WHERE REGION = :region AND PROFILES IS NOT NULL
+            ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END,
+                     COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+            -- No job ever recorded profiles for this region. Fall back to a
+            -- safe default, but write a visible marker so the substitution is
+            -- never silent.
             IF (UPPER(:region) = 'SANFRANCISCO') THEN
                 profiles := 'driving-car,driving-hgv,cycling-electric';
             ELSE
                 profiles := 'driving-car,cycling-electric';
             END IF;
+            BEGIN
+                EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :region ||
+                    '/_REPAIR_PROFILE_FALLBACK FROM (SELECT ''' || :profiles ||
+                    ''') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
         END IF;
 
         BEGIN
@@ -2860,15 +2953,34 @@ BEGIN
         LET reg VARCHAR := r.REGION;
         LET reg_pbf_url VARCHAR := r.PBF_URL;
         LET reg_compute VARCHAR := r.COMPUTE_SIZE;
+        -- Skip regions with an in-flight provision job: rewriting the ORS
+        -- config (enabled profiles) mid-build would corrupt the running build.
+        LET active_job_cnt INTEGER := 0;
+        BEGIN
+            SELECT COUNT(*) INTO :active_job_cnt
+            FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            WHERE REGION = :reg AND STATUS IN ('RUNNING','PENDING');
+        EXCEPTION WHEN OTHER THEN active_job_cnt := 0;
+        END;
+        IF (:active_job_cnt > 0) THEN
+            CONTINUE;
+        END IF;
+        -- Honor the actual requested profiles (most recent non-failed job),
+        -- not COMPLETE-only, so this migration never silently switches a
+        -- region's enabled profiles to a hardcoded fallback.
         profiles := (
             SELECT PROFILES
             FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-            WHERE REGION = :reg AND STATUS = 'COMPLETE'
-            ORDER BY COMPLETED_AT DESC NULLS LAST
+            WHERE REGION = :reg AND PROFILES IS NOT NULL
+            ORDER BY CASE WHEN COALESCE(STATUS,'') NOT IN ('FAILED','ERROR') THEN 0 ELSE 1 END,
+                     COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
             LIMIT 1
         );
         IF (profiles IS NULL OR TRIM(profiles) = '') THEN
-            profiles := 'driving-car,cycling-electric';
+            -- No job ever recorded profiles for this region. Skip rather than
+            -- guess: writing an empty profile set would produce a config with
+            -- every profile disabled (a broken graph on next resume).
+            CONTINUE;
         END IF;
         pbf_file := SPLIT_PART(COALESCE(:reg_pbf_url, ''), '/', -1);
         IF (pbf_file = '' OR pbf_file IS NULL) THEN

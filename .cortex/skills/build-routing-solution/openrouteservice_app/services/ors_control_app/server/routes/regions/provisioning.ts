@@ -147,8 +147,30 @@ export function createRegionsProvisioningRouter(): Router {
       const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
       const uniqueStarted = [...new Set(startedProfiles)];
       const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
+
+      // The profile being CONTRACTED right now is identified by the graph
+      // weighting token in the latest CH/LM log line, NOT by the last-spawned
+      // ORS-pl loader thread. ORS spawns every enabled profile's loader thread
+      // up front, so the last-spawned thread (used previously) reported e.g.
+      // cycling-electric while the engine was still contracting driving-car.
+      // Map weighting tokens to canonical profile names.
+      const weightToProfile = (tok: string): string => {
+        if (tok.startsWith('hgv_ors')) return 'driving-hgv';
+        if (tok.startsWith('car_ors')) return 'driving-car';
+        if (tok.startsWith('electrobike')) return 'cycling-electric';
+        if (tok.startsWith('bike_ors')) return 'cycling-regular';
+        if (tok.startsWith('pedestrian')) return 'foot-walking';
+        return tok;
+      };
+      const weightTokens = [...logs.matchAll(/(hgv_ors|car_ors|electrobike|bike_ors|pedestrian)/g)].map(m => m[1]);
+      const contracting = weightTokens.length > 0 ? weightToProfile(weightTokens[weightTokens.length - 1]) : null;
       const lastStarted = uniqueStarted.length > 0 ? uniqueStarted[uniqueStarted.length - 1] : null;
-      const currentProfile = lastStarted && !finishedProfiles.includes(lastStarted) ? lastStarted : null;
+      // Prefer the actually-contracting profile (if not yet finished); fall back
+      // to the most recently started loader thread that hasn't completed.
+      const currentProfile =
+        (contracting && !finishedProfiles.includes(contracting)) ? contracting
+        : (lastStarted && !finishedProfiles.includes(lastStarted)) ? lastStarted
+        : null;
 
       if (finishedProfiles.length === totalProfiles && totalProfiles > 0 && !currentProfile) {
         const healthOk = logs.includes('Started Application');
