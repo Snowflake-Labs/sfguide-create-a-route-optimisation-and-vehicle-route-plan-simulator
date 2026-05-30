@@ -518,5 +518,53 @@ export function createPlantIntelRouter(runSql: RunSql): Router {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  // ─── Robot telemetry from database ──────────────────────────────────────────
+  router.get('/robots', async (req, res) => {
+    try {
+      const plantId = parseInt(req.query.plant_id as string, 10);
+      if (isNaN(plantId)) return res.status(400).json({ error: 'Valid plant_id required' });
+      const buildingRole = req.query.building_role as string | undefined;
+      const floorIdx = req.query.floor_index !== undefined ? parseInt(req.query.floor_index as string, 10) : undefined;
+
+      let where = `WHERE PLANT_ID = ${plantId}`;
+      if (buildingRole) where += ` AND BUILDING_ROLE = '${buildingRole.replace(/'/g, "''")}'`;
+      if (floorIdx !== undefined && !isNaN(floorIdx)) where += ` AND FLOOR_INDEX = ${floorIdx}`;
+
+      const rows = up(await runSql(
+        `SELECT ROBOT_ID, ROBOT_TYPE, ROBOT_TYPE_LABEL, STATUS, BUILDING_ROLE, BUILDING_ROLE_NAME,
+                FLOOR_INDEX, CURRENT_ZONE, DESTINATION_ZONE, BATTERY_PCT, SPEED_MS,
+                VIBRATION_MM_S, ONBOARD_TEMP_C, DISTANCE_TRAVELLED_M, UPTIME_HRS,
+                MAINT_DUE_HRS, CARGO_BATCH, CARGO_KG
+         FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.ROBOT_TELEMETRY
+         ${where}
+         ORDER BY BUILDING_ROLE, FLOOR_INDEX, ROBOT_TYPE, ROBOT_ID`,
+        'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'));
+      res.json(rows);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Robot summary counts per building/type (lightweight for map legend)
+  router.get('/robots/summary', async (req, res) => {
+    try {
+      const plantId = parseInt(req.query.plant_id as string, 10);
+      if (isNaN(plantId)) return res.status(400).json({ error: 'Valid plant_id required' });
+      const rows = up(await runSql(
+        `SELECT BUILDING_ROLE, BUILDING_ROLE_NAME, FLOOR_INDEX, ROBOT_TYPE, ROBOT_TYPE_LABEL,
+                COUNT(*) AS ROBOT_COUNT,
+                COUNT_IF(STATUS = 'moving') AS MOVING,
+                COUNT_IF(STATUS = 'charging') AS CHARGING,
+                COUNT_IF(STATUS = 'error') AS ERROR,
+                COUNT_IF(STATUS NOT IN ('moving','charging','error')) AS OTHER,
+                ROUND(AVG(BATTERY_PCT), 1) AS AVG_BATTERY,
+                COUNT_IF(MAINT_DUE_HRS < 4) AS MAINT_URGENT
+         FROM FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.ROBOT_TELEMETRY
+         WHERE PLANT_ID = ${plantId}
+         GROUP BY BUILDING_ROLE, BUILDING_ROLE_NAME, FLOOR_INDEX, ROBOT_TYPE, ROBOT_TYPE_LABEL
+         ORDER BY BUILDING_ROLE, FLOOR_INDEX, ROBOT_TYPE`,
+        'FLEET_INTELLIGENCE', 'PHARMA_SUPPLY_CHAIN'));
+      res.json(rows);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   return router;
 }

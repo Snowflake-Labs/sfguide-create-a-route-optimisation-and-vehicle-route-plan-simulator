@@ -159,8 +159,19 @@ export default function PlantIntelMap({ onBuildingSelect, onRoomSelect, navigate
     if (navLevel >= 3 && currentFloorZones.length > 0 && selectedPlant && selectedBuilding) {
       const seed = selectedPlant.PLANT_ID * 37 + (selectedBuilding.id?.charCodeAt(0) || 1) * 13 + selectedFloor * 7;
       robotRngRef.current = rng2(seed + 1000);
-      robotsRef.current = initRobots(selectedPlant.PLANT_ID, selectedBuilding.id || '', selectedFloor, currentFloorZones);
-      setRobotPositions([...robotsRef.current]);
+      // Fetch actual robot counts from database, fall back to defaults on error
+      fetch(`/api/plant-intel/robots/summary?plant_id=${selectedPlant.PLANT_ID}&building_role=${selectedBuilding.id}&floor_index=${selectedFloor}`)
+        .then(r => r.ok ? r.json() : [])
+        .then((summary: any[]) => {
+          const counts: Record<string, number> = {};
+          summary.forEach((row: any) => { counts[row.ROBOT_TYPE] = (counts[row.ROBOT_TYPE] || 0) + (row.ROBOT_COUNT || 0); });
+          robotsRef.current = initRobots(selectedPlant.PLANT_ID, selectedBuilding.id || '', selectedFloor, currentFloorZones, Object.keys(counts).length > 0 ? counts : undefined);
+          setRobotPositions([...robotsRef.current]);
+        })
+        .catch(() => {
+          robotsRef.current = initRobots(selectedPlant.PLANT_ID, selectedBuilding.id || '', selectedFloor, currentFloorZones);
+          setRobotPositions([...robotsRef.current]);
+        });
     } else { robotsRef.current = []; setRobotPositions([]); }
   }, [navLevel, selectedFloor, selectedBuilding, selectedPlant, currentFloorZones]);
 
@@ -302,7 +313,7 @@ export default function PlantIntelMap({ onBuildingSelect, onRoomSelect, navigate
           if (object.status !== undefined && object.zoneId) { const c=alertColor(object.status); return {html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name}</b><br/><span style="color:${c};font-weight:700">${object.value}${object.unit}</span>${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`}; }
           if (object.expiryDate) { const c=alertColor(object.expiryStatus||'ok'); return {html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b><br/>${object.product||''}<br/>Batch: ${object.batchNo||'-'} · ${object.pallets||''}<br/>Expires: ${object.expiryDate}<br/><span style="color:${c}">${object.daysLeft}d remaining</span>${object.temperature?`<br/>Temp: ${object.temperature}`:''}</div>`}; }
           if (object.id && !object.alertStatus && !object.properties) { const c=object.status==='Fault'||object.status==='Alarm'?'#ef4444':object.status==='Maintenance'||object.status==='Changeover'||object.status==='On Battery'?'#f97316':'#22c55e'; const lines=[object.role&&`Role: ${object.role}`,object.model&&`Model: ${object.model}`,object.status&&`Status: <span style="color:${c}">${object.status}</span>`,object.capacity&&`Capacity: ${object.capacity}`,object.batch&&`Batch: ${object.batch}`,object.temperature&&`Temp: ${object.temperature}`,object.pressure&&`Pressure: ${object.pressure}`,object.airflow&&`Airflow: ${object.airflow}`,object.load&&`Load: ${object.load}`,object.daysLeft!=null&&`${object.daysLeft}d remaining`,].filter(Boolean); return {html:`<div style="font-size:12px;padding:5px 9px"><b>${object.name||object.id}</b>${lines.length?`<br/>${lines.join('<br/>')}`:''}${object.alert?`<br/><span style="color:#f97316">⚠ ${object.alert}</span>`:''}</div>`}; }
-          if (object.type && (object.type==='AGV'||object.type==='INSPECT'||object.type==='CLEAN')) { const bc=object.battery<20?'#ef4444':object.battery<50?'#f97316':'#22c55e'; const rt=ROBOT_TYPES.find(x=>x.type===object.type); return {html:`<div style="font-size:12px;padding:5px 9px"><b>${object.id}</b> <span style="opacity:0.7">${rt?.label||object.type}</span><br/>${object.task}<br/><span style="color:${bc}">🔋 ${Math.round(object.battery)}%</span>${object.status==='charging'?' <span style="color:#64748b">● Charging</span>':object.status==='error'?' <span style="color:#ef4444">● Error</span>':''}</div>`}; }
+          if (object.type && (object.type==='AGV'||object.type==='INSPECT'||object.type==='CLEAN')) { const bc=object.battery<20?'#ef4444':object.battery<50?'#f97316':'#22c55e'; const rt=ROBOT_TYPE_DEFAULTS[object.type]; return {html:`<div style="font-size:12px;padding:5px 9px"><b>${object.id}</b> <span style="opacity:0.7">${rt?.label||object.type}</span><br/>${object.task}<br/><span style="color:${bc}">🔋 ${Math.round(object.battery)}%</span>${object.status==='charging'?' <span style="color:#64748b">● Charging</span>':object.status==='error'?' <span style="color:#ef4444">● Error</span>':''}</div>`}; }
           return null;
         }}
       />
@@ -311,8 +322,8 @@ export default function PlantIntelMap({ onBuildingSelect, onRoomSelect, navigate
       {navLevel>=3 && robotPositions.length>0 && (
         <div style={{ position:'absolute', bottom:10, right:10, background:'rgba(0,0,0,0.75)', backdropFilter:'blur(6px)', borderRadius:8, padding:'7px 11px' }}>
           <div style={{ fontSize:9, color:'#888', marginBottom:4, textTransform:'uppercase', letterSpacing:0.5 }}>Floor Robots</div>
-          {ROBOT_TYPES.map(rt => { const cnt = robotPositions.filter((r:any)=>r.type===rt.type).length; if(!cnt) return null; return (
-            <div key={rt.type} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0' }}>
+          {Object.entries(ROBOT_TYPE_DEFAULTS).map(([type, rt]) => { const cnt = robotPositions.filter((r:any)=>r.type===type).length; if(!cnt) return null; return (
+            <div key={type} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0' }}>
               <div style={{ width:8, height:8, borderRadius:'50%', background:`rgb(${rt.color[0]},${rt.color[1]},${rt.color[2]})`, flexShrink:0 }} />
               <span style={{ fontSize:10, color:'#ddd' }}>{rt.label} ({cnt})</span>
             </div>
@@ -407,11 +418,11 @@ function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
 
 // ── Robot simulation helpers ──────────────────────────────────────────────────
 
-const ROBOT_TYPES = [
-  { type:'AGV',     label:'Transport AGV',     color:[59,130,246,240] as [number,number,number,number], elev:0.8, speed:0.006, count:12 },
-  { type:'INSPECT', label:'Inspection Robot',  color:[250,204,21,240] as [number,number,number,number], elev:2.5, speed:0.004, count:6 },
-  { type:'CLEAN',   label:'Cleaning Robot',    color:[156,163,175,220] as [number,number,number,number], elev:0.4, speed:0.003, count:5 },
-];
+const ROBOT_TYPE_DEFAULTS: Record<string, { label: string; color: [number,number,number,number]; elev: number; speed: number; defaultCount: number }> = {
+  AGV:     { label:'Transport AGV',     color:[59,130,246,240], elev:0.8, speed:0.006, defaultCount:12 },
+  INSPECT: { label:'Inspection Robot',  color:[250,204,21,240], elev:2.5, speed:0.004, defaultCount:6 },
+  CLEAN:   { label:'Cleaning Robot',    color:[156,163,175,220], elev:0.4, speed:0.003, defaultCount:5 },
+};
 
 const ROBOT_TASKS: Record<string, (from:string, to:string) => string> = {
   AGV:     (f,t) => `Transporting batch to ${t}`,
@@ -424,11 +435,12 @@ function rng2(seed: number) {
   return () => { s = (s * 1664525 + 1013904223) | 0; return (s >>> 0) / 0xffffffff; };
 }
 
-function initRobots(plantId: number, buildingKey: string, floorIdx: number, zones: any[]): any[] {
+function initRobots(plantId: number, buildingKey: string, floorIdx: number, zones: any[], robotCounts?: Record<string, number>): any[] {
   if (!zones.length) return [];
   const r = rng2(plantId * 37 + (buildingKey.charCodeAt(0) || 1) * 13 + floorIdx * 7 + 999);
   const robots: any[] = [];
-  ROBOT_TYPES.forEach(({ type, color, elev, speed, count }) => {
+  for (const [type, cfg] of Object.entries(ROBOT_TYPE_DEFAULTS)) {
+    const count = robotCounts?.[type] ?? cfg.defaultCount;
     for (let i = 0; i < count; i++) {
       const fi = Math.floor(r() * zones.length);
       const ti = Math.floor(r() * zones.length);
@@ -436,17 +448,17 @@ function initRobots(plantId: number, buildingKey: string, floorIdx: number, zone
       const toZ   = zones[ti];
       const wpts  = robotWaypoints(fromZ.id, toZ.id, zones);
       robots.push({
-        id: `${type}-${String.fromCharCode(65 + robots.length)}`,
-        type, color, elev,
+        id: `${type}-${String.fromCharCode(65 + (i % 26))}${i >= 26 ? Math.floor(i/26) : ''}`,
+        type, color: cfg.color, elev: cfg.elev,
         fromZone: fromZ.id, toZone: toZ.id,
         waypoints: wpts, wpIdx: 0, segProg: r(),
-        speed: speed * (0.8 + r() * 0.4),
+        speed: cfg.speed * (0.8 + r() * 0.4),
         battery: Math.round(25 + r() * 75),
         status: 'moving',
         task: ROBOT_TASKS[type](fromZ.name, toZ.name),
       });
     }
-  });
+  }
   return robots;
 }
 
