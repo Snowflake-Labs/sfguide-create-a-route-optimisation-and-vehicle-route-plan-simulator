@@ -408,9 +408,9 @@ function lerp2(a: number, b: number, t: number) { return a+(b-a)*t; }
 // ── Robot simulation helpers ──────────────────────────────────────────────────
 
 const ROBOT_TYPES = [
-  { type:'AGV',     label:'Transport AGV',     color:[59,130,246,240] as [number,number,number,number], elev:0.8, speed:0.006, count:2 },
-  { type:'INSPECT', label:'Inspection Robot',  color:[250,204,21,240] as [number,number,number,number], elev:2.5, speed:0.004, count:1 },
-  { type:'CLEAN',   label:'Cleaning Robot',    color:[156,163,175,220] as [number,number,number,number], elev:0.4, speed:0.003, count:1 },
+  { type:'AGV',     label:'Transport AGV',     color:[59,130,246,240] as [number,number,number,number], elev:0.8, speed:0.006, count:12 },
+  { type:'INSPECT', label:'Inspection Robot',  color:[250,204,21,240] as [number,number,number,number], elev:2.5, speed:0.004, count:6 },
+  { type:'CLEAN',   label:'Cleaning Robot',    color:[156,163,175,220] as [number,number,number,number], elev:0.4, speed:0.003, count:5 },
 ];
 
 const ROBOT_TASKS: Record<string, (from:string, to:string) => string> = {

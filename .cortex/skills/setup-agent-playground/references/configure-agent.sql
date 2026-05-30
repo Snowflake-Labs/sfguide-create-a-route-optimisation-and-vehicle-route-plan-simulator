@@ -104,6 +104,21 @@ instructions:
     - When the user clicks a plant building/zone OR provides a plant name with facility context:
       ALWAYS call TOOL_PLANT_IMPACT immediately with the plant name. Do NOT ask the user to confirm.
       Then use the result to describe batch risk, inventory gaps, shipment delays, and downstream pharmacy exposure.
+    - Create a new plant / add a manufacturing site: Use TOOL_CREATE_PLANT
+      PROVISIONING WORKFLOW — follow these steps conversationally:
+      1. Ask for location, specialisation, and capacity if not provided
+      2. Recommend robot count: capacity_batches_month * 0.15 (min 24, max 600), rounded to nearest 6
+      3. Robot mix by specialisation: INJECTABLES=60/30/10, BIOLOGICS=50/20/30, VACCINES=65/25/10, API=35/40/25, SOLID_DOSE=40/20/40
+      4. Suggest custom labels: BIOLOGICS→"Bioreactor Shuttle"/"Culture Monitor"/"Containment Cleaner", VACCINES→"Cryo-Logistics Bot"/"Cold Chain Validator"/"Decontamination Unit"
+      5. Confirm with user, then call TOOL_CREATE_PLANT, then TOOL_ALTER_PLANT for labels
+    - Remove / decommission a plant from the network: Use TOOL_REMOVE_PLANT
+    - Resize robot fleet (whole plant or specific building/type): Use TOOL_ALTER_PLANT
+      CONFIGURATION WORKFLOW — follow these steps:
+      1. First query pharma_supply_chain to show current fleet state
+      2. Present what will change (before/after)
+      3. For emergencies (fire drill, contamination): apply immediately with {"all": "..."} status
+      4. For labels: suggest industry-appropriate names based on plant specialisation
+      5. Confirm, then call TOOL_ALTER_PLANT with robot_count + robot_type_labels + status_descriptions as needed
 
     PLANT-FLOOR ROBOTS (AGVs, inspection robots, cleaning robots):
     - Robot fleet status (active/charging/error counts), battery levels, maintenance due: Use pharma_supply_chain tool
@@ -255,6 +270,78 @@ tools:
           - plant_name
   - tool_spec:
       type: generic
+      name: TOOL_CREATE_PLANT
+      description: "Create a new manufacturing plant. Adds the plant to the PLANTS table, discovers nearby Overture Maps building footprints within a search radius, and deploys a configurable number of robots (AGVs, inspection, cleaning) distributed across building roles."
+      input_schema:
+        type: object
+        properties:
+          plant_name:
+            type: string
+            description: "Name of the new plant (e.g. 'Austin BioHub')"
+          city:
+            type: string
+            description: "City where the plant is located"
+          country:
+            type: string
+            description: "Country code (e.g. 'US', 'UK', 'SE')"
+          latitude:
+            type: number
+            description: "Latitude of the plant location"
+          longitude:
+            type: number
+            description: "Longitude of the plant location"
+          specialisation:
+            type: string
+            description: "Manufacturing specialisation (e.g. 'INJECTABLES', 'SOLID_DOSE', 'BIOLOGICS')"
+          capacity_batches_month:
+            type: integer
+            description: "Monthly batch capacity (default 200)"
+          search_radius_m:
+            type: integer
+            description: "Radius in meters to search for building footprints (default 800)"
+          robot_count:
+            type: integer
+            description: "Total number of robots to deploy at the plant (default 24). Distributed evenly across 6 building roles. Mix: 50% AGV, 30% Inspection, 20% Cleaning."
+        required: [plant_name, city, country, latitude, longitude, specialisation]
+  - tool_spec:
+      type: generic
+      name: TOOL_REMOVE_PLANT
+      description: "Remove a manufacturing plant and its associated building footprints from the network. Returns confirmation with details of removed records."
+      input_schema:
+        type: object
+        properties:
+          plant_name:
+            type: string
+            description: "Name of the plant to remove (e.g. 'Austin BioHub')"
+        required: [plant_name]
+  - tool_spec:
+      type: generic
+      name: TOOL_ALTER_PLANT
+      description: "Modify the robot/sensor fleet at a plant. Can resize (change count), rename robot types, and set custom activity/status descriptions. Supports whole-plant, per-building, or per-robot-type targeting."
+      input_schema:
+        type: object
+        properties:
+          plant_name:
+            type: string
+            description: "Name of the plant to modify (e.g. 'Hudson Valley Site', 'Northshire Site')"
+          robot_count:
+            type: integer
+            description: "New total number of robots for the targeted scope. Omit to keep existing count unchanged."
+          building_role:
+            type: string
+            description: "Optional. Target a specific building: api, form, cold, qc, util, or dist. If omitted, targets entire plant."
+          robot_type_filter:
+            type: string
+            description: "Optional. Only affect a specific robot type: AGV, INSPECT, or CLEAN. Requires building_role for resize."
+          robot_type_labels:
+            type: string
+            description: "Optional JSON string to rename robot types. Keys are robot type codes, values are new display names. Example: {\"AGV\": \"Delivery Drone\", \"INSPECT\": \"Quality Scanner\", \"CLEAN\": \"Sanitization Bot\"}"
+          status_descriptions:
+            type: string
+            description: "Optional JSON string to change robot activity descriptions. Keys are current statuses (moving, charging, error) mapped to new descriptions. Use {\"all\": \"...\"} to set every robot in scope to the same status. Example: {\"moving\": \"Transporting batch ONC-042 to QC lab\"}"
+        required: [plant_name]
+  - tool_spec:
+      type: generic
       name: TOOL_WEATHER
       description: "Current Met Office weather for the routing region. Returns temperature, wind, precipitation, visibility and routing advisory."
       input_schema:
@@ -340,6 +427,24 @@ tool_resources:
     execution_environment:
       type: warehouse
       warehouse: ROUTING_ANALYTICS
+  TOOL_CREATE_PLANT:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CREATE_PLANT
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
+  TOOL_REMOVE_PLANT:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_REMOVE_PLANT
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
+  TOOL_ALTER_PLANT:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ALTER_PLANT
+    execution_environment:
+      type: warehouse
+      warehouse: ROUTING_ANALYTICS
   pharma_supply_chain:
     type: semantic_view
     semantic_view: FLEET_INTELLIGENCE.PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV
@@ -384,14 +489,67 @@ EXCEPTION
 END;
 
 -- =============================================================================
--- VERIFY
+-- VERIFY: All 15 tool backing resources exist (13 procedures + 4 semantic views)
 -- =============================================================================
 
-SHOW SEMANTIC VIEWS IN SCHEMA FLEET_INTELLIGENCE.PUBLIC;
-SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;
+DECLARE
+    v_missing VARCHAR;
+    v_missing_sv VARCHAR;
+    v_proc_count NUMBER;
+    v_sv_count NUMBER;
+BEGIN
+    -- Check all 13 procedures exist (tool_resources of type: procedure)
+    v_missing := (
+        SELECT NULLIF(LISTAGG(expected_proc, ', ') WITHIN GROUP (ORDER BY expected_proc), '')
+        FROM (
+            SELECT expected_proc
+            FROM (
+                SELECT 'TOOL_DIRECTIONS' AS expected_proc
+                UNION ALL SELECT 'TOOL_ISOCHRONE'
+                UNION ALL SELECT 'TOOL_OPTIMIZATION'
+                UNION ALL SELECT 'TOOL_PHARMA_CATCHMENT'
+                UNION ALL SELECT 'TOOL_SUPPLY_CHAIN'
+                UNION ALL SELECT 'TOOL_INVENTORY_STATUS'
+                UNION ALL SELECT 'TOOL_DEMAND_FORECAST'
+                UNION ALL SELECT 'TOOL_REPLENISHMENT_PLAN'
+                UNION ALL SELECT 'TOOL_WEATHER'
+                UNION ALL SELECT 'TOOL_PLANT_IMPACT'
+                UNION ALL SELECT 'TOOL_CREATE_PLANT'
+                UNION ALL SELECT 'TOOL_REMOVE_PLANT'
+                UNION ALL SELECT 'TOOL_ALTER_PLANT'
+            ) expected
+            LEFT JOIN FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES p
+                ON p.PROCEDURE_SCHEMA = 'ROUTING_AGENT'
+                AND p.PROCEDURE_NAME = expected.expected_proc
+            WHERE p.PROCEDURE_NAME IS NULL
+        )
+    );
 
+    -- Check all 4 semantic views exist
+    v_missing_sv := (
+        SELECT NULLIF(LISTAGG(expected_sv, ', ') WITHIN GROUP (ORDER BY expected_sv), '')
+        FROM (
+            SELECT expected_sv
+            FROM (
+                SELECT 'PHARMA_SUPPLY_CHAIN.PHARMA_SUPPLY_CHAIN_SV' AS expected_sv
+                UNION ALL SELECT 'ROUTING_AGENT.FLEET_ANALYTICS_VIEW'
+                UNION ALL SELECT 'PUBLIC.FLEET_TRIPS_SV'
+                UNION ALL SELECT 'PUBLIC.FLEET_TELEMETRY_SV'
+            ) expected
+            LEFT JOIN FLEET_INTELLIGENCE.INFORMATION_SCHEMA.SEMANTIC_VIEWS sv
+                ON sv.SCHEMA || '.' || sv.NAME = expected.expected_sv
+            WHERE sv.NAME IS NULL
+        )
+    );
 
--- =============================================================================
--- VERIFY
--- =============================================================================
+    IF (v_missing IS NOT NULL OR v_missing_sv IS NOT NULL) THEN
+        RETURN 'FAILED — MISSING TOOLS: procs=[' || COALESCE(v_missing, '') || '] views=[' || COALESCE(v_missing_sv, '') || ']';
+    END IF;
+
+    v_proc_count := (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT');
+    v_sv_count := (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.SEMANTIC_VIEWS);
+
+    RETURN 'ROUTING_AGENT OK — ' || v_proc_count || ' procedures, ' || v_sv_count || ' semantic views. All 15 tool resources verified.';
+END;
+
 SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;

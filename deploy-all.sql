@@ -186,8 +186,9 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/retail-catchment/references/seed-data.sql;
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
--- ║ PHASE 4: AGENT TOOLS & INTELLIGENCE                                        ║
--- ║ Tools must be created BEFORE the agent (agent references them).            ║
+-- ║ PHASE 4: DATA + TOOL PROCEDURES                                             ║
+-- ║ Creates all backing tables and tool procedures. NO semantic views or agent  ║
+-- ║ here — those go in Phase 5 AFTER all dependencies exist.                   ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
 -- Ensure LARGE warehouse is active for Overture Maps geospatial queries
@@ -202,11 +203,11 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- Owner: .cortex/skills/add-weather-routing/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-weather-routing/references/deploy-weather-tool.sql;
 
--- Pharma Supply Chain (PLANTS, SUPPLIERS, PRODUCTS, BATCHES, SHIPMENTS, INVENTORY)
+-- Pharma Supply Chain DATA ONLY (PLANTS, SUPPLIERS, PRODUCTS, BATCHES, SHIPMENTS, INVENTORY)
 -- Owner: .cortex/skills/add-pharma-supply-chain/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-supply-chain/references/deploy-pharma-supply-chain.sql;
 
--- Robot Telemetry (capacity-scaled robots + PHARMA_SUPPLY_CHAIN_SV)
+-- Robot Telemetry DATA + PHARMA_SUPPLY_CHAIN_SV semantic view
 -- Owner: .cortex/skills/add-pharma-supply-chain/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-supply-chain/references/deploy-robot-telemetry.sql;
 
@@ -214,31 +215,41 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- Owner: .cortex/skills/add-plant-map/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-plant-map/references/build-plant-footprints.sql;
 
--- Pharma Intelligence (SF_INVENTORY, SF_DEMAND_FORECAST, tool procedures)
+-- Pharma Intelligence DATA (SF_INVENTORY, SF_DEMAND_FORECAST)
 -- Owner: .cortex/skills/add-pharma-intelligence/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-data.sql;
+
+-- Pharma Intelligence TOOL PROCEDURES (TOOL_INVENTORY_STATUS, TOOL_DEMAND_FORECAST, TOOL_REPLENISHMENT_PLAN)
+-- Owner: .cortex/skills/add-pharma-intelligence/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-pharma-tools.sql;
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-pharma-intelligence/references/deploy-plant-impact-tool.sql;
 
--- Fleet Analytics (FLEET_TRIPS_SV, FLEET_TELEMETRY_SV semantic views)
--- Owner: .cortex/skills/add-fleet-analytics/
-EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-fleet-analytics/references/deploy-fleet-analytics.sql;
-
--- Routing Agent tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION, TOOL_PHARMA_CATCHMENT)
--- MUST run BEFORE configure-agent.sql (agent references these procedures)
+-- Routing Agent TOOL PROCEDURES (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION, TOOL_SUPPLY_CHAIN)
 -- Owner: .cortex/skills/routing-agent/ + build-routing-solution stored_procedures/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/routing-agent/references/deploy-agent.sql;
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/build-routing-solution/openrouteservice_app/sql/stored_procedures/tool_pharma_catchment.sql;
 
+-- Plant Management TOOL PROCEDURES (TOOL_CREATE_PLANT, TOOL_ALTER_PLANT)
+-- Owner: .cortex/skills/add-plant-map/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-plant-map/references/tool-create-plant.sql;
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-plant-map/references/tool-alter-plant.sql;
+
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
--- ║ PHASE 5: AGENT + STREAMLIT (created LAST — references all tools/views)     ║
+-- ║ PHASE 5: SEMANTIC VIEWS → AGENT → STREAMLIT                                ║
+-- ║ All semantic views created FIRST (they reference tables from Phase 4).     ║
+-- ║ Agent created LAST (it references ALL tools + semantic views).             ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
--- Semantic View for Cortex Analyst
+-- Fleet Analytics semantic views (FLEET_TRIPS_SV, FLEET_TELEMETRY_SV)
+-- Owner: .cortex/skills/add-fleet-analytics/
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/add-fleet-analytics/references/deploy-fleet-analytics.sql;
+
+-- Cortex Analyst semantic view (FLEET_ANALYTICS_VIEW — combined trips+telemetry)
 -- Owner: .cortex/skills/setup-agent-playground/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/deploy-semantic-view.sql;
 
--- Routing Agent (CREATE AGENT with all 10 tools)
+-- Routing Agent (CREATE AGENT with ALL tools + semantic views)
+-- MUST BE LAST — references every procedure and semantic view created above.
 -- Owner: .cortex/skills/setup-agent-playground/
 EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/skills/setup-agent-playground/references/configure-agent.sql;
 
@@ -263,14 +274,10 @@ USE WAREHOUSE ROUTING_ANALYTICS;
 DROP WAREHOUSE IF EXISTS ROUTING_DEPLOY;
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
--- ║ DEPLOYMENT COMPLETE                                                         ║
--- ║                                                                             ║
--- ║ Verify:                                                                     ║
--- ║   SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;  (5 services RUNNING)    ║
--- ║   SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.ROUTING_AGENT;                  ║
--- ║   SHOW STREAMLITS IN SCHEMA SYNTHETIC_DATASETS.UNIFIED;                    ║
--- ║   SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS;  (6008)      ║
--- ║   SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;       ║
--- ║   CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_WEATHER('SanFrancisco');      ║
--- ║   CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PLANT_IMPACT('ALL');          ║
+-- ║ PHASE 7: END-TO-END VERIFICATION                                           ║
+-- ║ Validates every layer: services, data, routing, tools, views, agent, app.  ║
+-- ║ Returns PASSED or FAILED with details. Can also be run standalone:         ║
+-- ║   EXECUTE IMMEDIATE FROM @...ORS_SPCS_STAGE/deploy/tests/verify-deployment.sql ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/tests/verify-deployment.sql;

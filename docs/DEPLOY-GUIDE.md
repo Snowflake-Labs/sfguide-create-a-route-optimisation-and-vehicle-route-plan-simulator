@@ -76,26 +76,34 @@ Execute each skill's reference SQL in order:
 5. `route-optimization/references/seed-data.sql`
 6. `retail-catchment/references/seed-data.sql`
 
-### Phase 4: Agent Tools & Intelligence
+### Phase 4: Data + Tool Procedures
+
+Creates all backing tables and tool procedures. No semantic views or agent here.
 
 **First:** `setup-agent-playground/references/deploy-demo-data.sql` (creates SF_TOP_PHARMACIES, SF_DRUG_FORMULARY, SF_HEALTH_DEMOGRAPHICS — required by pharma intelligence)
 
 Then in order:
 1. `add-weather-routing/references/deploy-weather-tool.sql`
 2. `add-pharma-supply-chain/references/deploy-pharma-supply-chain.sql`
-3. `add-pharma-supply-chain/references/deploy-robot-telemetry.sql`
+3. `add-pharma-supply-chain/references/deploy-robot-telemetry.sql` (data + PHARMA_SUPPLY_CHAIN_SV)
 4. `add-plant-map/references/build-plant-footprints.sql` (VIEW + ST_DWITHIN, not CTAS)
 5. `add-pharma-intelligence/references/deploy-pharma-data.sql`
 6. `add-pharma-intelligence/references/deploy-pharma-tools.sql`
 7. `add-pharma-intelligence/references/deploy-plant-impact-tool.sql` (TOOL_PLANT_IMPACT procedure)
-8. `add-fleet-analytics/references/deploy-fleet-analytics.sql`
+8. `routing-agent/references/deploy-agent.sql` (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_OPTIMIZATION, TOOL_SUPPLY_CHAIN)
+9. `build-routing-solution/.../stored_procedures/tool_pharma_catchment.sql`
+10. `add-plant-map/references/tool-create-plant.sql` (TOOL_CREATE_PLANT — creates plants with configurable robot_count)
+11. `add-plant-map/references/tool-alter-plant.sql` (TOOL_ALTER_PLANT — resize/rename/re-status robots, all VARCHAR params)
 
-### Phase 5: Agent + Streamlit
+### Phase 5: Semantic Views → Agent → Streamlit
 
-1. `setup-agent-playground/references/deploy-semantic-view.sql`
-2. `setup-agent-playground/references/configure-agent.sql`
-3. Create Fleet Explorer Streamlit app
-4. Upload `agent-demos.json` to stage
+**Order is critical:** semantic views first, then agent (references all views + tools), then Streamlit/config.
+
+1. `add-fleet-analytics/references/deploy-fleet-analytics.sql` (FLEET_TRIPS_SV, FLEET_TELEMETRY_SV)
+2. `setup-agent-playground/references/deploy-semantic-view.sql` (FLEET_ANALYTICS_VIEW)
+3. `setup-agent-playground/references/configure-agent.sql` ← **MUST BE LAST** (references all tools + semantic views)
+4. Create Fleet Explorer Streamlit app
+5. Upload `agent-demos.json` to stage
 
 ## Known Pitfalls (fixed in codebase)
 
@@ -117,6 +125,8 @@ Then in order:
 | `EXECUTE IMMEDIATE FROM` fails with 391917 | all modules | Cortex Code SQL tool can't handle scripting block results. Use `snow sql -q` via Bash tool instead (see Deployment Rule 8) |
 | VRP industries empty (region mismatch) | route-optimization | `$REGION_NAME` session variables don't resolve in CTAS/INSERT inside `EXECUTE IMMEDIATE FROM`. Fixed: replaced `$VAR` with `GETVARIABLE('VAR')` which works in all contexts |
 | Agent tool identifiers mismatch | configure-agent | Agent spec referenced `TOOL_ISOCHRONES` and `TOOL_ROUTE_OPTIMIZATION` but actual procs are `TOOL_ISOCHRONE` and `TOOL_OPTIMIZATION`. Also `TOOL_PHARMA_CATCHMENT` and `TOOL_PLANT_IMPACT` weren't being deployed. Fixed: corrected identifiers and added missing deploy steps |
+| PHARMA_SUPPLY_CHAIN_SV not found (agent 399504) | configure-agent | Agent references semantic view that didn't exist yet. Fixed: moved all semantic view creation to Phase 5 BEFORE `configure-agent.sql`. Agent must be created LAST after all tools + views exist |
+| Agent refuses VARIANT/object params (unsupported type) | tool-alter-plant | Warehouse execution environment only supports scalar types. Fixed: changed VARIANT params to VARCHAR, PARSE_JSON inside procedure body. Tool_spec uses `type: string` not `type: object` |
 
 ## Verification
 
