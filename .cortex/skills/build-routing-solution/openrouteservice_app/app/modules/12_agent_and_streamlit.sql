@@ -12,7 +12,7 @@ COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/
 FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
 FILES=('agent-demos.json');
 
--- Semantic View for Fleet Analytics
+-- Semantic View for Fleet Analytics (AI extension requires AI_VERIFIED_QUERIES)
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
   TABLES (
     trips AS SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS PRIMARY KEY (TRIP_ID),
@@ -32,24 +32,42 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS
     telemetry.battery AS telemetry.BATTERY_PCT COMMENT = 'Battery percentage'
   )
   DIMENSIONS (
-    trips.vehicle_type AS trips.VEHICLE_TYPE COMMENT = 'Vehicle type: ebike, hgv',
-    trips.region AS trips.REGION COMMENT = 'Geographic region',
-    trips.trip_start AS trips.TRIP_START COMMENT = 'Trip start timestamp',
-    trips.is_detour AS trips.IS_DETOUR COMMENT = 'Whether trip had a detour',
-    fleet.vehicle_id_dim AS fleet.VEHICLE_ID COMMENT = 'Vehicle identifier',
+    trips.vehicle_type AS trips.VEHICLE_TYPE WITH SYNONYMS=('mode','transport type') COMMENT = 'Vehicle type: ebike, hgv',
+    trips.region AS trips.REGION WITH SYNONYMS=('city','area','location') COMMENT = 'Geographic region',
+    trips.trip_start AS trips.TRIP_START WITH SYNONYMS=('date','start time','when') COMMENT = 'Trip start timestamp',
+    trips.is_detour AS trips.IS_DETOUR WITH SYNONYMS=('detour','deviation') COMMENT = 'Whether trip had a detour',
+    fleet.vehicle_id_dim AS fleet.VEHICLE_ID WITH SYNONYMS=('vehicle','driver') COMMENT = 'Vehicle identifier',
     fleet.shift_type AS fleet.SHIFT_TYPE COMMENT = 'Shift type',
-    pois.poi_name AS pois.NAME COMMENT = 'POI name',
-    pois.poi_category AS pois.CATEGORY COMMENT = 'POI category',
-    telemetry.status AS telemetry.STATUS COMMENT = 'Vehicle status: MOVING, DWELL, IDLE'
+    pois.poi_name AS pois.NAME WITH SYNONYMS=('pickup','restaurant','origin') COMMENT = 'POI name',
+    pois.poi_category AS pois.CATEGORY WITH SYNONYMS=('cuisine','food type') COMMENT = 'POI category',
+    telemetry.status AS telemetry.STATUS WITH SYNONYMS=('vehicle status','activity') COMMENT = 'Vehicle status: MOVING, DWELL, IDLE'
   )
   METRICS (
-    trips.total_trips AS COUNT(trips.TRIP_ID) COMMENT = 'Total trips',
-    trips.avg_distance AS AVG(trips.DISTANCE_KM) COMMENT = 'Average distance km',
-    trips.avg_duration AS AVG(trips.DURATION_MINUTES) COMMENT = 'Average duration minutes',
-    fleet.active_vehicles AS COUNT(DISTINCT fleet.VEHICLE_ID) COMMENT = 'Active vehicle count',
-    telemetry.avg_speed AS AVG(telemetry.SPEED_KMH) COMMENT = 'Average speed km/h'
+    trips.total_trips AS COUNT(trips.TRIP_ID) WITH SYNONYMS=('trip count','deliveries') COMMENT = 'Total trips',
+    trips.avg_distance AS AVG(trips.DISTANCE_KM) WITH SYNONYMS=('average distance') COMMENT = 'Average distance km',
+    trips.avg_duration AS AVG(trips.DURATION_MINUTES) WITH SYNONYMS=('average duration') COMMENT = 'Average duration minutes',
+    fleet.active_vehicles AS COUNT(DISTINCT fleet.VEHICLE_ID) WITH SYNONYMS=('fleet size') COMMENT = 'Active vehicle count',
+    telemetry.avg_speed AS AVG(telemetry.SPEED_KMH) WITH SYNONYMS=('average speed') COMMENT = 'Average speed km/h'
   )
-  COMMENT = 'Fleet intelligence analytics covering trips, telemetry, vehicles, and POIs.';
+  COMMENT = 'Fleet intelligence analytics covering trips, telemetry, vehicles, and POIs.'
+  AI_VERIFIED_QUERIES (
+    FLEET_OVERVIEW AS (
+      QUESTION 'Give me an overview of the fleet: total trips, average distance, and active vehicles'
+      SQL 'SELECT COUNT(TRIP_ID) AS TOTAL_TRIPS, ROUND(AVG(DISTANCE_KM),2) AS AVG_DISTANCE_KM, ROUND(AVG(DURATION_MINUTES),1) AS AVG_DURATION_MINS, COUNT(DISTINCT VEHICLE_ID) AS ACTIVE_VEHICLES FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS'
+    ),
+    TRIPS_BY_VEHICLE_TYPE AS (
+      QUESTION 'How many trips by vehicle type?'
+      SQL 'SELECT VEHICLE_TYPE, COUNT(TRIP_ID) AS TOTAL_TRIPS, ROUND(AVG(DISTANCE_KM),2) AS AVG_KM FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS GROUP BY VEHICLE_TYPE ORDER BY TOTAL_TRIPS DESC'
+    ),
+    HOURLY_DEMAND AS (
+      QUESTION 'What is the hourly demand pattern?'
+      SQL 'SELECT HOUR(TRIP_START) AS HOUR_OF_DAY, COUNT(TRIP_ID) AS TRIPS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS WHERE TRIP_START IS NOT NULL GROUP BY HOUR(TRIP_START) ORDER BY HOUR_OF_DAY'
+    ),
+    AVG_SPEED_BY_STATUS AS (
+      QUESTION 'What is the average speed by vehicle status?'
+      SQL 'SELECT STATUS, ROUND(AVG(SPEED_KMH),1) AS AVG_SPEED, COUNT(*) AS READINGS FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY GROUP BY STATUS ORDER BY AVG_SPEED DESC'
+    )
+  );
 
 -- Enable cross-region inference
 ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
@@ -80,7 +98,7 @@ instructions:
     For robot fleet health across ALL plants, call TOOL_PLANT_IMPACT('ALL')
 tools:
   - tool_spec:
-      type: cortex_analyst
+      type: cortex_analyst_text_to_sql
       name: fleet_analytics
       description: "Fleet trip and telemetry analytics — trip counts, distances, durations, speeds, battery levels, vehicle comparison, hourly patterns, busiest POIs. Use for any data/analytics question about the fleet."
   - tool_spec:
@@ -186,7 +204,8 @@ tools:
 tool_resources:
   fleet_analytics:
     type: semantic_view
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
+    semantic_view: FLEET_INTELLIGENCE.ROUTING_AGENT.FLEET_ANALYTICS_VIEW
+    execution_environment: {type: warehouse, warehouse: ROUTING_ANALYTICS}
   TOOL_DIRECTIONS:
     type: procedure
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
