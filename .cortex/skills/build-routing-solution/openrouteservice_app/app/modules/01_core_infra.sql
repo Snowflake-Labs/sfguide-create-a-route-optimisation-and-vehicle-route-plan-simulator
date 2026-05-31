@@ -62,12 +62,12 @@ CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_OSM_EAI
-     ALLOWED_NETWORK_RULES = (ORS_OSM_NETWORK_RULE)
+     ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_APP.CORE.ORS_OSM_NETWORK_RULE)
      ENABLED = TRUE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
    CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION ORS_CARTO_EAI
-     ALLOWED_NETWORK_RULES = (ORS_CARTO_NETWORK_RULE)
+     ALLOWED_NETWORK_RULES = (OPENROUTESERVICE_APP.CORE.ORS_CARTO_NETWORK_RULE)
      ENABLED = TRUE
      COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
@@ -141,16 +141,11 @@ CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD(folder VARCHAR, fi
    ENDPOINT = 'downloader'
    AS '/download_to_stage';
 
--- Step 2: Download the real San Francisco OSM PBF (~32MB).
--- The DOWNLOAD function calls the downloader service which saves to its volume mount
--- at /downloads/ors_spcs_stage/ → maps to @ORS_SPCS_STAGE on the stage.
--- Folder arg = 'ors_spcs_stage/SanFrancisco' so file lands at @stage/SanFrancisco/
--- This overwrites any bundled test PBF (e.g. the small Heidelberg extract).
-SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(
-    'ors_spcs_stage/SanFrancisco',
-    'SanFrancisco.osm.pbf',
-    'https://download.bbbike.org/osm/bbbike/SanFrancisco/SanFrancisco.osm.pbf'
-) AS map_download_status;
+-- Step 2: Upload the San Francisco OSM PBF (~25MB) from workspace to stage.
+-- Direct upload avoids SSL issues with the downloader service container.
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/staged_files/'
+FILES=('SanFrancisco.osm.pbf');
 
 -- Step 3: Start ORS service — it will build the routing graph from the freshly
 -- downloaded PBF. Graph build takes ~20s for SF. The openrouteservice.yaml spec

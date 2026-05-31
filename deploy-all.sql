@@ -59,6 +59,37 @@ USE SCHEMA OPENROUTESERVICE_APP.CORE;
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- UPLOAD SERVICE YAML SPECS to correct paths.
+-- COPY FILES preserves relative path structure, so we point FROM directly at
+-- each service's folder. This ensures the file lands at e.g.
+-- @ORS_SPCS_STAGE/services/downloader/downloader_spec.yaml (not nested).
+-- ═══════════════════════════════════════════════════════════════════════════════
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/downloader/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/services/downloader/'
+FILES=('downloader_spec.yaml');
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/openrouteservice/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/services/openrouteservice/'
+FILES=('openrouteservice.yaml');
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/vroom/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/services/vroom/'
+FILES=('vroom-service.yaml');
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/gateway/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/services/gateway/'
+FILES=('routing-gateway-service.yaml');
+
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/'
+FILES=('ors_control_app_service.yaml');
+
+-- Upload ors-config.yml to the SanFrancisco region folder (NOT to deploy/)
+COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/SanFrancisco/
+FROM 'snow://workspace/USER$.PUBLIC."sfguide-build-fleet-intelligence-with-cortex-code"/versions/live/'
+FILES=('ors-config.yml');
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- CRITICAL STAGE HYGIENE: Remove any ors-config.yml files from deploy/ paths.
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- WHY: The ORS Control App scans the ENTIRE @ORS_SPCS_STAGE for files matching
@@ -104,8 +135,8 @@ EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/.cortex/
 -- Seed REGION_ORS_MAP so the control app resolves SanFrancisco as the active region.
 -- The table is created by module 03 but not populated until a region is provisioned.
 -- Without this, the control app falls back to stage-scan which can pick up phantom regions.
-INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS)
-SELECT 'SanFrancisco', 'San Francisco', 37.70, 37.82, -122.52, -122.35, 'DEPLOYED'
+INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (REGION, DISPLAY_NAME, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, STATUS, IS_DEFAULT)
+SELECT 'SanFrancisco', 'San Francisco', 37.70, 37.82, -122.52, -122.35, 'DEPLOYED', TRUE
 WHERE NOT EXISTS (SELECT 1 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = 'SanFrancisco');
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
