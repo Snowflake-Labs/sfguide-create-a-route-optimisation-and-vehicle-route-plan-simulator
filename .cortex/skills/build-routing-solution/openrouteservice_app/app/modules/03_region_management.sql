@@ -432,7 +432,17 @@ BEGIN
             status_json := TRY_PARSE_JSON(:status_raw);
             IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
                 profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
-                IF (:profile_count > 0) THEN
+                -- Persistence gate: service_ready=true does NOT prove graphs synced
+                -- to the stage object store (upload lags the container view). Only
+                -- finalize when every requested profile is artifact-complete on the
+                -- stage. If not yet persisted, keep waiting; the wrapper may exit on
+                -- timeout and the rescue task finalizes once artifacts land.
+                LET graphs_ok BOOLEAN := FALSE;
+                BEGIN
+                    CALL OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(:P_REGION, :P_PROFILES) INTO :graphs_ok;
+                EXCEPTION WHEN OTHER THEN graphs_ok := FALSE;
+                END;
+                IF (:profile_count > 0 AND :graphs_ok) THEN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP SET STATUS='DEPLOYED' WHERE REGION = :P_REGION;
                     BEGIN
                         EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 14400';
@@ -445,11 +455,9 @@ BEGIN
                         EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
-                    -- so subsequent suspend/resume cycles reuse the built graphs instead of rebuilding.
-                    BEGIN
-                        CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
-                    EXCEPTION WHEN OTHER THEN NULL;
-                    END;
+                    -- REBUILD_GRAPHS is now always false in the service spec, so
+                    -- there is no post-build flag flip: the next suspend/resume
+                    -- reuses the persisted graphs automatically.
                     -- Deploy a per-region VROOM service alongside the ORS service so
                     -- OPTIMIZATION calls for this region route to a VROOM that has
                     -- ORS_HOST=ors-service-<region>. Best-effort: a missing VROOM falls
@@ -459,10 +467,27 @@ BEGIN
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
                     -- Write success marker so create_region_ors_service can
-                    -- safely reuse persisted graphs on the next deploy.
+                    -- safely reuse persisted graphs on the next deploy. Retried
+                    -- (not silently swallowed): a lost marker is only a missed
+                    -- optimization now (reuse is artifact-based, not marker-based),
+                    -- but we still surface a persistent failure in MESSAGE.
                     BEGIN
-                        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
-                            '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                        LET mk_ok BOOLEAN := FALSE;
+                        FOR mk_try IN 1 TO 3 DO
+                            BEGIN
+                                EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                                    '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                                mk_ok := TRUE;
+                            EXCEPTION WHEN OTHER THEN mk_ok := FALSE;
+                            END;
+                            IF (:mk_ok) THEN BREAK; END IF;
+                            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(2)';
+                        END FOR;
+                        IF (NOT :mk_ok) THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                            SET MESSAGE = COALESCE(MESSAGE, '') || ' [build_ok_marker_write_failed]'
+                            WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
                     -- Seed Route Optimization PLACES from Overture Maps for this
@@ -843,8 +868,7 @@ LANGUAGE SQL
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"' || LOWER(P_REBUILD_GRAPHS) ||
-    '","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
     CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END ||
     '","XMX":"' ||
     CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END ||
@@ -852,6 +876,55 @@ $$
     '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
     '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
     '"}]}}'
+$$;
+
+-- ---------------------------------------------------------------------------
+-- GRAPHS_ARTIFACT_COMPLETE(region, profiles) -> BOOLEAN
+-- Authoritative persistence check: returns TRUE only when EVERY requested
+-- profile has a complete on-stage artifact set under
+-- @ORS_GRAPHS_SPCS_STAGE/<region>/<profile>/ -- location_index (OSM) +
+-- landmarks_*_with_turn_costs (LM) + nodes_ch_* + shortcuts_* (CH). This is
+-- what gates STATUS='COMPLETE': service_ready=true alone does NOT prove the
+-- graph synced to the object store (the upload lags the container's view), so
+-- callers poll this until TRUE (bounded) before declaring a build done.
+-- Per-profile so a 2-of-3 build never reads as complete (the 3rd still builds).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(P_REGION VARCHAR, P_PROFILES VARCHAR)
+RETURNS BOOLEAN
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"artifact-complete"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    expected_count INTEGER DEFAULT 0;
+    complete_count INTEGER DEFAULT 0;
+BEGIN
+    expected_count := ARRAY_SIZE(SPLIT(TRIM(COALESCE(:P_PROFILES, '')), ','));
+    IF (:expected_count = 0 OR TRIM(COALESCE(:P_PROFILES, '')) = '') THEN
+        RETURN FALSE;
+    END IF;
+    BEGIN
+        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+        rs := (
+            WITH files AS (SELECT "name" AS n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))),
+                 profs AS (SELECT TRIM(VALUE::VARCHAR) AS p
+                           FROM TABLE(FLATTEN(input => SPLIT(:P_PROFILES, ',')))
+                           WHERE TRIM(VALUE::VARCHAR) <> '')
+            SELECT COUNT(*) AS COMPLETE_PROFILES
+            FROM profs
+            WHERE EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%location_index%')
+              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%landmarks_%with_turn_costs%')
+              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%nodes_ch_%')
+              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%shortcuts_%')
+        );
+        LET c CURSOR FOR rs;
+        FOR r IN c DO complete_count := r.COMPLETE_PROFILES; END FOR;
+    EXCEPTION WHEN OTHER THEN complete_count := 0;
+    END;
+    RETURN (:complete_count >= :expected_count);
+END;
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.create_region_ors_service(P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR)
@@ -868,11 +941,52 @@ DECLARE
     ors_spec VARCHAR;
     create_sql VARCHAR;
     graph_file_count INTEGER DEFAULT 0;
-    rebuild_flag VARCHAR DEFAULT 'true';
+    rebuild_flag VARCHAR DEFAULT 'false';
+    has_build_ok BOOLEAN DEFAULT FALSE;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+
+    -- Guard against tearing down an in-flight build. If a build job for this
+    -- region is RUNNING/PENDING AND the ORS service already exists with a live
+    -- container that is actively building (container status RUNNING/READY but
+    -- ORS not yet service_ready), refuse to DROP/CREATE. This prevents a
+    -- re-provision / family reconciliation from killing an in-progress
+    -- multi-hour graph build (the trigger behind the Europe rebuild incident).
+    -- It does NOT block the wrapper's own initial create: at that point the
+    -- container does not exist yet (or is not a live-building container), so
+    -- the guard does not fire. A fully-ready service (service_ready=true) is
+    -- also not blocked, since dropping it does not lose an in-progress build.
+    BEGIN
+        LET guard_job_cnt INTEGER := 0;
+        SELECT COUNT(*) INTO :guard_job_cnt
+        FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+        WHERE REGION = :P_REGION AND STATUS IN ('RUNNING','PENDING');
+        IF (:guard_job_cnt > 0) THEN
+            LET guard_svc_status VARCHAR := '';
+            BEGIN
+                EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''' || :svc_name || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+                LET rs_g RESULTSET := (SELECT "status" AS S FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1);
+                LET c_g CURSOR FOR rs_g;
+                FOR r IN c_g DO guard_svc_status := COALESCE(r.S, ''); END FOR;
+            EXCEPTION WHEN OTHER THEN guard_svc_status := '';
+            END;
+            IF (:guard_svc_status IN ('RUNNING','READY')) THEN
+                LET guard_ready BOOLEAN := FALSE;
+                BEGIN
+                    LET rs_gr RESULTSET := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+                    LET c_gr CURSOR FOR rs_gr;
+                    FOR r IN c_gr DO guard_ready := COALESCE(r.R, FALSE); END FOR;
+                EXCEPTION WHEN OTHER THEN guard_ready := FALSE;
+                END;
+                IF (NOT :guard_ready) THEN
+                    RETURN 'SKIPPED: ' || :P_REGION || ' has an in-flight build (container alive, not yet service_ready) with an active provision job; refusing to drop/recreate the service.';
+                END IF;
+            END IF;
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     -- For any non-city tier, resolve the LARGEST high-memory family available
     -- in this cloud + region at runtime. The user-mandated rule is: anything
@@ -913,94 +1027,35 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- Probe graphs stage for the success marker (_BUILD_OK) plus the
-    -- intermediate phase markers (_OSM_DONE, _LM_DONE, _CH_DONE) written by
-    -- PROVISION_REGION_WRAPPER's wait loop. Smart-resume policy:
-    --
-    --   _BUILD_OK present -> full success last time. Reuse all graphs
-    --                        (REBUILD_GRAPHS=false). Fast resume in seconds.
-    --
-    --   _CH_DONE present -> CH+LM both written but service never came up.
-    --                        Reuse all graphs (REBUILD_GRAPHS=false). ORS will
-    --                        load the persisted CH/LM and skip both phases.
-    --
-    --   _LM_DONE present -> LM written but CH did not finish. Remove any
-    --                        partial nodes_ch_* / shortcuts_* but keep
-    --                        location_index + landmarks_*. ORS will skip OSM
-    --                        and LM, only re-run CH.
-    --
-    --   _OSM_DONE present -> only OSM import done. Remove landmarks_* and
-    --                        nodes_ch_* / shortcuts_* (any partial LM or CH);
-    --                        keep location_index. ORS will skip OSM, re-run CH+LM.
-    --
-    --   no markers       -> first build OR earlier build did not complete OSM.
-    --                        Wipe everything and rebuild from scratch.
-    LET marker_count INTEGER DEFAULT 0;
-    LET marker_lm_done   BOOLEAN DEFAULT FALSE;
-    LET marker_ch_done   BOOLEAN DEFAULT FALSE;
-    LET marker_osm_done  BOOLEAN DEFAULT FALSE;
+    -- Reuse policy (robust): NEVER force REBUILD_GRAPHS=true, and NEVER REMOVE
+    -- graph files based on marker/artifact absence. Stock ORS v9 builds on an
+    -- empty graph dir and loads an existing graph when present, so
+    -- REBUILD_GRAPHS=false is correct in every normal case:
+    --   * empty dir     -> ORS builds from the PBF (first build)
+    --   * present graph -> ORS loads it (fast resume in seconds)
+    -- A genuinely torn/corrupt graph is recovered out-of-band by an explicit,
+    -- controlled stage purge (REBUILD_REGION_GRAPHS), never by this procedure
+    -- silently wiping a directory because a best-effort _BUILD_OK marker failed
+    -- to land. This removes the destructive "no markers -> REMOVE dir -> set
+    -- REBUILD_GRAPHS=true" behavior that caused perpetual rebuild loops.
+    rebuild_flag := 'false';
+
+    -- Diagnostic-only probe (drives NO destructive action): record how many
+    -- graph files are already staged and whether _BUILD_OK is present, purely
+    -- for the return message / operator visibility.
     BEGIN
         EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
-        rs := (SELECT
-            BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%')  AS HAS_OK,
-            BOOLOR_AGG("name" ILIKE '%/_CH_DONE%')   AS HAS_CH,
-            BOOLOR_AGG("name" ILIKE '%/_LM_DONE%')   AS HAS_LM,
-            BOOLOR_AGG("name" ILIKE '%/_OSM_DONE%')  AS HAS_OSM,
-            COUNT(*)                                  AS C
-            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        rs := (SELECT COUNT(*) AS C,
+                      BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') AS HAS_OK
+               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
         LET c_mk CURSOR FOR rs;
         FOR r IN c_mk DO
-            IF (COALESCE(r.HAS_OK, FALSE))  THEN marker_count    := 1; END IF;
-            IF (COALESCE(r.HAS_CH, FALSE))  THEN marker_ch_done  := TRUE; END IF;
-            IF (COALESCE(r.HAS_LM, FALSE))  THEN marker_lm_done  := TRUE; END IF;
-            IF (COALESCE(r.HAS_OSM, FALSE)) THEN marker_osm_done := TRUE; END IF;
             graph_file_count := r.C;
+            has_build_ok := COALESCE(r.HAS_OK, FALSE);
         END FOR;
     EXCEPTION WHEN OTHER THEN
-        marker_count := 0; marker_ch_done := FALSE; marker_lm_done := FALSE; marker_osm_done := FALSE; graph_file_count := 0;
+        graph_file_count := 0; has_build_ok := FALSE;
     END;
-
-    IF (:marker_count > 0 OR :marker_ch_done) THEN
-        -- Full graph or CH+LM persisted: REBUILD_GRAPHS=false, no purge needed.
-        rebuild_flag := 'false';
-    ELSEIF (:marker_lm_done) THEN
-        -- LM written, CH partial. Remove any partial CH artifacts so ORS
-        -- reruns CH cleanly without trying to load a torn nodes_ch_* file.
-        rebuild_flag := 'false';
-        BEGIN
-            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*nodes_ch_.*''';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-        BEGIN
-            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*shortcuts_.*''';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    ELSEIF (:marker_osm_done) THEN
-        -- Only OSM done. Remove any partial LM/CH artifacts. Keep location_index.
-        rebuild_flag := 'false';
-        BEGIN
-            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*landmarks_.*''';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-        BEGIN
-            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*nodes_ch_.*''';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-        BEGIN
-            EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/ PATTERN = ''.*shortcuts_.*''';
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    ELSE
-        -- No markers: either first build, or prior build did not finish OSM
-        -- import cleanly. Purge whatever partial files remain and rebuild.
-        IF (:graph_file_count > 0) THEN
-            BEGIN
-                EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
-            EXCEPTION WHEN OTHER THEN NULL;
-            END;
-        END IF;
-        rebuild_flag := 'true';
-    END IF;
 
     -- ===== Family reconciliation =====
     -- CREATE COMPUTE POOL IF NOT EXISTS will not change INSTANCE_FAMILY on
@@ -1043,13 +1098,15 @@ BEGIN
     SET STATUS = 'DEPLOYED', COMPUTE_SIZE = :P_COMPUTE_SIZE, INSTANCE_FAMILY = :instance_family, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
-    RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ')';
+    RETURN 'Region ORS service created for ' || :P_REGION || ' (REBUILD_GRAPHS=' || :rebuild_flag || ', existing graph files: ' || :graph_file_count || ', build_ok=' || :has_build_ok || ')';
 END;
 $$;
 
--- Flip REBUILD_GRAPHS for an existing region service via ALTER SERVICE FROM SPECIFICATION.
--- The new env var only takes effect on the next container start (suspend/resume or explicit cycle),
--- which is the desired behavior: no mid-build disruption.
+-- Re-applies a region's ORS service spec via ALTER SERVICE FROM SPECIFICATION.
+-- NOTE: BUILD_ORS_SERVICE_SPEC now hardcodes REBUILD_GRAPHS=false, so P_REBUILD
+-- has no effect on the rebuild flag (true is fully eliminated from the system);
+-- this proc is retained only as a spec re-apply helper. Forced rebuilds go
+-- through REBUILD_REGION_GRAPHS (explicit stage purge + cycle), not this proc.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(P_REGION VARCHAR, P_REBUILD VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
@@ -1080,7 +1137,9 @@ END;
 $$;
 
 -- Force a full graph rebuild for a region (PBF update / corruption recovery).
--- Flips REBUILD_GRAPHS=true, cycles the service, waits for service_ready, then flips back to false.
+-- Purges the persisted graph dir and cycles the service; the spec is always
+-- REBUILD_GRAPHS=false, so ORS rebuilds from the PBF into the empty dir. No
+-- REBUILD_GRAPHS=true is ever used. Readiness wait scales with region size.
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.REBUILD_REGION_GRAPHS(P_REGION VARCHAR)
 RETURNS STRING
 LANGUAGE SQL
@@ -1097,7 +1156,26 @@ DECLARE
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'true');
+    -- Region-sized readiness wait. A continental graph rebuild can take hours;
+    -- a fixed 30-min cap would give up mid-build. Tier from the region's size.
+    LET compute_size VARCHAR DEFAULT 'L';
+    BEGIN
+        SELECT COALESCE(COMPUTE_SIZE, 'L') INTO :compute_size
+        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
+    EXCEPTION WHEN OTHER THEN compute_size := 'L';
+    END;
+    LET wait_iters INTEGER := CASE UPPER(:compute_size)
+        WHEN 'S' THEN 120 WHEN 'L' THEN 480 WHEN 'XXL' THEN 720 ELSE 480 END;  -- x 30s
+
+    -- Forced rebuild WITHOUT REBUILD_GRAPHS=true: the spec is always
+    -- REBUILD_GRAPHS=false, so we explicitly purge the persisted graph dir and
+    -- cycle the service. On resume ORS sees an empty graph dir and rebuilds from
+    -- the PBF. This keeps ORS's destructive in-container wipe semantics out of
+    -- the codebase entirely (no path can wipe a dir out from under a reuse).
+    BEGIN
+        EXECUTE IMMEDIATE 'REMOVE @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     -- Disable auto time-based suspension for the duration of the rebuild so the
     -- service cannot auto-suspend while graphs are being computed.
@@ -1110,7 +1188,7 @@ BEGIN
     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
 
-    FOR i IN 1 TO 60 DO
+    FOR i IN 1 TO :wait_iters DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
         BEGIN
             rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR AS S');
@@ -1125,7 +1203,8 @@ BEGIN
         END;
     END FOR;
 
-    CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
+    -- No flag flip: the spec is always REBUILD_GRAPHS=false. ORS rebuilt into the
+    -- (purged) graph dir, which persists via the stage-backed volume for resumes.
 
     -- Ensure a per-region VROOM service exists alongside the rebuilt ORS.
     -- Idempotent (CREATE SERVICE IF NOT EXISTS) so safe to call on rebuilds.
@@ -1140,7 +1219,7 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); REBUILD_GRAPHS flipped back to false';
+    RETURN 'Rebuild complete for ' || :P_REGION || ' (' || :profile_count || ' profile(s) ready); graph dir purged and rebuilt with REBUILD_GRAPHS=false';
 EXCEPTION
     WHEN OTHER THEN
         LET err_msg VARCHAR := SQLERRM;
@@ -2257,6 +2336,7 @@ DECLARE
     status_raw VARCHAR DEFAULT '';
     status_json VARIANT;
     is_ready BOOLEAN DEFAULT FALSE;
+    svc_ready BOOLEAN DEFAULT FALSE;
     peak_rss FLOAT DEFAULT NULL;
 BEGIN
     -- Find the most recent qualifying job for this region (ERROR with the
@@ -2291,8 +2371,20 @@ BEGIN
         FOR r IN c2 DO status_raw := r.S; END FOR;
         status_json := TRY_PARSE_JSON(:status_raw);
         IF (status_json:service_ready::BOOLEAN = TRUE AND status_json:profiles IS NOT NULL) THEN
+            svc_ready := TRUE;
             profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
-            IF (:profile_count > 0) THEN is_ready := TRUE; END IF;
+            IF (:profile_count > 0) THEN
+                -- Persistence gate: only finalize when the loaded profiles are ALSO
+                -- artifact-complete on the stage. service_ready=true alone does not
+                -- prove the graph synced to the object store.
+                LET loaded_profiles VARCHAR := ARRAY_TO_STRING(OBJECT_KEYS(status_json:profiles), ',');
+                LET graphs_ok BOOLEAN := FALSE;
+                BEGIN
+                    CALL OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(:P_REGION, :loaded_profiles) INTO :graphs_ok;
+                EXCEPTION WHEN OTHER THEN graphs_ok := FALSE;
+                END;
+                IF (:graphs_ok) THEN is_ready := TRUE; END IF;
+            END IF;
         END IF;
     EXCEPTION WHEN OTHER THEN is_ready := FALSE;
     END;
@@ -2350,6 +2442,31 @@ BEGIN
             END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
+        -- Terminal guard: if the container reports service_ready (graph loaded in
+        -- the container) but the artifacts still have NOT persisted to the stage
+        -- after a generous cap, stop monitoring forever and mark the job ERROR so
+        -- it surfaces in the UI failed panel instead of hanging RUNNING. Only
+        -- fires when svc_ready=TRUE (build finished) but persistence is stuck --
+        -- never kills a still-in-progress build (svc_ready=FALSE then). The cap is
+        -- intentionally generous (continental build + multi-GB stage sync) and is
+        -- a tunable constant.
+        IF (:svc_ready) THEN
+            LET persist_elapsed_min INTEGER DEFAULT 0;
+            BEGIN
+                SELECT TIMESTAMPDIFF(MINUTE, STARTED_AT, SYSDATE()) INTO :persist_elapsed_min
+                FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE JOB_ID = :job_id;
+            EXCEPTION WHEN OTHER THEN persist_elapsed_min := 0;
+            END;
+            IF (:persist_elapsed_min > 720) THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                SET STATUS='ERROR',
+                    ERROR_MSG='graph_persist_timeout',
+                    MESSAGE='Service reported ready but graph artifacts never persisted to stage within the cap (720 min); marking ERROR instead of hanging RUNNING.',
+                    COMPLETED_AT=SYSDATE()
+                WHERE JOB_ID = :job_id;
+                RETURN 'persist_timeout:' || :P_REGION;
+            END IF;
+        END IF;
         RETURN 'not_ready:' || :P_REGION;
     END IF;
 
@@ -2367,18 +2484,33 @@ BEGIN
         EXECUTE IMMEDIATE 'ALTER COMPUTE POOL IF EXISTS ORS_POOL_' || UPPER(:P_REGION) || ' SET AUTO_SUSPEND_SECS = 3600';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
-    BEGIN
-        CALL OPENROUTESERVICE_APP.CORE.SET_REBUILD_GRAPHS_FLAG(:P_REGION, 'false');
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
+    -- REBUILD_GRAPHS is always false in the service spec now; no flag flip is
+    -- needed (the next resume reuses persisted graphs automatically).
     -- Ensure region VROOM exists (rescue path: ORS came up via async job).
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+    -- Write the success marker, retried (not silently swallowed). With
+    -- artifact-based reuse a lost marker no longer arms a destructive wipe, but
+    -- we still retry and surface a persistent failure in MESSAGE.
     BEGIN
-        EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
-            '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+        LET mk_ok BOOLEAN := FALSE;
+        FOR mk_try IN 1 TO 3 DO
+            BEGIN
+                EXECUTE IMMEDIATE 'COPY INTO @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION ||
+                    '/_BUILD_OK FROM (SELECT ''ok'') FILE_FORMAT = (TYPE = CSV) SINGLE = TRUE OVERWRITE = TRUE';
+                mk_ok := TRUE;
+            EXCEPTION WHEN OTHER THEN mk_ok := FALSE;
+            END;
+            IF (:mk_ok) THEN BREAK; END IF;
+            EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(2)';
+        END FOR;
+        IF (NOT :mk_ok) THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+            SET MESSAGE = COALESCE(MESSAGE, '') || ' [build_ok_marker_write_failed]'
+            WHERE JOB_ID = :job_id;
+        END IF;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
