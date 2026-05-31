@@ -17,7 +17,7 @@ ors:
       driving-hgv: 
         enabled: true
       cycling-regular:
-        enabled: false
+        enabled: true
       cycling-road:
         enabled: false
       cycling-mountain:

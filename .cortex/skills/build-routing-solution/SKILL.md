@@ -629,6 +629,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
 
    > **Note on Module 03:** Module 03 is large (461 lines) but required. In workspace environments, executing complex procedures via `snowflake_sql_execute` is acceptable. Core tables and procedures (`REGION_CATALOG`, `REGION_ORS_MAP`, `REGION_PROVISION_JOBS`, `REFRESH_REGION_CATALOG`, `LOAD_SEED_CATALOG`) are essential; advanced provisioning procedures can be created later if needed.
 
+   > **⚠️ CRITICAL — Do NOT insert San Francisco into `REGION_ORS_MAP`:** The default `ORS_SERVICE` already serves San Francisco. The `REGION_ORS_MAP` table is ONLY for additional region-specific services (e.g., `ORS_SERVICE_LOSANGELES`). If San Francisco is registered there, the gateway will try to resolve DNS `ors-service-sanfrancisco` which does not exist, causing `NOT_FOUND` errors in the Control App UI. The Control App already hardcodes the default service as "San Francisco (Default)" in `/api/regions/provisioned`. Never INSERT/MERGE San Francisco into `REGION_ORS_MAP`.
+
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
 
 2. **Verify** all services are running:
