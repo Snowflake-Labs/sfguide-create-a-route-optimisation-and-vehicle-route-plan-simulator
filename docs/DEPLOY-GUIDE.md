@@ -22,11 +22,7 @@ Embedded in `deploy-all.sql` — no manual setup needed:
 5. **All objects need COMMENT tracking tags** per AGENTS.md
 6. **Log errors** to `logs/` per error logging convention
 7. **Stage layout is critical** — `ors-config.yml` and map files go ONLY in `@stage/{RegionName}/` (e.g. `SanFrancisco/`). The control app discovers regions by scanning for `*ors-config*` files and uses the parent folder name as the region identifier. A file at `config/ors-config.yml` would create a phantom region called "config".
-8. **Use `snow sql` for EXECUTE IMMEDIATE FROM** — The Cortex Code SQL tool (`snowflake_sql_execute`) returns error `391917` ("Invalid parameter... Allowed formats: jsonv2") for `EXECUTE IMMEDIATE FROM` when the staged file contains SQL scripting blocks (`BEGIN...END`, `$$` procedures). Use `snow sql -q "..."` via the Bash tool instead:
-   ```bash
-   snow sql -q "USE WAREHOUSE ROUTING_DEPLOY; USE SCHEMA OPENROUTESERVICE_APP.CORE; EXECUTE IMMEDIATE FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/deploy/path/to/module.sql;"
-   ```
-   This works reliably for all modules. Simple DDL (CREATE TABLE, CREATE FUNCTION) can still use `snowflake_sql_execute` directly.
+8. **EXECUTE IMMEDIATE FROM works via `snowflake_sql_execute`** — Use `snowflake_sql_execute` directly for all `EXECUTE IMMEDIATE FROM` statements. If a module returns error `391917` ("Invalid parameter... Allowed formats: jsonv2"), the SQL still executed successfully — verify by checking that the created objects exist. This is a result-format parsing issue, not an execution failure. No `snow sql` or cloud agents required.
 
 ## Execution Order
 
@@ -122,7 +118,7 @@ Then in order:
 | DOWNLOAD function not found | 01 | Module 01 calls `DOWNLOAD()` but it was defined in module 02. Fixed: inline CREATE FUNCTION in 01 before the SELECT call |
 | ROUTING_AGENT schema not found | deploy-demo-data | `deploy-demo-data.sql` creates procs in `FLEET_INTELLIGENCE.ROUTING_AGENT` but didn't create the schema. Fixed: added CREATE SCHEMA IF NOT EXISTS at top |
 | ORS_STATUS returns 404 | 02 | `_ORS_STATUS_RAW` was mapped to `/status` but gateway endpoint is `/ors_status`. Fixed in module 02 |
-| `EXECUTE IMMEDIATE FROM` fails with 391917 | all modules | Cortex Code SQL tool can't handle scripting block results. Use `snow sql -q` via Bash tool instead (see Deployment Rule 8) |
+| `EXECUTE IMMEDIATE FROM` returns 391917 | all modules | This is a result-format parsing issue, NOT an execution failure. The SQL executes successfully — verify by checking created objects exist. No `snow sql` needed |
 | VRP industries empty (region mismatch) | route-optimization | `$REGION_NAME` session variables don't resolve in CTAS/INSERT inside `EXECUTE IMMEDIATE FROM`. Fixed: replaced `$VAR` with `GETVARIABLE('VAR')` which works in all contexts |
 | Agent tool identifiers mismatch | configure-agent | Agent spec referenced `TOOL_ISOCHRONES` and `TOOL_ROUTE_OPTIMIZATION` but actual procs are `TOOL_ISOCHRONE` and `TOOL_OPTIMIZATION`. Also `TOOL_PHARMA_CATCHMENT` and `TOOL_PLANT_IMPACT` weren't being deployed. Fixed: corrected identifiers and added missing deploy steps |
 | PHARMA_SUPPLY_CHAIN_SV not found (agent 399504) | configure-agent | Agent references semantic view that didn't exist yet. Fixed: moved all semantic view creation to Phase 5 BEFORE `configure-agent.sql`. Agent must be created LAST after all tools + views exist |
