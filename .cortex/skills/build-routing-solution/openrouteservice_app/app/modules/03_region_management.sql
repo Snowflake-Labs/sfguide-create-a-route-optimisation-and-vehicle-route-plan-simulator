@@ -882,12 +882,13 @@ $$;
 -- GRAPHS_ARTIFACT_COMPLETE(region, profiles) -> BOOLEAN
 -- Authoritative persistence check: returns TRUE only when EVERY requested
 -- profile has a complete on-stage artifact set under
--- @ORS_GRAPHS_SPCS_STAGE/<region>/<profile>/ -- location_index (OSM) +
--- landmarks_*_with_turn_costs (LM) + nodes_ch_* + shortcuts_* (CH). This is
--- what gates STATUS='COMPLETE': service_ready=true alone does NOT prove the
--- graph synced to the object store (the upload lags the container's view), so
--- callers poll this until TRUE (bounded) before declaring a build done.
--- Per-profile so a 2-of-3 build never reads as complete (the 3rd still builds).
+-- @ORS_GRAPHS_SPCS_STAGE/<region>/<profile>/ -- stamp.txt (GraphHopper/ORS
+-- per-profile build-complete marker; algorithm-agnostic for CH and LM profiles)
+-- + location_index (OSM import). This gates STATUS='COMPLETE':
+-- service_ready=true alone does NOT prove the graph synced to the object store
+-- (the upload lags the container's view), so callers poll this until TRUE
+-- (bounded) before declaring a build done. Per-profile so a 2-of-3 build never
+-- reads as complete (the 3rd still builds).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(P_REGION VARCHAR, P_PROFILES VARCHAR)
 RETURNS BOOLEAN
@@ -914,10 +915,8 @@ BEGIN
                            WHERE TRIM(VALUE::VARCHAR) <> '')
             SELECT COUNT(*) AS COMPLETE_PROFILES
             FROM profs
-            WHERE EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%location_index%')
-              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%landmarks_%with_turn_costs%')
-              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%nodes_ch_%')
-              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%shortcuts_%')
+            WHERE EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%stamp.txt%')
+              AND EXISTS (SELECT 1 FROM files WHERE n ILIKE '%/' || profs.p || '/%location_index%')
         );
         LET c CURSOR FOR rs;
         FOR r IN c DO complete_count := r.COMPLETE_PROFILES; END FOR;
@@ -2374,13 +2373,18 @@ BEGIN
             svc_ready := TRUE;
             profile_count := ARRAY_SIZE(OBJECT_KEYS(status_json:profiles));
             IF (:profile_count > 0) THEN
-                -- Persistence gate: only finalize when the loaded profiles are ALSO
-                -- artifact-complete on the stage. service_ready=true alone does not
-                -- prove the graph synced to the object store.
+                -- Persistence gate: only finalize when every REQUESTED profile is
+                -- artifact-complete on the stage (not just what ORS loaded).
+                -- service_ready=true alone does not prove the graph synced to the
+                -- object store.
                 LET loaded_profiles VARCHAR := ARRAY_TO_STRING(OBJECT_KEYS(status_json:profiles), ',');
+                LET requested_profiles VARCHAR := '';
+                SELECT COALESCE(PROFILES, '') INTO :requested_profiles
+                FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS WHERE JOB_ID = :job_id;
+                IF (TRIM(:requested_profiles) = '') THEN requested_profiles := :loaded_profiles; END IF;
                 LET graphs_ok BOOLEAN := FALSE;
                 BEGIN
-                    CALL OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(:P_REGION, :loaded_profiles) INTO :graphs_ok;
+                    CALL OPENROUTESERVICE_APP.CORE.GRAPHS_ARTIFACT_COMPLETE(:P_REGION, :requested_profiles) INTO :graphs_ok;
                 EXCEPTION WHEN OTHER THEN graphs_ok := FALSE;
                 END;
                 IF (:graphs_ok) THEN is_ready := TRUE; END IF;
