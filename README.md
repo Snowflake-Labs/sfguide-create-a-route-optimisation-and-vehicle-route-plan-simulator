@@ -185,4 +185,4 @@ If you have questions or suggestions about this solution, contact [fleet-intelli
 
 ## License
 
-Apache License 2.0
+Snowflake Skills License © 2026 Snowflake Inc. All rights reserved. See [LICENSE](LICENSE) for details.
