@@ -3,7 +3,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.0
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.4
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000
@@ -13,6 +13,22 @@ spec:
         # v1.1.0 — no global ORS_SERVICE / VROOM_SERVICE. Every region (including
         # the default) is per-region; missing region resolves to this name.
         DEFAULT_REGION_NAME: SanFrancisco
+        # Guardrail caps raised above defaults to fit demo workloads.
+        # (#audit-pr-120 follow-up). Engine-side caps in ors-config.yml are
+        # already permissive (matrix maximum_routes = 2,000,000 -> sqrt = 1414),
+        # so the gateway env vars below are the real bottleneck. Defaults are
+        # 200 / 2 / 10 / 18000 / 1000 in routing_service.py.
+        # Studio routability sends 1+1000 destinations per MATRIX_TABULAR call;
+        # BackloadMatching's slider goes to 500 unique locations. 1500 covers
+        # both with headroom under the engine's implied 1414 ceiling, where
+        # _retry_matrix_chunked reliably recovers via 50 -> 10 fallback.
+        ORS_GUARDRAIL_MATRIX_MAX_LOCATIONS: "1500"
+        # Default 2 was tight for what-if comparisons; engine cap is 2 only
+        # in some presets, but most allow 5+. Stays aligned with engine.
+        ORS_GUARDRAIL_ISOCHRONES_MAX_LOCATIONS: "5"
+        ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS: "10"
+        ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S: "18000"
+        ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS: "1000"
   endpoints:
     - name: gateway
       port: 8000

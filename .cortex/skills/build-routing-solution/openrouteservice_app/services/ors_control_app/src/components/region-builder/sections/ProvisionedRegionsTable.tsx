@@ -103,7 +103,7 @@ export default function ProvisionedRegionsTable({ regions, loading, onDrop }: Pr
                               </div>
                             )}
                             {gr?.error && isServiceUp && (
-                              <div style={{ fontSize: 11, color: '#e53935', marginTop: 4, maxWidth: 220 }} title={gr.error}>
+                              <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, maxWidth: 220 }} title={gr.error}>
                                 {gr.error.length > 80 ? gr.error.slice(0, 80) + '...' : gr.error}
                               </div>
                             )}

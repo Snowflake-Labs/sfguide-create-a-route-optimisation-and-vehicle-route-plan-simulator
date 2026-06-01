@@ -87,6 +87,50 @@ LET c CURSOR FOR rs;
 FOR r IN c DO my_count := r.CNT; END FOR;
 ```
 
+### Nested `$$` inside a `$$`-quoted procedure body
+
+Never write literal `$$` inside a procedure body that is itself fenced with `$$ … $$`. The outer parser treats the inner `$$` as closing the body early.
+
+```sql
+-- FAILS: premature close of outer $$ fence
+' FROM SPECIFICATION $$' || :spec_yaml || '$$';
+
+-- CORRECT: build dollar-quotes without literal $$
+' FROM SPECIFICATION ' || CHR(36) || CHR(36) || :spec_yaml || CHR(36) || CHR(36);
+```
+
+Alternatively, use a tagged outer fence (e.g. `$proc$ … $proc$`) that does not appear inside the body.
+
+### Multi-statement Scripting blocks in `-f` files
+
+`snow sql -f` splits the file on `;` boundaries. A bare `DECLARE … BEGIN … END;` block is fragmented into invalid pieces.
+
+Wrap every Snowflake Scripting block in a skill reference SQL file with:
+
+```sql
+EXECUTE IMMEDIATE $$
+DECLARE
+  ...
+BEGIN
+  ...
+END;
+$$;
+```
+
+### Snowflake exception syntax (not Oracle)
+
+Oracle's `RAISE name USING MESSAGE = '…'` is **not** supported. Use a declared exception:
+
+```sql
+DECLARE
+  my_err EXCEPTION (-20001, 'Human-readable message');
+BEGIN
+  IF (bad_condition) THEN
+    RAISE my_err;
+  END IF;
+END;
+```
+
 ## 4. Common Pitfalls
 
 | Pitfall | Symptom | Fix |
@@ -100,6 +144,9 @@ FOR r IN c DO my_count := r.CNT; END FOR;
 | City ORS service auto-suspends mid-build | 500 Internal Server Error from MATRIX_TABULAR | Wrapper now suspends then resumes the city service before building to reset the auto-suspend timer. Traffic via gateway does NOT count as direct service activity for SPCS auto-suspend. |
 | Gateway processes rows sequentially (pre-v0.9.6) | Matrix builds very slow (~62s per batch of 50) | Gateway v0.9.6 uses `ThreadPoolExecutor(MATRIX_CONCURRENCY)` (default 6) for concurrent ORS calls within each batch. Do NOT revert to sequential processing. |
 | Work queue row has >1000 destinations | ORS error 6099 "too many locations" or gateway 500 | BUILD_WORK_QUEUE chunks destinations to max 1000 per row via `FLOOR((dest_seq - 1) / 1000)`. Do NOT revert to all-destinations-per-origin. |
+| Literal `$$` inside `$$`-quoted proc body | `syntax error … unexpected '' \|\| :var \|\| ''` | Use `CHR(36) \|\| CHR(36)` or a tagged outer fence |
+| Bare `DECLARE … BEGIN … END;` in `-f` SQL | `unexpected '<EOF>'` mid-block | Wrap in `EXECUTE IMMEDIATE $$ … $$;` |
+| Oracle `RAISE … USING MESSAGE` | `unexpected 'USING'` | `DECLARE x EXCEPTION (-20001, 'msg'); … RAISE x;` |
 
 ## 5. Compute Pool & Service Sizing Guidelines
 
@@ -151,7 +198,7 @@ Example: 3 ORS + 3 gateway + 1 Berlin + 3 = 10 containers → 4 nodes minimum (u
 | Service | Image | Tag |
 |---------|-------|-----|
 | ORS | openrouteservice | v9.0.0 |
-| Downloader | downloader | v0.0.3 |
-| Gateway | routing_reverse_proxy | v1.1.0 |
+| Downloader | downloader | v0.0.4 |
+| Gateway | routing_reverse_proxy | v1.1.4 |
 | VROOM | vroom-docker | v1.0.4 |
-| Control App | ors_control_app | v1.1.8 |
+| Control App | ors_control_app | v1.1.82 |

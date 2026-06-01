@@ -3,18 +3,18 @@
 spec:
   containers:
     - name: ors-control-app
-      image: /openrouteservice_app/core/image_repository/ors_control_app:v1.1.8
+      image: /openrouteservice_app/core/image_repository/ors_control_app:v1.1.82
       env:
         SNOWFLAKE_DATABASE: "OPENROUTESERVICE_APP"
         SNOWFLAKE_WAREHOUSE: "ROUTING_ANALYTICS"
-        APP_VERSION: "1.1.8"
+        APP_VERSION: "1.1.82"
       resources:
         requests:
-          cpu: "0.5"
-          memory: "512Mi"
-        limits:
           cpu: "1"
           memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
   endpoints:
     - name: ors-control-app
       port: 3001

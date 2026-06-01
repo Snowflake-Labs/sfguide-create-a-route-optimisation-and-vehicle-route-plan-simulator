@@ -5,6 +5,10 @@ import { sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
+import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
+import type { LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 export default function TripInspector() {
   const { regionName, center, zoom } = useRegion();
@@ -15,7 +19,6 @@ export default function TripInspector() {
   const [selectedTrip, setSelectedTrip] = useState<string | null>(null);
   const [tripPoints, setTripPoints] = useState<any[]>([]);
   const [dwellPoints, setDwellPoints] = useState<any[]>([]);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setTripsLoading(true);
@@ -32,10 +35,6 @@ export default function TripInspector() {
     });
   }, [regionName, vehicleType]);
 
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
-
   const loadTrip = useCallback(async (tripId: string) => {
     setSelectedTrip(tripId);
     const [points, dwells] = await Promise.all([
@@ -44,11 +43,6 @@ export default function TripInspector() {
     ]);
     setTripPoints(points);
     setDwellPoints(dwells);
-    if (points.length > 0) {
-      const lngs = points.map((p: any) => Number(p.LNG));
-      const lats = points.map((p: any) => Number(p.LAT));
-      setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 13 }));
-    }
   }, []);
 
   const basemap = useMemo(() => cartoBasemap(), []);
@@ -67,6 +61,19 @@ export default function TripInspector() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const p of tripPoints) {
+      if (p.LNG != null && p.LAT != null) out.push([Number(p.LNG), Number(p.LAT)]);
+    }
+    for (const d of dwellPoints) {
+      if (d.LNG != null && d.LAT != null) out.push([Number(d.LNG), Number(d.LAT)]);
+    }
+    return out;
+  }, [tripPoints, dwellPoints]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (object.FACILITY_NAME !== undefined) {
@@ -79,7 +86,7 @@ export default function TripInspector() {
   }, []);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Trip Inspector</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
         {tripsLoading ? 'Loading trips...' : `${trips.length} recent trips`}
@@ -104,8 +111,9 @@ export default function TripInspector() {
         </div>
       )}
 
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 12, fontSize: 12, background: 'rgba(0,0,0,0.6)', padding: '6px 12px', borderRadius: 6, color: '#fff' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'rgb(34,197,94)', display: 'inline-block' }} /> SLA OK</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: 'rgb(239,68,68)', display: 'inline-block' }} /> Breach</span>
@@ -137,6 +145,6 @@ export default function TripInspector() {
           </tbody>
         </table>
       </div>
-    </div>
+    </PageContainer>
   );
 }

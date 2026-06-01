@@ -1,22 +1,32 @@
-// Helpers, types, and constants for AssetVelocity.
+// Helpers, types, and constants for AssetVelocity (smart reposition v1.1).
 
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
+
+// sfQuery + asSqlJsonLiteral live in the shared src/lib/sfQuery module so all
+// pages share the same body.error handling and dollar-quoted JSON escape path.
+// We re-export here to keep the existing import sites in this folder stable.
+import { sfQuery as sharedSfQuery, asSqlJsonLiteral, safeText, type SfQueryOpts } from '../../lib/sfQuery';
+export { asSqlJsonLiteral, safeText };
+export type { SfQueryOpts };
+
+// VEHICLE_CLASS_PROFILE is the single source of truth for capacity, costs, ORS
+// profile, and break enforcement across the routing UI. Backload Matching owns
+// the loader; we re-export so Asset Velocity stays in lock-step (no fork).
+export { fetchVehicleClass } from '../backload-matching/helpers';
+export type { VehicleClass } from '../backload-matching/helpers';
 
 export const RO_DB = 'FLEET_INTELLIGENCE';
 export const RO_SCHEMA = 'ROUTE_OPTIMIZATION';
 export const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
-export async function sfQuery(sql: string, database = RO_DB, schema = RO_SCHEMA): Promise<any[]> {
-  try {
-    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql, database, schema }) });
-    const body = await res.json();
-    const rows = Array.isArray(body) ? body : (body.result ?? []);
-    return Array.isArray(rows) ? rows : [];
-  } catch (err) {
-    console.error('[sfQuery] Error:', err, 'SQL:', sql.slice(0, 300));
-    return [];
-  }
+export async function sfQuery(
+  sql: string,
+  database = RO_DB,
+  schema = RO_SCHEMA,
+  opts: SfQueryOpts = {},
+): Promise<any[]> {
+  return sharedSfQuery(sql, database, schema, opts);
 }
 
 export function cartoBasemap() {
@@ -36,6 +46,8 @@ export const SEVERITY_COLOR: Record<string, [number, number, number]> = {
   OK: [34, 197, 94],
 };
 
+export type VehicleSubtype = 'DRY' | 'REEFER' | 'FLAT' | 'TANKER' | null;
+
 export interface Trailer {
   VEHICLE_ID: string;
   REGION: string;
@@ -50,6 +62,18 @@ export interface Trailer {
   COST_OF_IDLENESS_USD: number;
   PROJECTED_SAVINGS_USD: number;
   IDLE_SEVERITY: string;
+  // v1.1 HGV profile (may be NULL for non-trucking presets)
+  VEHICLE_SUBTYPE?: VehicleSubtype;
+  HAZMAT?: boolean;
+  WEIGHT_TONS?: number;
+  HEIGHT_M?: number;
+  LENGTH_M?: number;
+  WIDTH_M?: number;
+  AXLELOAD_T?: number;
+  ORS_PROFILE?: string;
+  // v1.1 page config (same on every row, materialised here for convenience)
+  MAX_REPOSITION_MINUTES?: number;
+  AVOID_FEATURES?: string;
 }
 
 export interface Terminal {
@@ -62,4 +86,27 @@ export interface Terminal {
   INBOUND: number;
   NET_OUTBOUND_TRIPS: number;
   DEMAND_SCORE: number;
+}
+
+// Reason codes shown for excluded terminals in the action-alerts table.
+export type ExclusionReason =
+  | 'OUT_OF_SHIFT'         // road duration > MAX_REPOSITION_MINUTES
+  | 'NOT_ROUTABLE'         // ORS could not snap / unreachable in current graph
+  | 'INCOMPATIBLE_SKILL'   // trailer subtype cannot serve terminal lane mix
+  | 'NO_DEMAND';           // terminal has no positive net-outbound (filtered upstream)
+
+export interface ReachabilityCell {
+  durationSec: number | null;   // null = not routable
+  distanceM: number | null;
+  reachable: boolean;           // true when durationSec <= MAX_REPOSITION_MINUTES * 60
+}
+
+// MatrixCache[trailerId][terminalId] = ReachabilityCell
+export type MatrixCache = Record<string, Record<string, ReachabilityCell>>;
+
+export interface VrpResult {
+  warning?: string;
+  routesCount?: number;
+  unassignedCount?: number;
+  totalDurationSec?: number;
 }

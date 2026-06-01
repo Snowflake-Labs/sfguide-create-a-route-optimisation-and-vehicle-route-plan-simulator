@@ -5,6 +5,8 @@ import { FT_DB, FT_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
+import { useH3FitMap } from '../../shared/useH3FitMap';
+import RecenterButton from '../../shared/RecenterButton';
 
 const COLOR_RANGE: [number, number, number][] = [
   [1, 152, 189], [73, 227, 206], [216, 254, 181],
@@ -19,7 +21,6 @@ export default function HeatMap() {
   const [h3Res, setH3Res] = useState(7);
   const [hexData, setHexData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -27,10 +28,6 @@ export default function HeatMap() {
     sfQuery(`SELECT H3_POINT_TO_CELL_STRING(ORIGIN, ${h3Res}) AS H3_INDEX, COUNT(*) AS TRIP_COUNT, ROUND(AVG(ROUTE_DISTANCE_METERS / 1000), 2) AS AVG_KM, ROUND(AVG(AVERAGE_KMH), 1) AS AVG_SPEED FROM TRIP_SUMMARY ${hourFilter} GROUP BY 1 HAVING TRIP_COUNT >= 2 ORDER BY TRIP_COUNT DESC LIMIT 8000`)
       .then(rows => { setHexData(rows); setLoading(false); });
   }, [hour, h3Res, regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const maxVal = useMemo(() => Math.max(1, ...hexData.map((h: any) => Number(h[metric] || 0))), [hexData, metric]);
   const totalTrips = useMemo(() => hexData.reduce((s, h) => s + Number(h.TRIP_COUNT || 0), 0), [hexData]);
@@ -60,6 +57,15 @@ export default function HeatMap() {
 
   const layers = useMemo(() => [basemap, hexLayer].filter(Boolean), [basemap, hexLayer]);
 
+  const getCell = useCallback((d: any) => d.H3_INDEX, []);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 45, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange, recenter, fitCoords } = useH3FitMap(hexData, getCell, {
+    fallback,
+    pitch: 45,
+    regionKey: regionName,
+    padding: { top: 100, bottom: 60, left: 60, right: 60 },
+  });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.H3_INDEX) return null;
     return { html: `<b>${object.H3_INDEX}</b><br/>Trips: ${object.TRIP_COUNT}<br/>Avg Speed: ${fmtDec(object.AVG_SPEED)} km/h`, style: { backgroundColor: '#14141f', color: '#e8e8f0', padding: '8px', borderRadius: '4px', fontSize: '12px' } };
@@ -86,9 +92,10 @@ export default function HeatMap() {
           <input type="range" min={5} max={9} value={h3Res} onChange={e => setH3Res(Number(e.target.value))} style={{ width: '100%' }} />
         </div>
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ display: 'flex', gap: 0, height: 8, borderRadius: 4, overflow: 'hidden', width: 120 }}>
             {COLOR_RANGE.map((c, i) => <div key={i} style={{ flex: 1, background: `rgb(${c.join(',')})` }} />)}

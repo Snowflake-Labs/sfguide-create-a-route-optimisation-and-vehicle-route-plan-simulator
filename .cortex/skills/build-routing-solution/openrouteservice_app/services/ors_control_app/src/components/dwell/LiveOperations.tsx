@@ -5,6 +5,10 @@ import { sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
 import { fmtDec } from '../../shared/format';
+import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
+import { coordsFromPoints, type LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 const STATE_COLORS: Record<string, [number, number, number, number]> = {
   DRIVING: [41, 181, 232, 200],
@@ -19,13 +23,17 @@ export default function LiveOperations() {
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [openDwells, setOpenDwells] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    // SLA threshold is read from VEHICLE_THRESHOLDS for the current
+    // vehicle type so HGV trucks no longer get the same 30 min SLA as
+    // e-bike couriers. Falls back to 30 min when the row is missing. (#33)
+    const safeVehicleType = vehicleType.replace(/[^a-z-]/gi, '');
+    const slaSubquery = `COALESCE((SELECT SLA_THRESHOLD_MIN FROM FLEET_INTELLIGENCE.CORE.VEHICLE_THRESHOLDS WHERE VEHICLE_TYPE = '${safeVehicleType}'), 30)`;
     const [v, d] = await Promise.all([
       sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, STATUS AS CURRENT_STATE, ST_X(POINT_GEOM) AS LNG, ST_Y(POINT_GEOM) AS LAT, TS AS LAST_UPDATE, SPEED_KMH AS CURRENT_SPEED_KMH FROM DT_STATE_CHANGES WHERE IS_STATE_CHANGE = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1 LIMIT 500`),
-      sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SESSION_START AS DWELL_START, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, 30 AS SLA_THRESHOLD_MIN, ROUND(30 - DWELL_MINUTES, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE SESSION_END IS NULL ORDER BY DWELL_MINUTES DESC LIMIT 50`),
+      sfQuery(`SELECT VEHICLE_ID AS DRIVER_ID, LOCATION_NAME AS FACILITY_NAME, SESSION_START AS DWELL_START, ROUND(DWELL_MINUTES,1) AS DWELL_DURATION_MIN, ${slaSubquery} AS SLA_THRESHOLD_MIN, ROUND(${slaSubquery} - DWELL_MINUTES, 1) AS TIME_REMAINING FROM DT_DWELL_ENRICHED WHERE SESSION_END IS NULL ORDER BY DWELL_MINUTES DESC LIMIT 50`),
     ]);
     setVehicles(v);
     setOpenDwells(d);
@@ -37,10 +45,6 @@ export default function LiveOperations() {
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
   }, [refresh]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   const stateCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -67,6 +71,10 @@ export default function LiveOperations() {
 
   const layers = useMemo(() => [basemap, vehicleLayer].filter(Boolean), [basemap, vehicleLayer]);
 
+  const fitCoords = useMemo<LngLat[]>(() => coordsFromPoints(vehicles, (v: any) => ({ lng: Number(v.LNG), lat: Number(v.LAT) })), [vehicles]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object || !object.DRIVER_ID) return null;
     return {
@@ -76,7 +84,7 @@ export default function LiveOperations() {
   }, []);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Live Operations</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
         {loading ? 'Refreshing...' : `${vehicles.length} vehicles tracked`} · Auto-refresh 30s
@@ -91,9 +99,10 @@ export default function LiveOperations() {
           </div>
         ))}
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Refreshing...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
       {openDwells.length > 0 && (
         <div style={{ marginTop: 12 }}>
@@ -121,6 +130,6 @@ export default function LiveOperations() {
           </div>
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

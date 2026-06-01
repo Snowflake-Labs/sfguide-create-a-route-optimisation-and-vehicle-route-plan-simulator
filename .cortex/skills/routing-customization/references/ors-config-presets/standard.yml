@@ -1,0 +1,74 @@
+################################################################################
+# Preset: standard
+#
+# Use when: single city / metropolitan region (San Francisco, Munich, Berlin).
+# Default for new installs.
+#
+# Profiles enabled:
+#   driving-car        -- primary
+#   cycling-electric   -- secondary (food-delivery use cases)
+#
+# Disabled in this preset to keep graph build fast and small:
+#   driving-hgv
+#   cycling-regular, cycling-road, cycling-mountain
+#   foot-walking, foot-hiking
+#   wheelchair
+#
+# Switch to bikes.yml if you need any cycling/foot profile beyond cycling-electric,
+# or to hgv.yml if HGV is your primary use case.
+################################################################################
+ors:
+  engine:
+    profile_default:
+      build:
+        # PBF replaced at deploy time per region; the placeholder here is the
+        # canonical default region (SanFrancisco).
+        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        instructions: false
+      service:
+        # Engine-side caps. Real per-call caps come from the gateway request-size
+        # guardrails (#51), which read from THIS file. Keep the engine values
+        # high so the gateway is always the active boundary.
+        maximum_distance: 100000000
+        maximum_distance_dynamic_weights: 100000000
+        maximum_distance_avoid_areas: 100000000
+        maximum_distance_alternative_routes: 100000000
+        maximum_distance_round_trip_routes: 100000000
+        maximum_visited_nodes: 100000000
+        maximum_waypoints: 1000
+        # Standard urban snapping radius. Continental extracts should use the
+        # continental.yml preset which raises this to 5000m.
+        maximum_snapping_radius: 400
+    profiles:
+      driving-car:
+        enabled: true
+      driving-hgv:
+        enabled: false
+      cycling-regular:
+        enabled: false
+      cycling-road:
+        enabled: false
+      cycling-mountain:
+        enabled: false
+      cycling-electric:
+        enabled: true
+      foot-walking:
+        enabled: false
+      foot-hiking:
+        enabled: false
+      wheelchair:
+        enabled: false
+  endpoints:
+    matrix:
+      maximum_visited_nodes: 100000000
+      maximum_routes: 2000000
+      maximum_routes_flexible: 2000000
+    isochrones:
+      maximum_locations: 2
+      maximum_intervals: 10
+      maximum_range_distance:
+        - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
+          value: 1500000
+      maximum_range_time:
+        - profiles: driving-car, driving-hgv, cycling-regular, cycling-road, cycling-mountain, cycling-electric, foot-walking, foot-hiking, wheelchair
+          value: 18000

@@ -98,6 +98,8 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8). No ORS calls needed.
 
+These projection views are now dataset-scoped (`V_FACT_TRIPS_CURRENT`, `V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`). Run Data Studio for the target preset before expecting rows.
+
 ### Quick check
 
 ```sql

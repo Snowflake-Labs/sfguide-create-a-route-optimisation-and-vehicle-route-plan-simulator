@@ -20,7 +20,7 @@ Data is generated using **Data Studio** in the ORS Control Panel, which writes t
 - `SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY`
 - `SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS`
 
-Projection views in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY` filter the unified tables by vehicle type and region via a `CONFIG` table. See [`references/sql-projection-views.sql`](references/sql-projection-views.sql) for the complete view definitions.
+Projection views in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY` read active-dataset projections (`V_FACT_TRIPS_CURRENT`, `V_DIM_POIS_CURRENT`) and filter by vehicle type and region via a `CONFIG` table. See [`references/sql-projection-views.sql`](references/sql-projection-views.sql) for the complete view definitions.
 
 **Objects created:**
 - `CONFIG` — single-row filter table (VEHICLE_TYPE + REGION)

@@ -5,6 +5,7 @@ import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import PageContainer from '../../shared/PageContainer';
 
 const barColor = (breachRate: number) => {
   if (breachRate > 20) return '#E5484D';
@@ -41,7 +42,7 @@ export default function DriverPerformance() {
   }, [data]);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Driver Performance</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Individual driver dwell time analysis</p>
       <div className="metric-grid">
@@ -83,6 +84,6 @@ export default function DriverPerformance() {
       <h3>Driver Details</h3>
       <DataTable data={data} columns={['DRIVER_ID', 'TOTAL_TRIPS', 'TOTAL_DWELLS', 'AVG_DWELL_MINUTES', 'SLA_BREACHES', 'BREACH_RATE', 'TOTAL_DWELL_MINUTES']} />
       {!loading && data.length === 0 && <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>No driver data found.</div>}
-    </div>
+    </PageContainer>
   );
 }

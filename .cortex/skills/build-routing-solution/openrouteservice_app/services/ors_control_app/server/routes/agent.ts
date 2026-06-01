@@ -1,368 +1,544 @@
-// /api/agent/chat - Cortex-backed routing agent with tool-call loop.
-// Streams responses via SSE. Calls FLEET_INTELLIGENCE.ROUTING_AGENT.* tool
-// procedures with one local fallback (tool_poi).
+// /api/agent/chat - Cortex Agent REST API (FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT).
+// Streams responses via SSE. Translates Cortex Agent SSE protocol into
+// our internal `workflow` / `token` / `result` events. Re-executes tool
+// procedures locally for map geometry when the stream omits it.
+// /api/agent/config - serves agent-demos.json from ORS_SPCS_STAGE.
 
 import { Router } from 'express';
-import { SF_DATABASE, SNOWFLAKE_HOST, IS_SPCS } from '../constants.js';
+import { SNOWFLAKE_HOST, IS_SPCS } from '../constants.js';
 import { runSql } from '../lib/sql.js';
-import { getSpcsToken } from '../lib/sanitize.js';
+import { getSpcsToken, escapeString } from '../lib/sanitize.js';
 
 export function createAgentRouter(): Router {
   const router = Router();
 
-  const TOOL_PROCEDURE_MAP: Record<string, { identifier: string; params: string[] }> = {
-    tool_directions: {
-      identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
-      params: ['locations_description', 'profile'],
-    },
-    tool_isochrone: {
-      identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
-      params: ['location_description', 'range_minutes', 'profile'],
-    },
-    tool_optimization: {
-      identifier: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
-      params: ['jobs_description', 'num_vehicles', 'profile'],
-    },
-    tool_poi: {
-      identifier: '__local__',
-      params: ['location_description', 'category', 'range_minutes', 'profile'],
-    },
-  };
-
-  const POI_CATEGORY_MAP: Record<string, string[]> = {
-    restaurant: ['restaurant', 'fast_food_restaurant', 'casual_eatery', 'fine_dining_restaurant', 'pizzaria', 'chicken_restaurant', 'sandwich_shop', 'sushi_restaurant', 'seafood_restaurant', 'steak_house', 'burger_restaurant'],
-    cafe: ['cafe', 'coffee_shop', 'bakery', 'tea_house'],
-    bar: ['bar', 'pub', 'nightclub', 'lounge'],
-    hotel: ['hotel', 'motel', 'hostel', 'bed_and_breakfast'],
-    shop: ['shopping_mall', 'convenience_store', 'supermarket', 'department_store', 'clothing_store'],
-    hospital: ['hospital', 'medical_clinic', 'pharmacy', 'dentist'],
-    school: ['school', 'university', 'college', 'kindergarten'],
-    park: ['park', 'playground', 'sports_complex', 'golf_course'],
-    gas_station: ['gas_station', 'charging_station'],
-    parking: ['parking', 'parking_garage'],
-  };
-
-  async function executeToolPoi(input: Record<string, any>): Promise<any> {
-    const { location_description, category, range_minutes, profile } = input;
-    const cats = POI_CATEGORY_MAP[String(category || 'restaurant').toLowerCase()] || POI_CATEGORY_MAP['restaurant'];
-    const isoResult = await executeToolLocally('tool_isochrone', { location_description, range_minutes: range_minutes ?? 10, profile });
-    if (isoResult?.status === 'FAILED' || isoResult?.error) return isoResult;
-    const geometry = isoResult?.geometry;
-    if (!geometry) return { error: 'Isochrone returned no geometry', status: 'FAILED' };
-    const catFilter = cats.map((c: string) => `'${c}'`).join(',');
-    const geojsonStr = JSON.stringify(geometry).replace(/'/g, "''");
-    const sql = `
-      SELECT NAMES::VARIANT:primary::STRING AS NAME,
-             BASIC_CATEGORY AS CATEGORY,
-             ST_Y(GEOMETRY) AS LAT,
-             ST_X(GEOMETRY) AS LNG
-      FROM OVERTURE_MAPS__PLACES.CARTO.PLACE
-      WHERE ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('${geojsonStr}'))
-        AND BASIC_CATEGORY IN (${catFilter})
-      LIMIT 200`;
-    try {
-      const rows = await runSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
-      const poi_list = (rows || []).map((r: any) => ({
-        name: r.NAME || 'Unknown',
-        category: r.CATEGORY || category,
-        lat: Number(r.LAT),
-        lng: Number(r.LNG),
-      }));
-      return { ...isoResult, poi_list, poi_count: poi_list.length };
-    } catch (e: any) {
-      return { ...isoResult, poi_list: [], poi_count: 0, poi_error: e.message?.slice(0, 200) };
-    }
-  }
-
-  const ROUTING_SYSTEM_PROMPT = `You are a routing agent powered by OpenRouteService. You help users with:
-  1. Driving/cycling/walking directions between locations
-  2. Reachability analysis (isochrones) - areas reachable within X minutes
-  3. Multi-stop delivery route optimization
-  4. Finding points of interest (restaurants, cafes, bars, hotels, shops, etc.) within a reachable area
-
-  You have access to four tools. To call a tool, respond with EXACTLY this JSON format and NOTHING else:
-  {"tool_call": {"name": "TOOL_NAME", "input": {PARAMS}}}
-
-  Available tools:
-  1. tool_directions - Get directions between locations
-     Input: {"locations_description": "string describing start/end/waypoints (required)", "profile": "string (default: driving-car)"}
-  2. tool_isochrone - Get area reachable within specified minutes from a location
-     Input: {"location_description": "string describing the center location (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
-  3. tool_optimization - Optimize delivery/pickup routes for multiple stops with one or more vehicles
-     Input: {"jobs_description": "string describing all delivery/pickup locations including the depot/start address (required)", "num_vehicles": number (default: 1), "profile": "string (default: driving-car)"}
-  4. tool_poi - Find points of interest within a reachable area from a location. Use when user asks to show/find specific place types within a travel time (e.g. "restaurants within 10 min drive").
-     Input: {"location_description": "string describing the center location (required)", "category": "one of: restaurant, cafe, bar, hotel, shop, hospital, school, park, gas_station, parking (required)", "range_minutes": number (required), "profile": "string (default: driving-car)"}
-
-  Transport profiles available: driving-car, cycling-electric (use for ANY cycling/bike request), driving-hgv (trucks only)
-
-  CRITICAL RULES:
-  1. ALWAYS call the appropriate tool for ANY routing question. NEVER answer from general knowledge.
-  2. When you need to call a tool, respond ONLY with the JSON tool_call object. No other text.
-  3. After receiving tool results, format them clearly: distances in km, durations in minutes.
-  4. If a tool returns an error, report it clearly. Do NOT retry with a different profile.
-  5. NEVER fabricate routing data.
-  6. Use tool_poi (NOT tool_isochrone) when the user asks to find/show specific place types within a travel time.
-  7. ONLY use these exact profile strings: driving-car, cycling-electric, driving-hgv. Never use cycling-regular, cycling-road, foot-walking or any other variant.`;
-
-  const AGENT_PROFILE_ALIASES: Record<string, string> = {
-    'bike': 'cycling-electric', 'bicycle': 'cycling-electric', 'cycling': 'cycling-electric',
-    'cycle': 'cycling-electric', 'cycling-regular': 'cycling-electric', 'cycling-road': 'cycling-electric',
-    'cycling-mountain': 'cycling-electric', 'foot-walking': 'driving-car', 'walk': 'driving-car',
-    'walking': 'driving-car', 'foot': 'driving-car', 'car': 'driving-car',
-    'drive': 'driving-car', 'driving': 'driving-car', 'truck': 'driving-hgv', 'hgv': 'driving-hgv',
-  };
-  const AGENT_VALID_PROFILES = new Set(['driving-car', 'driving-hgv', 'cycling-electric']);
-
-  function normalizeAgentProfile(profile: string | undefined): string {
-    if (!profile) return 'driving-car';
-    const lower = profile.toLowerCase().trim();
-    if (AGENT_VALID_PROFILES.has(lower)) return lower;
-    return AGENT_PROFILE_ALIASES[lower] || 'driving-car';
-  }
-
-  function escAgentSql(val: any): string {
-    if (val === undefined || val === null) return "''";
-    return "'" + String(val).replace(/'/g, "''") + "'";
-  }
-
-  async function executeToolLocally(toolName: string, input: Record<string, any>): Promise<any> {
-    if (toolName === 'tool_poi') return executeToolPoi(input);
-    const mapping = TOOL_PROCEDURE_MAP[toolName];
-    if (!mapping || mapping.identifier === '__local__') return { error: `Unknown tool: ${toolName}`, status: 'FAILED' };
-    const args = mapping.params.map(p => {
-      let val = input[p];
-      if (p === 'profile') val = normalizeAgentProfile(val as string);
-      if (val === undefined || val === null) return 'DEFAULT';
-      if (typeof val === 'number') return String(val);
-      return escAgentSql(val);
-    });
-    const sql = `CALL ${mapping.identifier}(${args.join(', ')})`;
-    try {
-      const rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
-      const result = rows?.[0];
-      if (result) {
-        const firstVal = Object.values(result)[0];
-        if (typeof firstVal === 'string') {
-          try { return JSON.parse(firstVal); } catch { return firstVal; }
-        }
-        return firstVal;
-      }
-      return { error: 'No result from tool execution', status: 'FAILED' };
-    } catch (err: any) {
-      return { error: `Tool execution failed: ${err.message}`, status: 'FAILED' };
-    }
-  }
-
-  function escAgentSqlStr(s: string): string {
-    return s.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/[\x00-\x1f]/g, ' ');
-  }
-
-  const AGENT_MODELS = ['claude-sonnet-4-5', 'mistral-large2'];
-  let agentModel = AGENT_MODELS[0];
-
-  async function callCortexCompleteStreaming(
-    messages: Array<{role: string; content: string}>,
-    onToken: (text: string) => void,
-  ): Promise<string> {
-    const token = getSpcsToken();
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+  // ------------------------------------------------------------------
+  // Tool procedure map for local re-execution (geometry recovery).
+  // Defaults are computed per-request so the active region/profile from the
+  // UI flow through to the re-executed CALLs.
+  // ------------------------------------------------------------------
+  type ToolDef = { proc: string; params: string[]; defaults?: Record<string, string> };
+  function buildToolProcMap(activeRegion: string, activeProfile: string): Record<string, ToolDef> {
+    const region = activeRegion || 'SanFrancisco';
+    const profile = activeProfile || 'driving-car';
+    return {
+      tool_directions: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
+        params: ['locations_description', 'profile'],
+        defaults: { profile },
+      },
+      tool_isochrone: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
+        params: ['location_description', 'range_minutes', 'profile'],
+        defaults: { profile, range_minutes: '10' },
+      },
+      tool_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
+        params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
+        defaults: { profile, region },
+      },
+      tool_route_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
+        params: ['delivery_locations', 'depot_location', 'num_vehicles', 'profile', 'region'],
+        defaults: { profile, region },
+      },
+      tool_poi_in_isochrone: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE',
+        params: ['location_description', 'range_minutes', 'poi_category', 'profile', 'max_results'],
+        defaults: { profile, range_minutes: '10', max_results: '25' },
+      },
+      tool_supply_chain: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
+        params: ['profile'],
+        defaults: { profile },
+      },
+      tool_pharma_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
+        params: ['profile'],
+        defaults: { profile },
+      },
+      tool_pharma_catchment: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
+        params: ['pharmacy_description', 'range_minutes', 'profile'],
+        defaults: { profile, range_minutes: '10' },
+      },
     };
-    const body = JSON.stringify({
-      model: agentModel,
-      messages,
-      stream: true,
-      max_tokens: 4096,
-      temperature: 0,
-    });
-    const url = `https://${SNOWFLAKE_HOST}/api/v2/cortex/inference:complete`;
-    console.log(`[Agent] Streaming CORTEX.COMPLETE model=${agentModel}, msgCount=${messages.length}`);
-    const startMs = Date.now();
-    const res = await fetch(url, { method: 'POST', headers, body });
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Cortex streaming API ${res.status}: ${errText.slice(0, 300)}`);
-    }
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No readable body from Cortex streaming response');
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(data);
-          const text = parsed.choices?.[0]?.delta?.content || '';
-          if (text) { fullText += text; onToken(text); }
-        } catch {}
-      }
-    }
-    console.log(`[Agent] Streaming completed in ${Date.now() - startMs}ms, length=${fullText.length}`);
-    if (!fullText) throw new Error('Cortex streaming returned empty response');
-    return fullText;
-  }
-
-  async function callCortexComplete(messages: Array<{role: string; content: string}>): Promise<string> {
-    const msgArray = messages.map(m => {
-      return `{'role':'${m.role}','content':'${escAgentSqlStr(m.content)}'}`;
-    }).join(',');
-    const sql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('${agentModel}', [${msgArray}], {'max_tokens':4096,'temperature':0}) as RESPONSE`;
-    console.log(`[Agent] Calling CORTEX.COMPLETE with model=${agentModel}, msgCount=${messages.length}, sqlLen=${sql.length}`);
-    const startMs = Date.now();
-    let rows: any[];
-    try {
-      rows = await runSql(sql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
-    } catch (err: any) {
-      console.error(`[Agent] CORTEX.COMPLETE failed (${Date.now() - startMs}ms): ${err.message}`);
-      if (agentModel === AGENT_MODELS[0] && AGENT_MODELS.length > 1) {
-        console.log(`[Agent] Retrying with fallback model ${AGENT_MODELS[1]}`);
-        agentModel = AGENT_MODELS[1];
-        const retrySql = sql.replace(AGENT_MODELS[0], agentModel);
-        rows = await runSql(retrySql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
-      } else {
-        throw err;
-      }
-    }
-    console.log(`[Agent] CORTEX.COMPLETE returned in ${Date.now() - startMs}ms`);
-    if (!rows || rows.length === 0) throw new Error('No response from CORTEX.COMPLETE');
-    const raw = rows[0].RESPONSE || rows[0][Object.keys(rows[0])[0]] || '';
-    let content = '';
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      content = parsed.choices?.[0]?.messages || parsed.choices?.[0]?.message?.content || '';
-    } catch {
-      content = String(raw);
-    }
-    if (!content) {
-      console.error(`[Agent] Empty content from CORTEX.COMPLETE. Raw: ${JSON.stringify(raw).slice(0, 500)}`);
-      throw new Error('Empty response from LLM');
-    }
-    return content.trim();
-  }
-
-  function findMatchingBrace(s: string): number {
-    let depth = 0; let inStr = false; let esc = false;
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (esc) { esc = false; continue; }
-      if (c === '\\') { esc = true; continue; }
-      if (c === '"') { inStr = !inStr; continue; }
-      if (inStr) continue;
-      if (c === '{') depth++;
-      if (c === '}') { depth--; if (depth === 0) return i; }
-    }
-    return -1;
-  }
-
-  function parseToolCall(text: string): { name: string; input: Record<string, any> } | null {
-    try {
-      const match = text.match(/\{\s*"tool_call"\s*:/s);
-      if (!match) return null;
-      const jsonStr = text.slice(text.indexOf('{'));
-      const braceEnd = findMatchingBrace(jsonStr);
-      if (braceEnd < 0) return null;
-      const parsed = JSON.parse(jsonStr.slice(0, braceEnd + 1));
-      if (parsed.tool_call?.name && TOOL_PROCEDURE_MAP[parsed.tool_call.name]) {
-        return { name: parsed.tool_call.name, input: parsed.tool_call.input || {} };
-      }
-    } catch {}
-    return null;
-  }
-
-  async function callCortexAgentWithToolLoop(
-    message: string, threadId?: string, parentMessageId?: string,
-    onProgress?: (data: { step: string; detail?: string }) => void,
-    onToken?: (text: string) => void,
-  ): Promise<any> {
-    if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
-    console.log(`[Agent] Starting tool loop for: "${message.slice(0, 100)}"`);
-    const messages: Array<{role: string; content: string}> = [
-      { role: 'system', content: ROUTING_SYSTEM_PROMPT },
-      { role: 'user', content: message },
-    ];
-    const maxIterations = 5;
-    const allToolResults: any[] = [];
-    let toolsExecuted = false;
-
-    for (let iter = 0; iter < maxIterations; iter++) {
-      onProgress?.({ step: 'calling_llm', detail: iter === 0 ? 'Thinking...' : `Processing (step ${iter + 1})` });
-
-      if (toolsExecuted && onToken) {
-        onProgress?.({ step: 'formatting', detail: 'Generating response...' });
-        try {
-          const streamedText = await callCortexCompleteStreaming(messages, onToken);
-          return { role: 'assistant', content: [{ type: 'text', text: streamedText }], _toolResults: allToolResults };
-        } catch (streamErr: any) {
-          console.warn(`[Agent] Streaming failed, falling back to blocking: ${streamErr.message}`);
-          const fallback = await callCortexComplete(messages);
-          onToken(fallback);
-          return { role: 'assistant', content: [{ type: 'text', text: fallback }], _toolResults: allToolResults };
-        }
-      }
-
-      const response = await callCortexComplete(messages);
-      console.log(`[Agent] LLM response (iter ${iter}): ${response.slice(0, 200)}`);
-      const toolCall = parseToolCall(response);
-
-      if (!toolCall) {
-        console.log(`[Agent] No tool call found, returning text response`);
-        if (onToken) onToken(response);
-        return { role: 'assistant', content: [{ type: 'text', text: response }], _toolResults: allToolResults };
-      }
-
-      const toolLabel = toolCall.name.replace('tool_', '');
-      onProgress?.({ step: 'executing_tool', detail: toolLabel });
-      console.log(`[Agent] Executing tool: ${toolCall.name}`);
-      messages.push({ role: 'assistant', content: response });
-      const toolResult = await executeToolLocally(toolCall.name, toolCall.input);
-      allToolResults.push(toolResult);
-      toolsExecuted = true;
-      const resultStr = JSON.stringify(toolResult).slice(0, 30000);
-      messages.push({ role: 'user', content: `Tool result from ${toolCall.name}:\n${resultStr}\n\nNow provide your final answer based on this data. Format distances in km and durations in minutes. Be concise.` });
-    }
-    return { role: 'assistant', content: [{ type: 'text', text: 'I was unable to complete the request after multiple attempts.' }], _toolResults: allToolResults };
   }
 
   function sendSseEvent(res: any, event: string, data: any) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
+  // ------------------------------------------------------------------
+  // /api/agent/config - serves agent-demos.json from ORS_SPCS_STAGE
+  // ------------------------------------------------------------------
+  const FALLBACK_AGENT_CONFIG = {
+    version: '1.0',
+    default_scenario: 'pharma',
+    max_token_limit: 8000,
+    scenarios: [
+      {
+        id: 'pharma',
+        label: 'Pharma Supply Chain',
+        icon: '\u{1F48A}',
+        description: 'Pharmaceutical delivery planning',
+        prompts: [
+          { label: '1. Catchment', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within 10 min drive of 498 Castro Street, San Francisco' },
+        ],
+      },
+    ],
+  };
+
+  async function loadStaticAgentDemos(): Promise<any> {
+    try {
+      const rows = await runSql(
+        `SELECT $1 AS CONFIG FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json (FILE_FORMAT => 'OPENROUTESERVICE_APP.CORE.JSON_FORMAT')`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+      if (rows?.[0]?.CONFIG) {
+        return typeof rows[0].CONFIG === 'string' ? JSON.parse(rows[0].CONFIG) : rows[0].CONFIG;
+      }
+    } catch (e: any) {
+      console.log(`[agent/config] Stage load failed: ${e.message}, using fallback`);
+    }
+    return FALLBACK_AGENT_CONFIG;
+  }
+
+  router.get('/api/agent/config', async (_req, res) => {
+    res.json(await loadStaticAgentDemos());
+  });
+
+  // ------------------------------------------------------------------
+  // /api/agent/examples?region=...&vehicle=... - live AI_COMPLETE-generated
+  // example chips for the Agent Playground. Falls back to agent-demos.json.
+  // ------------------------------------------------------------------
+  function profileFromVehicle(vt: string): string {
+    const v = (vt || '').toLowerCase();
+    if (!v) return 'driving-car';
+    if (v.includes('hgv') || v.includes('truck') || v.includes('lorry') || v.includes('semi')) return 'driving-hgv';
+    if (v.includes('ebike') || v.includes('e-bike') || v.includes('electric_bike')) return 'cycling-electric';
+    if (v.includes('mountain')) return 'cycling-mountain';
+    if (v.includes('bike') || v.includes('bicycle') || v.includes('cycle')) return 'cycling-regular';
+    if (v.includes('walk') || v.includes('foot') || v.includes('pedestrian')) return 'foot-walking';
+    if (v.includes('hike')) return 'foot-hiking';
+    if (v.includes('wheelchair')) return 'wheelchair';
+    return 'driving-car';
+  }
+
+  function extractFirstJson(text: string): any | null {
+    if (!text) return null;
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1] : text;
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(candidate.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+
+  router.get('/api/agent/examples', async (req, res) => {
+    const region = String(req.query.region || '').trim();
+    const vehicle = String(req.query.vehicle || '').trim();
+    const profile = profileFromVehicle(vehicle);
+
+    if (!region) {
+      return res.json(await loadStaticAgentDemos());
+    }
+
+    try {
+      // Set tracking query tag for attribution.
+      await runSql(
+        `ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+
+      // Resolve region centroid from REGION_CATALOG (boundary preferred).
+      const regionLit = escapeString(region);
+      const centroidRows = await runSql(
+        `SELECT
+            rc.REGION_NAME AS REGION_NAME,
+            rc.COUNTRY AS COUNTRY,
+            rc.CONTINENT AS CONTINENT,
+            ST_X(ST_CENTROID(rc.BOUNDARY))::FLOAT AS CENTROID_LON,
+            ST_Y(ST_CENTROID(rc.BOUNDARY))::FLOAT AS CENTROID_LAT,
+            (rc.MIN_LAT + rc.MAX_LAT)/2.0 AS BBOX_LAT,
+            (rc.MIN_LON + rc.MAX_LON)/2.0 AS BBOX_LON
+         FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+         WHERE rc.BOUNDARY IS NOT NULL
+           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${regionLit}')
+                OR UPPER(rc.REGION_KEY) = UPPER('${regionLit}'))
+         LIMIT 1`,
+        'OPENROUTESERVICE_APP', 'CORE',
+      );
+
+      let regionLabel = region;
+      let country = '';
+      let continent = '';
+      let centroidLat: number | null = null;
+      let centroidLon: number | null = null;
+      if (centroidRows?.[0]) {
+        regionLabel = centroidRows[0].REGION_NAME || region;
+        country = centroidRows[0].COUNTRY || '';
+        continent = centroidRows[0].CONTINENT || '';
+        centroidLat = centroidRows[0].CENTROID_LAT ?? centroidRows[0].BBOX_LAT ?? null;
+        centroidLon = centroidRows[0].CENTROID_LON ?? centroidRows[0].BBOX_LON ?? null;
+      }
+
+      const isSF = /san[\s-]?francisco/i.test(region) || /^sf$/i.test(region);
+
+      const promptText =
+        `You are generating example prompts for a routing/fleet AI playground. ` +
+        `The active map region is "${regionLabel}"${country ? ` (${country}${continent ? ', ' + continent : ''})` : ''}` +
+        (centroidLat != null && centroidLon != null ? ` centred near lat ${centroidLat.toFixed(4)}, lon ${centroidLon.toFixed(4)}` : '') +
+        `. The active vehicle type is "${vehicle || 'car'}" mapped to ORS profile "${profile}". ` +
+        `\n\nGenerate 2 scenario tabs, each with 4-5 short example prompts that exercise these tools: ` +
+        `tool_directions (point-to-point routing), tool_isochrone (drive/cycle/walk-time reachability polygons), ` +
+        `tool_poi_in_isochrone (Overture Maps POI search inside an isochrone, e.g. pharmacies, restaurants, shops), ` +
+        `tool_route_optimization (multi-vehicle VRP with depot + stops). ` +
+        (isSF ? `Because the region is San Francisco, also include: tool_supply_chain, tool_pharma_optimization, tool_pharma_catchment. ` : '') +
+        `\n\nRules:` +
+        `\n- Use REAL street addresses, neighbourhoods, or landmarks within "${regionLabel}". Do NOT invent SF addresses for non-SF regions.` +
+        `\n- Each prompt must read like a natural-language question a dispatcher would ask.` +
+        `\n- Reference the vehicle type / ORS profile where appropriate (e.g. cycling, HGV, walking).` +
+        `\n- Use ONLY plain ASCII apostrophes (') and double quotes ("). No smart quotes.` +
+        `\n- Each prompt label must start with "1. ", "2. ", etc.` +
+        `\n- Each scenario needs an id (kebab-case), label, single emoji icon, short description, and 4-5 prompt entries.` +
+        `\n\nReturn ONLY valid JSON, no markdown fences, in this exact shape:\n` +
+        `{"default_scenario":"<id>","scenarios":[{"id":"...","label":"...","icon":"...","description":"...","prompts":[{"label":"1. ...","icon":"...","prompt":"..."}]}]}`;
+
+      const cortexSql = `SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', '${escapeString(promptText)}') AS RESULT`;
+      const cortexRows = await runSql(cortexSql, 'OPENROUTESERVICE_APP', 'CORE');
+      const raw = cortexRows?.[0]?.RESULT;
+      const parsed = typeof raw === 'string' ? extractFirstJson(raw) : (raw && typeof raw === 'object' ? raw : null);
+
+      if (parsed && Array.isArray(parsed.scenarios) && parsed.scenarios.length > 0) {
+        const cleaned = {
+          version: '1.0',
+          default_scenario: parsed.default_scenario || parsed.scenarios[0].id,
+          max_token_limit: 8000,
+          scenarios: parsed.scenarios.map((s: any, i: number) => ({
+            id: String(s.id || `scenario-${i + 1}`),
+            label: String(s.label || `Scenario ${i + 1}`),
+            icon: String(s.icon || '\u{1F4CD}'),
+            description: String(s.description || ''),
+            prompts: Array.isArray(s.prompts)
+              ? s.prompts.slice(0, 6).map((p: any, j: number) => ({
+                  label: String(p.label || `${j + 1}. Example`),
+                  icon: String(p.icon || '\u{1F4CD}'),
+                  prompt: String(p.prompt || ''),
+                })).filter((p: any) => p.prompt)
+              : [],
+          })).filter((s: any) => s.prompts.length > 0),
+        };
+        if (cleaned.scenarios.length > 0) {
+          return res.json(cleaned);
+        }
+      }
+      console.log(`[agent/examples] AI_COMPLETE returned unparseable JSON for region=${region} vehicle=${vehicle}, falling back`);
+    } catch (e: any) {
+      console.log(`[agent/examples] Generation failed for region=${region} vehicle=${vehicle}: ${e.message}`);
+    }
+    res.json(await loadStaticAgentDemos());
+  });
+
+  // ------------------------------------------------------------------
+  // Helpers for parsing tool_result content blocks
+  // ------------------------------------------------------------------
+  function extractResultObj(c: any): any {
+    let resultObj: any = null;
+    if (c?.type === 'json' && c.json) {
+      const raw = c.json;
+      if (raw.result != null) {
+        if (typeof raw.result === 'object') resultObj = raw.result;
+        else if (typeof raw.result === 'string') {
+          try { resultObj = JSON.parse(raw.result); } catch { resultObj = raw; }
+        } else resultObj = raw;
+      } else resultObj = raw;
+    } else if (c?.type === 'text' && c.text) {
+      try {
+        const pt = JSON.parse(c.text);
+        if (pt && typeof pt === 'object') {
+          if (pt.result != null) {
+            if (typeof pt.result === 'object') resultObj = pt.result;
+            else if (typeof pt.result === 'string') {
+              try { resultObj = JSON.parse(pt.result); } catch { resultObj = pt; }
+            } else resultObj = pt;
+          } else resultObj = pt;
+        }
+      } catch {}
+    }
+    return resultObj;
+  }
+
+  // ------------------------------------------------------------------
+  // /api/agent/chat - Cortex Agent REST API call with SSE forwarding
+  // ------------------------------------------------------------------
   router.post('/api/agent/chat', async (req, res) => {
-    const { message, thread_id, parent_message_id } = req.body;
+    const { message, thread_id, parent_message_id, history, region, vehicle_type, profile } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
+    const activeRegion: string = (typeof region === 'string' && region) ? region : 'SanFrancisco';
+    const activeProfile: string = (typeof profile === 'string' && profile) ? profile : profileFromVehicle(String(vehicle_type || ''));
+    const activeVehicle: string = (typeof vehicle_type === 'string' && vehicle_type) ? vehicle_type : '';
+    const TOOL_PROC_MAP = buildToolProcMap(activeRegion, activeProfile);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
+
     try {
-      const onProgress = (data: { step: string; detail?: string }) => { sendSseEvent(res, 'progress', data); };
-      const onToken = (text: string) => { res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`); };
-      const agentResult = await callCortexAgentWithToolLoop(message, thread_id, parent_message_id, onProgress, onToken);
-      const content = agentResult?.content || [];
-      let msg = '';
+      if (!IS_SPCS) throw new Error('Cortex Agent is only available in SPCS mode');
+      const token = getSpcsToken();
+      const agentUrl = `https://${SNOWFLAKE_HOST}/api/v2/databases/FLEET_INTELLIGENCE/schemas/ROUTING_AGENT/agents/ROUTING_AGENT:run`;
+
+      const messages: Array<{ role: string; content: Array<{ type: string; text: string }> }> = [];
+      // Inject a hidden first-turn context note so the LLM defaults tool args
+      // to the active region + ORS profile chosen in the UI header.
+      if (activeRegion || activeVehicle) {
+        const ctx =
+          `Context for this conversation: active map region = ${activeRegion || 'unknown'}; ` +
+          `active vehicle type = ${activeVehicle || 'unknown'} (ORS profile = ${activeProfile}). ` +
+          `When you call routing tools, default the 'region' argument to "${activeRegion}" ` +
+          `and the 'profile' argument to "${activeProfile}" unless the user explicitly asks for a different region or transport mode. ` +
+          `Geocode all place names within "${activeRegion}" by default.`;
+        messages.push({ role: 'user', content: [{ type: 'text', text: ctx }] });
+        messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Understood. I will default to the active region and profile.' }] });
+      }
+      if (Array.isArray(history)) {
+        for (const h of history) {
+          if ((h.role === 'user' || h.role === 'assistant') && h.content) {
+            const text = typeof h.content === 'string' ? h.content : '';
+            if (text) messages.push({ role: h.role, content: [{ type: 'text', text }] });
+          }
+        }
+      }
+      messages.push({ role: 'user', content: [{ type: 'text', text: message }] });
+
+      const body: any = { messages, stream: true };
+      if (thread_id) {
+        body.thread_id = Number(thread_id);
+        body.parent_message_id = parent_message_id ? Number(parent_message_id) : 0;
+      }
+
+      console.log(`[Agent] Calling Cortex Agent API: "${message.slice(0, 100)}" thread=${thread_id || 'new'}`);
+      sendSseEvent(res, 'workflow', { type: 'start', label: 'Agent started', ts: Date.now() });
+
+      const agentRes = await fetch(agentUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!agentRes.ok) {
+        const errText = await agentRes.text();
+        throw new Error(`Cortex Agent API ${agentRes.status}: ${errText.slice(0, 500)}`);
+      }
+
+      const reader = agentRes.body?.getReader();
+      if (!reader) throw new Error('No readable body from Cortex Agent');
+      const decoder = new TextDecoder();
+
+      let fullText = '';
       let geometry: any = null;
-      const toolResults: any[] = agentResult?._toolResults || [];
-      for (const item of content) { if (item.type === 'text') msg += (msg ? '\n' : '') + item.text; }
-      for (const tr of toolResults) { if (tr && typeof tr === 'object' && tr.geometry && !geometry) geometry = tr.geometry; }
-      if (!msg) msg = agentResult?.message || 'No response from agent';
-      const response: any = { message: msg, tool_results: toolResults };
+      const toolResults: any[] = [];
+      const toolsCalled: Array<{ name: string; input: any }> = [];
+      const workflowSteps: any[] = [{ type: 'start', label: 'Agent started', ts: Date.now() }];
+      let responseThreadId: number | undefined;
+      let responseMessageId: number | undefined;
+      let tokenUsage: any = null;
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+            continue;
+          }
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (!data) continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            switch (currentEvent) {
+              case 'response.text.delta': {
+                const text = parsed.text || '';
+                if (text) {
+                  fullText += text;
+                  res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`);
+                }
+                break;
+              }
+              case 'response.thinking.delta':
+                break;
+              case 'response.status': {
+                const step = { type: 'status', label: parsed.message || parsed.status || 'Processing', ts: Date.now() };
+                workflowSteps.push(step);
+                sendSseEvent(res, 'workflow', step);
+                break;
+              }
+              case 'response.tool_use': {
+                const toolName = parsed.name || 'unknown';
+                toolsCalled.push({ name: toolName, input: parsed.input });
+                const step = { type: 'tool_start', label: `Calling ${toolName.replace('tool_', '')}`, tool: toolName, input: parsed.input, ts: Date.now() };
+                workflowSteps.push(step);
+                sendSseEvent(res, 'workflow', step);
+                break;
+              }
+              case 'response.tool_result': {
+                const toolName = parsed.name || 'unknown';
+                const step = { type: 'tool_done', label: `${toolName.replace('tool_', '')} complete`, tool: toolName, ts: Date.now() };
+                workflowSteps.push(step);
+                sendSseEvent(res, 'workflow', step);
+                if (parsed.content) {
+                  for (const c of parsed.content) {
+                    const resultObj = extractResultObj(c);
+                    if (resultObj) {
+                      toolResults.push(resultObj);
+                      if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                    }
+                  }
+                }
+                console.log(`[Agent] Tool result for ${toolName}: has_geometry=${!!geometry}, results=${toolResults.length}`);
+                break;
+              }
+              case 'response.tool_result.status': {
+                const step = { type: 'status', label: parsed.message || parsed.status || 'Tool executing', ts: Date.now() };
+                workflowSteps.push(step);
+                sendSseEvent(res, 'workflow', step);
+                break;
+              }
+              case 'metadata': {
+                if (parsed.metadata) {
+                  if (parsed.metadata.message_id) responseMessageId = parsed.metadata.message_id;
+                  if (parsed.metadata.run_id) {
+                    const parts = String(parsed.metadata.run_id).split('-');
+                    if (parts.length >= 1) responseThreadId = Number(parts[0]) || undefined;
+                  }
+                }
+                break;
+              }
+              case 'response': {
+                if (parsed.metadata) {
+                  responseThreadId = parsed.metadata.thread_id ?? responseThreadId;
+                  responseMessageId = parsed.metadata.assistant_message_id ?? responseMessageId;
+                  tokenUsage = parsed.metadata.usage ?? tokenUsage;
+                }
+                if (parsed.content) {
+                  for (const item of parsed.content) {
+                    if (item.type === 'text' && !fullText) fullText += (fullText ? '\n' : '') + item.text;
+                    if (item.type === 'tool_result' && item.tool_result?.content) {
+                      for (const c of item.tool_result.content) {
+                        const resultObj = extractResultObj(c);
+                        if (resultObj) {
+                          toolResults.push(resultObj);
+                          if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                        }
+                      }
+                    }
+                  }
+                }
+                break;
+              }
+              case 'error':
+                throw new Error(parsed.message || 'Agent error');
+              default: {
+                if (!currentEvent && parsed.role === 'assistant' && parsed.content) {
+                  for (const item of parsed.content) {
+                    if (item.type === 'tool_result' && item.tool_result?.content) {
+                      for (const c of item.tool_result.content) {
+                        const resultObj = extractResultObj(c);
+                        if (resultObj) {
+                          toolResults.push(resultObj);
+                          if (resultObj.geometry && !geometry) geometry = resultObj.geometry;
+                        }
+                      }
+                    }
+                    if (item.type === 'text' && !fullText) fullText += (fullText ? '\n' : '') + item.text;
+                  }
+                  if (parsed.metadata) {
+                    responseThreadId = parsed.metadata.thread_id ?? responseThreadId;
+                    responseMessageId = parsed.metadata.assistant_message_id ?? responseMessageId;
+                    tokenUsage = parsed.metadata.usage ?? tokenUsage;
+                  }
+                }
+                break;
+              }
+            }
+          } catch (parseErr: any) {
+            if (currentEvent === 'error') throw parseErr;
+          }
+          currentEvent = '';
+        }
+      }
+
+      // Geometry recovery: re-execute tools locally if the agent stream
+      // didn't carry full geometry (common for some response shapes).
+      if (!geometry && toolsCalled.length > 0) {
+        console.log(`[Agent] No geometry from agent stream, re-executing ${toolsCalled.length} tool(s) locally for map data`);
+        for (const tc of toolsCalled) {
+          const toolDef = TOOL_PROC_MAP[tc.name];
+          if (!toolDef) continue;
+          try {
+            const args = tc.input || {};
+            const sqlArgs = toolDef.params.map(p => {
+              const val = args[p] ?? toolDef.defaults?.[p] ?? null;
+              if (val == null) return 'NULL';
+              if (typeof val === 'number') return String(val);
+              return `'${escapeString(String(val))}'`;
+            }).join(', ');
+            const callSql = `CALL ${toolDef.proc}(${sqlArgs})`;
+            console.log(`[Agent] Re-executing: ${callSql.slice(0, 200)}`);
+            const rows = await runSql(callSql, 'FLEET_INTELLIGENCE', 'ROUTING_AGENT');
+            if (rows && rows.length > 0) {
+              const firstCol = Object.keys(rows[0])[0];
+              let rawResult = rows[0][firstCol];
+              if (typeof rawResult === 'string') {
+                try { rawResult = JSON.parse(rawResult); } catch {}
+              }
+              if (rawResult && typeof rawResult === 'object') {
+                toolResults.push(rawResult);
+                if (rawResult.geometry && !geometry) geometry = rawResult.geometry;
+              }
+            }
+          } catch (e: any) {
+            console.error(`[Agent] Re-exec ${tc.name} failed: ${e.message}`);
+          }
+        }
+      }
+
+      const doneStep = { type: 'done', label: 'Complete', ts: Date.now() };
+      workflowSteps.push(doneStep);
+      sendSseEvent(res, 'workflow', doneStep);
+
+      if (!fullText) fullText = 'No response from agent';
+      const response: any = {
+        message: fullText,
+        tool_results: toolResults,
+        token_usage: { workflow_steps: workflowSteps, ...(tokenUsage || {}) },
+      };
       if (geometry) response.geometry = geometry;
-      if (agentResult?.metadata?.thread_id) response.thread_id = agentResult.metadata.thread_id;
-      if (agentResult?.metadata?.message_id) response.message_id = agentResult.metadata.message_id;
+      if (responseThreadId) response.thread_id = responseThreadId;
+      if (responseMessageId) response.message_id = responseMessageId;
+
       sendSseEvent(res, 'result', response);
       res.end();
+      console.log(`[Agent] Completed. Text=${fullText.length}chars, tools=${toolResults.length}, has_geometry=${!!geometry}, thread=${responseThreadId}`);
     } catch (err: any) {
       console.error(`[Agent] Chat endpoint error: ${err.message}`);
       sendSseEvent(res, 'error', { error: err.message || 'Unknown agent error' });

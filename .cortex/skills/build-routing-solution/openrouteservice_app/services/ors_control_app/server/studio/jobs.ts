@@ -6,7 +6,7 @@ import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers.js';
 import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './scaling.js';
 import { ensureTables } from './ensure-tables.js';
 import { syncRegionRegistryAndConfig } from './region-sync.js';
-import { insertTelemetryBatch, insertTripBatch, insertDimFleet, insertDimPois, insertFactFreightOffers } from './inserters.js';
+import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactFreightOffers, insertDimPartners, insertFactPartnerHistory } from './inserters.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -139,6 +139,7 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
 export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
   const tables = [
     'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_FREIGHT_OFFERS',
+    'DIM_PARTNERS', 'FACT_PARTNER_HISTORY',
   ];
   const deleted: Record<string, number> = {};
   for (const tbl of tables) {
@@ -154,6 +155,33 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
     }
   }
   try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+    );
+    deleted['ROUTE_OPTIMIZATION.PLACES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['ROUTE_OPTIMIZATION.PLACES'] = -1;
+  }
+  try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+    );
+    deleted['ROUTE_OPTIMIZATION.LOOKUP'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['ROUTE_OPTIMIZATION.LOOKUP'] = -1;
+  }
+  try {
+    const rows = await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'MARKETPLACE',
+    );
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+  } catch {
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = -1;
+  }
+  try {
     await snowSql(
       `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='DELETED', COMPLETED_AT=SYSDATE() WHERE JOB_ID=${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'CORE'
@@ -164,6 +192,426 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   log('INFO', 'Studio', `Deleted data for job ${jobId}: ${JSON.stringify(deleted)}`);
   return { deleted };
 }
+
+async function ensureRouteOptimizationSeedData(
+  snowSql: SnowSqlFn,
+  region: string,
+  jobId: string,
+): Promise<void> {
+  const safeRegion = region.replace(/'/g, "''");
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES
+     SET JOB_ID = ${escVal(jobId)}
+     WHERE REGION = ${escVal(region)}`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP
+     SET JOB_ID = ${escVal(jobId)}
+     WHERE REGION = ${escVal(region)}`,
+    'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
+  );
+}
+
+async function precomputeOfferRoutes(
+  snowSql: SnowSqlFn,
+  region: string,
+  profile: string,
+  jobId: string,
+): Promise<void> {
+  const enabled = (process.env.STUDIO_PRECOMPUTE_OFFER_ROUTES ?? 'true').toLowerCase() !== 'false';
+  if (!enabled) return;
+  await snowSql(
+    `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  );
+  await snowSql(
+    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
+     USING (
+       SELECT
+         o.OFFER_ID,
+         ${escVal(jobId)} AS JOB_ID,
+         d.DISTANCE / 1000.0 AS ROAD_KM,
+         d.DURATION / 60.0 AS ROAD_MIN,
+         ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS GEOMETRY,
+         ${escVal(profile)} AS PROFILE
+       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS o,
+            TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
+              ${escVal(profile)},
+              ARRAY_CONSTRUCT(o.PICKUP_LON, o.PICKUP_LAT),
+              ARRAY_CONSTRUCT(o.DROPOFF_LON, o.DROPOFF_LAT),
+              ${escVal(region)}
+            )) d
+       WHERE o.JOB_ID = ${escVal(jobId)}
+         AND o.PICKUP_LON IS NOT NULL
+         AND o.PICKUP_LAT IS NOT NULL
+         AND o.DROPOFF_LON IS NOT NULL
+         AND o.DROPOFF_LAT IS NOT NULL
+     ) src
+     ON tgt.OFFER_ID = src.OFFER_ID
+     WHEN MATCHED THEN UPDATE SET
+       ROAD_KM = src.ROAD_KM,
+       ROAD_MIN = src.ROAD_MIN,
+       GEOMETRY = src.GEOMETRY,
+       PROFILE = src.PROFILE,
+       JOB_ID = src.JOB_ID,
+       COMPUTED_AT = CURRENT_TIMESTAMP()
+     WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT, JOB_ID)
+       VALUES (src.OFFER_ID, src.ROAD_KM, src.ROAD_MIN, src.GEOMETRY, src.PROFILE, CURRENT_TIMESTAMP(), src.JOB_ID)`,
+    'FLEET_INTELLIGENCE', 'MARKETPLACE',
+  );
+}
+
+// -------------------------------------------------------------------------
+// Dataset registry CRUD (used by /api/studio/datasets/* endpoints).
+// All operations target FLEET_INTELLIGENCE.CORE.DIM_DATASETS plus the
+// SYNTHETIC_DATASETS.UNIFIED.* fact/dim tables when physically deleting.
+// -------------------------------------------------------------------------
+
+export interface DatasetRow {
+  datasetId: string;
+  region: string;
+  vehicleType: string;
+  label: string | null;
+  isActive: boolean;
+  createdAt: string;
+  rowCounts: Record<string, number> | null;
+  notes: string | null;
+}
+
+export async function listDatasets(
+  snowSql: SnowSqlFn,
+  filter: { region?: string; vehicleType?: string } = {},
+): Promise<DatasetRow[]> {
+  const where: string[] = [];
+  if (filter.region)       where.push(`REGION = ${escVal(filter.region)}`);
+  if (filter.vehicleType)  where.push(`VEHICLE_TYPE = ${escVal(filter.vehicleType)}`);
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await snowSql(
+    `SELECT DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE,
+            TO_VARCHAR(CONVERT_TIMEZONE('UTC', CREATED_AT), 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z' AS CREATED_AT,
+            ROW_COUNTS, NOTES
+     FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     ${whereClause}
+     ORDER BY REGION, VEHICLE_TYPE, IS_ACTIVE DESC, CREATED_AT DESC`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return rows.map((r: any) => {
+    let rowCounts: Record<string, number> | null = null;
+    if (r.ROW_COUNTS) {
+      try {
+        rowCounts = typeof r.ROW_COUNTS === 'string' ? JSON.parse(r.ROW_COUNTS) : r.ROW_COUNTS;
+      } catch (_) { rowCounts = null; }
+    }
+    return {
+      datasetId: r.DATASET_ID,
+      region: r.REGION,
+      vehicleType: r.VEHICLE_TYPE,
+      label: r.LABEL ?? null,
+      isActive: r.IS_ACTIVE === true || r.IS_ACTIVE === 'true',
+      createdAt: r.CREATED_AT,
+      rowCounts,
+      notes: r.NOTES ?? null,
+    };
+  });
+}
+
+export async function activateDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+): Promise<{ activated: string; deactivated: number; region: string; vehicleType: string }> {
+  // Look up scope first so we know which siblings to deactivate.
+  const rows = await snowSql(
+    `SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)} LIMIT 1`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  if (!rows.length) {
+    throw new Error(`Dataset ${datasetId} not found in DIM_DATASETS`);
+  }
+  const region = (rows[0] as any).REGION as string;
+  const vehicleType = (rows[0] as any).VEHICLE_TYPE as string;
+  // Refuse activation when the target DATASET_ID has 0 rows in DIM_FLEET.
+  // Without this, a placeholder DIM_DATASETS row (e.g. legacy '-seed'
+  // recovery rows or rows whose base data was deleted out-of-band) can be
+  // activated and the V_*_CURRENT views silently return zero, leaving
+  // every fleet/freight page empty with no diagnostic. (#audit-pr-120)
+  let probeCount = 0;
+  try {
+    const probe = await snowSql(
+      `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+       WHERE JOB_ID = ${escVal(datasetId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    probeCount = Number((probe[0] as any)?.N ?? 0);
+  } catch (e: any) {
+    const err: any = new Error(
+      `DIM_FLEET probe failed (${e.message?.slice(0, 150)}). ` +
+      `Control-app boot likely didn't finish initialising tables; restart the service.`,
+    );
+    err.code = 'BOOT_INCOMPLETE';
+    throw err;
+  }
+  if (probeCount === 0) {
+    const err: any = new Error(
+      `Dataset ${datasetId} has 0 rows in DIM_FLEET; ` +
+      `re-run Data Studio for ${region} / ${vehicleType} to materialise data.`,
+    );
+    err.code = 'DATASET_EMPTY';
+    err.region = region;
+    err.vehicleType = vehicleType;
+    throw err;
+  }
+  // Atomic-ish: deactivate other siblings, then activate this one.
+  const deact = await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET IS_ACTIVE = FALSE
+     WHERE REGION = ${escVal(region)}
+       AND VEHICLE_TYPE = ${escVal(vehicleType)}
+       AND DATASET_ID <> ${escVal(datasetId)}
+       AND IS_ACTIVE = TRUE`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET IS_ACTIVE = TRUE
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return {
+    activated: datasetId,
+    deactivated: (deact[0] as any)?.['number of rows updated'] ?? 0,
+    region,
+    vehicleType,
+  };
+}
+
+export async function renameDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+  label: string,
+): Promise<{ datasetId: string; label: string }> {
+  const trimmed = label.trim().slice(0, 200);
+  await snowSql(
+    `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     SET LABEL = ${escVal(trimmed)}
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  return { datasetId, label: trimmed };
+}
+
+export async function deleteDataset(
+  snowSql: SnowSqlFn,
+  datasetId: string,
+): Promise<{ datasetId: string; deleted: Record<string, number>; activeReassigned: boolean }> {
+  // Read the dataset row first so we can refuse-delete on the only-active
+  // case and know the (region, vehicle_type) for re-activation logic.
+  const rows = await snowSql(
+    `SELECT REGION, VEHICLE_TYPE, IS_ACTIVE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)} LIMIT 1`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  if (!rows.length) {
+    throw new Error(`Dataset ${datasetId} not found in DIM_DATASETS`);
+  }
+  const region = (rows[0] as any).REGION as string;
+  const vehicleType = (rows[0] as any).VEHICLE_TYPE as string;
+  const wasActive = (rows[0] as any).IS_ACTIVE === true || (rows[0] as any).IS_ACTIVE === 'true';
+  if (wasActive) {
+    const others = await snowSql(
+      `SELECT COUNT(*) AS N FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND DATASET_ID <> ${escVal(datasetId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    const otherCount = Number((others[0] as any)?.N ?? 0);
+    if (otherCount === 0) {
+      throw new Error(
+        `Refusing to delete the only dataset for ${region} / ${vehicleType}. ` +
+        `Generate a new one (or pick another) and re-try.`,
+      );
+    }
+  }
+  // Physical purge of fact/dim rows for this JOB_ID.
+  const { deleted } = await deleteJobData(datasetId, snowSql);
+  // Remove the registry row.
+  await snowSql(
+    `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+     WHERE DATASET_ID = ${escVal(datasetId)}`,
+    'FLEET_INTELLIGENCE', 'CORE',
+  );
+  // If we just removed the active row, promote the most recent remaining.
+  let activeReassigned = false;
+  if (wasActive) {
+    const upd = await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = TRUE
+       WHERE DATASET_ID = (
+         SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         WHERE REGION = ${escVal(region)}
+           AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         ORDER BY CREATED_AT DESC
+         LIMIT 1
+       )`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+    activeReassigned = Number((upd[0] as any)?.['number of rows updated'] ?? 0) > 0;
+  }
+  return { datasetId, deleted, activeReassigned };
+}
+
+// Make Data Studio runs non-destructive on natural-key tables. Each run is
+// recorded as an immutable dataset in FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+// keyed by JOB_ID; at most one row per (REGION, VEHICLE_TYPE) is IS_ACTIVE.
+// Downstream consumers read from V_*_CURRENT views which join to
+// DIM_DATASETS and filter on IS_ACTIVE = TRUE — so prior runs stay queryable
+// by JOB_ID without polluting the live UI.
+//
+// FACT_TRIPS, FACT_VEHICLE_TELEMETRY, DIM_TRIP_SCHEDULE keep their existing
+// append-only semantics; the *_CURRENT views also filter them by active
+// JOB_ID.
+//
+// archivePriorDatasets is the non-destructive replacement for legacy
+// region-scoped DELETEs that used to wipe DIM_POIS / DIM_FLEET /
+// FACT_FREIGHT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY across ALL
+// datasets in a region.
+//
+// INVARIANT: All destructive cleanup of fact/dim rows MUST be scoped by
+// JOB_ID — never by REGION or (REGION, VEHICLE_TYPE). Each preset /
+// generation run is an independent dataset keyed by JOB_ID; deleting one
+// preset's data must never touch another preset's rows. The only
+// JOB_ID-scoped destructive helper is deleteJobData() above. Do not add
+// region-wide DELETE helpers here without changing the data model.
+async function archivePriorDatasets(
+  snowSql: SnowSqlFn,
+  region: string,
+  vehicleType: string,
+  newJobId: string,
+  label: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = FALSE
+       WHERE REGION = ${escVal(region)}
+         AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         AND IS_ACTIVE = TRUE`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets UPDATE failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    await snowSql(
+      `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
+       SELECT ${escVal(newJobId)}, ${escVal(region)}, ${escVal(vehicleType)},
+              ${escVal(label)}, TRUE`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `archivePriorDatasets INSERT failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+}
+
+// Revert archivePriorDatasets when a job fails before producing any data.
+// Removes the just-inserted DIM_DATASETS row for newJobId and re-activates
+// the most recent prior dataset for the same (REGION, VEHICLE_TYPE), so the
+// failed run never appears as the active dataset and the previous active
+// dataset is restored.
+async function revertArchivePriorDatasets(
+  snowSql: SnowSqlFn,
+  region: string,
+  vehicleType: string,
+  newJobId: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE DATASET_ID = ${escVal(newJobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `revertArchivePriorDatasets DELETE failed for ${newJobId} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+  try {
+    // Re-activate the most recent remaining dataset for this scope.
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET IS_ACTIVE = TRUE
+       WHERE DATASET_ID = (
+         SELECT DATASET_ID
+         FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+         WHERE REGION = ${escVal(region)}
+           AND VEHICLE_TYPE = ${escVal(vehicleType)}
+         ORDER BY CREATED_AT DESC
+         LIMIT 1
+       )`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `revertArchivePriorDatasets restore-prior failed for ${region}/${vehicleType} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId: newJobId });
+  }
+}
+
+// Recompute ROW_COUNTS on DIM_DATASETS after a job's inserts complete.
+// Best-effort — failure does not affect the job outcome.
+async function updateDatasetRowCounts(
+  snowSql: SnowSqlFn,
+  jobId: string,
+): Promise<void> {
+  try {
+    await snowSql(
+      `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+       SET ROW_COUNTS = OBJECT_CONSTRUCT(
+         'pois',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS              WHERE JOB_ID = ${escVal(jobId)}),
+         'fleet',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET             WHERE JOB_ID = ${escVal(jobId)}),
+         'offers',    (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS   WHERE JOB_ID = ${escVal(jobId)}),
+         'partners',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = ${escVal(jobId)}),
+         'history',   (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = ${escVal(jobId)}),
+         'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE WHERE JOB_ID = ${escVal(jobId)}),
+         'places',    (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES WHERE JOB_ID = ${escVal(jobId)}),
+         'trips',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS            WHERE JOB_ID = ${escVal(jobId)}),
+         'telemetry', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE JOB_ID = ${escVal(jobId)})
+       )
+       WHERE DATASET_ID = ${escVal(jobId)}`,
+      'FLEET_INTELLIGENCE', 'CORE',
+    );
+  } catch (e: any) {
+    log('WARN', 'Studio',
+        `updateDatasetRowCounts failed for ${jobId} (non-fatal): ${e.message?.slice(0, 200)}`,
+        { jobId });
+  }
+}
+
+// NOTE: A region-scoped clearRegionScope() helper used to live here. It
+// was removed because (a) it was already unused (deleteDataset() route
+// calls deleteJobData() which is JOB_ID-scoped) and (b) its REGION-scoped
+// DELETEs would have wiped data across ALL datasets in a region, breaking
+// per-preset independence. See the INVARIANT comment above
+// archivePriorDatasets. If you need to physically purge a single dataset,
+// use deleteJobData(jobId) — it is the only sanctioned destructive helper.
 
 function broadcast(job: Job, event: string, data: any) {
   job.events.push({ event, data, ts: Date.now() });
@@ -209,32 +657,15 @@ export function subscribeJob(jobId: string, cb: SseCallback): () => void {
 
 // escVal, UNIFIED_DB, UNIFIED_SCHEMA moved to ./sql-helpers.ts
 
-async function disableOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 0',
-    // v1.1.0: bare ORS_SERVICE has been removed; the per-region default is
-    // ORS_SERVICE_SANFRANCISCO. Both lines here are best-effort and survive a
-    // mid-migration window where either name might still be present.
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 0',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 0',
-  ];
-  for (const sql of stmts) {
-    try { await snowSql(sql); } catch (_) { /* best-effort */ }
-  }
-  log('INFO', 'Studio', 'Disabled ORS auto-suspend for generation');
-}
-
-async function restoreOrsAutoSuspend(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ROUTING_GATEWAY_SERVICE SET AUTO_SUSPEND_SECS = 14400',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE SET AUTO_SUSPEND_SECS = 14400',
-    'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO SET AUTO_SUSPEND_SECS = 14400',
-  ];
-  for (const sql of stmts) {
-    try { await snowSql(sql); } catch (_) { /* best-effort */ }
-  }
-  log('INFO', 'Studio', 'Restored ORS auto-suspend after generation');
-}
+// AUTO_SUSPEND pinning for the active studio job is now performed inside
+// captureAndScaleUp() / scaleDown() (see ./scaling.ts) so it is region-aware
+// and uses captured baselines for symmetric restore. The previous hardcoded
+// disableOrsAutoSuspend / restoreOrsAutoSuspend helpers only pinned the
+// gateway, the legacy ORS_SERVICE name, and ORS_SERVICE_SANFRANCISCO — they
+// never touched the active job's per-region ORS_SERVICE_<REGION>,
+// VROOM_SERVICE_<REGION>, or ORS_POOL_<REGION>, which is why ORS could
+// auto-suspend mid-run. The new flow guarantees pin and unpin always travel
+// together with capture/restore (single source of truth, no drift).
 
 // ===== Compute pool / service scale-up for synthetic data generation =====
 // Mirrors the matrix-build pattern in app/modules/05_matrix_pipeline.sql.
@@ -347,7 +778,6 @@ export async function startGeneration(
     }, JOB_LOG_FLUSH_MS);
     try {
       await ensureTables(snowSql);
-      await disableOrsAutoSuspend(snowSql);
       try {
         scalingState = await captureAndScaleUp(snowSql, config.region);
       } catch (e: any) {
@@ -374,10 +804,54 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, buildFleet, generateFreightOffers } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory } = await import('./engine.js');
+      const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
+      const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
-      const fleet = buildFleet(config, pois, createRng(config.fleet.num_vehicles * 31));
-      const offers = generateFreightOffers(pois, config, 300);
+      const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
+      const fleet = fleetResult.fleet;
+      const partners = generatePartners(config, 80);
+      const partnerHistory = generatePartnerHistory(partners, config, 6);
+      const offerCount = Math.max(1, Math.floor(Number(config.offers?.count ?? 300)));
+      const offers = generateFreightOffers(pois, config, offerCount, partners);
+
+      // Region-agnostic spatial spread diagnostics. Logged once at fleet build
+      // time so users can verify on any of the 5,194 regions in REGION_CATALOG
+      // that homes spread across multiple bins.
+      const ssEnabled = config.spatial_spread?.enabled !== false;
+      const effBinDeg = fleetResult.diagnostics.bin_deg;
+      const poiSpread = ssEnabled ? spreadStats(pois, effBinDeg) : { populated_bins: 0, top_bin_share: 0, median_per_bin: 0 };
+      const homeSpread = ssEnabled ? spreadStats(fleet.map(m => ({ lat: m.home_poi.lat, lng: m.home_poi.lng })), effBinDeg) : { populated_bins: 0, top_bin_share: 0, median_per_bin: 0 };
+      log('INFO', 'Studio', `Spatial spread: bin_deg=${effBinDeg}, area_km2=${config.region_area_km2}, POI bins=${poiSpread.populated_bins} (top_share=${poiSpread.top_bin_share.toFixed(3)}), home bins=${homeSpread.populated_bins} (top_share=${homeSpread.top_bin_share.toFixed(3)}), stratification=${fleetResult.diagnostics.stratification_used}`, {
+        jobId,
+        detail: {
+          bin_deg: effBinDeg,
+          region_area_km2: config.region_area_km2,
+          poi_populated_bins: poiSpread.populated_bins,
+          poi_top_bin_share: poiSpread.top_bin_share,
+          home_populated_bins: homeSpread.populated_bins,
+          home_top_bin_share: homeSpread.top_bin_share,
+          home_vehicles_per_bin_p50: fleetResult.diagnostics.vehicles_per_bin_p50,
+          home_vehicles_per_bin_p95: fleetResult.diagnostics.vehicles_per_bin_p95,
+          stratification_used: fleetResult.diagnostics.stratification_used,
+          total_home_pois: fleetResult.diagnostics.total_home_pois,
+          distance_distribution: config.distance_distribution,
+        },
+      });
+      broadcast(job, 'progress', { status: `Spatial spread: ${homeSpread.populated_bins} home bins, top_share=${(homeSpread.top_bin_share * 100).toFixed(1)}% (bin=${effBinDeg} deg)` });
+
+      // Dataset versioning (FLIP-LAST):
+      // We INSERT all dimension/freight rows under the new JOB_ID FIRST, then
+      // flip DIM_DATASETS.IS_ACTIVE at the very end of this block. This keeps
+      // the previously-active dataset visible to downstream demos (Backload
+      // Matching, Freight Exchange, Fleet Intelligence, Asset Velocity) for
+      // the entire ~5-30s window during which the new data is being inserted,
+      // and switches them atomically to the new dataset only once it is fully
+      // populated. The new JOB_ID's rows live in the base tables but are
+      // invisible to V_*_CURRENT views until the flip happens.
+      // Old rows STAY IN PLACE forever and remain queryable by JOB_ID via the
+      // bottom Datasets panel. Physical purge is via DELETE /api/studio/datasets/:id.
+      const datasetLabel = `${presetName} @ ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
 
       try {
         await insertDimPois(pois, config, snowSql, jobId);
@@ -398,6 +872,40 @@ export async function startGeneration(
       } catch (e: any) {
         log('WARN', 'Studio', `FACT_FREIGHT_OFFERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `FACT_FREIGHT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
+      }
+      try {
+        const n = await insertDimPartners(partners, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} partners`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} partners` });
+      } catch (e: any) {
+        log('WARN', 'Studio', `DIM_PARTNERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `DIM_PARTNERS insert failed: ${e.message?.slice(0, 150)}` });
+      }
+      try {
+        const n = await insertFactPartnerHistory(partnerHistory, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} partner-history rows`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} partner-history rows` });
+      } catch (e: any) {
+        log('WARN', 'Studio', `FACT_PARTNER_HISTORY insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `FACT_PARTNER_HISTORY insert failed: ${e.message?.slice(0, 150)}` });
+      }
+
+      // Atomic switchover: now that all dimension/freight tables for this run
+      // are fully populated, flip the active dataset pointer. From this
+      // millisecond onwards, V_*_CURRENT views project the new dataset.
+      await archivePriorDatasets(snowSql, config.region, vt, jobId, datasetLabel);
+      broadcast(job, 'progress', {
+        status: `Activated new dataset for ${config.region} / ${vt} (prior datasets kept queryable; jobId = ${jobId})`,
+      });
+      try {
+        await ensureRouteOptimizationSeedData(snowSql, config.region, jobId);
+      } catch (e: any) {
+        log('WARN', 'Studio', `Route optimization seed failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+      }
+      try {
+        await precomputeOfferRoutes(snowSql, config.region, config.ors_profile, jobId);
+      } catch (e: any) {
+        log('WARN', 'Studio', `Offer-route precompute failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
       }
 
       const catCounts: Record<string, number> = {};
@@ -435,7 +943,9 @@ export async function startGeneration(
           pendingTrips.push(event.record);
           if (pendingTrips.length >= 50) {
             try {
-              await insertTripBatch(pendingTrips.splice(0), snowSql, jobId);
+              const batch = pendingTrips.splice(0);
+              await insertTripBatch(batch, snowSql, jobId);
+              await insertTripScheduleBatch(batch, snowSql, jobId);
             } catch (e: any) {
               log('ERROR', 'Studio', `Trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
               broadcast(job, 'warning', { message: `Trip insert failed: ${e.message?.slice(0, 150)}` });
@@ -450,6 +960,7 @@ export async function startGeneration(
       if (pendingTrips.length > 0) {
         try {
           await insertTripBatch(pendingTrips, snowSql, jobId);
+          await insertTripScheduleBatch(pendingTrips, snowSql, jobId);
         } catch (e: any) {
           log('ERROR', 'Studio', `Final trip batch insert failed: ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Final trip insert failed: ${e.message?.slice(0, 150)}` });
@@ -507,12 +1018,25 @@ export async function startGeneration(
           log('WARN', 'Studio', `Region sync after completion failed: ${e.message?.slice(0, 200)}`, { jobId });
         }
       }
+      // Always refresh ROW_COUNTS on the dataset registry so the Studio UI
+      // can show row counts per archived dataset (POIs, fleet, offers,
+      // partners, history, trips, telemetry). Best-effort.
+      await updateDatasetRowCounts(snowSql, jobId);
     } catch (e: any) {
       job.status = 'FAILED';
       job.error = e.message;
       job.completedAt = new Date();
       log('ERROR', 'Studio', `Job ${jobId} failed: ${e.message?.slice(0, 300)}`, { jobId });
       broadcast(job, 'error', { error: e.message });
+      // If the job failed before any data was actually written, revert the
+      // archive: remove the new DIM_DATASETS row and re-activate the prior
+      // one so the user is not left with an empty active dataset.
+      if ((job.pointsGenerated || 0) === 0 && (job.tripsGenerated || 0) === 0) {
+        try {
+          await revertArchivePriorDatasets(snowSql, config.region, vt, jobId);
+          log('INFO', 'Studio', `Reverted dataset archive for failed empty job ${jobId}`, { jobId });
+        } catch (_e: any) { /* best-effort */ }
+      }
       try {
         await snowSql(
           `UPDATE FLEET_INTELLIGENCE.CORE.GENERATION_JOBS SET STATUS='FAILED',
@@ -528,7 +1052,6 @@ export async function startGeneration(
     } finally {
       clearInterval(flushTimer);
       try { await scaleDown(snowSql, scalingState); } catch (_) { /* best-effort */ }
-      await restoreOrsAutoSuspend(snowSql);
       try { await persistJobLog(job, snowSql); } catch (_) { /* best-effort */ }
     }
   })();

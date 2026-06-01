@@ -1,0 +1,86 @@
+################################################################################
+# Preset: continental (opt-in, USA / EU / multi-country extracts)
+#
+# Use when: routing across an entire country or continent (the full USA,
+# the full EU, all of South America). Default is too conservative for
+# these extracts:
+#   * graphs_data_access defaults to RAM_STORE; continental graphs need MMAP
+#     to fit on a HIGHMEM_X64_M pool (~5GB+ graphs).
+#   * maximum_snapping_radius defaults to 400m; rural areas in the western US
+#     and rural EU routinely have road graphs 1-5km from the user-supplied
+#     coordinate.
+#   * maximum_waypoints raised so cross-country VRP payloads succeed.
+#
+# Pair this preset with a per-region pool sized at INSTANCE_FAMILY =
+# HIGHMEM_X64_M (or larger) for both build and serve. The preflight check
+# in #52 will refuse to start a continental build on a smaller pool.
+#
+# Resolves #43 (US connection_failed on long routes).
+################################################################################
+ors:
+  engine:
+    # MMAP is mandatory for continental graphs: RAM_STORE OOMs on the
+    # 5-15GB graphs the USA / EU / South America extracts produce. MMAP
+    # trades a slight per-query latency increase for the ability to load
+    # graphs that do not fit in memory.
+    graphs_data_access: MMAP
+    profile_default:
+      build:
+        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        instructions: false
+      service:
+        # Engine-side caps stay astronomically high; the gateway-side
+        # guardrails (#51) read THIS preset and enforce the realistic
+        # per-call limit. When you opt into continental, the guardrails
+        # widen automatically -- no Snowflake-side change needed.
+        maximum_distance: 100000000
+        maximum_distance_dynamic_weights: 100000000
+        maximum_distance_avoid_areas: 100000000
+        maximum_distance_alternative_routes: 100000000
+        maximum_distance_round_trip_routes: 100000000
+        maximum_visited_nodes: 100000000
+        # Higher than standard: continental VRP payloads can be very large.
+        maximum_waypoints: 5000
+        # The single most important continental-only knob. Default 400m
+        # silently drops rural coordinates and produces "connection_failed"
+        # (#43). 5000m matches what HERE/Google use for highway snapping
+        # in the western US.
+        maximum_snapping_radius: 5000
+    profiles:
+      driving-car:
+        enabled: true
+      driving-hgv:
+        enabled: true
+      cycling-regular:
+        enabled: false
+      cycling-road:
+        enabled: false
+      cycling-mountain:
+        enabled: false
+      cycling-electric:
+        enabled: false
+      foot-walking:
+        enabled: false
+      foot-hiking:
+        enabled: false
+      wheelchair:
+        enabled: false
+  endpoints:
+    matrix:
+      maximum_visited_nodes: 100000000
+      maximum_routes: 2000000
+      maximum_routes_flexible: 2000000
+      # Higher snapping radius matches the engine-side default.
+      maximum_search_radius: 5000
+    isochrones:
+      maximum_locations: 2
+      maximum_intervals: 10
+      # Continental isochrone range is widened to 7200s (2h) per the
+      # current gateway-side cap (#113). Going higher would exceed the
+      # gateway timeout budget on an unprepared continental graph.
+      maximum_range_distance:
+        - profiles: driving-car, driving-hgv
+          value: 3000000
+      maximum_range_time:
+        - profiles: driving-car, driving-hgv
+          value: 7200

@@ -31,8 +31,18 @@ python3 .cortex/skills/evals/run_evals.py
 # Audit a single skill interactively
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
+# Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
+bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
+```
+
+**Optional pre-commit hook** (blocks commits when `image-versions.env`, service YAMLs, SQL modules, or scripting guidelines drift):
+
+```bash
+chmod +x .githooks/pre-commit
+git config core.hooksPath .githooks
 ```
 
 No global build/lint step — each skill is independently deployable via its own SKILL.md workflow.
@@ -51,9 +61,12 @@ No global build/lint step — each skill is independently deployable via its own
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
+| `setup-agent-playground` | demo-setup | Seeds SF pharma demo data + uploads agent-demos.json so the Agent Playground shows pharma/retail/fleet scenarios |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
 | `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |
+| `freight-exchange` | demo | Dispatcher-grade marketplace cockpit (parallel page to Backload Matching). Browse + filter + map of synthesized freight offers per active preset, with trust-score (credit/KYC/blacklist) and market-rate (vs. weekly p25/p50/p75 USD/km RATE_INDEX dynamic table) badges. Powered by FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data. |
+| `emergency-response` | demo | 5-page Emergency Response Intelligence dashboard + 6-step Dynamic Table pipeline. Automates participant-impact assessment for wildfire/hurricane/flood/tornado/snow events using free Marketplace hazard data (NWS Alerts, FEMA, Census, FEMA NRI) plus ORS isochrones and OPTIMIZATION with `avoid_polygons` for hazard-aware reachability and dispatch routing. |
 
 ## Skill Conventions (Quick Reference)
 
@@ -75,6 +88,16 @@ Key rules:
 - Deployment skills must include a `## Configuration` table with parameterized defaults
 - Deployment skills must include a `## Required Privileges` table (no ACCOUNTADMIN assumptions)
 - Deployment skills must include a `## Cleanup` section with DROP statements
+
+## Fix Discipline (new-deployment-first)
+
+**MANDATORY:** Every bug fix or improvement MUST first land in the source artifacts that a fresh, from-scratch deployment consumes, so the next clean install is correct with no manual step. A live-environment hotfix is always secondary and is only valid once the same change exists in the repo source.
+
+- **Data / SQL fixes** -> the skill SQL (`references/*.sql`), `datasets/load-seed-data.sql`, and/or the control app's `init.ts` boot path. NOT just an ad-hoc `snow sql` run against a live account.
+- **App behavior fixes** (React/server) -> the source under `services/ors_control_app/` PLUS an image-version bump (`image-versions.env` + service YAML + `references/snowflake-scripting-guidelines.md`, enforced by `check_image_versions.sh`). NOT just a redeploy of an unchanged image.
+- **Config/pointer/seed fixes** -> seed them in the loader or the boot init (data-derived, not hardcoded), so a fresh install never depends on a demo skill or a restart to become correct.
+
+Before considering any fix done, reason through the fresh-install path (`build-routing-solution` Steps 1-8): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
 
 ## Error Logging
 
@@ -159,6 +182,8 @@ If no friction was encountered, the log should still be created with "No frictio
 ## Do NOT
 
 - **Inline large SQL blocks in SKILL.md** — put them in `references/*.md` and link
+- **Modify a `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.*` (or any other shared) view in `references/asset-velocity-views.sql` (or its sibling `*.sql` under `references/`) without also updating its parallel definition in `services/ors_control_app/server/lib/init.ts`.** The control app's `init.ts` runs on every container start and `CREATE OR REPLACE`s the views it owns, silently overwriting any out-of-band changes. If the React page references a column that `init.ts` hasn't recreated, `sfQuery` gets a SQL error, swallows it, and the page renders empty data with no obvious failure. When in doubt, search `init.ts` for the view name before changing a reference SQL file. **The four Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) specifically live in the `assetVelocityStmts()` helper consumed by the exported `ensureAssetVelocityViews()` in `init.ts` — that function is the single runtime owner (called both at boot and lazily by `POST /api/asset-velocity/ensure`). Edit `assetVelocityStmts()` and keep `references/asset-velocity-views.sql` in sync.**
+- **Inline JSON in SQL via single-quoted string literals.** Free-text fields (POI names, addresses, listing text) routinely contain apostrophes, backslashes, and double-quotes that break Snowflake's `PARSE_JSON` once the host string is single-quoted. Use the helper `asSqlJsonLiteral(obj)` from `services/ors_control_app/src/lib/sfQuery.ts` (dollar-quoted literal). Pair it with `sfQuery(..., {throwOnError:true})` whenever the call sits behind a user-visible button — silent `[]` returns are the canonical mask for this entire bug class. The two page-level helper modules (`asset-velocity/helpers.ts` and `backload-matching/helpers.ts`) already re-export from `src/lib/sfQuery.ts`; do NOT add a third copy of `sfQuery`.
 - **Skip the query tag** — every skill must set the session query tag for attribution tracking:
   ```sql
   ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-<skill-name>","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -273,16 +298,19 @@ graph TD
     BRS --> RET[retail-catchment]
     BRS --> RD[route-deviation]
     BRS --> RA[routing-agent]
+    RA --> SAP[setup-agent-playground]
     RO --> BM[backload-matching]
     BRS --> BM
+    BM --> FX[freight-exchange]
+    BRS --> FX
     RC --> FIT
     RC --> FIFD
     RC --> RD
-    RD --> DA[dwell-analysis]
+ RD --> DA[dwell-analysis]
 
-    style BRS fill:#f96,stroke:#333
-    style RP fill:#9cf,stroke:#333
-    style RC fill:#9cf,stroke:#333
+ style BRS fill:#f96,stroke:#333
+ style RP fill:#9cf,stroke:#333
+ style RC fill:#9cf,stroke:#333
 ```
 
 **Legend:** Orange = core infrastructure. Blue = configuration/prerequisites. White = demo/feature skills.
@@ -292,22 +320,59 @@ Deploy order (top → bottom). Teardown order (bottom → top).
 ## Common Patterns
 
 - **ORS dependency**: most demo skills require 4 running ORS services. Use `routing-prerequisites` to verify.
+- **DIM_DATASETS bootstrap invariant (friction-log F4 fix, v1.1.58)**: `init.ts` MUST call `ensureUnifiedTables()` (from `server/studio/ensure-tables.ts`) BEFORE any `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` statement. The `V_*_CURRENT` views JOIN to `FLEET_INTELLIGENCE.CORE.DIM_DATASETS`, which is created by `ensureUnifiedTables`. On a fresh install no Studio job has ever run, so without the explicit ensure-tables call at boot start the views fail with "object does not exist" and every demo that reads through them silently breaks. Symmetrically: any SQL that ALTERs `SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET` (e.g. `extend-dim-fleet-hgv.sql`) MUST `DROP VIEW IF EXISTS V_DIM_FLEET_CURRENT` first, otherwise `ADD COLUMN` invalidates the view's declared column count and the next boot fails until the view is dropped manually.
+- **Agent Playground region awareness**: The control-app's Agent Playground sends `region`, `vehicle_type`, and the derived ORS `profile` on every `/api/agent/chat` call. The backend prepends a hidden context turn so the Cortex Agent defaults tool args to the active region/profile, and uses the same values as the local geometry-recovery re-execution defaults (no more hard-coded `California` / `driving-car`). Example chips are generated live by `GET /api/agent/examples` via `SNOWFLAKE.CORTEX.COMPLETE` per (region, vehicle); fallback is `config/agent-demos.json` on `ORS_SPCS_STAGE`. No caching — regenerated on every selection change (300 ms debounce).
 - **Overture Maps POI data**: fleet skills use Overture Maps for realistic locations. Fallback: synthetic points within configured bounding boxes.
 - **ORS Control App deployment**: Edit source → `docker build` (multi-stage, no manual dist/ step) → `docker push` → update YAML version → `snow stage copy` spec to stage → `ALTER SERVICE FROM @stage SPECIFICATION_FILE=...`.
 - **Object tracking**: Two tracking mechanisms — session `query_tag` (tracks queries) and object `COMMENT` (tracks created objects). Both are required. For CTAS (`CREATE TABLE ... AS SELECT`), use `ALTER TABLE ... SET COMMENT` after creation since CTAS doesn't support inline COMMENT.
 - **REBUILD_GRAPHS management (Issue #59)**: Routing graphs are persisted on `@ORS_GRAPHS_SPCS_STAGE/<region>/` and MUST be reused across suspend/resume cycles. The `create_region_ors_service` proc probes the stage and sets `REBUILD_GRAPHS="false"` if graphs already exist. After first-time provisioning completes (`service_ready=true`), `PROVISION_REGION_WRAPPER` auto-calls `SET_REBUILD_GRAPHS_FLAG(region, 'false')` so the next resume is instant (~1–2 min). For forced rebuilds (PBF update / corruption), call `REBUILD_REGION_GRAPHS(region)`.
+- **Parallel graph load on resume**: `ors-config.yml` for every region sets `ors.engine.init_threads` via `WRITE_ORS_CONFIG` to `min(N_profiles, cap)` where cap is **2** for `S`, **4** for `L`, **8** for `XXL` (S-tier 2G heap OOMs above 2 parallel profile loads). Effective on the next suspend/resume cycle after the staged config is re-written (`REROLL_ORS_CONFIG_INIT_THREADS` on deploy, or any provision/re-provision).
 - **Per-region VROOM (multi-region OPTIMIZATION)**: Each provisioned region gets its own `VROOM_SERVICE_<REGION>` co-located in `ORS_POOL_<REGION>` (same compute pool as the region's ORS). The VROOM image (`vroom-docker:v1.0.4`) reads `ORS_HOST` from env and substitutes it into `/conf/config.yml` at startup, so the same image serves any region without rebuild. `BUILD_VROOM_SERVICE_SPEC(region)` + `create_region_vroom_service(region)` mirror the ORS pattern; `PROVISION_REGION_WRAPPER` calls `create_region_vroom_service` after the ORS service is up. The routing gateway's `resolve_vroom_host(region)` returns `vroom-service-<region>` and routes `/optimization` there, so VROOM's internal ORS calls land on the right regional graph. To add a new region, no code change is needed — the existing provisioning flow auto-deploys the per-region VROOM. Drop with `drop_region_vroom(region)` (also called by `drop_region_ors`). **v1.1.0 unification**: there is NO global `ORS_SERVICE`/`VROOM_SERVICE` anymore — even the default region (`SanFrancisco`) is served by `ORS_SERVICE_SANFRANCISCO` + `VROOM_SERVICE_SANFRANCISCO` in `ORS_POOL_SANFRANCISCO`. The gateway resolves a missing/NULL `region` to the env var `DEFAULT_REGION_NAME` (default: `SanFrancisco`) so callers may still omit the argument; both omitted and explicit-region paths land on the same per-region service. Passing `region` is recommended in all multi-region payloads to be self-documenting and to avoid relying on the DEFAULT_REGION_NAME setting. The `_OPTIMIZATION_TABULAR_RAW(jobs, vehicles, matrices, region)` form requires region as the 4th arg (do not pass `NULL`). VROOM's `config.yml` body-parser limit is set to `50mb` to fit pre-computed matrices for VRPs up to ~1000 locations.
-- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Only services *strictly involved in the active build* are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`. The contract:
+- **AUTO_SUSPEND_SECS invariant (per-stage contract)**: Only services *strictly involved in the active build* are pinned at `AUTO_SUSPEND_SECS=0`. Every other service stays at the steady-state default. Active build = a row in `REGION_PROVISION_JOBS` with `STATUS IN ('PENDING','RUNNING')` at a specific `STAGE`, OR a row in `MATRIX_BUILD_JOBS` with `STATUS IN ('PENDING','RUNNING')` and `STAGE NOT IN ('COMPLETE','ERROR')`, OR a row in `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS` with `STATUS IN ('PENDING','RUNNING')` (Data Studio synthetic-generation job). The contract:
   - `STAGE = 'DOWNLOADING'` → pin `DOWNLOADER`, `ORS_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
   - `STAGE IN ('CONFIGURING','STARTING_SERVICE','WAITING_FOR_SERVICE','BUILDING_GRAPH')` → pin `ORS_SERVICE_<REGION>` and `ORS_POOL_<REGION>` to 0; `DOWNLOADER` returns to 14400 (the PBF is already on stage).
   - Matrix job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0.
+  - Studio (Data Studio) generation job `STATUS IN ('PENDING','RUNNING')` → pin `routing_gateway_service`, `ORS_SERVICE_<REGION>`, `VROOM_SERVICE_<REGION>`, and `ORS_POOL_<REGION>` to 0. The control-app's `captureAndScaleUp()` performs this pinning in-process at job start and `scaleDown()` restores the captured baselines on every exit. `RECONCILE_AUTO_SUSPEND()` is the global safety net for the case where the control-app container restarts mid-run.
   - All other times → services = `14400` (4h), per-region pools = `3600` (1h). `OPENROUTERSERVICE_APP_COMPUTE_POOL` is unrelated to this invariant (its default is `600`).
   - `ors_control_app` has public endpoints and therefore no `AUTO_SUSPEND_SECS` — it is excluded.
   - Every procedure that flips a value to `0` is responsible for restoring its default on ALL exits (happy path, timeout, early return, exception).
-  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
+  - The idempotent safety net `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is the single source of truth and now reconciles `routing_gateway_service`, `ORS_SERVICE_%`, `VROOM_SERVICE_%`, `DOWNLOADER`, and `ORS_POOL_%` against `REGION_PROVISION_JOBS`, `MATRIX_BUILD_JOBS`, AND `FLEET_INTELLIGENCE.CORE.GENERATION_JOBS`. Auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`; safe to call at any time.
 - **v1.1.4 default-sentinel retirement**: The legacy `region:'default'` sentinel returned by `/api/regions/provisioned` was retired. `LIST_REGIONS()` now returns SanFrancisco as a regular row in `REGION_ORS_MAP` (with new `IS_DEFAULT BOOLEAN` column, seeded `TRUE` for the canonical default). The control-app server no longer synthesizes a `region:'default'` entry, no longer makes 0-arg `ORS_STATUS()` calls, and no longer special-cases `'default'` in studio job pool scaling, ors-readiness, or stage probing. The `isDefault` boolean is preserved as a pure UI hint (dropdown auto-selection + "(Default)" badge) but is decoupled from SQL routing. Inbound API requests passing `'default'` or empty region are still resolved at the gateway boundary via `normalizeRegion()` -> `DEFAULT_REGION_NAME`, but internal contracts assume real region keys.
+- **Dataset versioning (Studio runs are non-destructive)**: Each Data Studio run is recorded as an immutable dataset in `FLEET_INTELLIGENCE.CORE.DIM_DATASETS` keyed by `JOB_ID`. At most ONE row per `(REGION, VEHICLE_TYPE)` has `IS_ACTIVE = TRUE`. Re-running Studio for the same `(REGION, VEHICLE_TYPE)` does NOT delete prior `DIM_*` / `FACT_FREIGHT_OFFERS` / `DIM_PARTNERS` / `FACT_PARTNER_HISTORY` rows — the prior `DIM_DATASETS` row is just flipped to `IS_ACTIVE = FALSE` and a new row is inserted as active (`archivePriorDatasets()` in `server/studio/jobs.ts`). All downstream consumers MUST read from dataset-scoped projection views and never from base tables directly: `SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_FACT_FREIGHT_OFFERS_CURRENT`, `V_DIM_PARTNERS_CURRENT`, `V_FACT_PARTNER_HISTORY_CURRENT`, `V_FACT_TRIPS_CURRENT`, `V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`, plus app-scoped `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT` and `FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT`. Intentional exceptions that still read from base tables: `RATE_INDEX` dynamic table (market-rate signal across all data), `region-sync.ts` / `regions/lifecycle.ts` (telemetry hull derivation wants full spatial coverage). Old datasets are deleted only via the explicit `DELETE /api/studio/datasets/:id` endpoint (Studio Datasets panel "Delete" button) — there is NO auto-prune. The legacy destructive `clearRegionScope()` helper is retained but is now invoked only from this endpoint, never from a generation run. On a `FAILED` run that produced 0 rows, `revertArchivePriorDatasets()` removes the new `DIM_DATASETS` row and re-activates the most recent prior dataset, so a failed empty run never replaces the active one. The Studio Datasets panel UI lists every dataset with row counts and per-row Activate / Rename / Delete buttons; Delete is refused with HTTP 409 if the target is the only dataset in its scope.
 
 ## Geospatial Conventions
+
+### Prefer Boundary Polygons over Bounding Boxes
+
+Whenever a region's polygon is available — and it almost always is, because `OPENROUTESERVICE_APP.CORE.REGION_CATALOG.BOUNDARY` is baked for every provisioned region (Geofabrik poly, bbbike bbox, or fallback) — filter spatial data with the polygon, not the bbox. Bbox over-includes ocean, neighbouring states, and even neighbouring countries (e.g. a Germany bbox grabs Czechia, Switzerland, Austria, the North Sea).
+
+| Use case | Bbox (avoid) | Boundary (preferred) |
+|---|---|---|
+| Filter rows in a region | `LON BETWEEN ... AND LAT BETWEEN ...` | `ST_WITHIN(geog, rc.BOUNDARY)` |
+| Map recenter | midpoint of `MIN_LON/MAX_LON, MIN_LAT/MAX_LAT` | `BOUNDARY_CENTROID_LON/LAT` from `/api/regions` |
+| Region picker enrich | `REGION_ORS_MAP.MIN_LAT/MAX_LAT/...` | `REGION_CATALOG.BOUNDARY` joined via `LOOKUP_NAME` / `REGION_KEY` |
+| Live POI / address query | bbox SET vars at ingest | `JOIN REGION_CATALOG ON ST_WITHIN` at query time |
+
+Standard join pattern (use this verbatim across SQL and React queries):
+```sql
+JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  ON rc.BOUNDARY IS NOT NULL
+ AND (UPPER(rc.LOOKUP_NAME) = UPPER('<region>')
+      OR UPPER(rc.REGION_KEY) = UPPER('<region>'))
+WHERE ST_WITHIN(<your_geog_col>, rc.BOUNDARY)
+```
+
+In React components, prefer the resolved ORS key (the one that successfully answered `ORS_STATUS`) as the `<region>` literal in the join. Do NOT serialize `BOUNDARY_GEOJSON` into the query — it is large (multi-MB for country-sized polygons) and the join keeps the polygon server-side.
+
+Bbox is acceptable ONLY when:
+- The boundary doesn't yet exist (e.g. brand new user-added region not yet in `REGION_CATALOG`).
+- The downstream API requires bbox literals (Geofabrik PBF download URL builder, ORS provisioning input).
+- A `CLUSTER BY` expression is required (GEOGRAPHY isn't allowed in `CLUSTER BY`).
+- Performance probing where a cheap bbox prefilter is layered ahead of `ST_WITHIN` — but the `ST_WITHIN` MUST still be present as the authoritative filter.
+
+For SQL pipelines that pre-filter at ingest time, prefer
+`ST_WITHIN(geom, (SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG WHERE UPPER(LOOKUP_NAME)=UPPER('<region>') OR UPPER(REGION_KEY)=UPPER('<region>') LIMIT 1))`
+over the legacy `SET BBOX_*` pattern when the polygon exists.
 
 ### GEOGRAPHY-First Schema Design
 - Store point locations as `GEOGRAPHY` columns (not separate FLOAT lat/lon).

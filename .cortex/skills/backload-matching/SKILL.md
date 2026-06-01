@@ -29,8 +29,9 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 ## Prerequisites
 
 - `build-routing-solution` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
-- `route-optimization` deployed (FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES seeded — only used to confirm the OPTIMIZATION function is callable).
+- `route-optimization` deployed.
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) — not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
+- Run Data Studio for the target `(region, vehicle_type)` first so `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, and `V_FACT_FREIGHT_OFFERS_CURRENT` are populated. The page no longer has an in-page "Generate seed data" action.
 
 ## Required Privileges
 
@@ -56,15 +57,13 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 | SCHEMA | `BACKLOAD_MATCHING` | Schema for backload tables and views |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
 | REGION | (active preset) | Auto-derived from `BACKLOAD_MATCHING.CONFIG`, which mirrors the active Control App region/vehicle. No hardcoded city. |
-| HOME_REGION | `Nordics` | Country group counted as "back-to-home" |
-| HOME_LAT / HOME_LON | `55.6759 / 12.5655` | Anchor (Copenhagen) used as vehicle `end` |
-| TRAILER_COUNT | `80` | Idle-bound trailers seeded |
-| INTERNAL_VOLUMES_COUNT | `120` | Internal waiting loads seeded |
-| EXTERNAL_OFFERS_COUNT | `300` | Synthetic external offers seeded |
+| VEHICLE_CLASS_PROFILE | `OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE` | Single source of truth for per-vehicle-class capacity (`PAYLOAD_KG_TYP`), shipment-weight band, ORS profile, costs (€/km, €/hr), and UI label. The skill is transport-type agnostic — no HGV-specific constants. Seeded with 8 classes (`bicycle`, `ebike`, `foot`, `motorcycle`, `car`, `van`, `hgv`, `truck`). Unknown `vehicle_type` → bootstrap and React both fail loudly so a custom preset never silently runs with wrong-class defaults. |
+| TRAILER_COUNT | up to ~80 (driven by Data Studio dataset) | Idle-bound trailers for the active preset |
+| INTERNAL_VOLUMES_COUNT | 120 | Internal waiting loads (most-recent FACT_TRIPS) |
+| EXTERNAL_OFFERS_COUNT | 300 | Synthetic external offers per region |
 | INTERNAL_PRIORITY | `100` | VROOM `priority` on internal jobs |
 | EXTERNAL_PRIORITY | `10` | VROOM `priority` on external offers |
 | TIME_WINDOW_TOLERANCE_HRS | `4` | Pickup-window slack added to jobs |
-| MAX_EMPTY_KM_PER_LEG | `200` | Hard skip in candidate pre-filter |
 | MAX_VEHICLES_PER_SOLVE | `30` | Solver caps vehicles per call to keep ORS responsive |
 | EUR_PER_EMPTY_KM | `1.20` | Used for KPI ("EUR/day reclaimed") |
 | IDLE_COST_EUR_PER_DAY | `650` | Used for KPI ("EUR/day reclaimed") |
@@ -85,7 +84,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-
 
 ```sql
 SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;            -- 4 services RUNNING
-SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES;  -- > 0
+SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT;  -- > 0
 DESC FUNCTION OPENROUTESERVICE_APP.CORE.OPTIMIZATION(VARIANT, VARCHAR);     -- exists
 ```
 

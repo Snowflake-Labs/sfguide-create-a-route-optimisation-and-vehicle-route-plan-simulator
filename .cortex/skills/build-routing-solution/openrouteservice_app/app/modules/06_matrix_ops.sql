@@ -1,3 +1,4 @@
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"06_matrix_ops"}}';
 USE SCHEMA OPENROUTESERVICE_APP.CORE;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.GET_BUILD_STATUS()
@@ -335,3 +336,116 @@ BEGIN
 END;
 $$;
 -- GRANT USAGE ON PROCEDURE OPENROUTESERVICE_APP.CORE.LOAD_SEED_MATRIX(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO APPLICATION ROLE app_user;
+
+
+-- ===========================================================================
+-- ESTIMATE_MATRIX_COST (#39 SQL-native variant)
+-- ---------------------------------------------------------------------------
+-- SQL-native cost estimator for callers that cannot reach the control-app's
+-- /api/matrix/cost-estimate endpoint (notebooks, SQL worksheets, Tasks).
+-- Returns the same JSON envelope shape as the HTTP endpoint, minus the
+-- road-aware filter (which requires the Overture Maps Marketplace listing
+-- and stays in the control-app for now).
+--
+-- Inputs:
+--   P_REGION      -- region name; MUST already exist in REGION_ORS_MAP
+--   P_RESOLUTION  -- H3 resolution 5..10
+--
+-- Returns JSON {ok, region, resolution, area_sqkm, hex_count, pair_count,
+--               estimated_minutes, estimated_credits, estimated_dollars}.
+--
+-- Formula mirrors the JS one in services/ors_control_app/server/routes/
+-- matrix/build.ts -> /api/matrix/cost-estimate. When the JS estimator
+-- changes, update this proc too so both surfaces agree.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.ESTIMATE_MATRIX_COST(P_REGION VARCHAR, P_RESOLUTION INT)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"matrix","feature":"cost-estimate"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    area_sqkm          FLOAT DEFAULT 0;
+    poly_area          FLOAT DEFAULT NULL;
+    bbox_area          FLOAT DEFAULT NULL;
+    hex_area_km2       FLOAT DEFAULT 0;
+    hex_count          NUMBER DEFAULT 0;
+    pair_count         NUMBER DEFAULT 0;
+    pairs_per_sec      INTEGER DEFAULT 30000;
+    pool_nodes         INTEGER DEFAULT 10;
+    pool_credit_per_hr FLOAT DEFAULT 1;
+    wh_credit_per_hr   FLOAT DEFAULT 10;
+    flatten_credits    FLOAT DEFAULT 2;
+    credit_dollars     FLOAT DEFAULT 3;
+    seconds            FLOAT DEFAULT 0;
+    minutes            FLOAT DEFAULT 0;
+    credits            FLOAT DEFAULT 0;
+    dollars            FLOAT DEFAULT 0;
+    safe_region        VARCHAR DEFAULT '';
+    rs RESULTSET;
+BEGIN
+    -- Escape single quotes in P_REGION to prevent SQL injection via the
+    -- EXECUTE IMMEDIATE string concatenations below. (#audit-pr-120)
+    safe_region := REPLACE(:P_REGION, '''', '''''');
+
+    -- Prefer the polygon area for parity with BUILD_HEXAGONS / the JS estimator.
+    BEGIN
+        rs := (EXECUTE IMMEDIATE
+            'SELECT BOUNDARY_AREA_KM2 FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG '
+            || 'WHERE BOUNDARY IS NOT NULL '
+            || 'AND (UPPER(LOOKUP_NAME) = UPPER(''' || :safe_region || ''') '
+            || 'OR UPPER(REGION_KEY) = UPPER(''' || :safe_region || ''')) '
+            || 'ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1');
+        LET cp CURSOR FOR rs;
+        FOR r IN cp DO poly_area := r.BOUNDARY_AREA_KM2; END FOR;
+    EXCEPTION WHEN OTHER THEN poly_area := NULL;
+    END;
+
+    BEGIN
+        rs := (EXECUTE IMMEDIATE
+            'SELECT ABS((MAX_LON - MIN_LON) * (MAX_LAT - MIN_LAT)) * 111.0 * 111.0 '
+            || '* COS(((MIN_LAT + MAX_LAT) / 2) * 0.01745329) AS BBOX_AREA '
+            || 'FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP '
+            || 'WHERE UPPER(REGION) = UPPER(''' || :safe_region || ''') LIMIT 1');
+        LET cb CURSOR FOR rs;
+        FOR r IN cb DO bbox_area := r.BBOX_AREA; END FOR;
+    EXCEPTION WHEN OTHER THEN bbox_area := NULL;
+    END;
+
+    area_sqkm := COALESCE(:poly_area, :bbox_area, 0);
+    IF (:area_sqkm <= 0) THEN
+        RETURN OBJECT_CONSTRUCT('ok', FALSE, 'error', 'unknown region ' || :P_REGION)::STRING;
+    END IF;
+
+    hex_area_km2 := CASE :P_RESOLUTION
+        WHEN 5 THEN 252.9 WHEN 6 THEN 36.13 WHEN 7 THEN 5.16
+        WHEN 8 THEN 0.737 WHEN 9 THEN 0.105 WHEN 10 THEN 0.015
+        ELSE 0 END;
+    IF (:hex_area_km2 = 0) THEN
+        RETURN OBJECT_CONSTRUCT('ok', FALSE, 'error', 'unsupported resolution ' || :P_RESOLUTION)::STRING;
+    END IF;
+
+    hex_count := CEIL(:area_sqkm / :hex_area_km2);
+    pair_count := :hex_count * :hex_count;
+    seconds := :pair_count / :pairs_per_sec;
+    minutes := :seconds / 60.0;
+    credits := (:seconds / 3600.0) * (:pool_nodes * :pool_credit_per_hr + :wh_credit_per_hr) + :flatten_credits;
+    dollars := :credits * :credit_dollars;
+
+    RETURN OBJECT_CONSTRUCT(
+        'ok', TRUE,
+        'region', :P_REGION,
+        'resolution', :P_RESOLUTION,
+        'area_sqkm', ROUND(:area_sqkm, 0),
+        'area_source', IFF(:poly_area IS NOT NULL, 'polygon', 'bbox'),
+        'hex_count', :hex_count,
+        'pair_count', :pair_count,
+        'estimated_seconds', ROUND(:seconds, 0),
+        'estimated_minutes', ROUND(:minutes, 1),
+        'estimated_credits', ROUND(:credits, 2),
+        'estimated_dollars', ROUND(:dollars, 2),
+        'pairs_per_second', :pairs_per_sec
+    )::STRING;
+END;
+$$;

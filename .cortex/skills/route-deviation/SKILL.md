@@ -11,7 +11,7 @@ metadata:
 
 # Deploy Route Deviation Analysis Demo
 
-End-to-end deployment of a Route Deviation Analysis demo comparing actual GPS paths against expected routes to detect detours, delays, and anomalies. Data Studio generates both actual and planned routes in `SYNTHETIC_DATASETS.UNIFIED`, so no ORS batch routing is needed. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type via CONFIG table.
+End-to-end deployment of a Route Deviation Analysis demo comparing actual GPS paths against expected routes to detect detours, delays, and anomalies. Data Studio generates both actual and planned routes in `SYNTHETIC_DATASETS.UNIFIED`, so no ORS batch routing is needed. Projection views must read active-dataset sources (`V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_FACT_TRIPS_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`). Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type via CONFIG table.
 
 ## Prerequisites
 

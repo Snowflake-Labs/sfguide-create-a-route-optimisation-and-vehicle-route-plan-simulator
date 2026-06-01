@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck } from 'lucide-react';
+import { Info, Map, Activity, MapPin, Wrench, Grid3X3, Database, Route, Clock, Truck, CarTaxiFront, GitBranch, Store, Bot, Stethoscope, ChevronDown, ChevronRight, Gauge, PackageCheck, AlertTriangle, ShoppingBasket, LineChart } from 'lucide-react';
 import ServiceManager from './components/ServiceManager';
 import RegionBuilder from './components/RegionBuilder';
 import MatrixBuilder from './components/MatrixBuilder';
@@ -14,10 +14,13 @@ import RouteDeviation from './components/RouteDeviation';
 import RouteOptimization from './components/RouteOptimization';
 import AssetVelocity from './components/AssetVelocity';
 import BackloadMatching from './components/BackloadMatching';
+import FreightExchange from './components/FreightExchange';
 import RetailCatchment from './components/RetailCatchment';
+import EmergencyResponseShell from './components/emergency/EmergencyResponseShell';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
+import Observability from './components/Observability';
 import About from './components/About';
 import Intro from './components/Intro';
 import Home from './components/Home';
@@ -80,11 +83,20 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   ]},
   { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
   { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
+  { key: 'freight-exchange', label: 'Freight Exchange', icon: ShoppingBasket },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
+  { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle, subPages: [
+    { key: 'emergency:hazard-ops', label: 'Hazard Ops' },
+    { key: 'emergency:triage', label: 'Triage' },
+    { key: 'emergency:reachability', label: 'Reachability' },
+    { key: 'emergency:dispatch', label: 'Dispatch' },
+    { key: 'emergency:vulnerability', label: 'Vulnerability' },
+  ]},
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];
 
 const ADMIN_NAV: NavGroup[] = [
+  { key: 'observability', label: 'Observability', icon: LineChart },
   { key: 'diagnostics', label: 'Diagnostics', icon: Stethoscope },
 ];
 
@@ -169,7 +181,7 @@ export default function App() {
   const activeCategory = activeTab.includes(':') ? activeTab.split(':')[0] : activeTab;
   const activeSubTab = activeTab.includes(':') ? activeTab.split(':')[1] : undefined;
 
-  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload'];
+  const FULL_WIDTH_TABS = ['intro', 'dwell', 'fleet-delivery', 'route-deviation', 'retail', 'agent', 'backload', 'emergency', 'freight-exchange'];
   const isFullWidth = FULL_WIDTH_TABS.includes(activeCategory);
 
   const renderNavGroup = (g: NavGroup) => {
@@ -261,16 +273,6 @@ export default function App() {
               )}
               <DatasetPicker />
               <OrsWakeButton />
-              <button
-                onClick={() => {
-                  document.cookie.split(';').forEach(c => {
-                    document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/');
-                  });
-                  window.location.href = '/logout';
-                }}
-                style={{ fontSize: 11, padding: '4px 10px', border: '1px solid #E5484D', borderRadius: 6, background: 'rgba(229,72,77,0.1)', cursor: 'pointer', color: '#E5484D', fontWeight: 600 }}
-                title="Log out and refresh session"
-              >⏻ Logout</button>
             </div>
           </header>
           <main className={`app-main${isFullWidth ? ' full-width' : ''}`}>
@@ -284,7 +286,7 @@ export default function App() {
               Remount is cheap for these pages and guarantees a clean
               fetch + map reset on every (region, vehicleType) change.
             */}
-            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}`; return (<>
+            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}|${vehicleTypeCtx.value.activeDatasetId ?? ''}`; return (<>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
             {activeTab === 'intro' && <Intro />}
@@ -298,12 +300,15 @@ export default function App() {
             {activeTab === 'route-opt' && <RouteOptimization key={dataKey} />}
             {activeTab === 'asset-velocity' && <AssetVelocity key={dataKey} />}
             {activeTab === 'backload' && <BackloadMatching key={dataKey} />}
+            {activeTab === 'freight-exchange' && <FreightExchange key={dataKey} />}
             {activeCategory === 'fleet-taxis' && <FleetTaxis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'fleet-delivery' && <FleetDelivery key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'route-deviation' && <RouteDeviation key={dataKey} subTab={activeSubTab} />}
             {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
+            {activeCategory === 'emergency' && <EmergencyResponseShell subTab={activeSubTab || 'hazard-ops'} />}
             {activeTab === 'agent' && <AgentPlayground />}
+            {activeTab === 'observability' && <Observability />}
             {activeTab === 'diagnostics' && <Diagnostics />}
             </>); })()}
           </main>

@@ -114,6 +114,33 @@ export const POI_DISPLAY_NAMES: Record<string, string> = {
   parking: 'Parking',
 };
 
+// Vehicle / skill / risk palettes used by extractAgentGeoData when rendering
+// optimization (TOOL_*_OPTIMIZATION, TOOL_SUPPLY_CHAIN) and population health
+// (TOOL_PHARMA_CATCHMENT) tool results.
+export const VEHICLE_ROUTE_COLORS: [number, number, number, number][] = [
+  [66, 133, 244, 220],
+  [255, 152, 0, 220],
+  [76, 175, 80, 220],
+  [156, 39, 176, 220],
+  [233, 30, 99, 220],
+];
+
+export const SKILL_COLORS: Record<number, [number, number, number, number]> = {
+  1: [66, 133, 244, 240],
+  2: [255, 152, 0, 240],
+  3: [76, 175, 80, 240],
+};
+
+export const SKILL_LABELS: Record<number, string> = {
+  1: 'Cold Chain / Vaccines',
+  2: 'Controlled Substances',
+  3: 'Standard Medicines',
+};
+
+export function skillColor(skill: number): [number, number, number, number] {
+  return SKILL_COLORS[skill] || [100, 149, 237, 240];
+}
+
 export function extractAgentGeoData(toolResults: any[]): GeoData {
   const features: any[] = [];
   const markerPoints: MarkerPoint[] = [];
@@ -135,13 +162,64 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
           features.push(...(tr.geometry.features || []));
         }
       }
-      // TOOL_OPTIMIZATION: routes array with encoded polyline geometry
+      // TOOL_OPTIMIZATION / TOOL_SUPPLY_CHAIN / TOOL_PHARMA_OPTIMIZATION:
+      // routes array with per-vehicle geometry. Tag each Feature with vehicle
+      // id + colour so the map can render distinct lines and the legend can
+      // identify them.
       if (tr.routes && Array.isArray(tr.routes)) {
         for (const route of tr.routes) {
+          const vehicleIdx = ((route.vehicle ?? 1) - 1);
+          const routeColor = VEHICLE_ROUTE_COLORS[vehicleIdx % VEHICLE_ROUTE_COLORS.length];
+          let coords: [number, number][] | null = null;
           if (route.geometry && typeof route.geometry === 'string') {
-            const coords = decodePolyline(route.geometry);
-            if (coords.length > 0) features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+            const decoded = decodePolyline(route.geometry);
+            if (decoded.length > 0) coords = decoded;
+          } else if (route.geometry && Array.isArray(route.geometry)) {
+            coords = route.geometry as [number, number][];
           }
+          if (coords) {
+            features.push({
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: coords },
+              properties: { vehicle: route.vehicle ?? 1, routeColor },
+            });
+          }
+        }
+      }
+      // TOOL_SUPPLY_CHAIN / TOOL_PHARMA_OPTIMIZATION: pre-geocoded job stops
+      // colored by VROOM skill (1=Cold Chain, 2=Controlled, 3=Standard).
+      if (tr.jobs && Array.isArray(tr.jobs)) {
+        for (const job of tr.jobs) {
+          if (job.longitude != null && job.latitude != null) {
+            const skill: number = job.skill ?? (Array.isArray(job.skills) ? job.skills[0] : 0) ?? 0;
+            poiPoints.push({
+              position: [Number(job.longitude), Number(job.latitude)],
+              name: job.name || job.address || job.pharmacy || 'Stop',
+              category: SKILL_LABELS[skill] || job.skill_label || 'Delivery Stop',
+              color: skill ? skillColor(skill) : [100, 149, 237, 240],
+            });
+          }
+        }
+      }
+      // TOOL_PHARMA_CATCHMENT: per-neighborhood demographics with risk score.
+      if (Array.isArray(tr.population_points)) {
+        for (const pt of tr.population_points) {
+          if (pt.longitude == null || pt.latitude == null) continue;
+          const risk: number = pt.risk_score ?? 0;
+          const color: [number, number, number, number] =
+            risk >= 55 ? [231, 76, 60, 220]
+            : risk >= 35 ? [230, 126, 34, 200]
+            : [46, 204, 113, 180];
+          const noCar = Math.round(100 - (pt.car_ownership_pct ?? 50));
+          poiPoints.push({
+            position: [Number(pt.longitude), Number(pt.latitude)],
+            name: `${pt.neighborhood} (pop. ${pt.population?.toLocaleString?.() ?? pt.population})\n` +
+                  `Diabetes ${pt.diabetes_pct}%  Hypertension ${pt.hypertension_pct}%\n` +
+                  `Elderly ${pt.pct_elderly}%  No car ${noCar}%\n` +
+                  `Risk score ${risk}/100`,
+            category: risk >= 55 ? 'High Health Risk' : risk >= 35 ? 'Medium Health Risk' : 'Lower Health Risk',
+            color,
+          });
         }
       }
       // Isochrone center point
@@ -157,16 +235,21 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
 
   for (const tr of toolResults) {
     if (!tr || typeof tr !== 'object') continue;
-    if (Array.isArray(tr.poi_list)) {
-      for (const poi of tr.poi_list) {
-        if (poi.lng != null && poi.lat != null) {
-          poiPoints.push({
-            position: [Number(poi.lng), Number(poi.lat)],
-            name: poi.name || 'Unknown',
-            category: poi.category || '',
-            color: poiColor(poi.category || ''),
-          });
-        }
+    // Two POI list shapes are accepted:
+    //   tr.poi_list  — legacy local executeToolPoi shape: { name, lng, lat, category }
+    //   tr.pois      — TOOL_POI_IN_ISOCHRONE proc shape:   { name, longitude, latitude, basic_category, primary_category }
+    const list: any[] = Array.isArray(tr.poi_list) ? tr.poi_list : (Array.isArray(tr.pois) ? tr.pois : []);
+    for (const poi of list) {
+      const lng = poi.lng ?? poi.longitude;
+      const lat = poi.lat ?? poi.latitude;
+      if (lng != null && lat != null) {
+        const cat = poi.category || poi.basic_category || poi.primary_category || '';
+        poiPoints.push({
+          position: [Number(lng), Number(lat)],
+          name: poi.name || 'Unknown',
+          category: cat,
+          color: poiColor(cat),
+        });
       }
     }
   }
@@ -238,3 +321,79 @@ export const SAMPLE_PROMPTS: { label: string; icon: string; prompt: string }[] =
 ];
 
 export const EMPTY_GEO: GeoData = { geojson: null, points: [], poiPoints: [], center: null, zoom: 12 };
+
+// Map a fleet "vehicle type" (truck / ebike / car / ...) to the matching ORS
+// transport profile. Default is driving-car for unknown types.
+export function profileFromVehicle(vehicleType: string | null | undefined): string {
+  const v = (vehicleType || '').toLowerCase();
+  if (!v) return 'driving-car';
+  if (v.includes('hgv') || v.includes('truck') || v.includes('lorry') || v.includes('semi')) return 'driving-hgv';
+  if (v.includes('ebike') || v.includes('e-bike') || v.includes('electric_bike') || v.includes('cycling-electric')) return 'cycling-electric';
+  if (v.includes('mountain')) return 'cycling-mountain';
+  if (v.includes('road_bike') || v.includes('cycling-road')) return 'cycling-road';
+  if (v.includes('bike') || v.includes('bicycle') || v.includes('cycle')) return 'cycling-regular';
+  if (v.includes('walk') || v.includes('foot') || v.includes('pedestrian')) return 'foot-walking';
+  if (v.includes('hike')) return 'foot-hiking';
+  if (v.includes('wheelchair')) return 'wheelchair';
+  return 'driving-car';
+}
+
+// ---------------------------------------------------------------------------
+// Scenario / saved-prompts / workflow types (added when porting the SUMMIT
+// Agent Playground UX into the current refactored AgentPlayground).
+// ---------------------------------------------------------------------------
+
+export interface ScenarioPrompt { label: string; icon: string; prompt: string; }
+export interface DemoScenario {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  prompts: ScenarioPrompt[];
+}
+export interface AgentDemosConfig {
+  version?: string;
+  default_scenario?: string;
+  max_token_limit?: number;
+  scenarios: DemoScenario[];
+}
+
+export interface SavedPrompt { id: string; label: string; prompt: string; icon?: string; }
+export const SAVED_PROMPTS_KEY = 'agent_playground_saved_prompts';
+
+export function loadSavedPrompts(): SavedPrompt[] {
+  try {
+    const raw = localStorage.getItem(SAVED_PROMPTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+export function persistSavedPrompts(prompts: SavedPrompt[]) {
+  try { localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(prompts)); } catch {}
+}
+
+export interface WorkflowStep {
+  type: string;
+  label: string;
+  ts: number;
+  duration_ms?: number;
+  tool?: string;
+  input?: any;
+  detail?: any;
+}
+
+export const FALLBACK_SCENARIOS: DemoScenario[] = [
+  {
+    id: 'pharma',
+    label: 'Pharma Supply Chain',
+    icon: '\u{1F48A}',
+    description: 'Pharmaceutical delivery planning',
+    prompts: [
+      { label: '1. Catchment analysis', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco' },
+      { label: '2. Drug demand', icon: '\u{1F48A}', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
+      { label: '3. Supply chain plan', icon: '\u{1F69A}', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
+    ],
+  },
+];

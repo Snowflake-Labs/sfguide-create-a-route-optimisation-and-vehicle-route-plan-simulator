@@ -1,0 +1,64 @@
+################################################################################
+# Preset: bikes (cycling + foot)
+#
+# Use when: fleet-intelligence-food-delivery, retail-catchment, last-mile
+# delivery demos that exercise cycling, e-bike, and walking profiles.
+#
+# Differences vs standard.yml:
+#   * All four cycling profiles + foot-walking enabled.
+#   * driving-hgv disabled (food delivery has no trucking leg).
+#   * driving-car kept enabled (cars co-exist with bikes in most demos).
+#   * Isochrone range narrower than standard since bike/foot reach is local.
+################################################################################
+ors:
+  engine:
+    profile_default:
+      build:
+        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        instructions: false
+      service:
+        maximum_distance: 100000000
+        maximum_distance_dynamic_weights: 100000000
+        maximum_distance_avoid_areas: 100000000
+        maximum_distance_alternative_routes: 100000000
+        maximum_distance_round_trip_routes: 100000000
+        maximum_visited_nodes: 100000000
+        maximum_waypoints: 1000
+        maximum_snapping_radius: 200
+    profiles:
+      driving-car:
+        enabled: true
+      driving-hgv:
+        enabled: false
+      cycling-regular:
+        enabled: true
+      cycling-road:
+        enabled: true
+      cycling-mountain:
+        enabled: false
+      cycling-electric:
+        enabled: true
+      foot-walking:
+        enabled: true
+      foot-hiking:
+        enabled: false
+      wheelchair:
+        enabled: false
+  endpoints:
+    matrix:
+      maximum_visited_nodes: 100000000
+      maximum_routes: 2000000
+      maximum_routes_flexible: 2000000
+    isochrones:
+      maximum_locations: 2
+      maximum_intervals: 10
+      maximum_range_distance:
+        - profiles: cycling-regular, cycling-road, cycling-electric, foot-walking
+          value: 100000
+        - profiles: driving-car
+          value: 500000
+      maximum_range_time:
+        - profiles: cycling-regular, cycling-road, cycling-electric, foot-walking
+          value: 7200
+        - profiles: driving-car
+          value: 7200

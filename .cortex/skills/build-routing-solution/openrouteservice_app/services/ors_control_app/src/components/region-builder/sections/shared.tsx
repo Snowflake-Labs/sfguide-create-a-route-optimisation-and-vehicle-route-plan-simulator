@@ -15,7 +15,7 @@ export function DiagDrawer({
     <div
       style={{
         padding: '10px 12px',
-        background: 'rgba(46, 134, 171, 0.08)',
+        background: 'rgba(41, 181, 232, 0.08)',
         borderLeft: '3px solid var(--accent)',
         borderRadius: 6,
         fontSize: 13,
@@ -23,7 +23,7 @@ export function DiagDrawer({
     >
       {entry.loading && <div>Diagnosing...</div>}
       {entry.error && (
-        <div style={{ color: 'var(--error, #e53935)' }}>Error: {entry.error}</div>
+        <div style={{ color: 'var(--red)' }}>Error: {entry.error}</div>
       )}
       {entry.markdown && (
         <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit' }}>
@@ -38,7 +38,7 @@ export function DiagDrawer({
           </pre>
         </details>
       )}
-      <button className="btn small ghost" style={{ marginTop: 6 }} onClick={onClose}>
+      <button className="btn small secondary" style={{ marginTop: 6 }} onClick={onClose}>
         Close
       </button>
     </div>

@@ -14,6 +14,8 @@ interface Dataset {
   pointCount: number;
   completedAt: string;
   isActive: boolean;
+  fleetRowCount?: number;
+  isAvailable?: boolean;
 }
 
 const PROFILE_LABELS: Record<string, string> = {
@@ -27,26 +29,39 @@ export default function DatasetPicker() {
   const region = useRegion();
   const vehicleTypeCtx = useVehicleType();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [currentRegion, setCurrentRegion] = useState<string | null>(null);
+  const [currentVehicleType, setCurrentVehicleType] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState('Loading...');
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  const isSelected = useCallback((ds: Dataset, region: string | null, vehicleType: string | null) => {
+    return region != null && vehicleType != null
+      && ds.region === region && ds.vehicleType === vehicleType;
+  }, []);
 
   const fetchDatasets = useCallback(async () => {
     try {
       const res = await fetch('/api/datasets');
       if (res.ok) {
         const data = await res.json();
-        setDatasets(data.datasets || []);
-        const active = (data.datasets || []).find((d: Dataset) => d.isActive);
-        if (active) setActiveLabel(active.presetName);
-        else if (data.datasets?.length) setActiveLabel(data.datasets[0].presetName);
+        const list: Dataset[] = data.datasets || [];
+        const region = data.currentRegion ?? null;
+        const vehicleType = data.currentVehicleType ?? null;
+        setDatasets(list);
+        setCurrentRegion(region);
+        setCurrentVehicleType(vehicleType);
+        const selected = list.find((d) => isSelected(d, region, vehicleType));
+        if (selected) setActiveLabel(selected.presetName);
+        else if (list.length) setActiveLabel(list[0].presetName);
         else setActiveLabel('No datasets');
       }
     } catch {
       setActiveLabel('No datasets');
     }
-  }, []);
+  }, [isSelected]);
 
   useEffect(() => { fetchDatasets(); }, [fetchDatasets]);
 
@@ -59,21 +74,33 @@ export default function DatasetPicker() {
   }, []);
 
   const handlePick = async (ds: Dataset) => {
+    if (isSelected(ds, currentRegion, currentVehicleType)) {
+      setOpen(false);
+      return;
+    }
+    if (ds.isAvailable === false) {
+      setError('No fleet data for this preset — re-run Data Studio.');
+      setOpen(false);
+      return;
+    }
     setOpen(false);
     setSwitching(true);
+    setError(null);
     try {
-      // Atomic server-side activation: updates VEHICLE_TYPE + REGION on all
-      // demo CONFIG tables in one round-trip BEFORE we touch React state.
-      // This guarantees that when contexts refresh and the App.tsx dataKey
-      // flips, every projection view (e.g. VW_TRIP_SUMMARY) already reads
-      // the new (region, vehicleType) from CONFIG.
-      await fetch('/api/datasets/activate', {
+      const res = await fetch('/api/datasets/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: ds.region, vehicleType: ds.vehicleType }),
+        body: JSON.stringify({ jobId: ds.jobId }),
       });
-      // Re-sync React state from server (single dataKey change -> single
-      // remount of demos, with CONFIG already consistent).
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Unknown error' }));
+        const msg = body.code === 'BOOT_INCOMPLETE'
+          ? 'Service still booting — try again in a few seconds'
+          : (body.error || `Activation failed (${res.status})`);
+        setError(msg);
+        await fetchDatasets();
+        return;
+      }
       await Promise.all([
         vehicleTypeCtx.refresh(),
         region.refresh(),
@@ -81,6 +108,8 @@ export default function DatasetPicker() {
       setActiveLabel(ds.presetName);
       window.dispatchEvent(new CustomEvent('ors-region-switched'));
       await fetchDatasets();
+    } catch {
+      setError('Network error — please retry');
     } finally {
       setSwitching(false);
     }
@@ -90,11 +119,31 @@ export default function DatasetPicker() {
 
   return (
     <div className="region-switcher" ref={ref}>
-      <button className={`region-trigger ${switching ? 'pulsing' : ''}`} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className={`region-trigger ${switching ? 'pulsing' : ''}`}
+        disabled={switching}
+        onClick={() => { setError(null); setOpen(!open); }}
+      >
         <Database size={14} />
         <span>{activeLabel}{switching ? '...' : ''}</span>
         <ChevronDown size={12} className={open ? 'rotated' : ''} />
       </button>
+      {error && (
+        <div
+          className="region-tag"
+          style={{
+            marginTop: 4,
+            fontSize: 11,
+            color: 'var(--danger, #E5484D)',
+            maxWidth: 280,
+            lineHeight: 1.3,
+          }}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
       {open && (
         <div className="region-dropdown" style={{ minWidth: 280 }}>
           {datasets.length === 0 && (
@@ -102,29 +151,45 @@ export default function DatasetPicker() {
               No completed datasets. Generate one in Data Studio.
             </div>
           )}
-          {datasets.map((ds) => (
-            <button
-              key={ds.jobId}
-              className={`region-option ${ds.isActive ? 'active' : ''}`}
-              onClick={() => handlePick(ds)}
-              style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
-                <Database size={12} />
-                <span style={{ fontWeight: 500, flex: 1 }}>{ds.presetName}</span>
-                {ds.isActive && <span className="region-tag seed">Active</span>}
-              </div>
-              <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-secondary)', paddingLeft: 18 }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                  <MapPin size={10} />{ds.regionDisplay}
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                  <Truck size={10} />{PROFILE_LABELS[ds.orsProfile] || ds.orsProfile}
-                </span>
-                <span>{fmtCount(ds.tripCount)} trips</span>
-              </div>
-            </button>
-          ))}
+          {datasets.map((ds) => {
+            const unavailable = ds.isAvailable === false;
+            const selected = isSelected(ds, currentRegion, currentVehicleType);
+            return (
+              <button
+                key={ds.jobId}
+                type="button"
+                className={`region-option ${selected ? 'active' : ''}`}
+                onClick={() => handlePick(ds)}
+                style={{
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  gap: 2,
+                  opacity: unavailable ? 0.55 : 1,
+                  cursor: unavailable ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                  <Database size={12} />
+                  <span style={{ fontWeight: 500, flex: 1 }}>{ds.presetName}</span>
+                  {selected && <span className="region-tag seed">Active</span>}
+                  {unavailable && (
+                    <span className="region-tag" style={{ fontSize: 10, opacity: 0.9 }}>
+                      no fleet data
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--text-secondary)', paddingLeft: 18 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <MapPin size={10} />{ds.regionDisplay}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <Truck size={10} />{PROFILE_LABELS[ds.orsProfile] || ds.orsProfile}
+                  </span>
+                  <span>{fmtCount(ds.tripCount)} trips</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

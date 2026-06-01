@@ -63,7 +63,32 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
     throw new Error(`SQL error: ${result.message}`);
   }
   if (!result.data) return [];
-  const cols = (result.resultSetMetaData?.rowType || []).map((c: any) => c.name);
+  const rowType: any[] = result.resultSetMetaData?.rowType || [];
+  const cols = rowType.map((c: any) => c.name);
+  // The Snowflake SQL REST API returns ALL values as strings inside `data`
+  // arrays (numerics, booleans, dates, etc). Without coercion, every numeric
+  // column in the React app arrives as a string and `(x as number).toFixed()`
+  // throws — the canonical mask for "blank page on Freight Exchange". Coerce
+  // by `rowType[i].type` here so callers get JS-native types. BIGINTs
+  // (NUMBER with precision > 15, scale 0) stay as strings to preserve
+  // precision; everything else (`real`, `fixed` with safe precision/scale,
+  // `boolean`) is converted.
+  const coercers: Array<(v: any) => any> = rowType.map((c: any) => {
+    const t = String(c?.type || '').toLowerCase();
+    if (t === 'real') return (v: any) => (v == null ? v : Number(v));
+    if (t === 'fixed') {
+      const scale = Number(c?.scale ?? 0);
+      const precision = Number(c?.precision ?? 0);
+      if (scale === 0 && precision > 15) return (v: any) => v; // preserve BIGINT
+      return (v: any) => (v == null ? v : Number(v));
+    }
+    if (t === 'boolean') return (v: any) => {
+      if (v == null) return v;
+      if (typeof v === 'boolean') return v;
+      return v === 'true' || v === true;
+    };
+    return (v: any) => v;
+  });
   let allData: any[][] = [...(result.data || [])];
   const partitions = result.resultSetMetaData?.partitionInfo;
   if (partitions && partitions.length > 1) {
@@ -78,7 +103,7 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
   console.log(`[SQL API] Returning ${allData.length} rows`);
   return allData.map((row: any[]) => {
     const obj: Record<string, any> = {};
-    cols.forEach((c: string, i: number) => { obj[c] = row[i]; });
+    cols.forEach((c: string, i: number) => { obj[c] = coercers[i](row[i]); });
     return obj;
   });
 }

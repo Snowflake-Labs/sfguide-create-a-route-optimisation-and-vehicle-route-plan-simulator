@@ -6,11 +6,17 @@ import { fmtDec } from '../../shared/format';
 import { FD_DB, FD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useActivePreset } from '../../hooks/useActivePreset';
+import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
+import PageContainer from '../../shared/PageContainer';
+import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 const ZONE_MINUTES = [5, 10, 15];
 
 export default function CatchmentPanel() {
+  const preset = useActivePreset();
   const { regionName, center, zoom } = useRegion();
   const { vehicleType } = useVehicleType();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -19,10 +25,9 @@ export default function CatchmentPanel() {
   const [catchmentZones, setCatchmentZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
-  const [travelMode, setTravelMode] = useState('cycling-electric');
+  const [travelMode, setTravelMode] = useState(preset.orsProfile);
   const [numZones, setNumZones] = useState(3);
   const [maxMinutes, setMaxMinutes] = useState(15);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
@@ -31,8 +36,8 @@ export default function CatchmentPanel() {
   }, [regionName, vehicleType]);
 
   useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
+    if (!preset.loading && preset.orsProfile) setTravelMode(preset.orsProfile);
+  }, [preset.orsProfile, preset.loading]);
 
   const selected = useMemo(() => restaurants.find(r => r.RESTAURANT_ID === selectedId), [restaurants, selectedId]);
 
@@ -42,9 +47,6 @@ export default function CatchmentPanel() {
     setAnalyzing(true);
 
     const rest = restaurants.find(r => r.RESTAURANT_ID === id);
-    if (rest?.LNG && rest?.LAT) {
-      setViewState(prev => ({ ...prev, longitude: Number(rest.LNG), latitude: Number(rest.LAT), zoom: 13 }));
-    }
 
     const [custRows] = await Promise.all([
       sfQuery(`SELECT ST_X(CUSTOMER_LOCATION) AS LNG, ST_Y(CUSTOMER_LOCATION) AS LAT, DELIVERY_TIME_MIN FROM DELIVERIES WHERE RESTAURANT_ID = '${id}' LIMIT 500`),
@@ -110,6 +112,19 @@ export default function CatchmentPanel() {
 
   const layers = useMemo(() => [basemap, ...dataLayers].filter(Boolean), [basemap, dataLayers]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (selected && selected.LNG != null && selected.LAT != null) out.push([Number(selected.LNG), Number(selected.LAT)]);
+    for (const c of customers) if (c.LNG != null && c.LAT != null) out.push([Number(c.LNG), Number(c.LAT)]);
+    for (const z of catchmentZones) if (z.geojson) out.push(...coordsFromGeoJSON(z.geojson));
+    if (!selected) {
+      for (const r of restaurants) if (r.LNG != null && r.LAT != null) out.push([Number(r.LNG), Number(r.LAT)]);
+    }
+    return out;
+  }, [selected, customers, catchmentZones, restaurants]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object?.RESTAURANT_NAME) return null;
     return {
@@ -119,6 +134,7 @@ export default function CatchmentPanel() {
   }, []);
 
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment Analysis</h2>
       <p className="subtitle">Restaurant delivery isochrone catchment</p>
@@ -160,9 +176,10 @@ export default function CatchmentPanel() {
           ))}</tbody>
         </table>
       </div>
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {(loading || analyzing) && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{analyzing ? 'Computing isochrones...' : 'Loading...'}</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} getTooltip={getTooltip} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
         {catchmentZones.length > 0 && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 8, background: 'rgba(0,0,0,0.6)', borderRadius: 6, padding: '4px 8px' }}>
             {catchmentZones.map((z, i) => <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#fff' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${ZONE_COLORS[z.zoneIdx % ZONE_COLORS.length].join(',')})` }} />{z.minutes} min</span>)}
@@ -170,5 +187,6 @@ export default function CatchmentPanel() {
         )}
       </div>
     </div>
+    </PageContainer>
   );
 }

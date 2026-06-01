@@ -55,6 +55,33 @@ Deploys the OpenRouteService route optimization application using Snowpark Conta
 | IMAGE_REPO | `ORS_REPOSITORY` | Image repository for SPCS containers |
 | COMPUTE_POOL | `ORS_COMPUTE_POOL` | Compute pool for ORS services |
 
+## Sizing
+
+Pre-check before provisioning a new region. The preflight procedure `OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(...)` (added in #52) returns a JSON verdict including the recommended compute size and instance family for any (bounding-box, profiles, compute_size) combination. Call it from the control-app's Region Builder before kicking off `PROVISION_REGION_WRAPPER`, or directly from SQL:
+
+```sql
+CALL OPENROUTESERVICE_APP.CORE.VALIDATE_REGION_PREFLIGHT(
+    36.0, 42.0, -125.0, -114.0,    -- California-sized bbox
+    'driving-car,driving-hgv',
+    'L'
+);
+-- Returns {"ok":true, "estimated_pbf_gib":2.83, "estimated_graph_gib":8.49,
+--          "recommended_compute_size":"XXL", "recommended_instance_family":"HIGHMEM_X64_L",
+--          "warnings":["Estimated graph size 8.49 GiB exceeds the headroom of compute size L. ..."]}
+```
+
+Reference table (typical Geofabrik extracts; one driving profile):
+
+| Region scale | bbox area (km²) | PBF (GiB) | Graph (GiB) | Compute size | Instance family | JVM `-Xmx` | `graphs_data_access` |
+|---|---|---|---|---|---|---|---|
+| Single city (Berlin, SF, Munich) | < 2 500 | < 0.1 | < 0.5 | `S` | HIGHMEM_X64_S | 20 GiB | `RAM_STORE` |
+| State / small country (California, Bavaria) | 2 500 – 50 000 | 0.5 – 3 | 1 – 6 | `L` | HIGHMEM_X64_M | 700 GiB | `RAM_STORE` |
+| Country / region (USA, EU) | > 50 000 | 3 – 15 | 6 – 20+ | `XXL` | HIGHMEM_X64_L | 1100 GiB | `MMAP` |
+
+Each additional enabled profile multiplies the graph size by ~1.5×. Disable unused profiles in the active `ors-config.yml` (or pick a narrower preset from `.cortex/skills/routing-customization/references/ors-config-presets/`) to keep build time bounded.
+
+**MMAP guidance for continental extracts.** Set `ors.engine.graphs_data_access: MMAP` in `ors-config.yml` whenever the estimated graph exceeds ~5 GiB. This trades a small per-query latency increase for the ability to load graphs that do not fit in RAM, and is mandatory for any extract that hits the 3-day silent hang documented at <https://ask.openrouteservice.org/t/ors-stuck-when-creating-graph-with-european-borders-enabled/>. The shipped [`continental.yml`](../routing-customization/references/ors-config-presets/continental.yml) preset enables this automatically.
+
 ## Workflow
 
 > **Fresh install assumed.** This workflow targets a clean Snowflake account with no pre-existing ORS objects. All DDL uses `CREATE ... IF NOT EXISTS` or `CREATE OR REPLACE` with complete schemas from the start. All columns (JOB_ID, GEOGRAPHY, etc.) are defined in the initial CREATE TABLE statements -- no ALTER TABLE migration steps are needed.
@@ -284,9 +311,19 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    MODULES_DIR=".cortex/skills/build-routing-solution/openrouteservice_app/app/modules"
 
    for m in 01_core_infra.sql 02_routing_functions.sql 03_region_management.sql \
-            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql; do
+            04_service_lifecycle.sql 05_matrix_pipeline.sql 06_matrix_ops.sql \
+            07_studio_jobs.sql 08_observability.sql 15_route_optimization_seed.sql; do
      bash "$RUN_SQL" <connection> "$MODULES_DIR/$m" || exit 1
    done
+
+   # Resume the observability ingest + retention tasks created (suspended) by
+   # module 08. Without this the Observability page in the control app stays
+   # empty even though the schema exists. Safe to run repeatedly — ALTER TASK
+   # RESUME is idempotent.
+   snow sql -c <connection> -q "
+     ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_METRICS_INGEST_TASK RESUME;
+     ALTER TASK OPENROUTESERVICE_APP.OBSERVABILITY.ORS_REQUEST_LOG_PURGE_TASK RESUME;
+   "
    ```
 
    > **Recovery if 01_core_infra.sql fails partway:** Fix the underlying issue (e.g., grant missing privileges), then re-run the full file. All DDL uses `IF NOT EXISTS` or `CREATE OR REPLACE`, making re-runs safe and idempotent. Alternatively, create only the missing service(s) individually using the corresponding `CREATE SERVICE` statement from the SQL file.
@@ -453,6 +490,10 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    | **Route Optimization (AISQL notebook)** | Optional Snowsight notebook with AISQL exploration prompts. Skippable — VRP page works without it. | ~3 min | Above + Cortex Claude access (`claude-sonnet-4-5`); may need `CORTEX_ENABLED_CROSS_REGION='ANY_REGION'` |
    | **Routing Agent** | Snowflake Intelligence agent wrapping ORS routing functions | ~5 min | Cortex AI access (claude-sonnet-4-5) |
    | **Backload Matching** | Fleet-wide VRP that pairs idle trailers with internal volumes + external freight offers. **Best with HGV preset** (typically `region=Germany`, `vehicle_type=hgv`); on default SanFrancisco/ebike presets the trailer + internal-volume views render empty (the bootstrap prints a `STATUS` warning row in that case). | ~3 min | Seed data (Step 8) + Route Optimization deployed; ideally Germany/HGV preset generated via Data Studio |
+   | **Asset Velocity (page views)** | Idle-vehicle detection + reposition Action Engine page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install), NOT HGV-only. Created by `route-optimization/references/extend-dim-fleet-hgv.sql` + `asset-velocity-views.sql`. | ~1 min | Route Optimization seed (CONFIG) **and** Dwell Analysis (`DT_DWELL_ENRICHED`) deployed first |
+   | **Freight Exchange** | Dispatcher freight-marketplace cockpit (offers, trust/rate badges, lane history). Reads `FLEET_INTELLIGENCE.MARKETPLACE.*` projection views over the active preset. Page ships in the control-app image (>= v1.1.78) — only `bootstrap.sql` is needed, no rebuild. | ~2 min | Seed data (Step 8) populated **before** this runs; Backload Matching deployed |
+
+   > **Why Asset Velocity / Freight Exchange must run in Step 8 (after seed load):** their active-preset filter rows (`ROUTE_OPTIMIZATION.CONFIG`, `MARKETPLACE.CONFIG`) are **data-derived** from `SYNTHETIC_DATASETS.UNIFIED`. The control-app's `init.ts` seeds `MARKETPLACE.CONFIG` at container boot (Step 6), which is BEFORE seed data loads (Step 7), so it derives nothing and the page stays empty. Running `freight-exchange/references/bootstrap.sql` here (Step 8, post-seed) re-derives `MARKETPLACE.CONFIG` correctly. The same applies to Asset Velocity, whose views depend on Dwell Analysis being deployed first.
 
    **Recommended for first-time users:** Fleet Intelligence: Food Delivery, Route Deviation, Dwell Analysis.
    These three use the seed data already loaded in Step 8 and require no additional Marketplace data or services.
@@ -463,6 +504,11 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - **First (independent, can run in parallel):** Fleet Intelligence: Food Delivery, Fleet Intelligence: Taxis, Retail Catchment, Route Optimization, Routing Agent
    - **Then:** Route Deviation (needs SYNTHETIC_DATASETS data)
    - **Then:** Dwell Analysis (needs SYNTHETIC_DATASETS data)
+   - **Then:** Asset Velocity page views — run `route-optimization/references/extend-dim-fleet-hgv.sql` then `asset-velocity-views.sql` (must be AFTER both Route Optimization seed and Dwell Analysis, because the views reference `DWELL_ANALYSIS.DT_DWELL_ENRICHED`).
+   - **Then:** Backload Matching (needs Route Optimization)
+   - **Then:** Freight Exchange (run `freight-exchange/references/bootstrap.sql`; must be AFTER seed data so `MARKETPLACE.CONFIG` data-derives correctly)
+
+   > **"All demos" means all of the above**, including Asset Velocity and Freight Exchange. Do NOT stop at the first 8 rows — those two pages exist in the control-app sidebar and render empty unless these final steps run.
 
 3. **For each selected demo**, invoke the corresponding skill:
    - Fleet Intelligence: Food Delivery -> Read and follow `.cortex/skills/fleet-intelligence-food-delivery/SKILL.md`
@@ -473,6 +519,8 @@ Follow the full build instructions in `references/build-images.md`. Summary:
    - Route Optimization -> Read and follow `.cortex/skills/route-optimization/SKILL.md`
    - Routing Agent -> Read and follow `.cortex/skills/routing-agent/SKILL.md`
    - Backload Matching -> Read and follow `.cortex/skills/backload-matching/SKILL.md`
+   - Asset Velocity page views -> covered by `.cortex/skills/route-optimization/SKILL.md` (Step 5b). Requires Dwell Analysis deployed first.
+   - Freight Exchange -> Read and follow `.cortex/skills/freight-exchange/SKILL.md`
 
 4. **After all selected demos are deployed**, verify by checking the ORS Control App — each deployed demo should appear as a page in the navigation menu.
 
@@ -607,6 +655,8 @@ To remove all objects created by this skill:
 -- Suspend the rescue task before dropping the database so it does not fire
 -- against a half-deleted environment.
 ALTER TASK IF EXISTS OPENROUTESERVICE_APP.CORE.RESCUE_PENDING_PROVISIONS_TASK SUSPEND;
+
+DROP TABLE IF EXISTS OPENROUTESERVICE_APP.CORE.REGION_REPAIR_LOG;
 
 DROP DATABASE IF EXISTS OPENROUTESERVICE_APP;
 DROP DATABASE IF EXISTS SYNTHETIC_DATASETS;

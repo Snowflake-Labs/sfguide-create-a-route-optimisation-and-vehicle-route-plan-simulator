@@ -1,0 +1,87 @@
+################################################################################
+# Preset: hgv (heavy goods vehicle / trucking-focused)
+#
+# Use when: backload-matching, freight-exchange, route-optimization demos with
+# long HGV legs across a single region. Tuned for medium-distance regional
+# trucking (one country, one US state) -- not continental. For multi-country
+# HGV, use continental.yml.
+#
+# Differences vs standard.yml:
+#   * driving-hgv preparation explicitly enables CH + LM for fast routing
+#     with proper turn costs and heavy-vehicle restrictions.
+#   * cycling-electric disabled (not needed for trucking).
+#   * maximum_waypoints raised to 5000 for VRP optimization payloads.
+#   * isochrone range_time raised to 21600s (6h) for HGV reachability demos.
+################################################################################
+ors:
+  engine:
+    profile_default:
+      build:
+        source_file: /home/ors/files/SanFrancisco.osm.pbf
+        instructions: false
+      service:
+        maximum_distance: 100000000
+        maximum_distance_dynamic_weights: 100000000
+        maximum_distance_avoid_areas: 100000000
+        maximum_distance_alternative_routes: 100000000
+        maximum_distance_round_trip_routes: 100000000
+        maximum_visited_nodes: 100000000
+        maximum_waypoints: 5000
+        maximum_snapping_radius: 1000
+    profiles:
+      driving-car:
+        enabled: true
+      driving-hgv:
+        enabled: true
+        build:
+          encoder_options:
+            turn_costs: true
+            block_fords: false
+            use_acceleration: true
+          preparation:
+            min_network_size: 200
+            methods:
+              ch:
+                enabled: true
+                threads: 1
+                weightings: recommended
+              core:
+                enabled: true
+                threads: 1
+                weightings: recommended,shortest
+                landmarks: 64
+                lmsets: highways;allow_all
+          ext_storages:
+            WayCategory:
+            HeavyVehicle:
+              restrictions: true
+            Tollways:
+            WaySurfaceType:
+      cycling-regular:
+        enabled: false
+      cycling-road:
+        enabled: false
+      cycling-mountain:
+        enabled: false
+      cycling-electric:
+        enabled: false
+      foot-walking:
+        enabled: false
+      foot-hiking:
+        enabled: false
+      wheelchair:
+        enabled: false
+  endpoints:
+    matrix:
+      maximum_visited_nodes: 100000000
+      maximum_routes: 2000000
+      maximum_routes_flexible: 2000000
+    isochrones:
+      maximum_locations: 2
+      maximum_intervals: 10
+      maximum_range_distance:
+        - profiles: driving-car, driving-hgv
+          value: 1500000
+      maximum_range_time:
+        - profiles: driving-car, driving-hgv
+          value: 21600

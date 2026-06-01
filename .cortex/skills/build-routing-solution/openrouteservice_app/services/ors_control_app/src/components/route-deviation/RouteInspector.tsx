@@ -7,6 +7,10 @@ import { fmtDec } from '../../shared/format';
 import { RD_DB, RD_SCHEMA, sfQuery, cartoBasemap } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import { useFitMap } from '../../shared/useFitMap';
+import RecenterButton from '../../shared/RecenterButton';
+import type { LngLat } from '../../shared/mapFit';
+import PageContainer from '../../shared/PageContainer';
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -29,17 +33,12 @@ export default function RouteInspector() {
   const [maxAccuracy, setMaxAccuracy] = useState(50);
   const [trucks, setTrucks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewState, setViewState] = useState({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 });
 
   useEffect(() => {
     setLoading(true);
     sfQuery(`SELECT DISTINCT VEHICLE_ID FROM TRIP_DEVIATION_ANALYSIS ORDER BY VEHICLE_ID LIMIT 100`)
       .then(t => { setTrucks(t); setLoading(false); });
   }, [regionName, vehicleType]);
-
-  useEffect(() => {
-    setViewState(prev => ({ ...prev, longitude: center.lng, latitude: center.lat, zoom }));
-  }, [center.lng, center.lat, zoom]);
 
   useEffect(() => {
     if (!selectedTruck) return;
@@ -51,11 +50,6 @@ export default function RouteInspector() {
     setSelectedTrip(tripId);
     const pts = await sfQuery(`SELECT ST_Y(POINT_GEOM) AS LATITUDE, ST_X(POINT_GEOM) AS LONGITUDE, SPEED_KMH, HEADING_DEG, POSTED_SPEED_KMH, GPS_ACCURACY_M, IS_DETOUR, IS_SPEEDING, TS, STATUS FROM ${RD_DB}.${RD_SCHEMA}.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = '${tripId}' ORDER BY TS`);
     setGpsPoints(pts);
-    if (pts.length > 0) {
-      const lngs = pts.map((p: any) => Number(p.LONGITUDE));
-      const lats = pts.map((p: any) => Number(p.LATITUDE));
-      setViewState(prev => ({ ...prev, longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2, latitude: (Math.min(...lats) + Math.max(...lats)) / 2, zoom: 12 }));
-    }
   }, []);
 
   const enrichedPoints = useMemo(() => {
@@ -103,7 +97,18 @@ export default function RouteInspector() {
   const speedData = useMemo(() => filteredPoints.map(p => ({ idx: p.idx, speed: Number(p.SPEED_KMH || 0), limit: Number(p.POSTED_SPEED_KMH || 0) })), [filteredPoints]);
   const accuracyData = useMemo(() => filteredPoints.map(p => ({ idx: p.idx, accuracy: Number(p.GPS_ACCURACY_M || 0) })), [filteredPoints]);
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    for (const p of filteredPoints) {
+      if (p.LONGITUDE != null && p.LATITUDE != null) out.push([Number(p.LONGITUDE), Number(p.LATITUDE)]);
+    }
+    return out;
+  }, [filteredPoints]);
+  const fallback = useMemo(() => ({ longitude: center.lng, latitude: center.lat, zoom, pitch: 0, bearing: 0 }), [center.lng, center.lat, zoom]);
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback, regionKey: regionName });
+
   return (
+    <PageContainer width="wide">
     <div className="panel">
       <h2 style={{ fontSize: 20, marginBottom: 4 }}>Route Inspector</h2>
       <p className="subtitle">GPS trace analysis with teleport and detour detection</p>
@@ -145,9 +150,10 @@ export default function RouteInspector() {
         </div>
       </div>
 
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
-        <DeckGL viewState={viewState} onViewStateChange={({ viewState: vs }: any) => setViewState(vs)} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
+        <DeckGL viewState={viewState} onViewStateChange={onViewStateChange} controller={true} layers={layers} style={{ width: '100%', height: '100%' }} />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
 
       {speedData.length > 0 && (
@@ -180,5 +186,6 @@ export default function RouteInspector() {
         </div>
       )}
     </div>
+    </PageContainer>
   );
 }

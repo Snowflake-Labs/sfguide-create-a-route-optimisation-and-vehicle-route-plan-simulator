@@ -38,7 +38,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       },
       routing: { optimal_route_probability: 0.75, alternative_route_probability: 0.20, detour_probability: 0.05, posted_speeds: { primary: 50, secondary: 40, residential: 30, default: 35 } },
       telemetry: { ping_interval_moving: { mean_sec: 10, std_sec: 3 }, ping_interval_dwell: { min_sec: 30, max_sec: 120 }, gps_jitter: { typical_m: 6, multipath_probability: 0.02, multipath_max_m: 80 } },
-      dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12 }, destination: { median_min: 2, sigma: 0.4, max_min: 8 }, idle: { median_min: 5, sigma: 0.5, max_min: 20 } },
+      dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12, long_wait_probability: 0.08 }, destination: { median_min: 2, sigma: 0.4, max_min: 20, long_wait_probability: 0.05 }, idle: { median_min: 5, sigma: 0.5, max_min: 20, long_wait_probability: 0.08 } },
       detour: { probability: 0.05, max_detour_factor: 1.4 },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
       ghost_trailer: {
@@ -77,7 +77,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       },
       routing: { optimal_route_probability: 0.85, alternative_route_probability: 0.12, detour_probability: 0.03, posted_speeds: { primary: 25, secondary: 20, residential: 15, default: 18 } },
       telemetry: { ping_interval_moving: { mean_sec: 8, std_sec: 2 }, ping_interval_dwell: { min_sec: 20, max_sec: 90 }, gps_jitter: { typical_m: 5, multipath_probability: 0.03, multipath_max_m: 60 } },
-      dwell: { origin: { median_min: 4, sigma: 0.6, max_min: 15 }, destination: { median_min: 2, sigma: 0.3, max_min: 5 }, idle: { median_min: 6, sigma: 0.5, max_min: 20 } },
+      dwell: { origin: { median_min: 4, sigma: 0.6, max_min: 15, long_wait_probability: 0.08 }, destination: { median_min: 2, sigma: 0.3, max_min: 18, long_wait_probability: 0.05 }, idle: { median_min: 6, sigma: 0.5, max_min: 20, long_wait_probability: 0.08 } },
       battery: { range_km: 60, drain_per_km: 1.67, recharge_threshold_pct: 15 },
       delivery_sla: { target_minutes: 30, warning_minutes: 25 },
       detour: { probability: 0.03, max_detour_factor: 1.3 },
@@ -117,7 +117,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       },
       routing: { optimal_route_probability: 0.70, alternative_route_probability: 0.20, detour_probability: 0.10, posted_speeds: { motorway: 80, primary: 60, secondary: 50, residential: 30, default: 55 } },
       telemetry: { ping_interval_moving: { mean_sec: 15, std_sec: 5 }, ping_interval_dwell: { min_sec: 60, max_sec: 180 }, gps_jitter: { typical_m: 8, multipath_probability: 0.02, multipath_max_m: 100 } },
-      dwell: { origin: { median_min: 15, sigma: 0.6, max_min: 45 }, destination: { median_min: 20, sigma: 0.7, max_min: 60 }, idle: { median_min: 10, sigma: 0.5, max_min: 30 } },
+      dwell: { origin: { median_min: 15, sigma: 0.6, max_min: 45, long_wait_probability: 0.10 }, destination: { median_min: 20, sigma: 0.7, max_min: 60, long_wait_probability: 0.08 }, idle: { median_min: 10, sigma: 0.5, max_min: 30, long_wait_probability: 0.10 } },
       breaks: { driving_hours_between_breaks: 4.5, mandatory_break_duration_min: 45, max_daily_driving_hours: 9 },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
       poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
@@ -200,6 +200,26 @@ export interface GenerationConfig {
     ping_interval_min_sec: number;
     ping_interval_max_sec: number;
   };
+  // Region-agnostic spatial-bin stratification for home POI assignment and
+  // destination picking. Spreads synthetic data evenly across the active
+  // region polygon instead of inheriting Overture POI density (which clusters
+  // in metros - Ruhr for Germany, Bay Area for California, Paris for France).
+  // Defaults are applied to ALL 5,194 regions in REGION_CATALOG; bin_deg is
+  // null = auto-derived from BOUNDARY_AREA_KM2 at job start.
+  spatial_spread?: {
+    enabled: boolean;
+    bin_deg: number | null;       // null = auto from area
+    min_bins_required: number;    // small regions w/ < N populated bins fall back
+  };
+  region_area_km2?: number | null; // populated by routes.ts before generation
+  // Per-day fleet parallelism. Up to N vehicles run their ORS calls
+  // concurrently within a single simulated day. Defaults to 8 - safe for the
+  // 4-instance ORS_SERVICE_<REGION> + 8-instance ROUTING_GATEWAY_SERVICE
+  // back-end. Set to 1 for fully sequential / reproducible runs.
+  parallelism?: number;
+  offers?: {
+    count: number;
+  };
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {
@@ -269,4 +289,24 @@ export function uuid(rng: () => number): string {
     else s += hex[Math.floor(rng() * 16)];
   }
   return s;
+}
+
+// Region-agnostic distance-distribution defaults. Templates that explicitly
+// set `distance_distribution` keep their values; this only fills gaps when the
+// caller (or saved preset) omits the block entirely. Larger regions get a
+// higher long-trip share so trips actually cross spatial bins; tiny regions
+// (cities) keep most trips short.
+export function defaultDistanceDistributionForArea(areaKm2: number | null | undefined): {
+  short_pct: number; short_max_km: number; medium_pct: number; medium_max_km: number; long_pct: number;
+} {
+  if (areaKm2 == null || !Number.isFinite(areaKm2) || areaKm2 <= 0) {
+    return { short_pct: 0.5, short_max_km: 10, medium_pct: 0.3, medium_max_km: 50, long_pct: 0.2 };
+  }
+  if (areaKm2 < 5_000) {
+    return { short_pct: 0.7, short_max_km: 5, medium_pct: 0.25, medium_max_km: 15, long_pct: 0.05 };
+  }
+  if (areaKm2 < 100_000) {
+    return { short_pct: 0.5, short_max_km: 15, medium_pct: 0.3, medium_max_km: 75, long_pct: 0.2 };
+  }
+  return { short_pct: 0.35, short_max_km: 30, medium_pct: 0.35, medium_max_km: 200, long_pct: 0.3 };
 }

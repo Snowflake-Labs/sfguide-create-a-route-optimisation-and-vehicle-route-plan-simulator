@@ -61,7 +61,11 @@ export function createStatusRouter(appVersion: string): Router {
           result.versions[row.COMPONENT || row.component] = row.VERSION || row.version;
         }
       }
-    } catch {}
+    } catch (err: any) {
+      const msg = err?.message?.slice(0, 200) || String(err);
+      result.versions_error = msg;
+      log('WARN', 'Health', `/api/health VERSION_INFO query failed: ${msg}`);
+    }
 
     result.healthy = result.services.ors === 'READY' && result.services.gateway === 'READY';
     res.json(result);
