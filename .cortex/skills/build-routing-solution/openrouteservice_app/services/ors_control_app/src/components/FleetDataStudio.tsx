@@ -15,12 +15,18 @@ import ConfigEditorPanel from './fleet-data-studio/panels/ConfigEditorPanel';
 import GenerationDashboardPanel from './fleet-data-studio/panels/GenerationDashboardPanel';
 import JobHistoryTable from './fleet-data-studio/panels/JobHistoryTable';
 import JobDetailDrawer from './fleet-data-studio/panels/JobDetailDrawer';
+import DatasetsPanel from './fleet-data-studio/panels/DatasetsPanel';
 
 export default function FleetDataStudio() {
   const catalog = useStudioCatalog();
   const jobsHook = useStudioJobs();
   const stream = useStudioStream(
-    { fetchJobs: jobsHook.fetchJobs, fetchStats: catalog.fetchStats, fetchCoverage: catalog.fetchCoverage },
+    {
+      fetchJobs: jobsHook.fetchJobs,
+      fetchStats: catalog.fetchStats,
+      fetchCoverage: catalog.fetchCoverage,
+      fetchAvailableRegions: catalog.fetchAvailableRegions,
+    },
     jobsHook.setActiveJobs,
   );
   const detail = useJobDetail();
@@ -265,6 +271,8 @@ export default function FleetDataStudio() {
         onCancelJobById={cancelJobById}
         onDeleteJobData={deleteJobData}
       />
+
+      <DatasetsPanel />
 
       <JobDetailDrawer
         selectedJobId={detail.selectedJobId}

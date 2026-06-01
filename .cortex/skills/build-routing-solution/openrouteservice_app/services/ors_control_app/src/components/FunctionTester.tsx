@@ -1,22 +1,44 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import DeckGL from '@deck.gl/react';
-import { GeoJsonLayer, ScatterplotLayer, BitmapLayer, PathLayer } from '@deck.gl/layers';
-import { TileLayer } from '@deck.gl/geo-layers';
-import { samplePoints, COORD_FUNCTIONS, type BBox, type SampledPoints } from './function-tester/samplePoints';
+import { samplePoints, COORD_FUNCTIONS, type BBox } from './function-tester/samplePoints';
 
 import {
-  RegionOption, GeoData, OptimizationStop, OptimizationVehicle, OptimizationParsed,
-  CARTO_LIGHT, OPTIMIZATION_PALETTE, PROFILE_LABELS, FUNCTIONS,
-  cartoBasemap, bboxCenter, offsetPoint, isoRangeFor, isProvisionedRegion,
-  generateSql, tryParseJson, decodePolyline, extractGeoData,
-  parseMatrixResult, parseOptimizationResult, travelTimeColor, parseIsochroneOrigin,
+  RegionOption,
+  PROFILE_LABELS,
+  FUNCTIONS,
+  bboxCenter,
+  generateSql,
+  expectedProfilesForRegion,
+  loadedProfilesForRegion,
 } from './function-tester/helpers';
 import { ResultMap } from './function-tester/ResultMap';
+import { useActivePreset } from '../hooks/useActivePreset';
+import PresetRoutingControls from '../shared/PresetRoutingControls';
 
 interface RoadPointsResult {
   points: [number, number][] | null;
   reason?: string;
   cached?: boolean;
+}
+
+function mapProvisionedRegion(reg: any): RegionOption {
+  let boundaryGeoJson = reg?.boundaryGeoJson ?? null;
+  if (reg && typeof reg.boundaryGeoJson === 'string') {
+    try {
+      const parsed = JSON.parse(reg.boundaryGeoJson);
+      if (parsed && (parsed.type === 'Polygon' || parsed.type === 'MultiPolygon')) {
+        boundaryGeoJson = parsed;
+      } else {
+        boundaryGeoJson = null;
+      }
+    } catch {
+      boundaryGeoJson = null;
+    }
+  }
+  return {
+    ...reg,
+    boundaryGeoJson,
+    graphReadiness: reg?.graphReadiness ?? null,
+  };
 }
 
 async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: boolean; region?: string }): Promise<RoadPointsResult> {
@@ -43,14 +65,13 @@ async function fetchRoadPoints(bbox: BBox, profile: string, opts?: { nocache?: b
 }
 
 export default function FunctionTester() {
+  const preset = useActivePreset();
   const [regions, setRegions] = useState<RegionOption[]>([]);
   const [selectedRegion, setSelectedRegion] = useState<RegionOption | null>(null);
   const [regionsLoading, setRegionsLoading] = useState(true);
   const [regionsError, setRegionsError] = useState<string | null>(null);
   const [selectedFn, setSelectedFn] = useState('ORS_STATUS');
-  const [selectedProfile, setSelectedProfile] = useState('driving-car');
-  const [availableProfiles, setAvailableProfiles] = useState<string[]>([]);
-  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState(preset.orsProfile);
   const [sfDatabase, setSfDatabase] = useState('');
   const [sqlInput, setSqlInput] = useState('SELECT CORE.ORS_STATUS()');
   const [result, setResult] = useState<any>(null);
@@ -62,176 +83,202 @@ export default function FunctionTester() {
   const [overtureAvailable, setOvertureAvailable] = useState<boolean | null>(null);
   const [sampleHint, setSampleHint] = useState<string | null>(null);
   const [lastExecutedSql, setLastExecutedSql] = useState('');
+  const [roadNonce, setRoadNonce] = useState(0);
+  const [sampleNonce, setSampleNonce] = useState(0);
   const userEditedRef = useRef(false);
+  const lastPresetRegionRef = useRef<string | null>(null);
+  const lastPresetProfileRef = useRef<string | null>(null);
+  const roadSeqRef = useRef(0);
+  const nocacheNextRef = useRef(false);
+  const selectedRegionKeyRef = useRef<string | null>(null);
 
-  const regeneratePoints = useCallback((fnName: string, region: RegionOption | null, profile: string, db: string, roads?: [number, number][] | null) => {
-    if (!COORD_FUNCTIONS.includes(fnName)) {
-      setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
-      return;
+  const refreshRegions = useCallback(async (): Promise<RegionOption[]> => {
+    const r = await fetch('/api/regions/provisioned');
+    const data = await r.json();
+    if (data.error) setRegionsError(data.error);
+    const regionList: RegionOption[] = (data.regions || []).map(mapProvisionedRegion);
+    setRegions(regionList);
+    const key = selectedRegionKeyRef.current;
+    if (key) {
+      const match = regionList.find((c) => c.region === key);
+      if (match) setSelectedRegion(match);
     }
-    const bbox = region?.bbox;
-    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
-      setSampleHint(null);
-      setSqlInput(generateSql(fnName, region, profile, db, null));
-      return;
-    }
-    const sampled = samplePoints({
-      fnName, bbox, profile,
-      roadPoints: roads || undefined,
-      boundary: region?.boundaryGeoJson || undefined,
-    });
-    setSampleHint(sampled?.hint || null);
-    setSqlInput(generateSql(fnName, region, profile, db, sampled));
-    userEditedRef.current = false;
+    return regionList;
   }, []);
 
   useEffect(() => {
+    selectedRegionKeyRef.current = selectedRegion?.region ?? null;
+  }, [selectedRegion]);
+
+  useEffect(() => {
     (async () => {
-      let db = '';
       try {
         const cr = await fetch('/api/config');
         const cfg = await cr.json();
-        db = cfg.database || '';
-        setSfDatabase(db);
+        setSfDatabase(cfg.database || '');
       } catch {}
 
-      let probeOvertureOk = false;
       try {
         const probeResp = await fetch('/api/diagnostics/probe');
         const probeData = await probeResp.json();
-        probeOvertureOk = probeData.overtureTransportation?.ok === true;
-        setOvertureAvailable(probeOvertureOk);
+        setOvertureAvailable(probeData.overtureTransportation?.ok === true);
       } catch {
         setOvertureAvailable(false);
       }
 
       try {
-        const r = await fetch('/api/regions/provisioned');
-        const data = await r.json();
-        if (data.error) setRegionsError(data.error);
-        const regionList: RegionOption[] = (data.regions || []).map((reg: any) => {
-          // Parse boundary GeoJSON string from REGION_CATALOG.BOUNDARY into an
-          // object so samplePoints can run polygon rejection sampling. Skip
-          // silently on parse error — falls back to bbox-only sampling.
-          if (reg && typeof reg.boundaryGeoJson === 'string') {
-            try {
-              const parsed = JSON.parse(reg.boundaryGeoJson);
-              if (parsed && (parsed.type === 'Polygon' || parsed.type === 'MultiPolygon')) {
-                return { ...reg, boundaryGeoJson: parsed };
-              }
-              return { ...reg, boundaryGeoJson: null };
-            } catch {
-              return { ...reg, boundaryGeoJson: null };
-            }
-          }
-          return reg;
-        });
-        setRegions(regionList);
-        const def = regionList.find((c) => c.isDefault) || regionList[0];
+        const regionList = await refreshRegions();
+        const def =
+          regionList.find((c) => c.region === preset.region) ||
+          regionList.find((c) => c.isDefault) ||
+          regionList[0];
+        const initProfile = preset.orsProfile || 'driving-car';
         if (def) {
           setSelectedRegion(def);
-          let roads: [number, number][] | null = null;
-          if (probeOvertureOk && def.bbox) {
-            const r = await fetchRoadPoints(def.bbox, 'driving-car', { region: def.region });
-            roads = r.points;
-            setRoadPoints(roads);
-            setRoadPointsReason(roads ? null : (r.reason || 'no road points'));
-          }
-          setSqlInput(generateSql('ORS_STATUS', def, 'driving-car', db));
+          setSelectedProfile(initProfile);
+          lastPresetRegionRef.current = preset.region;
+          lastPresetProfileRef.current = initProfile;
         }
       } catch (err: any) {
         setRegionsError(err.message || 'Failed to load regions');
       }
       setRegionsLoading(false);
     })();
-  }, []);
-
-  const fetchProfiles = useCallback(async (region: RegionOption | null) => {
-    setProfilesLoading(true);
-    try {
-      const pfx = sfDatabase ? `${sfDatabase}.CORE` : 'CORE';
-      const resolved = region?.region ?? null;
-      const rg = resolved ? `'${resolved}'` : 'NULL::VARCHAR';
-      const statusSql = `SELECT ${pfx}.ORS_STATUS(${rg})`;
-      const resp = await fetch('/api/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: statusSql }),
-      });
-      const data = await resp.json();
-      if (data.result?.[0]) {
-        const raw = Object.values(data.result[0])[0];
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed?.profiles && typeof parsed.profiles === 'object') {
-          const names = Object.keys(parsed.profiles).filter((p: string) => parsed.profiles[p]?.encoder_name);
-          if (names.length > 0) {
-            setAvailableProfiles(names);
-            if (!names.includes(selectedProfile)) {
-              setSelectedProfile(names[0]);
-              regeneratePoints(selectedFn, region, names[0], sfDatabase, roadPoints);
-            }
-            setProfilesLoading(false);
-            return;
-          }
-        }
-      }
-    } catch {}
-    setAvailableProfiles([]);
-    setProfilesLoading(false);
-  }, [selectedFn, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+  }, [refreshRegions]);
 
   useEffect(() => {
-    if (selectedRegion) fetchProfiles(selectedRegion);
-  }, [selectedRegion]);
+    if (selectedRegion?.graphReadiness?.service_ready !== false) return;
+    const id = window.setInterval(() => {
+      void refreshRegions();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [selectedRegion?.region, selectedRegion?.graphReadiness?.service_ready, refreshRegions]);
 
-  const onRegionChange = useCallback(async (regionKey: string) => {
-    const r = regions.find((c) => c.region === regionKey) || null;
-    setSelectedRegion(r);
-    userEditedRef.current = false;
-    let roads: [number, number][] | null = null;
-    if (overtureAvailable && r?.bbox) {
-      const rp = await fetchRoadPoints(r.bbox, selectedProfile, { region: r.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    } else {
+  const expectedProfiles = useMemo(
+    () => expectedProfilesForRegion(selectedRegion),
+    [selectedRegion],
+  );
+  const loadedProfiles = useMemo(
+    () => loadedProfilesForRegion(selectedRegion),
+    [selectedRegion],
+  );
+
+  const profileOptions = useMemo(() => {
+    return expectedProfiles.map((p) => {
+      const base = PROFILE_LABELS[p] || p;
+      const loading = loadedProfiles.length > 0 && !loadedProfiles.includes(p);
+      const notReady = selectedRegion?.graphReadiness?.service_ready === false && !loadedProfiles.includes(p);
+      const suffix = loading || notReady ? ' (loading...)' : '';
+      return { value: p, label: `${base}${suffix}` };
+    });
+  }, [expectedProfiles, loadedProfiles, selectedRegion?.graphReadiness?.service_ready]);
+
+  useEffect(() => {
+    if (expectedProfiles.length === 0) return;
+    if (!expectedProfiles.includes(selectedProfile)) {
+      userEditedRef.current = false;
+      setSelectedProfile(expectedProfiles[0]);
+    }
+  }, [expectedProfiles, selectedProfile]);
+
+  useEffect(() => {
+    const region = selectedRegion;
+    const profile = selectedProfile;
+    const bbox = region?.bbox;
+
+    if (overtureAvailable !== true || !bbox || !region) {
       setRoadPoints(null);
       setRoadPointsReason(null);
+      return;
     }
-    regeneratePoints(selectedFn, r, selectedProfile, sfDatabase, roads);
-  }, [regions, selectedFn, selectedProfile, sfDatabase, overtureAvailable, regeneratePoints]);
+
+    setRoadPoints(null);
+    setRoadPointsReason(null);
+
+    const mySeq = ++roadSeqRef.current;
+    const nocache = nocacheNextRef.current;
+    nocacheNextRef.current = false;
+
+    (async () => {
+      const rp = await fetchRoadPoints(bbox, profile, { region: region.region, nocache });
+      if (mySeq !== roadSeqRef.current) return;
+      setRoadPoints(rp.points);
+      setRoadPointsReason(rp.points ? null : (rp.reason || 'no road points'));
+    })();
+  }, [selectedRegion, selectedProfile, overtureAvailable, roadNonce]);
+
+  useEffect(() => {
+    if (userEditedRef.current) return;
+
+    const fnName = selectedFn;
+    const region = selectedRegion;
+    const profile = selectedProfile;
+    const db = sfDatabase;
+    const roads = roadPoints;
+
+    if (!COORD_FUNCTIONS.includes(fnName)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+
+    const bbox = region?.bbox;
+    if (!bbox || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0)) {
+      setSampleHint(null);
+      setSqlInput(generateSql(fnName, region, profile, db, null));
+      return;
+    }
+
+    const sampled = samplePoints({
+      fnName,
+      bbox,
+      profile,
+      roadPoints: roads || undefined,
+      boundary: region?.boundaryGeoJson || undefined,
+      seed: sampleNonce,
+    });
+    setSampleHint(sampled?.hint || null);
+    setSqlInput(generateSql(fnName, region, profile, db, sampled));
+  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, sampleNonce]);
+
+  const onRegionChange = useCallback((regionKey: string) => {
+    const r = regions.find((c) => c.region === regionKey) || null;
+    userEditedRef.current = false;
+    setSelectedRegion(r);
+  }, [regions]);
 
   const onFnChange = useCallback((fnName: string) => {
+    userEditedRef.current = false;
     setSelectedFn(fnName);
-    userEditedRef.current = false;
-    regeneratePoints(fnName, selectedRegion, selectedProfile, sfDatabase, roadPoints);
-  }, [selectedRegion, selectedProfile, sfDatabase, roadPoints, regeneratePoints]);
+  }, []);
 
-  const onProfileChange = useCallback(async (profile: string) => {
+  const onProfileChange = useCallback((profile: string) => {
+    userEditedRef.current = false;
     setSelectedProfile(profile);
-    userEditedRef.current = false;
-    let roads: [number, number][] | null = roadPoints;
-    if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, profile, { region: selectedRegion.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    }
-    regeneratePoints(selectedFn, selectedRegion, profile, sfDatabase, roads);
-  }, [selectedRegion, selectedFn, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
+  }, []);
 
-  const handleReshuffle = useCallback(async () => {
+  useEffect(() => {
+    if (preset.loading || regions.length === 0 || !preset.region) return;
+    if (lastPresetRegionRef.current === preset.region) return;
+    lastPresetRegionRef.current = preset.region;
+    const match = regions.find((c) => c.region === preset.region);
+    if (match) onRegionChange(match.region);
+  }, [preset.region, preset.loading, regions, onRegionChange]);
+
+  useEffect(() => {
+    if (preset.loading || !preset.orsProfile) return;
+    if (lastPresetProfileRef.current === preset.orsProfile) return;
+    if (expectedProfiles.length > 0 && !expectedProfiles.includes(preset.orsProfile)) return;
+    lastPresetProfileRef.current = preset.orsProfile;
+    onProfileChange(preset.orsProfile);
+  }, [preset.orsProfile, preset.loading, expectedProfiles, onProfileChange]);
+
+  const handleReshuffle = useCallback(() => {
     userEditedRef.current = false;
-    let roads = roadPoints;
-    if (overtureAvailable && selectedRegion?.bbox) {
-      const rp = await fetchRoadPoints(selectedRegion.bbox, selectedProfile, { nocache: true, region: selectedRegion.region });
-      roads = rp.points;
-      setRoadPoints(roads);
-      setRoadPointsReason(roads ? null : (rp.reason || 'no road points'));
-    }
-    regeneratePoints(selectedFn, selectedRegion, selectedProfile, sfDatabase, roads);
-  }, [selectedFn, selectedRegion, selectedProfile, sfDatabase, roadPoints, overtureAvailable, regeneratePoints]);
+    nocacheNextRef.current = true;
+    setRoadNonce((n) => n + 1);
+    setSampleNonce((n) => n + 1);
+  }, []);
 
   const handleSqlChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     userEditedRef.current = true;
@@ -261,26 +308,42 @@ export default function FunctionTester() {
     setRunning(false);
   }, [sqlInput]);
 
+  const graphsLoading = selectedRegion?.graphReadiness?.service_ready === false;
+
   return (
     <div className="panel">
       <h2>Function Tester</h2>
       <p className="subtitle">Test ORS routing functions against any provisioned region</p>
 
-      <h3>Region</h3>
-      <select
-        className="select"
-        value={selectedRegion?.region || ''}
-        onChange={(e) => onRegionChange(e.target.value)}
-      >
-        {regionsLoading && <option value="">Loading regions...</option>}
-        {!regionsLoading && regions.length === 0 && <option value="">No regions provisioned</option>}
-        {regions.map((c) => (
-          <option key={c.region} value={c.region}>
-            {c.display_name || c.region}
-            {c.isDefault ? '' : ` (${c.region})`}
-          </option>
-        ))}
-      </select>
+      <h3>Region &amp; routing profile</h3>
+      {regionsLoading ? (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading regions...</p>
+      ) : regions.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No regions provisioned</p>
+      ) : (
+        <PresetRoutingControls
+          region={selectedRegion?.region || preset.region}
+          profile={selectedProfile}
+          onChange={({ region, profile }) => {
+            if (region !== selectedRegion?.region) onRegionChange(region);
+            if (profile !== selectedProfile) onProfileChange(profile);
+          }}
+          regions={regions.map((c) => ({
+            value: c.region,
+            label: c.display_name || c.region,
+          }))}
+          profiles={
+            profileOptions.length > 0
+              ? profileOptions
+              : [{ value: preset.orsProfile, label: PROFILE_LABELS[preset.orsProfile] || preset.orsProfile }]
+          }
+        />
+      )}
+      {graphsLoading && (
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 0' }}>
+          ORS graphs are loading for this region — profiles marked &quot;(loading...)&quot; are not yet routable.
+        </p>
+      )}
       {regionsError && (
         <p style={{ color: 'var(--error)', fontSize: 13, margin: '4px 0 0' }}>{regionsError}</p>
       )}
@@ -289,20 +352,6 @@ export default function FunctionTester() {
           Bounding box unavailable for this region. Coordinates in generated SQL may be incorrect.
         </p>
       )}
-
-      <h3>Routing Profile</h3>
-      <select
-        className="select"
-        value={selectedProfile}
-        onChange={(e) => onProfileChange(e.target.value)}
-        disabled={profilesLoading}
-      >
-        {profilesLoading && <option value="">Loading profiles...</option>}
-        {!profilesLoading && availableProfiles.length === 0 && <option value="driving-car">driving-car</option>}
-        {!profilesLoading && availableProfiles.map((p) => (
-          <option key={p} value={p}>{PROFILE_LABELS[p] || p}</option>
-        ))}
-      </select>
 
       <h3>Function</h3>
       <div className="fn-grid">
@@ -365,7 +414,14 @@ export default function FunctionTester() {
         </div>
       )}
 
-      {result !== null && <ResultMap result={result} fnName={selectedFn} regionCenter={bboxCenter(selectedRegion?.bbox)} executedSql={lastExecutedSql} />}
+      {result !== null && <ResultMap
+        result={result}
+        fnName={selectedFn}
+        regionCenter={bboxCenter(selectedRegion?.bbox)}
+        regionBbox={selectedRegion?.bbox ?? null}
+        regionBoundary={selectedRegion?.boundaryGeoJson ?? null}
+        executedSql={lastExecutedSql}
+      />}
 
       {result !== null && (selectedFn === 'MATRIX' || selectedFn === 'MATRIX_TABULAR') && (() => {
         const raw = result?.[0] ? Object.values(result[0])[0] : null;

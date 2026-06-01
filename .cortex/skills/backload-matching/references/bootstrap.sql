@@ -1,27 +1,77 @@
 -- ============================================================================
 -- Backload Matching Engine - Bootstrap (projection views over UNIFIED)
 -- ============================================================================
--- Replaces the obsolete load-demo-data.sql + tools/gen_demo_data.py codegen.
---
 -- This script creates:
---   * BACKLOAD_MATCHING.CONFIG       - single-row (VEHICLE_TYPE, REGION) used to
---                                       filter the projection views to the
+--   * OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE (idempotent seed)
+--                                    - per-vehicle-class capacity, costs,
+--                                      ORS profile, UI label. Single source
+--                                      of truth shared across pages.
+--   * BACKLOAD_MATCHING.CONFIG       - single-row (VEHICLE_TYPE, REGION) used
+--                                       to filter the projection views to the
 --                                       active Data Studio preset. Auto-updated
 --                                       by Data Studio's syncRegionRegistryAndConfig
 --                                       and by /api/regions/active.
---   * BACKLOAD_MATCHING.VW_TRAILERS  - DIM_FLEET joined to last drop-off from
---                                       FACT_TRIPS, filtered by CONFIG.
+--   * BACKLOAD_MATCHING.VW_TRAILERS  - DIM_FLEET joined to last drop-off,
+--                                       MAX_PAYLOAD_KG = VEHICLE_CLASS_PROFILE
+--                                       (no more 24,000 kg HGV-only fallback).
 --   * BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES
 --                                    - 120 most-recent FACT_TRIPS as "waiting
---                                       internal volumes", filtered by CONFIG.
+--                                       internal volumes". Weight clamped to
+--                                       class profile. Pickup window is
+--                                       future-aware (anchored at "now + 30..630
+--                                       min") so it always overlaps the
+--                                       vehicle shift.
 --   * BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
---                                    - FACT_FREIGHT_OFFERS filtered by CONFIG.
+--                                    - FACT_FREIGHT_OFFERS, weight rescaled
+--                                       into the active class's band.
 --   * BACKLOAD_MATCHING.PROPOSAL_DECISIONS - real table, write-back target.
+--
+-- The control-app's server/lib/init.ts is the SOURCE OF TRUTH for the views;
+-- it runs on every container start and CREATE-OR-REPLACEs them. Keep this
+-- script in lockstep with init.ts.
 -- ============================================================================
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 USE WAREHOUSE ROUTING_ANALYTICS;
+
+-- ----------------------------------------------------------------------------
+-- 0. VEHICLE_CLASS_PROFILE (shared, lives in OPENROUTESERVICE_APP.CORE)
+-- ----------------------------------------------------------------------------
+-- Per-vehicle-class profile that drives capacity, costs, ORS profile binding,
+-- and UI copy. Idempotent CREATE + MERGE so re-running this script is safe.
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE (
+  VEHICLE_TYPE      VARCHAR PRIMARY KEY,
+  ORS_PROFILE       VARCHAR  NOT NULL,
+  PAYLOAD_KG_TYP    NUMBER   NOT NULL,
+  PAYLOAD_KG_MAX    NUMBER   NOT NULL,
+  SHIPMENT_KG_MIN   NUMBER   NOT NULL,
+  SHIPMENT_KG_MAX   NUMBER   NOT NULL,
+  AVG_SPEED_KMH     NUMBER   NOT NULL,
+  COST_EUR_PER_KM   FLOAT    NOT NULL,
+  COST_EUR_PER_HR   FLOAT    NOT NULL,
+  ENFORCE_BREAK     BOOLEAN  NOT NULL,
+  HOME_RANGE_KM     NUMBER   NOT NULL,
+  LABEL_NOUN        VARCHAR  NOT NULL
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+MERGE INTO OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE tgt
+USING (
+  SELECT * FROM VALUES
+    ('bicycle',    'cycling-regular',     15,    25,    1,    15,  18,  0.05,  8.0, FALSE,  15, 'bicycle'),
+    ('ebike',      'cycling-electric',    25,    40,    2,    25,  22,  0.08, 10.0, FALSE,  25, 'ebike'),
+    ('foot',       'foot-walking',         5,    10,    1,     5,   5,  0.02, 12.0, FALSE,   5, 'courier'),
+    ('motorcycle', 'driving-car',         20,    50,    1,    20,  45,  0.20, 18.0, FALSE,  80, 'motorcycle'),
+    ('car',        'driving-car',        400,   600,   50,   400,  50,  0.30, 22.0, FALSE,  80, 'car'),
+    ('van',        'driving-car',       1500,  3500,  100,  1500,  55,  0.55, 28.0, FALSE, 150, 'van'),
+    ('hgv',        'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'trailer'),
+    ('truck',      'driving-hgv',      24000, 26000, 1000, 24000,  60,  0.85, 38.0, TRUE,  200, 'truck')
+  AS v(VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
+) src
+ON tgt.VEHICLE_TYPE = src.VEHICLE_TYPE
+WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, PAYLOAD_KG_TYP, PAYLOAD_KG_MAX, SHIPMENT_KG_MIN, SHIPMENT_KG_MAX, AVG_SPEED_KMH, COST_EUR_PER_KM, COST_EUR_PER_HR, ENFORCE_BREAK, HOME_RANGE_KM, LABEL_NOUN)
+  VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.PAYLOAD_KG_TYP, src.PAYLOAD_KG_MAX, src.SHIPMENT_KG_MIN, src.SHIPMENT_KG_MAX, src.AVG_SPEED_KMH, src.COST_EUR_PER_KM, src.COST_EUR_PER_HR, src.ENFORCE_BREAK, src.HOME_RANGE_KM, src.LABEL_NOUN);
 
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
@@ -39,17 +89,6 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":
 
 MERGE INTO CONFIG tgt
 USING (
-  -- Data-driven default: pick the (region, vehicle_type) tuple with the most
-  -- synthetic rows so the views populate against whatever preset is loaded.
-  -- No hardcoded city/vehicle. Rank by FACT_TRIPS first, fall back to DIM_FLEET.
-  --
-  -- Update semantics:
-  --   * WHEN NOT MATCHED -> seed CONFIG (greenfield install).
-  --   * WHEN MATCHED AND the existing tuple has 0 matching FACT_TRIPS rows ->
-  --     reconcile (heals stale installs where the old hardcoded `hgv`/`California`
-  --     default was previously seeded, or where Data Studio sync hasn't caught up).
-  --   * Otherwise leave CONFIG alone, so user picks via /api/regions/active and
-  --     syncRegionRegistryAndConfig are never overwritten.
   WITH counts AS (
     SELECT t.VEHICLE_TYPE, t.REGION, COUNT(*) AS n
     FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
@@ -77,6 +116,23 @@ WHEN MATCHED AND NOT EXISTS (
   THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
+-- Pre-flight: fail loudly if the active vehicle_type is not in
+-- VEHICLE_CLASS_PROFILE (Decision #2 in plan). This catches custom presets
+-- before they silently produce empty views.
+EXECUTE IMMEDIATE $$
+DECLARE
+  vt VARCHAR;
+  hits NUMBER;
+  unknown_vt EXCEPTION (-20001, 'Unknown vehicle_type in CONFIG. Add a row to OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE before running backload-matching.');
+BEGIN
+  vt := (SELECT VEHICLE_TYPE FROM CONFIG LIMIT 1);
+  hits := (SELECT COUNT(*) FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE WHERE VEHICLE_TYPE = :vt);
+  IF (hits = 0) THEN
+    RAISE unknown_vt;
+  END IF;
+END;
+$$;
+
 -- ----------------------------------------------------------------------------
 -- 2. PROPOSAL_DECISIONS (write-back; real table)
 -- ----------------------------------------------------------------------------
@@ -94,9 +150,11 @@ CREATE TABLE IF NOT EXISTS PROPOSAL_DECISIONS (
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ----------------------------------------------------------------------------
--- 3. VW_TRAILERS - DIM_FLEET filtered by CONFIG, joined to last trip drop-off
+-- 3. VW_TRAILERS - DIM_FLEET filtered by CONFIG, payload from class profile
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW VW_TRAILERS AS
+CREATE OR REPLACE VIEW VW_TRAILERS
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
 WITH last_drop AS (
   SELECT VEHICLE_ID,
          MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
@@ -112,6 +170,11 @@ home_anchor AS (
   SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON
   FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS
   WHERE REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+),
+cls AS (
+  SELECT vcp.*
+  FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+  WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
 )
 SELECT
   f.VEHICLE_ID                                        AS TRAILER_ID,
@@ -127,18 +190,28 @@ SELECT
   DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
   'IN_TRANSIT'                                        AS STATUS,
   FALSE                                               AS HAZMAT_CERT,
-  COALESCE(NULLIF(f.BATTERY_RANGE_KM, 0), 24000)::NUMBER AS MAX_PAYLOAD_KG
+  (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+  NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
 FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
 JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS h ON h.LOCATION_ID = f.HOME_LOCATION_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
 WHERE f.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
-  AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1);
+  AND f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+  AND EXISTS (SELECT 1 FROM cls);
 
 -- ----------------------------------------------------------------------------
--- 4. VW_INTERNAL_VOLUMES - recent FACT_TRIPS rebranded as "internal waiting loads"
+-- 4. VW_INTERNAL_VOLUMES - recent FACT_TRIPS with class-clamped weight + future
+--    pickup windows (always overlaps "now + shift")
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW VW_INTERNAL_VOLUMES AS
+CREATE OR REPLACE VIEW VW_INTERNAL_VOLUMES
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH cls AS (
+  SELECT vcp.*
+  FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+  WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+)
 SELECT
   'INT-' || LPAD(ROW_NUMBER() OVER (ORDER BY t.TRIP_START)::VARCHAR, 5, '0') AS ID,
   COALESCE(o.NAME, 'Origin')                                                  AS PICKUP_CITY,
@@ -147,9 +220,20 @@ SELECT
   COALESCE(d.NAME, 'Destination')                                             AS DROPOFF_CITY,
   t.DESTINATION_LON                                                           AS DROPOFF_LON,
   t.DESTINATION_LAT                                                           AS DROPOFF_LAT,
-  t.TRIP_START                                                                AS PICKUP_FROM_TS,
-  DATEADD(hour, 4, t.TRIP_START)                                              AS PICKUP_TO_TS,
-  (1000 + ABS(HASH(t.TRIP_ID)) % 24000)::NUMBER                               AS WEIGHT_KG,
+  GREATEST(
+    t.TRIP_START,
+    DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+  )                                                                           AS PICKUP_FROM_TS,
+  DATEADD(hour, 4,
+    GREATEST(
+      t.TRIP_START,
+      DATEADD('minute', MOD(ABS(HASH(t.TRIP_ID)), 600) + 30, CURRENT_TIMESTAMP())
+    )
+  )                                                                           AS PICKUP_TO_TS,
+  (
+    (SELECT SHIPMENT_KG_MIN FROM cls)
+    + ABS(HASH(t.TRIP_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0)
+  )::NUMBER                                                                   AS WEIGHT_KG,
   'B2B pallets'                                                               AS PRODUCT,
   FALSE                                                                       AS HAZMAT
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t
@@ -157,14 +241,11 @@ LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS o ON o.LOCATION_ID = t.ORIGIN_POI_
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = t.DESTINATION_POI_ID
 WHERE t.REGION       = (SELECT REGION       FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
   AND t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+  AND EXISTS (SELECT 1 FROM cls)
 QUALIFY ROW_NUMBER() OVER (ORDER BY t.TRIP_START DESC) <= 120;
 
 -- ----------------------------------------------------------------------------
 -- 4b. Ensure FACT_FREIGHT_OFFERS exists and is populated for the active region.
---     Inlined from references/backfill-freight-offers.sql so any preset (default
---     SanFrancisco included) gets offers without a separate manual step. Both
---     the CREATE TABLE and the INSERT are idempotent — the INSERT skips regions
---     that already have offers, so re-running this script is safe.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
   OFFER_ID         VARCHAR,
@@ -261,9 +342,16 @@ SELECT
 FROM pairs;
 
 -- ----------------------------------------------------------------------------
--- 5. VW_EXTERNAL_OFFERS - FACT_FREIGHT_OFFERS filtered by CONFIG
+-- 5. VW_EXTERNAL_OFFERS - FACT_FREIGHT_OFFERS, weight rescaled into class band
 -- ----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW VW_EXTERNAL_OFFERS AS
+CREATE OR REPLACE VIEW VW_EXTERNAL_OFFERS
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH cls AS (
+  SELECT vcp.*
+  FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE vcp
+  WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+)
 SELECT
   f.OFFER_ID,
   f.SOURCE,
@@ -277,29 +365,31 @@ SELECT
   f.DROPOFF_LAT,
   f.PICKUP_FROM_TS,
   f.PICKUP_TO_TS,
-  f.WEIGHT_KG,
+  LEAST(
+    (SELECT SHIPMENT_KG_MAX FROM cls),
+    GREATEST(
+      (SELECT SHIPMENT_KG_MIN FROM cls),
+      ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+    )
+  )                                       AS WEIGHT_KG,
   f.PRODUCT,
-  f.PRICE_USD                              AS PRICE_EUR,  -- back-compat alias for the React component
+  f.PRICE_USD                              AS PRICE_EUR,
   f.HAZMAT,
   f.LISTING_TEXT
 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS f
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p ON p.LOCATION_ID = f.PICKUP_POI_ID
 LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS d ON d.LOCATION_ID = f.DROPOFF_POI_ID
-WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1);
+WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG LIMIT 1)
+  AND EXISTS (SELECT 1 FROM cls);
 
 -- ----------------------------------------------------------------------------
--- 6. Sanity + active-preset notice
+-- 6. Sanity report
 -- ----------------------------------------------------------------------------
--- The first result-set is the per-object row count. The second result-set is a
--- single-row "STATUS" notice that surfaces when the active preset produces an
--- empty trailer or internal-volume projection (friction-log F2: greenfield SF
--- /ebike installs return 0 trailers because the bootstrap CONFIG resolves to
--- whatever the highest-row preset is, even if it has no DIM_FLEET rows). The
--- notice tells the operator how to switch presets so the demo populates.
 SELECT 'CONFIG'              AS object, COUNT(*) AS n FROM CONFIG
 UNION ALL SELECT 'VW_TRAILERS',         COUNT(*) FROM VW_TRAILERS
 UNION ALL SELECT 'VW_INTERNAL_VOLUMES', COUNT(*) FROM VW_INTERNAL_VOLUMES
 UNION ALL SELECT 'VW_EXTERNAL_OFFERS',  COUNT(*) FROM VW_EXTERNAL_OFFERS
+UNION ALL SELECT 'VEHICLE_CLASS_PROFILE', COUNT(*) FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
 ORDER BY 1;
 
 WITH cfg AS (
@@ -312,14 +402,10 @@ WITH cfg AS (
 )
 SELECT
   CASE
-    WHEN c.trailers = 0 OR c.internal_volumes = 0
-      THEN 'WARNING: backload-matching trailer/internal-volume views are EMPTY '
-        || 'for the active preset (VEHICLE_TYPE=' || cfg.VEHICLE_TYPE
-        || ', REGION=' || cfg.REGION || '). The demo expects HGV trips '
-        || '(typically REGION=Germany, VEHICLE_TYPE=hgv). Either: (a) generate '
-        || 'an HGV preset via Data Studio in the ORS Control App; or (b) run '
-        || 'POST /api/regions/active to switch the active region. The page will '
-        || 'render an empty state until trailer rows appear.'
+    WHEN c.trailers = 0
+      THEN 'WARNING: VW_TRAILERS is empty for the active preset (VEHICLE_TYPE='
+        || cfg.VEHICLE_TYPE || ', REGION=' || cfg.REGION
+        || '). Generate a Data Studio dataset for this region/vehicle.'
     ELSE 'OK: backload-matching populated for VEHICLE_TYPE=' || cfg.VEHICLE_TYPE
         || ', REGION=' || cfg.REGION
         || ' (trailers=' || c.trailers

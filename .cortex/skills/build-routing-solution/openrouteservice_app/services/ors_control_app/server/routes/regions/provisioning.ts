@@ -147,8 +147,30 @@ export function createRegionsProvisioningRouter(): Router {
       const startedProfiles = [...logs.matchAll(/ORS-pl-([\w-]+)/g)].map(m => m[1]);
       const uniqueStarted = [...new Set(startedProfiles)];
       const totalProfiles = Math.max(uniqueStarted.length, finishedProfiles.length);
+
+      // The profile being CONTRACTED right now is identified by the graph
+      // weighting token in the latest CH/LM log line, NOT by the last-spawned
+      // ORS-pl loader thread. ORS spawns every enabled profile's loader thread
+      // up front, so the last-spawned thread (used previously) reported e.g.
+      // cycling-electric while the engine was still contracting driving-car.
+      // Map weighting tokens to canonical profile names.
+      const weightToProfile = (tok: string): string => {
+        if (tok.startsWith('hgv_ors')) return 'driving-hgv';
+        if (tok.startsWith('car_ors')) return 'driving-car';
+        if (tok.startsWith('electrobike')) return 'cycling-electric';
+        if (tok.startsWith('bike_ors')) return 'cycling-regular';
+        if (tok.startsWith('pedestrian')) return 'foot-walking';
+        return tok;
+      };
+      const weightTokens = [...logs.matchAll(/(hgv_ors|car_ors|electrobike|bike_ors|pedestrian)/g)].map(m => m[1]);
+      const contracting = weightTokens.length > 0 ? weightToProfile(weightTokens[weightTokens.length - 1]) : null;
       const lastStarted = uniqueStarted.length > 0 ? uniqueStarted[uniqueStarted.length - 1] : null;
-      const currentProfile = lastStarted && !finishedProfiles.includes(lastStarted) ? lastStarted : null;
+      // Prefer the actually-contracting profile (if not yet finished); fall back
+      // to the most recently started loader thread that hasn't completed.
+      const currentProfile =
+        (contracting && !finishedProfiles.includes(contracting)) ? contracting
+        : (lastStarted && !finishedProfiles.includes(lastStarted)) ? lastStarted
+        : null;
 
       if (finishedProfiles.length === totalProfiles && totalProfiles > 0 && !currentProfile) {
         const healthOk = logs.includes('Started Application');
@@ -188,17 +210,43 @@ export function createRegionsProvisioningRouter(): Router {
       }
 
       if (hasLM) {
+        // ORS 9 logs LM progress as
+        //   "Calling LM prepare.doWork on 1/4 landmark sets"
+        //   "Calling LM prepare.doWork on 2/4 landmark sets"
+        // per profile. Use the highest observed N/M to compute the actual
+        // landmark progress instead of pinning to 95%. (#40)
+        const lmDoWorkRe = /Calling LM prepare\.doWork on\s+(\d+)\/(\d+)/g;
+        let lmCurrent = 0;
+        let lmTotal = 0;
+        let m: RegExpExecArray | null;
+        while ((m = lmDoWorkRe.exec(logs)) !== null) {
+          const cur = parseInt(m[1], 10);
+          const tot = parseInt(m[2], 10);
+          if (Number.isFinite(cur) && Number.isFinite(tot) && tot > 0) {
+            lmCurrent = Math.max(lmCurrent, cur);
+            lmTotal = Math.max(lmTotal, tot);
+          }
+        }
+        // Map LM sets (1..lmTotal) onto the 70..99% slice of profile progress;
+        // CH already accounts for the first 70%. Fall back to 95% when we
+        // could not parse any N/M line yet.
+        const lmProfileFrac = lmTotal > 0 ? 0.7 + 0.29 * (lmCurrent / lmTotal) : 0.95;
+        const profileProgress = Math.min(Math.round(lmProfileFrac * 100), 99);
         const overallProgress = totalProfiles > 0
-          ? Math.round(((finishedProfiles.length + 0.95) / totalProfiles) * 100)
-          : 95;
+          ? Math.round(((finishedProfiles.length + lmProfileFrac) / totalProfiles) * 100)
+          : profileProgress;
         res.json({
           phase: 'building',
           progress: Math.min(overallProgress, 99),
-          profileProgress: 95,
+          profileProgress,
           currentProfile,
           completedProfiles: finishedProfiles,
           totalProfiles,
-          detail: 'Landmark preparation',
+          lmCurrent: lmCurrent > 0 ? lmCurrent : undefined,
+          lmTotal: lmTotal > 0 ? lmTotal : undefined,
+          detail: lmTotal > 0
+            ? `Landmark preparation (${lmCurrent}/${lmTotal} sets)`
+            : 'Landmark preparation',
         });
         return;
       }
@@ -223,6 +271,28 @@ export function createRegionsProvisioningRouter(): Router {
       });
     } catch (err: any) {
       res.json({ phase: 'unknown', progress: 0, error: err.message });
+    }
+  });
+
+  // Tail the most recent ORS service logs for a region. Used by the
+  // BuildSummaryCard (#40) to surface what the engine is actually doing
+  // -- e.g. "[ORS-pl-driving-car] Calling LM prepare.doWork on 2/4
+  // landmark sets" -- without forcing the user into the Diagnostics
+  // page.
+  router.get('/api/regions/:region/logs', async (req, res) => {
+    try {
+      const svcName = orsServiceFqn(req.params.region);
+      const linesRaw = parseInt(String(req.query.lines || '200'), 10);
+      const lines = Number.isFinite(linesRaw) ? Math.min(Math.max(linesRaw, 10), 1000) : 200;
+      const rows = await runSql(`SELECT SYSTEM$GET_SERVICE_LOGS('${svcName}', 0, 'ors', ${lines}) AS LOGS`);
+      const logs: string = rows?.[0]?.LOGS || '';
+      // Trim to the requested number of lines (SYSTEM$GET_SERVICE_LOGS may
+      // return more). Keep newest at the bottom.
+      const all = logs.split(/\r?\n/);
+      const tail = all.slice(-lines).join('\n');
+      res.json({ logs: tail, total_lines: all.length, returned_lines: Math.min(all.length, lines) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
     }
   });
 

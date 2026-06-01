@@ -29,13 +29,8 @@ export default function FailedJobsList({
       {jobs.map((job) => (
         <div
           key={job.job_id}
-          style={{
-            margin: '8px 0',
-            padding: '12px 16px',
-            background: 'rgba(229, 57, 53, 0.12)',
-            borderRadius: 8,
-            border: '1px solid rgba(229, 57, 53, 0.4)',
-          }}
+          className="error-banner"
+          style={{ margin: '8px 0' }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <div>
@@ -51,7 +46,7 @@ export default function FailedJobsList({
               <button className="btn small" onClick={() => onDismiss(job.job_id)}>Dismiss</button>
             </div>
           </div>
-          <div style={{ fontSize: 12, color: '#e53935', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <div style={{ fontSize: 12, color: 'var(--red)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {job.error_msg || job.message || 'Unknown error'}
           </div>
           {job.profiles && (

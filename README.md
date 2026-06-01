@@ -1,5 +1,9 @@
 # Route Optimisation and Fleet Intelligence on Snowflake
 
+### Watch the 4-minute demo
+
+[![Watch the 4-minute demo](https://img.youtube.com/vi/wT9fRQLIL7E/maxresdefault.jpg)](https://www.youtube.com/watch?v=wT9fRQLIL7E)
+
 **Click the button below to get access to the full Snowflake Guide:**
 
 [![Quickstart Guide](https://img.shields.io/badge/Quickstart-Guide-29B5E8?style=for-the-badge&logo=snowflake&logoColor=white)](https://www.snowflake.com/en/developers/guides/oss-install-openrouteservice-native-app/)
@@ -181,4 +185,4 @@ If you have questions or suggestions about this solution, contact [fleet-intelli
 
 ## License
 
-Apache License 2.0
+Snowflake Skills License © 2026 Snowflake Inc. All rights reserved. See [LICENSE](LICENSE) for details.

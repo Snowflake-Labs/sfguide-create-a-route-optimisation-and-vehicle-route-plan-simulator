@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { runSql } from '../lib/sql.js';
 import { escapeString } from '../lib/sanitize.js';
 import { setActiveRegionOverride } from '../lib/state.js';
-import { ensureBackloadAndAssetVelocityObjects } from '../lib/init.js';
+import { activateDataset } from '../studio/jobs.js';
 import { log } from '../diagnostics.js';
 
 const FLEET_CONFIG_SCHEMAS = [
@@ -24,6 +24,42 @@ const ORS_PROFILE_TO_VEHICLE_TYPE: Record<string, string> = {
   'cycling-road': 'ebike',
 };
 
+const VEHICLE_TYPE_TO_ORS_PROFILE: Record<string, string> = {
+  ebike: 'cycling-electric',
+  hgv: 'driving-hgv',
+  car: 'driving-car',
+};
+
+/** Hybrid preset profile: GENERATION_JOBS → VEHICLE_CLASS_PROFILE → legacy map. */
+async function resolveOrsProfile(
+  vehicleType: string,
+  activeDatasetId: string | null,
+): Promise<string> {
+  if (activeDatasetId) {
+    try {
+      const rows = await runSql(
+        `SELECT j.ORS_PROFILE
+           FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+          WHERE j.JOB_ID = '${escapeString(activeDatasetId)}'
+          LIMIT 1`,
+        'FLEET_INTELLIGENCE', 'CORE',
+      );
+      const fromJob = (rows[0] as any)?.ORS_PROFILE;
+      if (fromJob) return String(fromJob);
+    } catch {}
+  }
+  try {
+    const rows = await runSql(
+      `SELECT ORS_PROFILE FROM OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE
+        WHERE VEHICLE_TYPE = '${escapeString(vehicleType)}' LIMIT 1`,
+      'OPENROUTESERVICE_APP', 'CORE',
+    );
+    const fromClass = (rows[0] as any)?.ORS_PROFILE;
+    if (fromClass) return String(fromClass);
+  } catch {}
+  return VEHICLE_TYPE_TO_ORS_PROFILE[vehicleType] || 'driving-car';
+}
+
 export function createFleetRouter(): Router {
   const router = Router();
 
@@ -38,16 +74,27 @@ export function createFleetRouter(): Router {
           region = rows[0].REGION || region;
         }
       } catch {}
+      let activeDatasetId: string | null = null;
+      try {
+        const dsRows = await runSql(
+          `SELECT DATASET_ID FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           WHERE REGION = '${escapeString(region)}' AND VEHICLE_TYPE = '${escapeString(vehicleType)}'
+             AND IS_ACTIVE = TRUE LIMIT 1`,
+          'FLEET_INTELLIGENCE', 'CORE',
+        );
+        if (dsRows?.[0]) activeDatasetId = (dsRows[0] as any).DATASET_ID;
+      } catch {}
       let availableTypes: string[] = [];
       let datasetPairs: { vehicleType: string; region: string }[] = [];
       try {
-        const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS ORDER BY VEHICLE_TYPE, REGION');
+        const rows = await runSql('SELECT DISTINCT VEHICLE_TYPE, REGION FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT ORDER BY VEHICLE_TYPE, REGION');
         datasetPairs = rows.map((r: any) => ({ vehicleType: r.VEHICLE_TYPE, region: r.REGION })).filter((p: any) => p.vehicleType && p.region);
         availableTypes = [...new Set(datasetPairs.map(p => p.vehicleType))];
       } catch {}
       if (vehicleType && !availableTypes.includes(vehicleType)) availableTypes.push(vehicleType);
       if (availableTypes.length === 0) availableTypes = [vehicleType];
-      res.json({ vehicleType, region, availableTypes, datasetPairs });
+      const orsProfile = await resolveOrsProfile(vehicleType, activeDatasetId);
+      res.json({ vehicleType, region, orsProfile, availableTypes, datasetPairs, activeDatasetId });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -99,9 +146,13 @@ export function createFleetRouter(): Router {
           j.POINTS_GENERATED AS POINT_COUNT,
           j.COMPLETED_AT,
           j.CONFIG:vehicleType::STRING AS CFG_VEHICLE_TYPE,
-          COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY
+          COALESCE(rr.DISPLAY_NAME, j.REGION) AS REGION_DISPLAY,
+          COALESCE(d.IS_ACTIVE, FALSE) AS DATASET_IS_ACTIVE,
+          (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f
+           WHERE f.JOB_ID = j.JOB_ID) AS FLEET_ROW_COUNT
         FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
         LEFT JOIN FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr ON rr.REGION_NAME = j.REGION
+        LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d ON d.DATASET_ID = j.JOB_ID
         WHERE j.STATUS IN ('COMPLETED', 'STOPPED')
           AND j.TRIPS_GENERATED > 0
         ORDER BY j.COMPLETED_AT DESC
@@ -109,6 +160,11 @@ export function createFleetRouter(): Router {
 
       const datasets = (rows || []).map((r: any) => {
         const vehicleType = r.CFG_VEHICLE_TYPE || ORS_PROFILE_TO_VEHICLE_TYPE[r.ORS_PROFILE] || 'car';
+        // isActive is derived from DIM_DATASETS.IS_ACTIVE, NOT from
+        // a region+vehicle equality check, so at most ONE dataset per
+        // (region, vehicle) shows the Active badge — the one whose
+        // JOB_ID matches the current DIM_DATASETS row with IS_ACTIVE=TRUE.
+        const fleetRowCount = Number(r.FLEET_ROW_COUNT ?? 0);
         return {
           jobId: r.JOB_ID,
           presetName: r.PRESET_NAME || `${r.REGION} ${r.ORS_PROFILE}`,
@@ -119,7 +175,9 @@ export function createFleetRouter(): Router {
           tripCount: r.TRIP_COUNT ?? 0,
           pointCount: r.POINT_COUNT ?? 0,
           completedAt: r.COMPLETED_AT,
-          isActive: r.REGION === currentRegion && vehicleType === currentVehicleType,
+          isActive: r.DATASET_IS_ACTIVE === true || r.DATASET_IS_ACTIVE === 'true',
+          fleetRowCount,
+          isAvailable: fleetRowCount > 0,
         };
       });
 
@@ -141,12 +199,86 @@ export function createFleetRouter(): Router {
   // ---------------------------------------------------------------------------
   router.post('/api/datasets/activate', async (req, res) => {
     try {
-      const { region, vehicleType } = req.body || {};
-      if (!region || !vehicleType) {
-        return res.status(400).json({ error: 'region and vehicleType required' });
+      const { jobId, region: bodyRegion, vehicleType: bodyVt } = req.body || {};
+      let region = bodyRegion as string | undefined;
+      let vehicleType = bodyVt as string | undefined;
+
+      // Per-dataset path: jobId provided. Resolve scope from DIM_DATASETS
+      // and atomically flip IS_ACTIVE for that (region, vehicle) so the
+      // V_*_CURRENT views immediately project the picked dataset.
+      if (jobId) {
+        try {
+          const result = await activateDataset(runSql, String(jobId));
+          region = result.region;
+          vehicleType = result.vehicleType;
+        } catch (e: any) {
+          if (e.code === 'DATASET_EMPTY') {
+            return res.status(409).json({
+              code: 'DATASET_EMPTY',
+              error: e.message,
+              region: e.region,
+              vehicleType: e.vehicleType,
+            });
+          }
+          if (e.code === 'BOOT_INCOMPLETE') {
+            return res.status(503).json({ code: 'BOOT_INCOMPLETE', error: e.message });
+          }
+          // Fallback: if DIM_DATASETS row is missing (legacy backfill miss),
+          // create one from GENERATION_JOBS so this and future picks work.
+          if (/not found/i.test(e.message || '')) {
+            const rows = await runSql(
+              `SELECT j.REGION, j.ORS_PROFILE, j.CONFIG:vehicleType::STRING AS CFG_VT
+               FROM FLEET_INTELLIGENCE.CORE.GENERATION_JOBS j
+               WHERE j.JOB_ID = '${escapeString(String(jobId))}' LIMIT 1`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            if (!rows.length) {
+              return res.status(404).json({ error: `Job ${jobId} not found` });
+            }
+            const row = rows[0] as any;
+            const vt = row.CFG_VT || ORS_PROFILE_TO_VEHICLE_TYPE[row.ORS_PROFILE] || 'car';
+            const fleetProbe = await runSql(
+              `SELECT COUNT(*) AS N FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
+               WHERE JOB_ID = '${escapeString(String(jobId))}'`,
+              'SYNTHETIC_DATASETS', 'UNIFIED',
+            );
+            if (Number((fleetProbe[0] as any)?.N ?? 0) === 0) {
+              return res.status(409).json({
+                code: 'DATASET_EMPTY',
+                error: `Dataset ${jobId} has 0 rows in DIM_FLEET; re-run Data Studio.`,
+                region: row.REGION,
+                vehicleType: vt,
+              });
+            }
+            // Insert a DIM_DATASETS row and mark active in scope.
+            await runSql(
+              `UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+               SET IS_ACTIVE = FALSE
+               WHERE REGION = '${escapeString(row.REGION)}'
+                 AND VEHICLE_TYPE = '${escapeString(vt)}' AND IS_ACTIVE = TRUE`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            await runSql(
+              `INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+                 (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE)
+               SELECT '${escapeString(String(jobId))}', '${escapeString(row.REGION)}',
+                      '${escapeString(vt)}',
+                      'recovered @ ' || TO_VARCHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI'),
+                      TRUE`,
+              'FLEET_INTELLIGENCE', 'CORE',
+            );
+            region = row.REGION;
+            vehicleType = vt;
+          } else {
+            throw e;
+          }
+        }
+      } else if (!region || !vehicleType) {
+        return res.status(400).json({ error: 'jobId or (region+vehicleType) required' });
       }
-      const safeRegion = escapeString(region);
-      const safeVehicleType = escapeString(vehicleType);
+
+      const safeRegion = escapeString(region!);
+      const safeVehicleType = escapeString(vehicleType!);
 
       // 1. Flip IS_DEFAULT in REGION_REGISTRY (best-effort).
       try {
@@ -157,7 +289,7 @@ export function createFleetRouter(): Router {
       } catch (e: any) {
         log('WARN', 'Datasets', `SET_ACTIVE_REGION not available: ${e.message?.slice(0, 100)}`);
       }
-      setActiveRegionOverride(region);
+      setActiveRegionOverride(region!);
 
       // 2. Update VEHICLE_TYPE + REGION on every demo CONFIG. We use the
       // union of the two schema lists (BACKLOAD_MATCHING is in CONFIG_SCHEMAS
@@ -170,6 +302,7 @@ export function createFleetRouter(): Router {
         'FLEET_INTELLIGENCE.RETAIL_CATCHMENT',
         'FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION',
         'FLEET_INTELLIGENCE.BACKLOAD_MATCHING',
+        'FLEET_INTELLIGENCE.MARKETPLACE',
       ];
       for (const schema of ALL_CONFIG_SCHEMAS) {
         try {
@@ -181,118 +314,18 @@ export function createFleetRouter(): Router {
         }
       }
 
-      // 3. Auto-seed PLACES for ROUTE_OPTIMIZATION (best-effort, mirrors
-      // /api/regions/active behaviour).
-      try {
-        await runSql(
-          `CALL FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SEED_ROUTE_OPTIMIZATION_REGION('${safeRegion}')`,
-          'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION'
-        );
-      } catch (e: any) {
-        log('WARN', 'Datasets', `Auto-seed PLACES for ${region}: ${e.message?.slice(0, 200)}`);
-      }
-
-      res.json({ ok: true, region, vehicleType });
+      res.json({ ok: true, region, vehicleType, jobId: jobId ?? null });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   router.post('/api/backload/seed', async (req, res) => {
-    try {
-      const region = String(req.body?.region || '').replace(/'/g, "''");
-      if (!region) return res.status(400).json({ error: 'region required' });
-      const vtRows = await runSql(
-        `SELECT VEHICLE_TYPE FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET
-         WHERE REGION = '${region}' GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1`,
-        'SYNTHETIC_DATASETS', 'UNIFIED',
-      );
-      const vt = String((vtRows[0] as any)?.VEHICLE_TYPE || 'hgv').replace(/'/g, "''");
-      await ensureBackloadAndAssetVelocityObjects(runSql);
-      await runSql(
-        `UPDATE FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG SET REGION = '${region}', VEHICLE_TYPE = '${vt}'`,
-        'FLEET_INTELLIGENCE', 'BACKLOAD_MATCHING',
-      );
-      await runSql(
-        `UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG SET REGION = '${region}', VEHICLE_TYPE = '${vt}'`,
-        'FLEET_INTELLIGENCE', 'ROUTE_OPTIMIZATION',
-      );
-      await runSql(
-        `INSERT INTO SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS (
-           OFFER_ID, REGION, VEHICLE_TYPE, SOURCE,
-           PICKUP_POI_ID, PICKUP_LAT, PICKUP_LON, PICKUP_GEOM,
-           DROPOFF_POI_ID, DROPOFF_LAT, DROPOFF_LON, DROPOFF_GEOM,
-           PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_USD,
-           HAZMAT, LISTING_TEXT, POSTED_AT, JOB_ID
-         )
-         WITH targets AS (
-           SELECT DISTINCT
-             p.REGION,
-             COALESCE(t.VEHICLE_TYPE, '${vt}') AS VEHICLE_TYPE,
-             p.JOB_ID
-           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
-           LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t ON t.JOB_ID = p.JOB_ID
-           WHERE p.REGION = '${region}'
-             AND p.REGION NOT IN (SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS WHERE REGION IS NOT NULL)
-         ),
-         pois_numbered AS (
-           SELECT p.REGION, p.JOB_ID, p.LOCATION_ID, p.NAME, p.LAT, p.LNG, p.POINT_GEOM,
-                  ROW_NUMBER() OVER (PARTITION BY p.REGION ORDER BY p.LOCATION_ID) AS RN,
-                  COUNT(*)   OVER (PARTITION BY p.REGION) AS C
-           FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
-           JOIN targets t ON t.REGION = p.REGION
-         ),
-         seq AS (
-           SELECT t.REGION, t.VEHICLE_TYPE, t.JOB_ID, g.S
-           FROM targets t
-           CROSS JOIN (SELECT SEQ4()+1 AS S FROM TABLE(GENERATOR(ROWCOUNT => 300))) g
-         ),
-         pairs AS (
-           SELECT s.REGION, s.VEHICLE_TYPE, s.JOB_ID, s.S,
-                  p.LOCATION_ID AS P_ID, p.LNG AS P_LON, p.LAT AS P_LAT, p.POINT_GEOM AS P_GEOM, p.NAME AS P_NAME, p.C AS C,
-                  q.LOCATION_ID AS Q_ID, q.LNG AS Q_LON, q.LAT AS Q_LAT, q.POINT_GEOM AS Q_GEOM, q.NAME AS Q_NAME
-           FROM seq s
-           JOIN pois_numbered p ON p.REGION = s.REGION AND p.RN = MOD(s.S * 7,  p.C) + 1
-           JOIN pois_numbered q ON q.REGION = s.REGION AND q.RN = MOD(s.S * 13 + 5, q.C) + 1
-           WHERE p.LOCATION_ID <> q.LOCATION_ID
-         )
-         SELECT
-           'OFF-' || LPAD(S::VARCHAR, 6, '0') AS OFFER_ID,
-           REGION, VEHICLE_TYPE,
-           CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-                THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-                ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-           END AS SOURCE,
-           P_ID, P_LAT, P_LON, P_GEOM,
-           Q_ID, Q_LAT, Q_LON, Q_GEOM,
-           DATEADD(MINUTE, MOD(S * 73,  1100) + 60,  CURRENT_TIMESTAMP())  AS PICKUP_FROM_TS,
-           DATEADD(MINUTE, MOD(S * 73,  1100) + 360, CURRENT_TIMESTAMP())  AS PICKUP_TO_TS,
-           (800 + MOD(ABS(HASH(P_ID || Q_ID)), 24000))::NUMBER             AS WEIGHT_KG,
-           DECODE(MOD(S, 6), 0,'Pallets (general)', 1,'Steel coils', 2,'Plastic granulate',
-                             3,'Beverages', 4,'Furniture', 5,'Bulk paper')  AS PRODUCT,
-           (400 + MOD(ABS(HASH(Q_ID || P_ID)), 4000))::NUMBER              AS PRICE_USD,
-           MOD(S, 13) = 0                                                   AS HAZMAT,
-           CASE WHEN LOWER(REGION) LIKE '%germany%' OR LOWER(REGION) LIKE '%europe%'
-                THEN DECODE(MOD(S, 4), 0,'TIMOCOM', 1,'WTRANSNET', 2,'TELEROUTE', 3,'B2P')
-                ELSE DECODE(MOD(S, 4), 0,'DAT', 1,'TRUCKSTOP', 2,'CONVOY', 3,'UBER_FREIGHT')
-           END || ' ' || P_NAME || ' -> ' || Q_NAME                         AS LISTING_TEXT,
-           CURRENT_TIMESTAMP()                                              AS POSTED_AT,
-           JOB_ID
-         FROM pairs`,
-        'SYNTHETIC_DATASETS', 'UNIFIED',
-      );
-      const counts = await runSql(
-        `SELECT
-           (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS) AS TRAILERS,
-           (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_INTERNAL_VOLUMES) AS INTERNAL_VOLUMES,
-           (SELECT COUNT(*) FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS) AS EXTERNAL_OFFERS`,
-        'FLEET_INTELLIGENCE', 'BACKLOAD_MATCHING',
-      );
-      res.json({ status: 'ok', region, vehicleType: vt, counts: counts[0] || {} });
-    } catch (err: any) {
-      log('ERROR', 'Backload', `seed failed: ${err.message?.slice(0, 300)}`);
-      res.status(500).json({ status: 'error', error: err.message });
-    }
+    res.status(410).json({
+      status: 'deprecated',
+      error:
+        'Backload seed endpoint is deprecated. Run Data Studio for the active preset to populate freight offers, fleet, and POIs.',
+    });
   });
 
 

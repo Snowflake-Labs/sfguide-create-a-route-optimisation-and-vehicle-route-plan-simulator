@@ -389,6 +389,22 @@ def process_geofabrik_row(row: dict) -> dict:
     }
 
 
+def _existing_boundary_result(row: dict) -> dict:
+    """Carry forward baked boundary columns for rows this script does not recompute."""
+    wkb = row.get("BOUNDARY_WKB")
+    src = row.get("BOUNDARY_SOURCE") or "missing"
+    verts = row.get("BOUNDARY_VERTICES")
+    area = row.get("BOUNDARY_AREA_KM2")
+    if wkb is None or (isinstance(wkb, float) and pd.isna(wkb)):
+        return {"BOUNDARY_WKB": None, "BOUNDARY_SOURCE": src, "BOUNDARY_VERTICES": 0, "BOUNDARY_AREA_KM2": 0.0}
+    return {
+        "BOUNDARY_WKB": wkb,
+        "BOUNDARY_SOURCE": src,
+        "BOUNDARY_VERTICES": int(verts) if verts is not None and not (isinstance(verts, float) and pd.isna(verts)) else 0,
+        "BOUNDARY_AREA_KM2": float(area) if area is not None and not (isinstance(area, float) and pd.isna(area)) else 0.0,
+    }
+
+
 def _bbox_result(row: dict, src: str) -> dict:
     try:
         if row.get("MIN_LON") is None or row.get("MAX_LON") is None or row.get("MIN_LAT") is None or row.get("MAX_LAT") is None:
@@ -413,10 +429,13 @@ def main() -> int:
 
     overrides = _load_overrides()
 
-    # Process each row.
+    # Process geofabrik/bbbike only; preserve natural-earth (and any other) baked rows.
     boundary_results: list[dict] = [None] * len(df)
     geofabrik_idx = [i for i, s in enumerate(df["SOURCE"]) if s == "geofabrik"]
     bbbike_idx = [i for i, s in enumerate(df["SOURCE"]) if s == "bbbike"]
+    preserve_idx = [i for i in range(len(df)) if i not in geofabrik_idx and i not in bbbike_idx]
+    for i in preserve_idx:
+        boundary_results[i] = _existing_boundary_result(df.iloc[i].to_dict())
 
     print(f"Fetching {len(geofabrik_idx)} Geofabrik .poly files in parallel...")
     t0 = time.time()
@@ -456,11 +475,29 @@ def main() -> int:
     for i in bbbike_idx:
         boundary_results[i] = _bbox_result(df.iloc[i].to_dict(), "bbbike-bbox")
 
-    # Build new columns.
-    df["LOOKUP_NAME"] = df["REGION_NAME"].apply(canonicalize)
+    # LOOKUP_NAME + ISO: refresh geofabrik/bbbike only; keep natural-earth seed values.
+    process_idx = set(geofabrik_idx) | set(bbbike_idx)
+    if "LOOKUP_NAME" not in df.columns:
+        df["LOOKUP_NAME"] = None
+    for i in process_idx:
+        df.at[i, "LOOKUP_NAME"] = canonicalize(df.at[i, "REGION_NAME"])
+    for i in preserve_idx:
+        if pd.isna(df.at[i, "LOOKUP_NAME"]) or df.at[i, "LOOKUP_NAME"] is None:
+            df.at[i, "LOOKUP_NAME"] = canonicalize(df.at[i, "REGION_NAME"])
+
+    def _country_name(row) -> Optional[str]:
+        c = row.get("COUNTRY")
+        if c is None or (isinstance(c, float) and pd.isna(c)):
+            return None
+        return str(c).strip() or None
+
     iso_a2, iso_a3, m49 = [], [], []
-    for _, row in df.iterrows():
-        a2, a3, m = lookup_country(row.get("COUNTRY"), overrides)
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if i in process_idx:
+            a2, a3, m = lookup_country(_country_name(row), overrides)
+        else:
+            a2, a3, m = row.get("ISO_COUNTRY_A2"), row.get("ISO_COUNTRY_A3"), row.get("UN_M49")
         iso_a2.append(a2)
         iso_a3.append(a3)
         m49.append(m)
@@ -469,11 +506,12 @@ def main() -> int:
     df["UN_M49"] = m49
 
     iso_sub = []
-    for _, row in df.iterrows():
-        if row.get("LEVEL") in ("subregion", "sub-region", "state", "province"):
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if i in process_idx and row.get("LEVEL") in ("subregion", "sub-region", "state", "province"):
             iso_sub.append(lookup_subdivision(row.get("REGION_NAME"), row.get("ISO_COUNTRY_A2"), overrides))
         else:
-            iso_sub.append(None)
+            iso_sub.append(row.get("ISO_SUBDIVISION"))
     df["ISO_SUBDIVISION"] = iso_sub
 
     df["BOUNDARY_WKB"] = [r["BOUNDARY_WKB"] for r in boundary_results]

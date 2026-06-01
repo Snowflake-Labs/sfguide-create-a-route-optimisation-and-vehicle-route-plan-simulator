@@ -1,7 +1,16 @@
+# Image tag MUST match openrouteservice_app/image-versions.env ($DOWNLOADER_TAG).
+# Run scripts/check_image_versions.sh to verify before uploading this spec to the stage.
 spec:
   containers:
     - name: downloader
-      image: /openrouteservice_app/core/image_repository/downloader:v0.0.3
+      image: /openrouteservice_app/core/image_repository/downloader:v0.0.4
+      resources:
+        requests:
+          cpu: "0.5"
+          memory: "1Gi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
       volumeMounts:
         - name: ors-spcs-stage
           mountPath: /downloads/ors_spcs_stage

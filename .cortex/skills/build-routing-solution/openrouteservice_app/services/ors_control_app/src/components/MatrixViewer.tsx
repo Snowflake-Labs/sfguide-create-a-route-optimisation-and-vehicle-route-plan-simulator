@@ -11,10 +11,16 @@ import {
   COLORS, rgb, lerpColor, rawValue, unitSuffix, fmtLegend,
 } from './matrix-viewer/helpers';
 import { getOdPair, getHexLatLon } from '../api/matrix';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromH3Cells } from '../shared/mapFit';
+import RecenterButton from '../shared/RecenterButton';
+import { useRegion } from '../hooks/useRegion';
+import type { LngLat } from '../shared/mapFit';
 
 type ViewerMode = 'area' | 'pair';
 
 export default function MatrixViewer() {
+  const { regionName } = useRegion();
   const [inventory, setInventory] = useState<MatrixInventoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
@@ -27,7 +33,6 @@ export default function MatrixViewer() {
   const [driveTimeLimit, setDriveTimeLimit] = useState(60);
   const [sliderMax, setSliderMax] = useState(60);
   const [activeTable, setActiveTable] = useState('');
-  const [viewState, setViewState] = useState({ longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const hasLoadedOnce = useRef(false);
@@ -145,15 +150,6 @@ export default function MatrixViewer() {
       setDestinations(dests);
       const maxVisible = dests.reduce((m, d) => Math.max(m, d.travel_time_secs), 0);
       setDriveTimeLimit(Math.ceil(maxVisible / 60) || sMax);
-      if (!hasLoadedOnce.current) {
-        setViewState(prev => ({
-          ...prev,
-          longitude: originData.origin_lon,
-          latitude: originData.origin_lat,
-          zoom: 11,
-        }));
-        hasLoadedOnce.current = true;
-      }
     } catch (e: any) {
       if (e.name !== 'AbortError') setDestinations([]);
     } finally {
@@ -421,6 +417,28 @@ export default function MatrixViewer() {
     [mode, basemap, bgLayer, bgLayerPair, reachLayer, originHaloLayer, originLayer, destHaloLayer, destLayer]
   );
 
+  const fitCoords = useMemo<LngLat[]>(() => {
+    const out: LngLat[] = [];
+    if (originLat !== 0 || originLon !== 0) out.push([originLon, originLat]);
+    if (mode === 'pair' && destHex && (destLat !== 0 || destLon !== 0)) {
+      out.push([destLon, destLat]);
+    } else if (mode === 'area' && destinations.length > 0) {
+      const hexCoords = coordsFromH3Cells(destinations, (d: ReachabilityData) => d.hex_id, { sample: 2000 });
+      for (const c of hexCoords) out.push(c);
+    }
+    return out;
+  }, [mode, originLat, originLon, destHex, destLat, destLon, destinations]);
+
+  const hasDests = destinations.length > 0;
+  const fitKey = useMemo(
+    () => `${regionName}|${activeTable || ''}|${originHex || ''}|${mode}|${destHex || ''}|${hasDests ? '1' : '0'}`,
+    [regionName, activeTable, originHex, mode, destHex, hasDests]
+  );
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, {
+    fallback: { longitude: -122.43, latitude: 37.77, zoom: 10, pitch: 0, bearing: 0 },
+    regionKey: fitKey,
+  });
+
   const getTooltip = useCallback(({ object }: any) => {
     if (!object) return null;
     if (mode === 'area' && object.travel_time_secs !== undefined) {
@@ -621,17 +639,18 @@ export default function MatrixViewer() {
             )}
           </div>
 
-          <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+          <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
             {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>{loadingMsg}</div>}
             <DeckGL
               viewState={viewState}
-              onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
+              onViewStateChange={onViewStateChange}
               controller={true}
               layers={layers}
               onClick={handleHexClick}
               getTooltip={getTooltip}
               style={{ width: '100%', height: '100%' }}
             />
+            <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
             {mode === 'area'

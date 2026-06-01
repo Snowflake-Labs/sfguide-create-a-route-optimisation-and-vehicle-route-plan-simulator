@@ -17,6 +17,7 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 - OpenRouteService Native App deployed and activated
 - Active Snowflake connection with a role that has privileges listed in the Required Privileges section below
+- For preset-driven demos, run Data Studio for the target `(region, vehicle_type)` first. The Route Optimization page now reads `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT` and the active dataset's UNIFIED `V_*_CURRENT` views.
 
 ## Required Privileges
 
@@ -46,21 +47,42 @@ Deploys the complete Route Optimization demo including Snowflake Marketplace dat
 
 This skill ships a second React page in the control app, **Asset Velocity**, that materialises an industry-standard ghost-trailer detection workflow. It is fully additive - the existing Route Optimizer (VRP) page is untouched.
 
-It reuses the dwell-analysis Dynamic Tables (no new DTs) and adds three thin views in `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION`:
+It reuses the dwell-analysis Dynamic Tables (no new DTs) and adds four thin views in `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION`:
 
 | View | Purpose |
 |------|---------|
 | `VW_IDLE_TRAILERS` | Latest dwell session per HGV, with idle duration metrics, deterministic dispatcher mapping, and an exception filter that drops `MAINTENANCE` statuses and `OUTLIER` driver profiles. |
 | `VW_LANE_DEMAND` | Net outbound trips per terminal over the most recent 30 days of `FACT_TRIPS`. High `DEMAND_SCORE` = trailer-short terminal. |
-| `VW_TRAILER_COST_OF_IDLENESS` | Joins `VW_IDLE_TRAILERS` with `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` and `CONFIG.RENTAL_CAPTURE_RATE` to compute cost-of-idleness, projected savings, and severity bucket. |
+| `VW_FLEET_HGV_PROFILE` | (v1.1) Resilient HGV-attribute view (subtype, weight, height, length, axleload, hazmat). Coalesces against deterministic defaults so the page works even after Data Studio regenerates `DIM_FLEET`. |
+| `VW_TRAILER_COST_OF_IDLENESS` | Joins `VW_IDLE_TRAILERS` with `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` and `CONFIG.RENTAL_CAPTURE_RATE` to compute cost-of-idleness, projected savings, and severity bucket. (v1.1) Also exposes per-trailer HGV attrs and CONFIG.MAX_REPOSITION_MINUTES / CONFIG.AVOID_FEATURES so the React page can build trailer-specific ORS profile_params. |
 
 Full use case framing, cross-vertical applicability, and risk mitigations live in [references/asset-velocity-use-case.md](references/asset-velocity-use-case.md).
 
+### Smart-reposition (v1.1)
+
+The Asset Velocity page now uses real ORS + VROOM features instead of Euclidean math:
+
+| Feature | Underlying call | Effect |
+|---------|-----------------|--------|
+| Road-network shortlist | `OPENROUTESERVICE_APP.CORE.MATRIX('driving-hgv', options, region)` with `profile_params.restrictions` envelope | Replaces `Math.hypot(dLng, dLat)` with HGV-aware road duration. |
+| Reachability gate | Matrix `durations[r][c]` vs `CONFIG.MAX_REPOSITION_MINUTES` | Terminals outside the shift are excluded with reason `OUT_OF_SHIFT`. |
+| Reachability polygon | `OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-hgv', lng, lat, range, region)` | Selected trailer's polygon overlays the deck.gl map. |
+| Multi-constraint VROOM | `OPENROUTESERVICE_APP.CORE.OPTIMIZATION(challenge, region)` with `time_windows`, `skills`, multi-dim `capacity`, `service`, `breaks`, `costs.fixed`, `max_travel_time` | Real bipartite assignment under driver shift, EU 561/2006 break, and trailer-subtype skill matching. |
+| HGV restrictions | `options.profile_params.restrictions` (weight/height/length/width/axleload/hazmat) + `options.avoid_features` | Routes avoid weight-restricted bridges, low overpasses, hazmat-banned roads, and (configurable) tollways/ferries. |
+
+Known limitations (synthetic data):
+- The wrapped `ISOCHRONES(...)` UDF does not yet pass `profile_params` through, so the polygon is profile-only (the matrix gate is the authoritative filter).
+- `DIM_POIS` has no `OPEN_FROM/OPEN_TO`, so terminal time windows default to 06:00–22:00 UTC.
+- `LANE_PROFILE` does not exist on terminals; skill-mismatch heuristics treat `RESTAURANT` POIs as REEFER-required and everything else as DRY-friendly.
+
 ### Deploy the Asset Velocity views
 
-Prerequisites: `dwell-analysis` skill deployed.
+> **This is a REQUIRED step of the standard workflow** (see **Step 5b** below), not an optional aside. Without it the Asset Velocity page in the control-app sidebar renders empty. It is preset-agnostic: `VW_IDLE_TRAILERS` pulls `VEHICLE_TYPE` from `ROUTE_OPTIMIZATION.CONFIG`, so on the default SanFrancisco/ebike install it surfaces idle **ebikes** (no HGV data required).
+
+Prerequisites: `dwell-analysis` skill deployed (the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time).
 
 ```bash
+snow sql -f .cortex/skills/route-optimization/references/extend-dim-fleet-hgv.sql -c <connection>
 snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sql -c <connection>
 ```
 
@@ -83,6 +105,10 @@ The page will gracefully render an empty state with deployment instructions if `
 | SCHEMA | `ROUTE_OPTIMIZATION` | Schema for VRP tables and notebooks |
 | WAREHOUSE | `ROUTING_ANALYTICS` | Warehouse for queries |
 | MARKETPLACE_CARTO | `CARTO Academy` | CARTO Academy Marketplace listing name |
+| `CONFIG.DAILY_RENTAL_RATE_AVOIDED_USD` | `80.00` | Daily $ saved per trailer hour returned to the network. |
+| `CONFIG.RENTAL_CAPTURE_RATE` | `0.600` | Fraction of theoretical idle-cost the operator believes they can capture (60%). |
+| `CONFIG.MAX_REPOSITION_MINUTES` | `600` | Driver shift cap (minutes). Drives the matrix reachability gate, the isochrone range, and VROOM `time_window` / `max_travel_time`. |
+| `CONFIG.AVOID_FEATURES` | `tollways,ferries` | Comma-separated ORS `avoid_features` list (passed via Matrix `options`). |
 
 ## Error Logging
 
@@ -179,6 +205,28 @@ CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
    Expected: PLACES 50K-500K, LOOKUP 4, JOB_TEMPLATE 29. **STOP** if any table has 0 rows.
 
 **Output:** Standing data populated for `<REGION_NAME>`.
+
+### Step 5b: Deploy Asset Velocity Page Views (required for the Asset Velocity page)
+
+**Goal:** Create the Asset Velocity views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_TRAILER_COST_OF_IDLENESS`, `VW_FLEET_HGV_PROFILE`) that power the Asset Velocity sidebar page. Preset-agnostic — shows idle vehicles of the active preset (e.g. ebikes on the default SF install).
+
+**Dependency:** `dwell-analysis` must be deployed first — the views reference `FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED`, which Snowflake validates at `CREATE VIEW` time. If Dwell Analysis is not yet deployed, skip this step and run it after Dwell Analysis; the page renders a friendly empty state with deployment instructions until then.
+
+> **Runtime owner:** the control-app `init.ts` is the source of truth for these four views (`VW_IDLE_TRAILERS`, `VW_LANE_DEMAND`, `VW_FLEET_HGV_PROFILE`, `VW_TRAILER_COST_OF_IDLENESS`) and `CREATE OR REPLACE`s them on every container boot. The `.sql` files below are the keep-in-sync source and the manual-repair path (run them when a boot recreate failed silently, e.g. `DT_DWELL_ENRICHED` was absent at boot). The active-preset pointer they filter on lives in `ROUTE_OPTIMIZATION.CONFIG`, seeded by `datasets/load-seed-data.sql` and by this skill's `seed-data.sql`.
+
+```bash
+snow sql -f .cortex/skills/route-optimization/references/extend-dim-fleet-hgv.sql -c <connection>
+snow sql -f .cortex/skills/route-optimization/references/asset-velocity-views.sql -c <connection>
+```
+
+Verify (all should return > 0 on a seeded install):
+```sql
+SELECT 'VW_IDLE_TRAILERS' AS V, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS
+UNION ALL SELECT 'VW_LANE_DEMAND', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
+UNION ALL SELECT 'VW_TRAILER_COST_OF_IDLENESS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
+```
+
+**Output:** Asset Velocity page views created and populated for the active preset.
 
 ### Step 6: Check Claude Model
 
@@ -327,10 +375,23 @@ DROP NOTEBOOK IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.ROUTING_FUNCTIONS_
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND;
 DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG;
 DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP;
 DROP STAGE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.NOTEBOOK;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION;
+
+-- v1.1 also added HGV columns to DIM_FLEET. They are non-destructive (NULL for
+-- non-trucking modes) and the column-add is idempotent, so cleanup is optional.
+-- If a fully clean DIM_FLEET is required (e.g. before regenerating via Data
+-- Studio), drop them with:
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS WEIGHT_TONS;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS HEIGHT_M;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS LENGTH_M;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS WIDTH_M;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS AXLELOAD_T;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS HAZMAT;
+ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET DROP COLUMN IF EXISTS VEHICLE_SUBTYPE;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

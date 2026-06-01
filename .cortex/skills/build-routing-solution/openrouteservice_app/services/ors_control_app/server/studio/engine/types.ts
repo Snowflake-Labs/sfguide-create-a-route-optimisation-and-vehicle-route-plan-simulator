@@ -121,6 +121,35 @@ export interface FreightOffer {
   pickup_from_offset_min: number;
   pickup_to_offset_min: number;
   listing_text: string;
+  equipment: string;
+  adr_class: string | null;
+  ldm: number;
+  distance_km: number;
+  price_per_km_usd: number;
+  partner_id: string;
+  status: string;
+  posted_at_offset_min: number;
+}
+
+export interface Partner {
+  partner_id: string;
+  name: string;
+  country: string;
+  credit_score: number;
+  payment_days_avg: number;
+  kyc_status: string;
+  blacklist_flag: boolean;
+  founded_year: number;
+}
+
+export interface PartnerHistoryRow {
+  partner_id: string;
+  origin_country: string;
+  dest_country: string;
+  equipment: string;
+  shipped_at_offset_days: number;
+  eur_per_km: number;
+  outcome: string;
 }
 
 export type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;

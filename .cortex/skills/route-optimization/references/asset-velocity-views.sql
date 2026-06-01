@@ -1,15 +1,27 @@
 -- Asset Velocity views for Non-Moving Trailer Detection & Action Engine
 -- Reuses FLEET_INTELLIGENCE.DWELL_ANALYSIS Dynamic Tables (must be deployed via dwell-analysis skill)
--- Source telemetry must exist in SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY / FACT_TRIPS / DIM_FLEET / DIM_POIS
+-- Source telemetry must exist in SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT / V_FACT_TRIPS_CURRENT / V_DIM_FLEET_CURRENT / V_DIM_POIS_CURRENT
+--
+-- IMPORTANT: The control app's `server/lib/init.ts` ALSO bootstraps these views
+-- on every container start and will silently overwrite any out-of-band changes.
+-- If you change a view definition here, you MUST mirror the change in
+-- `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app/server/lib/init.ts`
+-- (search for `VW_TRAILER_COST_OF_IDLENESS` etc.) before redeploying the SPCS image.
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- 0. Cost-of-idleness configuration row (re-uses existing CONFIG table)
+-- 0. Cost-of-idleness + smart-reposition configuration (extends existing CONFIG table)
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS DAILY_RENTAL_RATE_AVOIDED_USD NUMBER(10,2);
 ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS RENTAL_CAPTURE_RATE NUMBER(4,3);
+-- v1.1 (smart reposition): max minutes a trailer can spend repositioning (driver shift cap),
+-- and ORS avoid_features applied to matrix / isochrone / optimization calls.
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS MAX_REPOSITION_MINUTES NUMBER(6,0);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS AVOID_FEATURES VARCHAR(200);
 UPDATE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
    SET DAILY_RENTAL_RATE_AVOIDED_USD = COALESCE(DAILY_RENTAL_RATE_AVOIDED_USD, 80.00),
-       RENTAL_CAPTURE_RATE          = COALESCE(RENTAL_CAPTURE_RATE, 0.600);
+       RENTAL_CAPTURE_RATE           = COALESCE(RENTAL_CAPTURE_RATE, 0.600),
+       MAX_REPOSITION_MINUTES        = COALESCE(MAX_REPOSITION_MINUTES, 600),
+       AVOID_FEATURES                = COALESCE(AVOID_FEATURES, 'tollways,ferries');
 
 -- 1. VW_IDLE_TRAILERS
 -- Latest dwell session per vehicle (vehicle type pulled from CONFIG so the view
@@ -47,7 +59,7 @@ last_session AS (
 ),
 fleet AS (
   SELECT f.VEHICLE_ID, f.REGION, f.HOME_LOCATION_ID, f.DRIVER_PROFILE
-  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET f, cfg
+  FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
   WHERE f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
     AND f.REGION       = cfg.REGION
 )
@@ -85,13 +97,13 @@ WITH cfg AS (
 ),
 window_bounds AS (
   SELECT MAX(t.TRIP_START) AS MAX_TS
-  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, cfg
+  FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, cfg
   WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
     AND t.REGION       = cfg.REGION
 ),
 recent_trips AS (
   SELECT t.*
-  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS t, window_bounds w, cfg
+  FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t, window_bounds w, cfg
   WHERE t.VEHICLE_TYPE = cfg.VEHICLE_TYPE
     AND t.REGION       = cfg.REGION
     AND t.TRIP_START   >= DATEADD('day', -30, w.MAX_TS)
@@ -122,7 +134,7 @@ SELECT
   GREATEST(0, a.OUTBOUND - a.INBOUND)
     + ROUND(GREATEST(0, a.OUTBOUND - a.INBOUND) * 0.25, 0) AS DEMAND_SCORE
 FROM agg a
-JOIN SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
   ON p.LOCATION_ID = a.POI_ID
 WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','STORE','RESTAURANT')
   AND (a.OUTBOUND - a.INBOUND) > 0;
@@ -130,8 +142,10 @@ WHERE p.LOCATION_TYPE IN ('WAREHOUSE','LOGISTICS','DEPOT','TERMINAL','ADDRESS','
 -- 3. VW_TRAILER_COST_OF_IDLENESS
 -- Per-trailer cost of idleness using configurable rate, plus the projected weekly-savings number used by the
 -- "Projected Rental Savings" KPI card.
+-- v1.1: now also exposes HGV profile attributes via VW_FLEET_HGV_PROFILE so the
+-- React page can build trailer-specific ORS profile_params + VROOM skills/capacity.
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":1},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
   t.VEHICLE_ID,
@@ -149,6 +163,17 @@ SELECT
   t.DRIVER_PROFILE,
   c.DAILY_RENTAL_RATE_AVOIDED_USD,
   c.RENTAL_CAPTURE_RATE,
+  c.MAX_REPOSITION_MINUTES,
+  c.AVOID_FEATURES,
+  -- HGV profile attributes (resilient to DIM_FLEET regeneration)
+  hgv.VEHICLE_SUBTYPE,
+  hgv.HAZMAT,
+  hgv.WEIGHT_TONS,
+  hgv.HEIGHT_M,
+  hgv.LENGTH_M,
+  hgv.WIDTH_M,
+  hgv.AXLELOAD_T,
+  hgv.ORS_PROFILE,
   ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD, 2)                            AS COST_OF_IDLENESS_USD,
   ROUND(t.IDLE_DAYS * c.DAILY_RENTAL_RATE_AVOIDED_USD * c.RENTAL_CAPTURE_RATE, 2)    AS PROJECTED_SAVINGS_USD,
   CASE
@@ -158,8 +183,12 @@ SELECT
     ELSE 'OK'
   END                                                                                AS IDLE_SEVERITY
 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_IDLE_TRAILERS t
+LEFT JOIN FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE hgv
+  ON hgv.VEHICLE_ID = t.VEHICLE_ID
 CROSS JOIN (SELECT MAX(DAILY_RENTAL_RATE_AVOIDED_USD) AS DAILY_RENTAL_RATE_AVOIDED_USD,
-                   MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE
+                   MAX(RENTAL_CAPTURE_RATE)          AS RENTAL_CAPTURE_RATE,
+                   MAX(MAX_REPOSITION_MINUTES)       AS MAX_REPOSITION_MINUTES,
+                   MAX(AVOID_FEATURES)               AS AVOID_FEATURES
             FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG) c;
 
 -- 4. Verification

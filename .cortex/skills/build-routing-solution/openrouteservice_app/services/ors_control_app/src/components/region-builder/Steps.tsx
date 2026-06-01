@@ -39,7 +39,7 @@ export function StepsLegend() {
   return (
     <div className="steps-legend" role="note">
       <div className="legend-section">
-        <strong style={{ color: 'var(--text-primary, inherit)', opacity: 0.85 }}>Steps:</strong>
+        <strong style={{ color: 'var(--text)', opacity: 0.85 }}>Steps:</strong>
         {PROVISION_PHASES.map((p, i) => (
           <Fragment key={p.id}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -52,7 +52,7 @@ export function StepsLegend() {
       </div>
       <span className="legend-divider">|</span>
       <div className="legend-section">
-        <strong style={{ color: 'var(--text-primary, inherit)', opacity: 0.85 }}>Legend:</strong>
+        <strong style={{ color: 'var(--text)', opacity: 0.85 }}>Legend:</strong>
         <span><span className="legend-glyph done">{STEP_GLYPH.done}</span>Done</span>
         <span><span className="legend-glyph active">{STEP_GLYPH.active}</span>In progress</span>
         <span><span className="legend-glyph pending">{STEP_GLYPH.pending}</span>Not started</span>

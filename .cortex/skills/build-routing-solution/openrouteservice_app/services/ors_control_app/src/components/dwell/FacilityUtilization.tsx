@@ -5,6 +5,7 @@ import DataTable from '../../shared/DataTable';
 import { sfQuery } from './helpers';
 import { useRegion } from '../../hooks/useRegion';
 import { useVehicleType } from '../../hooks/useVehicleType';
+import PageContainer from '../../shared/PageContainer';
 
 export default function FacilityUtilization() {
   const { regionName } = useRegion();
@@ -32,7 +33,7 @@ export default function FacilityUtilization() {
   const types = useMemo(() => new Set(data.map(r => r.FACILITY_TYPE)).size, [data]);
 
   return (
-    <div>
+    <PageContainer width="wide">
       <h3>Facility Utilization</h3>
       <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Dwell time patterns across facilities</p>
       <div className="metric-grid">
@@ -72,6 +73,6 @@ export default function FacilityUtilization() {
       </div>
       <h3>All Facilities</h3>
       <DataTable data={data} columns={['FACILITY_NAME', 'FACILITY_TYPE', 'TOTAL_VISITS', 'AVG_DWELL_MINUTES', 'UNIQUE_DRIVERS']} />
-    </div>
+    </PageContainer>
   );
 }

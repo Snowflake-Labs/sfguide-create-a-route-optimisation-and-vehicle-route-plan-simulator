@@ -55,7 +55,7 @@ Configure which routing profiles are available in your Routing Solution.
 2. **Warn about resource impact:**
    - More profiles = longer graph build time
    - More profiles = more memory usage
-   - Default (car, cycling-electric, hgv) covers most use cases
+   - Default (car, cycling-electric) covers most use cases
 
 **Output:** User selections recorded
 

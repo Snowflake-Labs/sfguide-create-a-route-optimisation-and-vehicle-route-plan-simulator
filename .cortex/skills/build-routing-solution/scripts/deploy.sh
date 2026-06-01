@@ -49,6 +49,9 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "  Checking image tag consistency (image-versions.env vs service YAMLs)..."
+bash "$SKILL_DIR/scripts/check_image_versions.sh" || exit 1
+
 # Auto-derive tag from current YAML version + git SHA so the image tag
 # always pins to a specific commit. Bypass with IMAGE_TAG=<tag>.
 if [ -z "${IMAGE_TAG:-}" ]; then

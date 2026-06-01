@@ -5,13 +5,27 @@ depends_on:
   - build-routing-solution
 metadata:
   author: Snowflake SIT-IS
-  version: 1.0.0
+  version: 1.1.0
   category: intelligence-agent
 ---
 
 # OpenRouteService Intelligence Demo
 
 Create a Snowflake Intelligence agent that provides AI-powered route planning using OpenRouteService functions with natural language geocoding.
+
+The agent registers seven tools:
+
+- `tool_directions` — multi-region driving / cycling / walking directions.
+- `tool_isochrone` — multi-region reachability polygons.
+- `tool_poi_in_isochrone` — Overture Maps POI search inside an isochrone.
+- `tool_optimization` — multi-region multi-vehicle VRP via VROOM.
+- `tool_supply_chain` — full SF pharma supply-chain plan (depot + 6 pharmacies + 3 specialist vans).
+- `tool_pharma_optimization` — 30 pre-geocoded SF pharmacy stops with skill-bound vehicles.
+- `tool_pharma_catchment` — drive-time catchment morbidity profile for a SF pharmacy.
+
+The first four are functional immediately after this skill runs. The three pharma
+tools require seed data deployed by [`setup-agent-playground`](../setup-agent-playground/SKILL.md);
+they fail gracefully with a "run setup-agent-playground" message if the data is missing.
 
 ## Configuration
 
@@ -45,6 +59,14 @@ Create a Snowflake Intelligence agent that provides AI-powered route planning us
 | SNOWFLAKE.CORTEX_USER | Database role | Enables AI_COMPLETE calls for geocoding |
 
 > **Note:** ACCOUNTADMIN is NOT required. Create a custom role with the above privileges, or use any role that has them.
+
+## Region awareness (Agent Playground)
+
+The Agent Playground (control-app page) is region- and vehicle-aware end-to-end:
+
+- The active region (`useRegion`) and vehicle type (`useVehicleType`) are sent on every chat call as `region`, `vehicle_type`, and the derived ORS `profile`. The chat backend prepends a hidden context turn instructing the LLM to default tool args to the active region/profile, and uses those values as the local re-execution defaults in `TOOL_PROC_MAP` (replacing the previously hard-coded `California` / `driving-car`).
+- Example chips under "Try an example" are generated **live** by `SNOWFLAKE.CORTEX.COMPLETE('claude-sonnet-4-5', ...)` via `GET /api/agent/examples?region=...&vehicle=...`. The endpoint resolves the region centroid from `OPENROUTESERVICE_APP.CORE.REGION_CATALOG` (boundary preferred, bbox fallback) and asks Cortex for 2 scenarios x 4-5 prompts in the existing `AgentDemosConfig` shape. On any failure (parse error, no region match, unprovisioned region) it falls back to the static `config/agent-demos.json` on `ORS_SPCS_STAGE`, then to a hardcoded SF stub.
+- Example regeneration is debounced 300 ms and re-runs every time the user switches region or vehicle type. There is no caching by design.
 
 ## Error Logging
 
@@ -125,7 +147,7 @@ This creates:
 
 ### Step 5: Register Agent with Snowflake Intelligence (Optional)
 
-> **Note:** This step requires Snowflake Intelligence to be configured on the account. The agent is fully functional via direct `INVOKE_AGENT` calls without SI registration.
+> **Note:** This step requires Snowflake Intelligence to be enabled on the account. On accounts where it is not provisioned, `SHOW SNOWFLAKE INTELLIGENCE` / the `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` below fail with `002003 ... 'SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT' does not exist or not authorized` (observed on tib85385, friction-log F5). This is expected and non-blocking: the agent is fully functional via the control-app **Agent Playground** and via direct `INVOKE_AGENT` REST/SQL calls without SI registration. Skip the rest of this step if SI is not enabled.
 
 1. **Check** if Snowflake Intelligence is available:
    ```sql

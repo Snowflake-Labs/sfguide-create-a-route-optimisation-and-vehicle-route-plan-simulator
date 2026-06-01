@@ -14,8 +14,8 @@ export default function BuildHistoryTable({ history, catalog, onRerun }: Props) 
   if (history.length === 0) return null;
   return (
     <div style={{ marginTop: '1rem' }}>
-      <h3 style={{ fontSize: '14px', margin: '0 0 0.5rem' }}>Recent builds</h3>
-      <p style={{ fontSize: '11px', opacity: 0.7, margin: '0 0 0.5rem' }}>
+      <h3>Recent builds</h3>
+      <p className="subtitle">
         Last {history.length} build attempts across all regions. Sourced from ORS_BUILD_HISTORY.
       </p>
       <table className="services-table" style={{ fontSize: '12px' }}>

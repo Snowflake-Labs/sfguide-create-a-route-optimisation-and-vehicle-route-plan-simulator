@@ -2,6 +2,11 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { PathLayer, BitmapLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { TileLayer, H3HexagonLayer } from '@deck.gl/geo-layers';
+import { useFitMap } from '../shared/useFitMap';
+import { coordsFromH3Cells } from '../shared/mapFit';
+import RecenterButton from '../shared/RecenterButton';
+import { useRegion } from '../hooks/useRegion';
+import PageContainer from '../shared/PageContainer';
 
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 const SF_VIEW = { longitude: -122.44, latitude: 37.76, zoom: 12, pitch: 0, bearing: 0 };
@@ -37,11 +42,11 @@ function cartoBasemap() {
 }
 
 export default function Intro() {
+  const { regionName } = useRegion();
   const [showGrid, setShowGrid] = useState(true);
   const [showTrips, setShowTrips] = useState(true);
   const [showPings, setShowPings] = useState(false);
   const [tripCount, setTripCount] = useState(100);
-  const [viewState, setViewState] = useState(SF_VIEW);
   const [resolution, setResolution] = useState(7);
 
   const [hexData, setHexData] = useState<any[]>([]);
@@ -101,6 +106,32 @@ export default function Intro() {
 
   const visibleTrips = useMemo(() => trips.slice(0, tripCount), [trips, tripCount]);
   const maxDist = useMemo(() => Math.max(1, ...trips.map((t: any) => Number(t.DISTANCE_M || 0))), [trips]);
+
+  const fitCoords = useMemo(() => {
+    const pts: [number, number][] = [];
+    for (const t of visibleTrips) {
+      if (t.O_LNG != null && t.O_LAT != null) pts.push([Number(t.O_LNG), Number(t.O_LAT)]);
+      if (t.D_LNG != null && t.D_LAT != null) pts.push([Number(t.D_LNG), Number(t.D_LAT)]);
+      try {
+        const gj = JSON.parse(t.ROUTE_GEOJSON);
+        const coords = gj?.coordinates || gj;
+        if (Array.isArray(coords)) {
+          for (const c of coords) {
+            if (Array.isArray(c) && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1]))) {
+              pts.push([Number(c[0]), Number(c[1])]);
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (showGrid && hexData.length) {
+      const hexCoords = coordsFromH3Cells(hexData, (d: any) => d.H3_INDEX, { sample: 2000 });
+      for (const c of hexCoords) pts.push(c);
+    }
+    return pts;
+  }, [visibleTrips, showGrid, hexData]);
+
+  const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { fallback: SF_VIEW, regionKey: regionName });
 
   const hexLayer = useMemo(() => {
     if (!showGrid || !hexData.length) return null;
@@ -239,6 +270,7 @@ export default function Intro() {
   const cost = (v: number) => `$${Math.round(v / 1000)}`;
 
   return (
+    <PageContainer width="wide" padded={false}>
     <div className="panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
         <div>
@@ -304,17 +336,19 @@ export default function Intro() {
         </div>
       </div>
 
-      <div style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
+      <div ref={containerRef} style={{ height: 500, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden', position: 'relative', background: '#e8e8e8' }}>
         {loading && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', zIndex: 10, fontSize: 14 }}>Loading...</div>}
         <DeckGL
           viewState={viewState}
-          onViewStateChange={({ viewState: vs }: any) => setViewState(vs)}
+          onViewStateChange={onViewStateChange}
           controller={true}
           layers={layers}
           getTooltip={getTooltip}
           style={{ width: '100%', height: '100%' }}
         />
+        <RecenterButton onClick={recenter} disabled={!fitCoords.length} />
       </div>
     </div>
+    </PageContainer>
   );
 }

@@ -75,6 +75,25 @@ export function useStudioCatalog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keep the region dropdown fresh without a hard page refresh: poll every
+  // 30s (mirrors ServiceManager) and re-fetch whenever the tab regains
+  // focus / becomes visible. Picks up regions that finished provisioning
+  // in the Region Builder while Data Studio was open.
+  useEffect(() => {
+    const interval = setInterval(fetchAvailableRegions, 30000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') fetchAvailableRegions();
+    };
+    const onFocus = () => fetchAvailableRegions();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [fetchAvailableRegions]);
+
   return {
     templates, presets, availableRegions, stats, coverage,
     fetchTemplates, fetchPresets, fetchStats, fetchCoverage, fetchAvailableRegions,

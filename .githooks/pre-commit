@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Optional local hook: git config core.hooksPath .githooks
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+SKILL_DIR=".cortex/skills/build-routing-solution"
+CHECK_SCRIPT="$SKILL_DIR/scripts/check_image_versions.sh"
+
+if [ ! -x "$CHECK_SCRIPT" ] && [ ! -f "$CHECK_SCRIPT" ]; then
+  exit 0
+fi
+
+STAGED=$(git diff --cached --name-only)
+needs_check=0
+for path in \
+  "$SKILL_DIR/openrouteservice_app/image-versions.env" \
+  "$SKILL_DIR/openrouteservice_app/services/" \
+  "$SKILL_DIR/openrouteservice_app/app/modules/" \
+  "$SKILL_DIR/references/snowflake-scripting-guidelines.md"; do
+  if echo "$STAGED" | grep -q "^${path}"; then
+    needs_check=1
+    break
+  fi
+done
+
+if [ "$needs_check" -eq 0 ]; then
+  exit 0
+fi
+
+echo "pre-commit: image version consistency check..."
+bash "$CHECK_SCRIPT" || {
+  echo "pre-commit FAILED: fix image tag drift (see image-versions.env), then re-commit."
+  exit 1
+}

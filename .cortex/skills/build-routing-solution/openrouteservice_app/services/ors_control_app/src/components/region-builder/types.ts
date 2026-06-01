@@ -32,6 +32,11 @@ export type BuildProgress = {
   completedProfiles?: string[];
   totalProfiles?: number;
   detail?: string;
+  // LM preparation progress in N/M form, parsed from "Calling LM prepare.doWork
+  // on N/M landmark sets" (#40). Present only while phase is 'building' and the
+  // current profile is mid-LM.
+  lmCurrent?: number;
+  lmTotal?: number;
 };
 
 export type DiagEntry = {

@@ -37,12 +37,41 @@
    )
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"region-catalog"}}';
 
+   -- =============================================================================
+   -- REGION_ORS_MAP bootstrap (Mirror of REGION_ORS_MAP DDL in 03_region_management.sql; keep in sync.)
+   -- REGION_FOR_POINT joins REGION_ORS_MAP. Create it here idempotently so module 02
+   -- compiles standalone — do not rely on 03 having run first.
+   -- =============================================================================
+   CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
+       REGION VARCHAR,
+       DISPLAY_NAME VARCHAR,
+       PBF_URL VARCHAR,
+       MIN_LAT FLOAT,
+       MAX_LAT FLOAT,
+       MIN_LON FLOAT,
+       MAX_LON FLOAT,
+       STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
+       COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
+       INSTANCE_FAMILY VARCHAR,
+       IS_DEFAULT BOOLEAN DEFAULT FALSE,
+       CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
+       UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
+   )
+   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD (folder VARCHAR, filename VARCHAR, URL VARCHAR)
       RETURNS varchar
       SERVICE=OPENROUTESERVICE_APP.CORE.downloader
       ENDPOINT='downloader'
       MAX_BATCH_ROWS = 1000
       AS '/download_to_stage';
+
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.DOWNLOAD_STATUS (folder VARCHAR, filename VARCHAR)
+      RETURNS varchar
+      SERVICE=OPENROUTESERVICE_APP.CORE.downloader
+      ENDPOINT='downloader'
+      MAX_BATCH_ROWS = 1000
+      AS '/download_status';
 
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._DIRECTIONS_TABULAR_RAW(method VARCHAR, jstart ARRAY, jend ARRAY, region VARCHAR)
       RETURNS VARIANT
@@ -58,12 +87,33 @@
       MAX_BATCH_ROWS = 1000
       AS '/directions';
 
+   -- Legacy 5-arg form retained for any caller that does not opt into
+   -- smoothing yet. The gateway treats the missing smoothing as omitted
+   -- (engine default, no smoothing pass). (#113)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR)
       RETURNS VARIANT
       SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
       ENDPOINT='gateway'
       MAX_BATCH_ROWS = 1000
       AS '/isochrones_tabular';
+
+   -- 6-arg form: caller-supplied smoothing. 0 = no smoothing (fastest);
+   -- 10 = the legacy hard-coded value; 50 = engine maximum. (#113)
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method TEXT, lon FLOAT, lat FLOAT, range INT, smoothing INT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 1000
+      AS '/isochrones_tabular';
+
+   -- Multi-point / multi-range isochrones via gateway /isochrones (range in seconds
+   -- when range_type is time). options VARIANT carries locations, range, range_type.
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method VARCHAR, options VARIANT, region VARCHAR)
+      RETURNS VARIANT
+      SERVICE=OPENROUTESERVICE_APP.CORE.routing_gateway_service
+      ENDPOINT='gateway'
+      MAX_BATCH_ROWS = 100
+      AS '/isochrones';
 
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE._OPTIMIZATION_TABULAR_RAW(jobs ARRAY, vehicles ARRAY, matrices ARRAY, region VARCHAR)
       RETURNS VARIANT
@@ -140,7 +190,7 @@
             resp:features[0]:properties:summary:duration::FLOAT AS DURATION
          FROM (SELECT OPENROUTESERVICE_APP.CORE._DIRECTIONS_RAW(method, locations, region) AS resp)';
 
-   -- ISOCHRONES
+   -- ISOCHRONES (5-arg, legacy default: smoothing=0 i.e. engine default)
    CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, region VARCHAR DEFAULT NULL)
       RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
       LANGUAGE SQL
@@ -149,6 +199,39 @@
       'SELECT resp AS RESPONSE,
             TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
          FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, region) AS resp)';
+
+   -- ISOCHRONES (6-arg with smoothing). 0 = engine default (fastest);
+   -- 10 matches the previously hard-coded gateway value; 50 = engine max
+   -- (slowest, smoothest polygon). Caller-controlled per #113. (#113)
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(method TEXT, lon FLOAT, lat FLOAT, range INT, smoothing INT, region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.1","attributes":{"component":"routing","feature":"smoothing"}}'
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(method, lon, lat, range, smoothing, region) AS resp)';
+
+   -- ISOCHRONES (multi-point / multi-range). locations = ARRAY of [lon, lat] pairs;
+   -- ranges = ARRAY of range values (seconds when range_type is time).
+   CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ISOCHRONES(
+      method VARCHAR, locations ARRAY, ranges ARRAY,
+      range_type VARCHAR DEFAULT 'time', region VARCHAR DEFAULT NULL)
+      RETURNS TABLE (RESPONSE VARIANT, GEOJSON GEOGRAPHY)
+      LANGUAGE SQL
+      COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"2.1","attributes":{"component":"routing","feature":"multi-isochrone"}}'
+      AS
+      'SELECT resp AS RESPONSE,
+            TO_GEOGRAPHY(resp:features[0]:geometry) AS GEOJSON
+         FROM (SELECT OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW(
+                  method,
+                  OBJECT_CONSTRUCT(
+                    ''locations'', locations,
+                    ''range'', ranges,
+                    ''range_type'', range_type
+                  ),
+                  region
+                ) AS resp)';
 
    -- ISOCHRONES_CLIPPED: same as ISOCHRONES but clips the returned polygon
    -- to the named region's actual boundary so catchment zones don't claim
@@ -292,7 +375,11 @@
      'area_km2',        rc.BOUNDARY_AREA_KM2
    )
    FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+   JOIN OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP rm
+     ON UPPER(rm.REGION) = UPPER(rc.LOOKUP_NAME)
+     OR UPPER(rm.REGION) = UPPER(rc.REGION_KEY)
    WHERE rc.BOUNDARY IS NOT NULL
+     AND rm.STATUS = 'DEPLOYED'
      AND ST_CONTAINS(rc.BOUNDARY, ST_MAKEPOINT(LON, LAT))
    ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
    LIMIT 1

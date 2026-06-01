@@ -5,6 +5,7 @@
 import type { POI, RouteFetchResult, SnowSqlFn } from './types.js';
 import { GenerationConfig, haversineKm } from '../profiles.js';
 import { log } from '../../diagnostics.js';
+import { binPoisByLatLng, binDegForArea, bboxAreaKm2 } from './spatial.js';
 
 const UNROUTABLE_PATTERNS: RegExp[] = [
   /Could not find routable point/i,
@@ -123,6 +124,28 @@ export function pickDestination(
 
   const nearby = destPois.filter(p => haversineKm(origin.lat, origin.lng, p.lat, p.lng) <= maxKm);
   const pool = nearby.length > 0 ? nearby : destPois;
+
+  // Layer 2: stratified destination pool (region-agnostic). Bin the candidate
+  // pool by spatial cell, pick a bin uniformly, then a POI within. This stops
+  // dense metros (Ruhr, Bay Area, Paris) from dominating destination selection.
+  // Falls back to uniform-over-pool when stratification is disabled or when
+  // fewer than min_bins_required bins are populated (small regions / short
+  // distance bands), preserving original behaviour.
+  const ssEnabled = config.spatial_spread?.enabled !== false;
+  const minBins = config.spatial_spread?.min_bins_required ?? 3;
+  if (ssEnabled) {
+    const ssBin = config.spatial_spread?.bin_deg;
+    const binDeg = ssBin && ssBin > 0
+      ? ssBin
+      : binDegForArea(config.region_area_km2 ?? bboxAreaKm2(config.bbox));
+    const bins = binPoisByLatLng(pool, binDeg);
+    if (bins.size >= minBins) {
+      const keys = [...bins.keys()];
+      const key = keys[Math.floor(rng() * keys.length)];
+      const list = bins.get(key)!;
+      return list[Math.floor(rng() * list.length)];
+    }
+  }
   return pool[Math.floor(rng() * pool.length)];
 }
 

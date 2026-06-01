@@ -1,9 +1,7 @@
 // /api/query — read-only SQL passthrough used by demo views.
 // /api/tiles/:z/:x/:y — Carto basemap tile proxy with in-memory LRU cache.
-// /logout — redirect helper for Snowflake-side session termination.
 
 import { Router } from 'express';
-import { SNOWFLAKE_HOST } from '../constants.js';
 import { runSql } from '../lib/sql.js';
 import { log } from '../diagnostics.js';
 
@@ -63,18 +61,6 @@ export function createQueryRouter(): Router {
         console.error(`Tile proxy error for ${key}: ${e.cause?.message || e.message}`);
         res.status(502).send('Tile fetch failed');
       }
-    }
-  });
-
-  router.get('/logout', (req, res) => {
-    // Redirect to Snowflake account logout which clears the session and shows login screen
-    const appUrl = encodeURIComponent(`https://${req.headers.host || ''}/`);
-    const accountHost = SNOWFLAKE_HOST || '';
-    if (accountHost) {
-      res.redirect(302, `https://${accountHost}/session/v1/logout-from-application?redirect_url=${appUrl}`);
-    } else {
-      res.clearCookie('session');
-      res.redirect(302, '/');
     }
   });
 

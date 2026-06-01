@@ -85,18 +85,18 @@ export default function ProvisionForm(props: Props) {
       <h3>Provision New Region</h3>
       <div className="provision-form">
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', alignItems: 'center' }}>
-          <div style={{ display: 'flex', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+          <div className="seg-control">
             <button
-              className={`btn small${sourceTab === 'bbbike' ? ' primary' : ''}`}
+              type="button"
+              className={`seg-btn${sourceTab === 'bbbike' ? ' active' : ''}`}
               onClick={() => { onSourceTabChange('bbbike'); onSelectRegion(null); }}
-              style={{ borderRadius: 0 }}
             >
               BBBike Cities
             </button>
             <button
-              className={`btn small${sourceTab === 'geofabrik' ? ' primary' : ''}`}
+              type="button"
+              className={`seg-btn${sourceTab === 'geofabrik' ? ' active' : ''}`}
               onClick={() => { onSourceTabChange('geofabrik'); onSelectRegion(null); }}
-              style={{ borderRadius: 0 }}
             >
               Geofabrik Regions
             </button>
@@ -117,7 +117,7 @@ export default function ProvisionForm(props: Props) {
         {(catalogLoading || refreshing) && catalog.length === 0 ? (
           <div className="empty-state" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
             <div className="loading-text" style={{ marginBottom: '0.5rem' }}>Loading region catalog...</div>
-            <p style={{ color: '#888', fontSize: '13px', margin: 0 }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
               First load may take 2-3 minutes while we fetch available regions from Geofabrik and BBBike.
             </p>
           </div>
@@ -141,14 +141,15 @@ export default function ProvisionForm(props: Props) {
               </thead>
               <tbody>
                 {filteredCatalog.length === 0 ? (
-                  <tr><td colSpan={5} style={{ textAlign: 'center', padding: '1rem', color: '#888' }}>No regions match your search</td></tr>
+                  <tr><td colSpan={5} style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)' }}>No regions match your search</td></tr>
                 ) : filteredCatalog.map((r) => {
                   const isSelected = selectedRegion?.catalogId === r.catalogId;
                   return (
                     <tr
                       key={r.catalogId}
                       onClick={() => { onSelectRegion(r); }}
-                      style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.25)' : undefined, outline: isSelected ? '2px solid rgba(59,130,246,0.6)' : undefined }}
+                      className={isSelected ? 'highlight-row' : undefined}
+                      style={{ cursor: 'pointer' }}
                     >
                       <td><strong>{r.regionName}</strong></td>
                       <td>{r.source === 'bbbike' ? 'City' : [r.continent, r.country].filter(Boolean).join(' / ') || '—'}</td>
@@ -213,7 +214,7 @@ export default function ProvisionForm(props: Props) {
                   </div>
                 </div>
               ))}
-              <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                 {selectedProfiles.length} profile{selectedProfiles.length !== 1 ? 's' : ''} selected
               </div>
             </div>
@@ -236,7 +237,7 @@ export default function ProvisionForm(props: Props) {
                     >
                       <div>
                         <strong>{s.label}</strong>
-                        {isRecommended && <span style={{ fontSize: '10px', marginLeft: 6, padding: '1px 6px', borderRadius: 4, background: 'rgba(38, 132, 255, 0.18)', color: '#2684ff' }}>Recommended</span>}
+                        {isRecommended && <span className="badge ok" style={{ marginLeft: 6 }}>Recommended</span>}
                       </div>
                       <div style={{ fontSize: '11px', opacity: 0.8 }}>{s.vcpu} vCPU / {s.mem}</div>
                       <div style={{ fontSize: '11px', opacity: 0.7 }}>{s.instance} / {s.heap} heap</div>
