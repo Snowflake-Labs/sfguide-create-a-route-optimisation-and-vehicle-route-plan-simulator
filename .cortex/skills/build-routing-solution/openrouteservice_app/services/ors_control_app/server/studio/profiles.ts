@@ -119,6 +119,13 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       telemetry: { ping_interval_moving: { mean_sec: 15, std_sec: 5 }, ping_interval_dwell: { min_sec: 60, max_sec: 180 }, gps_jitter: { typical_m: 8, multipath_probability: 0.02, multipath_max_m: 100 } },
       dwell: { origin: { median_min: 15, sigma: 0.6, max_min: 45, long_wait_probability: 0.10 }, destination: { median_min: 20, sigma: 0.7, max_min: 60, long_wait_probability: 0.08 }, idle: { median_min: 10, sigma: 0.5, max_min: 30, long_wait_probability: 0.10 } },
       breaks: { driving_hours_between_breaks: 4.5, mandatory_break_duration_min: 45, max_daily_driving_hours: 9 },
+      overnight: {
+        enabled: true,
+        rest_hours_min: 10,
+        rest_hours_max: 11,
+        ping_interval_min_sec: 300,
+        ping_interval_max_sec: 900,
+      },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
       poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
       ghost_trailer: {
@@ -187,6 +194,13 @@ export interface GenerationConfig {
   };
   dwell: Record<string, DwellConfig | Record<string, DwellConfig>>;
   breaks?: { driving_hours_between_breaks: number; mandatory_break_duration_min: number; max_daily_driving_hours: number };
+  overnight?: {
+    enabled?: boolean;
+    rest_hours_min: number;
+    rest_hours_max: number;
+    ping_interval_min_sec: number;
+    ping_interval_max_sec: number;
+  };
   battery?: { range_km: number; drain_per_km: number; recharge_threshold_pct: number };
   delivery_sla?: { target_minutes: number; warning_minutes: number };
   detour?: { probability: number; max_detour_factor: number };

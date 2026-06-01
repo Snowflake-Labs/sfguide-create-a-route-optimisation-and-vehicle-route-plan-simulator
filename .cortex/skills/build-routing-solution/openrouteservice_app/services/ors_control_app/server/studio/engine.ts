@@ -47,6 +47,7 @@ interface VehicleDayResult {
   successes: number;
   failures: number;
   unroutable: number;
+  busyUntilDayOffset?: number;
 }
 
 export async function* generateTelemetry(
@@ -114,6 +115,7 @@ export async function* generateTelemetry(
   let consecutiveFails = 0;
   let unroutableSkips = 0;
   const unroutablePoiIds = new Set<string>();
+  const busyUntil = new Map<string, number>();
   const MAX_CONSECUTIVE_FAILURES = 25;
   const MIN_ATTEMPTS_BEFORE_STOP = 20;
   const MAX_ROUTE_RETRIES = 3;
@@ -163,6 +165,7 @@ export async function* generateTelemetry(
     let successes = 0;
     let failures = 0;
     let unroutable = 0;
+    let busyUntilDayOffset: number | undefined;
 
     // Ghost trailer handling - vehicle is parked at home for several days.
     const inGhostWindow = member.ghost_start_day !== undefined
@@ -197,6 +200,10 @@ export async function* generateTelemetry(
         ghostLifecycle, config, member.home_poi,
         durationSec, ghostCfg.ping_interval_min_sec, ghostCfg.ping_interval_max_sec, memberRng,
       ));
+      return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
+    }
+
+    if ((busyUntil.get(member.vehicle_id) ?? -1) >= dayOffset) {
       return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
     }
 
@@ -377,6 +384,17 @@ export async function* generateTelemetry(
         trips.push(tripRecord);
       }
 
+      const dayStartMidnight = Date.UTC(
+        currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(),
+      );
+      const daysConsumed = Math.floor(
+        (lifecycle.currentTime.getTime() - dayStartMidnight) / 86400000,
+      );
+      if (daysConsumed > 0) {
+        busyUntilDayOffset = dayOffset + daysConsumed;
+        break;
+      }
+
       currentOriginPoi = destPoi;
       lifecycle.tripSeq++;
     }
@@ -386,7 +404,10 @@ export async function* generateTelemetry(
       points.push(...emitDwell(lifecycle, config, null, idleDwell as DwellConfig, 'IDLE', currentOriginPoi, memberRng));
     }
 
-    return { vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable };
+    return {
+      vehicleId: member.vehicle_id, points, trips, successes, failures, unroutable,
+      busyUntilDayOffset,
+    };
   }
 
   // Day loop: dispatch up to PARALLELISM vehicle-day workers concurrently and
@@ -436,8 +457,12 @@ export async function* generateTelemetry(
       totalTrips += result.trips.length;
       if (result.successes > 0) {
         consecutiveFails = 0;
-      } else if (result.failures > 0) {
+      } else       if (result.failures > 0) {
         consecutiveFails += result.failures;
+      }
+
+      if (result.busyUntilDayOffset != null) {
+        busyUntil.set(result.vehicleId, result.busyUntilDayOffset);
       }
 
       // Emit trips immediately (they are small; consumer batches them at 50)
@@ -487,6 +512,9 @@ export async function* generateTelemetry(
           const remaining = await Promise.all(inFlight.values());
           inFlight.clear();
           for (const { result: rest } of remaining) {
+            if (rest.busyUntilDayOffset != null) {
+              busyUntil.set(rest.vehicleId, rest.busyUntilDayOffset);
+            }
             for (const trip of rest.trips) yield { type: 'trip', record: trip };
             if (rest.points.length > 0) {
               totalPoints += rest.points.length;
