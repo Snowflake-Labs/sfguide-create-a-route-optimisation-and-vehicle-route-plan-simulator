@@ -1083,11 +1083,19 @@ BEGIN
     -- Diagnostic-only probe (drives NO destructive action): record how many
     -- graph files are already staged and whether _BUILD_OK is present, purely
     -- for the return message / operator visibility.
+    -- DIRECTORY() is queryable inside owner-rights SQL procs; LIST/RESULT_SCAN
+    -- is NOT (raises "Unsupported statement type 'LIST_FILES'"), which silently
+    -- forced graph_file_count=0 and disabled the runtime-family-reuse override
+    -- below. Refresh first so recent container-side graph writes are visible.
     BEGIN
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+        EXECUTE IMMEDIATE 'ALTER STAGE OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE REFRESH';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
         rs := (SELECT COUNT(*) AS C,
-                      BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') AS HAS_OK
-               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+                      BOOLOR_AGG(RELATIVE_PATH ILIKE :P_REGION || '/%_BUILD_OK%') AS HAS_OK
+               FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE)
+               WHERE RELATIVE_PATH ILIKE :P_REGION || '/%');
         LET c_mk CURSOR FOR rs;
         FOR r IN c_mk DO
             graph_file_count := r.C;
@@ -1375,7 +1383,7 @@ $$
         'isochrones_maximum_intervals', 10,
         'isochrones_maximum_range_distance', 1500000,
         'isochrones_maximum_range_time', 18000
-    )
+    )::VARIANT
 $$;
 
 CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
@@ -1965,9 +1973,17 @@ BEGIN
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
 
     -- Refuse to downsize if no graphs exist (would force a full rebuild on small node).
+    -- DIRECTORY() works inside owner-rights procs; LIST/RESULT_SCAN does not
+    -- (raises "Unsupported statement type 'LIST_FILES'"), which previously made
+    -- this guard always see 0 files and refuse every downsize.
     BEGIN
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
-        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        EXECUTE IMMEDIATE 'ALTER STAGE OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE REFRESH';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        rs := (SELECT COUNT(*) AS C
+               FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE)
+               WHERE RELATIVE_PATH ILIKE :P_REGION || '/%');
         LET c CURSOR FOR rs;
         FOR r IN c DO graph_file_count := r.C; END FOR;
     EXCEPTION WHEN OTHER THEN graph_file_count := 0;
