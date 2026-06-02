@@ -982,6 +982,7 @@ DECLARE
     graph_file_count INTEGER DEFAULT 0;
     rebuild_flag VARCHAR DEFAULT 'false';
     has_build_ok BOOLEAN DEFAULT FALSE;
+    vroom_existed BOOLEAN DEFAULT FALSE;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -1096,6 +1097,27 @@ BEGIN
         graph_file_count := 0; has_build_ok := FALSE;
     END;
 
+    -- ===== Runtime-family reuse =====
+    -- Once a region has already been built (graph files present on the stage),
+    -- honor the family recorded in REGION_ORS_MAP instead of re-resolving the
+    -- large *build* family from the size tier. This makes a prior
+    -- DOWNSIZE_REGION_AFTER_BUILD result sticky: without it, re-running
+    -- create_region_ors_service for an XXL region would re-resolve
+    -- MEM_X64_G2_192 and silently re-inflate the runtime pool the downsize had
+    -- shrunk. A forced rebuild purges the graphs FIRST (REBUILD_REGION_GRAPHS),
+    -- so graphs are absent there and the large build family is used as before.
+    IF (:has_build_ok OR :graph_file_count > 0) THEN
+        LET stored_family VARCHAR DEFAULT NULL;
+        BEGIN
+            SELECT INSTANCE_FAMILY INTO :stored_family
+            FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
+        EXCEPTION WHEN OTHER THEN stored_family := NULL;
+        END;
+        IF (:stored_family IS NOT NULL AND TRIM(:stored_family) <> '') THEN
+            instance_family := :stored_family;
+        END IF;
+    END IF;
+
     -- ===== Family reconciliation =====
     -- CREATE COMPUTE POOL IF NOT EXISTS will not change INSTANCE_FAMILY on
     -- an existing pool, and SPCS forbids ALTER ... INSTANCE_FAMILY. If the
@@ -1115,6 +1137,15 @@ BEGIN
     IF (:existing_family IS NOT NULL AND :existing_family <> :instance_family) THEN
         BEGIN EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name;
         EXCEPTION WHEN OTHER THEN NULL; END;
+        -- The per-region VROOM service is co-located in this pool. SPCS refuses
+        -- to DROP a compute pool that still owns ANY service, so the VROOM must
+        -- be dropped before the pool and recreated after it is rebuilt on the
+        -- new family. (Omitting this is what silently broke
+        -- DOWNSIZE_REGION_AFTER_BUILD: the pool DROP failed and the family swap
+        -- never happened.)
+        BEGIN EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' || UPPER(:P_REGION);
+            vroom_existed := TRUE;
+        EXCEPTION WHEN OTHER THEN NULL; END;
         BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' STOP ALL';
         EXCEPTION WHEN OTHER THEN NULL; END;
         BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' SUSPEND';
@@ -1132,6 +1163,16 @@ BEGIN
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
     create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
+
+    -- If a family swap dropped the co-located VROOM service above, recreate it in
+    -- the freshly-rebuilt pool so OPTIMIZATION for this region still routes to a
+    -- region-local VROOM. Idempotent (CREATE SERVICE IF NOT EXISTS inside).
+    IF (:vroom_existed) THEN
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
 
     MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t
     USING (SELECT :P_REGION AS REGION) s ON t.REGION = s.REGION
@@ -1229,9 +1270,24 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
-    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
+    -- Re-upsize the pool to the build family before rebuilding. After a region
+    -- has been downsized (DOWNSIZE_REGION_AFTER_BUILD) its pool sits on the small
+    -- runtime family; rebuilding a continental graph there would OOM. The graph
+    -- dir was just purged above, so create_region_ors_service resolves the LARGE
+    -- build family (the runtime-family-reuse override only fires when graphs are
+    -- present) and reconciles the pool back up, recreating the service so it
+    -- rebuilds from the PBF. If an in-flight build guard fires (SKIPPED) or the
+    -- recreate errors, fall back to an in-place cycle on the existing pool.
+    LET rebuild_recreate VARCHAR DEFAULT '';
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :compute_size) INTO :rebuild_recreate;
+    EXCEPTION WHEN OTHER THEN rebuild_recreate := 'ERROR';
+    END;
+    IF (:rebuild_recreate LIKE 'SKIPPED%' OR :rebuild_recreate = 'ERROR') THEN
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
+    END IF;
 
     FOR i IN 1 TO :wait_iters DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
@@ -1288,6 +1344,47 @@ BEGIN
 END;
 $$;
 
+-- ===========================================================================
+-- ORS service-level routing limits (per-region, runtime-only — no rebuild).
+--
+-- ORS_LIMIT_DEFAULTS() is the single source of truth for the default values
+-- emitted into ors-config.yml. REGION_ORS_LIMITS stores per-region overrides
+-- so a user can widen distance/waypoint/snapping/matrix/isochrone caps via the
+-- control-app "Routing Limits" panel; WRITE_ORS_CONFIG reads both at config
+-- generation time, so overrides survive every reprovision (Option A — limits
+-- are never lost to a fresh build). Changing these requires only a container
+-- restart (suspend/resume), never a graph rebuild.
+-- ===========================================================================
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()
+RETURNS VARIANT
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}'
+AS
+$$
+    OBJECT_CONSTRUCT(
+        'maximum_distance', 100000000,
+        'maximum_distance_dynamic_weights', 100000000,
+        'maximum_distance_avoid_areas', 100000000,
+        'maximum_distance_alternative_routes', 100000000,
+        'maximum_distance_round_trip_routes', 100000000,
+        'maximum_visited_nodes', 100000000,
+        'maximum_waypoints', 1000,
+        'maximum_snapping_radius', 1000,
+        'matrix_maximum_routes', 2000000,
+        'matrix_maximum_visited_nodes', 100000000,
+        'isochrones_maximum_locations', 2,
+        'isochrones_maximum_intervals', 10,
+        'isochrones_maximum_range_distance', 1500000,
+        'isochrones_maximum_range_time', 18000
+    )
+$$;
+
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
+    REGION     VARCHAR NOT NULL,
+    LIMITS     VARIANT,
+    UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}';
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
@@ -1299,7 +1396,46 @@ EXECUTE AS OWNER
 AS
 $$
 def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
-    import tempfile, os
+    import tempfile, os, json
+
+    # Service-level routing limits: defaults from ORS_LIMIT_DEFAULTS(), then
+    # per-region overrides from REGION_ORS_LIMITS. These are runtime-only caps
+    # (applied on container restart, no graph rebuild). A safe inline fallback
+    # is kept in case the helper objects are absent on an older deploy.
+    limits = {
+        'maximum_distance': 100000000,
+        'maximum_distance_dynamic_weights': 100000000,
+        'maximum_distance_avoid_areas': 100000000,
+        'maximum_distance_alternative_routes': 100000000,
+        'maximum_distance_round_trip_routes': 100000000,
+        'maximum_visited_nodes': 100000000,
+        'maximum_waypoints': 1000,
+        'maximum_snapping_radius': 1000,
+        'matrix_maximum_routes': 2000000,
+        'matrix_maximum_visited_nodes': 100000000,
+        'isochrones_maximum_locations': 2,
+        'isochrones_maximum_intervals': 10,
+        'isochrones_maximum_range_distance': 1500000,
+        'isochrones_maximum_range_time': 18000,
+    }
+    try:
+        d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
+        if d and d[0]['D']:
+            limits.update({k: int(v) for k, v in json.loads(d[0]['D']).items() if v is not None})
+    except Exception:
+        pass
+    try:
+        region_lit = (p_region or '').replace("'", "''")
+        rows = session.sql(
+            "SELECT LIMITS::STRING AS L FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS "
+            "WHERE UPPER(REGION) = UPPER('" + region_lit + "') LIMIT 1"
+        ).collect()
+        if rows and rows[0]['L']:
+            for k, v in json.loads(rows[0]['L']).items():
+                if k in limits and v is not None:
+                    limits[k] = int(v)
+    except Exception:
+        pass
 
     thread_config = {
         'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
@@ -1351,32 +1487,32 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         '        source_file: /home/ors/files/' + p_pbf_file,
         '        instructions: false',
         '      service:',
-        '        maximum_distance: 100000000',
-        '        maximum_distance_dynamic_weights: 100000000',
-        '        maximum_distance_avoid_areas: 100000000',
-        '        maximum_distance_alternative_routes: 100000000',
-        '        maximum_distance_round_trip_routes: 100000000',
-        '        maximum_visited_nodes: 100000000',
-        '        maximum_waypoints: 1000',
-        '        maximum_snapping_radius: 1000',
+        '        maximum_distance: ' + str(limits['maximum_distance']),
+        '        maximum_distance_dynamic_weights: ' + str(limits['maximum_distance_dynamic_weights']),
+        '        maximum_distance_avoid_areas: ' + str(limits['maximum_distance_avoid_areas']),
+        '        maximum_distance_alternative_routes: ' + str(limits['maximum_distance_alternative_routes']),
+        '        maximum_distance_round_trip_routes: ' + str(limits['maximum_distance_round_trip_routes']),
+        '        maximum_visited_nodes: ' + str(limits['maximum_visited_nodes']),
+        '        maximum_waypoints: ' + str(limits['maximum_waypoints']),
+        '        maximum_snapping_radius: ' + str(limits['maximum_snapping_radius']),
         '    profiles:',
     ]
     yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'
     yaml_content += '\n'.join([
         '  endpoints:',
         '    matrix:',
-        '      maximum_visited_nodes: 100000000',
-        '      maximum_routes: 2000000',
-        '      maximum_routes_flexible: 2000000',
+        '      maximum_visited_nodes: ' + str(limits['matrix_maximum_visited_nodes']),
+        '      maximum_routes: ' + str(limits['matrix_maximum_routes']),
+        '      maximum_routes_flexible: ' + str(limits['matrix_maximum_routes']),
         '    isochrones:',
-        '      maximum_locations: 2',
-        '      maximum_intervals: 10',
+        '      maximum_locations: ' + str(limits['isochrones_maximum_locations']),
+        '      maximum_intervals: ' + str(limits['isochrones_maximum_intervals']),
         '      maximum_range_distance:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 1500000',
+        '          value: ' + str(limits['isochrones_maximum_range_distance']),
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 18000',
+        '          value: ' + str(limits['isochrones_maximum_range_time']),
         '',
     ])
 
@@ -1711,7 +1847,7 @@ DECLARE
     svc_name VARCHAR;
     pool_name VARCHAR;
     runtime_family VARCHAR;
-    new_spec VARCHAR;
+    recreate_msg VARCHAR DEFAULT '';
     graph_file_count INTEGER DEFAULT 0;
     rs RESULTSET;
 BEGIN
@@ -1730,7 +1866,7 @@ BEGIN
         RETURN 'Refusing to downsize ' || :P_REGION || ': no graph files found on stage. Run REBUILD_REGION_GRAPHS first.';
     END IF;
 
-    -- Resolve runtime instance family (mirrors create_region_ors_service mapping).
+    -- Resolve runtime instance family.
     -- Three-tier model: S (city) | L (country, was HIGHMEM_X64_L for build) | XXL (continent).
     -- Runtime is intentionally smaller than build to avoid 24/7 spend at build-tier rates.
     IF (:P_RUNTIME_SIZE = 'XXL') THEN
@@ -1743,33 +1879,33 @@ BEGIN
         runtime_family := 'HIGHMEM_X64_M';        -- default to safe high-mem; never CPU-only for non-city
     END IF;
 
-    -- Persist graphs across the cycle (REBUILD_GRAPHS=false).
-    new_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_RUNTIME_SIZE, 'false');
+    -- Record the runtime family BEFORE recreating the service. create_region_ors_service
+    -- honors the stored family whenever graphs are present (which they are here),
+    -- so it recreates the pool on runtime_family instead of re-resolving the large
+    -- build family. This is also what makes the swap actually drop the build-tier
+    -- pool: create_region_ors_service drops the co-located VROOM + ORS services
+    -- first, which the old in-line DROP COMPUTE POOL could never do (the pool still
+    -- owned VROOM, so the drop silently failed and the family never changed).
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :P_RUNTIME_SIZE, UPDATED_AT = SYSDATE()
+    WHERE REGION = :P_REGION;
 
-    -- Suspend service so we can swap the underlying pool.
+    -- Recreate pool + ORS service + VROOM on the runtime family. Graphs are loaded
+    -- from the persisted stage on the smaller box (REBUILD_GRAPHS=false in the spec).
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :P_RUNTIME_SIZE) INTO :recreate_msg;
+
+    -- create_region_ors_service leaves the freshly-created service at
+    -- AUTO_SUSPEND_SECS=0 (for in-progress builds); the build is done here, so
+    -- restore the steady-state service default.
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SUSPEND';
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- Drop the XXL pool and recreate at the runtime family.
+    -- Belt-and-suspenders: ensure VROOM exists in the new pool (create_region_ors_service
+    -- recreates it only when its family-swap branch fired).
     BEGIN
-        EXECUTE IMMEDIATE 'DROP COMPUTE POOL IF EXISTS ' || :pool_name;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-
-    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL ' || :pool_name ||
-        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :runtime_family ||
-        ' AUTO_SUSPEND_SECS = 14400 AUTO_RESUME = TRUE' ||
-        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '","stage":"runtime"}}''';
-
-    -- Apply the new (runtime-sized) spec on top of the new pool.
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name ||
-        ' FROM SPECIFICATION ''' || :new_spec || '''';
-
-    -- Resume to load graphs from the persisted stage.
-    BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' RESUME';
+        CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
@@ -1778,7 +1914,7 @@ BEGIN
     WHERE REGION = :P_REGION;
 
     RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
-           ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage.';
+           ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage. ' || :recreate_msg;
 END;
 $$;
 
