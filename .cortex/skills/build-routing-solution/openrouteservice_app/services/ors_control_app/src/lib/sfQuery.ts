@@ -38,7 +38,24 @@ export async function sfQuery(
       body: JSON.stringify({ sql, database, schema }),
       signal: opts.signal,
     });
-    const body = await res.json();
+    const rawText = await res.text();
+    if (!res.ok) {
+      const msg = `HTTP ${res.status}: ${rawText.slice(0, 200)}`;
+      const err = new Error(msg);
+      console.error('[sfQuery] HTTP error:', msg, 'SQL:', sql.slice(0, 300));
+      if (opts.throwOnError) throw err;
+      return [];
+    }
+    let body: unknown;
+    try {
+      body = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      const msg = `Invalid JSON response: ${rawText.slice(0, 200)}`;
+      const err = new Error(msg);
+      console.error('[sfQuery] parse error:', msg, 'SQL:', sql.slice(0, 300));
+      if (opts.throwOnError) throw err;
+      return [];
+    }
     // SQL errors come back as { error: "..." }. Without this branch, callers
     // see an empty array indistinguishable from "no rows" — the canonical
     // mask for JSON-escape bugs and silent permission errors.

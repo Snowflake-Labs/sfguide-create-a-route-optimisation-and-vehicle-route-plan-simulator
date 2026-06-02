@@ -40,45 +40,25 @@ export function avoidFeaturesArr(csv?: string): string[] {
   return csv.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-// Builds the ORS Matrix `options` payload. Includes profile_params restrictions
-// when the profile is driving-hgv; otherwise omits them (cars/ebikes don't need them).
+// Builds the ORS Matrix `options` payload for the reachability gate only.
+// Do NOT send profile_params.restrictions or avoid_features here: they force ORS
+// into the flexible (non-CH) matrix algorithm, which times out on continental
+// graphs (50x50 EU HGV). driving-hgv without dynamic weighting uses the CH fast
+// path. Full HGV restrictions are enforced at VROOM OPTIMIZATION (buildChallenge).
 export function buildMatrixOptions(
-  profile: string,
   sourcesLngLat: [number, number][],
   destsLngLat: [number, number][],
-  envelope: ReturnType<typeof fleetEnvelope>,
-  avoid: string[],
 ): Record<string, unknown> {
   const locations = [...sourcesLngLat, ...destsLngLat];
   const sources = sourcesLngLat.map((_, i) => i);
   const destinations = destsLngLat.map((_, i) => sourcesLngLat.length + i);
-  const opts: Record<string, unknown> = {
+  return {
     locations,
     sources,
     destinations,
-    metrics: ['duration', 'distance'],
+    metrics: ['duration'],
     resolve_locations: true,
   };
-  if (profile === 'driving-hgv' && envelope.weight > 0) {
-    const options: Record<string, unknown> = {
-      vehicle_type: 'hgv',
-      profile_params: {
-        restrictions: {
-          weight: envelope.weight,
-          height: envelope.height,
-          length: envelope.length,
-          width: envelope.width,
-          axleload: envelope.axleload,
-          hazmat: envelope.hazmat,
-        },
-      },
-    };
-    if (avoid.length) options.avoid_features = avoid;
-    opts.options = options;
-  } else if (avoid.length) {
-    opts.options = { avoid_features: avoid };
-  }
-  return opts;
 }
 
 // One MATRIX call returns a duration/distance matrix that we cache per
@@ -87,8 +67,6 @@ export async function fetchMatrix(
   trailers: Trailer[],
   terminals: Terminal[],
   profile: string,
-  envelope: ReturnType<typeof fleetEnvelope>,
-  avoid: string[],
   region: string,
   maxRepositionMinutes: number,
 ): Promise<MatrixCache> {
@@ -107,7 +85,7 @@ export async function fetchMatrix(
   for (let i = 0; i < trailers.length; i += effectiveTrailerBatch) {
     const batch = trailers.slice(i, i + effectiveTrailerBatch);
     const sources = batch.map(t => [Number(t.LAST_LNG), Number(t.LAST_LAT)] as [number, number]);
-    const opts = buildMatrixOptions(profile, sources, dests, envelope, avoid);
+    const opts = buildMatrixOptions(sources, dests);
     // Dollar-quoted SQL literal so apostrophes/backslashes/quotes inside any
     // free-text field never need escaping. Bubble SQL errors up to the caller
     // so the page can surface "ORS matrix call failed: <msg>" instead of
@@ -125,6 +103,12 @@ export async function fetchMatrix(
       continue;
     }
     const respObj = typeof resp === 'string' ? JSON.parse(resp) : resp;
+    if (respObj && typeof respObj === 'object' && respObj.error) {
+      const msg = typeof respObj.message === 'string'
+        ? respObj.message
+        : String(respObj.error);
+      throw new Error(msg.slice(0, 500));
+    }
     const durations: (number | null)[][] = respObj?.durations || [];
     const distances: (number | null)[][] = respObj?.distances || [];
     for (let r = 0; r < batch.length; r++) {
@@ -171,7 +155,7 @@ export function nearestByRoad(
 // Returns GeoJSON polygon (or null on error). Uses the existing ISOCHRONES
 // wrapper; HGV-specific restrictions inside the wrapper are not yet plumbed
 // through, so this polygon is profile-only (driving-hgv graph) — the matrix
-// gate (which DOES respect profile_params) is the authoritative filter.
+// gate (CH fast-path matrix) is the authoritative duration filter.
 export async function fetchTrailerIsochrone(
   trailer: Trailer,
   profile: string,
