@@ -1651,6 +1651,7 @@ DECLARE
     write_msg    VARCHAR DEFAULT NULL;
     susp_msg     VARCHAR DEFAULT NULL;
     res_msg      VARCHAR DEFAULT NULL;
+    warm_msg     VARCHAR DEFAULT NULL;
 BEGIN
     IF (P_REGION IS NULL OR TRIM(P_REGION) = '') THEN
         RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'region required')::STRING;
@@ -1718,6 +1719,19 @@ BEGIN
     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
     CALL OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(:svc_name) INTO :res_msg;
 
+    -- MMAP regions: warm the page cache after the restart so the first user
+    -- queries are not exposed to cold graph-page faults (10s+ on a small box).
+    -- PREWARM waits for readiness itself, so the fire-and-forget RESUME above is
+    -- fine. Best-effort: a prewarm failure never fails the limits change.
+    BEGIN
+        IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
+               FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+              WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
+            CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
+        END IF;
+    EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-skipped';
+    END;
+
     RETURN OBJECT_CONSTRUCT(
         'status',       'ok',
         'region',       :P_REGION,
@@ -1726,11 +1740,222 @@ BEGIN
         'compute_size', :compute_size,
         'write',        TRY_PARSE_JSON(:write_msg),
         'suspend',      TRY_PARSE_JSON(:susp_msg),
-        'resume',       TRY_PARSE_JSON(:res_msg)
+        'resume',       TRY_PARSE_JSON(:res_msg),
+        'prewarm',      :warm_msg
     )::STRING;
 EXCEPTION
     WHEN OTHER THEN
         RETURN OBJECT_CONSTRUCT('status', 'error', 'region', :P_REGION, 'error', SQLERRM)::STRING;
+END;
+$$;
+
+-- ===========================================================================
+-- PREWARM_REGION_GRAPH(region) -> summary string
+-- ---------------------------------------------------------------------------
+-- MMAP page-cache warmer. When a region serves its graph via
+-- graphs_data_access: MMAP (GRAPHS_DATA_ACCESS='MMAP'), the on-disk graph is
+-- memory-mapped and pages fault in from the (slow) stage-backed volume on
+-- demand. The first long routes after a service start therefore spike to
+-- 10s+ while the shared upper contraction-hierarchy pages fault in; once the
+-- graph (which fits in the box's free RAM) is fully cached, routes drop to
+-- sub-100ms and stay warm for the life of the container.
+--
+-- This proc forces that warm-up off the critical path by firing a star sweep
+-- of long DIRECTIONS routes from the bbox centroid to a 5x5 lattice of points,
+-- traversing the bulk of the network. Each call is independently EXCEPTION-
+-- wrapped so an unsnappable (ocean / off-road) grid point never aborts the
+-- sweep. Best-effort and idempotent: safe to call after any resume.
+--
+-- NOTE: this only runs on EXPLICIT resume paths (resume_region_ors,
+-- APPLY_ORS_LIMITS, downsize). SPCS AUTO_RESUME (a query arriving after idle
+-- auto-suspend) has no proc hook, so the first organic query after an idle
+-- suspend still pays the cold-fault cost. Schedule this proc on a TASK or keep
+-- AUTO_SUSPEND_SECS high for MMAP regions to mitigate that case.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"mmap-prewarm"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    min_lat FLOAT DEFAULT NULL;
+    max_lat FLOAT DEFAULT NULL;
+    min_lon FLOAT DEFAULT NULL;
+    max_lon FLOAT DEFAULT NULL;
+    profile VARCHAR DEFAULT 'driving-car';
+    region_lit VARCHAR;
+    ok_count INTEGER DEFAULT 0;
+    try_count INTEGER DEFAULT 0;
+    ready BOOLEAN DEFAULT FALSE;
+    waited INTEGER DEFAULT 0;
+    pts ARRAY DEFAULT NULL;
+    n INTEGER DEFAULT 0;
+    stride INTEGER DEFAULT 1;
+    jj INTEGER DEFAULT 0;
+    olon FLOAT DEFAULT NULL;
+    olat FLOAT DEFAULT NULL;
+    dlon FLOAT DEFAULT NULL;
+    dlat FLOAT DEFAULT NULL;
+    anchor_lon FLOAT DEFAULT NULL;
+    anchor_lat FLOAT DEFAULT NULL;
+    anchor_found BOOLEAN DEFAULT FALSE;
+    started_at TIMESTAMP DEFAULT SYSDATE();
+    rs RESULTSET;
+BEGIN
+    region_lit := REPLACE(:P_REGION, '''', '''''');
+
+    -- Wait (bounded) until the engine is ready so callers that only fire-and-
+    -- forget a RESUME (APPLY_ORS_LIMITS) can still hand off to this proc safely.
+    WHILE (NOT :ready AND :waited < 300) DO
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+                || :region_lit || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+            LET cr CURSOR FOR rs;
+            FOR r IN cr DO ready := COALESCE(r.R, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN ready := FALSE;
+        END;
+        IF (NOT :ready) THEN
+            CALL SYSTEM$WAIT(10);
+            waited := TIMESTAMPDIFF(SECOND, :started_at, SYSDATE());
+        END IF;
+    END WHILE;
+    IF (NOT :ready) THEN
+        RETURN 'prewarm skipped: ' || :P_REGION || ' not ready after ' || :waited || 's';
+    END IF;
+
+    -- Region bounding box (centroid + lattice span).
+    BEGIN
+        SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON
+          INTO :min_lat, :max_lat, :min_lon, :max_lon
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN min_lat := NULL;
+    END;
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN 'prewarm skipped: no bbox for ' || :P_REGION;
+    END IF;
+
+    -- Resolve the region's primary profile (most-recent non-failed provision
+    -- job, else ORS_STATUS, else driving-car).
+    BEGIN
+        profile := (
+            SELECT SPLIT_PART(PROFILES, ',', 1)
+              FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+             WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+             ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                      COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+             LIMIT 1);
+    EXCEPTION WHEN OTHER THEN profile := NULL;
+    END;
+    IF (profile IS NULL OR TRIM(profile) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :region_lit || ''')::VARCHAR):profiles), '','') AS P');
+            LET cp CURSOR FOR rs;
+            FOR r IN cp DO profile := SPLIT_PART(r.P, ',', 1); END FOR;
+        EXCEPTION WHEN OTHER THEN profile := NULL;
+        END;
+    END IF;
+    IF (profile IS NULL OR TRIM(profile) = '') THEN profile := 'driving-car'; END IF;
+    profile := TRIM(profile);
+
+    -- Sample a 12x12 lattice over the bbox and keep only points that fall inside
+    -- the region BOUNDARY polygon (REGION_CATALOG). This discards ocean / out-of-
+    -- region points (a continental bbox centroid is often open sea) so the warm
+    -- routes have routable land endpoints. Built via EXECUTE IMMEDIATE with the
+    -- bbox numbers interpolated -- a declared CURSOR with :min_lon binds is not
+    -- bound by an implicit FOR-IN open ("Bind variable not set").
+    BEGIN
+        rs := (EXECUTE IMMEDIATE
+            'SELECT ARRAY_AGG(ARRAY_CONSTRUCT(g.glon, g.glat)) AS PTS FROM ('
+            || 'SELECT ' || :min_lon || ' + (' || :max_lon || ' - ' || :min_lon || ') * (MOD(seq,12)/11.0) AS glon, '
+            ||              :min_lat || ' + (' || :max_lat || ' - ' || :min_lat || ') * (FLOOR(seq/12)/11.0) AS glat '
+            || 'FROM (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4())-1 AS seq FROM TABLE(GENERATOR(ROWCOUNT=>144)))) g '
+            || 'JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc '
+            || '  ON rc.BOUNDARY IS NOT NULL '
+            || ' AND (UPPER(rc.LOOKUP_NAME)=UPPER(''' || :region_lit || ''') OR UPPER(rc.REGION_KEY)=UPPER(''' || :region_lit || ''')) '
+            || 'WHERE ST_WITHIN(ST_MAKEPOINT(g.glon, g.glat), rc.BOUNDARY)');
+        LET cg CURSOR FOR rs;
+        FOR r IN cg DO pts := r.PTS; END FOR;
+    EXCEPTION WHEN OTHER THEN pts := NULL;
+    END;
+    n := COALESCE(ARRAY_SIZE(:pts), 0);
+    IF (:n < 2) THEN
+        RETURN 'prewarm skipped: ' || :P_REGION
+            || ' has no boundary land sample (n=' || :n || ') -- cannot pick routable warm points';
+    END IF;
+
+    -- The region BOUNDARY polygon over a continental extract still contains a lot
+    -- of open sea (Atlantic, North Sea, Baltic, Mediterranean) and islands, so a
+    -- geometric point is NOT guaranteed routable. Phase 1: discover a connected
+    -- mainland anchor by probing pairs (i, i+n/2) until one actually routes
+    -- (bounded to 25 probes). Each probe is a long route, so successes already
+    -- warm the upper contraction hierarchy.
+    FOR i IN 0 TO :n - 1 DO
+        IF (NOT :anchor_found AND :try_count < 25) THEN
+            jj := MOD(i + FLOOR(:n / 2), :n);
+            olon := GET(GET(:pts, i), 0)::FLOAT;
+            olat := GET(GET(:pts, i), 1)::FLOAT;
+            dlon := GET(GET(:pts, :jj), 0)::FLOAT;
+            dlat := GET(GET(:pts, :jj), 1)::FLOAT;
+            try_count := try_count + 1;
+            BEGIN
+                rs := (EXECUTE IMMEDIATE
+                    'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                    || '''' || :profile || ''', '
+                    || 'ARRAY_CONSTRUCT(' || :olon || ', ' || :olat || '), '
+                    || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
+                    || '''' || :region_lit || '''))');
+                LET cd CURSOR FOR rs;
+                FOR r IN cd DO
+                    IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN
+                        ok_count := ok_count + 1;
+                        anchor_found := TRUE;
+                        anchor_lon := :olon;
+                        anchor_lat := :olat;
+                    END IF;
+                END FOR;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+    END FOR;
+
+    -- Phase 2: star from the verified anchor to a spread of land points. The
+    -- anchor sits on the connected mainland network, so every reachable target
+    -- yields a long route that faults more of the shared graph into page cache.
+    IF (:anchor_found) THEN
+        stride := GREATEST(1, FLOOR(:n / 30));
+        FOR i IN 0 TO :n - 1 DO
+            IF (MOD(i, :stride) = 0) THEN
+                dlon := GET(GET(:pts, i), 0)::FLOAT;
+                dlat := GET(GET(:pts, i), 1)::FLOAT;
+                try_count := try_count + 1;
+                BEGIN
+                    rs := (EXECUTE IMMEDIATE
+                        'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                        || '''' || :profile || ''', '
+                        || 'ARRAY_CONSTRUCT(' || :anchor_lon || ', ' || :anchor_lat || '), '
+                        || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
+                        || '''' || :region_lit || '''))');
+                    LET cd CURSOR FOR rs;
+                    FOR r IN cd DO
+                        IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN ok_count := ok_count + 1; END IF;
+                    END FOR;
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+            END IF;
+        END FOR;
+    END IF;
+
+    RETURN 'prewarm ' || :P_REGION || ' profile=' || :profile || ': ' || :ok_count
+        || '/' || :try_count || ' routes ok (land sample n=' || :n
+        || ', anchor_found=' || :anchor_found || ') in '
+        || TIMESTAMPDIFF(SECOND, :started_at, SYSDATE()) || 's';
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN 'prewarm error for ' || :P_REGION || ': ' || SQLERRM;
 END;
 $$;
 
@@ -1823,6 +2048,16 @@ BEGIN
             END IF;
         END WHILE;
         IF (:ready) THEN
+            -- MMAP regions: warm the page cache so the first real user queries
+            -- skip cold graph-page faults. Best-effort; never fails the resume.
+            BEGIN
+                IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
+                       FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                      WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
+                    CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION);
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
             RETURN 'Resumed ORS services for ' || :P_REGION || ' (ready+canary_ok in ' || :elapsed || 's)';
         ELSE
             RETURN 'Resumed ORS services for ' || :P_REGION ||
