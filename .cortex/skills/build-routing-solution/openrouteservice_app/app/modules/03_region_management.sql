@@ -1528,7 +1528,117 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         os.unlink(config_path)
         os.rmdir(tmpdir)
 
-    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ')'
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ', max_distance=' + str(limits['maximum_distance']) + ', max_waypoints=' + str(limits['maximum_waypoints']) + ')'
+$$;
+
+-- ===========================================================================
+-- APPLY_ORS_LIMITS — persist per-region service-level routing limits and apply
+-- them WITHOUT a graph rebuild. Stores the overrides in REGION_ORS_LIMITS,
+-- regenerates ors-config.yml on the region's stage (WRITE_ORS_CONFIG reads the
+-- overrides), then suspend/resumes the regional ORS service so the new config
+-- is read on container start. REBUILD_GRAPHS=false means the persisted graph is
+-- reloaded, not recalculated. Profiles / pbf / compute are preserved by
+-- re-deriving them (mirrors REROLL_ORS_CONFIG_INIT_THREADS), with an ORS_STATUS
+-- fallback for the bootstrapped default region that has no provision-job row.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.APPLY_ORS_LIMITS(P_REGION VARCHAR, P_LIMITS VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    pbf_url      VARCHAR DEFAULT NULL;
+    pbf_file     VARCHAR DEFAULT '';
+    profiles     VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT 'S';
+    svc_name     VARCHAR;
+    write_msg    VARCHAR DEFAULT NULL;
+    susp_msg     VARCHAR DEFAULT NULL;
+    res_msg      VARCHAR DEFAULT NULL;
+BEGIN
+    IF (P_REGION IS NULL OR TRIM(P_REGION) = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'region required')::STRING;
+    END IF;
+    svc_name := 'ORS_SERVICE_' || REGEXP_REPLACE(UPPER(:P_REGION), '[^A-Z0-9_]', '');
+
+    -- Self-healing: the table is created by this module on deploy, but ensure it
+    -- exists in case the app calls this proc against an older partial deploy.
+    CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
+        REGION     VARCHAR NOT NULL,
+        LIMITS     VARIANT,
+        UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
+    );
+
+    -- Upsert the per-region overrides (one row per region).
+    DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS WHERE UPPER(REGION) = UPPER(:P_REGION);
+    INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (REGION, LIMITS, UPDATED_AT)
+        SELECT :P_REGION, PARSE_JSON(:P_LIMITS), SYSDATE();
+
+    -- Derive pbf / compute from REGION_ORS_MAP (mirror REROLL_ORS_CONFIG_INIT_THREADS).
+    BEGIN
+        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, 'S')
+          INTO :pbf_url, :compute_size
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION)
+         LIMIT 1;
+    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := 'S';
+    END;
+    pbf_file := SPLIT_PART(COALESCE(:pbf_url, ''), '/', -1);
+    IF (pbf_file = '' OR pbf_file IS NULL) THEN
+        pbf_file := :P_REGION || '.osm.pbf';
+    END IF;
+
+    -- Preserve enabled profiles: most-recent non-failed provision job first.
+    profiles := (
+        SELECT PROFILES
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+         WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+         ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                  COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+         LIMIT 1
+    );
+    -- Fallback for the bootstrapped default region (no provision job): use the
+    -- profiles currently loaded by the running engine.
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE
+                'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):profiles), '','') AS P');
+            LET c CURSOR FOR rs;
+            FOR r IN c DO profiles := r.P; END FOR;
+        EXCEPTION WHEN OTHER THEN profiles := NULL;
+        END;
+    END IF;
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        profiles := 'driving-car';
+    END IF;
+
+    -- Regenerate the staged config with the merged limits.
+    CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_file, :profiles, :compute_size) INTO :write_msg;
+
+    -- Cycle the service so the new config is read on container start. The
+    -- persisted graph is reloaded (REBUILD_GRAPHS=false) — no recalculation.
+    CALL OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(:svc_name) INTO :susp_msg;
+    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+    CALL OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(:svc_name) INTO :res_msg;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status',       'ok',
+        'region',       :P_REGION,
+        'service',      :svc_name,
+        'profiles',     :profiles,
+        'compute_size', :compute_size,
+        'write',        TRY_PARSE_JSON(:write_msg),
+        'suspend',      TRY_PARSE_JSON(:susp_msg),
+        'resume',       TRY_PARSE_JSON(:res_msg)
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'region', :P_REGION, 'error', SQLERRM)::STRING;
+END;
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
