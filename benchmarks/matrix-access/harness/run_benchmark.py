@@ -41,11 +41,11 @@ def get_connection():
 def fetch_probes(conn):
     cur = conn.cursor()
     cur.execute(
-        "SELECT ORIGIN_H3, DEST_H3 FROM OPENROUTESERVICE_APP.BENCH_MATRIX.BENCH_PROBES_W1 ORDER BY probe_id"
+        "SELECT ORIGIN_H3, DEST_H3 FROM BENCHMARK.BENCH_MATRIX.BENCH_PROBES_W1 ORDER BY probe_id"
     )
     w1 = cur.fetchall()
     cur.execute(
-        "SELECT ORIGIN_H3 FROM OPENROUTESERVICE_APP.BENCH_MATRIX.BENCH_PROBES_W2 ORDER BY probe_id"
+        "SELECT ORIGIN_H3 FROM BENCHMARK.BENCH_MATRIX.BENCH_PROBES_W2 ORDER BY probe_id"
     )
     w2 = [r[0] for r in cur.fetchall()]
     cur.close()
@@ -109,7 +109,7 @@ def write_summary(all_rows):
         "# Matrix Access Benchmark - Summary",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-        f"Source: `OPENROUTESERVICE_APP.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES6` (~121 M rows, ~0.71 GB).",
+        f"Source: `BENCHMARK.TRAVEL_MATRIX.GERMANY_DRIVING_HGV_MATRIX_RES7` (~3.2 B rows, ~31.6 GB).",
         "",
         "Latencies are client-measured wall time per query (warm-up excluded).",
         "Result cache disabled at session level.",
@@ -144,6 +144,9 @@ def main():
     ap.add_argument("--warmup", type=int, default=50)
     ap.add_argument("--w1", type=int, default=1000, help="cap on W1 probes")
     ap.add_argument("--w2", type=int, default=200, help="cap on W2 probes")
+    ap.add_argument("--int-warmup-min", type=int, default=45,
+                    help="minutes to dwell after resuming the interactive WH so its "
+                         "data cache warms before measuring the Interactive variant")
     args = ap.parse_args()
 
     random.seed(42)
@@ -163,6 +166,20 @@ def main():
     for variant_id, table, warehouse, label in VARIANTS:
         print(f"\n=== Variant {variant_id} ({label}) on {warehouse} ===")
         use_warehouse(conn, warehouse)
+
+        # Interactive tables serve slowly until the data cache is warm. Resume the
+        # interactive WH (re-attach is idempotent) and dwell before measuring so the
+        # cache is warm. Re-warming also matters after any cluster auto-scale.
+        if variant_id == "E_interactive" and args.int_warmup_min > 0:
+            cur = conn.cursor()
+            cur.execute(
+                "ALTER WAREHOUSE BENCH_INT_WH ADD TABLES "
+                "(BENCHMARK.BENCH_MATRIX.BENCH_MATRIX_INTERACTIVE)"
+            )
+            cur.execute("ALTER WAREHOUSE BENCH_INT_WH RESUME IF SUSPENDED")
+            cur.close()
+            print(f"  Warming interactive cache for {args.int_warmup_min} min ...")
+            time.sleep(args.int_warmup_min * 60)
 
         # W1
         print(f"  W1 point lookup x {len(w1_probes)} ...")

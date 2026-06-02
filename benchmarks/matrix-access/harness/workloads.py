@@ -4,14 +4,14 @@ W1 = point lookup    : WHERE ORIGIN_H3=? AND DEST_H3=? -> 1 row
 W2 = group lookup    : WHERE ORIGIN_H3=?               -> all dests for that origin
 """
 
-DB_SCHEMA = "OPENROUTESERVICE_APP.BENCH_MATRIX"
+DB_SCHEMA = "BENCHMARK.BENCH_MATRIX"
 
 VARIANTS = [
     # (variant_id, table_name, warehouse, label)
     ("A_standard",       "BENCH_MATRIX_STD",         "BENCH_STD_WH", "Standard"),
-    ("B_standard_sos",   "BENCH_MATRIX_SOS",         "BENCH_STD_WH", "Standard+SOS"),
     ("C_clustered",      "BENCH_MATRIX_CLUSTERED",   "BENCH_STD_WH", "Clustered"),
-    ("D_hybrid",         "BENCH_MATRIX_HYBRID",      "BENCH_STD_WH", "Hybrid (Unistore)"),
+    # D_hybrid excluded at 3.2B-row scale: Unistore bulk INSERT did not complete
+    # within ~100 min on LARGE (hybrid bulk-load throughput is the bottleneck).
     ("E_interactive",    "BENCH_MATRIX_INTERACTIVE", "BENCH_INT_WH", "Interactive (Gen2)"),
 ]
 
