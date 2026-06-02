@@ -1766,11 +1766,18 @@ $$;
 -- wrapped so an unsnappable (ocean / off-road) grid point never aborts the
 -- sweep. Best-effort and idempotent: safe to call after any resume.
 --
--- NOTE: this only runs on EXPLICIT resume paths (resume_region_ors,
--- APPLY_ORS_LIMITS, downsize). SPCS AUTO_RESUME (a query arriving after idle
--- auto-suspend) has no proc hook, so the first organic query after an idle
--- suspend still pays the cold-fault cost. Schedule this proc on a TASK or keep
--- AUTO_SUSPEND_SECS high for MMAP regions to mitigate that case.
+-- Call sites: resume_region_ors, APPLY_ORS_LIMITS, DOWNSIZE_REGION_AFTER_BUILD
+-- (MMAP-gated at each caller). City RAM_STORE and legacy high-mem families skip.
+--
+-- AUTO_RESUME after idle (no proc hook): the first query after ORS auto-suspends
+-- (idle >= AUTO_SUSPEND_SECS, default 14400) and SPCS auto-resumes the service
+-- cannot be pre-warmed -- that query triggers the resume and pays the cold-fault
+-- penalty once, then self-warms for the rest of the session. To eliminate that
+-- spike, keep the service hot: ALTER SERVICE ORS_SERVICE_<REGION> SET
+-- AUTO_SUSPEND_SECS = 0 (runs the cheap CPU_X64_SL box 24/7; a deliberate
+-- exception to the 4h steady-state invariant). A periodic keep-warm TASK is
+-- intentionally NOT used: prewarm resumes the service, so a TASK either keeps
+-- the box always-on (erasing the MMAP cost saving) or runs too rarely to help.
 -- ===========================================================================
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(P_REGION VARCHAR)
 RETURNS STRING
@@ -2300,6 +2307,7 @@ DECLARE
     write_msg VARCHAR DEFAULT NULL;
     region_level VARCHAR DEFAULT NULL;
     serving_size VARCHAR DEFAULT NULL;
+    warm_msg VARCHAR DEFAULT NULL;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -2453,9 +2461,20 @@ BEGIN
         GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
+    -- MMAP serving tiers (country/continent -> CPU_X64_SL): warm the page cache
+    -- now so the first user query after the build does not pay cold graph-page
+    -- faults. PREWARM self-waits for readiness. Best-effort: never fails downsize.
+    IF (:gda = 'MMAP') THEN
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
+        EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-skipped';
+        END;
+    END IF;
+
     RETURN 'Region ' || :P_REGION || ' downsized to ' || :serving_size ||
            ' (' || :runtime_family || ', graphs_data_access=' || :gda || '); ' ||
-           :graph_file_count || ' graph files reused from stage. ' || :recreate_msg;
+           :graph_file_count || ' graph files reused from stage. ' || :recreate_msg ||
+           COALESCE(' prewarm=' || :warm_msg, '');
 END;
 $$;
 
