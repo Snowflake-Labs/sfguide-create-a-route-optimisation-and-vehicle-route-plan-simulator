@@ -872,22 +872,57 @@ BEGIN
 END;
 $$;
 
+-- 4-arg form: when P_INSTANCE_FAMILY is a known family, the JVM heap (XMS/XMX)
+-- is derived from that family's physical RAM (~10% XMS / ~75% XMX) instead of
+-- the size tier. This keeps the heap coherent with the actual node after a
+-- DOWNSIZE_REGION_AFTER_BUILD recreates the service on a smaller runtime family
+-- (e.g. an 'L' region downsized onto HIGHMEM_X64_M / 240 GB now gets XMX 180G,
+-- not the 700G build-tier ceiling). Unknown/NULL family falls back to the
+-- legacy size-tier CASE so build-time specs and the 3-arg callers are unchanged.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
+    P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR, P_INSTANCE_FAMILY VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region"}}'
+AS
+$$
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
+        WHEN 'HIGHMEM_X64_M'  THEN '16G'
+        WHEN 'HIGHMEM_X64_L'  THEN '64G'
+        WHEN 'HIGHMEM_X64_SL' THEN '48G'
+        WHEN 'MEM_X64_G2_64'  THEN '32G'
+        WHEN 'MEM_X64_G2_192' THEN '96G'
+        ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END)
+    END ||
+    '","XMX":"' ||
+    CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
+        WHEN 'HIGHMEM_X64_M'  THEN '180G'
+        WHEN 'HIGHMEM_X64_L'  THEN '740G'
+        WHEN 'HIGHMEM_X64_SL' THEN '490G'
+        WHEN 'MEM_X64_G2_64'  THEN '368G'
+        WHEN 'MEM_X64_G2_192' THEN '1080G'
+        ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END)
+    END ||
+    '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
+    '"}]}}'
+$$;
+
+-- 3-arg form retained for backward compatibility (diagnostic call in the
+-- control app's region registry, and any external caller). Delegates to the
+-- 4-arg form with NULL family, preserving the legacy size-tier heap exactly.
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
     P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END ||
-    '","XMX":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END ||
-    '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
-    '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
-    '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
-    '"}]}}'
+    OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(P_REGION, P_COMPUTE_SIZE, P_REBUILD_GRAPHS, NULL)
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -1166,7 +1201,9 @@ BEGIN
         ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
 
-    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag);
+    -- Pass the resolved instance_family so the spec's JVM heap matches the node
+    -- RAM (coherent on downsized runtime families, not just the build tier).
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag, :instance_family);
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
     create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
@@ -1211,16 +1248,19 @@ $$
 DECLARE
     svc_name VARCHAR;
     compute_size VARCHAR DEFAULT 'M';
+    inst_family VARCHAR DEFAULT NULL;
     ors_spec VARCHAR;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    rs := (SELECT COALESCE(COMPUTE_SIZE, 'M') AS CS FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
+    rs := (SELECT COALESCE(COMPUTE_SIZE, 'M') AS CS, INSTANCE_FAMILY AS IF FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
     LET c CURSOR FOR rs;
-    FOR r IN c DO compute_size := r.CS; END FOR;
+    FOR r IN c DO compute_size := r.CS; inst_family := r.IF; END FOR;
 
-    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :compute_size, :P_REBUILD);
+    -- Pass the stored instance_family so the re-applied spec keeps a heap that
+    -- matches the node RAM (coherent after a downsize).
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :compute_size, :P_REBUILD, :inst_family);
 
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name ||
         ' FROM SPECIFICATION ''' || ors_spec || '''';
