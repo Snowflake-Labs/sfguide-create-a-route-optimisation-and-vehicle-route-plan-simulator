@@ -91,6 +91,10 @@ export default function MapView({
   const hasFittedRef = useRef(false);
   const lastRegionRef = useRef<string | undefined>(fitTo?.regionKey);
   const forceFitRef = useRef(false);
+  // True once the user has manually panned/zoomed/rotated. Suppresses the
+  // automatic "re-fit when data leaves the viewport" behavior so a background
+  // data poll never yanks the camera back. Cleared on region change / Recenter.
+  const userMovedRef = useRef(false);
   const basemap = useMemo(() => cartoBasemap(), []);
 
   useEffect(() => {
@@ -130,13 +134,18 @@ export default function MapView({
   if (lastRegionRef.current !== fitRegionKey) {
     lastRegionRef.current = fitRegionKey;
     hasFittedRef.current = false;
+    userMovedRef.current = false;
   }
 
   useEffect(() => {
     if (!dims) return;
     if (!fitTo || !fitCoords || fitCoords.length === 0) return;
     const firstFit = !hasFittedRef.current || forceFitRef.current;
-    if (!firstFit && coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
+    if (!firstFit) {
+      // User took control of the camera: never auto-recenter on a data poll.
+      if (userMovedRef.current) return;
+      if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
+    }
 
     const next = fitBoundsToData({
       width: dims.width,
@@ -165,8 +174,12 @@ export default function MapView({
     }
   }
 
-  const handleViewStateChange = useCallback(({ viewState: vs }: any) => {
+  const handleViewStateChange = useCallback(({ viewState: vs, interactionState }: any) => {
     if (!isValidViewState(vs)) return;
+    if (interactionState && (interactionState.isDragging || interactionState.isPanning ||
+        interactionState.isZooming || interactionState.isRotating)) {
+      userMovedRef.current = true;
+    }
     setViewState(vs);
     onViewStateChange?.(vs);
   }, [onViewStateChange]);
@@ -174,6 +187,7 @@ export default function MapView({
   const recenter = useCallback(() => {
     forceFitRef.current = true;
     hasFittedRef.current = false;
+    userMovedRef.current = false;
     setRecenterTick(t => t + 1);
   }, []);
 
