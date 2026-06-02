@@ -231,3 +231,40 @@ export function coordsSignature(coords: LngLat[] | null | undefined): string {
   const [[a1, a2], [b1, b2]] = b;
   return `${coords.length}|${a1.toFixed(6)},${a2.toFixed(6)},${b1.toFixed(6)},${b2.toFixed(6)}`;
 }
+
+/** True when every coord's bounding box lies inside the current viewport. */
+export function coordsWithinView(
+  coords: LngLat[] | null | undefined,
+  view: ViewState,
+  width: number,
+  height: number,
+): boolean {
+  const dataBounds = boundsOf(coords ?? []);
+  if (!dataBounds) return true;
+  if (!isFiniteNum(width) || !isFiniteNum(height) || width <= 0 || height <= 0) return true;
+  if (!isFiniteNum(view.longitude) || !isFiniteNum(view.latitude) || !isFiniteNum(view.zoom)) return false;
+
+  try {
+    const vp = new WebMercatorViewport({
+      width,
+      height,
+      longitude: view.longitude,
+      latitude: view.latitude,
+      zoom: view.zoom,
+      pitch: view.pitch ?? 0,
+      bearing: view.bearing ?? 0,
+    });
+    const viewBounds = vp.getBounds();
+    if (!viewBounds) return false;
+    const [viewMinLng, viewMinLat, viewMaxLng, viewMaxLat] = viewBounds as [number, number, number, number];
+    const [[minLng, minLat], [maxLng, maxLat]] = dataBounds;
+    return (
+      minLng >= viewMinLng &&
+      minLat >= viewMinLat &&
+      maxLng <= viewMaxLng &&
+      maxLat <= viewMaxLat
+    );
+  } catch {
+    return false;
+  }
+}
