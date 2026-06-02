@@ -49,6 +49,19 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
+    -- Flag every MMAP region for prewarm. This is the real server resume path
+    -- (services.ts -> RESUME_ALL_SERVICES); without this, UI-resumed MMAP regions
+    -- never get warmed. The */2 min RESCUE_PENDING_PROVISIONS reconciler drains
+    -- NEEDS_PREWARM and readiness-gates the actual warm via a passive SHOW SERVICES
+    -- status check, so flagging all MMAP regions here is safe and set-based (no
+    -- service-name parsing). Best-effort: never fails the resume.
+    BEGIN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+         WHERE UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE')) = 'MMAP';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
     RETURN OBJECT_CONSTRUCT(
         'resumed', resumed_count,
         'already_running', already_running
@@ -115,6 +128,17 @@ BEGIN
             END;
         END IF;
     END FOR;
+
+    -- All regional services are now suspended; clear pending prewarm flags so the
+    -- reconciler does not try to warm a suspended region (the status gate would
+    -- skip it anyway, but this keeps NEEDS_PREWARM truthful). The next resume
+    -- (RESUME_ALL_SERVICES / resume_region_ors) re-sets it for MMAP regions.
+    BEGIN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+         WHERE NEEDS_PREWARM = TRUE;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     RETURN 'Suspended ' || suspended_count || ' services';
 END;

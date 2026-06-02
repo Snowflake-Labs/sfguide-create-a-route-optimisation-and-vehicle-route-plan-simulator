@@ -553,9 +553,17 @@ BEGIN
                     -- (city -> GEN_X64_G2_4/RAM_STORE; country/sub-region/continent ->
                     -- CPU_X64_SL/MMAP). Fires for EVERY completed build, including city
                     -- (which now shrinks below its GEN_X64_G2_8 build box). Best-effort;
-                    -- failure is non-fatal so the build still reports COMPLETE.
+                    -- failure is non-fatal so the build still reports COMPLETE -- but a
+                    -- DEGRADED/Refusing result is recorded on the job row so the silent
+                    -- "downsized to a dead service" case is observable.
                     BEGIN
-                        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
+                        LET dz_msg VARCHAR := '';
+                        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE) INTO :dz_msg;
+                        IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                               SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+                             WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
                     EXCEPTION WHEN OTHER THEN NULL;
                     END;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
@@ -778,6 +786,7 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     INSTANCE_FAMILY VARCHAR,
     GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE',
     IS_DEFAULT BOOLEAN DEFAULT FALSE,
+    NEEDS_PREWARM BOOLEAN DEFAULT FALSE,
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
@@ -792,6 +801,19 @@ EXECUTE IMMEDIATE $$
 BEGIN
     ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
         ADD COLUMN IF NOT EXISTS GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE';
+    RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
+
+-- Idempotent backfill of NEEDS_PREWARM (set TRUE by the resume/limits/downsize
+-- paths for MMAP regions; drained by the RESCUE_PENDING_PROVISIONS reconciler).
+-- Same EXECUTE IMMEDIATE wrapper as above so the bare ADD COLUMN can't abort the
+-- module on installs that already have the column.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        ADD COLUMN IF NOT EXISTS NEEDS_PREWARM BOOLEAN DEFAULT FALSE;
     RETURN 'ok';
 EXCEPTION WHEN OTHER THEN RETURN 'skipped';
 END;
@@ -1719,17 +1741,21 @@ BEGIN
     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
     CALL OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(:svc_name) INTO :res_msg;
 
-    -- MMAP regions: warm the page cache after the restart so the first user
-    -- queries are not exposed to cold graph-page faults (10s+ on a small box).
-    -- PREWARM waits for readiness itself, so the fire-and-forget RESUME above is
-    -- fine. Best-effort: a prewarm failure never fails the limits change.
+    -- MMAP regions: flag for prewarm instead of warming inline. The */2 min
+    -- RESCUE_PENDING_PROVISIONS reconciler drains NEEDS_PREWARM (it readiness-
+    -- gates via a passive SHOW SERVICES status check), so the limits change
+    -- returns promptly to the UI instead of blocking on a ~minute-long page-cache
+    -- warm. Best-effort: a flag-write failure never fails the limits change.
     BEGIN
         IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
                FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
               WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
-            CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+               SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+             WHERE UPPER(REGION) = UPPER(:P_REGION);
+            warm_msg := 'flagged-for-reconciler';
         END IF;
-    EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-skipped';
+    EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-flag-skipped';
     END;
 
     RETURN OBJECT_CONSTRUCT(
@@ -2055,13 +2081,17 @@ BEGIN
             END IF;
         END WHILE;
         IF (:ready) THEN
-            -- MMAP regions: warm the page cache so the first real user queries
-            -- skip cold graph-page faults. Best-effort; never fails the resume.
+            -- MMAP regions: flag for prewarm instead of warming inline so the
+            -- resume returns as soon as the service is ready+canary-ok. The */2 min
+            -- RESCUE_PENDING_PROVISIONS reconciler drains NEEDS_PREWARM (readiness-
+            -- gated via a passive SHOW SERVICES status check). Best-effort.
             BEGIN
                 IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
                        FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
                       WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
-                    CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION);
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                       SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+                     WHERE UPPER(REGION) = UPPER(:P_REGION);
                 END IF;
             EXCEPTION WHEN OTHER THEN NULL;
             END;
@@ -2223,6 +2253,16 @@ BEGIN
                 '); resume preserves service object');
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+    -- Clear any pending prewarm flag: the service is now suspended, so a stale
+    -- TRUE would just be skipped by the reconciler's status gate until the next
+    -- resume re-sets it. Keeping the flag truthful avoids an unwanted warm if the
+    -- region is later resumed for a reason that doesn't want a prewarm.
+    BEGIN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+         WHERE UPPER(REGION) = UPPER(:P_REGION);
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     RETURN 'Soft-suspended ' || :P_REGION ||
            ' (resume via resume_region_ors). service_ready was ' || :ors_ready;
 END;
@@ -2308,6 +2348,8 @@ DECLARE
     region_level VARCHAR DEFAULT NULL;
     serving_size VARCHAR DEFAULT NULL;
     warm_msg VARCHAR DEFAULT NULL;
+    downsize_ready BOOLEAN DEFAULT FALSE;
+    downsize_status VARCHAR DEFAULT 'ok';
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -2461,17 +2503,63 @@ BEGIN
         GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
+    -- Assert the recreated service actually comes ready. Every caller wraps this
+    -- proc in EXCEPTION ... NULL and the family/map row is written BEFORE the
+    -- recreate, so a half-failed recreate would otherwise leave REGION_ORS_MAP on
+    -- the new family with a dead service while the build still reports SUCCESS.
+    -- This bounded readiness probe (reuses the ORS_STATUS service_ready signal)
+    -- makes that degrade observable -- COST_GUARD_LOG row + a 'DEGRADED:' return
+    -- prefix -- WITHOUT throwing (the build stays COMPLETE; this stays best-effort).
+    LET dn_started TIMESTAMP := SYSDATE();
+    WHILE (NOT :downsize_ready AND TIMESTAMPDIFF(SECOND, :dn_started, SYSDATE()) < 120) DO
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+                || :P_REGION || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+            LET cdr CURSOR FOR rs;
+            FOR r IN cdr DO downsize_ready := COALESCE(r.R, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN downsize_ready := FALSE;
+        END;
+        IF (NOT :downsize_ready) THEN
+            CALL SYSTEM$WAIT(10);
+        END IF;
+    END WHILE;
+    IF (NOT :downsize_ready) THEN
+        downsize_status := 'degraded';
+        BEGIN
+            INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, REASON)
+            VALUES (:P_REGION, 'downsize_not_ready',
+                    'service not ready after recreate to ' || :runtime_family
+                    || ' (gda=' || :gda || ', size=' || :serving_size || '); ' || :recreate_msg);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+
     -- MMAP serving tiers (country/continent -> CPU_X64_SL): warm the page cache
     -- now so the first user query after the build does not pay cold graph-page
     -- faults. PREWARM self-waits for readiness. Best-effort: never fails downsize.
-    IF (:gda = 'MMAP') THEN
+    -- Only when the service came ready (downsize_status='ok'): warming a service
+    -- that never came up is pointless and would just burn the readiness wait.
+    -- Set NEEDS_PREWARM=TRUE first and clear it only on a successful inline warm,
+    -- so a failed inline warm is retried by the */2 min reconciler (self-heal).
+    IF (:gda = 'MMAP' AND :downsize_status = 'ok') THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+         WHERE UPPER(REGION) = UPPER(:P_REGION);
         BEGIN
             CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
+            -- 'anchor_found=true' is PREWARM's reliable "the sweep actually routed"
+            -- signal; only then clear the flag. Otherwise leave it for the reconciler.
+            IF (:warm_msg LIKE '%anchor_found=true%') THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                   SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+                 WHERE UPPER(REGION) = UPPER(:P_REGION);
+            END IF;
         EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-skipped';
         END;
     END IF;
 
-    RETURN 'Region ' || :P_REGION || ' downsized to ' || :serving_size ||
+    RETURN CASE WHEN :downsize_status = 'degraded' THEN 'DEGRADED: ' ELSE '' END ||
+           'Region ' || :P_REGION || ' downsized to ' || :serving_size ||
            ' (' || :runtime_family || ', graphs_data_access=' || :gda || '); ' ||
            :graph_file_count || ' graph files reused from stage. ' || :recreate_msg ||
            COALESCE(' prewarm=' || :warm_msg, '');
@@ -3306,11 +3394,17 @@ BEGIN
         WHERE BUILD_ID = :build_id;
     END IF;
 
-    -- Best-effort runtime downsize (same as wrapper success path).
     -- Best-effort runtime downsize (same as wrapper success path). Fires for every
-    -- level (city -> GEN_X64_G2_4/RAM_STORE; larger -> CPU_X64_SL/MMAP).
+    -- level (city -> GEN_X64_G2_4/RAM_STORE; larger -> CPU_X64_SL/MMAP). A
+    -- DEGRADED/Refusing result is recorded on the job row so the failure is visible.
     BEGIN
-        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size);
+        LET dz_msg VARCHAR := '';
+        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size) INTO :dz_msg;
+        IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+               SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+             WHERE JOB_ID = :job_id;
+        END IF;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
@@ -3437,9 +3531,20 @@ BEGIN
         -- written just above gates this loop, so the next cycle skips this region).
         -- For the default city region (SanFrancisco) this shrinks the runtime pool
         -- from the GEN_X64_G2_8 build box down to GEN_X64_G2_4. Graphs are present
-        -- and persisted, so DOWNSIZE reuses them (no rebuild). Best-effort.
+        -- and persisted, so DOWNSIZE reuses them (no rebuild). Best-effort. A
+        -- DEGRADED/Refusing result is annotated on the region's latest job row
+        -- (DOWNSIZE also writes a COST_GUARD_LOG row on degrade as a backstop).
         BEGIN
-            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:region, 'S');
+            LET dz_msg VARCHAR := '';
+            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:region, 'S') INTO :dz_msg;
+            IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                   SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+                 WHERE JOB_ID = (
+                       SELECT JOB_ID FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        WHERE UPPER(REGION) = UPPER(:region)
+                        ORDER BY COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1);
+            END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
@@ -3765,6 +3870,48 @@ BEGIN
     -- RUNNING before REPAIR evaluates its in-flight guards.
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- MMAP prewarm drain. Setters (resume_region_ors, APPLY_ORS_LIMITS,
+    -- RESUME_ALL_SERVICES, DOWNSIZE) only flip NEEDS_PREWARM=TRUE and return
+    -- promptly; the actual page-cache warm happens here, off the interactive
+    -- path. Placed after REPAIR and before RETURN so it runs EVERY cycle even
+    -- when the provision-job cursor above is empty (steady state).
+    --
+    -- Wake-safe by construction: for each flagged MMAP region we first read the
+    -- service "status" via a passive SHOW SERVICES (metadata only -- it never
+    -- resumes a service or pool). Only when status='RUNNING' do we call PREWARM.
+    -- A flagged-but-suspended region is skipped (no probe, no wake) and warms
+    -- naturally the next cycle after it is running -- so a stuck flag cannot
+    -- create a 2-min wake-loop / cost regression.
+    BEGIN
+        LET pw_rs RESULTSET := (
+            SELECT REGION FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+             WHERE NEEDS_PREWARM = TRUE
+               AND UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE')) = 'MMAP'
+        );
+        LET pw_cur CURSOR FOR pw_rs;
+        FOR pw IN pw_cur DO
+            BEGIN
+                LET pw_region VARCHAR := pw.REGION;
+                LET pw_status VARCHAR := '';
+                EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(:pw_region)
+                    || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+                BEGIN
+                    SELECT "status" INTO :pw_status
+                    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+                EXCEPTION WHEN OTHER THEN pw_status := '';
+                END;
+                IF (UPPER(:pw_status) = 'RUNNING') THEN
+                    CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:pw_region);
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                       SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+                     WHERE UPPER(REGION) = UPPER(:pw_region);
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END FOR;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
