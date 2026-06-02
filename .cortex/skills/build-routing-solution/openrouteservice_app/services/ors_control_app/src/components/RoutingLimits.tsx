@@ -55,6 +55,89 @@ const GROUPS: Group[] = [
 
 const ALL_KEYS = GROUPS.flatMap(g => g.fields.map(f => f.key));
 
+type ScalePresetId = 'city' | 'country' | 'continent';
+
+interface ScalePreset {
+  id: ScalePresetId;
+  label: string;
+  description: string;
+  limits: Record<string, number>;
+}
+
+// Scale presets pre-fill all fields; Apply still uses PUT /api/regions/:region/ors-limits.
+// Values align with routing-customization ors-config-presets (standard / hgv / continental).
+const SCALE_PRESETS: ScalePreset[] = [
+  {
+    id: 'city',
+    label: 'City',
+    description: 'Metro / urban extract — routes up to ~300 km, standard snapping and VRP size.',
+    limits: {
+      maximum_distance: 300000,
+      maximum_distance_dynamic_weights: 300000,
+      maximum_distance_avoid_areas: 300000,
+      maximum_distance_alternative_routes: 300000,
+      maximum_distance_round_trip_routes: 300000,
+      maximum_visited_nodes: 100000000,
+      maximum_waypoints: 1000,
+      maximum_snapping_radius: 1000,
+      matrix_maximum_routes: 250000,
+      matrix_maximum_visited_nodes: 100000000,
+      isochrones_maximum_locations: 2,
+      isochrones_maximum_intervals: 10,
+      isochrones_maximum_range_distance: 150000,
+      isochrones_maximum_range_time: 5400,
+    },
+  },
+  {
+    id: 'country',
+    label: 'Country',
+    description: 'Single large country — routes up to ~2,000 km, wider snapping for rural roads.',
+    limits: {
+      maximum_distance: 2000000,
+      maximum_distance_dynamic_weights: 2000000,
+      maximum_distance_avoid_areas: 2000000,
+      maximum_distance_alternative_routes: 2000000,
+      maximum_distance_round_trip_routes: 2000000,
+      maximum_visited_nodes: 100000000,
+      maximum_waypoints: 2000,
+      maximum_snapping_radius: 2000,
+      matrix_maximum_routes: 1000000,
+      matrix_maximum_visited_nodes: 100000000,
+      isochrones_maximum_locations: 2,
+      isochrones_maximum_intervals: 10,
+      isochrones_maximum_range_distance: 1500000,
+      isochrones_maximum_range_time: 18000,
+    },
+  },
+  {
+    id: 'continent',
+    label: 'Continent',
+    description: 'Multi-country / continental extract — uncapped route distance, 5 km snapping, large VRP/matrix. Isochrone time capped at 2 h (gateway timeout safety, not geographic scale).',
+    limits: {
+      maximum_distance: 100000000,
+      maximum_distance_dynamic_weights: 100000000,
+      maximum_distance_avoid_areas: 100000000,
+      maximum_distance_alternative_routes: 100000000,
+      maximum_distance_round_trip_routes: 100000000,
+      maximum_visited_nodes: 100000000,
+      maximum_waypoints: 5000,
+      maximum_snapping_radius: 5000,
+      matrix_maximum_routes: 2000000,
+      matrix_maximum_visited_nodes: 100000000,
+      isochrones_maximum_locations: 2,
+      isochrones_maximum_intervals: 10,
+      isochrones_maximum_range_distance: 3000000,
+      isochrones_maximum_range_time: 7200,
+    },
+  },
+];
+
+function limitsToFormValues(limits: Record<string, number>): Record<string, string> {
+  const v: Record<string, string> = {};
+  for (const k of ALL_KEYS) v[k] = String(limits[k] ?? '');
+  return v;
+}
+
 // Distance fields shown in km as a hint; snapping radius stays in meters.
 const KM_KEYS = new Set([
   'maximum_distance',
@@ -83,6 +166,7 @@ export default function RoutingLimits() {
   const [bounds, setBounds] = useState<Record<string, [number, number]>>({});
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [activePreset, setActivePreset] = useState<ScalePresetId | 'custom' | null>(null);
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -98,6 +182,7 @@ export default function RoutingLimits() {
       const v: Record<string, string> = {};
       for (const k of ALL_KEYS) v[k] = String(eff[k] ?? '');
       setValues(v);
+      setActivePreset(null);
     } catch (e: any) {
       setMessage({ kind: 'error', text: e?.message || 'Failed to load limits' });
     }
@@ -106,8 +191,17 @@ export default function RoutingLimits() {
 
   useEffect(() => { load(); }, [load]);
 
+  const selectPreset = (id: ScalePresetId) => {
+    const preset = SCALE_PRESETS.find(p => p.id === id);
+    if (!preset) return;
+    setValues(limitsToFormValues(preset.limits));
+    setActivePreset(id);
+    setMessage(null);
+  };
+
   const setField = (key: string, raw: string) => {
     setValues(prev => ({ ...prev, [key]: raw.replace(/[^0-9]/g, '') }));
+    setActivePreset('custom');
   };
 
   const apply = async (reset: boolean) => {
@@ -145,6 +239,9 @@ export default function RoutingLimits() {
 
   const isModified = (key: string) => values[key] !== '' && Number(values[key]) !== defaults[key];
   const anyOverride = Object.keys(overrides).length > 0;
+  const selectedPresetMeta = activePreset && activePreset !== 'custom'
+    ? SCALE_PRESETS.find(p => p.id === activePreset)
+    : null;
 
   if (loading) return <div className="panel loading">Loading routing limits...</div>;
 
@@ -175,6 +272,39 @@ export default function RoutingLimits() {
           {message.text}
         </div>
       )}
+
+      <section style={{ marginTop: 14 }}>
+        <h3 style={{ marginBottom: 6 }}>Scale preset</h3>
+        <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '0 0 10px' }}>
+          Pre-fill all limits for a typical extract size. Adjust any field afterward (switches to Custom), then Apply.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          {SCALE_PRESETS.map(p => (
+            <button
+              key={p.id}
+              type="button"
+              className={`btn${activePreset === p.id ? ' primary' : ''}`}
+              disabled={applying}
+              onClick={() => selectPreset(p.id)}
+            >
+              {p.label}
+            </button>
+          ))}
+          {activePreset === 'custom' && (
+            <span className="badge warn" style={{ fontSize: 11 }}>Custom</span>
+          )}
+        </div>
+        {selectedPresetMeta && (
+          <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '8px 0 0' }}>
+            {selectedPresetMeta.description}
+          </p>
+        )}
+        {activePreset === 'custom' && (
+          <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '8px 0 0' }}>
+            Values differ from the last selected preset — edit fields freely, then Apply.
+          </p>
+        )}
+      </section>
 
       {GROUPS.map(group => (
         <section key={group.title} style={{ marginTop: 18 }}>
