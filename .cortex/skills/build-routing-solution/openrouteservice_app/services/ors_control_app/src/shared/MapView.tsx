@@ -6,6 +6,7 @@ import type { Layer } from '@deck.gl/core';
 import {
   fitBoundsToData,
   coordsSignature,
+  coordsWithinView,
   DEFAULT_PADDING,
   type LngLat,
   type Padding,
@@ -18,9 +19,8 @@ interface FitToOptions {
   minZoom?: number;
   maxZoom?: number;
   /**
-   * When this key changes, the camera is allowed to re-fit once. Otherwise
-   * the first non-empty fit wins and subsequent data updates won't move
-   * the camera.
+   * When this key changes, the camera re-fits. Otherwise the first non-empty
+   * fit wins; later data updates re-fit only when objects fall outside view.
    */
   regionKey?: string;
 }
@@ -82,6 +82,8 @@ export default function MapView({
     ...(fallbackViewState || {}),
     ...(initialViewState || {}),
   });
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const [recenterTick, setRecenterTick] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,7 +135,8 @@ export default function MapView({
   useEffect(() => {
     if (!dims) return;
     if (!fitTo || !fitCoords || fitCoords.length === 0) return;
-    if (hasFittedRef.current && !forceFitRef.current) return;
+    const firstFit = !hasFittedRef.current || forceFitRef.current;
+    if (!firstFit && coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
 
     const next = fitBoundsToData({
       width: dims.width,

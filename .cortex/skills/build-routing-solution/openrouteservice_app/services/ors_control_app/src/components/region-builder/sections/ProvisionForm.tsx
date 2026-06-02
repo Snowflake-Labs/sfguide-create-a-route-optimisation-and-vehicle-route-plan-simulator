@@ -9,6 +9,7 @@ import {
   ALL_PROFILES, COMPUTE_SIZES, ComputeSize, DEFAULT_PROFILES, SourceTab,
   estTime, recommendComputeSize, sizeClass, sizeLabel,
 } from '../helpers';
+import RegionBoundaryMap from '../RegionBoundaryMap';
 
 interface Props {
   catalog: CatalogRegion[];
@@ -185,6 +186,24 @@ export default function ProvisionForm(props: Props) {
                 </div>
               )}
             </div>
+
+            <RegionBoundaryMap
+              boundaries={[{
+                key: selectedRegion.regionKey,
+                name: selectedRegion.regionName,
+                geojson: selectedRegion.boundaryGeoJson,
+                bbox: selectedRegion.bbox
+                  ? {
+                    minLon: selectedRegion.bbox.minLon,
+                    minLat: selectedRegion.bbox.minLat,
+                    maxLon: selectedRegion.bbox.maxLon,
+                    maxLat: selectedRegion.bbox.maxLat,
+                  }
+                  : null,
+              }]}
+              fitKey={selectedRegion.regionKey}
+              height={260}
+            />
 
             {(selectedRegion.pbfSizeMb ?? 0) > 500 && (
               <div className="warning-banner" style={{ marginTop: '0.5rem' }}>

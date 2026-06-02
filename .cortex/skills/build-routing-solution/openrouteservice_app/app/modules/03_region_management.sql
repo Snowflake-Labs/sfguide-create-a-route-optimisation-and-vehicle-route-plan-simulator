@@ -181,8 +181,12 @@ DECLARE
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
 BEGIN
-    -- JVM heap mirrors the BUILD_ORS_SERVICE_SPEC heap CASE so build history
-    -- captures the actual headroom the JVM was given.
+    -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
+    -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
+    -- resolved instance_family (not the size tier). At BUILD time the family is
+    -- the large build family for the tier, so these size-tier values remain a
+    -- close approximation of the build-time heap (XXL~1080G, L~740G); they are
+    -- intentionally NOT the smaller RUNTIME heap a region gets after downsize.
     xmx_gib := CASE UPPER(:P_COMPUTE_SIZE)
         WHEN 'XXL' THEN 1100 WHEN 'L' THEN 700
         WHEN 'S' THEN 20 ELSE 700 END;
@@ -543,18 +547,25 @@ BEGIN
                         EXIT_STATUS = 'SUCCESS',
                         PEAK_RSS_GIB = :peak_rss
                     WHERE BUILD_ID = :build_id;
-                    -- Auto-downsize the runtime service to a smaller tier so the user
-                    -- does not pay 24/7 build-tier rates for steady-state querying.
-                    -- Only applies to non-city builds (S is already minimal). Mapping
-                    -- is in DOWNSIZE_REGION_AFTER_BUILD: L -> HIGHMEM_X64_M, XXL ->
-                    -- MEM_X64_G2_64. Best-effort; failure is non-fatal so the build
-                    -- still reports COMPLETE even if the downsize hits a transient.
-                    IF (UPPER(:P_COMPUTE_SIZE) IN ('L','XXL')) THEN
-                        BEGIN
-                            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
-                        EXCEPTION WHEN OTHER THEN NULL;
-                        END;
-                    END IF;
+                    -- Auto-downsize the runtime service to a smaller serving tier
+                    -- so the user does not pay 24/7 build-tier rates for steady-state
+                    -- querying. Level-driven mapping lives in DOWNSIZE_REGION_AFTER_BUILD
+                    -- (city -> GEN_X64_G2_4/RAM_STORE; country/sub-region/continent ->
+                    -- CPU_X64_SL/MMAP). Fires for EVERY completed build, including city
+                    -- (which now shrinks below its GEN_X64_G2_8 build box). Best-effort;
+                    -- failure is non-fatal so the build still reports COMPLETE -- but a
+                    -- DEGRADED/Refusing result is recorded on the job row so the silent
+                    -- "downsized to a dead service" case is observable.
+                    BEGIN
+                        LET dz_msg VARCHAR := '';
+                        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE) INTO :dz_msg;
+                        IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+                            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                               SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+                             WHERE JOB_ID = :P_JOB_ID;
+                        END IF;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
                 END IF;
             END IF;
@@ -773,11 +784,40 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
     COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
     INSTANCE_FAMILY VARCHAR,
+    GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE',
     IS_DEFAULT BOOLEAN DEFAULT FALSE,
+    NEEDS_PREWARM BOOLEAN DEFAULT FALSE,
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- Idempotent backfill of GRAPHS_DATA_ACCESS for installs created before this
+-- column existed. Per the ADD COLUMN IF NOT EXISTS gotcha (it can raise a
+-- compile-time "ambiguous column" error when the column already exists), the
+-- ALTER is wrapped in an EXCEPTION-swallowing EXECUTE IMMEDIATE so a fresh
+-- install (where the CREATE TABLE above already has the column) is a clean no-op.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        ADD COLUMN IF NOT EXISTS GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE';
+    RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
+
+-- Idempotent backfill of NEEDS_PREWARM (set TRUE by the resume/limits/downsize
+-- paths for MMAP regions; drained by the RESCUE_PENDING_PROVISIONS reconciler).
+-- Same EXECUTE IMMEDIATE wrapper as above so the bare ADD COLUMN can't abort the
+-- module on installs that already have the column.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        ADD COLUMN IF NOT EXISTS NEEDS_PREWARM BOOLEAN DEFAULT FALSE;
+    RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
 
 -- Idempotent migration for installs created before IS_DEFAULT existed.
 -- Disabled 2026-05-19: triggers "ambiguous column name 'IS_DEFAULT'" on
@@ -872,22 +912,61 @@ BEGIN
 END;
 $$;
 
+-- 4-arg form: when P_INSTANCE_FAMILY is a known family, the JVM heap (XMS/XMX)
+-- is derived from that family's physical RAM (~10% XMS / ~75% XMX) instead of
+-- the size tier. This keeps the heap coherent with the actual node after a
+-- DOWNSIZE_REGION_AFTER_BUILD recreates the service on a smaller runtime family
+-- (e.g. an 'L' region downsized onto HIGHMEM_X64_M / 240 GB now gets XMX 180G,
+-- not the 700G build-tier ceiling). Unknown/NULL family falls back to the
+-- legacy size-tier CASE so build-time specs and the 3-arg callers are unchanged.
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
+    P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR, P_INSTANCE_FAMILY VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region"}}'
+AS
+$$
+    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
+    CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
+        WHEN 'HIGHMEM_X64_M'  THEN '16G'
+        WHEN 'HIGHMEM_X64_L'  THEN '64G'
+        WHEN 'HIGHMEM_X64_SL' THEN '48G'
+        WHEN 'MEM_X64_G2_64'  THEN '32G'
+        WHEN 'MEM_X64_G2_192' THEN '96G'
+        WHEN 'CPU_X64_SL'     THEN '4G'
+        WHEN 'GEN_X64_G2_4'   THEN '1G'
+        ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END)
+    END ||
+    '","XMX":"' ||
+    CASE UPPER(COALESCE(P_INSTANCE_FAMILY, ''))
+        WHEN 'HIGHMEM_X64_M'  THEN '180G'
+        WHEN 'HIGHMEM_X64_L'  THEN '740G'
+        WHEN 'HIGHMEM_X64_SL' THEN '490G'
+        WHEN 'MEM_X64_G2_64'  THEN '368G'
+        WHEN 'MEM_X64_G2_192' THEN '1080G'
+        WHEN 'CPU_X64_SL'     THEN '24G'
+        WHEN 'GEN_X64_G2_4'   THEN '9G'
+        ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END)
+    END ||
+    '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
+    '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
+    '"}]}}'
+$$;
+
+-- 3-arg form retained for backward compatibility (diagnostic call in the
+-- control app's region registry, and any external caller). Delegates to the
+-- 4-arg form with NULL family, preserving the legacy size-tier heap exactly.
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
     P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR
 )
 RETURNS VARCHAR
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region"}}'
 AS
 $$
-    '{"spec":{"containers":[{"name":"ors","image":"/openrouteservice_app/core/image_repository/openrouteservice:v9.0.0","volumeMounts":[{"name":"files","mountPath":"/home/ors/files"},{"name":"graphs","mountPath":"/home/ors/graphs"},{"name":"elevation-cache","mountPath":"/home/ors/elevation_cache"}],"env":{"REBUILD_GRAPHS":"false","ORS_CONFIG_LOCATION":"/home/ors/files/ors-config.yml","XMS":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END ||
-    '","XMX":"' ||
-    CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END ||
-    '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
-    '"},{"name":"graphs","source":"@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || P_REGION ||
-    '"},{"name":"elevation-cache","source":"@OPENROUTESERVICE_APP.CORE.ORS_elevation_cache_SPCS_STAGE/' || P_REGION ||
-    '"}]}}'
+    OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(P_REGION, P_COMPUTE_SIZE, P_REBUILD_GRAPHS, NULL)
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -982,6 +1061,7 @@ DECLARE
     graph_file_count INTEGER DEFAULT 0;
     rebuild_flag VARCHAR DEFAULT 'false';
     has_build_ok BOOLEAN DEFAULT FALSE;
+    vroom_existed BOOLEAN DEFAULT FALSE;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -1082,11 +1162,19 @@ BEGIN
     -- Diagnostic-only probe (drives NO destructive action): record how many
     -- graph files are already staged and whether _BUILD_OK is present, purely
     -- for the return message / operator visibility.
+    -- DIRECTORY() is queryable inside owner-rights SQL procs; LIST/RESULT_SCAN
+    -- is NOT (raises "Unsupported statement type 'LIST_FILES'"), which silently
+    -- forced graph_file_count=0 and disabled the runtime-family-reuse override
+    -- below. Refresh first so recent container-side graph writes are visible.
     BEGIN
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
+        EXECUTE IMMEDIATE 'ALTER STAGE OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE REFRESH';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
         rs := (SELECT COUNT(*) AS C,
-                      BOOLOR_AGG("name" ILIKE '%/_BUILD_OK%') AS HAS_OK
-               FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+                      BOOLOR_AGG(RELATIVE_PATH ILIKE :P_REGION || '/%_BUILD_OK%') AS HAS_OK
+               FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE)
+               WHERE RELATIVE_PATH ILIKE :P_REGION || '/%');
         LET c_mk CURSOR FOR rs;
         FOR r IN c_mk DO
             graph_file_count := r.C;
@@ -1095,6 +1183,27 @@ BEGIN
     EXCEPTION WHEN OTHER THEN
         graph_file_count := 0; has_build_ok := FALSE;
     END;
+
+    -- ===== Runtime-family reuse =====
+    -- Once a region has already been built (graph files present on the stage),
+    -- honor the family recorded in REGION_ORS_MAP instead of re-resolving the
+    -- large *build* family from the size tier. This makes a prior
+    -- DOWNSIZE_REGION_AFTER_BUILD result sticky: without it, re-running
+    -- create_region_ors_service for an XXL region would re-resolve
+    -- MEM_X64_G2_192 and silently re-inflate the runtime pool the downsize had
+    -- shrunk. A forced rebuild purges the graphs FIRST (REBUILD_REGION_GRAPHS),
+    -- so graphs are absent there and the large build family is used as before.
+    IF (:has_build_ok OR :graph_file_count > 0) THEN
+        LET stored_family VARCHAR DEFAULT NULL;
+        BEGIN
+            SELECT INSTANCE_FAMILY INTO :stored_family
+            FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION;
+        EXCEPTION WHEN OTHER THEN stored_family := NULL;
+        END;
+        IF (:stored_family IS NOT NULL AND TRIM(:stored_family) <> '') THEN
+            instance_family := :stored_family;
+        END IF;
+    END IF;
 
     -- ===== Family reconciliation =====
     -- CREATE COMPUTE POOL IF NOT EXISTS will not change INSTANCE_FAMILY on
@@ -1115,6 +1224,15 @@ BEGIN
     IF (:existing_family IS NOT NULL AND :existing_family <> :instance_family) THEN
         BEGIN EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name;
         EXCEPTION WHEN OTHER THEN NULL; END;
+        -- The per-region VROOM service is co-located in this pool. SPCS refuses
+        -- to DROP a compute pool that still owns ANY service, so the VROOM must
+        -- be dropped before the pool and recreated after it is rebuilt on the
+        -- new family. (Omitting this is what silently broke
+        -- DOWNSIZE_REGION_AFTER_BUILD: the pool DROP failed and the family swap
+        -- never happened.)
+        BEGIN EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.VROOM_SERVICE_' || UPPER(:P_REGION);
+            vroom_existed := TRUE;
+        EXCEPTION WHEN OTHER THEN NULL; END;
         BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' STOP ALL';
         EXCEPTION WHEN OTHER THEN NULL; END;
         BEGIN EXECUTE IMMEDIATE 'ALTER COMPUTE POOL ' || :pool_name || ' SUSPEND';
@@ -1127,11 +1245,23 @@ BEGIN
         ' AUTO_SUSPEND_SECS = 3600 AUTO_RESUME = TRUE' ||
         ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '"}}''';
 
-    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag);
+    -- Pass the resolved instance_family so the spec's JVM heap matches the node
+    -- RAM (coherent on downsized runtime families, not just the build tier).
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_COMPUTE_SIZE, :rebuild_flag, :instance_family);
 
     EXECUTE IMMEDIATE 'DROP SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || svc_name;
     create_sql := 'CREATE SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' IN COMPUTE POOL ' || :pool_name || ' FROM SPECIFICATION ''' || ors_spec || ''' MIN_INSTANCES = 1 MAX_INSTANCES = 1 AUTO_SUSPEND_SECS = 0 COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}''';
     EXECUTE IMMEDIATE :create_sql;
+
+    -- If a family swap dropped the co-located VROOM service above, recreate it in
+    -- the freshly-rebuilt pool so OPTIMIZATION for this region still routes to a
+    -- region-local VROOM. Idempotent (CREATE SERVICE IF NOT EXISTS inside).
+    IF (:vroom_existed) THEN
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
 
     MERGE INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP t
     USING (SELECT :P_REGION AS REGION) s ON t.REGION = s.REGION
@@ -1162,16 +1292,19 @@ $$
 DECLARE
     svc_name VARCHAR;
     compute_size VARCHAR DEFAULT 'M';
+    inst_family VARCHAR DEFAULT NULL;
     ors_spec VARCHAR;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
 
-    rs := (SELECT COALESCE(COMPUTE_SIZE, 'M') AS CS FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
+    rs := (SELECT COALESCE(COMPUTE_SIZE, 'M') AS CS, INSTANCE_FAMILY AS IF FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP WHERE REGION = :P_REGION);
     LET c CURSOR FOR rs;
-    FOR r IN c DO compute_size := r.CS; END FOR;
+    FOR r IN c DO compute_size := r.CS; inst_family := r.IF; END FOR;
 
-    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :compute_size, :P_REBUILD);
+    -- Pass the stored instance_family so the re-applied spec keeps a heap that
+    -- matches the node RAM (coherent after a downsize).
+    ors_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :compute_size, :P_REBUILD, :inst_family);
 
     EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name ||
         ' FROM SPECIFICATION ''' || ors_spec || '''';
@@ -1229,9 +1362,24 @@ BEGIN
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
-    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
+    -- Re-upsize the pool to the build family before rebuilding. After a region
+    -- has been downsized (DOWNSIZE_REGION_AFTER_BUILD) its pool sits on the small
+    -- runtime family; rebuilding a continental graph there would OOM. The graph
+    -- dir was just purged above, so create_region_ors_service resolves the LARGE
+    -- build family (the runtime-family-reuse override only fires when graphs are
+    -- present) and reconciles the pool back up, recreating the service so it
+    -- rebuilds from the PBF. If an in-flight build guard fires (SKIPPED) or the
+    -- recreate errors, fall back to an in-place cycle on the existing pool.
+    LET rebuild_recreate VARCHAR DEFAULT '';
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :compute_size) INTO :rebuild_recreate;
+    EXCEPTION WHEN OTHER THEN rebuild_recreate := 'ERROR';
+    END;
+    IF (:rebuild_recreate LIKE 'SKIPPED%' OR :rebuild_recreate = 'ERROR') THEN
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' SUSPEND';
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || svc_name || ' RESUME';
+    END IF;
 
     FOR i IN 1 TO :wait_iters DO
         EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
@@ -1288,6 +1436,47 @@ BEGIN
 END;
 $$;
 
+-- ===========================================================================
+-- ORS service-level routing limits (per-region, runtime-only — no rebuild).
+--
+-- ORS_LIMIT_DEFAULTS() is the single source of truth for the default values
+-- emitted into ors-config.yml. REGION_ORS_LIMITS stores per-region overrides
+-- so a user can widen distance/waypoint/snapping/matrix/isochrone caps via the
+-- control-app "Routing Limits" panel; WRITE_ORS_CONFIG reads both at config
+-- generation time, so overrides survive every reprovision (Option A — limits
+-- are never lost to a fresh build). Changing these requires only a container
+-- restart (suspend/resume), never a graph rebuild.
+-- ===========================================================================
+CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()
+RETURNS VARIANT
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}'
+AS
+$$
+    OBJECT_CONSTRUCT(
+        'maximum_distance', 100000000,
+        'maximum_distance_dynamic_weights', 100000000,
+        'maximum_distance_avoid_areas', 100000000,
+        'maximum_distance_alternative_routes', 100000000,
+        'maximum_distance_round_trip_routes', 100000000,
+        'maximum_visited_nodes', 100000000,
+        'maximum_waypoints', 1000,
+        'maximum_snapping_radius', 1000,
+        'matrix_maximum_routes', 2000000,
+        'matrix_maximum_visited_nodes', 100000000,
+        'isochrones_maximum_locations', 2,
+        'isochrones_maximum_intervals', 10,
+        'isochrones_maximum_range_distance', 1500000,
+        'isochrones_maximum_range_time', 18000
+    )::VARIANT
+$$;
+
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
+    REGION     VARCHAR NOT NULL,
+    LIMITS     VARIANT,
+    UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}';
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.write_ors_config(P_REGION VARCHAR, P_PBF_FILE VARCHAR, P_PROFILES VARCHAR, P_COMPUTE_SIZE VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
@@ -1299,7 +1488,63 @@ EXECUTE AS OWNER
 AS
 $$
 def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
-    import tempfile, os
+    import tempfile, os, json
+
+    # Service-level routing limits: defaults from ORS_LIMIT_DEFAULTS(), then
+    # per-region overrides from REGION_ORS_LIMITS. These are runtime-only caps
+    # (applied on container restart, no graph rebuild). A safe inline fallback
+    # is kept in case the helper objects are absent on an older deploy.
+    limits = {
+        'maximum_distance': 100000000,
+        'maximum_distance_dynamic_weights': 100000000,
+        'maximum_distance_avoid_areas': 100000000,
+        'maximum_distance_alternative_routes': 100000000,
+        'maximum_distance_round_trip_routes': 100000000,
+        'maximum_visited_nodes': 100000000,
+        'maximum_waypoints': 1000,
+        'maximum_snapping_radius': 1000,
+        'matrix_maximum_routes': 2000000,
+        'matrix_maximum_visited_nodes': 100000000,
+        'isochrones_maximum_locations': 2,
+        'isochrones_maximum_intervals': 10,
+        'isochrones_maximum_range_distance': 1500000,
+        'isochrones_maximum_range_time': 18000,
+    }
+    try:
+        d = session.sql("SELECT OPENROUTESERVICE_APP.CORE.ORS_LIMIT_DEFAULTS()::STRING AS D").collect()
+        if d and d[0]['D']:
+            limits.update({k: int(v) for k, v in json.loads(d[0]['D']).items() if v is not None})
+    except Exception:
+        pass
+    try:
+        region_lit = (p_region or '').replace("'", "''")
+        rows = session.sql(
+            "SELECT LIMITS::STRING AS L FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS "
+            "WHERE UPPER(REGION) = UPPER('" + region_lit + "') LIMIT 1"
+        ).collect()
+        if rows and rows[0]['L']:
+            for k, v in json.loads(rows[0]['L']).items():
+                if k in limits and v is not None:
+                    limits[k] = int(v)
+    except Exception:
+        pass
+
+    # Per-region graph data-access mode (RAM_STORE default, MMAP opt-in). MMAP
+    # memory-maps the on-disk graph instead of loading it into the JVM heap, so
+    # a large graph fits on a small box with a small heap (at a slight per-query
+    # latency cost). This is a load-time setting -- switching it only needs a
+    # container restart, never a graph rebuild.
+    graphs_data_access = 'RAM_STORE'
+    try:
+        region_lit2 = (p_region or '').replace("'", "''")
+        gda_rows = session.sql(
+            "SELECT COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE') AS G FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP "
+            "WHERE UPPER(REGION) = UPPER('" + region_lit2 + "') LIMIT 1"
+        ).collect()
+        if gda_rows and gda_rows[0]['G']:
+            graphs_data_access = str(gda_rows[0]['G']).strip().upper()
+    except Exception:
+        pass
 
     thread_config = {
         'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
@@ -1345,38 +1590,44 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     lines = [
         'ors:',
         '  engine:',
+    ]
+    # graphs_data_access goes directly under engine: (omitted when RAM_STORE so
+    # the default behavior is byte-for-byte unchanged for non-MMAP regions).
+    if graphs_data_access == 'MMAP':
+        lines.append('    graphs_data_access: MMAP')
+    lines += [
         '    init_threads: ' + str(init_threads),
         '    profile_default:',
         '      build:',
         '        source_file: /home/ors/files/' + p_pbf_file,
         '        instructions: false',
         '      service:',
-        '        maximum_distance: 100000000',
-        '        maximum_distance_dynamic_weights: 100000000',
-        '        maximum_distance_avoid_areas: 100000000',
-        '        maximum_distance_alternative_routes: 100000000',
-        '        maximum_distance_round_trip_routes: 100000000',
-        '        maximum_visited_nodes: 100000000',
-        '        maximum_waypoints: 1000',
-        '        maximum_snapping_radius: 1000',
+        '        maximum_distance: ' + str(limits['maximum_distance']),
+        '        maximum_distance_dynamic_weights: ' + str(limits['maximum_distance_dynamic_weights']),
+        '        maximum_distance_avoid_areas: ' + str(limits['maximum_distance_avoid_areas']),
+        '        maximum_distance_alternative_routes: ' + str(limits['maximum_distance_alternative_routes']),
+        '        maximum_distance_round_trip_routes: ' + str(limits['maximum_distance_round_trip_routes']),
+        '        maximum_visited_nodes: ' + str(limits['maximum_visited_nodes']),
+        '        maximum_waypoints: ' + str(limits['maximum_waypoints']),
+        '        maximum_snapping_radius: ' + str(limits['maximum_snapping_radius']),
         '    profiles:',
     ]
     yaml_content = '\n'.join(lines) + '\n' + '\n'.join(profile_lines) + '\n'
     yaml_content += '\n'.join([
         '  endpoints:',
         '    matrix:',
-        '      maximum_visited_nodes: 100000000',
-        '      maximum_routes: 2000000',
-        '      maximum_routes_flexible: 2000000',
+        '      maximum_visited_nodes: ' + str(limits['matrix_maximum_visited_nodes']),
+        '      maximum_routes: ' + str(limits['matrix_maximum_routes']),
+        '      maximum_routes_flexible: ' + str(limits['matrix_maximum_routes']),
         '    isochrones:',
-        '      maximum_locations: 2',
-        '      maximum_intervals: 10',
+        '      maximum_locations: ' + str(limits['isochrones_maximum_locations']),
+        '      maximum_intervals: ' + str(limits['isochrones_maximum_intervals']),
         '      maximum_range_distance:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 1500000',
+        '          value: ' + str(limits['isochrones_maximum_range_distance']),
         '      maximum_range_time:',
         '        - profiles: ' + all_profiles_str,
-        '          value: 18000',
+        '          value: ' + str(limits['isochrones_maximum_range_time']),
         '',
     ])
 
@@ -1392,7 +1643,353 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         os.unlink(config_path)
         os.rmdir(tmpdir)
 
-    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ')'
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ', max_distance=' + str(limits['maximum_distance']) + ', max_waypoints=' + str(limits['maximum_waypoints']) + ', graphs_data_access=' + graphs_data_access + ')'
+$$;
+
+-- ===========================================================================
+-- APPLY_ORS_LIMITS — persist per-region service-level routing limits and apply
+-- them WITHOUT a graph rebuild. Stores the overrides in REGION_ORS_LIMITS,
+-- regenerates ors-config.yml on the region's stage (WRITE_ORS_CONFIG reads the
+-- overrides), then suspend/resumes the regional ORS service so the new config
+-- is read on container start. REBUILD_GRAPHS=false means the persisted graph is
+-- reloaded, not recalculated. Profiles / pbf / compute are preserved by
+-- re-deriving them (mirrors REROLL_ORS_CONFIG_INIT_THREADS), with an ORS_STATUS
+-- fallback for the bootstrapped default region that has no provision-job row.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.APPLY_ORS_LIMITS(P_REGION VARCHAR, P_LIMITS VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ors-limits"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    rs RESULTSET;
+    pbf_url      VARCHAR DEFAULT NULL;
+    pbf_file     VARCHAR DEFAULT '';
+    profiles     VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT 'S';
+    svc_name     VARCHAR;
+    write_msg    VARCHAR DEFAULT NULL;
+    susp_msg     VARCHAR DEFAULT NULL;
+    res_msg      VARCHAR DEFAULT NULL;
+    warm_msg     VARCHAR DEFAULT NULL;
+BEGIN
+    IF (P_REGION IS NULL OR TRIM(P_REGION) = '') THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'error', 'region required')::STRING;
+    END IF;
+    svc_name := 'ORS_SERVICE_' || REGEXP_REPLACE(UPPER(:P_REGION), '[^A-Z0-9_]', '');
+
+    -- Self-healing: the table is created by this module on deploy, but ensure it
+    -- exists in case the app calls this proc against an older partial deploy.
+    CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (
+        REGION     VARCHAR NOT NULL,
+        LIMITS     VARIANT,
+        UPDATED_AT TIMESTAMP_NTZ DEFAULT SYSDATE()
+    );
+
+    -- Upsert the per-region overrides (one row per region).
+    DELETE FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS WHERE UPPER(REGION) = UPPER(:P_REGION);
+    INSERT INTO OPENROUTESERVICE_APP.CORE.REGION_ORS_LIMITS (REGION, LIMITS, UPDATED_AT)
+        SELECT :P_REGION, PARSE_JSON(:P_LIMITS), SYSDATE();
+
+    -- Derive pbf / compute from REGION_ORS_MAP (mirror REROLL_ORS_CONFIG_INIT_THREADS).
+    BEGIN
+        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, 'S')
+          INTO :pbf_url, :compute_size
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION)
+         LIMIT 1;
+    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := 'S';
+    END;
+    pbf_file := SPLIT_PART(COALESCE(:pbf_url, ''), '/', -1);
+    IF (pbf_file = '' OR pbf_file IS NULL) THEN
+        pbf_file := :P_REGION || '.osm.pbf';
+    END IF;
+
+    -- Preserve enabled profiles: most-recent non-failed provision job first.
+    profiles := (
+        SELECT PROFILES
+          FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+         WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+         ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                  COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+         LIMIT 1
+    );
+    -- Fallback for the bootstrapped default region (no provision job): use the
+    -- profiles currently loaded by the running engine.
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE
+                'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):profiles), '','') AS P');
+            LET c CURSOR FOR rs;
+            FOR r IN c DO profiles := r.P; END FOR;
+        EXCEPTION WHEN OTHER THEN profiles := NULL;
+        END;
+    END IF;
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        profiles := 'driving-car';
+    END IF;
+
+    -- Regenerate the staged config with the merged limits.
+    CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_file, :profiles, :compute_size) INTO :write_msg;
+
+    -- Cycle the service so the new config is read on container start. The
+    -- persisted graph is reloaded (REBUILD_GRAPHS=false) — no recalculation.
+    CALL OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(:svc_name) INTO :susp_msg;
+    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+    CALL OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(:svc_name) INTO :res_msg;
+
+    -- MMAP regions: flag for prewarm instead of warming inline. The */2 min
+    -- RESCUE_PENDING_PROVISIONS reconciler drains NEEDS_PREWARM (it readiness-
+    -- gates via a passive SHOW SERVICES status check), so the limits change
+    -- returns promptly to the UI instead of blocking on a ~minute-long page-cache
+    -- warm. Best-effort: a flag-write failure never fails the limits change.
+    BEGIN
+        IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
+               FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+              WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+               SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+             WHERE UPPER(REGION) = UPPER(:P_REGION);
+            warm_msg := 'flagged-for-reconciler';
+        END IF;
+    EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-flag-skipped';
+    END;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status',       'ok',
+        'region',       :P_REGION,
+        'service',      :svc_name,
+        'profiles',     :profiles,
+        'compute_size', :compute_size,
+        'write',        TRY_PARSE_JSON(:write_msg),
+        'suspend',      TRY_PARSE_JSON(:susp_msg),
+        'resume',       TRY_PARSE_JSON(:res_msg),
+        'prewarm',      :warm_msg
+    )::STRING;
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('status', 'error', 'region', :P_REGION, 'error', SQLERRM)::STRING;
+END;
+$$;
+
+-- ===========================================================================
+-- PREWARM_REGION_GRAPH(region) -> summary string
+-- ---------------------------------------------------------------------------
+-- MMAP page-cache warmer. When a region serves its graph via
+-- graphs_data_access: MMAP (GRAPHS_DATA_ACCESS='MMAP'), the on-disk graph is
+-- memory-mapped and pages fault in from the (slow) stage-backed volume on
+-- demand. The first long routes after a service start therefore spike to
+-- 10s+ while the shared upper contraction-hierarchy pages fault in; once the
+-- graph (which fits in the box's free RAM) is fully cached, routes drop to
+-- sub-100ms and stay warm for the life of the container.
+--
+-- This proc forces that warm-up off the critical path by firing a star sweep
+-- of long DIRECTIONS routes from the bbox centroid to a 5x5 lattice of points,
+-- traversing the bulk of the network. Each call is independently EXCEPTION-
+-- wrapped so an unsnappable (ocean / off-road) grid point never aborts the
+-- sweep. Best-effort and idempotent: safe to call after any resume.
+--
+-- Call sites: resume_region_ors, APPLY_ORS_LIMITS, DOWNSIZE_REGION_AFTER_BUILD
+-- (MMAP-gated at each caller). City RAM_STORE and legacy high-mem families skip.
+--
+-- AUTO_RESUME after idle (no proc hook): the first query after ORS auto-suspends
+-- (idle >= AUTO_SUSPEND_SECS, default 14400) and SPCS auto-resumes the service
+-- cannot be pre-warmed -- that query triggers the resume and pays the cold-fault
+-- penalty once, then self-warms for the rest of the session. To eliminate that
+-- spike, keep the service hot: ALTER SERVICE ORS_SERVICE_<REGION> SET
+-- AUTO_SUSPEND_SECS = 0 (runs the cheap CPU_X64_SL box 24/7; a deliberate
+-- exception to the 4h steady-state invariant). A periodic keep-warm TASK is
+-- intentionally NOT used: prewarm resumes the service, so a TASK either keeps
+-- the box always-on (erasing the MMAP cost saving) or runs too rarely to help.
+-- ===========================================================================
+CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(P_REGION VARCHAR)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"mmap-prewarm"}}'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    min_lat FLOAT DEFAULT NULL;
+    max_lat FLOAT DEFAULT NULL;
+    min_lon FLOAT DEFAULT NULL;
+    max_lon FLOAT DEFAULT NULL;
+    profile VARCHAR DEFAULT 'driving-car';
+    region_lit VARCHAR;
+    ok_count INTEGER DEFAULT 0;
+    try_count INTEGER DEFAULT 0;
+    ready BOOLEAN DEFAULT FALSE;
+    waited INTEGER DEFAULT 0;
+    pts ARRAY DEFAULT NULL;
+    n INTEGER DEFAULT 0;
+    stride INTEGER DEFAULT 1;
+    jj INTEGER DEFAULT 0;
+    olon FLOAT DEFAULT NULL;
+    olat FLOAT DEFAULT NULL;
+    dlon FLOAT DEFAULT NULL;
+    dlat FLOAT DEFAULT NULL;
+    anchor_lon FLOAT DEFAULT NULL;
+    anchor_lat FLOAT DEFAULT NULL;
+    anchor_found BOOLEAN DEFAULT FALSE;
+    started_at TIMESTAMP DEFAULT SYSDATE();
+    rs RESULTSET;
+BEGIN
+    region_lit := REPLACE(:P_REGION, '''', '''''');
+
+    -- Wait (bounded) until the engine is ready so callers that only fire-and-
+    -- forget a RESUME (APPLY_ORS_LIMITS) can still hand off to this proc safely.
+    WHILE (NOT :ready AND :waited < 300) DO
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+                || :region_lit || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+            LET cr CURSOR FOR rs;
+            FOR r IN cr DO ready := COALESCE(r.R, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN ready := FALSE;
+        END;
+        IF (NOT :ready) THEN
+            CALL SYSTEM$WAIT(10);
+            waited := TIMESTAMPDIFF(SECOND, :started_at, SYSDATE());
+        END IF;
+    END WHILE;
+    IF (NOT :ready) THEN
+        RETURN 'prewarm skipped: ' || :P_REGION || ' not ready after ' || :waited || 's';
+    END IF;
+
+    -- Region bounding box (centroid + lattice span).
+    BEGIN
+        SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON
+          INTO :min_lat, :max_lat, :min_lon, :max_lon
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN min_lat := NULL;
+    END;
+    IF (min_lat IS NULL OR max_lat IS NULL OR min_lon IS NULL OR max_lon IS NULL) THEN
+        RETURN 'prewarm skipped: no bbox for ' || :P_REGION;
+    END IF;
+
+    -- Resolve the region's primary profile (most-recent non-failed provision
+    -- job, else ORS_STATUS, else driving-car).
+    BEGIN
+        profile := (
+            SELECT SPLIT_PART(PROFILES, ',', 1)
+              FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+             WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+             ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                      COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+             LIMIT 1);
+    EXCEPTION WHEN OTHER THEN profile := NULL;
+    END;
+    IF (profile IS NULL OR TRIM(profile) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :region_lit || ''')::VARCHAR):profiles), '','') AS P');
+            LET cp CURSOR FOR rs;
+            FOR r IN cp DO profile := SPLIT_PART(r.P, ',', 1); END FOR;
+        EXCEPTION WHEN OTHER THEN profile := NULL;
+        END;
+    END IF;
+    IF (profile IS NULL OR TRIM(profile) = '') THEN profile := 'driving-car'; END IF;
+    profile := TRIM(profile);
+
+    -- Sample a 12x12 lattice over the bbox and keep only points that fall inside
+    -- the region BOUNDARY polygon (REGION_CATALOG). This discards ocean / out-of-
+    -- region points (a continental bbox centroid is often open sea) so the warm
+    -- routes have routable land endpoints. Built via EXECUTE IMMEDIATE with the
+    -- bbox numbers interpolated -- a declared CURSOR with :min_lon binds is not
+    -- bound by an implicit FOR-IN open ("Bind variable not set").
+    BEGIN
+        rs := (EXECUTE IMMEDIATE
+            'SELECT ARRAY_AGG(ARRAY_CONSTRUCT(g.glon, g.glat)) AS PTS FROM ('
+            || 'SELECT ' || :min_lon || ' + (' || :max_lon || ' - ' || :min_lon || ') * (MOD(seq,12)/11.0) AS glon, '
+            ||              :min_lat || ' + (' || :max_lat || ' - ' || :min_lat || ') * (FLOOR(seq/12)/11.0) AS glat '
+            || 'FROM (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4())-1 AS seq FROM TABLE(GENERATOR(ROWCOUNT=>144)))) g '
+            || 'JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc '
+            || '  ON rc.BOUNDARY IS NOT NULL '
+            || ' AND (UPPER(rc.LOOKUP_NAME)=UPPER(''' || :region_lit || ''') OR UPPER(rc.REGION_KEY)=UPPER(''' || :region_lit || ''')) '
+            || 'WHERE ST_WITHIN(ST_MAKEPOINT(g.glon, g.glat), rc.BOUNDARY)');
+        LET cg CURSOR FOR rs;
+        FOR r IN cg DO pts := r.PTS; END FOR;
+    EXCEPTION WHEN OTHER THEN pts := NULL;
+    END;
+    n := COALESCE(ARRAY_SIZE(:pts), 0);
+    IF (:n < 2) THEN
+        RETURN 'prewarm skipped: ' || :P_REGION
+            || ' has no boundary land sample (n=' || :n || ') -- cannot pick routable warm points';
+    END IF;
+
+    -- The region BOUNDARY polygon over a continental extract still contains a lot
+    -- of open sea (Atlantic, North Sea, Baltic, Mediterranean) and islands, so a
+    -- geometric point is NOT guaranteed routable. Phase 1: discover a connected
+    -- mainland anchor by probing pairs (i, i+n/2) until one actually routes
+    -- (bounded to 25 probes). Each probe is a long route, so successes already
+    -- warm the upper contraction hierarchy.
+    FOR i IN 0 TO :n - 1 DO
+        IF (NOT :anchor_found AND :try_count < 25) THEN
+            jj := MOD(i + FLOOR(:n / 2), :n);
+            olon := GET(GET(:pts, i), 0)::FLOAT;
+            olat := GET(GET(:pts, i), 1)::FLOAT;
+            dlon := GET(GET(:pts, :jj), 0)::FLOAT;
+            dlat := GET(GET(:pts, :jj), 1)::FLOAT;
+            try_count := try_count + 1;
+            BEGIN
+                rs := (EXECUTE IMMEDIATE
+                    'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                    || '''' || :profile || ''', '
+                    || 'ARRAY_CONSTRUCT(' || :olon || ', ' || :olat || '), '
+                    || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
+                    || '''' || :region_lit || '''))');
+                LET cd CURSOR FOR rs;
+                FOR r IN cd DO
+                    IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN
+                        ok_count := ok_count + 1;
+                        anchor_found := TRUE;
+                        anchor_lon := :olon;
+                        anchor_lat := :olat;
+                    END IF;
+                END FOR;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END IF;
+    END FOR;
+
+    -- Phase 2: star from the verified anchor to a spread of land points. The
+    -- anchor sits on the connected mainland network, so every reachable target
+    -- yields a long route that faults more of the shared graph into page cache.
+    IF (:anchor_found) THEN
+        stride := GREATEST(1, FLOOR(:n / 30));
+        FOR i IN 0 TO :n - 1 DO
+            IF (MOD(i, :stride) = 0) THEN
+                dlon := GET(GET(:pts, i), 0)::FLOAT;
+                dlat := GET(GET(:pts, i), 1)::FLOAT;
+                try_count := try_count + 1;
+                BEGIN
+                    rs := (EXECUTE IMMEDIATE
+                        'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                        || '''' || :profile || ''', '
+                        || 'ARRAY_CONSTRUCT(' || :anchor_lon || ', ' || :anchor_lat || '), '
+                        || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
+                        || '''' || :region_lit || '''))');
+                    LET cd CURSOR FOR rs;
+                    FOR r IN cd DO
+                        IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN ok_count := ok_count + 1; END IF;
+                    END FOR;
+                EXCEPTION WHEN OTHER THEN NULL;
+                END;
+            END IF;
+        END FOR;
+    END IF;
+
+    RETURN 'prewarm ' || :P_REGION || ' profile=' || :profile || ': ' || :ok_count
+        || '/' || :try_count || ' routes ok (land sample n=' || :n
+        || ', anchor_found=' || :anchor_found || ') in '
+        || TIMESTAMPDIFF(SECOND, :started_at, SYSDATE()) || 's';
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN 'prewarm error for ' || :P_REGION || ': ' || SQLERRM;
+END;
 $$;
 
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.resume_region_ors(P_REGION VARCHAR, P_WAIT_FOR_READY BOOLEAN DEFAULT TRUE, P_TIMEOUT_SECONDS INTEGER DEFAULT 900)
@@ -1484,6 +2081,20 @@ BEGIN
             END IF;
         END WHILE;
         IF (:ready) THEN
+            -- MMAP regions: flag for prewarm instead of warming inline so the
+            -- resume returns as soon as the service is ready+canary-ok. The */2 min
+            -- RESCUE_PENDING_PROVISIONS reconciler drains NEEDS_PREWARM (readiness-
+            -- gated via a passive SHOW SERVICES status check). Best-effort.
+            BEGIN
+                IF ((SELECT UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE'))
+                       FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                      WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1) = 'MMAP') THEN
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                       SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+                     WHERE UPPER(REGION) = UPPER(:P_REGION);
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
             RETURN 'Resumed ORS services for ' || :P_REGION || ' (ready+canary_ok in ' || :elapsed || 's)';
         ELSE
             RETURN 'Resumed ORS services for ' || :P_REGION ||
@@ -1642,6 +2253,16 @@ BEGIN
                 '); resume preserves service object');
     EXCEPTION WHEN OTHER THEN NULL;
     END;
+    -- Clear any pending prewarm flag: the service is now suspended, so a stale
+    -- TRUE would just be skipped by the reconciler's status gate until the next
+    -- resume re-sets it. Keeping the flag truthful avoids an unwanted warm if the
+    -- region is later resumed for a reason that doesn't want a prewarm.
+    BEGIN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+         WHERE UPPER(REGION) = UPPER(:P_REGION);
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
     RETURN 'Soft-suspended ' || :P_REGION ||
            ' (resume via resume_region_ors). service_ready was ' || :ors_ready;
 END;
@@ -1698,12 +2319,17 @@ $$;
 --   one more SPCS object per region and a moving ALTER SERVICE call
 --   between pools, doubling the lifecycle code paths to reconcile.
 -- =============================================================================
+-- Drop the prior 2-arg signature so the new 3-arg form (with two defaulted
+-- params) is not flagged as "ambiguous PROCEDURE overloading". Idempotent:
+-- no-op on a fresh install where the 2-arg version never existed.
+DROP PROCEDURE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(VARCHAR, VARCHAR);
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(
-    P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M'
+    P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M', P_GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE'
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -1711,17 +2337,40 @@ DECLARE
     svc_name VARCHAR;
     pool_name VARCHAR;
     runtime_family VARCHAR;
-    new_spec VARCHAR;
+    recreate_msg VARCHAR DEFAULT '';
     graph_file_count INTEGER DEFAULT 0;
+    gda VARCHAR DEFAULT 'RAM_STORE';
+    pbf_url VARCHAR DEFAULT NULL;
+    pbf_file VARCHAR DEFAULT '';
+    profiles VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT 'S';
+    write_msg VARCHAR DEFAULT NULL;
+    region_level VARCHAR DEFAULT NULL;
+    serving_size VARCHAR DEFAULT NULL;
+    warm_msg VARCHAR DEFAULT NULL;
+    downsize_ready BOOLEAN DEFAULT FALSE;
+    downsize_status VARCHAR DEFAULT 'ok';
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+    gda := UPPER(COALESCE(:P_GRAPHS_DATA_ACCESS, 'RAM_STORE'));
+    IF (:gda NOT IN ('RAM_STORE', 'MMAP')) THEN
+        gda := 'RAM_STORE';
+    END IF;
 
     -- Refuse to downsize if no graphs exist (would force a full rebuild on small node).
+    -- DIRECTORY() works inside owner-rights procs; LIST/RESULT_SCAN does not
+    -- (raises "Unsupported statement type 'LIST_FILES'"), which previously made
+    -- this guard always see 0 files and refuse every downsize.
     BEGIN
-        EXECUTE IMMEDIATE 'LIST @OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE/' || :P_REGION || '/';
-        rs := (SELECT COUNT(*) AS C FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())));
+        EXECUTE IMMEDIATE 'ALTER STAGE OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE REFRESH';
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+    BEGIN
+        rs := (SELECT COUNT(*) AS C
+               FROM DIRECTORY(@OPENROUTESERVICE_APP.CORE.ORS_GRAPHS_SPCS_STAGE)
+               WHERE RELATIVE_PATH ILIKE :P_REGION || '/%');
         LET c CURSOR FOR rs;
         FOR r IN c DO graph_file_count := r.C; END FOR;
     EXCEPTION WHEN OTHER THEN graph_file_count := 0;
@@ -1730,55 +2379,190 @@ BEGIN
         RETURN 'Refusing to downsize ' || :P_REGION || ': no graph files found on stage. Run REBUILD_REGION_GRAPHS first.';
     END IF;
 
-    -- Resolve runtime instance family (mirrors create_region_ors_service mapping).
-    -- Three-tier model: S (city) | L (country, was HIGHMEM_X64_L for build) | XXL (continent).
-    -- Runtime is intentionally smaller than build to avoid 24/7 spend at build-tier rates.
-    IF (:P_RUNTIME_SIZE = 'XXL') THEN
+    -- Resolve the runtime (serving) instance family.
+    -- Level-driven serving-tier policy (keyed off REGION_CATALOG.LEVEL):
+    --   * city                         -> GEN_X64_G2_4 (3 vCPU / 13 GB), RAM_STORE
+    --       Small city graph fits in RAM on a tiny box; MMAP not needed.
+    --   * country / sub-region / continent -> CPU_X64_SL (14 vCPU / 58 GB), MMAP
+    --       The graph is memory-mapped (off-heap, OS page cache), not loaded into
+    --       the JVM heap, so serving RAM is decoupled from graph size. This is the
+    --       proven Europe (continent) serving box; country/continent share it.
+    -- Serving is intentionally far smaller than the build tier to avoid 24/7 spend
+    -- at build-tier rates. If LEVEL is unknown (custom region with no catalog row),
+    -- fall back to the legacy P_RUNTIME_SIZE mapping so existing callers are safe.
+    BEGIN
+        SELECT LEVEL INTO :region_level
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+           OR UPPER(REGION_KEY)  = UPPER(:P_REGION)
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN region_level := NULL;
+    END;
+    region_level := LOWER(TRIM(COALESCE(:region_level, '')));
+
+    -- serving_size is the COMPUTE_SIZE token recorded for the runtime pool. It
+    -- drives WRITE_ORS_CONFIG thread profile; heap is family-driven elsewhere.
+    serving_size := COALESCE(:P_RUNTIME_SIZE, 'M');
+
+    IF (:region_level = 'city') THEN
+        runtime_family := 'GEN_X64_G2_4';         -- 3 vCPU / 13 GB; small city graph in RAM
+        gda := 'RAM_STORE';
+        serving_size := 'S';
+    ELSEIF (:region_level IN ('country', 'sub-region', 'continent')) THEN
+        runtime_family := 'CPU_X64_SL';           -- 14 vCPU / 58 GB; graph mmap'd off-heap
+        gda := 'MMAP';
+        serving_size := 'M';
+    -- ----- Fallback: no LEVEL in catalog. Use legacy P_RUNTIME_SIZE mapping. -----
+    ELSEIF (:P_RUNTIME_SIZE = 'XXL') THEN
         runtime_family := 'MEM_X64_G2_64';        -- downsize XXL build -> mid-tier high-mem
     ELSEIF (:P_RUNTIME_SIZE = 'L') THEN
         runtime_family := 'HIGHMEM_X64_M';        -- downsize L build -> smaller high-mem (was unsafe CPU_X64_L)
     ELSEIF (:P_RUNTIME_SIZE = 'S') THEN
         runtime_family := 'GEN_X64_G2_8';
+    ELSEIF (:P_RUNTIME_SIZE = 'M' AND :gda = 'MMAP') THEN
+        runtime_family := 'CPU_X64_SL';
     ELSE
         runtime_family := 'HIGHMEM_X64_M';        -- default to safe high-mem; never CPU-only for non-city
     END IF;
 
-    -- Persist graphs across the cycle (REBUILD_GRAPHS=false).
-    new_spec := OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(:P_REGION, :P_RUNTIME_SIZE, 'false');
+    -- Record the runtime family BEFORE recreating the service. create_region_ors_service
+    -- honors the stored family whenever graphs are present (which they are here),
+    -- so it recreates the pool on runtime_family instead of re-resolving the large
+    -- build family. This is also what makes the swap actually drop the build-tier
+    -- pool: create_region_ors_service drops the co-located VROOM + ORS services
+    -- first, which the old in-line DROP COMPUTE POOL could never do (the pool still
+    -- owned VROOM, so the drop silently failed and the family never changed).
+    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :serving_size,
+        GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
+    WHERE REGION = :P_REGION;
 
-    -- Suspend service so we can swap the underlying pool.
+    -- Regenerate the staged ors-config.yml BEFORE recreating the service so the
+    -- container reads the correct graphs_data_access on first start. This is
+    -- mandatory for the MMAP+small-family path: CPU_X64_SL has a 24 GB heap, so
+    -- a RAM_STORE start would OOM loading the graph -- the MMAP line must already
+    -- be in the staged config. WRITE_ORS_CONFIG reads GRAPHS_DATA_ACCESS from
+    -- REGION_ORS_MAP (just set above). Derivation mirrors APPLY_ORS_LIMITS.
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SUSPEND';
+        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, :serving_size)
+          INTO :pbf_url, :compute_size
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := :serving_size;
+    END;
+    pbf_file := SPLIT_PART(COALESCE(:pbf_url, ''), '/', -1);
+    IF (pbf_file = '' OR pbf_file IS NULL) THEN
+        pbf_file := :P_REGION || '.osm.pbf';
+    END IF;
+    profiles := (
+        SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+         WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+         ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                  COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+         LIMIT 1
+    );
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE
+                'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):profiles), '','') AS P');
+            LET c2 CURSOR FOR rs;
+            FOR r IN c2 DO profiles := r.P; END FOR;
+        EXCEPTION WHEN OTHER THEN profiles := NULL;
+        END;
+    END IF;
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        profiles := 'driving-car';
+    END IF;
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_file, :profiles, :compute_size) INTO :write_msg;
+    EXCEPTION WHEN OTHER THEN write_msg := 'config-regen-skipped';
+    END;
+
+    -- Recreate pool + ORS service + VROOM on the runtime family. Graphs are loaded
+    -- from the persisted stage on the smaller box (REBUILD_GRAPHS=false in the spec).
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :serving_size) INTO :recreate_msg;
+
+    -- create_region_ors_service leaves the freshly-created service at
+    -- AUTO_SUSPEND_SECS=0 (for in-progress builds); the build is done here, so
+    -- restore the steady-state service default.
+    BEGIN
+        EXECUTE IMMEDIATE 'ALTER SERVICE IF EXISTS OPENROUTESERVICE_APP.CORE.' || :svc_name || ' SET AUTO_SUSPEND_SECS = 14400';
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
-    -- Drop the XXL pool and recreate at the runtime family.
+    -- Belt-and-suspenders: ensure VROOM exists in the new pool (create_region_ors_service
+    -- recreates it only when its family-swap branch fired).
     BEGIN
-        EXECUTE IMMEDIATE 'DROP COMPUTE POOL IF EXISTS ' || :pool_name;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-
-    EXECUTE IMMEDIATE 'CREATE COMPUTE POOL ' || :pool_name ||
-        ' MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = ' || :runtime_family ||
-        ' AUTO_SUSPEND_SECS = 14400 AUTO_RESUME = TRUE' ||
-        ' COMMENT = ''{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","region":"' || :P_REGION || '","stage":"runtime"}}''';
-
-    -- Apply the new (runtime-sized) spec on top of the new pool.
-    EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name ||
-        ' FROM SPECIFICATION ''' || :new_spec || '''';
-
-    -- Resume to load graphs from the persisted stage.
-    BEGIN
-        EXECUTE IMMEDIATE 'ALTER SERVICE OPENROUTESERVICE_APP.CORE.' || :svc_name || ' RESUME';
+        CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:P_REGION);
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family, UPDATED_AT = SYSDATE()
+    SET COMPUTE_SIZE = :serving_size, INSTANCE_FAMILY = :runtime_family,
+        GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
-    RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
-           ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage.';
+    -- Assert the recreated service actually comes ready. Every caller wraps this
+    -- proc in EXCEPTION ... NULL and the family/map row is written BEFORE the
+    -- recreate, so a half-failed recreate would otherwise leave REGION_ORS_MAP on
+    -- the new family with a dead service while the build still reports SUCCESS.
+    -- This bounded readiness probe (reuses the ORS_STATUS service_ready signal)
+    -- makes that degrade observable -- COST_GUARD_LOG row + a 'DEGRADED:' return
+    -- prefix -- WITHOUT throwing (the build stays COMPLETE; this stays best-effort).
+    LET dn_started TIMESTAMP := SYSDATE();
+    WHILE (NOT :downsize_ready AND TIMESTAMPDIFF(SECOND, :dn_started, SYSDATE()) < 120) DO
+        BEGIN
+            rs := (EXECUTE IMMEDIATE 'SELECT COALESCE(TRY_PARSE_JSON(OPENROUTESERVICE_APP.CORE.ORS_STATUS('''
+                || :P_REGION || ''')::VARCHAR):service_ready::BOOLEAN, FALSE) AS R');
+            LET cdr CURSOR FOR rs;
+            FOR r IN cdr DO downsize_ready := COALESCE(r.R, FALSE); END FOR;
+        EXCEPTION WHEN OTHER THEN downsize_ready := FALSE;
+        END;
+        IF (NOT :downsize_ready) THEN
+            CALL SYSTEM$WAIT(10);
+        END IF;
+    END WHILE;
+    IF (NOT :downsize_ready) THEN
+        downsize_status := 'degraded';
+        BEGIN
+            INSERT INTO OPENROUTESERVICE_APP.CORE.COST_GUARD_LOG (REGION, ACTION, REASON)
+            VALUES (:P_REGION, 'downsize_not_ready',
+                    'service not ready after recreate to ' || :runtime_family
+                    || ' (gda=' || :gda || ', size=' || :serving_size || '); ' || :recreate_msg);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+    END IF;
+
+    -- MMAP serving tiers (country/continent -> CPU_X64_SL): warm the page cache
+    -- now so the first user query after the build does not pay cold graph-page
+    -- faults. PREWARM self-waits for readiness. Best-effort: never fails downsize.
+    -- Only when the service came ready (downsize_status='ok'): warming a service
+    -- that never came up is pointless and would just burn the readiness wait.
+    -- Set NEEDS_PREWARM=TRUE first and clear it only on a successful inline warm,
+    -- so a failed inline warm is retried by the */2 min reconciler (self-heal).
+    IF (:gda = 'MMAP' AND :downsize_status = 'ok') THEN
+        UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+           SET NEEDS_PREWARM = TRUE, UPDATED_AT = SYSDATE()
+         WHERE UPPER(REGION) = UPPER(:P_REGION);
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:P_REGION) INTO :warm_msg;
+            -- 'anchor_found=true' is PREWARM's reliable "the sweep actually routed"
+            -- signal; only then clear the flag. Otherwise leave it for the reconciler.
+            IF (:warm_msg LIKE '%anchor_found=true%') THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                   SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+                 WHERE UPPER(REGION) = UPPER(:P_REGION);
+            END IF;
+        EXCEPTION WHEN OTHER THEN warm_msg := 'prewarm-skipped';
+        END;
+    END IF;
+
+    RETURN CASE WHEN :downsize_status = 'degraded' THEN 'DEGRADED: ' ELSE '' END ||
+           'Region ' || :P_REGION || ' downsized to ' || :serving_size ||
+           ' (' || :runtime_family || ', graphs_data_access=' || :gda || '); ' ||
+           :graph_file_count || ' graph files reused from stage. ' || :recreate_msg ||
+           COALESCE(' prewarm=' || :warm_msg, '');
 END;
 $$;
 
@@ -2610,13 +3394,19 @@ BEGIN
         WHERE BUILD_ID = :build_id;
     END IF;
 
-    -- Best-effort runtime downsize (same as wrapper success path).
-    IF (UPPER(:compute_size) IN ('L','XXL')) THEN
-        BEGIN
-            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size);
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    END IF;
+    -- Best-effort runtime downsize (same as wrapper success path). Fires for every
+    -- level (city -> GEN_X64_G2_4/RAM_STORE; larger -> CPU_X64_SL/MMAP). A
+    -- DEGRADED/Refusing result is recorded on the job row so the failure is visible.
+    BEGIN
+        LET dz_msg VARCHAR := '';
+        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size) INTO :dz_msg;
+        IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+            UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+               SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+             WHERE JOB_ID = :job_id;
+        END IF;
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     RETURN 'rescued:' || :P_REGION || ' (job=' || :job_id || ', profiles=' || :profile_count || ')';
 END;
@@ -2734,6 +3524,27 @@ BEGIN
         END;
         BEGIN
             CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:region);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
+        -- Apply the level-driven serving tier exactly once (the _BUILD_OK marker
+        -- written just above gates this loop, so the next cycle skips this region).
+        -- For the default city region (SanFrancisco) this shrinks the runtime pool
+        -- from the GEN_X64_G2_8 build box down to GEN_X64_G2_4. Graphs are present
+        -- and persisted, so DOWNSIZE reuses them (no rebuild). Best-effort. A
+        -- DEGRADED/Refusing result is annotated on the region's latest job row
+        -- (DOWNSIZE also writes a COST_GUARD_LOG row on degrade as a backstop).
+        BEGIN
+            LET dz_msg VARCHAR := '';
+            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:region, 'S') INTO :dz_msg;
+            IF (:dz_msg LIKE 'DEGRADED:%' OR :dz_msg LIKE 'Refusing%') THEN
+                UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                   SET ERROR_MSG = LEFT(COALESCE(ERROR_MSG || ' | ', '') || 'downsize: ' || :dz_msg, 4000)
+                 WHERE JOB_ID = (
+                       SELECT JOB_ID FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+                        WHERE UPPER(REGION) = UPPER(:region)
+                        ORDER BY COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC LIMIT 1);
+            END IF;
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
@@ -3059,6 +3870,48 @@ BEGIN
     -- RUNNING before REPAIR evaluates its in-flight guards.
     BEGIN
         CALL OPENROUTESERVICE_APP.CORE.REPAIR_STUCK_REGION_BUILDS();
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
+
+    -- MMAP prewarm drain. Setters (resume_region_ors, APPLY_ORS_LIMITS,
+    -- RESUME_ALL_SERVICES, DOWNSIZE) only flip NEEDS_PREWARM=TRUE and return
+    -- promptly; the actual page-cache warm happens here, off the interactive
+    -- path. Placed after REPAIR and before RETURN so it runs EVERY cycle even
+    -- when the provision-job cursor above is empty (steady state).
+    --
+    -- Wake-safe by construction: for each flagged MMAP region we first read the
+    -- service "status" via a passive SHOW SERVICES (metadata only -- it never
+    -- resumes a service or pool). Only when status='RUNNING' do we call PREWARM.
+    -- A flagged-but-suspended region is skipped (no probe, no wake) and warms
+    -- naturally the next cycle after it is running -- so a stuck flag cannot
+    -- create a 2-min wake-loop / cost regression.
+    BEGIN
+        LET pw_rs RESULTSET := (
+            SELECT REGION FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+             WHERE NEEDS_PREWARM = TRUE
+               AND UPPER(COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE')) = 'MMAP'
+        );
+        LET pw_cur CURSOR FOR pw_rs;
+        FOR pw IN pw_cur DO
+            BEGIN
+                LET pw_region VARCHAR := pw.REGION;
+                LET pw_status VARCHAR := '';
+                EXECUTE IMMEDIATE 'SHOW SERVICES LIKE ''ORS_SERVICE_' || UPPER(:pw_region)
+                    || ''' IN SCHEMA OPENROUTESERVICE_APP.CORE';
+                BEGIN
+                    SELECT "status" INTO :pw_status
+                    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) LIMIT 1;
+                EXCEPTION WHEN OTHER THEN pw_status := '';
+                END;
+                IF (UPPER(:pw_status) = 'RUNNING') THEN
+                    CALL OPENROUTESERVICE_APP.CORE.PREWARM_REGION_GRAPH(:pw_region);
+                    UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+                       SET NEEDS_PREWARM = FALSE, UPDATED_AT = SYSDATE()
+                     WHERE UPPER(REGION) = UPPER(:pw_region);
+                END IF;
+            EXCEPTION WHEN OTHER THEN NULL;
+            END;
+        END FOR;
     EXCEPTION WHEN OTHER THEN NULL;
     END;
 

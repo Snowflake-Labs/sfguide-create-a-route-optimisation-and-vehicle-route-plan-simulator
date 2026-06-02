@@ -15,7 +15,7 @@ import {
   fetchVehicleClass, type VehicleClass,
 } from './asset-velocity/helpers';
 import {
-  profileForFleet, fleetEnvelope, avoidFeaturesArr,
+  profileForFleet,
   fetchMatrix, nearestByRoad, fetchTrailerIsochrone,
 } from './asset-velocity/ors-helpers';
 import { buildChallenge, skillsForTrailer, skillsForTerminal } from './asset-velocity/vroom-mapper';
@@ -181,9 +181,7 @@ export default function AssetVelocity() {
       const cappedTrailers = forTrailers.slice(0, MATRIX_TRAILER_CAP);
       const cappedTerminals = forTerminals.slice(0, MATRIX_TERMINAL_CAP);
       const profile = vehicleClass?.ORS_PROFILE || profileForFleet(cappedTrailers);
-      const envelope = fleetEnvelope(cappedTrailers);
-      const avoid = avoidFeaturesArr(avoidFeatures);
-      const cache = await fetchMatrix(cappedTrailers, cappedTerminals, profile, envelope, avoid, regionName, maxRepositionMinutes);
+      const cache = await fetchMatrix(cappedTrailers, cappedTerminals, profile, regionName, maxRepositionMinutes);
       setMatrix(cache);
       setMatrixError(null);
     } catch (e: any) {
@@ -193,11 +191,29 @@ export default function AssetVelocity() {
     } finally {
       setMatrixLoading(false);
     }
-  }, [regionName, avoidFeatures, maxRepositionMinutes, vehicleClass]);
+  }, [regionName, maxRepositionMinutes, vehicleClass]);
+
+  // Stable key so the matrix effect does not re-fire when refreshMatrix's
+  // useCallback identity changes while vehicleClass/maxRepositionMinutes settle.
+  const matrixInputKey = useMemo(() => {
+    if (!trailers.length || !terminals.length) return '';
+    const profile = vehicleClass?.ORS_PROFILE || profileForFleet(trailers);
+    return [
+      regionName,
+      trailers.length,
+      terminals.length,
+      trailers[0]?.VEHICLE_ID,
+      terminals[0]?.TERMINAL_ID,
+      maxRepositionMinutes,
+      profile,
+    ].join('|');
+  }, [regionName, trailers, terminals, maxRepositionMinutes, vehicleClass]);
 
   useEffect(() => {
-    if (trailers.length && terminals.length) refreshMatrix(trailers, terminals);
-  }, [trailers, terminals, refreshMatrix]);
+    if (!matrixInputKey) return;
+    void refreshMatrix(trailers, terminals);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- gated by matrixInputKey only
+  }, [matrixInputKey]);
 
   // ----- KPI totals -----
   const totals = useMemo(() => {

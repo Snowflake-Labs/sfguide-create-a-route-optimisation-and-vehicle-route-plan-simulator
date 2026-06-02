@@ -3,7 +3,7 @@
 spec:
   containers:
     - name: reverse-proxy
-      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.4
+      image: /openrouteservice_app/core/image_repository/routing_reverse_proxy:v1.1.5
       env:
         SERVER_HOST: 0.0.0.0
         SERVER_PORT: 8000
@@ -29,6 +29,8 @@ spec:
         ORS_GUARDRAIL_ISOCHRONES_MAX_INTERVALS: "10"
         ORS_GUARDRAIL_ISOCHRONES_MAX_RANGE_S: "18000"
         ORS_GUARDRAIL_DIRECTIONS_MAX_WAYPOINTS: "1000"
+        # Fail matrix calls before SPCS ingress upstream timeout (~60s).
+        ORS_TIMEOUT_MATRIX: "55"
   endpoints:
     - name: gateway
       port: 8000

@@ -4,6 +4,7 @@
 import { Fragment } from 'react';
 import OverflowMenu from '../../../shared/OverflowMenu';
 import { GraphInfo, RegionStatus } from '../helpers';
+import RegionBoundaryMap from '../RegionBoundaryMap';
 
 interface Props {
   regions: RegionStatus[];
@@ -26,6 +27,24 @@ export default function ProvisionedRegionsTable({ regions, loading, onDrop }: Pr
           </div>
         </div>
       ) : (
+        <>
+        <RegionBoundaryMap
+          boundaries={regions.map((c) => ({
+            key: c.region,
+            name: c.display_name || c.region,
+            geojson: c.boundaryGeoJson,
+            bbox: c.bbox
+              ? {
+                minLon: c.bbox.min_lon,
+                minLat: c.bbox.min_lat,
+                maxLon: c.bbox.max_lon,
+                maxLat: c.bbox.max_lat,
+              }
+              : null,
+            isDefault: c.isDefault,
+          }))}
+          height={320}
+        />
         <table className="services-table">
           <thead>
             <tr>
@@ -135,6 +154,7 @@ export default function ProvisionedRegionsTable({ regions, loading, onDrop }: Pr
             })}
           </tbody>
         </table>
+        </>
       )}
     </>
   );

@@ -67,7 +67,16 @@ else
   snow sql -f "$SQL_FILE" -c "$CONN" 2>&1 | tee "$LOG"
 fi
 
-if grep -Eq "^(Error|[0-9]{6} \()" "$LOG"; then
+# Detect per-statement SQL errors. snow CLI renders errors inside a Unicode box
+# (e.g. "│ 090207 (42601): ... SQL compilation error"), so the previous
+# anchored regex "^(Error|[0-9]{6} \()" never matched the box-prefixed line and
+# silently reported OK on a failed module (observed 2026-06-02). Strip leading
+# non-alphanumeric glyphs (box-drawing chars │ ╭ ╰ ─, pipes, whitespace) per
+# line, then match the canonical Snowflake error signature: a six-digit code
+# followed by a 5-char SQLSTATE, e.g. "090207 (42601)". This is precise enough
+# to avoid false positives from echoed SQL/comments (which never carry that
+# code) while catching every real SQL error regardless of box framing.
+if sed 's/^[^[:alnum:]]*//' "$LOG" | grep -Eq '^[0-9]{6} \([0-9A-Z]{5}\)'; then
   echo "FAIL: $BASE emitted SQL errors (see $LOG)" >&2
   _status "FAIL" "$BASE"
   exit 2

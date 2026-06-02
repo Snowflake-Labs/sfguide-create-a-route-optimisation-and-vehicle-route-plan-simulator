@@ -29,6 +29,7 @@ DEFAULT_REGION_NAME = os.getenv('DEFAULT_REGION_NAME', 'SanFrancisco')
 # (e.g. USA driving-hgv) routinely take longer than the legacy 120 s default
 # because fastisochrones is not enabled — see GitHub issue tracking that.
 ORS_TIMEOUT_DEFAULT = int(os.getenv('ORS_TIMEOUT_DEFAULT', '120'))
+ORS_TIMEOUT_MATRIX = int(os.getenv('ORS_TIMEOUT_MATRIX', '55'))
 ORS_TIMEOUT_ISOCHRONES = int(os.getenv('ORS_TIMEOUT_ISOCHRONES', '300'))
 GATEWAY_VERSION = 'v1.1.6'
 
@@ -1092,7 +1093,12 @@ def get_ors_response(function, profile, payload, format, ors_host=None, region_h
     # Isochrones on large graphs (e.g. USA driving-hgv) can take > 120 s because
     # fastisochrones preparation is not enabled. Use a longer per-endpoint
     # timeout for isochrones to avoid silent gateway-side cliffs.
-    timeout_s = ORS_TIMEOUT_ISOCHRONES if function == 'isochrones' else ORS_TIMEOUT_DEFAULT
+    if function == 'isochrones':
+        timeout_s = ORS_TIMEOUT_ISOCHRONES
+    elif function == 'matrix':
+        timeout_s = ORS_TIMEOUT_MATRIX
+    else:
+        timeout_s = ORS_TIMEOUT_DEFAULT
     logger.info(f'Calling: {downstream_url} (timeout={timeout_s}s)')
     logger.info(f'Payload: {payload}')
 

@@ -244,4 +244,6 @@ export interface CatalogRegion {
   pbfSizeMb?: number;
   level: 'continent' | 'country' | 'sub-region' | 'city';
   bbox?: { minLat: number; maxLat: number; minLon: number; maxLon: number };
+  /** GeoJSON string from REGION_CATALOG.BOUNDARY (ST_ASGEOJSON). Null when not baked. */
+  boundaryGeoJson?: string | null;
 }

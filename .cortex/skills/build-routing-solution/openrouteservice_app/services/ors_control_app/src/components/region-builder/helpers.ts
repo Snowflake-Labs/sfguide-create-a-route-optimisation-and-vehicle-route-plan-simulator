@@ -33,6 +33,9 @@ export interface RegionStatus {
   functionExists: boolean;
   isDefault?: boolean;
   graphReadiness?: GraphReadiness | null;
+  /** GeoJSON string from REGION_CATALOG (enriched by /api/regions/provisioned). */
+  boundaryGeoJson?: string | null;
+  bbox?: { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
 }
 
 export interface ProvisionJob {
@@ -136,5 +139,6 @@ export function toCatalogRegion(row: any): CatalogRegion {
     pbfSizeMb: row.PBF_SIZE_MB ?? undefined,
     level: row.LEVEL,
     bbox: row.MIN_LAT != null ? { minLat: Number(row.MIN_LAT), maxLat: Number(row.MAX_LAT), minLon: Number(row.MIN_LON), maxLon: Number(row.MAX_LON) } : undefined,
+    boundaryGeoJson: row.BOUNDARY_GEOJSON ?? null,
   };
 }

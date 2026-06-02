@@ -3,6 +3,7 @@ import { FlyToInterpolator } from '@deck.gl/core';
 import {
   fitBoundsToData,
   coordsSignature,
+  coordsWithinView,
   DEFAULT_PADDING,
   type LngLat,
   type Padding,
@@ -16,10 +17,10 @@ export interface UseFitMapOptions {
   maxZoom?: number;
   pitch?: number;
   /**
-   * Identifier for the active region/area. The map will auto-fit on the
-   * first non-empty data load, and will re-fit again only when this key
-   * changes (e.g. user switches region). Subsequent data updates that
-   * keep the same regionKey will NOT move the camera.
+   * Identifier for the active region/area. The map auto-fits on the first
+   * non-empty data load and re-fits when this key changes (e.g. region switch).
+   * Subsequent data updates re-fit only when the new objects fall outside the
+   * current viewport.
    */
   regionKey?: string;
 }
@@ -65,6 +66,8 @@ export function useFitMap(
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const [viewState, setViewState] = useState<ViewState>(initial);
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
   const [recenterTick, setRecenterTick] = useState(0);
   const hasFittedRef = useRef(false);
   const lastRegionRef = useRef<string | undefined>(regionKey);
@@ -104,7 +107,8 @@ export function useFitMap(
   useEffect(() => {
     if (!dims) return;
     if (!coords || coords.length === 0) return;
-    if (hasFittedRef.current && !forceFitRef.current) return;
+    const firstFit = !hasFittedRef.current || forceFitRef.current;
+    if (!firstFit && coordsWithinView(coords, viewStateRef.current, dims.width, dims.height)) return;
     const next = fitBoundsToData({
       width: dims.width,
       height: dims.height,
