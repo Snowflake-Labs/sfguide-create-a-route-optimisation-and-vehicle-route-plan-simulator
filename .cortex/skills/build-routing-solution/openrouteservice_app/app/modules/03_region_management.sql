@@ -547,18 +547,17 @@ BEGIN
                         EXIT_STATUS = 'SUCCESS',
                         PEAK_RSS_GIB = :peak_rss
                     WHERE BUILD_ID = :build_id;
-                    -- Auto-downsize the runtime service to a smaller tier so the user
-                    -- does not pay 24/7 build-tier rates for steady-state querying.
-                    -- Only applies to non-city builds (S is already minimal). Mapping
-                    -- is in DOWNSIZE_REGION_AFTER_BUILD: L -> HIGHMEM_X64_M, XXL ->
-                    -- MEM_X64_G2_64. Best-effort; failure is non-fatal so the build
-                    -- still reports COMPLETE even if the downsize hits a transient.
-                    IF (UPPER(:P_COMPUTE_SIZE) IN ('L','XXL')) THEN
-                        BEGIN
-                            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
-                        EXCEPTION WHEN OTHER THEN NULL;
-                        END;
-                    END IF;
+                    -- Auto-downsize the runtime service to a smaller serving tier
+                    -- so the user does not pay 24/7 build-tier rates for steady-state
+                    -- querying. Level-driven mapping lives in DOWNSIZE_REGION_AFTER_BUILD
+                    -- (city -> GEN_X64_G2_4/RAM_STORE; country/sub-region/continent ->
+                    -- CPU_X64_SL/MMAP). Fires for EVERY completed build, including city
+                    -- (which now shrinks below its GEN_X64_G2_8 build box). Best-effort;
+                    -- failure is non-fatal so the build still reports COMPLETE.
+                    BEGIN
+                        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :P_COMPUTE_SIZE);
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
                     RETURN 'Job ' || :P_JOB_ID || ' complete: ' || :profile_count || ' profiles ready';
                 END IF;
             END IF;
@@ -914,6 +913,7 @@ $$
         WHEN 'MEM_X64_G2_64'  THEN '32G'
         WHEN 'MEM_X64_G2_192' THEN '96G'
         WHEN 'CPU_X64_SL'     THEN '4G'
+        WHEN 'GEN_X64_G2_4'   THEN '1G'
         ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END)
     END ||
     '","XMX":"' ||
@@ -924,6 +924,7 @@ $$
         WHEN 'MEM_X64_G2_64'  THEN '368G'
         WHEN 'MEM_X64_G2_192' THEN '1080G'
         WHEN 'CPU_X64_SL'     THEN '24G'
+        WHEN 'GEN_X64_G2_4'   THEN '9G'
         ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END)
     END ||
     '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
@@ -2062,6 +2063,8 @@ DECLARE
     profiles VARCHAR DEFAULT '';
     compute_size VARCHAR DEFAULT 'S';
     write_msg VARCHAR DEFAULT NULL;
+    region_level VARCHAR DEFAULT NULL;
+    serving_size VARCHAR DEFAULT NULL;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
@@ -2091,19 +2094,47 @@ BEGIN
         RETURN 'Refusing to downsize ' || :P_REGION || ': no graph files found on stage. Run REBUILD_REGION_GRAPHS first.';
     END IF;
 
-    -- Resolve runtime instance family.
-    -- Three-tier model: S (city) | L (country, was HIGHMEM_X64_L for build) | XXL (continent).
-    -- Runtime is intentionally smaller than build to avoid 24/7 spend at build-tier rates.
-    IF (:P_RUNTIME_SIZE = 'XXL') THEN
+    -- Resolve the runtime (serving) instance family.
+    -- Level-driven serving-tier policy (keyed off REGION_CATALOG.LEVEL):
+    --   * city                         -> GEN_X64_G2_4 (3 vCPU / 13 GB), RAM_STORE
+    --       Small city graph fits in RAM on a tiny box; MMAP not needed.
+    --   * country / sub-region / continent -> CPU_X64_SL (14 vCPU / 58 GB), MMAP
+    --       The graph is memory-mapped (off-heap, OS page cache), not loaded into
+    --       the JVM heap, so serving RAM is decoupled from graph size. This is the
+    --       proven Europe (continent) serving box; country/continent share it.
+    -- Serving is intentionally far smaller than the build tier to avoid 24/7 spend
+    -- at build-tier rates. If LEVEL is unknown (custom region with no catalog row),
+    -- fall back to the legacy P_RUNTIME_SIZE mapping so existing callers are safe.
+    BEGIN
+        SELECT LEVEL INTO :region_level
+        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+        WHERE UPPER(LOOKUP_NAME) = UPPER(:P_REGION)
+           OR UPPER(REGION_KEY)  = UPPER(:P_REGION)
+        LIMIT 1;
+    EXCEPTION WHEN OTHER THEN region_level := NULL;
+    END;
+    region_level := LOWER(TRIM(COALESCE(:region_level, '')));
+
+    -- serving_size is the COMPUTE_SIZE token recorded for the runtime pool. It
+    -- drives WRITE_ORS_CONFIG thread profile; heap is family-driven elsewhere.
+    serving_size := COALESCE(:P_RUNTIME_SIZE, 'M');
+
+    IF (:region_level = 'city') THEN
+        runtime_family := 'GEN_X64_G2_4';         -- 3 vCPU / 13 GB; small city graph in RAM
+        gda := 'RAM_STORE';
+        serving_size := 'S';
+    ELSEIF (:region_level IN ('country', 'sub-region', 'continent')) THEN
+        runtime_family := 'CPU_X64_SL';           -- 14 vCPU / 58 GB; graph mmap'd off-heap
+        gda := 'MMAP';
+        serving_size := 'M';
+    -- ----- Fallback: no LEVEL in catalog. Use legacy P_RUNTIME_SIZE mapping. -----
+    ELSEIF (:P_RUNTIME_SIZE = 'XXL') THEN
         runtime_family := 'MEM_X64_G2_64';        -- downsize XXL build -> mid-tier high-mem
     ELSEIF (:P_RUNTIME_SIZE = 'L') THEN
         runtime_family := 'HIGHMEM_X64_M';        -- downsize L build -> smaller high-mem (was unsafe CPU_X64_L)
     ELSEIF (:P_RUNTIME_SIZE = 'S') THEN
         runtime_family := 'GEN_X64_G2_8';
     ELSEIF (:P_RUNTIME_SIZE = 'M' AND :gda = 'MMAP') THEN
-        -- Small general box (CPU_X64_SL, 14 vCPU / 58 GB) is only safe with MMAP:
-        -- the graph is memory-mapped (off-heap, OS page cache), not loaded into
-        -- the 24 GB JVM heap, so a 24 GB graph fits where RAM_STORE would OOM.
         runtime_family := 'CPU_X64_SL';
     ELSE
         runtime_family := 'HIGHMEM_X64_M';        -- default to safe high-mem; never CPU-only for non-city
@@ -2117,7 +2148,7 @@ BEGIN
     -- first, which the old in-line DROP COMPUTE POOL could never do (the pool still
     -- owned VROOM, so the drop silently failed and the family never changed).
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :P_RUNTIME_SIZE,
+    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :serving_size,
         GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
@@ -2128,11 +2159,11 @@ BEGIN
     -- be in the staged config. WRITE_ORS_CONFIG reads GRAPHS_DATA_ACCESS from
     -- REGION_ORS_MAP (just set above). Derivation mirrors APPLY_ORS_LIMITS.
     BEGIN
-        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, :P_RUNTIME_SIZE)
+        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, :serving_size)
           INTO :pbf_url, :compute_size
           FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
          WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1;
-    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := :P_RUNTIME_SIZE;
+    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := :serving_size;
     END;
     pbf_file := SPLIT_PART(COALESCE(:pbf_url, ''), '/', -1);
     IF (pbf_file = '' OR pbf_file IS NULL) THEN
@@ -2165,7 +2196,7 @@ BEGIN
 
     -- Recreate pool + ORS service + VROOM on the runtime family. Graphs are loaded
     -- from the persisted stage on the smaller box (REBUILD_GRAPHS=false in the spec).
-    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :P_RUNTIME_SIZE) INTO :recreate_msg;
+    CALL OPENROUTESERVICE_APP.CORE.create_region_ors_service(:P_REGION, :serving_size) INTO :recreate_msg;
 
     -- create_region_ors_service leaves the freshly-created service at
     -- AUTO_SUSPEND_SECS=0 (for in-progress builds); the build is done here, so
@@ -2183,11 +2214,11 @@ BEGIN
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family,
+    SET COMPUTE_SIZE = :serving_size, INSTANCE_FAMILY = :runtime_family,
         GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
-    RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
+    RETURN 'Region ' || :P_REGION || ' downsized to ' || :serving_size ||
            ' (' || :runtime_family || ', graphs_data_access=' || :gda || '); ' ||
            :graph_file_count || ' graph files reused from stage. ' || :recreate_msg;
 END;
@@ -3022,12 +3053,12 @@ BEGIN
     END IF;
 
     -- Best-effort runtime downsize (same as wrapper success path).
-    IF (UPPER(:compute_size) IN ('L','XXL')) THEN
-        BEGIN
-            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size);
-        EXCEPTION WHEN OTHER THEN NULL;
-        END;
-    END IF;
+    -- Best-effort runtime downsize (same as wrapper success path). Fires for every
+    -- level (city -> GEN_X64_G2_4/RAM_STORE; larger -> CPU_X64_SL/MMAP).
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:P_REGION, :compute_size);
+    EXCEPTION WHEN OTHER THEN NULL;
+    END;
 
     RETURN 'rescued:' || :P_REGION || ' (job=' || :job_id || ', profiles=' || :profile_count || ')';
 END;
@@ -3145,6 +3176,16 @@ BEGIN
         END;
         BEGIN
             CALL OPENROUTESERVICE_APP.CORE.create_region_vroom_service(:region);
+        EXCEPTION WHEN OTHER THEN NULL;
+        END;
+
+        -- Apply the level-driven serving tier exactly once (the _BUILD_OK marker
+        -- written just above gates this loop, so the next cycle skips this region).
+        -- For the default city region (SanFrancisco) this shrinks the runtime pool
+        -- from the GEN_X64_G2_8 build box down to GEN_X64_G2_4. Graphs are present
+        -- and persisted, so DOWNSIZE reuses them (no rebuild). Best-effort.
+        BEGIN
+            CALL OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(:region, 'S');
         EXCEPTION WHEN OTHER THEN NULL;
         END;
 
