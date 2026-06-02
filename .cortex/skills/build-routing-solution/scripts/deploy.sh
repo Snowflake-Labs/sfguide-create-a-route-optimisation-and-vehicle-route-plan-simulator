@@ -112,14 +112,15 @@ fi
 # ── 3. Render service spec with new tag and upload to stage ─────
 if [ "${SKIP_SERVICE:-0}" != "1" ]; then
   echo "[5/8] Render service spec with image tag $IMAGE_TAG..."
-  TMP_YAML=$(mktemp)
-  trap "rm -f $TMP_YAML" EXIT
+  STAGE_DIR=$(mktemp -d)
+  STAGE_YAML="$STAGE_DIR/ors_control_app_service.yaml"
+  trap "rm -rf $STAGE_DIR" EXIT
   sed -E "s|(ors_control_app:)[^\"' ]+|\1$IMAGE_TAG|" \
-    "$APP_DIR/ors_control_app_service.yaml" > "$TMP_YAML"
+    "$APP_DIR/ors_control_app_service.yaml" > "$STAGE_YAML"
 
   echo "[6/8] Upload spec to stage..."
-  snow stage copy "$TMP_YAML" \
-    @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ors_control_app_service.yaml \
+  snow stage copy "$STAGE_YAML" \
+    @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ \
     -c "$CONNECTION" --overwrite >/dev/null
 
   echo "[7/8] Suspend, ALTER FROM SPECIFICATION, Resume..."
