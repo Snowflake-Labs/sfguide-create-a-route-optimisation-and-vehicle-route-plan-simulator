@@ -785,14 +785,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
     },
     {
       sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
+        JOB_ID       VARCHAR    NOT NULL,
         OFFER_ID     VARCHAR    NOT NULL,
         ROAD_KM      FLOAT,
         ROAD_MIN     FLOAT,
         GEOMETRY     VARCHAR,
         PROFILE      VARCHAR(20),
         COMPUTED_AT  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-        JOB_ID       VARCHAR,
-        CONSTRAINT PK_FACT_OFFER_ROUTES PRIMARY KEY (OFFER_ID)
+        CONSTRAINT PK_FACT_OFFER_ROUTES PRIMARY KEY (JOB_ID, OFFER_ID)
       ) COMMENT = ${TRACK_FX}`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
@@ -967,7 +967,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         SELECT fr.*
         FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
         JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_FREIGHT_OFFERS_CURRENT o
-          ON o.OFFER_ID = fr.OFFER_ID`,
+          ON o.OFFER_ID = fr.OFFER_ID AND o.JOB_ID = fr.JOB_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -1143,7 +1143,8 @@ export async function ensureBackloadAndAssetVelocityObjects(
                ELSE 'DIRECT'
           END AS ROUTE_DETOUR_BADGE
         FROM e
-        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr USING (OFFER_ID)`,
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
+          ON fr.OFFER_ID = e.OFFER_ID AND fr.JOB_ID = e.JOB_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {

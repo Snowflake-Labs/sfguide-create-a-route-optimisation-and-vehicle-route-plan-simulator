@@ -147,11 +147,12 @@ export function createFreightExchangeRouter(): Router {
       const profile = profileFor(region, vehicleType);
 
       const stale = await runSql(`
-        SELECT o.OFFER_ID, o.PICKUP_LON, o.PICKUP_LAT, o.DROPOFF_LON, o.DROPOFF_LAT
+        SELECT o.OFFER_ID, o.JOB_ID, o.PICKUP_LON, o.PICKUP_LAT, o.DROPOFF_LON, o.DROPOFF_LAT
         FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
-        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr USING (OFFER_ID)
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
+          ON fr.OFFER_ID = o.OFFER_ID AND fr.JOB_ID = o.JOB_ID
         WHERE o.STATUS = 'OPEN'
-          AND (fr.OFFER_ID IS NULL OR fr.COMPUTED_AT < DATEADD(hour, -${maxAgeHours}, CURRENT_TIMESTAMP()))
+          AND (fr.JOB_ID IS NULL OR fr.COMPUTED_AT < DATEADD(hour, -${maxAgeHours}, CURRENT_TIMESTAMP()))
           AND o.PICKUP_LON IS NOT NULL AND o.DROPOFF_LON IS NOT NULL
         LIMIT ${batchSize}
       `);
@@ -172,17 +173,18 @@ export function createFreightExchangeRouter(): Router {
             continue;
           }
           const geom = JSON.stringify(geometry);
+          const jobId = r.JOB_ID ? `'${escapeString(String(r.JOB_ID))}'` : 'NULL';
           await runSql(`
             MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
-            USING (SELECT '${escapeString(String(r.OFFER_ID))}' AS OFFER_ID) src
-              ON tgt.OFFER_ID = src.OFFER_ID
+            USING (SELECT ${jobId} AS JOB_ID, '${escapeString(String(r.OFFER_ID))}' AS OFFER_ID) src
+              ON tgt.OFFER_ID = src.OFFER_ID AND tgt.JOB_ID = src.JOB_ID
             WHEN MATCHED THEN UPDATE SET
               ROAD_KM = ${roadKm}, ROAD_MIN = ${roadMin ?? 'NULL'},
               GEOMETRY = $$${geom}$$,
               PROFILE = '${escapeString(profile)}',
               COMPUTED_AT = CURRENT_TIMESTAMP()
-            WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
-              VALUES ('${escapeString(String(r.OFFER_ID))}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geom}$$, '${escapeString(profile)}', CURRENT_TIMESTAMP())
+            WHEN NOT MATCHED THEN INSERT (JOB_ID, OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
+              VALUES (${jobId}, '${escapeString(String(r.OFFER_ID))}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geom}$$, '${escapeString(profile)}', CURRENT_TIMESTAMP())
           `);
           processed++;
         } catch (e: any) {
@@ -263,10 +265,11 @@ export function createFreightExchangeRouter(): Router {
       const { region, vehicleType } = await activePresetContext();
       const profile = profileFor(region, vehicleType);
 
+      const jobIdSql = o.JOB_ID ? `'${escapeString(String(o.JOB_ID))}'` : 'NULL';
       const cached = await runSql(`
         SELECT ROAD_KM, ROAD_MIN, GEOMETRY
         FROM FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT
-        WHERE OFFER_ID = '${offerId}'
+        WHERE OFFER_ID = '${offerId}' AND JOB_ID = ${jobIdSql}
         LIMIT 1
       `);
       if (cached?.length) {
@@ -300,17 +303,16 @@ export function createFreightExchangeRouter(): Router {
           const geo = JSON.stringify(geometry);
           await runSql(`
             MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
-            USING (SELECT '${offerId}' AS OFFER_ID) src
-              ON tgt.OFFER_ID = src.OFFER_ID
+            USING (SELECT ${jobIdSql} AS JOB_ID, '${offerId}' AS OFFER_ID) src
+              ON tgt.OFFER_ID = src.OFFER_ID AND tgt.JOB_ID = src.JOB_ID
             WHEN MATCHED THEN UPDATE SET
               ROAD_KM = ${roadKm},
               ROAD_MIN = ${roadMin ?? 'NULL'},
               GEOMETRY = $$${geo}$$,
               PROFILE = '${escapeString(profile)}',
-              JOB_ID = ${o.JOB_ID ? `'${escapeString(String(o.JOB_ID))}'` : 'NULL'},
               COMPUTED_AT = CURRENT_TIMESTAMP()
-            WHEN NOT MATCHED THEN INSERT (OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, JOB_ID, COMPUTED_AT)
-              VALUES ('${offerId}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geo}$$, '${escapeString(profile)}', ${o.JOB_ID ? `'${escapeString(String(o.JOB_ID))}'` : 'NULL'}, CURRENT_TIMESTAMP())
+            WHEN NOT MATCHED THEN INSERT (JOB_ID, OFFER_ID, ROAD_KM, ROAD_MIN, GEOMETRY, PROFILE, COMPUTED_AT)
+              VALUES (${jobIdSql}, '${offerId}', ${roadKm}, ${roadMin ?? 'NULL'}, $$${geo}$$, '${escapeString(profile)}', CURRENT_TIMESTAMP())
           `);
         }
         res.json({
