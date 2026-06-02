@@ -181,8 +181,12 @@ DECLARE
     pbf_dl_status VARCHAR DEFAULT '';
     dl_failed BOOLEAN DEFAULT FALSE;
 BEGIN
-    -- JVM heap mirrors the BUILD_ORS_SERVICE_SPEC heap CASE so build history
-    -- captures the actual headroom the JVM was given.
+    -- Build-tier JVM heap headroom for build-history telemetry. NOTE: as of the
+    -- family-derived heap change, BUILD_ORS_SERVICE_SPEC sizes XMS/XMX from the
+    -- resolved instance_family (not the size tier). At BUILD time the family is
+    -- the large build family for the tier, so these size-tier values remain a
+    -- close approximation of the build-time heap (XXL~1080G, L~740G); they are
+    -- intentionally NOT the smaller RUNTIME heap a region gets after downsize.
     xmx_gib := CASE UPPER(:P_COMPUTE_SIZE)
         WHEN 'XXL' THEN 1100 WHEN 'L' THEN 700
         WHEN 'S' THEN 20 ELSE 700 END;
@@ -773,11 +777,26 @@ CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP (
     STATUS VARCHAR DEFAULT 'NOT_DEPLOYED',
     COMPUTE_SIZE VARCHAR DEFAULT 'XXL',
     INSTANCE_FAMILY VARCHAR,
+    GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE',
     IS_DEFAULT BOOLEAN DEFAULT FALSE,
     CREATED_AT TIMESTAMP DEFAULT SYSDATE(),
     UPDATED_AT TIMESTAMP DEFAULT SYSDATE()
 )
 COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region"}}';
+
+-- Idempotent backfill of GRAPHS_DATA_ACCESS for installs created before this
+-- column existed. Per the ADD COLUMN IF NOT EXISTS gotcha (it can raise a
+-- compile-time "ambiguous column" error when the column already exists), the
+-- ALTER is wrapped in an EXCEPTION-swallowing EXECUTE IMMEDIATE so a fresh
+-- install (where the CREATE TABLE above already has the column) is a clean no-op.
+EXECUTE IMMEDIATE $$
+BEGIN
+    ALTER TABLE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+        ADD COLUMN IF NOT EXISTS GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE';
+    RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$;
 
 -- Idempotent migration for installs created before IS_DEFAULT existed.
 -- Disabled 2026-05-19: triggers "ambiguous column name 'IS_DEFAULT'" on
@@ -894,6 +913,7 @@ $$
         WHEN 'HIGHMEM_X64_SL' THEN '48G'
         WHEN 'MEM_X64_G2_64'  THEN '32G'
         WHEN 'MEM_X64_G2_192' THEN '96G'
+        WHEN 'CPU_X64_SL'     THEN '4G'
         ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '110G' WHEN 'L' THEN '70G' WHEN 'S' THEN '2G' ELSE '70G' END)
     END ||
     '","XMX":"' ||
@@ -903,6 +923,7 @@ $$
         WHEN 'HIGHMEM_X64_SL' THEN '490G'
         WHEN 'MEM_X64_G2_64'  THEN '368G'
         WHEN 'MEM_X64_G2_192' THEN '1080G'
+        WHEN 'CPU_X64_SL'     THEN '24G'
         ELSE (CASE UPPER(P_COMPUTE_SIZE) WHEN 'XXL' THEN '1100G' WHEN 'L' THEN '700G' WHEN 'S' THEN '20G' ELSE '700G' END)
     END ||
     '"}}],"endpoints":[{"name":"ors","port":8082,"public":false}],"volumes":[{"name":"files","source":"@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/' || P_REGION ||
@@ -1485,6 +1506,23 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     except Exception:
         pass
 
+    # Per-region graph data-access mode (RAM_STORE default, MMAP opt-in). MMAP
+    # memory-maps the on-disk graph instead of loading it into the JVM heap, so
+    # a large graph fits on a small box with a small heap (at a slight per-query
+    # latency cost). This is a load-time setting -- switching it only needs a
+    # container restart, never a graph rebuild.
+    graphs_data_access = 'RAM_STORE'
+    try:
+        region_lit2 = (p_region or '').replace("'", "''")
+        gda_rows = session.sql(
+            "SELECT COALESCE(GRAPHS_DATA_ACCESS, 'RAM_STORE') AS G FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP "
+            "WHERE UPPER(REGION) = UPPER('" + region_lit2 + "') LIMIT 1"
+        ).collect()
+        if gda_rows and gda_rows[0]['G']:
+            graphs_data_access = str(gda_rows[0]['G']).strip().upper()
+    except Exception:
+        pass
+
     thread_config = {
         'S':  {'init_threads': 1, 'ch_threads': 4, 'lm_threads': 4},
         # L: HIGHMEM_X64_L (124 vCPU / 984 GB) -- country / sub-region builds.
@@ -1529,6 +1567,12 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
     lines = [
         'ors:',
         '  engine:',
+    ]
+    # graphs_data_access goes directly under engine: (omitted when RAM_STORE so
+    # the default behavior is byte-for-byte unchanged for non-MMAP regions).
+    if graphs_data_access == 'MMAP':
+        lines.append('    graphs_data_access: MMAP')
+    lines += [
         '    init_threads: ' + str(init_threads),
         '    profile_default:',
         '      build:',
@@ -1576,7 +1620,7 @@ def run(session, p_region, p_pbf_file, p_profiles, p_compute_size):
         os.unlink(config_path)
         os.rmdir(tmpdir)
 
-    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ', max_distance=' + str(limits['maximum_distance']) + ', max_waypoints=' + str(limits['maximum_waypoints']) + ')'
+    return 'ORS config written for ' + p_region + ' with profiles: ' + p_profiles + ', init_threads=' + str(init_threads) + ' (build ch=' + str(tc['ch_threads']) + ' lm=' + str(tc['lm_threads']) + ', max_distance=' + str(limits['maximum_distance']) + ', max_waypoints=' + str(limits['maximum_waypoints']) + ', graphs_data_access=' + graphs_data_access + ')'
 $$;
 
 -- ===========================================================================
@@ -1992,12 +2036,17 @@ $$;
 --   one more SPCS object per region and a moving ALTER SERVICE call
 --   between pools, doubling the lifecycle code paths to reconcile.
 -- =============================================================================
+-- Drop the prior 2-arg signature so the new 3-arg form (with two defaulted
+-- params) is not flagged as "ambiguous PROCEDURE overloading". Idempotent:
+-- no-op on a fresh install where the 2-arg version never existed.
+DROP PROCEDURE IF EXISTS OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(VARCHAR, VARCHAR);
+
 CREATE OR REPLACE PROCEDURE OPENROUTESERVICE_APP.CORE.DOWNSIZE_REGION_AFTER_BUILD(
-    P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M'
+    P_REGION VARCHAR, P_RUNTIME_SIZE VARCHAR DEFAULT 'M', P_GRAPHS_DATA_ACCESS VARCHAR DEFAULT 'RAM_STORE'
 )
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.1","attributes":{"component":"multi-region","action":"cost-guardrail"}}'
 EXECUTE AS OWNER
 AS
 $$
@@ -2007,10 +2056,20 @@ DECLARE
     runtime_family VARCHAR;
     recreate_msg VARCHAR DEFAULT '';
     graph_file_count INTEGER DEFAULT 0;
+    gda VARCHAR DEFAULT 'RAM_STORE';
+    pbf_url VARCHAR DEFAULT NULL;
+    pbf_file VARCHAR DEFAULT '';
+    profiles VARCHAR DEFAULT '';
+    compute_size VARCHAR DEFAULT 'S';
+    write_msg VARCHAR DEFAULT NULL;
     rs RESULTSET;
 BEGIN
     svc_name := 'ORS_SERVICE_' || UPPER(:P_REGION);
     pool_name := 'ORS_POOL_' || UPPER(:P_REGION);
+    gda := UPPER(COALESCE(:P_GRAPHS_DATA_ACCESS, 'RAM_STORE'));
+    IF (:gda NOT IN ('RAM_STORE', 'MMAP')) THEN
+        gda := 'RAM_STORE';
+    END IF;
 
     -- Refuse to downsize if no graphs exist (would force a full rebuild on small node).
     -- DIRECTORY() works inside owner-rights procs; LIST/RESULT_SCAN does not
@@ -2041,6 +2100,11 @@ BEGIN
         runtime_family := 'HIGHMEM_X64_M';        -- downsize L build -> smaller high-mem (was unsafe CPU_X64_L)
     ELSEIF (:P_RUNTIME_SIZE = 'S') THEN
         runtime_family := 'GEN_X64_G2_8';
+    ELSEIF (:P_RUNTIME_SIZE = 'M' AND :gda = 'MMAP') THEN
+        -- Small general box (CPU_X64_SL, 14 vCPU / 58 GB) is only safe with MMAP:
+        -- the graph is memory-mapped (off-heap, OS page cache), not loaded into
+        -- the 24 GB JVM heap, so a 24 GB graph fits where RAM_STORE would OOM.
+        runtime_family := 'CPU_X64_SL';
     ELSE
         runtime_family := 'HIGHMEM_X64_M';        -- default to safe high-mem; never CPU-only for non-city
     END IF;
@@ -2053,8 +2117,51 @@ BEGIN
     -- first, which the old in-line DROP COMPUTE POOL could never do (the pool still
     -- owned VROOM, so the drop silently failed and the family never changed).
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :P_RUNTIME_SIZE, UPDATED_AT = SYSDATE()
+    SET INSTANCE_FAMILY = :runtime_family, COMPUTE_SIZE = :P_RUNTIME_SIZE,
+        GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
+
+    -- Regenerate the staged ors-config.yml BEFORE recreating the service so the
+    -- container reads the correct graphs_data_access on first start. This is
+    -- mandatory for the MMAP+small-family path: CPU_X64_SL has a 24 GB heap, so
+    -- a RAM_STORE start would OOM loading the graph -- the MMAP line must already
+    -- be in the staged config. WRITE_ORS_CONFIG reads GRAPHS_DATA_ACCESS from
+    -- REGION_ORS_MAP (just set above). Derivation mirrors APPLY_ORS_LIMITS.
+    BEGIN
+        SELECT PBF_URL, COALESCE(COMPUTE_SIZE, :P_RUNTIME_SIZE)
+          INTO :pbf_url, :compute_size
+          FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
+         WHERE UPPER(REGION) = UPPER(:P_REGION) LIMIT 1;
+    EXCEPTION WHEN OTHER THEN pbf_url := NULL; compute_size := :P_RUNTIME_SIZE;
+    END;
+    pbf_file := SPLIT_PART(COALESCE(:pbf_url, ''), '/', -1);
+    IF (pbf_file = '' OR pbf_file IS NULL) THEN
+        pbf_file := :P_REGION || '.osm.pbf';
+    END IF;
+    profiles := (
+        SELECT PROFILES FROM OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
+         WHERE UPPER(REGION) = UPPER(:P_REGION) AND PROFILES IS NOT NULL
+         ORDER BY CASE WHEN COALESCE(STATUS, '') NOT IN ('FAILED', 'ERROR') THEN 0 ELSE 1 END,
+                  COALESCE(COMPLETED_AT, STARTED_AT, CREATED_AT) DESC
+         LIMIT 1
+    );
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        BEGIN
+            rs := (EXECUTE IMMEDIATE
+                'SELECT ARRAY_TO_STRING(OBJECT_KEYS(TRY_PARSE_JSON('
+                || 'OPENROUTESERVICE_APP.CORE.ORS_STATUS(''' || :P_REGION || ''')::VARCHAR):profiles), '','') AS P');
+            LET c2 CURSOR FOR rs;
+            FOR r IN c2 DO profiles := r.P; END FOR;
+        EXCEPTION WHEN OTHER THEN profiles := NULL;
+        END;
+    END IF;
+    IF (profiles IS NULL OR TRIM(profiles) = '') THEN
+        profiles := 'driving-car';
+    END IF;
+    BEGIN
+        CALL OPENROUTESERVICE_APP.CORE.WRITE_ORS_CONFIG(:P_REGION, :pbf_file, :profiles, :compute_size) INTO :write_msg;
+    EXCEPTION WHEN OTHER THEN write_msg := 'config-regen-skipped';
+    END;
 
     -- Recreate pool + ORS service + VROOM on the runtime family. Graphs are loaded
     -- from the persisted stage on the smaller box (REBUILD_GRAPHS=false in the spec).
@@ -2076,11 +2183,13 @@ BEGIN
     END;
 
     UPDATE OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP
-    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family, UPDATED_AT = SYSDATE()
+    SET COMPUTE_SIZE = :P_RUNTIME_SIZE, INSTANCE_FAMILY = :runtime_family,
+        GRAPHS_DATA_ACCESS = :gda, UPDATED_AT = SYSDATE()
     WHERE REGION = :P_REGION;
 
     RETURN 'Region ' || :P_REGION || ' downsized to ' || :P_RUNTIME_SIZE ||
-           ' (' || :runtime_family || '); ' || :graph_file_count || ' graph files reused from stage. ' || :recreate_msg;
+           ' (' || :runtime_family || ', graphs_data_access=' || :gda || '); ' ||
+           :graph_file_count || ' graph files reused from stage. ' || :recreate_msg;
 END;
 $$;
 
