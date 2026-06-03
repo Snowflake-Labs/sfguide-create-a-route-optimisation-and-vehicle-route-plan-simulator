@@ -1670,6 +1670,8 @@ DECLARE
     profiles     VARCHAR DEFAULT '';
     compute_size VARCHAR DEFAULT 'S';
     svc_name     VARCHAR;
+    svc_status   VARCHAR DEFAULT NULL;
+    waited       INTEGER DEFAULT 0;
     write_msg    VARCHAR DEFAULT NULL;
     susp_msg     VARCHAR DEFAULT NULL;
     res_msg      VARCHAR DEFAULT NULL;
@@ -1737,8 +1739,30 @@ BEGIN
 
     -- Cycle the service so the new config is read on container start. The
     -- persisted graph is reloaded (REBUILD_GRAPHS=false) — no recalculation.
+    -- ALTER SERVICE ... SUSPEND is asynchronous, so poll SHOW SERVICES until the
+    -- service actually reports SUSPENDED (cap ~60s) BEFORE resuming. A fixed
+    -- WAIT(5) raced the suspend: if the container had not finished suspending,
+    -- RESUME_SERVICE saw status RUNNING, short-circuited ("already running"),
+    -- and the in-flight suspend then landed afterward — leaving the service
+    -- SUSPENDED with the new config never loaded. That is the "service didn't
+    -- restart / limits look unchanged" symptom.
     CALL OPENROUTESERVICE_APP.CORE.SUSPEND_SERVICE(:svc_name) INTO :susp_msg;
-    EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(5)';
+    waited := 0;
+    LOOP
+        SHOW SERVICES LIKE :svc_name IN SCHEMA OPENROUTESERVICE_APP.CORE;
+        BEGIN
+            SELECT "status" INTO :svc_status
+              FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+             WHERE "is_job" = 'false'
+             LIMIT 1;
+        EXCEPTION WHEN OTHER THEN svc_status := NULL;
+        END;
+        IF (svc_status = 'SUSPENDED' OR waited >= 60) THEN
+            BREAK;
+        END IF;
+        EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(3)';
+        waited := waited + 3;
+    END LOOP;
     CALL OPENROUTESERVICE_APP.CORE.RESUME_SERVICE(:svc_name) INTO :res_msg;
 
     -- MMAP regions: flag for prewarm instead of warming inline. The */2 min
