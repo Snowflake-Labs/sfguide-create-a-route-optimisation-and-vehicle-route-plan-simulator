@@ -55,6 +55,17 @@ const GROUPS: Group[] = [
 
 const ALL_KEYS = GROUPS.flatMap(g => g.fields.map(f => f.key));
 
+// Human-readable labels for the phases returned by /build-progress while the
+// regional ORS service cycles (suspend -> reload persisted graph -> Ready).
+const RESTART_LABELS: Record<string, string> = {
+  waiting: 'Waiting for the service to suspend…',
+  initializing: 'Service starting up…',
+  importing: 'Loading the persisted graph…',
+  building: 'Reloading the graph…',
+  finalizing: 'Finalizing…',
+  ready: 'Ready',
+};
+
 type ScalePresetId = 'city' | 'country' | 'continent';
 
 interface ScalePreset {
@@ -168,10 +179,13 @@ export default function RoutingLimits() {
   const [applying, setApplying] = useState(false);
   const [activePreset, setActivePreset] = useState<ScalePresetId | 'custom' | null>(null);
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [restart, setRestart] = useState<{ phase: string; progress: number } | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setMessage(null);
+  // silent=true refreshes state in place without flipping the panel to its
+  // loading skeleton or clearing the current status banner (used after Apply so
+  // the restart-progress / "limits live" message survives the state refresh).
+  const load = useCallback(async (silent = false) => {
+    if (!silent) { setLoading(true); setMessage(null); }
     try {
       const r = await fetch(`/api/regions/${encodeURIComponent(regionName)}/ors-limits`);
       const data = await r.json();
@@ -184,12 +198,34 @@ export default function RoutingLimits() {
       setValues(v);
       setActivePreset(null);
     } catch (e: any) {
-      setMessage({ kind: 'error', text: e?.message || 'Failed to load limits' });
+      if (!silent) setMessage({ kind: 'error', text: e?.message || 'Failed to load limits' });
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [regionName]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Poll ORS readiness after a restart so the user can see the service cycle
+  // (suspend -> graph reload -> Ready) instead of staring at a static banner.
+  // Resolves true once the engine reports ready, false on timeout.
+  const pollRestart = useCallback(async (): Promise<boolean> => {
+    const deadline = Date.now() + 4 * 60 * 1000;
+    setRestart({ phase: 'waiting', progress: 0 });
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 3000));
+      try {
+        const r = await fetch(`/api/regions/${encodeURIComponent(regionName)}/build-progress`);
+        if (r.ok) {
+          const d = await r.json();
+          const phase = d.phase || 'waiting';
+          setRestart({ phase, progress: Number(d.progress) || 0 });
+          if (phase === 'ready') { setRestart(null); return true; }
+        }
+      } catch { /* service briefly unreachable mid-restart — keep polling */ }
+    }
+    setRestart(null);
+    return false;
+  }, [regionName]);
 
   const selectPreset = (id: ScalePresetId) => {
     const preset = SCALE_PRESETS.find(p => p.id === id);
@@ -224,13 +260,21 @@ export default function RoutingLimits() {
       if (!r.ok || data.status === 'error') {
         const detail = data.errors ? data.errors.join('; ') : (data.error || 'Apply failed');
         setMessage({ kind: 'error', text: detail });
-      } else {
-        setMessage({
-          kind: 'ok',
-          text: `Applied to ${displayName}. ORS_SERVICE is restarting — the persisted graph reloads (no rebuild). Check Status & Health until graphs report Ready.`,
-        });
-        await load();
+        setApplying(false);
+        return;
       }
+      setMessage({
+        kind: 'ok',
+        text: `Applied to ${displayName}. ORS is restarting — the persisted graph reloads (no rebuild).`,
+      });
+      const ready = await pollRestart();
+      await load(true);
+      setMessage({
+        kind: 'ok',
+        text: ready
+          ? `Applied to ${displayName}. ORS restarted and graphs report Ready — the new limits are live.`
+          : `Applied to ${displayName}. ORS is still reloading the graph. Check Status & Health until it reports Ready.`,
+      });
     } catch (e: any) {
       setMessage({ kind: 'error', text: e?.message || 'Apply failed' });
     }
@@ -270,6 +314,21 @@ export default function RoutingLimits() {
           color: message.kind === 'ok' ? '#2e7d32' : '#e53935',
         }}>
           {message.text}
+        </div>
+      )}
+
+      {restart && (
+        <div style={{
+          margin: '10px 0', padding: '8px 12px', borderRadius: 6, fontSize: 12,
+          background: 'rgba(33,150,243,0.10)', border: '1px solid rgba(33,150,243,0.4)', color: '#1565c0',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span><strong>Restarting ORS</strong> — {RESTART_LABELS[restart.phase] || restart.phase}</span>
+            <span style={{ fontFamily: 'monospace' }}>{restart.progress}%</span>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: 'rgba(33,150,243,0.2)', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${Math.max(4, restart.progress)}%`, background: '#2196f3', transition: 'width 0.4s ease' }} />
+          </div>
         </div>
       )}
 
@@ -359,12 +418,12 @@ export default function RoutingLimits() {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 18, alignItems: 'center' }}>
         <button className="btn primary" disabled={applying} onClick={() => apply(false)}>
-          {applying ? 'Applying…' : 'Apply & Restart ORS'}
+          {restart ? 'Restarting ORS…' : applying ? 'Applying…' : 'Apply & Restart ORS'}
         </button>
         <button className="btn" disabled={applying || !anyOverride} onClick={() => apply(true)} title={anyOverride ? 'Clear overrides and restore defaults' : 'No overrides to reset'}>
           Reset to defaults
         </button>
-        <button className="btn" disabled={applying} onClick={load}>Reload</button>
+        <button className="btn" disabled={applying} onClick={() => load()}>Reload</button>
       </div>
     </div>
   );
