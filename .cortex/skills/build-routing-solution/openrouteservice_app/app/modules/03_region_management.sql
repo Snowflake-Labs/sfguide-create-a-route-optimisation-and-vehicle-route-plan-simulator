@@ -1811,10 +1811,17 @@ $$;
 -- sub-100ms and stay warm for the life of the container.
 --
 -- This proc forces that warm-up off the critical path by firing a star sweep
--- of long DIRECTIONS routes from the bbox centroid to a 5x5 lattice of points,
--- traversing the bulk of the network. Each call is independently EXCEPTION-
--- wrapped so an unsnappable (ocean / off-road) grid point never aborts the
--- sweep. Best-effort and idempotent: safe to call after any resume.
+-- of long DIRECTIONS routes from a verified mainland anchor to a dense lattice
+-- of land points, traversing the bulk of the network. The lattice resolution
+-- (GRID_DIM x GRID_DIM) is sized so that even a continental region whose stored
+-- bbox spans the antimeridian (e.g. the USA extract, MIN_LON=-180 / MAX_LON=180
+-- because it includes Alaska + Pacific territories) still yields enough in-
+-- boundary CONUS land points to warm specific corridors -- a 12x12 grid over a
+-- global bbox left only ~2 longitude columns inside CONUS, so corridors like the
+-- US southeast stayed cold and the first real route there paid the full fault-in
+-- cost (~45s). Each call is independently EXCEPTION-wrapped so an unsnappable
+-- (ocean / off-road) grid point never aborts the sweep. Best-effort and
+-- idempotent: safe to call after any resume.
 --
 -- Call sites: resume_region_ors, APPLY_ORS_LIMITS, DOWNSIZE_REGION_AFTER_BUILD
 -- (MMAP-gated at each caller). City RAM_STORE and legacy high-mem families skip.
@@ -1849,6 +1856,12 @@ DECLARE
     waited INTEGER DEFAULT 0;
     pts ARRAY DEFAULT NULL;
     n INTEGER DEFAULT 0;
+    -- Lattice resolution. 32x32 = 1024 candidate points: over a continental
+    -- (antimeridian-spanning) bbox this puts ~5 longitude columns x ~13 latitude
+    -- rows inside CONUS (~50 land points after the BOUNDARY filter), dense enough
+    -- to traverse every regional corridor. Over a small city bbox it simply
+    -- samples more densely (harmless; cities serve RAM_STORE and skip prewarm).
+    grid_dim INTEGER DEFAULT 32;
     stride INTEGER DEFAULT 1;
     jj INTEGER DEFAULT 0;
     olon FLOAT DEFAULT NULL;
@@ -1858,6 +1871,15 @@ DECLARE
     anchor_lon FLOAT DEFAULT NULL;
     anchor_lat FLOAT DEFAULT NULL;
     anchor_found BOOLEAN DEFAULT FALSE;
+    -- Connectivity-vote anchor discovery (Phase 1) state.
+    ti INTEGER DEFAULT 0;            -- target loop index
+    o_stride INTEGER DEFAULT 1;      -- stride between candidate origins
+    t_stride INTEGER DEFAULT 1;      -- stride between vote targets
+    n_targets INTEGER DEFAULT 6;     -- number of spread targets each origin votes against
+    succ INTEGER DEFAULT 0;          -- successful target routes for the current origin
+    best_ok INTEGER DEFAULT -1;      -- best success count seen so far
+    win_target INTEGER DEFAULT 3;    -- early-exit threshold (origin reaches >= this many targets)
+    dist_val FLOAT DEFAULT NULL;
     started_at TIMESTAMP DEFAULT SYSDATE();
     rs RESULTSET;
 BEGIN
@@ -1918,18 +1940,21 @@ BEGIN
     IF (profile IS NULL OR TRIM(profile) = '') THEN profile := 'driving-car'; END IF;
     profile := TRIM(profile);
 
-    -- Sample a 12x12 lattice over the bbox and keep only points that fall inside
-    -- the region BOUNDARY polygon (REGION_CATALOG). This discards ocean / out-of-
-    -- region points (a continental bbox centroid is often open sea) so the warm
-    -- routes have routable land endpoints. Built via EXECUTE IMMEDIATE with the
-    -- bbox numbers interpolated -- a declared CURSOR with :min_lon binds is not
-    -- bound by an implicit FOR-IN open ("Bind variable not set").
+    -- Sample a GRID_DIM x GRID_DIM lattice over the bbox and keep only points that
+    -- fall inside the region BOUNDARY polygon (REGION_CATALOG). The boundary is a
+    -- coarse hull (it over-includes ocean and several disconnected landmasses), so
+    -- this filter only discards the grossly out-of-region points; it does NOT
+    -- guarantee a point is on land or on the main road network. The connectivity
+    -- vote in Phase 1 below uses actual routing to pick a routable mainland anchor.
+    -- Built via EXECUTE IMMEDIATE with the bbox numbers interpolated -- a declared
+    -- CURSOR with :min_lon binds is not bound by an implicit FOR-IN open
+    -- ("Bind variable not set").
     BEGIN
         rs := (EXECUTE IMMEDIATE
             'SELECT ARRAY_AGG(ARRAY_CONSTRUCT(g.glon, g.glat)) AS PTS FROM ('
-            || 'SELECT ' || :min_lon || ' + (' || :max_lon || ' - ' || :min_lon || ') * (MOD(seq,12)/11.0) AS glon, '
-            ||              :min_lat || ' + (' || :max_lat || ' - ' || :min_lat || ') * (FLOOR(seq/12)/11.0) AS glat '
-            || 'FROM (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4())-1 AS seq FROM TABLE(GENERATOR(ROWCOUNT=>144)))) g '
+            || 'SELECT ' || :min_lon || ' + (' || :max_lon || ' - ' || :min_lon || ') * (MOD(seq,' || :grid_dim || ')/(' || :grid_dim || '-1.0)) AS glon, '
+            ||              :min_lat || ' + (' || :max_lat || ' - ' || :min_lat || ') * (FLOOR(seq/' || :grid_dim || ')/(' || :grid_dim || '-1.0)) AS glat '
+            || 'FROM (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4())-1 AS seq FROM TABLE(GENERATOR(ROWCOUNT=>' || (:grid_dim * :grid_dim) || '))) ) g '
             || 'JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc '
             || '  ON rc.BOUNDARY IS NOT NULL '
             || ' AND (UPPER(rc.LOOKUP_NAME)=UPPER(''' || :region_lit || ''') OR UPPER(rc.REGION_KEY)=UPPER(''' || :region_lit || ''')) '
@@ -1944,46 +1969,66 @@ BEGIN
             || ' has no boundary land sample (n=' || :n || ') -- cannot pick routable warm points';
     END IF;
 
-    -- The region BOUNDARY polygon over a continental extract still contains a lot
-    -- of open sea (Atlantic, North Sea, Baltic, Mediterranean) and islands, so a
-    -- geometric point is NOT guaranteed routable. Phase 1: discover a connected
-    -- mainland anchor by probing pairs (i, i+n/2) until one actually routes
-    -- (bounded to 25 probes). Each probe is a long route, so successes already
-    -- warm the upper contraction hierarchy.
+    -- The BOUNDARY polygon is a coarse hull: it admits open sea (Atlantic,
+    -- Pacific, Gulf) AND several DISCONNECTED landmasses (for the USA: CONUS,
+    -- Alaska, Hawaii, Pacific / Caribbean territories) that share no road path.
+    -- Geometry alone therefore cannot pick a routable mainland point -- a purely
+    -- geometric "densest cluster" lands in the ocean off the coast or in Alaska
+    -- (high-latitude longitude compression). The only reliable signal is whether
+    -- a point actually routes on the road network, so Phase 1 holds a CONNECTIVITY
+    -- VOTE: probe a spread of candidate origins against a fixed spread of target
+    -- points and keep the origin that reaches the MOST targets. The largest
+    -- connected road network (CONUS) wins the vote because an ocean point routes
+    -- to nothing and a smaller landmass (Alaska) reaches only its own few points.
+    -- Bounded (n_targets x origins) with early-exit once an origin clears
+    -- win_target; every successful probe also warms the upper contraction
+    -- hierarchy, so the vote doubles as the first wave of warming.
+    o_stride := GREATEST(1, FLOOR(:n / 12));   -- ~12 spread candidate origins
+    t_stride := GREATEST(1, FLOOR(:n / :n_targets));
     FOR i IN 0 TO :n - 1 DO
-        IF (NOT :anchor_found AND :try_count < 25) THEN
-            jj := MOD(i + FLOOR(:n / 2), :n);
+        IF (NOT :anchor_found AND MOD(i, :o_stride) = 0 AND :try_count < 48) THEN
             olon := GET(GET(:pts, i), 0)::FLOAT;
             olat := GET(GET(:pts, i), 1)::FLOAT;
-            dlon := GET(GET(:pts, :jj), 0)::FLOAT;
-            dlat := GET(GET(:pts, :jj), 1)::FLOAT;
-            try_count := try_count + 1;
-            BEGIN
-                rs := (EXECUTE IMMEDIATE
-                    'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
-                    || '''' || :profile || ''', '
-                    || 'ARRAY_CONSTRUCT(' || :olon || ', ' || :olat || '), '
-                    || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
-                    || '''' || :region_lit || '''))');
-                LET cd CURSOR FOR rs;
-                FOR r IN cd DO
-                    IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN
-                        ok_count := ok_count + 1;
-                        anchor_found := TRUE;
-                        anchor_lon := :olon;
-                        anchor_lat := :olat;
-                    END IF;
-                END FOR;
-            EXCEPTION WHEN OTHER THEN NULL;
-            END;
+            succ := 0;
+            FOR ti IN 0 TO :n_targets - 1 DO
+                jj := LEAST(:ti * :t_stride, :n - 1);
+                IF (:jj <> i) THEN
+                    dlon := GET(GET(:pts, :jj), 0)::FLOAT;
+                    dlat := GET(GET(:pts, :jj), 1)::FLOAT;
+                    try_count := try_count + 1;
+                    BEGIN
+                        rs := (EXECUTE IMMEDIATE
+                            'SELECT DISTANCE FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS('
+                            || '''' || :profile || ''', '
+                            || 'ARRAY_CONSTRUCT(' || :olon || ', ' || :olat || '), '
+                            || 'ARRAY_CONSTRUCT(' || :dlon || ', ' || :dlat || '), '
+                            || '''' || :region_lit || '''))');
+                        LET cd CURSOR FOR rs;
+                        FOR r IN cd DO
+                            IF (r.DISTANCE IS NOT NULL AND r.DISTANCE > 0) THEN succ := succ + 1; END IF;
+                        END FOR;
+                    EXCEPTION WHEN OTHER THEN NULL;
+                    END;
+                END IF;
+            END FOR;
+            IF (:succ > :best_ok) THEN
+                best_ok := :succ;
+                anchor_lon := :olon;
+                anchor_lat := :olat;
+                ok_count := ok_count + :succ;
+            END IF;
+            -- Early-exit: this origin clearly sits on the dominant network.
+            IF (:succ >= :win_target) THEN anchor_found := TRUE; END IF;
         END IF;
     END FOR;
+    -- Any origin that reached at least one target is a valid mainland anchor.
+    IF (NOT :anchor_found AND :best_ok > 0) THEN anchor_found := TRUE; END IF;
 
     -- Phase 2: star from the verified anchor to a spread of land points. The
     -- anchor sits on the connected mainland network, so every reachable target
     -- yields a long route that faults more of the shared graph into page cache.
     IF (:anchor_found) THEN
-        stride := GREATEST(1, FLOOR(:n / 30));
+        stride := GREATEST(1, FLOOR(:n / 40));
         FOR i IN 0 TO :n - 1 DO
             IF (MOD(i, :stride) = 0) THEN
                 dlon := GET(GET(:pts, i), 0)::FLOAT;
