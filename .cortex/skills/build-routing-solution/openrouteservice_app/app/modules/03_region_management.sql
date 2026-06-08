@@ -275,7 +275,12 @@ BEGIN
             pbf_dl_status := '';
             EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''', ''' || :P_PBF_URL || ''')';
 
-            FOR poll_i IN 1 TO 720 DO
+            -- 1320 polls x 30s = 11h ceiling. Continental PBFs (e.g.
+            -- europe-latest ~34 GB) download at Geofabrik's per-client-IP
+            -- throttle of ~1 MB/s (parallel segments do NOT raise it), so the
+            -- transfer can take ~9-10h. The downloader is resumable, so a
+            -- mid-flight connection break does not restart from zero.
+            FOR poll_i IN 1 TO 1320 DO
                 rs := (EXECUTE IMMEDIATE 'SELECT OPENROUTESERVICE_APP.CORE.DOWNLOAD_STATUS(''ors_spcs_stage/' || :P_REGION || ''', ''' || :pbf_filename || ''')::VARCHAR AS S');
                 pbf_dl_status := '';
                 FOR r IN rs DO
@@ -286,7 +291,7 @@ BEGIN
                     BREAK;
                 ELSEIF (LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')) THEN
                     UPDATE OPENROUTESERVICE_APP.CORE.REGION_PROVISION_JOBS
-                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/720)...'
+                    SET MESSAGE = 'Downloading PBF file (' || :pbf_dl_status || ', poll ' || :poll_i || '/1320)...'
                     WHERE JOB_ID = :P_JOB_ID;
                     EXECUTE IMMEDIATE 'SELECT SYSTEM$WAIT(30)';
                 ELSE
@@ -305,7 +310,7 @@ BEGIN
         IF (:dl_failed) THEN
             LET dl_err STRING := CASE
                 WHEN LOWER(TRIM(:pbf_dl_status)) IN ('started', 'in_progress', 'not_started')
-                    THEN 'PBF download timed out after 720 polls (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
+                    THEN 'PBF download timed out after 1320 polls (~11h) (last status: ' || COALESCE(:pbf_dl_status, 'unknown') || ')'
                 ELSE 'PBF download failed: ' || COALESCE(:pbf_dl_status, 'unknown status')
             END;
             SYSTEM$LOG_INFO(dl_err);
