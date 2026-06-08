@@ -90,6 +90,17 @@ export default function RegionBoundaryMap({ boundaries, fitKey, height = 260 }: 
     [boundaries],
   );
 
+  // Single color assignment shared by polygon layers AND legend — eliminates index drift.
+  const colorByKey = useMemo(() => {
+    const m = new Map<string, { stroke: [number, number, number, number]; fill: [number, number, number, number] }>();
+    let colorIndex = 0;
+    for (const item of drawable) {
+      m.set(item.key, strokeFill(item.isDefault ? 0 : colorIndex + 1, item.isDefault));
+      if (!item.isDefault) colorIndex += 1;
+    }
+    return m;
+  }, [drawable]);
+
   const fitCoords = useMemo<LngLat[]>(() => {
     const out: LngLat[] = [];
     for (const item of drawable) {
@@ -107,10 +118,10 @@ export default function RegionBoundaryMap({ boundaries, fitKey, height = 260 }: 
 
   const layers = useMemo((): Layer[] => {
     const result: Layer[] = [];
-    let colorIndex = 0;
-    for (const item of boundaries) {
-      const { stroke, fill } = strokeFill(item.isDefault ? 0 : colorIndex + 1, item.isDefault);
-      if (!item.isDefault) colorIndex += 1;
+    for (const item of drawable) {
+      const colors = colorByKey.get(item.key);
+      if (!colors) continue;
+      const { stroke, fill } = colors;
 
       const geom = parseGeoJson(item.geojson);
       if (geom) {
@@ -148,7 +159,7 @@ export default function RegionBoundaryMap({ boundaries, fitKey, height = 260 }: 
       }
     }
     return result;
-  }, [boundaries]);
+  }, [drawable, colorByKey]);
 
   const onRecenterReady = useCallback((fn: () => void) => {
     recenterRef.current = fn;
@@ -199,10 +210,11 @@ export default function RegionBoundaryMap({ boundaries, fitKey, height = 260 }: 
           disabled={fitCoords.length === 0}
         />
       </div>
-      {boundaries.length > 1 && (
+      {drawable.length > 1 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8, fontSize: 12 }}>
-          {boundaries.filter((b) => parseGeoJson(b.geojson) || isValidBbox(b.bbox)).map((b, i) => {
-            const { stroke } = strokeFill(b.isDefault ? 0 : i + 1, b.isDefault);
+          {drawable.map((b) => {
+            const colors = colorByKey.get(b.key);
+            const stroke = colors?.stroke ?? DEFAULT_STROKE;
             return (
               <span key={b.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
