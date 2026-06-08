@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,14 +20,19 @@ CHUNK_SIZE = 8_192_000
 # parallel segments multiply effective throughput and keep multi-GB continental
 # PBFs (e.g. europe-latest ~34 GB) under the SQL provisioning poll ceiling.
 CONCURRENCY = max(1, min(int(os.getenv('DOWNLOAD_CONCURRENCY', '6')), 8))
-# Per-segment retry budget. A transient connection reset (e.g. IncompleteRead)
-# resumes the SAME segment from its current offset rather than restarting the
-# whole file, so status stays 'in_progress' and the SQL poll loop keeps waiting.
+# Per-segment retry budget. A transient connection reset re-downloads only that
+# one segment (1/N of the file), not the whole transfer, so status stays
+# 'in_progress' and the SQL poll loop keeps waiting.
 MAX_RETRIES = max(1, int(os.getenv('DOWNLOAD_MAX_RETRIES', '6')))
-# Flush the on-disk resume sidecar at most this often (per segment) to bound I/O.
-SEGMENT_FLUSH_BYTES = 16 * 1024 * 1024
 
 BASE_FOLDER = '/downloads'
+
+# IMPORTANT: SPCS stage-backed volume mounts are object-storage/FUSE backed and
+# do NOT support random-offset writes (seek + write into an existing object).
+# They DO support sequential writes of whole new objects. This downloader
+# therefore fetches each byte-range segment in parallel into its OWN segment
+# file (written sequentially from offset 0), then sequentially concatenates the
+# segment files into the final object. No seek-into-preallocated-file is used.
 
 # Status registry: target_path -> {"status": str, "error": str|None,
 #                                  "progress": {"done": int, "total": int}}
@@ -63,6 +69,10 @@ def _sidecar_path(file_path):
     return file_path + '.part.progress'
 
 
+def _seg_path(file_path, idx):
+    return '%s.seg%d' % (file_path, idx)
+
+
 def _set_job_status(target_path, status, error=None):
     with _download_lock:
         job = _download_jobs.get(target_path) or {}
@@ -87,7 +97,6 @@ def _get_job_status(target_path):
 
 def _resolve_status(folder, filename):
     target_path = _target_path(folder, filename)
-    part_path = _part_path(target_path)
     sidecar = _sidecar_path(target_path)
 
     job = _get_job_status(target_path)
@@ -102,14 +111,14 @@ def _resolve_status(folder, filename):
         return job['status']
 
     # No in-memory job. This happens after a container restart: the in-memory
-    # registry is gone but the staged .part + sidecar persist on the volume.
+    # registry is gone but staged segment files + sidecar persist on the volume.
     if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
         return 'success'
 
-    # A leftover .part / sidecar is a RESUMABLE partial download, not an error.
+    # A leftover sidecar means a RESUMABLE partial download, not an error.
     # Returning 'not_started' lets the next /download_to_stage trigger resume
-    # from the sidecar offsets instead of failing the provision.
-    if os.path.exists(sidecar) or os.path.exists(part_path):
+    # (completed segment files are skipped) instead of failing the provision.
+    if os.path.exists(sidecar):
         return 'not_started'
 
     return 'not_started'
@@ -165,6 +174,10 @@ def _plan_segments(total, n):
     return segments
 
 
+def _seg_len(seg):
+    return seg['end'] - seg['start'] + 1
+
+
 def _load_sidecar(sidecar, url, total):
     if not os.path.exists(sidecar):
         return None
@@ -181,79 +194,110 @@ def _load_sidecar(sidecar, url, total):
 
 
 def _write_sidecar(sidecar, url, total, segments):
-    tmp = sidecar + '.tmp'
-    with open(tmp, 'w') as f:
+    # Small file; write directly (a torn write is tolerable because resume also
+    # validates each segment file's on-disk size). Avoids rename churn on the
+    # object-store mount.
+    with open(sidecar, 'w') as f:
         json.dump({'url': url, 'total': total, 'segments': segments}, f)
-    os.replace(tmp, sidecar)
 
 
-def _preallocate(part_path, total):
-    flags = os.O_RDWR | os.O_CREAT
-    fd = os.open(part_path, flags)
-    try:
-        os.ftruncate(fd, total)
-    finally:
-        os.close(fd)
+def _download_segment(url, seg_file, seg, seg_lock):
+    '''Fetch one byte-range segment sequentially into its own file.
 
-
-def _download_segment(url, part_path, seg, seg_lock):
-    '''Download a single byte-range segment, resuming from seg['done'].
-
-    Retries the SAME segment from its current offset on transient errors so a
-    connection reset never discards already-written bytes.
+    Each retry re-fetches the whole segment from offset 0 into a fresh file
+    (sequential write only -- safe on object-store mounts). A failure costs at
+    most one segment (1/N of the file), never the whole transfer.
     '''
+    expected = _seg_len(seg)
+
+    # Skip if a previous run already completed this segment (cross-restart resume).
+    if os.path.exists(seg_file) and os.path.getsize(seg_file) == expected:
+        with seg_lock:
+            seg['done'] = expected
+        return
+
     attempt = 0
     while True:
-        resume_at = seg['start'] + seg['done']
-        if resume_at > seg['end']:
-            return
-        headers = {'Range': 'bytes=%d-%d' % (resume_at, seg['end'])}
+        headers = {'Range': 'bytes=%d-%d' % (seg['start'], seg['end'])}
         try:
             r = requests.get(url, headers=headers, stream=True,
                              timeout=(30, 300))
             if r.status_code not in (200, 206):
                 raise RuntimeError('HTTP %d' % r.status_code)
-            with open(part_path, 'r+b') as out:
-                out.seek(resume_at)
+            written = 0
+            with open(seg_file, 'wb') as out:
                 for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                     if not chunk:
                         continue
                     out.write(chunk)
+                    written += len(chunk)
                     with seg_lock:
-                        seg['done'] += len(chunk)
+                        seg['done'] = written
+            if written != expected:
+                raise RuntimeError('segment short read: got %d, expected %d'
+                                   % (written, expected))
             return
         except Exception as exc:
             attempt += 1
+            with seg_lock:
+                seg['done'] = 0
             if attempt > MAX_RETRIES:
                 raise RuntimeError(
                     'segment %d-%d failed after %d retries: %s'
                     % (seg['start'], seg['end'], MAX_RETRIES, exc))
             backoff = min(2 ** attempt, 60)
-            logger.warning(
-                'segment %d-%d retry %d/%d after %ss (resume at %d): %s',
-                seg['start'], seg['end'], attempt, MAX_RETRIES, backoff,
-                seg['start'] + seg['done'], exc)
+            logger.warning('segment %d-%d retry %d/%d after %ss: %s',
+                           seg['start'], seg['end'], attempt, MAX_RETRIES,
+                           backoff, exc)
             time.sleep(backoff)
 
 
-def _download_ranged(url, file_path, total):
+def _concatenate(file_path, segments, total):
+    '''Sequentially concatenate segment files into the final object.'''
     part_path = _part_path(file_path)
+    with open(part_path, 'wb') as out:
+        for idx in range(len(segments)):
+            seg_file = _seg_path(file_path, idx)
+            with open(seg_file, 'rb') as src:
+                shutil.copyfileobj(src, out, CHUNK_SIZE)
+
+    final_size = os.path.getsize(part_path)
+    if final_size != total:
+        raise RuntimeError('assembled size mismatch: got %d, expected %d'
+                           % (final_size, total))
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    os.rename(part_path, file_path)
+
+    # Cleanup segment files + sidecar after a successful assemble.
+    for idx in range(len(segments)):
+        try:
+            os.remove(_seg_path(file_path, idx))
+        except OSError:
+            pass
+    sidecar = _sidecar_path(file_path)
+    if os.path.exists(sidecar):
+        try:
+            os.remove(sidecar)
+        except OSError:
+            pass
+
+
+def _download_ranged(url, file_path, total):
     sidecar = _sidecar_path(file_path)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
     segments = _load_sidecar(sidecar, url, total)
     if segments is None:
         segments = _plan_segments(total, CONCURRENCY)
-        _preallocate(part_path, total)
         _write_sidecar(sidecar, url, total, segments)
         logger.info('Starting ranged download %s (%d bytes, %d segments)',
                     file_path, total, len(segments))
     else:
-        if not os.path.exists(part_path) or os.path.getsize(part_path) != total:
-            _preallocate(part_path, total)
-        done = sum(s['done'] for s in segments)
-        logger.info('Resuming ranged download %s from %d/%d bytes (%d%%)',
-                    file_path, done, total, int(done * 100 / total))
+        done = sum(min(s['done'], _seg_len(s)) for s in segments)
+        logger.info('Resuming ranged download %s (~%d/%d bytes, %d segments)',
+                    file_path, done, total, len(segments))
 
     seg_lock = threading.Lock()
     stop_flusher = threading.Event()
@@ -262,15 +306,13 @@ def _download_ranged(url, file_path, total):
         with seg_lock:
             snapshot = [dict(s) for s in segments]
         _write_sidecar(sidecar, url, total, snapshot)
-        done = sum(s['done'] for s in snapshot)
+        done = sum(min(s['done'], _seg_len(s)) for s in snapshot)
         _set_progress(file_path, done, total)
         logger.info('Download progress %s: %d/%d bytes (%d%%)',
                     file_path, done, total, int(done * 100 / total))
 
-    # Periodic background flusher: persists resume state and logs progress
-    # roughly every 15s without coupling to per-chunk write paths.
     def _flusher_loop():
-        while not stop_flusher.wait(15):
+        while not stop_flusher.wait(30):
             try:
                 _flush()
             except Exception as exc:
@@ -282,8 +324,11 @@ def _download_ranged(url, file_path, total):
     errors = []
     try:
         with ThreadPoolExecutor(max_workers=len(segments)) as ex:
-            futures = [ex.submit(_download_segment, url, part_path, seg, seg_lock)
-                       for seg in segments]
+            futures = []
+            for idx, seg in enumerate(segments):
+                seg_file = _seg_path(file_path, idx)
+                futures.append(
+                    ex.submit(_download_segment, url, seg_file, seg, seg_lock))
             for fut in futures:
                 try:
                     fut.result()
@@ -293,8 +338,6 @@ def _download_ranged(url, file_path, total):
         stop_flusher.set()
         flusher.join(timeout=5)
 
-    # Persist final segment state before evaluating success/failure so a
-    # subsequent resume sees the latest offsets.
     try:
         _flush()
     except Exception:
@@ -303,16 +346,9 @@ def _download_ranged(url, file_path, total):
     if errors:
         raise RuntimeError('; '.join(errors))
 
-    final_size = os.path.getsize(part_path)
-    if final_size != total:
-        raise RuntimeError('size mismatch: got %d, expected %d'
-                           % (final_size, total))
-
-    if os.path.exists(file_path):
-        os.remove(file_path)
-    os.rename(part_path, file_path)
-    if os.path.exists(sidecar):
-        os.remove(sidecar)
+    logger.info('All %d segments complete for %s; concatenating...',
+                len(segments), file_path)
+    _concatenate(file_path, segments, total)
     logger.info('Download successful to %s (%d bytes via %d segments)',
                 file_path, total, len(segments))
     return total
@@ -328,7 +364,6 @@ def _download_file_streaming(url, file_path):
 
     response = requests.get(url, stream=True, timeout=(30, 300))
     if response.status_code != 200:
-        # Permanent HTTP error on the fallback path: drop the empty .part.
         if os.path.exists(part_path):
             os.remove(part_path)
         raise RuntimeError('HTTP %d from %s' % (response.status_code, url))
@@ -364,9 +399,9 @@ def _run_download(url, file_path):
         _download_file(url, file_path)
         _set_job_status(file_path, 'success')
     except Exception as exc:
-        # IMPORTANT: do NOT delete .part / .part.progress here. They are the
-        # resume state. The next /download_to_stage trigger resumes from the
-        # sidecar offsets instead of restarting the whole transfer from byte 0.
+        # IMPORTANT: do NOT delete segment files / sidecar here. They are the
+        # resume state. The next /download_to_stage trigger resumes, skipping
+        # segments already complete on disk instead of restarting from scratch.
         message = 'error: %s' % exc
         _set_job_status(file_path, 'error', message)
         logger.exception('Download failed for %s', file_path)
@@ -383,7 +418,7 @@ def _start_download(url, file_path):
         return 'success'
 
     # Fresh start OR resume-after-error/restart: a single new thread that
-    # _download_ranged will transparently resume from the sidecar if present.
+    # _download_ranged transparently resumes from the sidecar + segment files.
     _set_job_status(file_path, 'started')
     thread = threading.Thread(
         target=_run_download,
