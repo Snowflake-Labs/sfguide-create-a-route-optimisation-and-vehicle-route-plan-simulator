@@ -3,7 +3,16 @@
 spec:
   containers:
     - name: downloader
-      image: /openrouteservice_app/core/image_repository/downloader:v0.0.4
+      image: /openrouteservice_app/core/image_repository/downloader:v0.0.5
+      env:
+        # Parallel byte-range connections for large range-capable downloads.
+        # Multiplies effective throughput against per-connection throttling
+        # (e.g. Geofabrik ~1 MB/s) so continental PBFs finish under the SQL
+        # provisioning poll ceiling. Capped at 8 in the service code.
+        DOWNLOAD_CONCURRENCY: "6"
+        # Per-segment retry budget. A transient reset resumes the same segment
+        # from its current offset rather than restarting the whole file.
+        DOWNLOAD_MAX_RETRIES: "6"
       resources:
         requests:
           cpu: "0.5"
