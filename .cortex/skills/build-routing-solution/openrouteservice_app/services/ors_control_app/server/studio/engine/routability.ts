@@ -5,6 +5,7 @@
 import type { POI, SnowSqlFn } from './types.js';
 import { GenerationConfig, uuid } from '../profiles.js';
 import { log } from '../../diagnostics.js';
+import { regionCatalogMatch } from '../../lib/region-catalog-match.js';
 
 // Look up ISO-2 country codes for the active region from FLEET_INTELLIGENCE.CORE.REGION_REGISTRY.
 // When the column is non-empty, loadPOIs filters POIs to those countries (eliminates border-bbox
@@ -174,14 +175,14 @@ export async function loadPOIs(
     ? `
       AND p.ADDRESSES[0]:country::STRING IN (${countryCodes.map(c => `'${c.replace(/'/g, "''")}'`).join(',')})`
     : '';
+  const mBoundary = regionCatalogMatch('rc', `'${config.region.replace(/'/g, "''")}'`);
   const sql = `
     WITH region_boundary AS (
       SELECT BOUNDARY
       FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
       WHERE rc.BOUNDARY IS NOT NULL
-        AND (UPPER(rc.LOOKUP_NAME) = UPPER('${config.region.replace(/'/g, "''")}')
-             OR UPPER(rc.REGION_KEY) = UPPER('${config.region.replace(/'/g, "''")}'))
-      ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+        AND ${mBoundary.predicate}
+      ORDER BY ${mBoundary.rank}
       LIMIT 1
     )
     SELECT p.ID AS LOCATION_ID, p.NAMES::VARIANT:primary AS NAME,

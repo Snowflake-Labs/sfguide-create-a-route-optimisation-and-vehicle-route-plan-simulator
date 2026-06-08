@@ -9,6 +9,7 @@ import { runSql, callProcedure } from '../../lib/sql.js';
 import { sanitizeIdentifier, toIso } from '../../lib/sanitize.js';
 import { orsServiceName } from '../../lib/region.js';
 import { getExpectedProfiles } from '../../lib/ors.js';
+import { regionCatalogMatch } from '../../lib/region-catalog-match.js';
 
 export function createRegionsRegistryRouter(): Router {
   const router = Router();
@@ -119,7 +120,8 @@ export function createRegionsRegistryRouter(): Router {
           || (bbox.min_lat === 0 && bbox.max_lat === 0 && bbox.min_lon === 0 && bbox.max_lon === 0);
         try {
           const safeRegion = sanitizeIdentifier(c.region);
-          const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE UPPER(LOOKUP_NAME) = UPPER('${safeRegion}') OR UPPER(REGION_KEY) = UPPER('${safeRegion}') OR UPPER(REGION_NAME) = UPPER('${safeRegion}') ORDER BY CASE WHEN UPPER(LOOKUP_NAME) = UPPER('${safeRegion}') THEN 0 WHEN UPPER(REGION_KEY) = UPPER('${safeRegion}') THEN 1 ELSE 2 END LIMIT 1`);
+          const m = regionCatalogMatch('', `'${safeRegion}'`);
+          const catRows = await runSql(`SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE ${m.predicate} ORDER BY ${m.rank} LIMIT 1`);
           const cat = catRows?.[0];
           if (cat) {
             const catBboxOk = cat.MIN_LAT != null && cat.MAX_LAT != null && cat.MIN_LON != null && cat.MAX_LON != null

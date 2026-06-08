@@ -8,6 +8,7 @@ import { SF_DATABASE } from '../../constants.js';
 import { runSql } from '../../lib/sql.js';
 import { escapeString } from '../../lib/sanitize.js';
 import { getActiveRegionOverride, setActiveRegionOverride } from '../../lib/state.js';
+import { regionCatalogMatch } from '../../lib/region-catalog-match.js';
 import { log } from '../../diagnostics.js';
 
 export function createRegionsLifecycleRouter(): Router {
@@ -17,6 +18,7 @@ export function createRegionsLifecycleRouter(): Router {
     try {
       let regions: any[] = [];
       try {
+        const mReg = regionCatalogMatch('rc', 'rr.ORS_REGION_KEY');
         regions = await runSql(
           `SELECT rr.REGION_NAME, rr.DISPLAY_NAME, rr.CENTER_LAT, rr.CENTER_LON,
                   rr.BBOX_MIN_LAT, rr.BBOX_MAX_LAT, rr.BBOX_MIN_LON, rr.BBOX_MAX_LON,
@@ -35,9 +37,8 @@ export function createRegionsLifecycleRouter(): Router {
            FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
            LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
              ON rc.BOUNDARY IS NOT NULL
-            AND (UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY)
-                 OR UPPER(rc.REGION_KEY) = UPPER(rr.ORS_REGION_KEY))
-           QUALIFY ROW_NUMBER() OVER (PARTITION BY rr.REGION_NAME ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC) = 1
+            AND ${mReg.predicate}
+           QUALIFY ROW_NUMBER() OVER (PARTITION BY rr.REGION_NAME ORDER BY ${mReg.rank}) = 1
            ORDER BY rr.IS_DEFAULT DESC, rr.PROVISIONED_AT`,
           'FLEET_INTELLIGENCE', 'CORE'
         );
@@ -95,6 +96,7 @@ export function createRegionsLifecycleRouter(): Router {
         // fall back to a centroid/envelope derived from the telemetry itself.
         // This replaces the previous behaviour of returning CENTER_LAT=0,
         // CENTER_LON=0 (null island).
+        const mTel = regionCatalogMatch('rc', 't.REGION');
         const synthRows = await runSql(`
           WITH telemetry_regions AS (
             SELECT DISTINCT REGION FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY WHERE REGION IS NOT NULL
@@ -107,10 +109,8 @@ export function createRegionsLifecycleRouter(): Router {
             FROM telemetry_regions t
             LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
               ON rc.BOUNDARY IS NOT NULL
-             AND (UPPER(rc.LOOKUP_NAME) = UPPER(t.REGION)
-                  OR UPPER(rc.REGION_KEY) = UPPER(t.REGION)
-                  OR UPPER(rc.REGION_NAME) = UPPER(t.REGION))
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY rc.BOUNDARY_AREA_KM2 ASC NULLS LAST) = 1
+             AND ${mTel.predicate}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.REGION ORDER BY ${mTel.rank}) = 1
           ),
           telemetry_hull AS (
             SELECT

@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { SNOWFLAKE_HOST, IS_SPCS } from '../constants.js';
 import { runSql } from '../lib/sql.js';
 import { getSpcsToken, escapeString } from '../lib/sanitize.js';
+import { regionCatalogMatch } from '../lib/region-catalog-match.js';
 
 export function createAgentRouter(): Router {
   const router = Router();
@@ -157,6 +158,7 @@ export function createAgentRouter(): Router {
 
       // Resolve region centroid from REGION_CATALOG (boundary preferred).
       const regionLit = escapeString(region);
+      const mCentroid = regionCatalogMatch('rc', `'${regionLit}'`);
       const centroidRows = await runSql(
         `SELECT
             rc.REGION_NAME AS REGION_NAME,
@@ -168,8 +170,8 @@ export function createAgentRouter(): Router {
             (rc.MIN_LON + rc.MAX_LON)/2.0 AS BBOX_LON
          FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
          WHERE rc.BOUNDARY IS NOT NULL
-           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${regionLit}')
-                OR UPPER(rc.REGION_KEY) = UPPER('${regionLit}'))
+           AND ${mCentroid.predicate}
+         ORDER BY ${mCentroid.rank}
          LIMIT 1`,
         'OPENROUTESERVICE_APP', 'CORE',
       );

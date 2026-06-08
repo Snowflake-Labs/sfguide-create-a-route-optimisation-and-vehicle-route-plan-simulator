@@ -6,6 +6,7 @@ import { SF_DATABASE } from '../constants.js';
 import { runSql } from '../lib/sql.js';
 import { sanitizeIdentifier } from '../lib/sanitize.js';
 import { roadPointsCacheKey, roadPointsCacheGet, roadPointsCacheSet } from '../lib/cache.js';
+import { regionCatalogMatch } from '../lib/region-catalog-match.js';
 import { log } from '../diagnostics.js';
 
 export function createSamplingRouter(): Router {
@@ -86,14 +87,13 @@ export function createSamplingRouter(): Router {
     // bbbike-bbox sources are intentionally INCLUDED — those rows store a valid
     // 5-vertex rectangle BOUNDARY equal to the bbox, so ST_INTERSECTS becomes
     // a no-op for points already inside the bbox. No need to special-case.
-    const regionBoundaryCte = safeRegionForBoundary
+    const mSample = safeRegionForBoundary ? regionCatalogMatch('', `'${safeRegionForBoundary}'`) : null;
+    const regionBoundaryCte = mSample
       ? `, region_boundary AS (
           SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG
-          WHERE (UPPER(LOOKUP_NAME) = UPPER('${safeRegionForBoundary}')
-                 OR UPPER(REGION_KEY) = UPPER('${safeRegionForBoundary}')
-                 OR UPPER(REGION_NAME) = UPPER('${safeRegionForBoundary}'))
+          WHERE ${mSample.predicate}
             AND BOUNDARY IS NOT NULL
-          ORDER BY BOUNDARY_AREA_KM2 ASC
+          ORDER BY ${mSample.rank}
           LIMIT 1
         )`
       : '';

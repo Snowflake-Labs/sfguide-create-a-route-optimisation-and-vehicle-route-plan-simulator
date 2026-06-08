@@ -61,14 +61,30 @@ function cartoBasemap() {
 const ZONE_COLORS: [number, number, number][] = [[34, 197, 94], [41, 181, 232], [245, 158, 11], [239, 68, 68], [128, 0, 255]];
 
 // Standard boundary join pattern (see AGENTS.md "Prefer Boundary over Bbox").
-// Joins REGION_CATALOG via LOOKUP_NAME / REGION_KEY so spatial filtering
-// happens server-side against the polygon — no GeoJSON sent over the wire.
+// Resolves REGION_CATALOG to the ONE correct polygon for `orsKey` and joins it
+// so spatial filtering happens server-side against the polygon — no GeoJSON sent
+// over the wire. The catalog holds same-name rows (e.g. country "Mexico" vs the
+// natural-earth state "México", both LOOKUP_NAME='Mexico'), so we resolve to a
+// single ranked row (exact REGION_KEY first, then larger admin level/area) and
+// JOIN it via ON TRUE — a bare JOIN on the table would fan out duplicate POIs
+// and could pick the wrong (smaller) polygon. Ranking mirrors the server helper
+// server/lib/region-catalog-match.ts; keep the two in sync.
 function boundaryJoin(orsKey: string): string {
   const k = orsKey.replace(/'/g, "''");
-  return `JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-            ON rc.BOUNDARY IS NOT NULL
-           AND (UPPER(rc.LOOKUP_NAME) = UPPER('${k}')
-                OR UPPER(rc.REGION_KEY) = UPPER('${k}'))`;
+  return `JOIN (
+            SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+            WHERE BOUNDARY IS NOT NULL
+              AND (UPPER(REGION_KEY) = UPPER('${k}')
+                   OR UPPER(LOOKUP_NAME) = UPPER('${k}')
+                   OR UPPER(REGION_NAME) = UPPER('${k}'))
+            ORDER BY
+              CASE WHEN UPPER(REGION_KEY) = UPPER('${k}') THEN 0
+                   WHEN UPPER(LOOKUP_NAME) = UPPER('${k}') THEN 1 ELSE 2 END,
+              CASE LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+                   WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3 ELSE 4 END,
+              COALESCE(BOUNDARY_AREA_KM2, 0) DESC
+            LIMIT 1
+          ) rc ON TRUE`;
 }
 const BOUNDARY_FILTER = `ST_WITHIN(p.GEOMETRY, rc.BOUNDARY)`;
 

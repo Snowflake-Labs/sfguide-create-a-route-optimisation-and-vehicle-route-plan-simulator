@@ -7,6 +7,7 @@ import { SF_DATABASE } from '../../constants.js';
 import { runSql, callProcedure, submitSqlAsync, cancelStatement } from '../../lib/sql.js';
 import { sanitizeIdentifier, sanitizeFloat, sanitizeInt, escapeString } from '../../lib/sanitize.js';
 import { orsServiceName } from '../../lib/region.js';
+import { regionCatalogMatch } from '../../lib/region-catalog-match.js';
 
 export function createMatrixBuildRouter(): Router {
   const router = Router();
@@ -26,6 +27,10 @@ export function createMatrixBuildRouter(): Router {
         );
         for (const r of rows || []) {
           const a = Number(r.A);
+          // K1 (REGION_KEY) is unique and authoritative — set unconditionally.
+          // K2 (LOOKUP_NAME) is a non-unique fallback, set only when no
+          // REGION_KEY already claimed the key, so a same-name sub-region never
+          // shadows the deployed region's true area.
           if (r.K1) catalogAreas[r.K1] = a;
           if (r.K2 && !catalogAreas[r.K2]) catalogAreas[r.K2] = a;
         }
@@ -147,14 +152,14 @@ export function createMatrixBuildRouter(): Router {
       // produce (California bbox = ~580k km^2 but real polygon = ~424k km^2).
       let polygonAreaSqKm: number | null = null;
       let hasPolygon = false;
+      const mPoly = regionCatalogMatch('', `'${escapeString(safeRegion)}'`);
       try {
         const polyRow = await runSql(
           `SELECT BOUNDARY_AREA_KM2 AS AREA
            FROM ${SF_DATABASE}.CORE.REGION_CATALOG
            WHERE BOUNDARY IS NOT NULL
-             AND (UPPER(LOOKUP_NAME) = UPPER('${escapeString(safeRegion)}')
-                  OR UPPER(REGION_KEY) = UPPER('${escapeString(safeRegion)}'))
-           ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1`
+             AND ${mPoly.predicate}
+           ORDER BY ${mPoly.rank} LIMIT 1`
         );
         if (polyRow?.[0]?.AREA != null) {
           polygonAreaSqKm = Number(polyRow[0].AREA);
@@ -183,9 +188,8 @@ export function createMatrixBuildRouter(): Router {
       const polyExpr = hasPolygon
         ? `(SELECT BOUNDARY FROM ${SF_DATABASE}.CORE.REGION_CATALOG
            WHERE BOUNDARY IS NOT NULL
-             AND (UPPER(LOOKUP_NAME) = UPPER('${escapeString(safeRegion)}')
-                  OR UPPER(REGION_KEY) = UPPER('${escapeString(safeRegion)}'))
-           ORDER BY BOUNDARY_AREA_KM2 ASC LIMIT 1)`
+             AND ${mPoly.predicate}
+           ORDER BY ${mPoly.rank} LIMIT 1)`
         : `TO_GEOGRAPHY('POLYGON((${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MIN_LAT)},${sanitizeFloat(bbox.MAX_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MAX_LAT)},${sanitizeFloat(bbox.MIN_LON)} ${sanitizeFloat(bbox.MIN_LAT)}))')`;
 
       const computeEstimate = async (resolution: number) => {

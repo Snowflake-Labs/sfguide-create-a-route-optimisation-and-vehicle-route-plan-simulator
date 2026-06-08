@@ -6,6 +6,7 @@
 // the freshly generated (region, vehicleType).
 
 import { log } from '../diagnostics.js';
+import { regionCatalogMatch } from '../lib/region-catalog-match.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
@@ -33,6 +34,7 @@ export async function syncRegionRegistryAndConfig(
   // 1. Upsert REGION_REGISTRY using REGION_CATALOG boundary when available.
   //    The CTEs build a single-row driver with center + bbox derived from the
   //    best available geometry source.
+  const mCat = regionCatalogMatch('', `'${safeRegion}'`);
   try {
     const upsertSql = `
       MERGE INTO FLEET_INTELLIGENCE.CORE.REGION_REGISTRY AS tgt
@@ -44,12 +46,8 @@ export async function syncRegionRegistryAndConfig(
             COALESCE(LOOKUP_NAME, REGION_KEY, REGION_NAME) AS CAT_LOOKUP
           FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
           WHERE BOUNDARY IS NOT NULL
-            AND (
-              UPPER(LOOKUP_NAME) = UPPER('${safeRegion}')
-              OR UPPER(REGION_KEY) = UPPER('${safeRegion}')
-              OR UPPER(REGION_NAME) = UPPER('${safeRegion}')
-            )
-          QUALIFY ROW_NUMBER() OVER (ORDER BY BOUNDARY_AREA_KM2 ASC NULLS LAST) = 1
+            AND ${mCat.predicate}
+          QUALIFY ROW_NUMBER() OVER (ORDER BY ${mCat.rank}) = 1
         ),
         hull AS (
           SELECT

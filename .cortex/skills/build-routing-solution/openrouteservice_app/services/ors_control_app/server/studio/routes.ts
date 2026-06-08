@@ -5,6 +5,7 @@ import { GenerationConfig, PROFILE_TEMPLATES, defaultDistanceDistributionForArea
 import { log } from '../diagnostics.js';
 import { normalizeRegion } from '../lib/region.js';
 import { bboxAreaKm2 } from './engine/spatial.js';
+import { regionCatalogMatch } from '../lib/region-catalog-match.js';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 
@@ -18,6 +19,7 @@ type Bbox = { min_lat: number; max_lat: number; min_lng: number; max_lng: number
 // inside SF bbox because the React client hardcoded SF as the catch-all).
 async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bbox> {
   const safeRegion = region.replace(/'/g, "''");
+  const mJoin = regionCatalogMatch('rc', 'rr.ORS_REGION_KEY');
   const regionRows = await snowSql(
     `SELECT
        COALESCE(rr.BBOX_MIN_LAT, rc.MIN_LAT) AS BBOX_MIN_LAT,
@@ -26,10 +28,9 @@ async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bb
        COALESCE(rr.BBOX_MAX_LON, rc.MAX_LON) AS BBOX_MAX_LON
      FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
      LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-       ON UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY)
-       OR UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY)
+       ON ${mJoin.predicate}
      WHERE rr.REGION_NAME='${safeRegion}'
-     QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+     QUALIFY ROW_NUMBER() OVER (ORDER BY ${mJoin.rank}) = 1`,
     'FLEET_INTELLIGENCE', 'CORE'
   ).catch(() => [] as any[]);
   let bbox: Bbox | null = regionRows.length ? {
@@ -39,12 +40,12 @@ async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bb
     max_lng: Number(regionRows[0].BBOX_MAX_LON),
   } : null;
   if (!bbox || [bbox.min_lat, bbox.max_lat, bbox.min_lng, bbox.max_lng].some(v => v == null || Number.isNaN(v))) {
+    const mCatOnly = regionCatalogMatch('', `'${safeRegion}'`);
     const catalogOnly = await snowSql(
       `SELECT MIN_LAT, MAX_LAT, MIN_LON, MAX_LON
        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
-       WHERE UPPER(LOOKUP_NAME)=UPPER('${safeRegion}')
-          OR UPPER(REGION_KEY)=UPPER('${safeRegion}')
-       QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+       WHERE ${mCatOnly.predicate}
+       QUALIFY ROW_NUMBER() OVER (ORDER BY ${mCatOnly.rank}) = 1`,
       'OPENROUTESERVICE_APP', 'CORE'
     ).catch(() => [] as any[]);
     if (catalogOnly.length) {
@@ -68,12 +69,12 @@ async function resolveRegionBbox(region: string, snowSql: SnowSqlFn): Promise<Bb
 async function resolveRegionAreaKm2(region: string, snowSql: SnowSqlFn): Promise<number | null> {
   const safe = region.replace(/'/g, "''");
   try {
+    const mArea = regionCatalogMatch('', `'${safe}'`);
     const rows = await snowSql(
       `SELECT BOUNDARY_AREA_KM2
        FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
-       WHERE UPPER(LOOKUP_NAME) = UPPER('${safe}')
-          OR UPPER(REGION_KEY) = UPPER('${safe}')
-       QUALIFY ROW_NUMBER() OVER (ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC) = 1`,
+       WHERE ${mArea.predicate}
+       QUALIFY ROW_NUMBER() OVER (ORDER BY ${mArea.rank}) = 1`,
       'OPENROUTESERVICE_APP', 'CORE',
     );
     if (rows.length && rows[0].BOUNDARY_AREA_KM2 != null) {

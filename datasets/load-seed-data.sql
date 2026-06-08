@@ -593,8 +593,25 @@ SELECT
   rc.COUNTRY           AS CATALOG_COUNTRY
 FROM FLEET_INTELLIGENCE.CORE.REGION_REGISTRY rr
 LEFT JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
-  ON rc.LOOKUP_NAME = rr.ORS_REGION_KEY
-  OR rc.REGION_KEY  = rr.ORS_REGION_KEY;
+  ON UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY)
+  OR UPPER(rc.LOOKUP_NAME)  = UPPER(rr.ORS_REGION_KEY)
+  OR UPPER(rc.REGION_NAME)  = UPPER(rr.ORS_REGION_KEY)
+-- REGION_CATALOG holds same-name rows (e.g. country "Mexico" vs the natural-earth
+-- state "México", both LOOKUP_NAME='Mexico'). Resolve to ONE row per region:
+-- exact REGION_KEY match first (unique, authoritative for every deployed region),
+-- then exact LOOKUP_NAME / REGION_NAME, then broader admin LEVEL and larger area.
+-- Without this a bare LEFT JOIN fans out to multiple rows per region and picks an
+-- arbitrary (often the wrong, smaller) BOUNDARY. Mirrors the application helper
+-- server/lib/region-catalog-match.ts.
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY rr.REGION_NAME
+  ORDER BY
+    CASE WHEN UPPER(rc.REGION_KEY)  = UPPER(rr.ORS_REGION_KEY) THEN 0
+         WHEN UPPER(rc.LOOKUP_NAME) = UPPER(rr.ORS_REGION_KEY) THEN 1 ELSE 2 END,
+    CASE rc.LEVEL WHEN 'continent' THEN 0 WHEN 'country' THEN 1
+         WHEN 'sub-region' THEN 2 WHEN 'sub-sub-region' THEN 3 ELSE 4 END,
+    COALESCE(rc.BOUNDARY_AREA_KM2, 0) DESC
+) = 1;
 
 -- 3b. GENERATION_JOBS
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
