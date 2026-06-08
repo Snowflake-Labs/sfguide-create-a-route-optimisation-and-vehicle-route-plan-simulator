@@ -16,6 +16,8 @@ import { refreshRegionCatalog } from '../../lib/refresh-region-catalog.js';
 export function createRegionsCatalogRouter(): Router {
   const router = Router();
 
+  // List catalog metadata only — omit BOUNDARY GeoJSON (~47 MB for 5k rows).
+  // Polygon for the selected region: GET /api/regions/catalog/:catalogId/boundary
   router.get('/api/regions/catalog', async (req, res) => {
     try {
       const search = (req.query.search as string || '').trim();
@@ -25,10 +27,25 @@ export function createRegionsCatalogRouter(): Router {
       if (search) where += ` AND LOWER(REGION_NAME) LIKE '%${escapeString(search.toLowerCase())}%'`;
       if (source) where += ` AND SOURCE = '${escapeString(source)}'`;
       if (level) where += ` AND LEVEL = '${escapeString(level)}'`;
-      const rows = await runSql(`SELECT CATALOG_ID, SOURCE, REGION_NAME, REGION_KEY, HIERARCHY, CONTINENT, COUNTRY, PBF_URL, PBF_SIZE_MB, LEVEL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG ${where} QUALIFY ROW_NUMBER() OVER (PARTITION BY SOURCE, REGION_KEY, COALESCE(COUNTRY,'') ORDER BY CATALOG_ID) = 1 ORDER BY SOURCE, CONTINENT, COUNTRY, REGION_NAME`);
+      const rows = await runSql(`SELECT CATALOG_ID, SOURCE, REGION_NAME, REGION_KEY, HIERARCHY, CONTINENT, COUNTRY, PBF_URL, PBF_SIZE_MB, LEVEL, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON FROM ${SF_DATABASE}.CORE.REGION_CATALOG ${where} QUALIFY ROW_NUMBER() OVER (PARTITION BY SOURCE, REGION_KEY, COALESCE(COUNTRY,'') ORDER BY CATALOG_ID) = 1 ORDER BY SOURCE, CONTINENT, COUNTRY, REGION_NAME`);
       res.json({ catalog: rows || [] });
     } catch (err: any) {
       res.json({ catalog: [], error: err.message });
+    }
+  });
+
+  router.get('/api/regions/catalog/:catalogId/boundary', async (req, res) => {
+    try {
+      const catalogId = escapeString(String(req.params.catalogId || '').trim());
+      if (!catalogId) {
+        res.status(400).json({ boundaryGeoJson: null, error: 'catalogId required' });
+        return;
+      }
+      const rows = await runSql(`SELECT CAST(ST_ASGEOJSON(BOUNDARY) AS VARCHAR) AS BOUNDARY_GEOJSON FROM ${SF_DATABASE}.CORE.REGION_CATALOG WHERE CATALOG_ID = '${catalogId}' LIMIT 1`);
+      const row = rows?.[0];
+      res.json({ boundaryGeoJson: row?.BOUNDARY_GEOJSON ?? null });
+    } catch (err: any) {
+      res.status(500).json({ boundaryGeoJson: null, error: err.message });
     }
   });
 

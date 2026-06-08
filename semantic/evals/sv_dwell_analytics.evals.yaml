@@ -1,0 +1,60 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+evals:
+  - question: "What is the total dwell time in minutes for each facility type?"
+    category: group_by
+    gold_sql: |
+      SELECT FACILITY_TYPE AS FACILITY_TYPE, SUM(DWELL_MINUTES) AS TOTAL_DWELL_MINUTES
+      FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+      GROUP BY 1 ORDER BY TOTAL_DWELL_MINUTES DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+        DIMENSIONS sessions.facility_type METRICS sessions.total_dwell_minutes
+      ) ORDER BY total_dwell_minutes DESC
+
+  - question: "How many dwell sessions are there for each dwell status?"
+    category: group_by
+    gold_sql: |
+      SELECT STATUS AS STATUS, COUNT(*) AS TOTAL_SESSIONS
+      FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+      GROUP BY 1 ORDER BY TOTAL_SESSIONS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+        DIMENSIONS sessions.dwell_status METRICS sessions.total_sessions
+      ) ORDER BY total_sessions DESC
+
+  - question: "What is the average dwell minutes per session for each city?"
+    category: group_by
+    gold_sql: |
+      SELECT CITY AS CITY, AVG(DWELL_MINUTES) AS AVG_DWELL_MINUTES
+      FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+      GROUP BY 1 ORDER BY AVG_DWELL_MINUTES DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+        DIMENSIONS sessions.city METRICS sessions.avg_dwell_minutes
+      ) ORDER BY avg_dwell_minutes DESC
+
+  - question: "What is the total number of SLA breaches for each driver profile?"
+    category: group_by
+    gold_sql: |
+      SELECT DRIVER_PROFILE AS DRIVER_PROFILE, SUM(SLA_BREACH_COUNT) AS TOTAL_SLA_BREACHES
+      FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
+      GROUP BY 1 ORDER BY TOTAL_SLA_BREACHES DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+        DIMENSIONS driver_dwell.dd_driver_profile METRICS driver_dwell.total_sla_breaches
+      ) ORDER BY total_sla_breaches DESC
+
+  - question: "How many distinct vehicles had dwell sessions?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT COUNT(DISTINCT VEHICLE_ID) AS UNIQUE_VEHICLES
+      FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS
+        METRICS sessions.unique_vehicles
+      )

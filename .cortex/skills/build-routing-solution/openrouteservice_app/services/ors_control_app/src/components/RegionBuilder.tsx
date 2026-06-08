@@ -90,6 +90,19 @@ export default function RegionBuilder() {
     } catch {}
   }, [selectedRegion, selectedProfiles, computeSize, forcePbfRedownload, jobs]);
 
+  useEffect(() => {
+    if (!selectedRegion?.catalogId || selectedRegion.boundaryGeoJson != null) return;
+    const { catalogId } = selectedRegion;
+    let cancelled = false;
+    void cat.fetchCatalogBoundary(catalogId).then((geojson) => {
+      if (cancelled || geojson == null) return;
+      setSelectedRegion((prev) =>
+        prev?.catalogId === catalogId ? { ...prev, boundaryGeoJson: geojson } : prev,
+      );
+    });
+    return () => { cancelled = true; };
+  }, [selectedRegion?.catalogId, selectedRegion?.boundaryGeoJson, cat.fetchCatalogBoundary]);
+
   const retryJob = useCallback((job: ProvisionJob) => {
     const match = cat.catalog.find((r) => r.regionKey.toUpperCase() === job.region.toUpperCase());
     if (match) {

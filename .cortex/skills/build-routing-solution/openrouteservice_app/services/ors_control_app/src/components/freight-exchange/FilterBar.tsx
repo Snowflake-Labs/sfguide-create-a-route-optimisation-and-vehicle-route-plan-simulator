@@ -1,5 +1,5 @@
 // Filter bar — vendor source chips, equipment chips, ADR / status / trust /
-// usd-per-km / max-age controls. Pure presentational; takes filter state
+// usd-per-km controls. Pure presentational; takes filter state
 // + setters from the orchestrator and emits changes via a single setter.
 
 import type { FilterState } from './types';
@@ -87,10 +87,6 @@ export default function FilterBar({ filters, setFilters, filteredCount, totalCou
       <label style={{ fontSize: 11, display: 'flex', gap: 4, alignItems: 'center' }}>
         max:
         <input type="number" value={filters.usdPerKmMax} onChange={e => setFilters(p => ({ ...p, usdPerKmMax: e.target.value === '' ? '' : Number(e.target.value) }))} style={{ width: 60, fontSize: 11, padding: '2px 4px' }} step="0.1" />
-      </label>
-      <label style={{ fontSize: 11, display: 'flex', gap: 4, alignItems: 'center' }}>
-        Max age (min):
-        <input type="number" value={filters.maxAgeMin} onChange={e => setFilters(p => ({ ...p, maxAgeMin: Number(e.target.value) || 1440 }))} style={{ width: 70, fontSize: 11, padding: '2px 4px' }} step="60" />
       </label>
       <span style={{ marginLeft: 'auto', fontSize: 11, color: '#374151', fontWeight: 600 }}>
         {filteredCount} / {totalCount} offers

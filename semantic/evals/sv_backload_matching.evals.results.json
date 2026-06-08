@@ -1,0 +1,50 @@
+{
+  "summary": {
+    "auto": [
+      4,
+      4
+    ],
+    "require": [
+      4,
+      4
+    ],
+    "sv": [
+      4,
+      4
+    ]
+  },
+  "results": [
+    {
+      "question": "How many backload decisions are there for each decision type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the average empty kilometers for each decision source?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the total net benefit in EUR across all backload decisions?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the average match score for each source page?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    }
+  ]
+}

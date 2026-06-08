@@ -82,7 +82,6 @@ export interface FilterState {
   statusFilter: 'OPEN' | 'ALL';
   usdPerKmMin: number | '';
   usdPerKmMax: number | '';
-  maxAgeMin: number;
   trustFilter: 'ANY' | 'GREEN' | 'GREEN_OR_YELLOW';
 }
 

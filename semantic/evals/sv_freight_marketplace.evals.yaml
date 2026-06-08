@@ -1,0 +1,74 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+evals:
+  - question: "How many freight offers are there for each equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT EQUIPMENT AS EQUIPMENT, COUNT(DISTINCT OFFER_ID) AS TOTAL_OFFERS
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+      GROUP BY 1 ORDER BY TOTAL_OFFERS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        DIMENSIONS offers.equipment METRICS offers.total_offers
+      ) ORDER BY total_offers DESC
+
+  - question: "What is the average offer price in USD for each freight exchange source?"
+    category: group_by
+    gold_sql: |
+      SELECT SOURCE AS SOURCE, AVG(PRICE_USD) AS AVG_PRICE_USD
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+      GROUP BY 1 ORDER BY AVG_PRICE_USD DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        DIMENSIONS offers.source METRICS offers.avg_price_usd
+      ) ORDER BY avg_price_usd DESC
+
+  - question: "How many offers are priced below market for each equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT EQUIPMENT AS EQUIPMENT,
+             COUNT_IF(MARKET_BADGE = 'BELOW_MARKET') AS BELOW_MARKET_OFFERS
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+      GROUP BY 1 ORDER BY BELOW_MARKET_OFFERS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        DIMENSIONS offers.equipment METRICS offers.below_market_offers
+      ) ORDER BY below_market_offers DESC
+
+  - question: "What is the total number of freight offers from green-trust partners?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT COUNT_IF(TRUST_BADGE = 'GREEN') AS GREEN_TRUST_OFFERS
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        METRICS offers.green_trust_offers
+      )
+
+  - question: "What is the on-time delivery rate percentage for each destination country?"
+    category: group_by
+    gold_sql: |
+      SELECT DEST_COUNTRY AS DEST_COUNTRY,
+             DIV0(SUM(ON_TIME), SUM(SHIPMENTS)) * 100 AS ON_TIME_RATE_PCT
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+      GROUP BY 1 ORDER BY ON_TIME_RATE_PCT DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        DIMENSIONS lane_history.dest_country METRICS lane_history.on_time_rate_pct
+      ) ORDER BY on_time_rate_pct DESC
+
+  - question: "What is the total number of historical shipments for each equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT EQUIPMENT AS EQUIPMENT, SUM(SHIPMENTS) AS TOTAL_SHIPMENTS
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+      GROUP BY 1 ORDER BY TOTAL_SHIPMENTS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE
+        DIMENSIONS lane_history.lane_equipment METRICS lane_history.total_shipments
+      ) ORDER BY total_shipments DESC

@@ -1,0 +1,61 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+evals:
+  - question: "What is the route deviation rate percentage for each driver?"
+    category: group_by
+    gold_sql: |
+      SELECT DRIVER_ID AS DRIVER_ID,
+             DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100 AS DEVIATION_RATE_PCT
+      FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+      GROUP BY 1 ORDER BY DEVIATION_RATE_PCT DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+        DIMENSIONS trip_dev.driver_id METRICS trip_dev.deviation_rate_pct
+      ) ORDER BY deviation_rate_pct DESC
+
+  - question: "How many trips deviated from their planned route in total?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT COUNT_IF(IS_ROUTE_DEVIATION) AS DEVIATION_TRIPS
+      FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+        METRICS trip_dev.deviation_trips
+      )
+
+  - question: "What is the total excess kilometers from deviations for each route variation?"
+    category: group_by
+    gold_sql: |
+      SELECT ROUTE_VARIATION AS ROUTE_VARIATION, SUM(DISTANCE_DEVIATION_KM) AS TOTAL_EXCESS_KM
+      FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+      GROUP BY 1 ORDER BY TOTAL_EXCESS_KM DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+        DIMENSIONS trip_dev.route_variation METRICS trip_dev.total_excess_km
+      ) ORDER BY total_excess_km DESC
+
+  - question: "What is the total time lost in minutes from deviations for each trip date?"
+    category: time_series
+    gold_sql: |
+      SELECT TRIP_DATE AS TRIP_DATE, SUM(DURATION_DEVIATION_MIN) AS TOTAL_TIME_LOST_MIN
+      FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+      GROUP BY 1 ORDER BY TRIP_DATE
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+        DIMENSIONS trip_dev.trip_date METRICS trip_dev.total_time_lost_min
+      ) ORDER BY trip_date
+
+  - question: "How many trips were analyzed for each origin city?"
+    category: group_by
+    gold_sql: |
+      SELECT ORIGIN_CITY AS ORIGIN_CITY, COUNT(DISTINCT TRIP_ID) AS TOTAL_TRIPS
+      FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+      GROUP BY 1 ORDER BY TOTAL_TRIPS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
+        DIMENSIONS trip_dev.origin_city METRICS trip_dev.total_trips
+      ) ORDER BY total_trips DESC

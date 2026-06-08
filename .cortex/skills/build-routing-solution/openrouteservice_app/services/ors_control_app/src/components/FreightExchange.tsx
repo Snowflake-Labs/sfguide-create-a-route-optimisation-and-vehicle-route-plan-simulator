@@ -28,7 +28,6 @@ const INITIAL_FILTERS: FilterState = {
   statusFilter: 'OPEN',
   usdPerKmMin: '',
   usdPerKmMax: '',
-  maxAgeMin: 1440,
   trustFilter: 'ANY',
 };
 
@@ -63,7 +62,6 @@ export default function FreightExchange() {
       if (filters.statusFilter === 'OPEN' && o.STATUS !== 'OPEN') return false;
       if (typeof filters.usdPerKmMin === 'number' && o.PRICE_PER_KM_USD !== null && o.PRICE_PER_KM_USD < filters.usdPerKmMin) return false;
       if (typeof filters.usdPerKmMax === 'number' && o.PRICE_PER_KM_USD !== null && o.PRICE_PER_KM_USD > filters.usdPerKmMax) return false;
-      if (o.POSTED_AGE_MIN > filters.maxAgeMin) return false;
       if (filters.trustFilter === 'GREEN' && o.TRUST_BADGE !== 'GREEN') return false;
       if (filters.trustFilter === 'GREEN_OR_YELLOW' && o.TRUST_BADGE === 'RED') return false;
       return true;

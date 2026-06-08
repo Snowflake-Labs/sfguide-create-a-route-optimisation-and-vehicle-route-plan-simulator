@@ -13,6 +13,7 @@ export function useRegionsCatalog() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const autoRefreshedRef = useRef(false);
+  const boundaryCacheRef = useRef<Map<string, string | null>>(new Map());
 
   const fetchRegions = useCallback(async () => {
     try {
@@ -54,6 +55,21 @@ export function useRegionsCatalog() {
     setRefreshing(false);
   }, [fetchCatalog]);
 
+  const fetchCatalogBoundary = useCallback(async (catalogId: string): Promise<string | null> => {
+    const cached = boundaryCacheRef.current.get(catalogId);
+    if (cached !== undefined) return cached;
+    try {
+      const r = await fetch(`/api/regions/catalog/${encodeURIComponent(catalogId)}/boundary`);
+      const data = await r.json();
+      const geojson = data.boundaryGeoJson ?? null;
+      boundaryCacheRef.current.set(catalogId, geojson);
+      return geojson;
+    } catch {
+      boundaryCacheRef.current.set(catalogId, null);
+      return null;
+    }
+  }, []);
+
   const dropRegion = useCallback(async (region: string) => {
     try {
       await fetch(`/api/regions/${encodeURIComponent(region)}`, { method: 'DELETE' });
@@ -74,6 +90,7 @@ export function useRegionsCatalog() {
     refreshing,
     fetchRegions,
     refreshCatalog,
+    fetchCatalogBoundary,
     dropRegion,
   };
 }

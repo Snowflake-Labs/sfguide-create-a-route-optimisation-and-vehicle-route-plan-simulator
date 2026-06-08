@@ -117,10 +117,14 @@ export default function ProvisionForm(props: Props) {
 
         {(catalogLoading || refreshing) && catalog.length === 0 ? (
           <div className="empty-state" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
-            <div className="loading-text" style={{ marginBottom: '0.5rem' }}>Loading region catalog...</div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
-              First load may take 2-3 minutes while we fetch available regions from Geofabrik and BBBike.
-            </p>
+            <div className="loading-text" style={{ marginBottom: refreshing ? '0.5rem' : 0 }}>
+              {refreshing ? 'Refreshing region catalog...' : 'Loading region catalog...'}
+            </div>
+            {refreshing && (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>
+                First load may take 2-3 minutes while we fetch available regions from Geofabrik and BBBike.
+              </p>
+            )}
           </div>
         ) : catalogLoading ? (
           <div className="loading-text">Loading catalog...</div>

@@ -1,0 +1,66 @@
+{
+  "summary": {
+    "auto": [
+      6,
+      6
+    ],
+    "require": [
+      6,
+      6
+    ],
+    "sv": [
+      6,
+      6
+    ]
+  },
+  "results": [
+    {
+      "question": "How many freight offers are there for each equipment type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the average offer price in USD for each freight exchange source?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "How many offers are priced below market for each equipment type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the total number of freight offers from green-trust partners?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "",
+      "require": "PASS",
+      "require_detail": ""
+    },
+    {
+      "question": "What is the on-time delivery rate percentage for each destination country?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    },
+    {
+      "question": "What is the total number of historical shipments for each equipment type?",
+      "sv": "PASS",
+      "auto": "PASS",
+      "auto_detail": "(matched on numeric values)",
+      "require": "PASS",
+      "require_detail": "(matched on numeric values)"
+    }
+  ]
+}

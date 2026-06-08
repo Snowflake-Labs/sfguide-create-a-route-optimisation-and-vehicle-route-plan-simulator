@@ -1,0 +1,48 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+# NOTE: decision evals require PROPOSAL_DECISIONS to be committed and visible.
+evals:
+  - question: "How many backload decisions are there for each decision type?"
+    category: group_by
+    gold_sql: |
+      SELECT DECISION_TYPE AS DECISION_TYPE, COUNT(DISTINCT DECISION_ID) AS TOTAL_DECISIONS
+      FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+      GROUP BY 1 ORDER BY TOTAL_DECISIONS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+        DIMENSIONS decisions.decision_type METRICS decisions.total_decisions
+      ) ORDER BY total_decisions DESC
+
+  - question: "What is the average empty kilometers for each decision source?"
+    category: group_by
+    gold_sql: |
+      SELECT SOURCE AS SOURCE, AVG(EMPTY_KM) AS AVG_EMPTY_KM
+      FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+      GROUP BY 1 ORDER BY AVG_EMPTY_KM DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+        DIMENSIONS decisions.decision_source METRICS decisions.avg_empty_km
+      ) ORDER BY avg_empty_km DESC
+
+  - question: "What is the total net benefit in EUR across all backload decisions?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT SUM(NET_BENEFIT_EUR) AS TOTAL_NET_BENEFIT_EUR
+      FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING METRICS decisions.total_net_benefit_eur
+      )
+
+  - question: "What is the average match score for each source page?"
+    category: group_by
+    gold_sql: |
+      SELECT SOURCE_PAGE AS SOURCE_PAGE, AVG(SCORE) AS AVG_SCORE
+      FROM FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+      GROUP BY 1 ORDER BY AVG_SCORE DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
+        DIMENSIONS decisions.source_page METRICS decisions.avg_score
+      ) ORDER BY avg_score DESC
