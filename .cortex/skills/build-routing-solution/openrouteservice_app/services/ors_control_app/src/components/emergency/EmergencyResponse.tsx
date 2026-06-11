@@ -56,7 +56,7 @@ export default function EmergencyResponse() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isoUnion, setIsoUnion] = useState<any>(null);
   const [numPatients, setNumPatients] = useState(150);
-  const [driveMinutes, setDriveMinutes] = useState(15);
+  const [driveMinutes, setDriveMinutes] = useState(90);
   const [vehicleConfigs, setVehicleConfigs] = useState<Record<string, VehicleConfig>>({});
   const [maxTrips, setMaxTrips] = useState(5);
   const [riskThreshold, setRiskThreshold] = useState(4);
@@ -371,7 +371,7 @@ export default function EmergencyResponse() {
             <label style={label}>Patient locations to emulate</label>
             <input style={inputStyle} type="number" min={1} max={1000} value={numPatients} onChange={e => setNumPatients(Number(e.target.value))} />
             <label style={label}>Drive time from centers (minutes)</label>
-            <input style={inputStyle} type="number" min={1} max={60} value={driveMinutes} onChange={e => setDriveMinutes(Number(e.target.value))} />
+            <input style={inputStyle} type="number" min={1} max={180} value={driveMinutes} onChange={e => setDriveMinutes(Number(e.target.value))} />
             <button style={btn(true)} disabled={busy || regionReady === false} onClick={seedData}>
               {busy && step === 2 ? 'Seeding...' : 'Seed data'}
             </button>

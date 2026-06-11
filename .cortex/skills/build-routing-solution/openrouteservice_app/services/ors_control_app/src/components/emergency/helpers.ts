@@ -183,7 +183,7 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
   const lvl = hazard === 'wildfire' ? 'WILDFIRE_LEVEL' : 'FLOOD_LEVEL';
   const lbl = hazard === 'wildfire' ? 'WILDFIRE_LABEL' : 'FLOOD_LABEL';
   const n = Math.max(1, Math.min(1000, Math.floor(numPatients)));
-  const mins = Math.max(1, Math.min(60, Math.floor(driveMinutes)));
+  const mins = Math.max(1, Math.min(180, Math.floor(driveMinutes)));
   const cands = Math.max(6000, Math.min(60000, n * 50));
   return `WITH per_center AS (
             SELECT CENTER_ID,
