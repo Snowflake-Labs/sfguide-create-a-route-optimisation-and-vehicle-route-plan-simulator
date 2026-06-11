@@ -188,6 +188,11 @@ export function centersSql(stateCode: string): string {
           ORDER BY CENTER_NAME`;
 }
 
+// Over-sample factor for the returned participant set: seedSql returns
+// ceil(n * SEED_OVERSAMPLE) candidates so the client's seed-time snap-validation
+// (snapParticipants) can drop unroutable points and still trim back to n.
+const SEED_OVERSAMPLE = 1.5;
+
 /**
  * Seed query: in ONE statement (so ORS isochrones run once), return both the
  * drive-time isochrone union (for the Step 2 sanity overlay) and a spatially
@@ -213,7 +218,10 @@ export function centersSql(stateCode: string): string {
  * points/union.
  *
  * `cands` over-samples the bounding box (clamped n*50, 6000..60000) so enough
- * candidates land inside the union to satisfy `LIMIT n` after rejection.
+ * candidates land inside the union to satisfy `LIMIT n` after rejection. We
+ * additionally over-sample the RETURNED set by SEED_OVERSAMPLE so the client's
+ * seed-time snap-validation (which drops points ORS cannot snap within the
+ * solver radius) can still reach `n` routable participants after rejection.
  *
  * Returns a single row: { UNION_GEOJSON (string), PARTICIPANTS (array) }.
  * driveMinutes is passed straight to ORS (minutes semantics).
@@ -222,8 +230,9 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
   const lvl = hazard === 'wildfire' ? 'WILDFIRE_LEVEL' : 'FLOOD_LEVEL';
   const lbl = hazard === 'wildfire' ? 'WILDFIRE_LABEL' : 'FLOOD_LABEL';
   const n = Math.max(1, Math.min(1000, Math.floor(numPatients)));
+  const want = Math.ceil(n * SEED_OVERSAMPLE);
   const mins = Math.max(1, Math.min(180, Math.floor(driveMinutes)));
-  const cands = Math.max(6000, Math.min(60000, n * 50));
+  const cands = Math.max(6000, Math.min(60000, want * 50));
   return `WITH per_center AS (
             SELECT ST_SIMPLIFY(
                      EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(LOC, ${mins}, ${sqlStr(orsRegion)}), 150) AS iso
@@ -257,7 +266,7 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
             SELECT LON, LAT, PT, 'P' || ROW_NUMBER() OVER (ORDER BY RANDOM()) AS PID
             FROM inside
             ORDER BY RANDOM()
-            LIMIT ${n}
+            LIMIT ${want}
           ),
           samp_risk AS (
             SELECT s.PID, s.LON, s.LAT, z.ZIP_CODE AS ZIP,
@@ -322,15 +331,58 @@ function routableFilterSql(origin: [number, number], dests: [number, number][], 
           FROM (SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('driving-car', ${src}, ${d}, ${sqlStr(region)}) AS M)`;
 }
 
+// Per-destination probe result aligned to the input order:
+//   null            -> drop (unreachable / unsnappable / beyond solver radius)
+//   [lon, lat]      -> routable; the snapped on-road coordinate (falls back to
+//                      the original coordinate if ORS omitted a snapped location)
+// The whole-batch sentinel 'keep-all' means the probe was inconclusive (batch
+// error, empty response, or every duration null -> origin/region suspect); the
+// caller should keep the batch unchanged so the probe never blocks a valid demo.
+type ProbeResult = Array<[number, number] | null> | 'keep-all';
+
+async function probeRoutability(
+  origin: [number, number],
+  dests: [number, number][],
+  region: string,
+): Promise<ProbeResult> {
+  const sql = routableFilterSql(origin, dests, region);
+  try {
+    const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
+    const rawDur = rows?.[0]?.DURATIONS;
+    const rawDest = rows?.[0]?.DESTINATIONS;
+    if (!rawDur) return 'keep-all';
+    const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
+    const destinations = rawDest ? JSON.parse(typeof rawDest === 'string' ? rawDest : String(rawDest)) : [];
+    if (!Array.isArray(durations)) return 'keep-all';
+    // If nothing in the batch is reachable, the origin/region is suspect.
+    if (!durations.some((d: any) => d != null && Number.isFinite(Number(d)))) return 'keep-all';
+    return dests.map((orig, j) => {
+      const d = durations[j];
+      if (d == null || !Number.isFinite(Number(d))) return null;               // unreachable
+      const dest = Array.isArray(destinations) ? destinations[j] : null;
+      if (dest == null) return null;                                           // unsnappable
+      const snap = dest?.snapped_distance;
+      if (snap == null || !Number.isFinite(Number(snap))) return null;         // no snap edge
+      if (Number(snap) > SOLVER_SNAP_RADIUS_M) return null;                    // beyond solver radius
+      const loc = dest?.location;
+      if (Array.isArray(loc) && loc.length >= 2 && Number.isFinite(Number(loc[0])) && Number.isFinite(Number(loc[1]))) {
+        return [Number(loc[0]), Number(loc[1])] as [number, number];          // snapped on-road coord
+      }
+      return orig;                                                             // routable but no snapped loc
+    });
+  } catch {
+    return 'keep-all';   // probe failed -> don't block the caller
+  }
+}
+
 /**
  * Probe each evacuee location for ORS routability and return only the points
- * VROOM can actually solve. `origin` must be a known-routable coordinate (an
- * InnovAge center, which sits on a geocoded street address). A point is dropped
- * when ORS returns a null duration or cannot snap it to a road, or when it snaps
- * beyond the solver's `maximum_snapping_radius` (SOLVER_SNAP_RADIUS_M) -- all of
- * which otherwise make the solve abort. The probe is best-effort: if a batch
- * errors, or the origin itself looks unroutable (all durations null), the batch
- * is kept so the filter never blocks a valid demo.
+ * VROOM can actually solve (keeping their ORIGINAL coordinates). `origin` must
+ * be a known-routable coordinate (an InnovAge center, on a geocoded street
+ * address). A point is dropped when ORS returns a null duration, cannot snap it
+ * to a road, or snaps beyond the solver's `maximum_snapping_radius`
+ * (SOLVER_SNAP_RADIUS_M) -- all of which otherwise make the solve abort. Used as
+ * a cheap safety net at plan time. Best-effort: inconclusive batches are kept.
  */
 export async function filterRoutableParticipants(
   evacuees: Participant[],
@@ -341,34 +393,39 @@ export async function filterRoutableParticipants(
   const keep: Participant[] = [];
   for (let i = 0; i < evacuees.length; i += ROUTABLE_BATCH) {
     const batch = evacuees.slice(i, i + ROUTABLE_BATCH);
-    const sql = routableFilterSql(origin, batch.map(p => [p.lon, p.lat] as [number, number]), region);
-    try {
-      const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
-      const rawDur = rows?.[0]?.DURATIONS;
-      const rawDest = rows?.[0]?.DESTINATIONS;
-      if (!rawDur) { keep.push(...batch); continue; }
-      const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
-      const destinations = rawDest ? JSON.parse(typeof rawDest === 'string' ? rawDest : String(rawDest)) : [];
-      if (!Array.isArray(durations)) { keep.push(...batch); continue; }
-      // If nothing in the batch is reachable, the origin/region is suspect --
-      // keep the batch rather than dropping every participant.
-      const anyReachable = durations.some((d: any) => d != null && Number.isFinite(Number(d)));
-      if (!anyReachable) { keep.push(...batch); continue; }
-      batch.forEach((p, j) => {
-        const d = durations[j];
-        if (d == null || !Number.isFinite(Number(d))) return;              // unreachable
-        const dest = Array.isArray(destinations) ? destinations[j] : null;
-        if (dest == null) return;                                          // unsnappable
-        const snap = dest?.snapped_distance;
-        if (snap == null || !Number.isFinite(Number(snap))) return;        // no snap edge
-        if (Number(snap) > SOLVER_SNAP_RADIUS_M) return;                   // snaps beyond solver radius
-        keep.push(p);
-      });
-    } catch {
-      keep.push(...batch);   // probe failed -> don't block the solve
-    }
+    const res = await probeRoutability(origin, batch.map(p => [p.lon, p.lat] as [number, number]), region);
+    if (res === 'keep-all') { keep.push(...batch); continue; }
+    batch.forEach((p, j) => { if (res[j] != null) keep.push(p); });   // keep ORIGINAL coords
   }
   return { routable: keep, dropped: evacuees.length - keep.length };
+}
+
+/**
+ * Snap-validate participants at SEED time: keep only points ORS can snap within
+ * the solver radius and ADOPT their snapped on-road coordinate. This guarantees
+ * the displayed participants are exactly what the solve can route (no shrink
+ * after "Plan evacuation") while preserving the area-uniform spread. seedSql
+ * over-samples by SEED_OVERSAMPLE so the caller can trim back to the requested
+ * count after rejection. `origin` must be a known-routable coordinate.
+ */
+export async function snapParticipants(
+  parts: Participant[],
+  origin: [number, number],
+  region: string,
+): Promise<{ snapped: Participant[]; dropped: number }> {
+  if (!parts.length) return { snapped: [], dropped: 0 };
+  const keep: Participant[] = [];
+  for (let i = 0; i < parts.length; i += ROUTABLE_BATCH) {
+    const batch = parts.slice(i, i + ROUTABLE_BATCH);
+    const res = await probeRoutability(origin, batch.map(p => [p.lon, p.lat] as [number, number]), region);
+    if (res === 'keep-all') { keep.push(...batch); continue; }   // inconclusive -> keep unsnapped
+    batch.forEach((p, j) => {
+      const snapped = res[j];
+      if (snapped == null) return;                                // drop unroutable
+      keep.push({ ...p, lon: snapped[0], lat: snapped[1] });      // adopt on-road coord
+    });
+  }
+  return { snapped: keep, dropped: parts.length - keep.length };
 }
 
 export type VehicleMeta = {

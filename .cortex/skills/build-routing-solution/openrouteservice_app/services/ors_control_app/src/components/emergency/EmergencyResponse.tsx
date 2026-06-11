@@ -23,7 +23,7 @@ import {
   type VehicleConfig, type PlanTrip,
   RISK_RGBA, RISK_HEX, RISK_NAME,
   sfQuery, sfQueryAsync, statesSql, orsStatusSql, riskZipsSql, centersSql, seedSql,
-  nearestCenterId, buildMultiTripChallenge, parseTrips, filterRoutableParticipants,
+  nearestCenterId, buildMultiTripChallenge, parseTrips, filterRoutableParticipants, snapParticipants,
 } from './helpers';
 
 const CENTER_RGBA: [number, number, number, number] = [20, 90, 200, 255];
@@ -149,7 +149,7 @@ export default function EmergencyResponse() {
         arr = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
       } catch {}
       if (!arr.length) throw new Error('No addresses found inside the drive-time area. Try a larger drive time.');
-      const ps: Participant[] = arr.map((r: any) => {
+      const candidates: Participant[] = arr.map((r: any) => {
         const lon = Number(r.lon), lat = Number(r.lat);
         return {
           id: String(r.pid), lon, lat, zip: String(r.zip || ''),
@@ -157,6 +157,14 @@ export default function EmergencyResponse() {
           centerId: nearestCenterId(lon, lat, cs),
         };
       });
+      // Snap-validate at seed time: drop points ORS cannot route within the
+      // solver radius and adopt the snapped on-road coordinate, then trim back
+      // to the requested count. seedSql over-samples so this still yields ~N.
+      const { snapped } = await snapParticipants(candidates, [cs[0].lon, cs[0].lat], orsRegion);
+      const ps: Participant[] = snapped.slice(0, numPatients).map(p => ({
+        ...p, centerId: nearestCenterId(p.lon, p.lat, cs),
+      }));
+      if (!ps.length) throw new Error('No routable participant locations found inside the drive-time area. Try a larger drive time.');
       setParticipants(ps);
 
       // Seed default vehicle config per center.
