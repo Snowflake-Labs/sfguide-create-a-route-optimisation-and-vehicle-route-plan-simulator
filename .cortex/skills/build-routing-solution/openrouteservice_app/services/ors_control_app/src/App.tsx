@@ -16,7 +16,7 @@ import AssetVelocity from './components/AssetVelocity';
 import BackloadMatching from './components/BackloadMatching';
 import FreightExchange from './components/FreightExchange';
 import RetailCatchment from './components/RetailCatchment';
-import EmergencyResponseShell from './components/emergency/EmergencyResponseShell';
+import EmergencyResponse from './components/emergency/EmergencyResponse';
 import AgentPlayground from './components/AgentPlayground';
 import FleetDataStudio from './components/FleetDataStudio';
 import Diagnostics from './components/Diagnostics';
@@ -86,13 +86,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
   { key: 'freight-exchange', label: 'Freight Exchange', icon: ShoppingBasket },
   { key: 'retail', label: 'Retail Catchment', icon: Store },
-  { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle, subPages: [
-    { key: 'emergency:hazard-ops', label: 'Hazard Ops' },
-    { key: 'emergency:triage', label: 'Triage' },
-    { key: 'emergency:reachability', label: 'Reachability' },
-    { key: 'emergency:dispatch', label: 'Dispatch' },
-    { key: 'emergency:vulnerability', label: 'Vulnerability' },
-  ]},
+  { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle },
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];
 
@@ -308,7 +302,7 @@ export default function App() {
             {activeCategory === 'dwell' && <DwellAnalysis key={dataKey} subTab={activeSubTab} />}
             {activeCategory === 'route-deviation' && <RouteDeviation key={dataKey} subTab={activeSubTab} />}
             {activeTab === 'retail' && <RetailCatchment key={dataKey} />}
-            {activeCategory === 'emergency' && <EmergencyResponseShell subTab={activeSubTab || 'hazard-ops'} />}
+            {activeCategory === 'emergency' && <EmergencyResponse />}
             {activeTab === 'agent' && <AgentPlayground />}
             {activeTab === 'routing-limits' && <RoutingLimits />}
             {activeTab === 'observability' && <Observability />}
