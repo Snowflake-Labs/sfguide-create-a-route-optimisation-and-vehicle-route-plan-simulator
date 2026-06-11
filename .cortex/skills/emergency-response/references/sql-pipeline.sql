@@ -152,10 +152,12 @@ LEFT JOIN rate cf ON cf.LABEL = n.CFLD_RISKR;
 -- Step 3: ORS isochrone wrapper (reused from v1)
 -- ----------------------------------------------------------------------------
 -- The wizard is fully client-driven: the React page issues read-only SELECTs
--- via /api/query for every step (risk ZIPs, seed sampling, VRP). No scenario
--- state is persisted server-side -- seeded participants live in React state
--- between steps and are embedded into the VROOM challenge at plan time, exactly
--- like RouteOptimization / AssetVelocity / BackloadMatching.
+-- via /api/query for every step (risk ZIPs; the seed query returns the
+-- isochrone union + a uniform participant sample in one statement; the VRP is
+-- a multi-trip pickup VROOM solve). No scenario state is persisted server-side
+-- -- seeded participants live in React state between steps and are embedded
+-- into the VROOM challenge at plan time, exactly like RouteOptimization /
+-- AssetVelocity / BackloadMatching.
 -- Thin wrapper over the ISOCHRONES table function so the seed step can union
 -- per-center drive-time polygons in plain SQL. NOTE: the ORS ISOCHRONES table
 -- function takes its range argument in MINUTES (it converts to seconds and

@@ -14,11 +14,11 @@ metadata:
 A single-page, multi-step wizard inside the existing `ors_control_app`. The operator walks four steps on one map:
 
 1. **Find risky areas** — pick a disaster type (flood or wildfire) and a US state; the map colors every ZIP code by its FEMA National Risk Index level (1 Very Low … 5 Very High).
-2. **Seed data** — enter a number of patient locations and a drive time (minutes); the app places the state's InnovAge PACE centers and samples synthetic participant addresses from Overture Maps that fall inside the union of per-center drive-time isochrones.
-3. **Vehicles** — for each center, set a vehicle count and per-vehicle passenger capacity.
-4. **Plan evacuation** — pick a risk threshold; the app solves a capacitated multi-depot VRP (`OPENROUTESERVICE_APP.CORE.OPTIMIZATION`) over every seeded participant whose home ZIP is at the selected risk level or higher, and draws one route per vehicle.
+2. **Seed data** — enter a number of patient locations and a drive time (minutes); the app places the state's InnovAge PACE centers, draws the union of per-center drive-time isochrones (sanity overlay), and samples participant addresses from Overture Maps uniformly across that union.
+3. **Vehicles** — for each center, set a vehicle count and per-vehicle passenger capacity, plus a max trips per vehicle (vans shuttle back to the center to evacuate everyone).
+4. **Plan evacuation** — pick a risk threshold; the app solves a capacitated multi-depot, multi-trip VRP (`OPENROUTESERVICE_APP.CORE.OPTIMIZATION`, `pickup:[1]` jobs) over every seeded participant whose home ZIP is at the selected risk level or higher. Each van is expanded into up to `maxTrips` round trips; the panel lists every trip and selecting one highlights its route with numbered stop markers. KPIs report evacuated / trips / drive minutes and warn if the trip cap leaves an overflow.
 
-The wizard is fully client-driven: every step issues a read-only `SELECT` via `/api/query` (risk ZIPs, isochrone-bounded Overture sampling, VROOM solve), mirroring `route-optimization` / `asset-velocity` / `backload-matching`. No server-side scenario state is persisted.
+The wizard is fully client-driven: every step issues a read-only `SELECT` via `/api/query` (risk ZIPs, the isochrone union + Overture sampling in one query, VROOM solve), mirroring `route-optimization` / `asset-velocity` / `backload-matching`. No server-side scenario state is persisted.
 
 ## Prerequisites
 
