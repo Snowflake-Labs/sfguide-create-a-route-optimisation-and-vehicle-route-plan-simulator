@@ -152,37 +152,39 @@ export function centersSql(stateCode: string): string {
 /**
  * Seed query: in ONE statement (so ORS isochrones run once), return both the
  * drive-time isochrone union (for the Step 2 sanity overlay) and a spatially
- * even sample of `numPatients` Overture addresses inside that union, tagged
+ * even sample of `numPatients` participant points inside that union, tagged
  * with their ZIP's risk for the active hazard.
  *
- * Sampling is H3-stratified to avoid clustering: a plain `ORDER BY RANDOM()`
- * over Overture addresses is density-weighted (every address row is equally
- * likely, and address rows mirror building density), so dense neighborhoods
- * inside the union dominate the draw. Instead we bucket candidate addresses
- * into H3 cells (resolution `h3Res`), cap the draw per cell at
- * `ceil(N / occupied_cells)`, then take a random `N` across cells. Each
- * populated cell contributes ~equal points, so per-neighborhood density is
- * capped and the sample spreads across the union rather than following
- * building density.
+ * Sampling is AREA-UNIFORM via rejection sampling, NOT drawn from address rows.
+ * An earlier address-row approach (even H3-stratified) could only place points
+ * where Overture `ADDRESS` data exists, and that coverage is itself spatially
+ * banded -- e.g. the PA 15-min union's SE quadrant has zero Overture addresses,
+ * so the map stayed clustered in a western band no matter how we sampled. To
+ * cover the whole polygon we instead scatter uniform random points across the
+ * union's bounding box and keep those inside the union (`ST_WITHIN`). Snowflake
+ * has no PostGIS `ST_GeneratePoints`, so this GENERATOR + UNIFORM rejection loop
+ * is the equivalent. Spread is area-proportional: larger isochrone lobes get
+ * proportionally more points (dense metros still get more total), but every
+ * part of the polygon -- including address-free areas -- is now covered.
  *
- * `h3Res` is the single evenness knob and works opposite to intuition for a
- * stratified sample: a COARSER partition (lower res, e.g. 6-7 ~ neighborhood
- * scale) gives a MORE even spatial spread because it caps how many points land
- * in each larger cell; a FINER partition (higher res) trends back toward
- * density-weighted because dense metros have many contiguous occupied cells.
- * Default 7 (~5 km^2 hexes) empirically gives the most even map for drive-time
- * metro unions (measured PA/15min: 24 occupied res-7 neighborhoods, <=7 pts
- * each vs. 14 neighborhoods / up to 26 for the old density-weighted draw).
+ * Each surviving point is a synthetic participant location (appropriate for an
+ * evacuation demo). ZIP + hazard risk are still real: tagged by point-in-polygon
+ * against V_ZIP_RISK. ZIP polygons are SRID=0 planar GEOMETRY, so we ST_SETSRID
+ * them to 4326 and TO_GEOGRAPHY before the spatial join to match the GEOGRAPHY
+ * points/union.
+ *
+ * `cands` over-samples the bounding box (clamped n*50, 6000..60000) so enough
+ * candidates land inside the union to satisfy `LIMIT n` after rejection.
  *
  * Returns a single row: { UNION_GEOJSON (string), PARTICIPANTS (array) }.
  * driveMinutes is passed straight to ORS (minutes semantics).
  */
-export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, numPatients: number, driveMinutes: number, h3Res = 7): string {
+export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, numPatients: number, driveMinutes: number): string {
   const lvl = hazard === 'wildfire' ? 'WILDFIRE_LEVEL' : 'FLOOD_LEVEL';
   const lbl = hazard === 'wildfire' ? 'WILDFIRE_LABEL' : 'FLOOD_LABEL';
   const n = Math.max(1, Math.min(1000, Math.floor(numPatients)));
   const mins = Math.max(1, Math.min(60, Math.floor(driveMinutes)));
-  const res = Math.max(5, Math.min(11, Math.floor(h3Res)));
+  const cands = Math.max(6000, Math.min(60000, n * 50));
   return `WITH per_center AS (
             SELECT CENTER_ID,
                    EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(LOC, ${mins}, ${sqlStr(orsRegion)}) AS iso
@@ -190,35 +192,40 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
             WHERE STATE = ${sqlStr(stateCode)}
           ),
           u AS (SELECT ST_UNION_AGG(iso) AS area FROM per_center WHERE iso IS NOT NULL),
-          cand AS (
-            SELECT a.ID AS PID, a.POSTCODE AS ZIP,
-                   ST_X(a.GEOMETRY) AS LON, ST_Y(a.GEOMETRY) AS LAT,
-                   H3_POINT_TO_CELL_STRING(a.GEOMETRY, ${res}) AS H3
-            FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a, u
-            WHERE a.COUNTRY = 'US'
-              AND a.POSTCODE IS NOT NULL
-              AND ST_WITHIN(a.GEOMETRY, u.area)
+          b AS (
+            SELECT area, ST_XMIN(area) AS xmin, ST_XMAX(area) AS xmax,
+                   ST_YMIN(area) AS ymin, ST_YMAX(area) AS ymax
+            FROM u
           ),
-          ncells AS (SELECT COUNT(DISTINCT H3) AS c FROM cand),
-          ranked AS (
-            SELECT cand.*, ncells.c AS NC,
-                   ROW_NUMBER() OVER (PARTITION BY H3 ORDER BY RANDOM()) AS RN
-            FROM cand, ncells
+          zips AS (
+            SELECT ZIP_CODE, ${lvl} AS LVL, ${lbl} AS LBL,
+                   TO_GEOGRAPHY(ST_SETSRID(ZIP_GEOMETRY, 4326)) AS g
+            FROM EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK
+            WHERE STATE = ${sqlStr(stateCode)}
+          ),
+          cand AS (
+            SELECT b.area,
+                   b.xmin + (b.xmax - b.xmin) * UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) AS LON,
+                   b.ymin + (b.ymax - b.ymin) * UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) AS LAT
+            FROM b, TABLE(GENERATOR(ROWCOUNT => ${cands}))
+          ),
+          inside AS (
+            SELECT LON, LAT, ST_POINT(LON, LAT) AS PT
+            FROM cand
+            WHERE ST_WITHIN(ST_POINT(LON, LAT), area)
           ),
           samp AS (
-            SELECT PID, ZIP, LON, LAT
-            FROM ranked
-            QUALIFY RN <= GREATEST(1, CEIL(${n}::FLOAT / NULLIF(NC, 0)))
+            SELECT LON, LAT, PT, 'P' || ROW_NUMBER() OVER (ORDER BY RANDOM()) AS PID
+            FROM inside
             ORDER BY RANDOM()
             LIMIT ${n}
           ),
           samp_risk AS (
-            SELECT s.PID, s.LON, s.LAT, s.ZIP,
-                   COALESCE(r.${lvl}, 0) AS RISK_LEVEL,
-                   COALESCE(r.${lbl}, 'No Rating') AS RISK_LABEL
+            SELECT s.PID, s.LON, s.LAT, z.ZIP_CODE AS ZIP,
+                   COALESCE(z.LVL, 0) AS RISK_LEVEL,
+                   COALESCE(z.LBL, 'No Rating') AS RISK_LABEL
             FROM samp s
-            LEFT JOIN EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK r
-              ON r.ZIP_CODE = s.ZIP AND r.STATE = ${sqlStr(stateCode)}
+            LEFT JOIN zips z ON ST_WITHIN(s.PT, z.g)
           )
           SELECT
             (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 100))::STRING FROM u) AS UNION_GEOJSON,
