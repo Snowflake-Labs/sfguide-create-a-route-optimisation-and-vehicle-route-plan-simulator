@@ -46,11 +46,25 @@ export type VehicleConfig = {
   capacity: number;
 };
 
-export type PlanRoute = {
-  vehicleId: number;
+// One pickup stop on a trip.
+export type PlanStop = {
+  seq: number;            // 1-based order within the trip
+  lon: number;
+  lat: number;
+  participantId: string;
+};
+
+// One trip = one round trip from a center (a physical vehicle may make several).
+export type PlanTrip = {
+  tripKey: string;        // stable unique key: `${physIndex}:${tripNumber}`
+  physIndex: number;      // physical vehicle index (for coloring)
+  vehicleLabel: string;   // e.g. "Denver Veh 1"
   centerId: string;
-  geojson: any;          // route LineString
-  assignedJobIds: number[];
+  tripNumber: number;     // 1-based trip ordinal for this physical vehicle
+  geojson: any;           // route LineString / Feature
+  stops: PlanStop[];
+  load: number;           // = stops.length
+  capacity: number;
   durationSec: number;
 };
 
@@ -136,9 +150,13 @@ export function centersSql(stateCode: string): string {
 }
 
 /**
- * Seed participants: sample `numPatients` Overture addresses inside the union
- * of per-center drive-time isochrones, tagged with their ZIP's risk for the
- * active hazard. driveMinutes is passed straight to ORS (minutes semantics).
+ * Seed query: in ONE statement (so ORS isochrones run once), return both the
+ * drive-time isochrone union (for the Step 2 sanity overlay) and a random
+ * sample of `numPatients` Overture addresses inside that union, tagged with
+ * their ZIP's risk for the active hazard. Sampling is uniform across the whole
+ * union (no risk filter) so participants are spread across the region.
+ * Returns a single row: { UNION_GEOJSON (string), PARTICIPANTS (array) }.
+ * driveMinutes is passed straight to ORS (minutes semantics).
  */
 export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, numPatients: number, driveMinutes: number): string {
   const lvl = hazard === 'wildfire' ? 'WILDFIRE_LEVEL' : 'FLOOD_LEVEL';
@@ -161,13 +179,21 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
               AND ST_WITHIN(a.GEOMETRY, u.area)
             ORDER BY RANDOM()
             LIMIT ${n}
+          ),
+          samp_risk AS (
+            SELECT s.PID, s.LON, s.LAT, s.ZIP,
+                   COALESCE(r.${lvl}, 0) AS RISK_LEVEL,
+                   COALESCE(r.${lbl}, 'No Rating') AS RISK_LABEL
+            FROM samp s
+            LEFT JOIN EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK r
+              ON r.ZIP_CODE = s.ZIP AND r.STATE = ${sqlStr(stateCode)}
           )
-          SELECT s.PID, s.LON, s.LAT, s.ZIP,
-                 COALESCE(r.${lvl}, 0) AS RISK_LEVEL,
-                 COALESCE(r.${lbl}, 'No Rating') AS RISK_LABEL
-          FROM samp s
-          LEFT JOIN EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK r
-            ON r.ZIP_CODE = s.ZIP AND r.STATE = ${sqlStr(stateCode)}`;
+          SELECT
+            (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 100))::STRING FROM u) AS UNION_GEOJSON,
+            (SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+               'pid', PID::STRING, 'lon', LON, 'lat', LAT, 'zip', ZIP::STRING,
+               'lvl', RISK_LEVEL, 'lbl', RISK_LABEL
+             )) FROM samp_risk) AS PARTICIPANTS`;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,41 +210,135 @@ export function nearestCenterId(lon: number, lat: number, centers: Center[]): st
   return best;
 }
 
+export type VehicleMeta = {
+  physIndex: number;     // physical vehicle (one real van)
+  centerId: string;
+  vehicleLabel: string;  // "Denver Veh 1"
+  tripSlot: number;      // 0-based virtual-trip slot for this physical vehicle
+  capacity: number;
+};
+
+function shortCenter(name: string): string {
+  // "InnovAge Colorado PACE - Denver" -> "Denver"
+  const m = name.split(' - ');
+  return (m[m.length - 1] || name).replace(/^InnovAge\s+/, '').trim();
+}
+
 /**
- * Build the VROOM challenge from evacuees (jobs) + per-center vehicle fleets.
- * Returns { challenge, vehicleCenter } where vehicleCenter maps a VROOM vehicle
- * id back to its origin center so routes can be colored/attributed per center.
+ * Build a multi-trip VROOM challenge. Each evacuee is a `pickup:[1]` job
+ * (collect one person at their home and bring them to the center). Each
+ * physical vehicle is expanded into `maxTrips` virtual vehicles that all
+ * start/end at the center, so a single solve can route several round trips per
+ * van. Total virtual capacity = sum(numVehicles*capacity)*maxTrips; if that is
+ * below the evacuee count VROOM leaves the overflow unassigned (reported).
+ *
+ * Returns { challenge, vehicleMeta, jobParticipant } where vehicleMeta maps a
+ * VROOM vehicle id back to its physical vehicle + trip slot for grouping.
  */
-export function buildVroomChallenge(
+export function buildMultiTripChallenge(
   evacuees: Participant[],
   centers: Center[],
   vehicleConfigs: VehicleConfig[],
-): { challenge: any; vehicleCenter: Record<number, string>; jobParticipant: Record<number, string> } {
+  maxTrips: number,
+): { challenge: any; vehicleMeta: Record<number, VehicleMeta>; jobParticipant: Record<number, string> } {
   const jobs: any[] = [];
   const jobParticipant: Record<number, string> = {};
   evacuees.forEach((p, i) => {
     const id = i + 1;
-    jobs.push({ id, location: [p.lon, p.lat], delivery: [1] });
+    jobs.push({ id, location: [p.lon, p.lat], pickup: [1] });
     jobParticipant[id] = p.id;
   });
 
+  const trips = Math.max(1, Math.min(20, Math.floor(maxTrips)));
   const vehicles: any[] = [];
-  const vehicleCenter: Record<number, string> = {};
+  const vehicleMeta: Record<number, VehicleMeta> = {};
   let vid = 1;
+  let physIndex = 0;
   for (const cfg of vehicleConfigs) {
     const c = centers.find(x => x.centerId === cfg.centerId);
     if (!c) continue;
+    const cap = Math.max(1, cfg.capacity);
     for (let k = 0; k < cfg.numVehicles; k++) {
-      vehicles.push({
-        id: vid,
-        profile: 'driving-car',
-        start: [c.lon, c.lat],
-        end: [c.lon, c.lat],
-        capacity: [Math.max(1, cfg.capacity)],
-      });
-      vehicleCenter[vid] = cfg.centerId;
-      vid++;
+      const label = `${shortCenter(c.name)} Veh ${k + 1}`;
+      for (let t = 0; t < trips; t++) {
+        vehicles.push({
+          id: vid,
+          profile: 'driving-car',
+          start: [c.lon, c.lat],
+          end: [c.lon, c.lat],
+          capacity: [cap],
+        });
+        vehicleMeta[vid] = { physIndex, centerId: cfg.centerId, vehicleLabel: label, tripSlot: t, capacity: cap };
+        vid++;
+      }
+      physIndex++;
     }
   }
-  return { challenge: { jobs, vehicles }, vehicleCenter, jobParticipant };
+  return { challenge: { jobs, vehicles }, vehicleMeta, jobParticipant };
+}
+
+/**
+ * Parse OPTIMIZATION rows into grouped, numbered trips. Each returned vehicle
+ * row with >=1 job becomes a PlanTrip; trips are grouped by physical vehicle
+ * (via vehicleMeta) and renumbered 1..k in tripSlot order. Stop coordinates
+ * come from our own evacuee list (via jobParticipant) so we never depend on
+ * VROOM echoing step locations.
+ */
+export function parseTrips(
+  rows: any[],
+  evacuees: Participant[],
+  vehicleMeta: Record<number, VehicleMeta>,
+  jobParticipant: Record<number, string>,
+): { trips: PlanTrip[]; assignedCount: number } {
+  const byParticipant: Record<string, Participant> = {};
+  for (const p of evacuees) byParticipant[p.id] = p;
+
+  type Raw = { meta: VehicleMeta; geojson: any; stops: PlanStop[]; durationSec: number };
+  const raws: Raw[] = [];
+  const assigned = new Set<number>();
+
+  for (const row of rows) {
+    const vid = Number(row.VEHICLE) || 0;
+    const meta = vehicleMeta[vid];
+    if (!meta) continue;
+    let steps: any[] = [];
+    try { steps = typeof row.STEPS === 'string' ? JSON.parse(row.STEPS) : (row.STEPS || []); } catch {}
+    const jobSteps = steps.filter((s: any) => s.type === 'job' && s.id != null);
+    if (!jobSteps.length) continue;
+    const stops: PlanStop[] = [];
+    jobSteps.forEach((s: any, i: number) => {
+      const jobId = Number(s.id);
+      assigned.add(jobId);
+      const pid = jobParticipant[jobId];
+      const p = pid ? byParticipant[pid] : undefined;
+      if (p) stops.push({ seq: i + 1, lon: p.lon, lat: p.lat, participantId: p.id });
+    });
+    let geojson: any = null;
+    try { geojson = row.GEOJSON ? (typeof row.GEOJSON === 'string' ? JSON.parse(row.GEOJSON) : row.GEOJSON) : null; } catch {}
+    raws.push({ meta, geojson, stops, durationSec: Number(row.DURATION) || 0 });
+  }
+
+  // Group by physical vehicle, order trips by tripSlot, renumber 1..k.
+  const groups: Record<number, Raw[]> = {};
+  for (const r of raws) (groups[r.meta.physIndex] ||= []).push(r);
+  const trips: PlanTrip[] = [];
+  for (const physIndex of Object.keys(groups).map(Number).sort((a, b) => a - b)) {
+    const g = groups[physIndex].sort((a, b) => a.meta.tripSlot - b.meta.tripSlot);
+    g.forEach((r, i) => {
+      const tripNumber = i + 1;
+      trips.push({
+        tripKey: `${physIndex}:${tripNumber}`,
+        physIndex,
+        vehicleLabel: r.meta.vehicleLabel,
+        centerId: r.meta.centerId,
+        tripNumber,
+        geojson: r.geojson,
+        stops: r.stops,
+        load: r.stops.length,
+        capacity: r.meta.capacity,
+        durationSec: r.durationSec,
+      });
+    });
+  }
+  return { trips, assignedCount: assigned.size };
 }

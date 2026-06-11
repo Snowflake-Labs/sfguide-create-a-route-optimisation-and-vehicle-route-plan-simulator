@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, GeoJsonLayer, PathLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, GeoJsonLayer, PathLayer, TextLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { useFitMap } from '../../shared/useFitMap';
@@ -20,10 +20,10 @@ import { coordsFromGeoJSON, type LngLat } from '../../shared/mapFit';
 import { asSqlJsonLiteral } from '../../lib/sfQuery';
 import {
   type Hazard, type StateOption, type RiskZip, type Center, type Participant,
-  type VehicleConfig, type PlanRoute,
+  type VehicleConfig, type PlanTrip,
   RISK_RGBA, RISK_HEX, RISK_NAME,
   sfQuery, statesSql, orsStatusSql, riskZipsSql, centersSql, seedSql,
-  nearestCenterId, buildVroomChallenge,
+  nearestCenterId, buildMultiTripChallenge, parseTrips,
 } from './helpers';
 
 const CENTER_RGBA: [number, number, number, number] = [20, 90, 200, 255];
@@ -54,12 +54,15 @@ export default function EmergencyResponse() {
   const [riskZips, setRiskZips] = useState<RiskZip[]>([]);
   const [centers, setCenters] = useState<Center[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [isoUnion, setIsoUnion] = useState<any>(null);
   const [numPatients, setNumPatients] = useState(150);
   const [driveMinutes, setDriveMinutes] = useState(15);
   const [vehicleConfigs, setVehicleConfigs] = useState<Record<string, VehicleConfig>>({});
+  const [maxTrips, setMaxTrips] = useState(5);
   const [riskThreshold, setRiskThreshold] = useState(4);
-  const [routes, setRoutes] = useState<PlanRoute[]>([]);
-  const [planStats, setPlanStats] = useState<{ evacuees: number; assigned: number; unassigned: number; totalMin: number } | null>(null);
+  const [trips, setTrips] = useState<PlanTrip[]>([]);
+  const [selectedTripKey, setSelectedTripKey] = useState<string | null>(null);
+  const [planStats, setPlanStats] = useState<{ evacuees: number; assigned: number; overflow: number; trips: number; totalMin: number } | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -97,8 +100,8 @@ export default function EmergencyResponse() {
 
   // Reset downstream state when the scenario inputs change.
   const resetFromStep1 = () => {
-    setCenters([]); setParticipants([]); setVehicleConfigs({});
-    setRoutes([]); setPlanStats(null); setStep(1);
+    setCenters([]); setParticipants([]); setIsoUnion(null); setVehicleConfigs({});
+    setTrips([]); setSelectedTripKey(null); setPlanStats(null); setStep(1);
   };
 
   // ---- Step 1: Find risky areas -------------------------------------------
@@ -112,7 +115,7 @@ export default function EmergencyResponse() {
         geojson: r.GEOJSON ? (typeof r.GEOJSON === 'string' ? JSON.parse(r.GEOJSON) : r.GEOJSON) : null,
       })).filter((z: RiskZip) => z.geojson);
       setRiskZips(zips);
-      setParticipants([]); setCenters([]); setRoutes([]); setPlanStats(null);
+      setParticipants([]); setCenters([]); setIsoUnion(null); setTrips([]); setSelectedTripKey(null); setPlanStats(null);
       setStep(2);
     } catch (e: any) { setErr(`Risk lookup failed: ${e?.message || e}`); }
     finally { setBusy(false); }
@@ -130,13 +133,27 @@ export default function EmergencyResponse() {
       if (!cs.length) throw new Error(`No InnovAge centers in ${stateCode}.`);
       setCenters(cs);
 
-      const pRows = await sfQuery(seedSql(stateCode, orsRegion, hazard, numPatients, driveMinutes), 'EMERGENCY_RESPONSE', 'PIPELINE', { throwOnError: true });
-      if (!pRows.length) throw new Error('No addresses found inside the drive-time area. Try a larger drive time.');
-      const ps: Participant[] = pRows.map((r: any) => {
-        const lon = Number(r.LON), lat = Number(r.LAT);
+      const rows = await sfQuery(seedSql(stateCode, orsRegion, hazard, numPatients, driveMinutes), 'EMERGENCY_RESPONSE', 'PIPELINE', { throwOnError: true });
+      const row = rows[0] || {};
+      // Isochrone union (sanity overlay).
+      let union: any = null;
+      try {
+        const raw = row.UNION_GEOJSON;
+        union = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+      } catch {}
+      setIsoUnion(union);
+      // Participants array.
+      let arr: any[] = [];
+      try {
+        const raw = row.PARTICIPANTS;
+        arr = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);
+      } catch {}
+      if (!arr.length) throw new Error('No addresses found inside the drive-time area. Try a larger drive time.');
+      const ps: Participant[] = arr.map((r: any) => {
+        const lon = Number(r.lon), lat = Number(r.lat);
         return {
-          id: String(r.PID), lon, lat, zip: String(r.ZIP || ''),
-          riskLevel: Number(r.RISK_LEVEL) || 0, riskLabel: r.RISK_LABEL || 'No Rating',
+          id: String(r.pid), lon, lat, zip: String(r.zip || ''),
+          riskLevel: Number(r.lvl) || 0, riskLabel: r.lbl || 'No Rating',
           centerId: nearestCenterId(lon, lat, cs),
         };
       });
@@ -146,13 +163,13 @@ export default function EmergencyResponse() {
       const vc: Record<string, VehicleConfig> = {};
       for (const c of cs) vc[c.centerId] = { centerId: c.centerId, numVehicles: 2, capacity: 4 };
       setVehicleConfigs(vc);
-      setRoutes([]); setPlanStats(null);
+      setTrips([]); setSelectedTripKey(null); setPlanStats(null);
       setStep(3);
     } catch (e: any) { setErr(`Seed failed: ${e?.message || e}`); }
     finally { setBusy(false); }
   }, [stateCode, orsRegion, hazard, numPatients, driveMinutes]);
 
-  // ---- Step 4: Plan evacuation --------------------------------------------
+  // ---- Step 4: Plan evacuation (multi-trip pickup VRP) --------------------
   const planEvacuation = useCallback(async () => {
     if (!orsRegion) return;
     const evacuees = participants.filter(p => p.riskLevel >= riskThreshold);
@@ -161,35 +178,25 @@ export default function EmergencyResponse() {
     if (!configs.length) { setErr('Assign at least one vehicle to a center.'); return; }
     setBusy(true); setErr('');
     try {
-      const { challenge, vehicleCenter } = buildVroomChallenge(evacuees, centers, configs);
+      const { challenge, vehicleMeta, jobParticipant } = buildMultiTripChallenge(evacuees, centers, configs, maxTrips);
       const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${orsRegion.replace(/'/g, "''")}'))`;
       const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
       if (!rows.length) throw new Error('Solver returned no routes (VROOM service may be warming up; retry in ~20s).');
-      const rs: PlanRoute[] = [];
-      const assigned = new Set<number>();
-      let totalSec = 0;
-      for (const row of rows) {
-        const vid = Number(row.VEHICLE) || 0;
-        let geojson: any = null;
-        try { geojson = row.GEOJSON ? (typeof row.GEOJSON === 'string' ? JSON.parse(row.GEOJSON) : row.GEOJSON) : null; } catch {}
-        let steps: any[] = [];
-        try { steps = typeof row.STEPS === 'string' ? JSON.parse(row.STEPS) : (row.STEPS || []); } catch {}
-        const jobIds = steps.filter((s: any) => s.type === 'job' && s.id != null).map((s: any) => Number(s.id));
-        jobIds.forEach(id => assigned.add(id));
-        totalSec += Number(row.DURATION) || 0;
-        rs.push({ vehicleId: vid, centerId: vehicleCenter[vid] || '', geojson, assignedJobIds: jobIds, durationSec: Number(row.DURATION) || 0 });
-      }
-      setRoutes(rs);
+      const { trips: planned, assignedCount } = parseTrips(rows, evacuees, vehicleMeta, jobParticipant);
+      const totalSec = planned.reduce((s, t) => s + t.durationSec, 0);
+      setTrips(planned);
+      setSelectedTripKey(planned[0]?.tripKey ?? null);
       setPlanStats({
         evacuees: evacuees.length,
-        assigned: assigned.size,
-        unassigned: evacuees.length - assigned.size,
+        assigned: assignedCount,
+        overflow: evacuees.length - assignedCount,
+        trips: planned.length,
         totalMin: Math.round(totalSec / 60),
       });
       setStep(4);
     } catch (e: any) { setErr(`Plan failed: ${e?.message || e}`); }
     finally { setBusy(false); }
-  }, [orsRegion, participants, riskThreshold, centers, vehicleConfigs]);
+  }, [orsRegion, participants, riskThreshold, centers, vehicleConfigs, maxTrips]);
 
   // ---- Map layers ----------------------------------------------------------
   const evacueeIds = useMemo(() => {
@@ -209,6 +216,16 @@ export default function EmergencyResponse() {
         opacity: step === 1 ? 0.85 : 0.45,
       }));
     }
+    // Isochrone union overlay (Step 2+) -- the drive-time reachable sampling area.
+    if (step >= 2 && isoUnion) {
+      ls.push(new GeoJsonLayer({
+        id: 'iso-union',
+        data: { type: 'Feature', properties: {}, geometry: isoUnion },
+        stroked: true, filled: true,
+        getFillColor: [41, 128, 185, 28], getLineColor: [41, 128, 185, 200],
+        lineWidthMinPixels: 1.5, pickable: true,
+      }));
+    }
     if (participants.length) {
       ls.push(new ScatterplotLayer({
         id: 'participants', data: participants, getPosition: (d: Participant) => [d.lon, d.lat],
@@ -220,18 +237,53 @@ export default function EmergencyResponse() {
         pickable: true,
       }));
     }
-    if (routes.length) {
+    if (trips.length) {
+      // All trip routes -- thin, colored per physical vehicle; selected thicker.
       ls.push(new PathLayer({
         id: 'routes',
-        data: routes.filter(r => r.geojson),
-        getPath: (r: PlanRoute) => {
-          const g = r.geojson;
-          const coords = g?.type === 'LineString' ? g.coordinates : (g?.geometry?.coordinates || []);
-          return coords;
+        data: trips.filter(t => t.geojson),
+        getPath: (t: PlanTrip) => {
+          const g = t.geojson;
+          return g?.type === 'LineString' ? g.coordinates : (g?.geometry?.coordinates || []);
         },
-        getColor: (r: PlanRoute) => ROUTE_PALETTE[(r.vehicleId - 1) % ROUTE_PALETTE.length],
-        widthMinPixels: 3, capRounded: true, jointRounded: true, pickable: true,
+        getColor: (t: PlanTrip) => {
+          const c = ROUTE_PALETTE[t.physIndex % ROUTE_PALETTE.length];
+          return t.tripKey === selectedTripKey ? [c[0], c[1], c[2], 255] : [c[0], c[1], c[2], 90];
+        },
+        getWidth: (t: PlanTrip) => (t.tripKey === selectedTripKey ? 6 : 3),
+        widthUnits: 'pixels', widthMinPixels: 2, capRounded: true, jointRounded: true, pickable: true,
+        updateTriggers: { getColor: selectedTripKey, getWidth: selectedTripKey },
       }));
+
+      // Numbered stop markers for the selected trip only (mirrors backload).
+      const sel = trips.find(t => t.tripKey === selectedTripKey);
+      if (sel && sel.stops.length) {
+        const physColor = ROUTE_PALETTE[sel.physIndex % ROUTE_PALETTE.length];
+        ls.push(new ScatterplotLayer({
+          id: 'sel-stop-halo', data: sel.stops, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [physColor[0], physColor[1], physColor[2], 60],
+          getRadius: 160, radiusMinPixels: 14, radiusMaxPixels: 44, stroked: false, filled: true,
+          parameters: { depthTest: false },
+        }));
+        ls.push(new ScatterplotLayer({
+          id: 'sel-stop-marker', data: sel.stops, pickable: true,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getFillColor: [255, 255, 255, 240],
+          getLineColor: [physColor[0], physColor[1], physColor[2], 255],
+          getRadius: 90, radiusMinPixels: 10, radiusMaxPixels: 17, lineWidthMinPixels: 2, stroked: true, filled: true,
+          parameters: { depthTest: false },
+        }));
+        ls.push(new TextLayer({
+          id: 'sel-stop-number', data: sel.stops, pickable: false,
+          getPosition: (d: any) => [d.lon, d.lat],
+          getText: (d: any) => String(d.seq),
+          getColor: [physColor[0], physColor[1], physColor[2], 255],
+          getSize: 12, sizeUnits: 'pixels', fontWeight: 700,
+          getAlignmentBaseline: 'center', getTextAnchor: 'middle',
+          parameters: { depthTest: false },
+        }));
+      }
     }
     if (centers.length) {
       ls.push(new ScatterplotLayer({
@@ -242,25 +294,28 @@ export default function EmergencyResponse() {
       }));
     }
     return ls;
-  }, [riskZips, participants, routes, centers, step, evacueeIds]);
+  }, [riskZips, participants, isoUnion, trips, selectedTripKey, centers, step, evacueeIds]);
 
   const fitCoords = useMemo<LngLat[]>(() => {
     if (participants.length) return participants.map(p => [p.lon, p.lat] as LngLat);
+    if (isoUnion) return coordsFromGeoJSON(isoUnion);
     if (riskZips.length) {
       const pts: LngLat[] = [];
       for (const z of riskZips.slice(0, 60)) pts.push(...coordsFromGeoJSON(z.geojson));
       return pts;
     }
     return [];
-  }, [participants, riskZips]);
+  }, [participants, isoUnion, riskZips]);
 
   const { containerRef, viewState, onViewStateChange, recenter } = useFitMap(fitCoords, { regionKey: `${stateCode}-${hazard}` });
 
   const getTooltip = useCallback(({ object, layer }: any) => {
     if (!object) return null;
     if (layer?.id === 'risk-zips') return { text: `ZIP ${object.properties.zip}\n${object.properties.label} (${object.properties.level})` };
+    if (layer?.id === 'iso-union') return { text: 'Drive-time reachable area (isochrone union)' };
     if (layer?.id === 'centers') return { text: object.name };
     if (layer?.id === 'participants') return { text: `${object.zip} -- ${object.riskLabel}` };
+    if (layer?.id === 'sel-stop-marker') return { text: `Stop ${object.seq}` };
     return null;
   }, []);
 
@@ -342,6 +397,9 @@ export default function EmergencyResponse() {
                 </div>
               );
             })}
+            <label style={{ ...label, marginTop: 8 }}>Max trips per vehicle</label>
+            <input style={inputStyle} type="number" min={1} max={20} value={maxTrips} onChange={e => setMaxTrips(Number(e.target.value))} />
+            <div style={{ fontSize: 11, color: 'var(--text-secondary,#888)' }}>Each van can shuttle back to its center this many times.</div>
           </div>
         )}
 
@@ -362,11 +420,42 @@ export default function EmergencyResponse() {
         )}
 
         {planStats && (
-          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Kpi label="Evacuees" value={planStats.evacuees} />
-            <Kpi label="Assigned" value={planStats.assigned} color="#26a65b" />
-            <Kpi label="Unassigned" value={planStats.unassigned} color={planStats.unassigned ? '#c0392b' : undefined} />
-            <Kpi label="Total drive (min)" value={planStats.totalMin} />
+          <>
+            <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <Kpi label="Evacuees" value={planStats.evacuees} />
+              <Kpi label="Evacuated" value={planStats.assigned} color="#26a65b" />
+              <Kpi label="Trips" value={planStats.trips} />
+              <Kpi label="Total drive (min)" value={planStats.totalMin} />
+            </div>
+            {planStats.overflow > 0 && (
+              <div style={{ marginTop: 10, fontSize: 11, color: '#b45309', background: '#fef3c7', padding: '8px 10px', borderRadius: 6 }}>
+                {planStats.overflow} participant(s) could not be evacuated within the trip cap. Increase vehicles, capacity, or max trips per vehicle.
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Trips list -- select a trip to highlight its route + numbered stops */}
+        {trips.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Trips ({trips.length})</div>
+            <div style={{ maxHeight: 220, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {trips.map(t => {
+                const c = ROUTE_PALETTE[t.physIndex % ROUTE_PALETTE.length];
+                const selected = t.tripKey === selectedTripKey;
+                return (
+                  <button key={t.tripKey} onClick={() => setSelectedTripKey(t.tripKey)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', cursor: 'pointer',
+                      padding: '6px 8px', borderRadius: 6, fontSize: 11,
+                      border: selected ? `1px solid rgb(${c[0]},${c[1]},${c[2]})` : '1px solid var(--border,#e2e2e2)',
+                      background: selected ? `rgba(${c[0]},${c[1]},${c[2]},0.10)` : 'transparent' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: `rgb(${c[0]},${c[1]},${c[2]})`, flexShrink: 0 }} />
+                    <span style={{ flex: 1 }}>{t.vehicleLabel} &middot; Trip {t.tripNumber}</span>
+                    <span style={{ color: 'var(--text-secondary,#888)' }}>{t.load}/{t.capacity} &middot; {Math.round(t.durationSec / 60)}m</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
