@@ -305,6 +305,16 @@ export function nearestCenterId(lon: number, lat: number, centers: Center[]): st
 // ---------------------------------------------------------------------------
 const ROUTABLE_BATCH = 150;
 
+// The solver (OPTIMIZATION/VROOM -> ORS) rejects any point that cannot snap to a
+// road within the region's `maximum_snapping_radius` -- 1000m for the standard
+// regions used here (CA/CO/PA). The MATRIX endpoint used by the probe snaps more
+// leniently (it will happily return a finite duration for a point that snapped,
+// say, 1155m away), so a point can PASS the probe yet make the solve abort with
+// "Could not find routable point within a radius of 1000.0 meters". We therefore
+// apply the solver's radius as the probe threshold. (Continental-preset regions
+// raise this to 5000m; for the supported emergency-response states it is 1000m.)
+const SOLVER_SNAP_RADIUS_M = 1000;
+
 function routableFilterSql(origin: [number, number], dests: [number, number][], region: string): string {
   const src = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${origin[0]}, ${origin[1]}))`;
   const d = 'ARRAY_CONSTRUCT(' + dests.map(p => `ARRAY_CONSTRUCT(${p[0]}, ${p[1]})`).join(',') + ')';
@@ -316,10 +326,11 @@ function routableFilterSql(origin: [number, number], dests: [number, number][], 
  * Probe each evacuee location for ORS routability and return only the points
  * VROOM can actually solve. `origin` must be a known-routable coordinate (an
  * InnovAge center, which sits on a geocoded street address). A point is dropped
- * when ORS returns a null duration or cannot snap it to a road -- precisely the
- * inputs that otherwise make VROOM abort the whole solve with code 3. The probe
- * is best-effort: if a batch errors, or the origin itself looks unroutable (all
- * durations null), the batch is kept so the filter never blocks a valid demo.
+ * when ORS returns a null duration or cannot snap it to a road, or when it snaps
+ * beyond the solver's `maximum_snapping_radius` (SOLVER_SNAP_RADIUS_M) -- all of
+ * which otherwise make the solve abort. The probe is best-effort: if a batch
+ * errors, or the origin itself looks unroutable (all durations null), the batch
+ * is kept so the filter never blocks a valid demo.
  */
 export async function filterRoutableParticipants(
   evacuees: Participant[],
@@ -350,6 +361,7 @@ export async function filterRoutableParticipants(
         if (dest == null) return;                                          // unsnappable
         const snap = dest?.snapped_distance;
         if (snap == null || !Number.isFinite(Number(snap))) return;        // no snap edge
+        if (Number(snap) > SOLVER_SNAP_RADIUS_M) return;                   // snaps beyond solver radius
         keep.push(p);
       });
     } catch {
