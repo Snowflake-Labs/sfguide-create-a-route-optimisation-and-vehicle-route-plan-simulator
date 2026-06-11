@@ -22,7 +22,7 @@ import {
   type Hazard, type StateOption, type RiskZip, type Center, type Participant,
   type VehicleConfig, type PlanTrip,
   RISK_RGBA, RISK_HEX, RISK_NAME,
-  sfQuery, statesSql, orsStatusSql, riskZipsSql, centersSql, seedSql,
+  sfQuery, sfQueryAsync, statesSql, orsStatusSql, riskZipsSql, centersSql, seedSql,
   nearestCenterId, buildMultiTripChallenge, parseTrips,
 } from './helpers';
 
@@ -133,7 +133,7 @@ export default function EmergencyResponse() {
       if (!cs.length) throw new Error(`No InnovAge centers in ${stateCode}.`);
       setCenters(cs);
 
-      const rows = await sfQuery(seedSql(stateCode, orsRegion, hazard, numPatients, driveMinutes), 'EMERGENCY_RESPONSE', 'PIPELINE', { throwOnError: true });
+      const rows = await sfQueryAsync(seedSql(stateCode, orsRegion, hazard, numPatients, driveMinutes), 'EMERGENCY_RESPONSE', 'PIPELINE');
       const row = rows[0] || {};
       // Isochrone union (sanity overlay).
       let union: any = null;
@@ -180,7 +180,7 @@ export default function EmergencyResponse() {
     try {
       const { challenge, vehicleMeta, jobParticipant } = buildMultiTripChallenge(evacuees, centers, configs, maxTrips);
       const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${orsRegion.replace(/'/g, "''")}'))`;
-      const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
+      const rows = await sfQueryAsync(sql, 'OPENROUTESERVICE_APP', 'CORE');
       if (!rows.length) throw new Error('Solver returned no routes (VROOM service may be warming up; retry in ~20s).');
       const { trips: planned, assignedCount } = parseTrips(rows, evacuees, vehicleMeta, jobParticipant);
       const totalSec = planned.reduce((s, t) => s + t.durationSec, 0);
@@ -373,7 +373,7 @@ export default function EmergencyResponse() {
             <label style={label}>Drive time from centers (minutes)</label>
             <input style={inputStyle} type="number" min={1} max={180} value={driveMinutes} onChange={e => setDriveMinutes(Number(e.target.value))} />
             <button style={btn(true)} disabled={busy || regionReady === false} onClick={seedData}>
-              {busy && step === 2 ? 'Seeding...' : 'Seed data'}
+              {busy && step === 2 ? 'Seeding... (large drive times can take 2-3 min)' : 'Seed data'}
             </button>
           </div>
         )}

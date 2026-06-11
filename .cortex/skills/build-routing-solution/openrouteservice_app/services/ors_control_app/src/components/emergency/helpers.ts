@@ -118,6 +118,45 @@ export async function sfQuery(
 const sqlStr = (v: string) => `'${String(v).replace(/'/g, "''")}'`;
 
 // ---------------------------------------------------------------------------
+// sfQueryAsync -- submit a long-running read-only query, then poll for the
+// result in short requests. Use for the multi-minute ORS isochrone seed and
+// VROOM solve: a single synchronous /api/query would hold the browser->SPCS
+// connection open past the ingress timeout (~60s) and fail. Here each request
+// is short, so queries that take 3+ minutes complete reliably.
+// ---------------------------------------------------------------------------
+export async function sfQueryAsync(
+  sql: string,
+  database = ER_DB,
+  schema = ER_SCHEMA,
+  opts: { pollMs?: number; maxMs?: number } = {},
+): Promise<any[]> {
+  const pollMs = opts.pollMs ?? 3000;
+  const maxMs = opts.maxMs ?? 480_000; // 8 min ceiling (< SQL API 600s)
+  const sub = await fetch('/api/query-async', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, database, schema }),
+  });
+  const subBody = await sub.json().catch(() => ({}));
+  if (subBody && subBody.error) throw new Error(String(subBody.error));
+  const handle = subBody && subBody.handle;
+  if (!handle) throw new Error('Query submission failed (no handle returned).');
+
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    const pr = await fetch(`/api/query-result/${encodeURIComponent(handle)}`);
+    const body = await pr.json().catch(() => ({}));
+    if (body && body.error) throw new Error(String(body.error));
+    if (body && body.status === 'running') continue;
+    const rows = Array.isArray(body) ? body : (body.result ?? null);
+    if (rows !== null) return Array.isArray(rows) ? rows : [];
+    // No status, no result -> treat as still pending and keep polling.
+  }
+  throw new Error('Query timed out while waiting for results. Try a smaller drive time or fewer locations.');
+}
+
+// ---------------------------------------------------------------------------
 // SQL builders
 // ---------------------------------------------------------------------------
 export function statesSql(): string {
@@ -186,8 +225,8 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
   const mins = Math.max(1, Math.min(180, Math.floor(driveMinutes)));
   const cands = Math.max(6000, Math.min(60000, n * 50));
   return `WITH per_center AS (
-            SELECT CENTER_ID,
-                   EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(LOC, ${mins}, ${sqlStr(orsRegion)}) AS iso
+            SELECT ST_SIMPLIFY(
+                     EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(LOC, ${mins}, ${sqlStr(orsRegion)}), 150) AS iso
             FROM EMERGENCY_RESPONSE.CORE.INNOVAGE_CENTERS
             WHERE STATE = ${sqlStr(stateCode)}
           ),
@@ -228,7 +267,7 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
             LEFT JOIN zips z ON ST_WITHIN(s.PT, z.g)
           )
           SELECT
-            (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 100))::STRING FROM u) AS UNION_GEOJSON,
+            (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 500))::STRING FROM u) AS UNION_GEOJSON,
             (SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
                'pid', PID::STRING, 'lon', LON, 'lat', LAT, 'zip', ZIP::STRING,
                'lvl', RISK_LEVEL, 'lbl', RISK_LABEL

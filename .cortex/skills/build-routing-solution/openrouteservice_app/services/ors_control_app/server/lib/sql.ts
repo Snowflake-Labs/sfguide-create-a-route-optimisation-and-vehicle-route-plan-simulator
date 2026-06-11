@@ -63,6 +63,13 @@ export async function snowSqlSpcs(sql: string, database?: string, schema?: strin
     throw new Error(`SQL error: ${result.message}`);
   }
   if (!result.data) return [];
+  return mapSqlApiResult(result, headers);
+}
+
+// Map a Snowflake SQL REST API result object into row objects with JS-native
+// types, fetching any extra partitions. Shared by the synchronous transport
+// and the async-by-handle path.
+async function mapSqlApiResult(result: any, headers: Record<string, string>): Promise<any[]> {
   const rowType: any[] = result.resultSetMetaData?.rowType || [];
   const cols = rowType.map((c: any) => c.name);
   // The Snowflake SQL REST API returns ALL values as strings inside `data`
@@ -120,21 +127,80 @@ export async function callProcedure(proc: string): Promise<string> {
 
 // Async statement submission — returns a Snowflake statementHandle for
 // long-running queries. Caller polls / cancels via cancelStatement.
-export async function submitSqlAsync(sql: string): Promise<string> {
+// db/schema let callers target the right namespace (e.g. EMERGENCY_RESPONSE).
+export async function submitSqlAsync(sql: string, database?: string, schema?: string): Promise<string> {
   if (!IS_SPCS) {
-    runSql(sql).catch((e: any) => console.error(`[Async local] Error: ${e.message}`));
-    return `local_${Date.now()}`;
+    // Local dev: run synchronously now, stash rows under a handle the
+    // fetch-by-handle path can pop. Keeps `npm run dev` working without SPCS.
+    const handle = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      localResultCache.set(handle, { rows: snowSqlLocal(sql, database, schema), ts: Date.now() });
+    } catch (e: any) {
+      localResultCache.set(handle, { error: e?.message || String(e), ts: Date.now() });
+    }
+    pruneLocalCache();
+    return handle;
   }
   const token = getSpcsToken();
-  const body = { statement: sql, timeout: 0, database: SF_DATABASE, warehouse: SF_WAREHOUSE };
+  const body = { statement: sql, timeout: 0, database: database || SF_DATABASE, schema: schema || 'CORE', warehouse: SF_WAREHOUSE, parameters: { QUERY_TAG: QUERY_TAG_VALUE, TIMEZONE: 'UTC' } };
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
     'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
   };
   console.log(`[SQL API Async] Submitting: ${sql.slice(0, 200)}`);
   const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements`, { method: 'POST', headers, body: JSON.stringify(body) });
+  if (!r.ok) {
+    const errBody = (await r.text()).slice(0, 500);
+    throw new Error(`SQL API error ${r.status}: ${errBody}`);
+  }
   const result = await r.json();
   return result.statementHandle || '';
+}
+
+// One-shot result retrieval for a previously submitted async statement.
+// Returns { status: 'running' } while the query is still executing, or
+// { rows } once complete. Throws on statement error. Each call is a short
+// request, so the browser can poll without holding a long-lived connection.
+export async function fetchResultByHandle(handle: string): Promise<{ status: 'running' } | { rows: any[] }> {
+  if (!handle) throw new Error('handle required');
+  if (handle.startsWith('local_')) {
+    const entry = localResultCache.get(handle);
+    if (!entry) return { rows: [] }; // already consumed or unknown
+    localResultCache.delete(handle);
+    if (entry.error) throw new Error(entry.error);
+    return { rows: entry.rows || [] };
+  }
+  const token = getSpcsToken();
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json',
+    'Accept': 'application/json', 'X-Snowflake-Authorization-Token-Type': 'OAUTH',
+  };
+  const r = await fetch(`https://${SNOWFLAKE_HOST}/api/v2/statements/${handle}`, { headers });
+  if (r.status === 202) return { status: 'running' };
+  const result: any = await r.json();
+  if (result.code === '333334' || (result.statementStatusUrl && !result.data && !result.message)) {
+    return { status: 'running' };
+  }
+  if (result.message && !result.data) {
+    throw new Error(`SQL error: ${result.message}`);
+  }
+  if (!result.data) return { rows: [] };
+  return { rows: await mapSqlApiResult(result, headers) };
+}
+
+// In-memory result cache for the local-dev async path. Short TTL + size cap
+// so a long-running dev server doesn't leak.
+const localResultCache = new Map<string, { rows?: any[]; error?: string; ts: number }>();
+const LOCAL_CACHE_TTL = 600_000; // 10 min
+function pruneLocalCache(): void {
+  const now = Date.now();
+  for (const [k, v] of localResultCache) {
+    if (now - v.ts > LOCAL_CACHE_TTL) localResultCache.delete(k);
+  }
+  if (localResultCache.size > 200) {
+    const oldest = [...localResultCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 100);
+    for (const [k] of oldest) localResultCache.delete(k);
+  }
 }
 
 export async function cancelStatement(handle: string): Promise<boolean> {
