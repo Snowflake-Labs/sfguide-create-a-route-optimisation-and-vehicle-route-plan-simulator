@@ -149,39 +149,13 @@ LEFT JOIN rate rf ON rf.LABEL = n.RFLD_RISKR
 LEFT JOIN rate cf ON cf.LABEL = n.CFLD_RISKR;
 
 -- ----------------------------------------------------------------------------
--- Step 3: Scenario tables (seed step persists; plan step reads back)
+-- Step 3: ORS isochrone wrapper (reused from v1)
 -- ----------------------------------------------------------------------------
--- Non-destructive per SCENARIO_ID. The control app uses one scenario id per
--- browser session; re-seeding the same id replaces only that scenario's rows.
-CREATE TABLE IF NOT EXISTS EMERGENCY_RESPONSE.CORE.SCENARIO_CENTERS (
-  SCENARIO_ID   VARCHAR,
-  CENTER_ID     VARCHAR,
-  CENTER_NAME   VARCHAR,
-  STATE         VARCHAR(2),
-  LON           FLOAT,
-  LAT           FLOAT,
-  LOC           GEOGRAPHY,
-  CREATED_AT    TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
-CREATE TABLE IF NOT EXISTS EMERGENCY_RESPONSE.CORE.SCENARIO_PARTICIPANTS (
-  SCENARIO_ID    VARCHAR,
-  PARTICIPANT_ID VARCHAR,
-  ADDRESS        VARCHAR,
-  ZIP_CODE       VARCHAR,
-  STATE          VARCHAR(2),
-  NEAREST_CENTER VARCHAR,
-  LON            FLOAT,
-  LAT            FLOAT,
-  HOME_LOC       GEOGRAPHY,
-  CREATED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-)
-COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-
--- ----------------------------------------------------------------------------
--- Step 4: ORS isochrone wrapper (reused from v1)
--- ----------------------------------------------------------------------------
+-- The wizard is fully client-driven: the React page issues read-only SELECTs
+-- via /api/query for every step (risk ZIPs, seed sampling, VRP). No scenario
+-- state is persisted server-side -- seeded participants live in React state
+-- between steps and are embedded into the VROOM challenge at plan time, exactly
+-- like RouteOptimization / AssetVelocity / BackloadMatching.
 -- Thin wrapper over the ISOCHRONES table function so the seed step can union
 -- per-center drive-time polygons in plain SQL. NOTE: the ORS ISOCHRONES table
 -- function takes its range argument in MINUTES (it converts to seconds and
