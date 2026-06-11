@@ -56,7 +56,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version"
 
 MERGE INTO EMERGENCY_RESPONSE.CONFIG.STATE_REGION_MAP t
 USING (SELECT * FROM VALUES
-  ('CA','California','California',  TRUE),
+  ('CA','California','UsCalifornia',  TRUE),
   ('CO','Colorado',  'UsColorado',  TRUE),
   ('PA','Pennsylvania','UsPennsylvania', TRUE)
   AS s(STATE_CODE, STATE_NAME, ORS_REGION, ENABLED)) s

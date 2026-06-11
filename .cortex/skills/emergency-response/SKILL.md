@@ -22,7 +22,7 @@ The wizard is fully client-driven: every step issues a read-only `SELECT` via `/
 
 ## Prerequisites
 
-1. ORS app deployed via `build-routing-solution`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`California`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
+1. ORS app deployed via `build-routing-solution`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`UsCalifornia`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
 2. **FEMA National Risk Index (Free)** — Marketplace listing `GZSTZKU9FH9` → `FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES` (auto-installed in Step 0a of `references/sql-pipeline.sql`).
 3. **US ZIP metadata + geometry** share → `U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.{ZIP_CODE_META_SHARE, ZIP_CODE_GEOMETRY_SHARE}`.
 4. **Overture Maps addresses** share → `OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS`.
@@ -52,7 +52,7 @@ The only persisted config is the state → ORS region map:
 
 | State | ORS region | Notes |
 |-------|-----------|-------|
-| CA | `California` | resume the ORS service before demoing CA |
+| CA | `UsCalifornia` | resume `ORS_SERVICE_USCALIFORNIA` before demoing CA |
 | CO | `UsColorado` | deployed |
 | PA | `UsPennsylvania` | deployed |
 
@@ -120,7 +120,7 @@ User: "Deploy emergency response and run a Colorado wildfire evacuation."
 
 ### Example 2: California (suspended region)
 User: "Demo a California flood scenario."
-1. Resume the `California` ORS + VROOM services (Service Manager).
+1. Resume the `UsCalifornia` ORS + VROOM services (`ORS_SERVICE_USCALIFORNIA`, `VROOM_SERVICE_USCALIFORNIA`) via the Service Manager.
 2. Same wizard flow with hazard `Flood`, state `California`.
 
 ## Troubleshooting
