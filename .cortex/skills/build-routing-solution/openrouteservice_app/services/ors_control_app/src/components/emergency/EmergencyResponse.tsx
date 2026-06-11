@@ -23,7 +23,7 @@ import {
   type VehicleConfig, type PlanTrip,
   RISK_RGBA, RISK_HEX, RISK_NAME,
   sfQuery, sfQueryAsync, statesSql, orsStatusSql, riskZipsSql, centersSql, seedSql,
-  nearestCenterId, buildMultiTripChallenge, parseTrips,
+  nearestCenterId, buildMultiTripChallenge, parseTrips, filterRoutableParticipants,
 } from './helpers';
 
 const CENTER_RGBA: [number, number, number, number] = [20, 90, 200, 255];
@@ -62,7 +62,7 @@ export default function EmergencyResponse() {
   const [riskThreshold, setRiskThreshold] = useState(4);
   const [trips, setTrips] = useState<PlanTrip[]>([]);
   const [selectedTripKey, setSelectedTripKey] = useState<string | null>(null);
-  const [planStats, setPlanStats] = useState<{ evacuees: number; assigned: number; overflow: number; trips: number; totalMin: number } | null>(null);
+  const [planStats, setPlanStats] = useState<{ evacuees: number; assigned: number; overflow: number; unroutable: number; trips: number; totalMin: number } | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -178,11 +178,41 @@ export default function EmergencyResponse() {
     if (!configs.length) { setErr('Assign at least one vehicle to a center.'); return; }
     setBusy(true); setErr('');
     try {
-      const { challenge, vehicleMeta, jobParticipant } = buildMultiTripChallenge(evacuees, centers, configs, maxTrips);
-      const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${orsRegion.replace(/'/g, "''")}'))`;
+      // Pre-filter unroutable evacuee points. Area-uniform sampling can place a
+      // participant too far from any road for ORS to snap; even one such point
+      // makes VROOM abort the whole solve (code 3). Probe routability from a
+      // known-routable center and drop the points VROOM would choke on.
+      const originCenter = centers.find(c => c.centerId === configs[0].centerId) ?? centers[0];
+      const { routable, dropped } = await filterRoutableParticipants(
+        evacuees, [originCenter.lon, originCenter.lat], orsRegion);
+      if (!routable.length) {
+        throw new Error('None of the at-risk participants are routable by ORS (all too far from a road). Re-seed or lower the risk threshold.');
+      }
+      const { challenge, vehicleMeta, jobParticipant } = buildMultiTripChallenge(routable, centers, configs, maxTrips);
+      const reg = orsRegion.replace(/'/g, "''");
+      const sql = `SELECT * FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${reg}'))`;
       const rows = await sfQueryAsync(sql, 'OPENROUTESERVICE_APP', 'CORE');
-      if (!rows.length) throw new Error('Solver returned no routes (VROOM service may be warming up; retry in ~20s).');
-      const { trips: planned, assignedCount } = parseTrips(rows, evacuees, vehicleMeta, jobParticipant);
+      if (!rows.length) {
+        // No routes: read the raw VROOM response to report the real reason
+        // instead of a blanket "warming up" guess.
+        let reason = 'VROOM service may be warming up; retry in ~20s';
+        try {
+          const rawRows = await sfQueryAsync(
+            `SELECT TO_VARCHAR(OPENROUTESERVICE_APP.CORE._OPTIMIZATION_RAW(PARSE_JSON(${asSqlJsonLiteral(challenge)}), '${reg}')) AS RESP`,
+            'OPENROUTESERVICE_APP', 'CORE');
+          const raw = rawRows?.[0]?.RESP;
+          const data = raw ? JSON.parse(String(raw)) : null;
+          if (data) {
+            if (data.code != null && Number(data.code) !== 0) {
+              reason = String(data.error || data.message || `solver code ${data.code}`);
+            } else if (Array.isArray(data.unassigned) && data.unassigned.length) {
+              reason = `no feasible assignment for ${data.unassigned.length} participant(s) -- add vehicles, capacity, or max trips`;
+            }
+          }
+        } catch { /* keep default reason */ }
+        throw new Error(`Solver returned no routes (${reason}).`);
+      }
+      const { trips: planned, assignedCount } = parseTrips(rows, routable, vehicleMeta, jobParticipant);
       const totalSec = planned.reduce((s, t) => s + t.durationSec, 0);
       setTrips(planned);
       setSelectedTripKey(planned[0]?.tripKey ?? null);
@@ -190,6 +220,7 @@ export default function EmergencyResponse() {
         evacuees: evacuees.length,
         assigned: assignedCount,
         overflow: evacuees.length - assignedCount,
+        unroutable: dropped,
         trips: planned.length,
         totalMin: Math.round(totalSec / 60),
       });
@@ -430,6 +461,7 @@ export default function EmergencyResponse() {
             {planStats.overflow > 0 && (
               <div style={{ marginTop: 10, fontSize: 11, color: '#b45309', background: '#fef3c7', padding: '8px 10px', borderRadius: 6 }}>
                 {planStats.overflow} participant(s) could not be evacuated within the trip cap. Increase vehicles, capacity, or max trips per vehicle.
+                {planStats.unroutable > 0 && ` ${planStats.unroutable} of these were excluded as unroutable (too far from a road for ORS to reach).`}
               </div>
             )}
           </>

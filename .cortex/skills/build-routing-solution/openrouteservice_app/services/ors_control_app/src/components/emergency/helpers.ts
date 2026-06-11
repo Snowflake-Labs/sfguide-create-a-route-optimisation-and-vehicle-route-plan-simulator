@@ -288,6 +288,77 @@ export function nearestCenterId(lon: number, lat: number, centers: Center[]): st
   return best;
 }
 
+// ---------------------------------------------------------------------------
+// Routability pre-filter -- drop evacuee points ORS cannot snap to a road.
+//
+// VROOM's /optimization aborts the ENTIRE solve with "code 3: Unfound route(s)"
+// if a single job location is unroutable (farther than the region's
+// maximum_snapping_radius from any road -- e.g. a sampled point in a park,
+// field, or water). Because participants are placed by area-uniform sampling
+// inside the isochrone polygon (seedSql), not on roads, this happens routinely
+// and zeroes out the whole plan. We pre-probe each point with MATRIX_TABULAR
+// (resolve_locations=true) from one known-routable origin: a null duration or a
+// null/unsnappable destination is exactly the condition that makes VROOM abort,
+// so we drop those points and solve over the rest. Mirrors the proven filter in
+// server/studio/engine/routability.ts. Batched under the gateway's 200-location
+// matrix guardrail.
+// ---------------------------------------------------------------------------
+const ROUTABLE_BATCH = 150;
+
+function routableFilterSql(origin: [number, number], dests: [number, number][], region: string): string {
+  const src = `ARRAY_CONSTRUCT(ARRAY_CONSTRUCT(${origin[0]}, ${origin[1]}))`;
+  const d = 'ARRAY_CONSTRUCT(' + dests.map(p => `ARRAY_CONSTRUCT(${p[0]}, ${p[1]})`).join(',') + ')';
+  return `SELECT TO_VARCHAR(M:durations[0]) AS DURATIONS, TO_VARCHAR(M:destinations) AS DESTINATIONS
+          FROM (SELECT OPENROUTESERVICE_APP.CORE.MATRIX_TABULAR('driving-car', ${src}, ${d}, ${sqlStr(region)}) AS M)`;
+}
+
+/**
+ * Probe each evacuee location for ORS routability and return only the points
+ * VROOM can actually solve. `origin` must be a known-routable coordinate (an
+ * InnovAge center, which sits on a geocoded street address). A point is dropped
+ * when ORS returns a null duration or cannot snap it to a road -- precisely the
+ * inputs that otherwise make VROOM abort the whole solve with code 3. The probe
+ * is best-effort: if a batch errors, or the origin itself looks unroutable (all
+ * durations null), the batch is kept so the filter never blocks a valid demo.
+ */
+export async function filterRoutableParticipants(
+  evacuees: Participant[],
+  origin: [number, number],
+  region: string,
+): Promise<{ routable: Participant[]; dropped: number }> {
+  if (!evacuees.length) return { routable: [], dropped: 0 };
+  const keep: Participant[] = [];
+  for (let i = 0; i < evacuees.length; i += ROUTABLE_BATCH) {
+    const batch = evacuees.slice(i, i + ROUTABLE_BATCH);
+    const sql = routableFilterSql(origin, batch.map(p => [p.lon, p.lat] as [number, number]), region);
+    try {
+      const rows = await sfQuery(sql, 'OPENROUTESERVICE_APP', 'CORE', { throwOnError: true });
+      const rawDur = rows?.[0]?.DURATIONS;
+      const rawDest = rows?.[0]?.DESTINATIONS;
+      if (!rawDur) { keep.push(...batch); continue; }
+      const durations = JSON.parse(typeof rawDur === 'string' ? rawDur : String(rawDur));
+      const destinations = rawDest ? JSON.parse(typeof rawDest === 'string' ? rawDest : String(rawDest)) : [];
+      if (!Array.isArray(durations)) { keep.push(...batch); continue; }
+      // If nothing in the batch is reachable, the origin/region is suspect --
+      // keep the batch rather than dropping every participant.
+      const anyReachable = durations.some((d: any) => d != null && Number.isFinite(Number(d)));
+      if (!anyReachable) { keep.push(...batch); continue; }
+      batch.forEach((p, j) => {
+        const d = durations[j];
+        if (d == null || !Number.isFinite(Number(d))) return;              // unreachable
+        const dest = Array.isArray(destinations) ? destinations[j] : null;
+        if (dest == null) return;                                          // unsnappable
+        const snap = dest?.snapped_distance;
+        if (snap == null || !Number.isFinite(Number(snap))) return;        // no snap edge
+        keep.push(p);
+      });
+    } catch {
+      keep.push(...batch);   // probe failed -> don't block the solve
+    }
+  }
+  return { routable: keep, dropped: evacuees.length - keep.length };
+}
+
 export type VehicleMeta = {
   physIndex: number;     // physical vehicle (one real van)
   centerId: string;
