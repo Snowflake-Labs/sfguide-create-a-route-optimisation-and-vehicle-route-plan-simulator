@@ -1,0 +1,21 @@
+center_name,street_address,city,state,postal_code,lon,lat,geocode_confidence,geocode_source
+CareConnect California PACE - Crenshaw,3670 Degnan Blvd,Los Angeles,CA,90018,-118.3295444,34.021072,9,opencage
+CareConnect California PACE - Sacramento,3870 Rosin Ct,Sacramento,CA,95834,-121.4758528,38.636805,10,opencage
+CareConnect California PACE - San Bernardino / Inland Empire,410 Park Center Circle,San Bernardino,CA,92408,-117.295968,34.074035,5,opencage
+CareConnect Colorado PACE - Aurora,3551 N Chambers,Aurora,CO,80011,-104.8097428,39.7652825,10,opencage
+CareConnect Colorado PACE - Denver,1265 S Broadway,Denver,CO,80210,-104.9875676,39.6936739,10,opencage
+CareConnect Colorado PACE - Lakewood,8405 W Alameda Ave,Lakewood,CO,80226,-105.091146,39.7110724,10,opencage
+CareConnect Colorado PACE - Northern Colorado,1303 E 11th St,Loveland,CO,80537,-105.0580494,40.4033645,9,opencage
+CareConnect Colorado PACE - Pueblo,401 W Northern Ave,Pueblo,CO,81004,-104.615073,38.244184,10,opencage
+CareConnect Colorado PACE - Thornton,445 E 124th Ave,Thornton,CO,80241,-104.9817638,39.9231987,10,opencage
+CareConnect New Mexico PACE - Albuquerque,904 Las Lomas NE,Albuquerque,NM,87102,-106.6334786,35.0892861,10,opencage
+CareConnect Pennsylvania LIFE - Allegheny,1940 W Allegheny Ave,Philadelphia,PA,19132,-75.161018,40.002572,10,opencage
+CareConnect Pennsylvania LIFE - Henry Avenue,3232 Henry Ave,Philadelphia,PA,19129,-75.1807749,40.0099503,10,opencage
+CareConnect Pennsylvania LIFE - Pennypack,4401 Megargee St,Philadelphia,PA,19136,-75.011422,40.048261,10,opencage
+CareConnect Pennsylvania LIFE - St. Bart's,5364 Jackson St,Philadelphia,PA,19124,-75.0677116,40.0168428,10,opencage
+CareConnect Virginia PACE - Blue Ridge,1335 Carlton Ave,Charlottesville,VA,22902,-78.467566,38.021617,10,opencage
+CareConnect Virginia PACE - Peninsula,439 Oriana Rd,Newport News,VA,23608,-76.5360892,37.1329573,9,opencage
+CareConnect Virginia PACE - Richmond,750 E 6th St,Richmond,VA,23224,-77.4316708,37.5168468,10,opencage
+CareConnect Virginia PACE - Roanoke Valley,1606 Lynchburg Turnpike,Salem,VA,24153,-80.0408466,37.292054,9,opencage
+CareConnect Florida PACE - Orlando,8410 S Orange Blossom Trl,Orlando,FL,32809,-81.4041119,28.4429108,10,official_map_pin
+CareConnect Florida PACE - Tampa,4520 Seedling Circle,Tampa,FL,33614,-82.5195091,28.0173924,10,official_map_pin

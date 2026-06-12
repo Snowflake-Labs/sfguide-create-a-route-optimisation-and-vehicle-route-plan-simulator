@@ -130,7 +130,7 @@ export default function EmergencyResponse() {
       const cs: Center[] = centerRows.map((r: any) => ({
         centerId: r.CENTER_ID, name: r.CENTER_NAME, lon: Number(r.LON), lat: Number(r.LAT),
       }));
-      if (!cs.length) throw new Error(`No InnovAge centers in ${stateCode}.`);
+      if (!cs.length) throw new Error(`No CareConnect centers in ${stateCode}.`);
       setCenters(cs);
 
       const rows = await sfQueryAsync(seedSql(stateCode, orsRegion, hazard, numPatients, driveMinutes), 'EMERGENCY_RESPONSE', 'PIPELINE');
@@ -372,7 +372,7 @@ export default function EmergencyResponse() {
     <div style={{ display: 'flex', height: '100%' }}>
       <div style={panel}>
         <h2 style={{ margin: '0 0 4px', fontSize: 18 }}>Emergency Response</h2>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary,#777)', marginBottom: 12 }}>Evacuation planning for InnovAge PACE participants.</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary,#777)', marginBottom: 12 }}>Evacuation planning for CareConnect PACE participants.</div>
 
         {/* Phase pips */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 14 }}>
@@ -426,7 +426,7 @@ export default function EmergencyResponse() {
               const vc = vehicleConfigs[c.centerId] || { centerId: c.centerId, numVehicles: 0, capacity: 4 };
               return (
                 <div key={c.centerId} style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2 }}>{c.name.replace(/^InnovAge\s+/, '')}</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 2 }}>{c.name.replace(/^CareConnect\s+/, '')}</div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input style={{ ...inputStyle, marginBottom: 0 }} type="number" min={0} max={20} value={vc.numVehicles}
                       onChange={e => setVehicleConfigs(v => ({ ...v, [c.centerId]: { ...vc, numVehicles: Number(e.target.value) } }))} />

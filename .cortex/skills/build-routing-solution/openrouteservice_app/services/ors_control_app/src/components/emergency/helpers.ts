@@ -180,10 +180,10 @@ export function riskZipsSql(stateCode: string, hazard: Hazard): string {
           WHERE STATE = ${sqlStr(stateCode)}`;
 }
 
-/** InnovAge centers in a state. */
+/** CareConnect centers in a state. */
 export function centersSql(stateCode: string): string {
   return `SELECT CENTER_ID, CENTER_NAME, LON, LAT
-          FROM EMERGENCY_RESPONSE.CORE.INNOVAGE_CENTERS
+          FROM EMERGENCY_RESPONSE.CORE.CARECONNECT_CENTERS
           WHERE STATE = ${sqlStr(stateCode)}
           ORDER BY CENTER_NAME`;
 }
@@ -236,7 +236,7 @@ export function seedSql(stateCode: string, orsRegion: string, hazard: Hazard, nu
   return `WITH per_center AS (
             SELECT ST_SIMPLIFY(
                      EMERGENCY_RESPONSE.CORE.ORS_ISOCHRONE_FOR_CENTER(LOC, ${mins}, ${sqlStr(orsRegion)}), 150) AS iso
-            FROM EMERGENCY_RESPONSE.CORE.INNOVAGE_CENTERS
+            FROM EMERGENCY_RESPONSE.CORE.CARECONNECT_CENTERS
             WHERE STATE = ${sqlStr(stateCode)}
           ),
           u AS (SELECT ST_UNION_AGG(iso) AS area FROM per_center WHERE iso IS NOT NULL),
@@ -378,7 +378,7 @@ async function probeRoutability(
 /**
  * Probe each evacuee location for ORS routability and return only the points
  * VROOM can actually solve (keeping their ORIGINAL coordinates). `origin` must
- * be a known-routable coordinate (an InnovAge center, on a geocoded street
+ * be a known-routable coordinate (a CareConnect center, on a geocoded street
  * address). A point is dropped when ORS returns a null duration, cannot snap it
  * to a road, or snaps beyond the solver's `maximum_snapping_radius`
  * (SOLVER_SNAP_RADIUS_M) -- all of which otherwise make the solve abort. Used as
@@ -437,9 +437,9 @@ export type VehicleMeta = {
 };
 
 function shortCenter(name: string): string {
-  // "InnovAge Colorado PACE - Denver" -> "Denver"
+  // "CareConnect Colorado PACE - Denver" -> "Denver"
   const m = name.split(' - ');
-  return (m[m.length - 1] || name).replace(/^InnovAge\s+/, '').trim();
+  return (m[m.length - 1] || name).replace(/^CareConnect\s+/, '').trim();
 }
 
 /**
