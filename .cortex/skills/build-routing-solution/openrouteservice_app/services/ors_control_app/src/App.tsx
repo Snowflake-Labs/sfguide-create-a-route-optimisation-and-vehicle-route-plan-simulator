@@ -29,6 +29,8 @@ import RegionSwitcher from './shared/RegionSwitcher';
 import VehicleTypeSwitcher from './shared/VehicleTypeSwitcher';
 import DatasetPicker from './shared/DatasetPicker';
 import OrsWakeButton from './shared/OrsWakeButton';
+import PageRenderer from './dynamic/PageRenderer';
+import { SPEC_PAGES } from './dynamic/specs';
 
 interface SubPage { key: string; label: string; }
 
@@ -282,7 +284,13 @@ export default function App() {
               Remount is cheap for these pages and guarantees a clean
               fetch + map reset on every (region, vehicleType) change.
             */}
-            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}|${vehicleTypeCtx.value.activeDatasetId ?? ''}`; return (<>
+            {(() => { const dataKey = `${region.value.regionName}|${vehicleTypeCtx.value.vehicleType}|${vehicleTypeCtx.value.activeDatasetId ?? ''}`;
+            // Declarative spec pages take precedence over the hand-coded
+            // branches below (coexistence). When the active tab has a PageSpec,
+            // render it via PageRenderer and skip the conditional list.
+            const specPage = SPEC_PAGES[activeTab];
+            if (specPage) return <PageRenderer key={dataKey} spec={specPage} />;
+            return (<>
             {activeTab === 'home' && <Home onNavigate={navigateTo} />}
             {activeTab === 'about' && <About />}
             {activeTab === 'intro' && <Intro />}
