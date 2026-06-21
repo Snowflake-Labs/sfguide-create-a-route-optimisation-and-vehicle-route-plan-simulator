@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+.env
+.env.local
+
+# Playwright artifacts (CI-generated)
+playwright-report/
+test-results/

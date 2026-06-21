@@ -1,0 +1,50 @@
+{
+  "name": "Fleet Intelligence",
+  "description": "Agent-first fleet analytics and routing. Explore dwell and congestion patterns, optimize multi-stop routes, compute drive-time isochrones, and analyze points of interest and retail catchments \u2014 all scoped to a selectable region and vehicle type.",
+  "targetUsers": [
+    "Fleet Operations Analyst",
+    "Logistics / Route Planner",
+    "Dispatch & Field Operations"
+  ],
+  "capabilities": [
+    "Analyze courier dwell time and congestion hotspots by region and vehicle type",
+    "Optimize multi-stop vehicle routes and compute drive-time isochrones",
+    "Find points of interest and estimate retail catchment areas",
+    "Switch the active region and vehicle context across dashboards and routing tools"
+  ],
+  "sampleQuestions": [
+    "Where are the worst dwell hotspots this week?",
+    "Show congestion by hour for the current region",
+    "Optimize a route for these 8 delivery stops",
+    "What is the 15-minute drive-time isochrone from the depot?"
+  ],
+  "snowflake": {
+    "database": "FLEET_INTELLIGENCE",
+    "schema": "DWELL_ANALYSIS"
+  },
+  "hasWorkflows": false,
+  "contextBar": [
+    {
+      "id": "region",
+      "type": "enum",
+      "label": "Region",
+      "default": "Europe",
+      "configColumn": "REGION",
+      "options": [
+        { "value": "Europe", "label": "Europe" }
+      ]
+    },
+    {
+      "id": "vehicle_type",
+      "type": "enum",
+      "label": "Vehicle",
+      "default": "hgv",
+      "configColumn": "VEHICLE_TYPE",
+      "options": [
+        { "value": "hgv", "label": "Heavy Goods Vehicle" },
+        { "value": "car", "label": "Car / Van" },
+        { "value": "cycling-regular", "label": "Cycle" }
+      ]
+    }
+  ]
+}

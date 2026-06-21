@@ -1,0 +1,187 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { logger } from '@/lib/logger';
+import { withLogging } from '@/lib/api-handler';
+import { getSnowflakeAuth } from '@/lib/sf-auth';
+
+const WAREHOUSE = process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH';
+const ROLE = process.env.SNOWFLAKE_ROLE || 'PUBLIC';
+
+interface StatementResponse {
+  statementHandle?: string;
+  statementStatusUrl?: string;
+  message?: string;
+  resultSetMetaData?: {
+    numRows: number;
+    format: string;
+    rowType: Array<{ name: string; type: string }>;
+  };
+  data?: string[][];
+  code?: string;
+}
+
+function validateQuery(sql: string): void {
+  const trimmed = sql.trim().toUpperCase();
+  if (!trimmed.startsWith('SELECT') && !trimmed.startsWith('WITH')) {
+    throw new Error('Only SELECT queries are allowed');
+  }
+  const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|MERGE|GRANT|REVOKE|COPY)\b/i;
+  if (forbidden.test(sql)) {
+    throw new Error('Query contains forbidden DDL/DML statements');
+  }
+}
+
+function validateParams(params?: Record<string, string | null>): void {
+  if (!params) return;
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== '') {
+      if (value.length > 1000) {
+        throw new Error(`Parameter '${key}' exceeds max length`);
+      }
+      if (/[;]/.test(value)) {
+        throw new Error(`Parameter '${key}' contains invalid characters`);
+      }
+    }
+  }
+}
+
+function resolveParams(sql: string, params?: Record<string, string | null>): string {
+  if (!params) return sql;
+  let resolved = sql;
+  for (const [key, value] of Object.entries(params)) {
+    const placeholder = new RegExp(`:${key}\\b`, 'g');
+    if (value === null || value === undefined || value === '') {
+      resolved = resolved.replace(placeholder, 'NULL');
+    } else {
+      resolved = resolved.replace(placeholder, `'${value.replace(/'/g, "''")}'`);
+    }
+  }
+  return resolved;
+}
+
+async function executeStatement(sql: string): Promise<StatementResponse> {
+  const auth = getSnowflakeAuth();
+  const url = `${auth.baseUrl}/api/v2/statements`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.token}`,
+      Accept: 'application/json',
+      'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+    },
+    body: JSON.stringify({
+      statement: sql,
+      timeout: 60,
+      warehouse: WAREHOUSE,
+      role: ROLE,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Snowflake API ${res.status}: ${text}`);
+  }
+
+  return res.json();
+}
+
+async function pollForResults(handle: string, sqlPreview: string): Promise<StatementResponse> {
+  const auth = getSnowflakeAuth();
+  const url = `${auth.baseUrl}/api/v2/statements/${handle}`;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    logger.debug('sf-poll', { attempt: i + 1, handle: handle.slice(0, 16), sql: sqlPreview });
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: 'application/json',
+        'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Poll error ${res.status}: ${text}`);
+    }
+    const data: StatementResponse = await res.json();
+    if (data.data || data.resultSetMetaData) return data;
+    if (data.message?.includes('error') || data.code === '000625') {
+      throw new Error(data.message || 'Query failed');
+    }
+  }
+  throw new Error('Query timed out after 30s');
+}
+
+async function handleQuery(request: NextRequest): Promise<Response> {
+  try {
+    const body = await request.json();
+    const rawSql = body.sql as string;
+    const params = body.params as Record<string, string | null> | undefined;
+
+    if (!rawSql) {
+      return NextResponse.json({ error: 'sql is required' }, { status: 400 });
+    }
+    if (!getSnowflakeAuth().baseUrl || !getSnowflakeAuth().token) {
+      return NextResponse.json({ error: 'Snowflake credentials not configured' }, { status: 500 });
+    }
+
+    validateQuery(rawSql);
+    validateParams(params);
+    const sql = resolveParams(rawSql, params);
+    const sqlPreview = sql.replace(/\s+/g, ' ').trim().slice(0, 120);
+
+    const sfStart = Date.now();
+    logger.debug('sf-exec', { sql: sqlPreview, warehouse: WAREHOUSE, role: ROLE });
+
+    let result = await executeStatement(sql);
+    const hadHandle = !!(result.statementHandle && !result.data);
+
+    if (hadHandle) {
+      logger.debug('sf-async', { handle: result.statementHandle?.slice(0, 16), sql: sqlPreview });
+      result = await pollForResults(result.statementHandle!, sqlPreview);
+    }
+
+    const sfMs = Date.now() - sfStart;
+    const numRows = result.resultSetMetaData?.numRows ?? 0;
+    logger.debug('sf-done', { ms: sfMs, rows: numRows, polling: hadHandle, sql: sqlPreview });
+
+    const columns = (result.resultSetMetaData?.rowType || []).map((col) => ({
+      key: col.name.toLowerCase(),
+      label: col.name,
+      type: col.type,
+    }));
+
+    const rows = (result.data || []).map((row) => {
+      const obj: Record<string, unknown> = {};
+      columns.forEach((col, i) => {
+        const raw = row[i];
+        if (raw === null || raw === undefined) {
+          obj[col.key] = null;
+        } else if (col.type === 'fixed' || col.type === 'real' || col.type === 'float') {
+          obj[col.key] = Number(raw);
+        } else if (col.type === 'boolean') {
+          obj[col.key] = raw === 'true' || raw === '1';
+        } else if (col.type === 'timestamp_ntz' || col.type === 'timestamp_ltz' || col.type === 'timestamp_tz') {
+          const ms = Math.round(parseFloat(raw) * 1000);
+          obj[col.key] = new Date(ms).toISOString();
+        } else {
+          obj[col.key] = raw;
+        }
+      });
+      return obj;
+    });
+
+    return NextResponse.json({
+      columns: columns.map(({ key, label }) => ({ key, label })),
+      rows,
+      totalRows: result.resultSetMetaData?.numRows ?? rows.length,
+    });
+  } catch (err) {
+    logger.error('sf-error', { warehouse: WAREHOUSE }, err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Query execution failed' },
+      { status: 500 },
+    );
+  }
+}
+
+export const POST = withLogging(handleQuery);

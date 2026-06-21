@@ -1,0 +1,35 @@
+#
+# Fleet Intelligence - Snowflake Native App manifest (tier-B config-extensible).
+#
+# This packages the Fleet Intelligence app: the SPCS-hosted SA UI service, the
+# synapse routing tool layer (User + Admin MCP servers), and the Cortex Agent.
+# Logical roles user/ops/admin (see app/install.json) bind to application roles
+# at install. Ops edits views/agent prompts on the config stage (no rebuild).
+#
+manifest_version: 1
+
+artifacts:
+  setup_script: setup.sql
+  readme: ../README.md
+
+privileges:
+  - CREATE COMPUTE POOL:
+      description: "Run the Fleet Intelligence SA UI service."
+  - CREATE WAREHOUSE:
+      description: "Execute dashboard queries and routing tools."
+
+configuration:
+  # Tier-B: the consumer/Ops can point these at edited copies of the bundle on
+  # the config stage to customize dashboards, agent prompts, and region context
+  # without rebuilding the image.
+  log_level: INFO
+  trace_level: ALWAYS
+
+references:
+  - routing_substrate:
+      label: "Routing substrate (FLEET_INTELLIGENCE.CORE / ROUTING_AGENT)"
+      description: "Provisioned ORS/VROOM routing functions the User tools wrap."
+      privileges: [USAGE]
+      object_type: SCHEMA
+      register_callback: config.register_substrate
+      required_at_setup: true

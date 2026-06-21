@@ -1,0 +1,122 @@
+{
+  "dwell_overview": {
+    "label": "Dwell Overview",
+    "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
+    "layout": {
+      "default": {
+        "columns": "1fr 1fr",
+        "rows": "auto 1fr",
+        "grid": "\"metrics metrics\"\n\"trends facilities\""
+      },
+      "mobile": {
+        "columns": "1fr",
+        "rows": "auto auto auto",
+        "grid": "\"metrics\"\n\"trends\"\n\"facilities\""
+      }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type"
+          },
+          "mapping": {
+            "metrics": [
+              { "column": "total_trips", "label": "Total Trips", "format": "number" },
+              { "column": "avg_dwell", "label": "Avg Dwell (min)", "format": "number_2dp" },
+              { "column": "sla_frac", "label": "SLA Compliance", "format": "percent" },
+              { "column": "active_drivers", "label": "Active Drivers", "format": "number" }
+            ]
+          }
+        }
+      },
+      "trends": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type"
+          }
+        },
+        "config": {
+          "title": "Daily Trends (Last 30 Days)",
+          "xAxis": { "field": "day", "fieldType": "category" },
+          "series": [
+            { "type": "line", "field": "total_dwells", "label": "Dwells", "color": "#29B5E8" },
+            { "type": "line", "field": "total_trips", "label": "Trips", "color": "#FF6B35" }
+          ]
+        }
+      },
+      "facilities": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
+          "params": {
+            "region": "context.region",
+            "vehicle_type": "context.vehicle_type"
+          }
+        },
+        "config": {
+          "title": "Top 10 Facilities by Visits",
+          "xAxis": { "field": "facility_name", "fieldType": "category" },
+          "series": [
+            { "type": "bar", "field": "total_visits", "label": "Visits" }
+          ]
+        }
+      }
+    }
+  },
+  "dwell_congestion": {
+    "label": "Congestion Map",
+    "description": "H3 dwell-density hexagons by hour of day (drag the slider to change the hour).",
+    "layout": {
+      "default": {
+        "columns": "1fr",
+        "rows": "auto 1fr",
+        "grid": "\"controls\"\n\"map\""
+      }
+    },
+    "areas": {
+      "controls": {
+        "component": "Slider",
+        "config": {
+          "label": "Hour of day",
+          "min": 0,
+          "max": 23,
+          "step": 1,
+          "default": 19
+        },
+        "emits": { "selected_hour": "" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "h3",
+              "hexColumn": "h3_index",
+              "valueColumn": "dwell_count",
+              "extruded": true,
+              "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
+              "pickable": true,
+              "tooltip": "<b>{h3_index}</b><br/>Dwells: {dwell_count}<br/>Avg: {avg_dwell_min} min",
+              "data": {
+                "query": "SELECT H3_CELL_R7 AS h3_index, SUM(SESSION_COUNT) AS dwell_count, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell_min FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = TO_NUMBER(:selected_hour) GROUP BY H3_CELL_R7 LIMIT 5000",
+                "params": {
+                  "selected_hour": "viewState.selected_hour",
+                  "region": "context.region",
+                  "vehicle_type": "context.vehicle_type"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

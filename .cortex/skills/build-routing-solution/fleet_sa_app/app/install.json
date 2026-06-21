@@ -1,0 +1,37 @@
+{
+  "$comment": "Logical->actual role binding for the Fleet Intelligence app. Consumed by the Native App packaging step (Phase 2F). synapse emits GRANTs against IDENTIFIER($<logical>_role); the operator remaps logical roles to real account roles here at install time. Step 2 ships the 'user' and 'admin' bundles; 'ops' is declared for binding completeness but its SA-native surface is deferred to Step 3 (the control-app console remains the interim ops surface).",
+  "appId": "com.snowflake.solution-accelerator.fleet-intelligence",
+  "version": "0.1.0",
+  "roles": {
+    "user": {
+      "description": "End consumer: routing/optimization verbs + Cortex Analyst over the fleet semantic views. This is the ONLY bundle attached to the consumer Cortex Agent.",
+      "logicalRole": "user",
+      "defaultBinding": "FLEET_APP_USER",
+      "mcpServer": "FLEET_USER_MCP",
+      "status": "active"
+    },
+    "ops": {
+      "description": "Operations: service lifecycle, region/matrix provisioning, config + view edits. DECLARED ONLY in Step 2; SA-native surface and MCP server deferred to Step 3. Interim surface = ORS control-app console.",
+      "logicalRole": "ops",
+      "defaultBinding": "FLEET_APP_OPS",
+      "mcpServer": null,
+      "status": "deferred"
+    },
+    "admin": {
+      "description": "Installer: app install, agent creation, routing-substrate prereq checks, role binding. Admin MCP server is NOT attached to the consumer agent.",
+      "logicalRole": "admin",
+      "defaultBinding": "FLEET_APP_ADMIN",
+      "mcpServer": "FLEET_ADMIN_MCP",
+      "status": "active"
+    }
+  },
+  "substrate": {
+    "$comment": "Routing substrate is a provisioned prerequisite, not created by app install. Admin bundle verifies/links it.",
+    "database": "FLEET_INTELLIGENCE",
+    "coreSchema": "CORE",
+    "requires": [
+      "FLEET_INTELLIGENCE.CORE routing service functions (DIRECTIONS/ISOCHRONES/OPTIMIZATION/MATRIX)",
+      "ORS/VROOM SPCS services reachable"
+    ]
+  }
+}

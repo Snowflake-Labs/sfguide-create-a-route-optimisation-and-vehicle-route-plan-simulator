@@ -39,6 +39,16 @@ dist-server/
 build/
 *.egg-info/
 
+# Next.js build output (SA host)
+**/.next/
+
+# synapse materialize generated outputs (install.json is kept as source config)
+**/_installed/**/install.sql
+**/_installed/**/runtime.js
+**/_installed/**/server.js
+**/_installed/**/package.json
+**/_installed/**/.claude-plugin/
+
 # Native app build output
 build-routing-solution/Native_app/output/
 **/native_app/output/
