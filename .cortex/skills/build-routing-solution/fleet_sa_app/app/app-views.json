@@ -589,8 +589,8 @@
       "trips": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
           "mapping": {
             "metrics": [
               { "column": "trips", "label": "Trips", "format": "number" },
@@ -604,8 +604,8 @@
       "safety": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
           "mapping": {
             "metrics": [
               { "column": "pings", "label": "GPS Pings", "format": "number" },
@@ -619,8 +619,8 @@
       "byregion": {
         "component": "Chart",
         "data": {
-          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS GROUP BY REGION ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id)) GROUP BY REGION ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
           "title": "Trips by Region",
@@ -631,8 +631,8 @@
       "bytype": {
         "component": "Chart",
         "data": {
-          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id)) GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
           "title": "Trips by Vehicle Type",
@@ -652,8 +652,8 @@
       "vehicles": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id)) GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": { "rowKey": "vehicle_id", "maxRows": 50 },
         "emits": { "selected_vehicle": "selection" }
@@ -680,8 +680,8 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{speed_kmh} km/h",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY WHERE LATITUDE IS NOT NULL SAMPLE (5000 ROWS)",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM (SELECT VEHICLE_ID, LONGITUDE, LATITUDE, SPEED_KMH FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id)) WHERE LATITUDE IS NOT NULL) SAMPLE (5000 ROWS)",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]

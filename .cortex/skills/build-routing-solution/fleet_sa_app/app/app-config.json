@@ -66,7 +66,9 @@
       "default": "Europe",
       "configColumn": "REGION",
       "options": [
-        { "value": "Europe", "label": "Europe" }
+        { "value": "Europe", "label": "Europe" },
+        { "value": "Germany", "label": "Germany" },
+        { "value": "SanFrancisco", "label": "San Francisco" }
       ]
     },
     {
@@ -80,6 +82,11 @@
         { "value": "car", "label": "Car / Van" },
         { "value": "cycling-regular", "label": "Cycle" }
       ]
+    },
+    {
+      "id": "dataset_id",
+      "type": "dataset",
+      "label": "Dataset"
     }
   ]
 }

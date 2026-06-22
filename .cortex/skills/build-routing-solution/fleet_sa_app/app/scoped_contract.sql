@@ -134,6 +134,48 @@ $$
           OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
 $$;
 
+-- ============================================================================
+-- Contract-layer scope-arg functions (FLEET_APP.* neutral data contract)
+-- ============================================================================
+-- The consumer app binds to the NEUTRAL FLEET_APP contract, never to the physical
+-- SYNTHETIC_DATASETS source (repo tenet: swappable data seam). The contract views
+-- VW_FACT_TRIPS / VW_FACT_VEHICLE_TELEMETRY thinly wrap the global-active
+-- V_*_CURRENT views. These contract-layer table functions are the per-session
+-- equivalents: they wrap the UNIFIED F_*_SCOPED functions above, so dashboards get
+-- per-session scoping WITHOUT reaching past the contract into the physical source.
+--
+-- Consumer call site:
+--   SELECT * FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id))
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  TRIP_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR,
+  ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR, ORIGIN_LAT FLOAT, ORIGIN_LON FLOAT, ORIGIN GEOGRAPHY,
+  DESTINATION_LAT FLOAT, DESTINATION_LON FLOAT, DESTINATION GEOGRAPHY, ROUTE_GEOG GEOGRAPHY,
+  DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, PLANNED_ROUTE_GEOG GEOGRAPHY, PLANNED_DISTANCE_KM FLOAT,
+  IS_DETOUR BOOLEAN, DETOUR_DISTANCE_KM FLOAT, TRIP_START TIMESTAMP_NTZ, TRIP_END TIMESTAMP_NTZ,
+  STATUS VARCHAR, ORS_PROFILE VARCHAR, JOB_ID VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(SYNTHETIC_DATASETS.UNIFIED.F_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+CREATE OR REPLACE FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  TELEMETRY_ID VARCHAR, REGION VARCHAR, VEHICLE_TYPE VARCHAR, VEHICLE_ID VARCHAR, TRIP_ID VARCHAR,
+  TS TIMESTAMP_NTZ, LATITUDE FLOAT, LONGITUDE FLOAT, POINT_GEOM GEOGRAPHY, SPEED_KMH FLOAT,
+  HEADING_DEG FLOAT, POSTED_SPEED_KMH FLOAT, STATUS VARCHAR, IS_SPEEDING BOOLEAN, IS_HOS_VIOLATION BOOLEAN,
+  IS_DETOUR BOOLEAN, GPS_ACCURACY_M FLOAT, LOCATION_ID VARCHAR, LOCATION_TYPE VARCHAR, ORS_PROFILE VARCHAR,
+  BATTERY_PCT FLOAT, ODOMETER_KM FLOAT, POINT_INDEX NUMBER, JOB_ID VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(SYNTHETIC_DATASETS.UNIFIED.F_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
 -- ---------------------------------------------------------------------------
 -- TODO (R2 follow-on, same pattern): the remaining V_*_CURRENT-backed tables
 --   F_DIM_TRIP_SCHEDULE_SCOPED, F_FACT_FREIGHT_OFFERS_SCOPED, F_DIM_PARTNERS_SCOPED,
