@@ -14,6 +14,7 @@ import { MatrixViewerPage } from '@/components/pages/matrix-viewer';
 import { RegionBuilderPage } from '@/components/pages/region-builder';
 import { MatrixBuilderPage } from '@/components/pages/matrix-builder';
 import { RoutingLimitsPage } from '@/components/pages/routing-limits';
+import { ObservabilityPage } from '@/components/pages/observability';
 
 interface SubPage { key: string; label: string; }
 interface NavGroup {
@@ -96,6 +97,7 @@ function renderPage(tab: string) {
     case 'matrix:builder': return <MatrixBuilderPage />;
     case 'matrix': return <MatrixBuilderPage />;
     case 'routing-limits': return <RoutingLimitsPage />;
+    case 'observability': return <ObservabilityPage />;
     case 'diagnostics': return <DiagnosticsPage />;
     default: return <Placeholder tab={tab} />;
   }
