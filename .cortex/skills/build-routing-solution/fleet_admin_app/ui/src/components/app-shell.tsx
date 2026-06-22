@@ -11,6 +11,7 @@ import { DiagnosticsPage } from '@/components/pages/diagnostics';
 import { ServiceManagerPage } from '@/components/pages/service-manager';
 import { FunctionTesterPage } from '@/components/pages/function-tester';
 import { MatrixViewerPage } from '@/components/pages/matrix-viewer';
+import { RegionBuilderPage } from '@/components/pages/region-builder';
 
 interface SubPage { key: string; label: string; }
 interface NavGroup {
@@ -87,6 +88,7 @@ function Placeholder({ tab }: { tab: string }) {
 function renderPage(tab: string) {
   switch (tab) {
     case 'services': return <ServiceManagerPage />;
+    case 'regions': return <RegionBuilderPage />;
     case 'functions': return <FunctionTesterPage />;
     case 'matrix:viewer': return <MatrixViewerPage />;
     case 'diagnostics': return <DiagnosticsPage />;
