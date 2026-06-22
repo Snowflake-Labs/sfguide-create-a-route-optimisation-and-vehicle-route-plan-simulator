@@ -64,9 +64,16 @@ export function AppShell() {
     Promise.all([
       fetch('/api/app-config').then((r) => r.json()),
       fetch('/api/views-config').then((r) => r.json()),
+      fetch('/api/pack-status').then((r) => r.json()).catch(() => ({ schemas: {} })),
     ])
-      .then(([appConfig, viewsConfig]: [AppConfig, ViewsConfig]) => {
+      .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean> }]) => {
         setAppConfig({ ...DEFAULT_APP_CONFIG, ...appConfig });
+
+        // Surfacing gate: schemas whose pack data did not resolve are hidden.
+        const schemaStatus = packStatus?.schemas ?? {};
+        const disabledSchemas = new Set(
+          Object.entries(schemaStatus).filter(([, present]) => !present).map(([s]) => s),
+        );
 
         if (appConfig.contextBar) {
           setContextBarFields(appConfig.contextBar as ContextBarField[]);
@@ -94,14 +101,15 @@ export function AppShell() {
         }
 
         if (Object.keys(viewsConfig).length > 0) {
-          registerViewsFromConfig(viewsConfig);
+          registerViewsFromConfig(viewsConfig, disabledSchemas);
         }
         // Bind this domain's map-producing tools to the inline map (config-driven).
         registerToolMaps(appConfig.tools?.mapTools ?? []);
         // Register custom showcase views only for the fleet domain pack. A full
-        // config-driven pack loader replaces this branch in Step 4C.
+        // config-driven pack loader replaces this branch in Step 4C. Pack-backed
+        // showcases are gated by the surfacing set.
         if (appConfig.domainPack === 'fleet') {
-          registerFleetViews();
+          registerFleetViews(disabledSchemas);
         }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
           // Always set the FQN — it's used by the write layer and other framework features.
