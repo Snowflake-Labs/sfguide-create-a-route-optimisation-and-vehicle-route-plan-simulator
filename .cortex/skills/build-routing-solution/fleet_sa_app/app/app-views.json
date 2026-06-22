@@ -327,57 +327,154 @@
       }
     }
   },
-  "taxi_overview": {
-    "label": "Taxi Overview",
-    "description": "Taxi fleet trip volume, speed, and shift mix.",
+  "fleetops_status": {
+    "label": "Fleet Status",
+    "description": "Asset activity, distance, and safety events for the active fleet (any vehicle mode).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byshift byregion\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bystatus\"" }
     },
     "areas": {
-      "metrics": {
+      "trips": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT DRIVER_ID) AS drivers, ROUND(AVG(ROUTE_DISTANCE_METERS)/1000,1) AS avg_dist_km, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT OPERATOR_ID) AS operators, ROUND(AVG(DISTANCE_KM),1) AS avg_dist_km, SUM(IFF(IS_DETOUR,1,0)) AS detours FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
           "mapping": {
             "metrics": [
               { "column": "total_trips", "label": "Total Trips", "format": "number" },
-              { "column": "drivers", "label": "Active Drivers", "format": "number" },
+              { "column": "operators", "label": "Active Operators", "format": "number" },
               { "column": "avg_dist_km", "label": "Avg Distance (km)", "format": "number_2dp" },
+              { "column": "detours", "label": "Detour Trips", "format": "number" }
+            ]
+          }
+        }
+      },
+      "safety": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
+          "mapping": {
+            "metrics": [
+              { "column": "pings", "label": "GPS Pings", "format": "number" },
+              { "column": "speeding", "label": "Speeding Events", "format": "number" },
+              { "column": "hos", "label": "HOS Violations", "format": "number" },
               { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" }
             ]
           }
         }
       },
-      "byshift": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT COALESCE(SHIFT_TYPE,'unknown') AS shift, COUNT(*) AS trips FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY GROUP BY SHIFT_TYPE ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        },
-        "config": {
-          "title": "Trips by Shift",
-          "xAxis": { "field": "shift", "fieldType": "category" },
-          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
-        }
-      },
       "byregion": {
         "component": "Chart",
         "data": {
-          "query": "SELECT COALESCE(REGION,'unknown') AS region, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY GROUP BY REGION ORDER BY avg_speed DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY REGION ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
-          "title": "Avg Speed by Region",
+          "title": "Trips by Region",
           "xAxis": { "field": "region", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "avg_speed", "label": "Avg Speed (km/h)" } ]
+          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
+        }
+      },
+      "bystatus": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT COALESCE(STATUS,'unknown') AS status, COUNT(*) AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY STATUS ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": {
+          "title": "Trips by Status",
+          "xAxis": { "field": "status", "fieldType": "category" },
+          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
         }
       }
     }
   },
-  "taxi_routes": {
-    "label": "Taxi Routes",
-    "description": "Driven taxi trip paths (longest trips shown) on the map.",
+  "fleetops_map": {
+    "label": "Asset Map",
+    "description": "Live asset telemetry positions \u2014 click an operator to highlight its pings.",
+    "layout": {
+      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"operators map\"" }
+    },
+    "areas": {
+      "operators": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT OPERATOR_ID AS operator_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY OPERATOR_ID ORDER BY pings DESC LIMIT 50",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "rowKey": "operator_id", "maxRows": 50 },
+        "emits": { "selected_operator": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "telemetry",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "base": [120, 120, 130, 120],
+                "active": [41, 181, 232, 255],
+                "matchColumn": "operator_id",
+                "whenViewStateEquals": "selected_operator"
+              },
+              "radius": 40,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 6,
+              "pickable": true,
+              "tooltip": "<b>{operator_id}</b><br/>{speed_kmh} km/h",
+              "data": {
+                "query": "SELECT OPERATOR_ID AS operator_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM (SELECT OPERATOR_ID, LONGITUDE, LATITUDE, SPEED_KMH FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LATITUDE IS NOT NULL) SAMPLE (5000 ROWS)",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fleetops_density": {
+    "label": "Demand Density",
+    "description": "H3 hexbin of GPS activity by hour of day (drag the slider to change the hour).",
+    "layout": {
+      "default": { "columns": "1fr", "rows": "auto 1fr", "grid": "\"controls\"\n\"map\"" }
+    },
+    "areas": {
+      "controls": {
+        "component": "Slider",
+        "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 12 },
+        "emits": { "selected_hour": "" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "h3",
+              "hexColumn": "h3_index",
+              "valueColumn": "ping_count",
+              "extruded": true,
+              "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
+              "pickable": true,
+              "tooltip": "<b>{h3_index}</b><br/>Pings: {ping_count}<br/>Avg: {avg_speed} km/h",
+              "data": {
+                "query": "SELECT H3_INDEX AS h3_index, SUM(PING_COUNT) AS ping_count, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_H3_DENSITY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:selected_hour AS NUMBER))) GROUP BY H3_INDEX LIMIT 5000",
+                "params": { "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fleetops_trips": {
+    "label": "Trip Inspection",
+    "description": "Driven trip paths (longest trips shown) with per-trip distance, duration, and speed.",
     "layout": {
       "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
     },
@@ -395,8 +492,8 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]
@@ -405,56 +502,111 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT TRIP_ID AS trip_id, OPERATOR_ID AS operator, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min, ROUND(AVERAGE_KMH,1) AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         }
       }
     }
   },
-  "food_delivery": {
-    "label": "Food Delivery",
-    "description": "Courier delivery performance and busiest restaurants.",
+  "fleetops_operators": {
+    "label": "Operator Performance",
+    "description": "Per-operator productivity: trips, distance, and speed, with shift and profile.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"restaurants scatter\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byops table\"" }
     },
     "areas": {
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT DELIVERY_ID) AS deliveries, COUNT(DISTINCT COURIER_ID) AS couriers, ROUND(AVG(DELIVERY_TIME_MIN),1) AS avg_time, ROUND(AVG(DISTANCE_KM),1) AS avg_dist FROM FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "query": "SELECT COUNT(*) AS operators, SUM(TRIPS) AS total_trips, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed, ROUND(AVG(AVG_DISTANCE_KM),2) AS avg_dist FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
           "mapping": {
             "metrics": [
-              { "column": "deliveries", "label": "Deliveries", "format": "number" },
-              { "column": "couriers", "label": "Couriers", "format": "number" },
-              { "column": "avg_time", "label": "Avg Time (min)", "format": "number_2dp" },
+              { "column": "operators", "label": "Operators", "format": "number" },
+              { "column": "total_trips", "label": "Total Trips", "format": "number" },
+              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" },
               { "column": "avg_dist", "label": "Avg Distance (km)", "format": "number_2dp" }
             ]
           }
         }
       },
-      "restaurants": {
+      "byops": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(RESTAURANT_NAME,1,22) AS restaurant, TOTAL_ORDERS AS orders FROM FLEET_APP.FOOD_DELIVERY.VW_RESTAURANTS_ENRICHED ORDER BY orders DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT OPERATOR_ID AS operator, TRIPS AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ORDER BY trips DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
-          "title": "Busiest Restaurants by Orders",
-          "xAxis": { "field": "restaurant", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "orders", "label": "Orders" } ]
+          "title": "Top Operators by Trips",
+          "xAxis": { "field": "operator", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
         }
       },
-      "scatter": {
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT OPERATOR_ID AS operator, COALESCE(SHIFT_TYPE,'-') AS shift, COALESCE(DRIVER_PROFILE,'-') AS profile, TRIPS AS trips, TOTAL_DISTANCE_KM AS total_km, AVG_SPEED_KMH AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ORDER BY trips DESC LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        }
+      }
+    }
+  },
+  "fleetops_origins": {
+    "label": "Top Origins",
+    "description": "Busiest origin locations by trip volume \u2014 where journeys begin (any origin type).",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byorigin map\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS origins, SUM(TOTAL_TRIPS) AS trips, ROUND(AVG(AVG_DURATION_MIN),1) AS avg_dur, COUNT(DISTINCT LOCATION_TYPE) AS types FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(NULL AS VARCHAR)))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
+          "mapping": {
+            "metrics": [
+              { "column": "origins", "label": "Origin Locations", "format": "number" },
+              { "column": "trips", "label": "Trips from Origins", "format": "number" },
+              { "column": "avg_dur", "label": "Avg Trip (min)", "format": "number_2dp" },
+              { "column": "types", "label": "Location Types", "format": "number" }
+            ]
+          }
+        }
+      },
+      "byorigin": {
         "component": "Chart",
         "data": {
-          "query": "SELECT ROUND(DISTANCE_KM,1) AS distance_km, ROUND(DELIVERY_TIME_MIN,1) AS delivery_time_min FROM FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES WHERE DELIVERY_TIME_MIN IS NOT NULL AND DISTANCE_KM IS NOT NULL LIMIT 400",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT SUBSTR(ORIGIN_NAME,1,22) AS origin, TOTAL_TRIPS AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(NULL AS VARCHAR))) WHERE TOTAL_TRIPS > 0 ORDER BY trips DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
         "config": {
-          "title": "Delivery Time vs Distance",
-          "xAxis": { "field": "distance_km", "fieldType": "number" },
-          "series": [ { "type": "scatter", "field": "delivery_time_min", "label": "Delivery time (min)" } ]
+          "title": "Busiest Origins by Trips",
+          "xAxis": { "field": "origin", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "origins",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [41, 181, 232, 180],
+              "radius": 120,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 14,
+              "pickable": true,
+              "tooltip": "<b>{poi_name}</b><br/>{category}<br/>Trips: {trips}",
+              "data": {
+                "query": "SELECT ORIGIN_NAME AS poi_name, LOCATION_TYPE AS category, LNG AS lng, LAT AS lat, TOTAL_TRIPS AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(NULL AS VARCHAR))) WHERE LAT IS NOT NULL AND TOTAL_TRIPS > 0 ORDER BY trips DESC LIMIT 2000",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
         }
       }
     }
@@ -572,116 +724,6 @@
               "data": {
                 "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL LIMIT 2000",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "fleet_operations": {
-    "label": "Fleet Operations",
-    "description": "Unified fleet telemetry and trips: volume, detours, and safety events.",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bytype\"" }
-    },
-    "areas": {
-      "trips": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id))",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
-          "mapping": {
-            "metrics": [
-              { "column": "trips", "label": "Trips", "format": "number" },
-              { "column": "total_km", "label": "Total KM", "format": "number" },
-              { "column": "detours", "label": "Detour Trips", "format": "number" },
-              { "column": "avg_duration", "label": "Avg Duration (min)", "format": "number_2dp" }
-            ]
-          }
-        }
-      },
-      "safety": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id))",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
-          "mapping": {
-            "metrics": [
-              { "column": "pings", "label": "GPS Pings", "format": "number" },
-              { "column": "speeding", "label": "Speeding Events", "format": "number" },
-              { "column": "hos", "label": "HOS Violations", "format": "number" },
-              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" }
-            ]
-          }
-        }
-      },
-      "byregion": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id)) GROUP BY REGION ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": {
-          "title": "Trips by Region",
-          "xAxis": { "field": "region", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
-        }
-      },
-      "bytype": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(:region, :dataset_id)) GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": {
-          "title": "Trips by Vehicle Type",
-          "xAxis": { "field": "vehicle_type", "fieldType": "category" },
-          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
-        }
-      }
-    }
-  },
-  "fleet_map": {
-    "label": "Fleet Map",
-    "description": "Live vehicle telemetry points \u2014 click a vehicle to highlight its pings.",
-    "layout": {
-      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"vehicles map\"" }
-    },
-    "areas": {
-      "vehicles": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id)) GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": { "rowKey": "vehicle_id", "maxRows": 50 },
-        "emits": { "selected_vehicle": "selection" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "scatterplot",
-              "id": "telemetry",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "base": [120, 120, 130, 120],
-                "active": [41, 181, 232, 255],
-                "matchColumn": "vehicle_id",
-                "whenViewStateEquals": "selected_vehicle"
-              },
-              "radius": 40,
-              "radiusMinPixels": 2,
-              "radiusMaxPixels": 6,
-              "pickable": true,
-              "tooltip": "<b>{vehicle_id}</b><br/>{speed_kmh} km/h",
-              "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM (SELECT VEHICLE_ID, LONGITUDE, LATITUDE, SPEED_KMH FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(:region, :dataset_id)) WHERE LATITUDE IS NOT NULL) SAMPLE (5000 ROWS)",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]

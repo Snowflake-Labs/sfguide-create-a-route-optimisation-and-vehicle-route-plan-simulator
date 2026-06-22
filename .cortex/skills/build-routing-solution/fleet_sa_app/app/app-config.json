@@ -1,23 +1,23 @@
 {
   "name": "Fleet Intelligence",
   "domainPack": "fleet",
-  "description": "Agent-first fleet analytics and routing. Explore dwell and congestion patterns, optimize multi-stop routes, compute drive-time isochrones, and analyze points of interest and retail catchments \u2014 all scoped to a selectable region and vehicle type.",
+  "description": "Agent-first fleet analytics and routing, organized by business problem and applicable to any asset mode (car, HGV, e-bike, and beyond). Inspect fleet status, demand density, trips, operator performance, and top origins; analyze dwell, route deviation, and asset utilization; optimize multi-stop routes and compute drive-time isochrones \u2014 all scoped to a selectable region and dataset.",
   "targetUsers": [
     "Fleet Operations Analyst",
     "Logistics / Route Planner",
     "Dispatch & Field Operations"
   ],
   "capabilities": [
-    "Analyze courier dwell time and congestion hotspots by region and vehicle type",
-    "Optimize multi-stop vehicle routes and compute drive-time isochrones",
-    "Find points of interest and estimate retail catchment areas",
-    "Switch the active region and vehicle context across dashboards and routing tools"
+    "Inspect fleet status, demand density, trips, operator performance, and top origins for any asset mode",
+    "Analyze dwell and congestion hotspots, route deviation, and asset utilization by region",
+    "Optimize multi-stop routes, compute drive-time isochrones, and match backload freight",
+    "Switch the active region and dataset (mode) across every dashboard and routing tool"
   ],
   "sampleQuestions": [
-    "Where are the worst dwell hotspots this week?",
-    "Show congestion by hour for the current region",
-    "Optimize a route for these 8 delivery stops",
-    "What is the 15-minute drive-time isochrone from the depot?"
+    "How many trips and operators are active for the current fleet?",
+    "Which operators have the highest average speed?",
+    "What are the busiest origin locations this week?",
+    "Where are the worst dwell hotspots and congestion by hour?"
   ],
   "snowflake": {
     "database": "FLEET_INTELLIGENCE",
