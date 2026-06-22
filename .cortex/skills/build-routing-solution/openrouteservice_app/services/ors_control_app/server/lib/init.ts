@@ -1053,6 +1053,38 @@ export async function ensureBackloadAndAssetVelocityObjects(
         $$`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
+    // OPS "activate dataset" primitive (R4): promote a dataset to the GLOBAL
+    // active scope while preserving one-active-per-(region,vehicle). Called by the
+    // OPS-gated consumer route /api/ops/activate-dataset. Mirror source:
+    // fleet_sa_app/app/ops_primitives.sql.
+    {
+      sql: `CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.CORE.ACTIVATE_DATASET(P_DATASET_ID VARCHAR)
+        RETURNS VARCHAR
+        LANGUAGE SQL
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        $$
+        DECLARE
+          v_region   VARCHAR;
+          v_vehicle  VARCHAR;
+        BEGIN
+          SELECT REGION, VEHICLE_TYPE INTO :v_region, :v_vehicle
+            FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+           WHERE DATASET_ID = :P_DATASET_ID;
+          IF (:v_region IS NULL) THEN
+            RETURN 'ERROR: dataset not found: ' || :P_DATASET_ID;
+          END IF;
+          UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             SET IS_ACTIVE = FALSE
+           WHERE REGION = :v_region AND VEHICLE_TYPE = :v_vehicle AND IS_ACTIVE = TRUE;
+          UPDATE FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+             SET IS_ACTIVE = TRUE
+           WHERE DATASET_ID = :P_DATASET_ID;
+          RETURN 'OK: activated ' || :P_DATASET_ID || ' for ' || :v_region || '/' || :v_vehicle;
+        END;
+        $$`,
+      db: 'FLEET_INTELLIGENCE', schema: 'CORE',
+    },
     {
       sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.V_PLACES_CURRENT
         COMMENT = ${TRACK_RO}

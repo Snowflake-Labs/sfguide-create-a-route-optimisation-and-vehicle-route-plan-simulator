@@ -3,6 +3,7 @@ import { query, run } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
+import { requireOps } from '@/lib/ingress-identity';
 
 // Hybrid context endpoint (Step 2A, genericized in Step 4A).
 //
@@ -100,7 +101,16 @@ async function handleGet() {
   }
 }
 
+// POST writes the SHARED per-schema CONFIG (the GLOBAL active scope). As of R3/R4
+// this is an OPS/ADMIN-only "promote active scope" action — consumers do per-session
+// selection via the contextBar (which no longer calls this) + scope-arg functions.
 async function handlePost(req: Request) {
+  const g = await requireOps(req);
+  if (!g.ok) {
+    logger.warn('region-set-denied', { user: g.user, roles: g.roles, reason: g.reason });
+    return NextResponse.json({ error: g.reason ?? 'Forbidden' }, { status: g.status });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

@@ -3,6 +3,7 @@ import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
+import { requireOps } from '@/lib/ingress-identity';
 
 // Ops console backend. Calls the OPS-bundle synapse verbs (the ops MCP) in the
 // ops schema. Verb + arity are allowlisted; a trailing NULL idempotency key is
@@ -31,6 +32,14 @@ function resolveOps(): { schema: string; verbs: Record<string, number> } {
 }
 
 async function handlePost(req: Request) {
+  // R3: enforce OPS/ADMIN at the surface via SPCS ingress identity. The app runs
+  // as the service identity, so without this a consumer could call ops verbs.
+  const g = await requireOps(req);
+  if (!g.ok) {
+    logger.warn('ops-denied', { user: g.user, roles: g.roles, reason: g.reason });
+    return NextResponse.json({ error: g.reason ?? 'Forbidden' }, { status: g.status });
+  }
+
   let body: { verb?: string; args?: unknown[] };
   try {
     body = await req.json();
