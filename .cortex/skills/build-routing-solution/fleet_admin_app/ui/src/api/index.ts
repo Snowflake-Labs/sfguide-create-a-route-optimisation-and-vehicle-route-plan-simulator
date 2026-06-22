@@ -7,3 +7,4 @@
 export * from './client';
 export * from './matrix';
 export * from './regions';
+export * from './studio';
