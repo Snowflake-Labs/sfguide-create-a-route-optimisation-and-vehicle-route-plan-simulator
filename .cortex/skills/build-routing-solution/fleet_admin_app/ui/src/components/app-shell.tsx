@@ -8,6 +8,7 @@ import {
 import { useRegionProvider, RegionContext } from '@/hooks/useRegion';
 import { useVehicleTypeProvider, VehicleTypeContext } from '@/hooks/useVehicleType';
 import { DiagnosticsPage } from '@/components/pages/diagnostics';
+import { ServiceManagerPage } from '@/components/pages/service-manager';
 
 interface SubPage { key: string; label: string; }
 interface NavGroup {
@@ -83,6 +84,7 @@ function Placeholder({ tab }: { tab: string }) {
 // Tab -> page component. Pages are added as they are ported (tasks 3-9).
 function renderPage(tab: string) {
   switch (tab) {
+    case 'services': return <ServiceManagerPage />;
     case 'diagnostics': return <DiagnosticsPage />;
     default: return <Placeholder tab={tab} />;
   }
