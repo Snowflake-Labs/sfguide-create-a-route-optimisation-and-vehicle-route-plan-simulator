@@ -231,7 +231,13 @@ def gen_sv_repoint(model, mapping, sv_list):
             reps = [reps]
         for r in reps:
             repl.append((r.split()[0], f"{schema}.{obj_name(ent['name'])}"))
-    lines = ["DECLARE", "  ddl STRING;", "BEGIN"]
+    # Wrapped in EXECUTE IMMEDIATE $$...$$ so the whole scripting block is a SINGLE
+    # statement: it then survives `snow sql -f` (and `snow sql -q`), which otherwise
+    # naively splits on the internal `;` of a bare DECLARE/BEGIN/END block. The inner
+    # `EXECUTE IMMEDIATE :ddl` (and the SV DDL it carries) never contains `$$`, so
+    # there is no dollar-quote collision. Idempotent: re-running against an already
+    # repointed SV is a no-op REPLACE -> identical CREATE OR REPLACE.
+    lines = ["EXECUTE IMMEDIATE $$", "DECLARE", "  ddl STRING;", "BEGIN"]
     for sv in [s.strip() for s in sv_list.split(",") if s.strip()]:
         sv_schema = ".".join(sv.split(".")[:2])
         lines.append(f"  EXECUTE IMMEDIATE 'USE SCHEMA {sv_schema}';")
@@ -241,6 +247,7 @@ def gen_sv_repoint(model, mapping, sv_list):
         lines.append("  EXECUTE IMMEDIATE :ddl;")
     lines.append("  RETURN 'repointed semantic views';")
     lines.append("END;")
+    lines.append("$$;")
     return "\n".join(lines) + "\n"
 
 

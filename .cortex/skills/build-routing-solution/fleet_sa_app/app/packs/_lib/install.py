@@ -99,6 +99,46 @@ def apply_pack(pack, conn):
     print(f"  [ok] {pack['name']} applied")
 
 
+def regenerate_repoint(pack):
+    """Emit <pack>/sv_repoint.sql: a single EXECUTE IMMEDIATE block that rebinds the
+    pack's semantic_views (from manifest) onto its FLEET_APP views. Deterministic from
+    model + mapping + manifest, so it is committed as the durable reproducibility
+    artifact. NOTE: assumes the SV already exists; this rebinds base tables, it does
+    NOT author the SV. Idempotent (no-op REPLACE once already on FLEET_APP)."""
+    svs = pack.get("semantic_views") or []
+    name = pack["name"]
+    d = os.path.join(FLEET_DIR, name)
+    model = os.path.join(d, "data-model.yaml")
+    mapping = os.path.join(d, "entity-mapping.yaml")
+    out = os.path.join(d, "sv_repoint.sql")
+    if not svs:
+        return None
+    if not (os.path.exists(model) and os.path.exists(mapping)):
+        print(f"  [skip repoint-gen] {name}: no data-model/entity-mapping")
+        return None
+    r = run([sys.executable, GENERATOR, "--model", model, "--mapping", mapping,
+             "--out", out, "--sv-repoint", ",".join(svs)])
+    if r.returncode != 0:
+        sys.exit(f"repoint generate failed for {name}:\n{r.stderr}")
+    print("  " + r.stdout.strip())
+    return out
+
+
+def repoint_pack(pack, conn):
+    if not (pack.get("semantic_views")):
+        return
+    out = os.path.join(FLEET_DIR, pack["name"], "sv_repoint.sql")
+    if not os.path.exists(out):
+        sys.exit(f"{pack['name']}: sv_repoint.sql missing - run with --regenerate")
+    cmd = ["snow", "sql", "-f", out]
+    if conn:
+        cmd += ["-c", conn]
+    r = run(cmd)
+    if r.returncode != 0:
+        sys.exit(f"sv-repoint failed for {pack['name']}:\n{r.stdout}\n{r.stderr}")
+    print(f"  [ok] {pack['name']} SV-repoint applied ({','.join(pack['semantic_views'])})")
+
+
 def probe_pack(pack, conn):
     probe = pack.get("probe")
     if not probe:
@@ -116,10 +156,11 @@ def probe_pack(pack, conn):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--connection", "-c", default=None, help="snow CLI connection name")
-    ap.add_argument("--regenerate", action="store_true", help="regenerate setup.sql from model+mapping before applying")
+    ap.add_argument("--regenerate", action="store_true", help="regenerate setup.sql (and sv_repoint.sql when --sv-repoint) from model+mapping before applying")
     ap.add_argument("--only", default=None, help="comma-separated subset of pack names")
     ap.add_argument("--dry-run", action="store_true", help="print the ordered plan, do nothing")
     ap.add_argument("--probe", action="store_true", help="report which packs resolve with data (surfacing signal)")
+    ap.add_argument("--sv-repoint", action="store_true", help="after applying each pack, rebind its semantic_views (manifest) onto its FLEET_APP views (idempotent)")
     args = ap.parse_args()
 
     packs = topo(load_manifest())
@@ -146,7 +187,11 @@ def main():
         print(f"== {p['name']} ({p['app_schema']}) ==")
         if args.regenerate:
             regenerate(p)
+            if args.sv_repoint:
+                regenerate_repoint(p)
         apply_pack(p, args.connection)
+        if args.sv_repoint:
+            repoint_pack(p, args.connection)
     print("done.")
 
 

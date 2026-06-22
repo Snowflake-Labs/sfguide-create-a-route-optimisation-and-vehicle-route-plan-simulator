@@ -14,9 +14,24 @@ pack's `entity-mapping.yaml` and regenerating - **consumers do not change**.
 - `entity-mapping.customer-demo.yaml` - optional swap proof (different shape).
 - `setup.sql` - generated DDL (do not hand-edit).
 - Generate: `python3 ../../_lib/generate.py --model <pack>/data-model.yaml --mapping <pack>/entity-mapping.yaml --out <pack>/setup.sql`
-- SV repoint: add `--sv-repoint <DB.SCHEMA.SV,...>` to emit a base-table rebind script.
+- SV repoint: add `--sv-repoint <DB.SCHEMA.SV,...>` to emit a base-table rebind script,
+  wrapped in `EXECUTE IMMEDIATE $$...$$` so it applies as a SINGLE statement via `snow sql -f`
+  (a bare `DECLARE/BEGIN/END;` block is split on its internal `;` and fails). The committed
+  `<pack>/sv_repoint.sql` is the durable, idempotent reproducibility artifact for self-building
+  packs whose SV absorbs physical DTs via `replaces:` (route_optimization, backload, dhl_ntbo).
+  It rebinds an already-existing SV; it does NOT author the SV (SV CREATE DDL is not yet a repo
+  source-of-truth - see caveat below).
 - Verify variant: `--app-schema FLEET_APP_VERIFY.<pack> --materialization view` builds the
   whole chain as instant views in a scratch schema for bit-for-bit checks (no DT refresh wait).
+
+## Installer (`_lib/install.py`)
+Manifest-driven deploy-all, idempotent, in inter-pack `depends_on` order:
+- `python3 install.py [-c <conn>]` - apply every pack's `setup.sql`.
+- `--regenerate` - regenerate `setup.sql` (and `sv_repoint.sql` when `--sv-repoint`) first.
+- `--sv-repoint` - after each pack's `setup.sql`, apply its `sv_repoint.sql` (rebinds the
+  manifest `semantic_views` onto FLEET_APP; idempotent no-op once already repointed).
+- `--probe` - report which packs resolve with data (the surfacing-gate signal).
+- `--dry-run` - print the ordered plan only.
 
 ## Self-building packs (`derived` primitives)
 A pack can REBUILD its analytic layer instead of facading pre-built physical DTs.
@@ -54,4 +69,9 @@ a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
 - Grants: database-level + FUTURE grants in `app/role_binding.sql` cover all packs.
 - SV repoint gotcha: a semantic view that declares a base table WITHOUT an alias
   needs an explicit alias injected on repoint (its implicit logical name = the
-  FQN's last identifier, referenced by `relationships`/facts).
+  FQN's last identifier, referenced by `relationships`/facts). The 3 committed
+  `sv_repoint.sql` SVs all use aliased base tables, so the blind FQN replace is safe.
+- SV-DDL source caveat: `sv_repoint.sql` rebinds an EXISTING semantic view's base tables;
+  the SV CREATE DDL itself is not yet committed as a repo artifact. A truly-fresh account
+  must create the 10 `SV_*` first (live source-of-truth), then `install.py --sv-repoint`
+  converges them onto FLEET_APP.
