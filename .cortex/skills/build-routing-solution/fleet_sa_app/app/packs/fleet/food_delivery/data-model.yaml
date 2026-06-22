@@ -1,0 +1,21 @@
+# Data model (logical contract) - Fleet domain pack: food_delivery
+pack: food_delivery
+app_schema: FLEET_APP.FOOD_DELIVERY
+entities:
+  - name: DELIVERIES
+    description: "Per-delivery food courier records: time, distance, courier."
+    access_pattern: mapped
+    grain: "One row per delivery"
+    primary_key: DELIVERY_ID
+    columns:
+      - { name: DELIVERY_ID, type: VARCHAR, nullable: false }
+      - { name: COURIER_ID, type: VARCHAR }
+      - { name: DELIVERY_TIME_MIN, type: FLOAT }
+      - { name: DISTANCE_KM, type: FLOAT }
+  - name: RESTAURANTS_ENRICHED
+    description: "Restaurant dimension with order volume."
+    access_pattern: mapped
+    grain: "One row per restaurant"
+    columns:
+      - { name: RESTAURANT_NAME, type: VARCHAR }
+      - { name: TOTAL_ORDERS, type: NUMBER }

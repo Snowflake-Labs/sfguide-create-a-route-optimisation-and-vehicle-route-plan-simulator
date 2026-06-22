@@ -1,0 +1,20 @@
+# Data model (logical contract) - Fleet domain pack: taxi
+pack: taxi
+app_schema: FLEET_APP.TAXI
+entities:
+  - name: TRIP_SUMMARY
+    description: "Per-trip taxi summary: distance, duration, speed, shift, route geometry."
+    access_pattern: mapped
+    grain: "One row per trip"
+    primary_key: TRIP_ID
+    columns:
+      - { name: TRIP_ID, type: VARCHAR, nullable: false }
+      - { name: DRIVER_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
+      - { name: SHIFT_TYPE, type: VARCHAR }
+      - { name: ROUTE_DISTANCE_METERS, type: FLOAT }
+      - { name: ROUTE_DURATION_SECS, type: FLOAT }
+      - { name: AVERAGE_KMH, type: FLOAT }
+      - { name: ORIGIN_ADDRESS, type: VARCHAR }
+      - { name: DESTINATION_ADDRESS, type: VARCHAR }
+      - { name: GEOMETRY, type: GEOGRAPHY }

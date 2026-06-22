@@ -1,0 +1,23 @@
+# Data model (logical contract) - Fleet domain pack: route_optimization (asset velocity)
+pack: route_optimization
+app_schema: FLEET_APP.ROUTE_OPTIMIZATION
+entities:
+  - name: TRAILER_COST_OF_IDLENESS
+    description: "Per-trailer idleness cost and projected savings."
+    access_pattern: mapped
+    grain: "One row per trailer/vehicle"
+    primary_key: VEHICLE_ID
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: IDLE_SEVERITY, type: VARCHAR }
+      - { name: IDLE_DAYS, type: FLOAT }
+      - { name: COST_OF_IDLENESS_USD, type: FLOAT }
+      - { name: PROJECTED_SAVINGS_USD, type: FLOAT }
+      - { name: LAST_LAT, type: FLOAT }
+      - { name: LAST_LNG, type: FLOAT }
+  - name: LANE_DEMAND
+    description: "Lane demand reference used by the asset-velocity semantic view."
+    access_pattern: mapped
+    grain: "One row per lane"
+    columns:
+      - { name: LANE, type: VARCHAR }

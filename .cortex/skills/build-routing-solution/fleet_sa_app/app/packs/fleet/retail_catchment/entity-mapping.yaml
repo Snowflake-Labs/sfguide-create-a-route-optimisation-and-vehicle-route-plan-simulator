@@ -1,0 +1,12 @@
+# Entity mapping - retail_catchment pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic retail-catchment data."
+entities:
+  - entity: RETAIL_POIS
+    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+    materialization: view
+    passthrough: true
+  - entity: CITIES_BY_STATE
+    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
+    materialization: view
+    passthrough: true

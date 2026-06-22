@@ -1,0 +1,12 @@
+# Entity mapping - route_optimization pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic asset-velocity / route-optimization data."
+entities:
+  - entity: TRAILER_COST_OF_IDLENESS
+    source_table: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
+    materialization: view
+    passthrough: true
+  - entity: LANE_DEMAND
+    source_table: FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_LANE_DEMAND
+    materialization: view
+    passthrough: true

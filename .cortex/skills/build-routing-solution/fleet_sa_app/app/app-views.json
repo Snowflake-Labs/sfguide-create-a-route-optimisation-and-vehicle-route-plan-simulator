@@ -337,7 +337,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT DRIVER_ID) AS drivers, ROUND(AVG(ROUTE_DISTANCE_METERS)/1000,1) AS avg_dist_km, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY",
+          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT DRIVER_ID) AS drivers, ROUND(AVG(ROUTE_DISTANCE_METERS)/1000,1) AS avg_dist_km, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -352,7 +352,7 @@
       "byshift": {
         "component": "Chart",
         "data": {
-          "query": "SELECT COALESCE(SHIFT_TYPE,'unknown') AS shift, COUNT(*) AS trips FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY GROUP BY SHIFT_TYPE ORDER BY trips DESC",
+          "query": "SELECT COALESCE(SHIFT_TYPE,'unknown') AS shift, COUNT(*) AS trips FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY GROUP BY SHIFT_TYPE ORDER BY trips DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -364,7 +364,7 @@
       "byregion": {
         "component": "Chart",
         "data": {
-          "query": "SELECT COALESCE(REGION,'unknown') AS region, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY GROUP BY REGION ORDER BY avg_speed DESC LIMIT 12",
+          "query": "SELECT COALESCE(REGION,'unknown') AS region, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY GROUP BY REGION ORDER BY avg_speed DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -395,7 +395,7 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
@@ -405,7 +405,7 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min FROM FLEET_APP.TAXI.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }
@@ -421,7 +421,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT DELIVERY_ID) AS deliveries, COUNT(DISTINCT COURIER_ID) AS couriers, ROUND(AVG(DELIVERY_TIME_MIN),1) AS avg_time, ROUND(AVG(DISTANCE_KM),1) AS avg_dist FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES",
+          "query": "SELECT COUNT(DISTINCT DELIVERY_ID) AS deliveries, COUNT(DISTINCT COURIER_ID) AS couriers, ROUND(AVG(DELIVERY_TIME_MIN),1) AS avg_time, ROUND(AVG(DISTANCE_KM),1) AS avg_dist FROM FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -436,7 +436,7 @@
       "restaurants": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(RESTAURANT_NAME,1,22) AS restaurant, TOTAL_ORDERS AS orders FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED ORDER BY orders DESC LIMIT 12",
+          "query": "SELECT SUBSTR(RESTAURANT_NAME,1,22) AS restaurant, TOTAL_ORDERS AS orders FROM FLEET_APP.FOOD_DELIVERY.VW_RESTAURANTS_ENRICHED ORDER BY orders DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -448,7 +448,7 @@
       "scatter": {
         "component": "Chart",
         "data": {
-          "query": "SELECT ROUND(DISTANCE_KM,1) AS distance_km, ROUND(DELIVERY_TIME_MIN,1) AS delivery_time_min FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES WHERE DELIVERY_TIME_MIN IS NOT NULL AND DISTANCE_KM IS NOT NULL LIMIT 400",
+          "query": "SELECT ROUND(DISTANCE_KM,1) AS distance_km, ROUND(DELIVERY_TIME_MIN,1) AS delivery_time_min FROM FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES WHERE DELIVERY_TIME_MIN IS NOT NULL AND DISTANCE_KM IS NOT NULL LIMIT 400",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -469,7 +469,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS",
+          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -484,7 +484,7 @@
       "bycat": {
         "component": "Chart",
         "data": {
-          "query": "SELECT BASIC_CATEGORY AS category, COUNT(*) AS pois FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS GROUP BY BASIC_CATEGORY ORDER BY pois DESC LIMIT 12",
+          "query": "SELECT BASIC_CATEGORY AS category, COUNT(*) AS pois FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS GROUP BY BASIC_CATEGORY ORDER BY pois DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -510,7 +510,7 @@
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category}",
               "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL LIMIT 5000",
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL LIMIT 5000",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
@@ -529,7 +529,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS",
+          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -544,7 +544,7 @@
       "byseverity": {
         "component": "Chart",
         "data": {
-          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
+          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -570,7 +570,7 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{severity}<br/>Idle {idle_days} days",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL LIMIT 2000",
+                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL LIMIT 2000",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }

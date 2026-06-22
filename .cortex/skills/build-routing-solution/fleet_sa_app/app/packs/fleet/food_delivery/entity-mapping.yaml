@@ -1,0 +1,12 @@
+# Entity mapping - food_delivery pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic food-delivery data."
+entities:
+  - entity: DELIVERIES
+    source_table: FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES
+    materialization: view
+    passthrough: true
+  - entity: RESTAURANTS_ENRICHED
+    source_table: FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED
+    materialization: view
+    passthrough: true

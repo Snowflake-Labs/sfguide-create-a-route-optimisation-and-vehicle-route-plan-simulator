@@ -1,0 +1,10 @@
+# Entity mapping - taxi pack - SOURCE: synthetic (sample data, emulation of customer data)
+# passthrough: synthetic source already matches the contract 1:1 (SELECT *).
+# To run on customer data, replace passthrough with explicit column mappings/transforms.
+source_id: synthetic
+description: "Bundled synthetic taxi data."
+entities:
+  - entity: TRIP_SUMMARY
+    source_table: FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
+    materialization: view
+    passthrough: true
