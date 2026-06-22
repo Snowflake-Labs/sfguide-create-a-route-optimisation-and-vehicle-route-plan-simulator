@@ -20,13 +20,15 @@ export function registerInlineComponents() {
   inlineRegistry.register({ toolName: 'render_choices', component: ChoiceList as AnyComponent });
   inlineRegistry.register({ toolName: 'render_picker', component: InlinePicker as AnyComponent });
   inlineRegistry.register({ toolName: 'render_progress', component: ProgressCard as AnyComponent });
-  // Fleet routing tools (FLEET_USER_MCP) -> render result geometry on a deck.gl map.
+}
+
+// Binds routing tool outputs to the inline deck.gl map. The tool names come
+// from app-config.json `tools.mapTools` (fetched by app-shell), so a non-fleet
+// domain declares its own map-producing tools without editing this file.
+// Re-registration is overwrite-safe; safe to call again when config reloads.
+export function registerToolMaps(mapTools: string[]): void {
   const routeMap = RouteMapInline as AnyComponent;
-  inlineRegistry.register({ toolName: 'get_directions', component: routeMap });
-  inlineRegistry.register({ toolName: 'optimize_routes', component: routeMap });
-  inlineRegistry.register({ toolName: 'compute_isochrone', component: routeMap });
-  inlineRegistry.register({ toolName: 'find_poi', component: routeMap });
-  inlineRegistry.register({ toolName: 'pharma_catchment', component: routeMap });
-  inlineRegistry.register({ toolName: 'pharma_optimization', component: routeMap });
-  inlineRegistry.register({ toolName: 'supply_chain', component: routeMap });
+  for (const toolName of mapTools) {
+    inlineRegistry.register({ toolName, component: routeMap });
+  }
 }

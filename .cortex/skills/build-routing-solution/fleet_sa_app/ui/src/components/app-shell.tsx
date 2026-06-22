@@ -5,7 +5,7 @@ import { ChatPanel } from './chat/chat-panel';
 import { ViewPanel } from './views/view-panel';
 import { Header } from './header';
 import { ContextBar, type ContextBarField } from './context-bar';
-import { registerInlineComponents } from './inline';
+import { registerInlineComponents, registerToolMaps } from './inline';
 import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
 import { registerWorkflowViews } from '@/lib/framework-views';
 import { registerFleetViews } from '@/lib/fleet-views';
@@ -21,6 +21,10 @@ export interface AppConfig {
   snowflake?: { database: string; schema: string; warehouse?: string };
   hasWorkflows?: boolean;
   contextBar?: ContextBarField[];
+  // Domain-pack selector: which custom showcase views to register (4C loader).
+  domainPack?: string;
+  // Routing/tool config; mapTools render their output on the inline deck.gl map.
+  tools?: { mapTools?: string[] };
 }
 
 const DEFAULT_APP_CONFIG: AppConfig = {
@@ -92,7 +96,13 @@ export function AppShell() {
         if (Object.keys(viewsConfig).length > 0) {
           registerViewsFromConfig(viewsConfig);
         }
-        registerFleetViews();
+        // Bind this domain's map-producing tools to the inline map (config-driven).
+        registerToolMaps(appConfig.tools?.mapTools ?? []);
+        // Register custom showcase views only for the fleet domain pack. A full
+        // config-driven pack loader replaces this branch in Step 4C.
+        if (appConfig.domainPack === 'fleet') {
+          registerFleetViews();
+        }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
           // Always set the FQN — it's used by the write layer and other framework features.
           setSnowflakeFqn(`${appConfig.snowflake.database}.${appConfig.snowflake.schema}`);

@@ -2,92 +2,146 @@ import { NextResponse } from 'next/server';
 import { query, run } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
+import { getServerConfig } from '@/lib/server-config';
 
-// Hybrid region/vehicle context endpoint (Step 2A).
+// Hybrid context endpoint (Step 2A, genericized in Step 4A).
 //
-// The SA contextBar drives a client-side `:param` (context.region / context.vehicle_type)
-// that auto-refetches dependent dashboard views. This endpoint is the SERVER-SIDE half of
-// the "Hybrid" decision: it writes the per-schema CONFIG(REGION, VEHICLE_TYPE) single-row
-// table so that projection views reading `(SELECT REGION FROM CONFIG LIMIT 1)` and the
-// routing tool layer observe the SAME active region/vehicle as the dashboards.
+// The contextBar drives a client-side `:param` (context.<fieldId>) that
+// auto-refetches dependent dashboard views. This endpoint is the SERVER-SIDE
+// half of the "Hybrid" decision: it writes the per-schema CONFIG single-row
+// table so projection views reading `(SELECT <col> FROM CONFIG LIMIT 1)` and
+// the routing tool layer observe the SAME active context as the dashboards.
 //
-// Schema names cannot be parameter-bound (they are identifiers), so every target schema is
-// validated against an allowlist before interpolation. Values ARE bound.
+// What used to be hardcoded (DB = FLEET_INTELLIGENCE, columns REGION /
+// VEHICLE_TYPE) is now config-driven: the database + schema allowlist come
+// from app-config.json `region`, and the context column set is derived from
+// the `contextBar` entries that carry a `configColumn`. The fleet literals
+// below are the fallback when config is absent.
+//
+// Schema + column names cannot be parameter-bound (they are identifiers), so
+// each is validated against a strict regex (and schemas against an allowlist)
+// before interpolation. Values ARE bound.
 
-const DB = 'FLEET_INTELLIGENCE';
-
-// Schemas whose CONFIG table carries REGION + VEHICLE_TYPE columns. Override with
-// FLEET_CONFIG_SCHEMAS (comma-separated). Default targets the dashboards shipped in Step 2.
-const ALLOWED_SCHEMAS = (process.env.FLEET_CONFIG_SCHEMAS ??
-  'DWELL_ANALYSIS,ROUTE_DEVIATION,ROUTE_OPTIMIZATION')
-  .split(',')
-  .map((s) => s.trim().toUpperCase())
-  .filter(Boolean);
+const DEFAULT_DB = 'FLEET_INTELLIGENCE';
+const DEFAULT_SCHEMAS = ['DWELL_ANALYSIS', 'ROUTE_DEVIATION', 'ROUTE_OPTIMIZATION'];
+// Used only when config has no contextBar with configColumns.
+const DEFAULT_CONTEXT_COLUMNS: Record<string, string> = {
+  region: 'REGION',
+  vehicle_type: 'VEHICLE_TYPE',
+};
 
 const IDENT = /^[A-Z_][A-Z0-9_]*$/;
 
-function resolveSchemas(requested?: string[]): string[] {
-  if (!requested || requested.length === 0) return [ALLOWED_SCHEMAS[0]];
+interface ResolvedRegion {
+  db: string;
+  schemas: string[];
+  // contextBar field id -> CONFIG column name (uppercased).
+  contextColumns: Record<string, string>;
+}
+
+function resolveRegion(): ResolvedRegion {
+  const cfg = getServerConfig();
+
+  const db = cfg.region?.database ?? DEFAULT_DB;
+
+  // Schema allowlist: env override (neutral name + back-compat alias) wins,
+  // then config, then the fleet default.
+  const envSchemas = process.env.CONTEXT_CONFIG_SCHEMAS ?? process.env.FLEET_CONFIG_SCHEMAS;
+  const rawSchemas = envSchemas ? envSchemas.split(',') : cfg.region?.schemas ?? DEFAULT_SCHEMAS;
+  const schemas = rawSchemas.map((s) => s.trim().toUpperCase()).filter((s) => IDENT.test(s));
+
+  // Context columns from contextBar entries that declare a configColumn.
+  const contextColumns: Record<string, string> = {};
+  for (const f of cfg.contextBar ?? []) {
+    if (f.configColumn && IDENT.test(f.configColumn.toUpperCase())) {
+      contextColumns[f.id] = f.configColumn.toUpperCase();
+    }
+  }
+
+  return {
+    db,
+    schemas: schemas.length > 0 ? schemas : DEFAULT_SCHEMAS,
+    contextColumns: Object.keys(contextColumns).length > 0 ? contextColumns : DEFAULT_CONTEXT_COLUMNS,
+  };
+}
+
+function resolveSchemas(cfg: ResolvedRegion, requested?: string[]): string[] {
+  if (!requested || requested.length === 0) return [cfg.schemas[0]];
   const out: string[] = [];
   for (const raw of requested) {
     const s = String(raw).trim().toUpperCase();
-    if (IDENT.test(s) && ALLOWED_SCHEMAS.includes(s)) out.push(s);
+    if (IDENT.test(s) && cfg.schemas.includes(s)) out.push(s);
   }
-  return out.length > 0 ? out : [ALLOWED_SCHEMAS[0]];
+  return out.length > 0 ? out : [cfg.schemas[0]];
 }
 
 async function handleGet() {
-  const schema = ALLOWED_SCHEMAS[0];
+  const cfg = resolveRegion();
+  const schema = cfg.schemas[0];
+  const fields = Object.entries(cfg.contextColumns); // [fieldId, COLUMN]
+  const cols = fields.map(([, col]) => col).join(', ');
   try {
-    const rows = await query<{ REGION: string; VEHICLE_TYPE: string }>(
-      `SELECT REGION, VEHICLE_TYPE FROM ${DB}.${schema}.CONFIG LIMIT 1`,
-    );
-    const row = rows[0] ?? { REGION: null, VEHICLE_TYPE: null };
-    return NextResponse.json({ schema, region: row.REGION, vehicle_type: row.VEHICLE_TYPE });
+    const rows = await query<Record<string, string>>(`SELECT ${cols} FROM ${cfg.db}.${schema}.CONFIG LIMIT 1`);
+    const row = rows[0] ?? {};
+    const context: Record<string, string | null> = {};
+    for (const [fieldId, col] of fields) {
+      context[fieldId] = row[col] ?? null;
+    }
+    // Legacy top-level keys for any existing consumer.
+    return NextResponse.json({
+      schema,
+      context,
+      region: context.region ?? null,
+      vehicle_type: context.vehicle_type ?? null,
+    });
   } catch (err) {
     logger.error('region-get', { schema }, err);
-    return NextResponse.json({ error: 'Failed to read active region' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to read active context' }, { status: 500 });
   }
 }
 
 async function handlePost(req: Request) {
-  let body: { region?: string; vehicle_type?: string; schemas?: string[] };
+  let body: Record<string, unknown>;
   try {
-    body = await req.json();
+    body = (await req.json()) as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const region = typeof body.region === 'string' && body.region.length > 0 ? body.region : undefined;
-  const vehicleType =
-    typeof body.vehicle_type === 'string' && body.vehicle_type.length > 0 ? body.vehicle_type : undefined;
+  const cfg = resolveRegion();
 
-  if (!region && !vehicleType) {
-    return NextResponse.json({ error: 'Provide region and/or vehicle_type' }, { status: 400 });
-  }
-
+  // Build SET pairs for any body key matching a known contextBar field id with
+  // a non-empty string value. (`schemas` is a control key, not a context value.)
   const sets: string[] = [];
   const binds: (string | number | null)[] = [];
-  if (region) {
-    sets.push('REGION = ?');
-    binds.push(region);
-  }
-  if (vehicleType) {
-    sets.push('VEHICLE_TYPE = ?');
-    binds.push(vehicleType);
+  const applied: Record<string, string> = {};
+  for (const [fieldId, col] of Object.entries(cfg.contextColumns)) {
+    const v = body[fieldId];
+    if (typeof v === 'string' && v.length > 0) {
+      sets.push(`${col} = ?`);
+      binds.push(v);
+      applied[fieldId] = v;
+    }
   }
 
-  const schemas = resolveSchemas(body.schemas);
+  if (sets.length === 0) {
+    return NextResponse.json(
+      { error: `Provide at least one context value (${Object.keys(cfg.contextColumns).join(', ')})` },
+      { status: 400 },
+    );
+  }
+
+  const schemas = resolveSchemas(cfg, Array.isArray(body.schemas) ? (body.schemas as string[]) : undefined);
   const updated: Record<string, number> = {};
   try {
     for (const schema of schemas) {
-      const n = await run(`UPDATE ${DB}.${schema}.CONFIG SET ${sets.join(', ')}`, binds);
+      const n = await run(`UPDATE ${cfg.db}.${schema}.CONFIG SET ${sets.join(', ')}`, binds);
       updated[schema] = n;
     }
-    return NextResponse.json({ ok: true, region: region ?? null, vehicle_type: vehicleType ?? null, updated });
+    return NextResponse.json({ ok: true, applied, updated });
   } catch (err) {
-    logger.error('region-set', { schemas, region, vehicleType }, err);
-    return NextResponse.json({ error: 'Failed to set active region' }, { status: 500 });
+    logger.error('region-set', { schemas, applied }, err);
+    return NextResponse.json({ error: 'Failed to set active context' }, { status: 500 });
   }
 }
 

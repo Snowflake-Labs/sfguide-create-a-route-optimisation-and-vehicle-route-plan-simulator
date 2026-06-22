@@ -2,16 +2,19 @@ import { NextResponse } from 'next/server';
 import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
+import { getServerConfig } from '@/lib/server-config';
 
-// Calls a User-bundle synapse routing proc (FLEET_USER_MCP verbs) for the Tier-3
-// showcase pages (VRP simulator, Emergency wizard). The agent uses the same
-// procs via FLEET_USER_MCP; these pages call them directly with explicit args.
-// Verb + arity are allowlisted; a trailing NULL idempotency key is appended.
+// Calls a User-bundle synapse routing proc (the routing MCP verbs) for the
+// Tier-3 showcase pages (VRP simulator, Emergency wizard). The agent uses the
+// same procs via its MCP server; these pages call them directly with explicit
+// args. Verb + arity are allowlisted; a trailing NULL idempotency key is
+// appended. The schema + verb allowlist come from app-config.json `tools`
+// (env APP_CONFIG); the fleet literals below are the fallback when absent.
 
-const SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_USER';
+const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_USER';
 
 // verb -> number of business args (excluding the trailing IDEMPOTENCY_KEY).
-const VERBS: Record<string, number> = {
+const DEFAULT_VERBS: Record<string, number> = {
   optimize_routes: 5,
   compute_isochrone: 3,
   get_directions: 2,
@@ -20,6 +23,14 @@ const VERBS: Record<string, number> = {
   pharma_optimization: 1,
   supply_chain: 1,
 };
+
+function resolveTools(): { schema: string; verbs: Record<string, number> } {
+  const cfg = getServerConfig().tools;
+  return {
+    schema: cfg?.schema ?? DEFAULT_SCHEMA,
+    verbs: cfg?.verbs ?? DEFAULT_VERBS,
+  };
+}
 
 async function handlePost(req: Request) {
   let body: { verb?: string; args?: unknown[] };
@@ -30,10 +41,11 @@ async function handlePost(req: Request) {
   }
 
   const verb = String(body.verb ?? '');
-  if (!(verb in VERBS)) {
+  const { schema, verbs } = resolveTools();
+  if (!(verb in verbs)) {
     return NextResponse.json({ error: `Unknown verb: ${verb}` }, { status: 400 });
   }
-  const arity = VERBS[verb]!;
+  const arity = verbs[verb]!;
   const args = Array.isArray(body.args) ? body.args : [];
   if (args.length !== arity) {
     return NextResponse.json({ error: `${verb} expects ${arity} args, got ${args.length}` }, { status: 400 });
@@ -44,7 +56,7 @@ async function handlePost(req: Request) {
   const binds = args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a)));
 
   try {
-    const rows = await query(`CALL ${SCHEMA}.${verb}(${placeholders})`, binds as (string | number | null)[]);
+    const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);
     const row = rows[0] as Record<string, unknown> | undefined;
     const raw = row ? Object.values(row)[0] : null;
     let result: unknown = raw;
