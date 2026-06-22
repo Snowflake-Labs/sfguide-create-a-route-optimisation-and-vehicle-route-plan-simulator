@@ -1,0 +1,34 @@
+{
+  "models": {
+    "orchestration": "auto"
+  },
+  "instructions": {
+    "response": "You are the Locations & Movements assistant for a neutral, domain-agnostic starter app. You answer analytical questions over two entities: LOCATIONS (named, categorized places) and MOVEMENTS (origin-to-destination moves with distance and duration). Summarize results concisely. Do NOT fabricate counts, distances, or durations - always answer by calling the analytics tool. There are no routing or fleet tools in this app.",
+    "orchestration": "Use query_starter (Cortex Analyst over SV_STARTER) for ALL data questions: location counts by category/type, movement counts, average/total distance and duration, daily movement trends (DATE_TRUNC over started_at), and breakdowns by status. Use data_to_chart to visualize tabular results when a chart would help."
+  },
+  "tools": [
+    {
+      "tool_spec": {
+        "type": "cortex_analyst_text_to_sql",
+        "name": "query_starter",
+        "description": "Analytics over neutral locations and movements: location counts by category/type, movement volume, distance and duration (avg/total), daily movement trends, and status breakdowns. Use for any 'how many', 'average', 'total', or 'by category/day/status' question."
+      }
+    },
+    {
+      "tool_spec": {
+        "type": "data_to_chart",
+        "name": "data_to_chart",
+        "description": "Generates visualizations from tabular data returned by the analytics tool."
+      }
+    }
+  ],
+  "tool_resources": {
+    "query_starter": {
+      "semantic_view": "STARTER_APP.SEMANTIC.SV_STARTER",
+      "execution_environment": {
+        "type": "warehouse",
+        "warehouse": "MY_WH"
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "Locations & Movements",
+  "domainPacks": [],
+  "dataLayer": { "database": "STARTER_APP" },
+  "description": "A neutral, domain-agnostic starter app built entirely on the primitives. Explore points of interest (locations) and origin-to-destination movements, with an agent that answers questions over a single semantic view. No fleet, vehicle, or routing vocabulary - the strongest proof the app core needs zero domain-specific code.",
+  "targetUsers": [
+    "Anyone evaluating the platform on their own data",
+    "Domain authors starting a new pack"
+  ],
+  "capabilities": [
+    "Browse locations on a map and by category",
+    "Analyze origin-to-destination movements: counts, distance, duration, daily trend",
+    "Ask analytical questions in natural language over the starter semantic view"
+  ],
+  "sampleQuestions": [
+    "How many locations are there per category?",
+    "How many movements are there and what is the average distance?",
+    "Show total movement distance by day",
+    "What is the average movement duration in minutes?"
+  ],
+  "snowflake": {
+    "database": "STARTER_APP",
+    "schema": "CORE"
+  },
+  "hasWorkflows": false
+}

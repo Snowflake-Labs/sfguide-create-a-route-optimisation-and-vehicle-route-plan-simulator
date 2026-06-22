@@ -18,6 +18,12 @@
 # =============================================================================
 
 packs:
+  - name: starter
+    app_schema: STARTER_APP.CORE
+    probe: STARTER_APP.CORE.VW_LOCATIONS
+    semantic_views: [STARTER_APP.SEMANTIC.SV_STARTER]
+    self_building: false   # neutral reference pack; maps from SYNTHETIC_DATASETS.NEUTRAL substrate
+
   - name: route_deviation
     app_schema: FLEET_APP.ROUTE_DEVIATION
     probe: FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION
