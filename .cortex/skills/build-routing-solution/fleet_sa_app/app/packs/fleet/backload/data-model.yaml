@@ -1,25 +1,174 @@
-# Data model (logical contract) - Fleet domain pack: backload (backload matching)
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: backload (SELF-BUILDING)
+# =============================================================================
+# Absorbs FLEET_INTELLIGENCE.BACKLOAD_MATCHING.{VW_TRAILERS, VW_EXTERNAL_OFFERS}
+# into the pack as derived primitives. Leaves project shared V_*_CURRENT
+# (CONFIG-filtered) + the cross-app reference OPENROUTESERVICE_APP.CORE.VEHICLE_CLASS_PROFILE.
+# PROPOSAL_DECISIONS is a base decisions log (leaf). Swap boundary = shared
+# V_*_CURRENT + the routing-app class profile. Consumers (backload_matching TSX +
+# SV_BACKLOAD_MATCHING) keep entity names TRAILERS/EXTERNAL_OFFERS/PROPOSAL_DECISIONS.
+# =============================================================================
+
 pack: backload
 app_schema: FLEET_APP.BACKLOAD_MATCHING
+
 entities:
-  - name: TRAILERS
-    description: "Trailers needing a backload (empty legs)."
+  # ---- Leaves ----------------------------------------------------------------
+  - name: TRIPS_CURRENT
+    description: "Current trips (for last drop-off per vehicle)."
     access_pattern: mapped
-    grain: "One row per trailer"
-    primary_key: TRAILER_ID
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: DESTINATION_LON, type: FLOAT }
+      - { name: DESTINATION_LAT, type: FLOAT }
+      - { name: DESTINATION_POI_ID, type: VARCHAR }
+      - { name: TRIP_END, type: TIMESTAMP_NTZ }
+  - name: POIS_CURRENT
+    description: "Region POIs (depot/dropoff naming + home anchor)."
+    access_pattern: mapped
+    columns:
+      - { name: LOCATION_ID, type: VARCHAR }
+      - { name: NAME, type: VARCHAR }
+      - { name: LAT, type: FLOAT }
+      - { name: LNG, type: FLOAT }
+  - name: FLEET_CURRENT
+    description: "Current fleet for active vehicle/region."
+    access_pattern: mapped
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: HOME_LOCATION_ID, type: VARCHAR }
+      - { name: BATTERY_RANGE_KM, type: FLOAT }
+  - name: FREIGHT_OFFERS
+    description: "External freight offers for the region."
+    access_pattern: mapped
+    columns: [ { name: OFFER_ID, type: VARCHAR } ]
+  - name: VEHICLE_CLASS_PROFILE
+    description: "Cross-app vehicle class reference (payload/shipment bands)."
+    access_pattern: mapped
+    columns: [ { name: VEHICLE_TYPE, type: VARCHAR } ]
+  - name: PROPOSAL_DECISIONS
+    description: "Persisted backload proposal decisions (base log)."
+    access_pattern: mapped
+    columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]
+
+  # ---- Consumer-facing derived primitives -----------------------------------
+  - name: TRAILERS
+    description: "Empty/returning trailers with home depot, last drop, payload (was VW_TRAILERS)."
+    access_pattern: derived
+    derived_from: FLEET_CURRENT
+    depends_on: [TRIPS_CURRENT, POIS_CURRENT, VEHICLE_CLASS_PROFILE, CONFIG]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS
     columns:
       - { name: TRAILER_ID, type: VARCHAR }
       - { name: DROPOFF_CITY, type: VARCHAR }
+      - { name: MAX_PAYLOAD_KG, type: NUMBER }
+    sql: |
+      WITH last_drop AS (
+        SELECT VEHICLE_ID,
+               MAX_BY(DESTINATION_LON, TRIP_END) AS DROPOFF_LON,
+               MAX_BY(DESTINATION_LAT, TRIP_END) AS DROPOFF_LAT,
+               MAX_BY(DESTINATION_POI_ID, TRIP_END) AS DROPOFF_POI_ID,
+               MAX(TRIP_END) AS LAST_TRIP_END
+        FROM {schema}.VW_TRIPS_CURRENT
+        GROUP BY VEHICLE_ID
+      ),
+      home_anchor AS (
+        SELECT AVG(LAT) AS HOME_LAT, AVG(LNG) AS HOME_LON FROM {schema}.VW_POIS_CURRENT
+      ),
+      poi AS (
+        SELECT LOCATION_ID, ANY_VALUE(NAME) AS NAME, ANY_VALUE(LAT) AS LAT, ANY_VALUE(LNG) AS LNG
+        FROM {schema}.VW_POIS_CURRENT GROUP BY LOCATION_ID
+      ),
+      fleet AS (
+        SELECT VEHICLE_ID, ANY_VALUE(REGION) AS REGION, ANY_VALUE(VEHICLE_TYPE) AS VEHICLE_TYPE,
+               ANY_VALUE(HOME_LOCATION_ID) AS HOME_LOCATION_ID, ANY_VALUE(BATTERY_RANGE_KM) AS BATTERY_RANGE_KM
+        FROM {src} GROUP BY VEHICLE_ID
+      ),
+      cls AS (
+        SELECT vcp.* FROM {schema}.VW_VEHICLE_CLASS_PROFILE vcp
+        WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+      )
+      SELECT
+        f.VEHICLE_ID                                        AS TRAILER_ID,
+        f.REGION                                            AS OPERATING_COUNTRY,
+        COALESCE(h.NAME, 'Home Depot')                      AS HOME_DEPOT,
+        COALESCE(h.LNG, (SELECT HOME_LON FROM home_anchor)) AS HOME_LON,
+        COALESCE(h.LAT, (SELECT HOME_LAT FROM home_anchor)) AS HOME_LAT,
+        f.VEHICLE_TYPE                                      AS CURRENT_LOAD,
+        COALESCE(d.NAME, 'Drop-off')                        AS DROPOFF_CITY,
+        ld.DROPOFF_LON                                      AS DROPOFF_LON,
+        ld.DROPOFF_LAT                                      AS DROPOFF_LAT,
+        ld.LAST_TRIP_END                                    AS ETA_TS,
+        DATEDIFF('minute', CURRENT_TIMESTAMP(), ld.LAST_TRIP_END) AS ETA_MIN,
+        'IN_TRANSIT'                                        AS STATUS,
+        FALSE                                               AS HAZMAT_CERT,
+        (SELECT PAYLOAD_KG_TYP FROM cls)::NUMBER            AS MAX_PAYLOAD_KG,
+        NULLIF(f.BATTERY_RANGE_KM, 0)                       AS EV_RANGE_KM
+      FROM fleet f
+      JOIN last_drop ld ON ld.VEHICLE_ID = f.VEHICLE_ID
+      LEFT JOIN poi h ON h.LOCATION_ID = f.HOME_LOCATION_ID
+      LEFT JOIN poi d ON d.LOCATION_ID = ld.DROPOFF_POI_ID
+      WHERE EXISTS (SELECT 1 FROM cls)
+
   - name: EXTERNAL_OFFERS
-    description: "External freight offers available to match against empty legs."
-    access_pattern: mapped
-    grain: "One row per offer"
-    primary_key: OFFER_ID
+    description: "External freight offers, class-aware weight clamp (was VW_EXTERNAL_OFFERS)."
+    access_pattern: derived
+    derived_from: FREIGHT_OFFERS
+    depends_on: [POIS_CURRENT, VEHICLE_CLASS_PROFILE, CONFIG]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
     columns:
       - { name: OFFER_ID, type: VARCHAR }
       - { name: PICKUP_CITY, type: VARCHAR }
-  - name: PROPOSAL_DECISIONS
-    description: "Recorded accept/reject decisions (used by SV_BACKLOAD_MATCHING)."
-    access_pattern: mapped
-    grain: "One row per decision"
-    columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]
+      - { name: WEIGHT_KG, type: NUMBER }
+    sql: |
+      WITH poi AS (
+        SELECT LOCATION_ID, ANY_VALUE(NAME) AS NAME
+        FROM {schema}.VW_POIS_CURRENT GROUP BY LOCATION_ID
+      ),
+      offers AS (
+        SELECT * FROM {src}
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY OFFER_ID ORDER BY POSTED_AT DESC NULLS LAST, PICKUP_FROM_TS DESC NULLS LAST
+        ) = 1
+      ),
+      cls AS (
+        SELECT vcp.* FROM {schema}.VW_VEHICLE_CLASS_PROFILE vcp
+        WHERE vcp.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM {schema}.VW_CONFIG LIMIT 1)
+      )
+      SELECT
+        f.OFFER_ID,
+        f.SOURCE,
+        COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS PICKUP_COUNTRY,
+        COALESCE(SUBSTR(f.REGION, 1, 2), 'US')   AS DROPOFF_COUNTRY,
+        COALESCE(p.NAME, 'Pickup')               AS PICKUP_CITY,
+        f.PICKUP_LON, f.PICKUP_LAT,
+        COALESCE(d.NAME, 'Dropoff')              AS DROPOFF_CITY,
+        f.DROPOFF_LON, f.DROPOFF_LAT,
+        f.PICKUP_FROM_TS, f.PICKUP_TO_TS,
+        LEAST(
+          (SELECT SHIPMENT_KG_MAX FROM cls),
+          GREATEST(
+            (SELECT SHIPMENT_KG_MIN FROM cls),
+            ((SELECT SHIPMENT_KG_MIN FROM cls) + ABS(HASH(f.OFFER_ID)) % NULLIF(((SELECT SHIPMENT_KG_MAX FROM cls) - (SELECT SHIPMENT_KG_MIN FROM cls)), 0))::NUMBER
+          )
+        )                                        AS WEIGHT_KG,
+        f.PRODUCT,
+        f.PRICE_USD                              AS PRICE_EUR,
+        f.HAZMAT,
+        f.LISTING_TEXT
+      FROM offers f
+      LEFT JOIN poi p ON p.LOCATION_ID = f.PICKUP_POI_ID
+      LEFT JOIN poi d ON d.LOCATION_ID = f.DROPOFF_POI_ID
+      WHERE EXISTS (SELECT 1 FROM cls)
+
+  - name: CONFIG
+    description: "Region/vehicle control row."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }

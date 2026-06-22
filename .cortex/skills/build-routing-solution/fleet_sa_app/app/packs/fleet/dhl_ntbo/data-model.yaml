@@ -1,21 +1,76 @@
-# Data model (logical contract) - Fleet domain pack: dhl_ntbo (DHL backload)
-# Agent-only: feeds SV_DHL_BACKLOAD (no dashboard). Contracted so the agent/Analyst
-# is fully on the FLEET_APP layer.
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: dhl_ntbo (SELF-BUILDING)
+# =============================================================================
+# Absorbs FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_*_ACTIVE (active-snapshot filters)
+# into the pack. Leaves = the DHL base tables; the consumer DHL_TRAILERS/ORDERS/
+# PROPOSALS entities are derived (join to the active snapshot). Swap boundary =
+# the DHL base tables (DHL_TRAILERS/ORDERS/PROPOSALS/SNAPSHOTS).
+# Consumer entities keep the columns SV_DHL_BACKLOAD binds to.
+# =============================================================================
+
 pack: dhl_ntbo
 app_schema: FLEET_APP.DHL_NTBO
+
 entities:
-  - name: DHL_TRAILERS
-    description: "Active DHL trailers."
+  # ---- Base-table leaves -----------------------------------------------------
+  - name: RAW_TRAILERS
+    description: "DHL trailer snapshots (base)."
     access_pattern: mapped
-    grain: "One row per active trailer"
     columns: [ { name: TRAILER_ID, type: VARCHAR } ]
-  - name: DHL_ORDERS
-    description: "Active DHL orders."
+  - name: RAW_ORDERS
+    description: "DHL order snapshots (base)."
     access_pattern: mapped
-    grain: "One row per active order"
     columns: [ { name: ORDER_ID, type: VARCHAR } ]
-  - name: DHL_PROPOSALS
-    description: "Active DHL backload proposals."
+  - name: RAW_PROPOSALS
+    description: "DHL proposal snapshots (base)."
     access_pattern: mapped
-    grain: "One row per proposal"
     columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]
+  - name: SNAPSHOTS
+    description: "Snapshot registry (IS_ACTIVE marks the live snapshot)."
+    access_pattern: mapped
+    columns: [ { name: SNAPSHOT_ID, type: VARCHAR } ]
+
+  # ---- Consumer-facing derived (active-snapshot filtered) -------------------
+  - name: DHL_TRAILERS
+    description: "Active-snapshot DHL trailers."
+    access_pattern: derived
+    derived_from: RAW_TRAILERS
+    depends_on: [SNAPSHOTS]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_TRAILERS_ACTIVE
+    columns: [ { name: TRAILER_ID, type: VARCHAR } ]
+    sql: |
+      SELECT t.* FROM {src} t
+      JOIN {schema}.VW_SNAPSHOTS s ON s.SNAPSHOT_ID = t.SNAPSHOT_ID AND s.IS_ACTIVE = TRUE
+
+  - name: DHL_ORDERS
+    description: "Active-snapshot DHL orders."
+    access_pattern: derived
+    derived_from: RAW_ORDERS
+    depends_on: [SNAPSHOTS]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_ORDERS_ACTIVE
+    columns: [ { name: ORDER_ID, type: VARCHAR } ]
+    sql: |
+      SELECT o.* FROM {src} o
+      JOIN {schema}.VW_SNAPSHOTS s ON s.SNAPSHOT_ID = o.SNAPSHOT_ID AND s.IS_ACTIVE = TRUE
+
+  - name: DHL_PROPOSALS
+    description: "Active-snapshot DHL proposals enriched with trailer + order fields."
+    access_pattern: derived
+    derived_from: RAW_PROPOSALS
+    depends_on: [SNAPSHOTS, RAW_TRAILERS, RAW_ORDERS]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_PROPOSALS_ACTIVE
+    columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]
+    sql: |
+      SELECT p.*, t.EMPTY_CITY, t.EMPTY_COUNTRY, t.EMPTY_LAT, t.EMPTY_LON,
+             t.CAPACITY_SUBTYPE, t.OWNER_BRANCH,
+             t.NEXT_START_LOCATION_TEXT, t.NEXT_START_LAT, t.NEXT_START_LON, t.NEXT_START_TS,
+             o.PICKUP_CITY, o.PICKUP_COUNTRY, o.PICKUP_LAT, o.PICKUP_LON,
+             o.DELIVERY_CITY, o.DELIVERY_COUNTRY, o.DELIVERY_LAT, o.DELIVERY_LON,
+             o.WEIGHT_KG, o.LDM, o.M3, o.APPROX_DISTANCE_KM, o.ADR, o.TEMP_CONTROLLED
+      FROM {src} p
+      JOIN {schema}.VW_SNAPSHOTS s ON s.SNAPSHOT_ID = p.SNAPSHOT_ID AND s.IS_ACTIVE = TRUE
+      LEFT JOIN {schema}.VW_RAW_TRAILERS t ON t.SNAPSHOT_ID = p.SNAPSHOT_ID AND t.TRAILER_ID = p.TRAILER_ID
+      LEFT JOIN {schema}.VW_RAW_ORDERS o ON o.SNAPSHOT_ID = p.SNAPSHOT_ID AND o.ORDER_ID = p.ORDER_ID

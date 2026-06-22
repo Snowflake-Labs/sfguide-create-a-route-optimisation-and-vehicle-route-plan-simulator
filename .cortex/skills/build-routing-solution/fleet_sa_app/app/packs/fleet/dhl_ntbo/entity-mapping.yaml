@@ -1,16 +1,22 @@
 # Entity mapping - dhl_ntbo pack - SOURCE: synthetic
+# Leaves = DHL base tables; the V_DHL_*_ACTIVE active-snapshot filters are derived
+# in data-model.yaml. Pack no longer depends on the legacy DHL_NTBO active views.
 source_id: synthetic
-description: "Bundled synthetic DHL backload data (agent-only; feeds SV_DHL_BACKLOAD)."
+description: "Bundled synthetic DHL NTBO backload data (base snapshot tables)."
 entities:
-  - entity: DHL_TRAILERS
-    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_TRAILERS_ACTIVE
+  - entity: RAW_TRAILERS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.DHL_TRAILERS
     materialization: view
     passthrough: true
-  - entity: DHL_ORDERS
-    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_ORDERS_ACTIVE
+  - entity: RAW_ORDERS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.DHL_ORDERS
     materialization: view
     passthrough: true
-  - entity: DHL_PROPOSALS
-    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_PROPOSALS_ACTIVE
+  - entity: RAW_PROPOSALS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.DHL_PROPOSALS
+    materialization: view
+    passthrough: true
+  - entity: SNAPSHOTS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.DHL_SNAPSHOTS
     materialization: view
     passthrough: true
