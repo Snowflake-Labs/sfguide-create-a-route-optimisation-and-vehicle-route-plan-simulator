@@ -30,6 +30,13 @@ PACKS_DIR = os.path.dirname(HERE)                 # .../app/packs
 FLEET_DIR = os.path.join(PACKS_DIR, "fleet")
 MANIFEST = os.path.join(PACKS_DIR, "manifest.yaml")
 GENERATOR = os.path.join(HERE, "generate.py")
+APP_DIR = os.path.dirname(PACKS_DIR)              # .../app
+# Hand-maintained, app-level contract SQL (NOT pack-generated). The per-session
+# scope-arg data contract (R2 of APP_RESTRUCTURE_PLAN): UNIFIED F_*_SCOPED UDTFs
+# + the neutral FLEET_APP.UNIFIED_FLEET.F_VW_*_SCOPED wrappers the consumer binds
+# to. Applied AFTER the unified_fleet pack (it owns FLEET_APP.UNIFIED_FLEET).
+CONTRACT_SQL = os.path.join(APP_DIR, "scoped_contract.sql")
+CONTRACT_PACK = "unified_fleet"
 
 try:
     import yaml
@@ -139,6 +146,22 @@ def repoint_pack(pack, conn):
     print(f"  [ok] {pack['name']} SV-repoint applied ({','.join(pack['semantic_views'])})")
 
 
+def apply_contract(conn):
+    """Apply the app-level per-session scope-arg data contract (scoped_contract.sql).
+    Idempotent (CREATE OR REPLACE FUNCTION). Runs after the unified_fleet pack so the
+    FLEET_APP.UNIFIED_FLEET schema it targets already exists."""
+    if not os.path.exists(CONTRACT_SQL):
+        print(f"  [skip contract] {CONTRACT_SQL} not found")
+        return
+    cmd = ["snow", "sql", "-f", CONTRACT_SQL]
+    if conn:
+        cmd += ["-c", conn]
+    r = run(cmd)
+    if r.returncode != 0:
+        sys.exit(f"scope-arg contract apply failed:\n{r.stdout}\n{r.stderr}")
+    print("  [ok] scope-arg data contract applied (scoped_contract.sql)")
+
+
 def probe_pack(pack, conn):
     probe = pack.get("probe")
     if not probe:
@@ -161,6 +184,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print the ordered plan, do nothing")
     ap.add_argument("--probe", action="store_true", help="report which packs resolve with data (surfacing signal)")
     ap.add_argument("--sv-repoint", action="store_true", help="after applying each pack, rebind its semantic_views (manifest) onto its FLEET_APP views (idempotent)")
+    ap.add_argument("--skip-contract", action="store_true", help="do NOT apply the per-session scope-arg data contract (scoped_contract.sql) after the unified_fleet pack")
     args = ap.parse_args()
 
     packs = topo(load_manifest())
@@ -192,6 +216,11 @@ def main():
         apply_pack(p, args.connection)
         if args.sv_repoint:
             repoint_pack(p, args.connection)
+    # Per-session scope-arg data contract: apply once after packs, only when the
+    # unified_fleet pack (owner of FLEET_APP.UNIFIED_FLEET) is in the install set.
+    if not args.skip_contract and any(p["name"] == CONTRACT_PACK for p in packs):
+        print("== scope-arg data contract (scoped_contract.sql) ==")
+        apply_contract(args.connection)
     print("done.")
 
 

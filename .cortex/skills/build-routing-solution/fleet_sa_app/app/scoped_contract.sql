@@ -177,6 +177,20 @@ $$
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Grants: the consumer (and OPS/ADMIN) call the contract-layer scope-arg
+-- functions through the NEUTRAL FLEET_APP contract. These are owner's-rights
+-- SQL UDTFs, so USAGE on the outer function is sufficient -- the inner call into
+-- SYNTHETIC_DATASETS.UNIFIED.F_*_SCOPED runs as the function owner. Roles from
+-- fleet_sa_app/app/role_binding.sql. Idempotent (re-granting is a no-op).
+-- ---------------------------------------------------------------------------
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+-- ---------------------------------------------------------------------------
 -- TODO (R2 follow-on, same pattern): the remaining V_*_CURRENT-backed tables
 --   F_DIM_TRIP_SCHEDULE_SCOPED, F_FACT_FREIGHT_OFFERS_SCOPED, F_DIM_PARTNERS_SCOPED,
 --   F_FACT_PARTNER_HISTORY_SCOPED, plus app-scoped V_PLACES_CURRENT (ROUTE_OPTIMIZATION)
