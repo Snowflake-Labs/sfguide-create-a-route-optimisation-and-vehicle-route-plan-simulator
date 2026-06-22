@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useRegionProvider, RegionContext } from '@/hooks/useRegion';
 import { useVehicleTypeProvider, VehicleTypeContext } from '@/hooks/useVehicleType';
+import { DiagnosticsPage } from '@/components/pages/diagnostics';
 
 interface SubPage { key: string; label: string; }
 interface NavGroup {
@@ -81,7 +82,10 @@ function Placeholder({ tab }: { tab: string }) {
 
 // Tab -> page component. Pages are added as they are ported (tasks 3-9).
 function renderPage(tab: string) {
-  return <Placeholder tab={tab} />;
+  switch (tab) {
+    case 'diagnostics': return <DiagnosticsPage />;
+    default: return <Placeholder tab={tab} />;
+  }
 }
 
 export function AppShell() {

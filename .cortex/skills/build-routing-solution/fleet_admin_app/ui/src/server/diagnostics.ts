@@ -11,8 +11,14 @@ export interface LogEntry {
 }
 
 const MAX_ENTRIES = 500;
-const buffer: LogEntry[] = [];
-const startTime = Date.now();
+// globalThis-pinned so the boot-init (instrumentation.ts) and the route handlers
+// share ONE ring buffer + uptime origin, even though Next compiles instrumentation
+// and the server routes as separate bundles (which would otherwise get distinct
+// module instances). See APP_RESTRUCTURE_PLAN R5 (globalThis-pinned singletons).
+const __diag = ((globalThis as unknown as { __fleetAdminDiag?: { buffer: LogEntry[]; startTime: number } }).__fleetAdminDiag
+  ??= { buffer: [], startTime: Date.now() });
+const buffer: LogEntry[] = __diag.buffer;
+const startTime = __diag.startTime;
 
 export function log(level: LogLevel, tag: string, message: string, extra?: Partial<LogEntry>) {
   const entry: LogEntry = { ts: new Date().toISOString(), level, tag, message, ...extra };

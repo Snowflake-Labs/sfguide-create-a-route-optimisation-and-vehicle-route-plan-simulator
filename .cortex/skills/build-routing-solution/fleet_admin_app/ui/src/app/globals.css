@@ -435,3 +435,5 @@
       .page-scroll--padded { padding: 24px; }
       .page-scroll--narrow { max-width: 1100px; margin: 0 auto; }
       .page-scroll--wide   { max-width: 1400px; margin: 0 auto; }
+
+.spin { animation: spin 0.8s linear infinite; }
