@@ -7,7 +7,7 @@
       "description": "End consumer: routing/optimization verbs + Cortex Analyst over the fleet semantic views. This is the ONLY bundle attached to the consumer Cortex Agent.",
       "logicalRole": "user",
       "defaultBinding": "FLEET_APP_USER",
-      "mcpServer": "FLEET_USER_MCP",
+      "mcpServer": "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP",
       "status": "active"
     },
     "ops": {

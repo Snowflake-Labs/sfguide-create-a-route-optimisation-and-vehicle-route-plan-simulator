@@ -1,0 +1,16 @@
+{
+  "app": "routing-tools",
+  "account": "wgb26798",
+  "runtime": "sproc",
+  "warehouse": "MY_WH",
+  "database": "OPENROUTESERVICE_APP",
+  "schema": "ROUTING",
+  "snowCliConn": "fleet_test_evals",
+  "accountUrl": "pm-fleet-test.snowflakecomputing.com",
+  "mcpServerName": "ROUTING_MCP",
+  "roles": {
+    "user": "FLEET_APP_USER"
+  },
+  "materializedAt": "2026-06-22T08:59:00.336Z",
+  "materializedFrom": "git:d4a45653f7e9f9848dd9d40bc31b0b088c11d693"
+}

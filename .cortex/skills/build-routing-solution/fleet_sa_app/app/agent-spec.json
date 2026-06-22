@@ -41,7 +41,7 @@
   "mcp_servers": [
     {
       "server_spec": {
-        "name": "FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_USER_MCP"
+        "name": "OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP"
       }
     }
   ]

@@ -6,11 +6,11 @@ produces its OWN Snowflake-managed MCP server (per-bundle servers = role isolati
 
 | App (`<app>/`) | Role | Procs | MCP server | Schema |
 |---|---|---|---|---|
-| `user/` | `user` | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `pharma_catchment` | `FLEET_USER_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_USER` |
+| `user/` (app `routing-tools`) | `user` | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `pharma_catchment`, `pharma_optimization`, `supply_chain` | `ROUTING_MCP` | `OPENROUTESERVICE_APP.ROUTING` |
 | `admin/` | `admin` | `set_active_region`, `check_substrate` | `FLEET_ADMIN_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_ADMIN` |
 | `ops/` | `ops` | `set_active_region`, `service_control`, `service_status`, `healthcheck` | `FLEET_OPS_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_OPS` |
 
-Only `FLEET_USER_MCP` is attached to the consumer Cortex Agent (`FLEET_AGENT`). `FLEET_ADMIN_MCP`
+Only `ROUTING_MCP` is attached to the consumer Cortex Agent (`FLEET_AGENT`). `FLEET_ADMIN_MCP`
 is bound to the admin role. `FLEET_OPS_MCP` is bound to the ops role and attached to a SEPARATE
 role-gated agent `FLEET_OPS_AGENT` (NOT the consumer agent) — so an end-user agent session can
 never see or invoke an Ops verb. The in-app Ops console reaches these verbs via `/api/ops`.

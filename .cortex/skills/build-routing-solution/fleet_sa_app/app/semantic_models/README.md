@@ -19,7 +19,7 @@ data dependencies; the views themselves are managed Snowflake objects.
 | query_backload_matching | `FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING` | `BACKLOAD_MATCHING` |
 | query_dhl_backload | `FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD` | `DHL_NTBO` |
 
-The agent also has `data_to_chart` and the `FLEET_USER_MCP` routing tools attached.
+The agent also has `data_to_chart` and the `ROUTING_MCP` routing tools (in `OPENROUTESERVICE_APP.ROUTING`) attached.
 
 ## Grants implication (3E)
 A non-admin consumer role (`FLEET_APP_USER`) needs `USAGE` on each semantic view and

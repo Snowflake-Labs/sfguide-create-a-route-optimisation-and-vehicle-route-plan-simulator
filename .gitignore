@@ -39,6 +39,11 @@ dist-server/
 build/
 *.egg-info/
 
+# Vendored synapse framework (tier-C self-containment): ship its built dist so a
+# fresh clone can `synapse materialize` from public npm with no external path.
+!.cortex/skills/build-routing-solution/fleet_tools/vendor/synapse/dist/
+!.cortex/skills/build-routing-solution/fleet_tools/vendor/synapse/dist/**
+
 # Next.js build output (SA host)
 **/.next/
 

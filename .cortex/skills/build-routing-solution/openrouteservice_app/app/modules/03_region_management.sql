@@ -924,6 +924,19 @@ $$;
 -- (e.g. an 'L' region downsized onto HIGHMEM_X64_M / 240 GB now gets XMX 180G,
 -- not the 700G build-tier ceiling). Unknown/NULL family falls back to the
 -- legacy size-tier CASE so build-time specs and the 3-arg callers are unchanged.
+--
+-- Region -> runtime pool sizing matrix (family -> node RAM -> XMX -> safe graph):
+--   HIGHMEM_X64_S   58 GB   -> XMX 44G   (graphs up to ~30 GB; e.g. Europe 23.4 GB)
+--   HIGHMEM_X64_M   240 GB  -> XMX 180G  (large country / multi-country)
+--   HIGHMEM_X64_SL  ~660 GB -> XMX 490G
+--   HIGHMEM_X64_L   984 GB  -> XMX 740G  (continent build tier)
+--   MEM_X64_G2_64   492 GB  -> XMX 368G
+--   MEM_X64_G2_192  ~1.4 TB -> XMX 1080G
+--   CPU_X64_SL      58 GB   -> XMX 24G   (too small for the Europe graph; was the
+--                                         memory-starvation hang fixed in Step 4B)
+-- Pick the smallest family whose XMX exceeds the region's graph size with
+-- headroom for OS + off-heap. The runtime family is stored in REGION_ORS_MAP and
+-- honored on rebuild (see create_region_ors_service "Runtime-family reuse").
 CREATE OR REPLACE FUNCTION OPENROUTESERVICE_APP.CORE.BUILD_ORS_SERVICE_SPEC(
     P_REGION VARCHAR, P_COMPUTE_SIZE VARCHAR, P_REBUILD_GRAPHS VARCHAR, P_INSTANCE_FAMILY VARCHAR
 )
@@ -937,6 +950,7 @@ $$
         WHEN 'HIGHMEM_X64_M'  THEN '16G'
         WHEN 'HIGHMEM_X64_L'  THEN '64G'
         WHEN 'HIGHMEM_X64_SL' THEN '48G'
+        WHEN 'HIGHMEM_X64_S'  THEN '6G'
         WHEN 'MEM_X64_G2_64'  THEN '32G'
         WHEN 'MEM_X64_G2_192' THEN '96G'
         WHEN 'CPU_X64_SL'     THEN '4G'
@@ -948,6 +962,7 @@ $$
         WHEN 'HIGHMEM_X64_M'  THEN '180G'
         WHEN 'HIGHMEM_X64_L'  THEN '740G'
         WHEN 'HIGHMEM_X64_SL' THEN '490G'
+        WHEN 'HIGHMEM_X64_S'  THEN '44G'
         WHEN 'MEM_X64_G2_64'  THEN '368G'
         WHEN 'MEM_X64_G2_192' THEN '1080G'
         WHEN 'CPU_X64_SL'     THEN '24G'

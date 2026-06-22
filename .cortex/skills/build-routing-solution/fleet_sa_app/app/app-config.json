@@ -24,7 +24,7 @@
     "schema": "DWELL_ANALYSIS"
   },
   "tools": {
-    "schema": "FLEET_INTELLIGENCE.SYNAPSE_USER",
+    "schema": "OPENROUTESERVICE_APP.ROUTING",
     "verbs": {
       "optimize_routes": 5,
       "compute_isochrone": 3,

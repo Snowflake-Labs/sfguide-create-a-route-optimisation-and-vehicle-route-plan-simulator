@@ -2,7 +2,7 @@
 --
 -- Codifies the application roles and the logical->application-role binding for
 -- the three skill bundles (user / ops / admin; see app/install.json). The
--- synapse tool procs, the FLEET_USER_MCP / FLEET_ADMIN_MCP servers, and the
+-- synapse tool procs, the ROUTING_MCP / FLEET_ADMIN_MCP servers, and the
 -- FLEET_AGENT are created by their own materialize/deploy steps (fleet_tools/)
 -- and by 2D; this script wires CONSUMER-FACING access to them.
 --
@@ -14,19 +14,20 @@ CREATE APPLICATION ROLE IF NOT EXISTS app_user;   -- consumers: dashboards + age
 CREATE APPLICATION ROLE IF NOT EXISTS app_ops;     -- operators: service lifecycle / region / health (Ops bundle)
 CREATE APPLICATION ROLE IF NOT EXISTS app_admin;   -- installer/admin
 
--- 2. Schemas holding the app objects.
+-- 2. Schemas holding the app objects. (Routing verbs + ROUTING_MCP live in the
+--    Routing Platform schema OPENROUTESERVICE_APP.ROUTING as of Step 4B.)
 CREATE SCHEMA IF NOT EXISTS synapse_user;
 CREATE SCHEMA IF NOT EXISTS synapse_ops;
 CREATE SCHEMA IF NOT EXISTS synapse_admin;
 CREATE SCHEMA IF NOT EXISTS config;
 
 -- 3. Consumer access bindings (logical role -> application role).
---    The end-user agent sees ONLY the User MCP server (role isolation).
+--    The end-user agent sees ONLY the routing MCP server (role isolation).
 GRANT USAGE ON SCHEMA synapse_user TO APPLICATION ROLE app_user;
 -- Granted once the objects exist (created by fleet_tools materialize/deploy):
---   GRANT USAGE ON MCP SERVER synapse_user.FLEET_USER_MCP TO APPLICATION ROLE app_user;
+--   GRANT USAGE ON MCP SERVER OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP TO APPLICATION ROLE app_user;
 --   GRANT USAGE ON AGENT      synapse_user.FLEET_AGENT     TO APPLICATION ROLE app_user;
---   (each User proc) GRANT USAGE ON PROCEDURE ... TO APPLICATION ROLE app_user;
+--   (each routing proc) GRANT USAGE ON PROCEDURE ... TO APPLICATION ROLE app_user;
 
 -- Ops bundle (Step 3): role-gated; bound to app_ops only, NEVER to app_user.
 -- The Ops agent + MCP server give operators service lifecycle / region / health.

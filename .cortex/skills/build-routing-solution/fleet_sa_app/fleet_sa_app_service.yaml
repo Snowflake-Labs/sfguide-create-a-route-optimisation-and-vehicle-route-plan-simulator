@@ -2,7 +2,7 @@
 # The app bundle (app-config.json / app-views.json) is mounted from a stage so
 # Ops can edit views/config and restart the service WITHOUT rebuilding the image
 # (tier-B config-extensibility). The agent runs in agent-object mode against
-# FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT, which exposes FLEET_USER_MCP.
+# FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT, which exposes OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP.
 spec:
   containers:
     - name: fleet-sa-app
