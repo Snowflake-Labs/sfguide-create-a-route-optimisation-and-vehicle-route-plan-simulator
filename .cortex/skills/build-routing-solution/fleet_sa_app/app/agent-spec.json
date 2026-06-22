@@ -27,16 +27,16 @@
     { "tool_spec": { "type": "data_to_chart", "name": "data_to_chart", "description": "Generates visualizations from tabular data returned by the analytics tools." } }
   ],
   "tool_resources": {
-    "query_dwell": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS" },
-    "query_fleet_operations": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS" },
-    "query_route_deviation": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION" },
-    "query_asset_velocity": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY" },
-    "query_taxis": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS" },
-    "query_food_delivery": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY" },
-    "query_retail_catchment": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT" },
-    "query_freight_marketplace": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE" },
-    "query_backload_matching": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING" },
-    "query_dhl_backload": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD" }
+    "query_dwell": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_fleet_operations": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_route_deviation": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_asset_velocity": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_taxis": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_food_delivery": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_retail_catchment": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_freight_marketplace": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_backload_matching": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } },
+    "query_dhl_backload": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD", "execution_environment": { "type": "warehouse", "warehouse": "MY_WH" } }
   },
   "mcp_servers": [
     {
