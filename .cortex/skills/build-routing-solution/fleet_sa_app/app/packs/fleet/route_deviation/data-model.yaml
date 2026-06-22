@@ -1,0 +1,105 @@
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: route_deviation
+# =============================================================================
+# Defines the LOGICAL entities the route-deviation solution depends on, independent
+# of any physical source. Consumers (dashboards, SV_ROUTE_DEVIATION) bind to the
+# generated FLEET_APP.ROUTE_DEVIATION.* views, never to a source table. A source
+# (synthetic today, customer tomorrow) is bound via entity-mapping.yaml; the views
+# are regenerated from that mapping.
+#
+# access_pattern:
+#   mapped   -> materialized 1:1 from a source via entity-mapping.yaml
+#   derived  -> COMPUTED by the solution from another logical entity (no customer
+#               mapping required); this is where the solution adds value
+#   context  -> small control/context table carried through
+#
+# Verified on wgb26798: the derived summaries below reproduce the stored
+# DRIVER_DEVIATION_SUMMARY / DAILY_DEVIATION_TRENDS exactly (0 mismatches).
+# =============================================================================
+
+pack: route_deviation
+app_schema: FLEET_APP.ROUTE_DEVIATION
+
+entities:
+  # ---- Core mapped fact: one row per analyzed trip --------------------------
+  - name: TRIP_DEVIATION
+    description: "Per-trip comparison of actual vs planned route: deviation distance/time, rates, and geometry."
+    access_pattern: mapped
+    grain: "One row per trip"
+    primary_key: TRIP_ID
+    columns:
+      - { name: TRIP_ID,                  type: VARCHAR,    nullable: false }
+      - { name: VEHICLE_ID,               type: VARCHAR }
+      - { name: DRIVER_ID,                type: VARCHAR }
+      - { name: TRIP_DATE,                type: DATE }
+      - { name: ROUTE_VARIATION,          type: VARCHAR,    description: "Route variation classification" }
+      - { name: ROUTE_DEVIATION_FACTOR,   type: FLOAT,      description: "Actual/expected route ratio" }
+      - { name: TRIP_TYPE,                type: VARCHAR }
+      - { name: ACTUAL_DISTANCE_KM,       type: FLOAT }
+      - { name: ACTUAL_DURATION_MIN,      type: FLOAT }
+      - { name: EXPECTED_DISTANCE_KM,     type: FLOAT }
+      - { name: EXPECTED_DURATION_MIN,    type: FLOAT }
+      - { name: STRAIGHT_LINE_DISTANCE_KM, type: FLOAT }
+      - { name: ORIGIN_NAME,              type: VARCHAR }
+      - { name: ORIGIN_CITY,              type: VARCHAR }
+      - { name: DEST_NAME,                type: VARCHAR }
+      - { name: DEST_CITY,                type: VARCHAR }
+      - { name: DISTANCE_DEVIATION_KM,    type: FLOAT,      description: "Excess distance km vs expected" }
+      - { name: DISTANCE_DEVIATION_PCT,   type: FLOAT }
+      - { name: DURATION_DEVIATION_MIN,   type: FLOAT,      description: "Excess minutes vs expected" }
+      - { name: DURATION_DEVIATION_PCT,   type: FLOAT }
+      - { name: IS_DISTANCE_DEVIATION,    type: BOOLEAN }
+      - { name: IS_DURATION_DEVIATION,    type: BOOLEAN }
+      - { name: IS_ROUTE_DEVIATION,       type: BOOLEAN,    description: "Whether the trip deviated from the planned route" }
+      - { name: ACTUAL_PATH,              type: GEOGRAPHY,  description: "Driven route geometry" }
+      - { name: EXPECTED_PATH,            type: GEOGRAPHY,  description: "Planned route geometry" }
+
+  # ---- Derived: per-driver rollup (computed from TRIP_DEVIATION) ------------
+  - name: DRIVER_DEVIATION_SUMMARY
+    description: "Per-driver deviation rollup. Solution-computed from TRIP_DEVIATION."
+    access_pattern: derived
+    grain: "One row per driver"
+    primary_key: DRIVER_ID
+    derived_from: TRIP_DEVIATION
+    group_by: [DRIVER_ID]
+    columns:
+      - { name: DRIVER_ID,                  type: VARCHAR,  nullable: false }
+      - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
+      - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
+      - { name: DEVIATION_RATE_PCT,         type: NUMBER,   expr: "ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2)" }
+      - { name: TOTAL_EXCESS_KM,            type: FLOAT,    expr: "SUM(DISTANCE_DEVIATION_KM)" }
+      - { name: TOTAL_TIME_LOST_MIN,        type: FLOAT,    expr: "SUM(DURATION_DEVIATION_MIN)" }
+      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DISTANCE_DEVIATION_PCT)" }
+      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DURATION_DEVIATION_PCT)" }
+      - { name: MAX_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "MAX(DISTANCE_DEVIATION_PCT)" }
+      - { name: MAX_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "MAX(DURATION_DEVIATION_PCT)" }
+    gaps:
+      - "DRIVER_PROFILE / OPERATING_MODE / HOME_CITY exist in the legacy physical summary but come from a driver dimension, not the trip fact. Map a driver dim entity to populate them; omitted here (dashboards do not use them)."
+
+  # ---- Derived: daily trend (computed from TRIP_DEVIATION) ------------------
+  - name: DAILY_DEVIATION_TRENDS
+    description: "Daily deviation trend. Solution-computed from TRIP_DEVIATION."
+    access_pattern: derived
+    grain: "One row per trip date"
+    primary_key: TRIP_DATE
+    derived_from: TRIP_DEVIATION
+    group_by: [TRIP_DATE]
+    columns:
+      - { name: TRIP_DATE,                  type: DATE,     nullable: false }
+      - { name: DAY_OF_WEEK,                type: VARCHAR,  expr: "ANY_VALUE(DAYNAME(TRIP_DATE))" }
+      - { name: TOTAL_TRIPS,                type: NUMBER,   expr: "COUNT(*)" }
+      - { name: DEVIATION_TRIPS,            type: NUMBER,   expr: "COUNT_IF(IS_ROUTE_DEVIATION)" }
+      - { name: DEVIATION_RATE_PCT,         type: NUMBER,   expr: "ROUND(DIV0(COUNT_IF(IS_ROUTE_DEVIATION), COUNT(*)) * 100, 2)" }
+      - { name: TOTAL_EXCESS_DISTANCE_KM,   type: FLOAT,    expr: "SUM(DISTANCE_DEVIATION_KM)" }
+      - { name: TOTAL_EXCESS_DURATION_MIN,  type: FLOAT,    expr: "SUM(DURATION_DEVIATION_MIN)" }
+      - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DISTANCE_DEVIATION_PCT)" }
+      - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DURATION_DEVIATION_PCT)" }
+
+  # ---- Context: region/vehicle control row ----------------------------------
+  - name: CONFIG
+    description: "Single-row region/vehicle context for the pack."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }

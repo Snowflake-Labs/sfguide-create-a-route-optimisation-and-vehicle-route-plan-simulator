@@ -238,7 +238,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0)) AS deviation_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0))*1.0/NULLIF(COUNT(*),0) AS deviation_frac, ROUND(SUM(DISTANCE_DEVIATION_KM),0) AS excess_km FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS",
+          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0)) AS deviation_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0))*1.0/NULLIF(COUNT(*),0) AS deviation_frac, ROUND(SUM(DISTANCE_DEVIATION_KM),0) AS excess_km FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -253,7 +253,7 @@
       "trend": {
         "component": "Chart",
         "data": {
-          "query": "SELECT TO_VARCHAR(TRIP_DATE) AS day, DEVIATION_RATE_PCT AS deviation_rate, TOTAL_TRIPS AS trips FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE",
+          "query": "SELECT TO_VARCHAR(TRIP_DATE) AS day, DEVIATION_RATE_PCT AS deviation_rate, TOTAL_TRIPS AS trips FROM FLEET_APP.ROUTE_DEVIATION.VW_DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -268,7 +268,7 @@
       "drivers": {
         "component": "Chart",
         "data": {
-          "query": "SELECT DRIVER_ID AS driver, DEVIATION_RATE_PCT AS deviation_rate FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY ORDER BY deviation_rate DESC LIMIT 12",
+          "query": "SELECT DRIVER_ID AS driver, DEVIATION_RATE_PCT AS deviation_rate FROM FLEET_APP.ROUTE_DEVIATION.VW_DRIVER_DEVIATION_SUMMARY ORDER BY deviation_rate DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -299,7 +299,7 @@
               "width": 4,
               "widthMinPixels": 2,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             },
@@ -311,7 +311,7 @@
               "width": 4,
               "widthMinPixels": 2,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
@@ -321,7 +321,7 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_NAME,1,18) AS origin, SUBSTR(DEST_NAME,1,18) AS destination, ROUND(DISTANCE_DEVIATION_PCT,1) AS dev_pct, ROUND(DISTANCE_DEVIATION_KM,1) AS excess_km FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_NAME,1,18) AS origin, SUBSTR(DEST_NAME,1,18) AS destination, ROUND(DISTANCE_DEVIATION_PCT,1) AS dev_pct, ROUND(DISTANCE_DEVIATION_KM,1) AS excess_km FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }

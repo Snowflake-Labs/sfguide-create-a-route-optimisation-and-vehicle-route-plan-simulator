@@ -108,6 +108,10 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN
       FROM ${CONFIG_STAGE}
       SPECIFICATION_FILE = 'fleet_sa_app_service.yaml';
+    -- CARTO basemap tile proxy (/api/tiles) needs egress to *.basemaps.cartocdn.com.
+    -- EAIs are a service property (not expressible in the spec YAML), so set it here.
+    -- Reuses the ORS control app's ORS_CARTO_EAI (a/b/c/d.basemaps.cartocdn.com:443).
+    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_sa_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_sa_alter.log; exit 1; }
 else

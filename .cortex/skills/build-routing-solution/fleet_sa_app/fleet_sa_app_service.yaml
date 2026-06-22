@@ -3,6 +3,12 @@
 # Ops can edit views/config and restart the service WITHOUT rebuilding the image
 # (tier-B config-extensibility). The agent runs in agent-object mode against
 # FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT, which exposes OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP.
+#
+# EXTERNAL ACCESS: the map basemap proxy (/api/tiles -> *.basemaps.cartocdn.com)
+# requires the service to have EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI).
+# This is a SERVICE property, NOT part of this spec body; deploy_fleet_sa_app.sh
+# sets it on every ALTER SERVICE. Without it, /api/tiles returns 502 and maps
+# render route geometry but no basemap.
 spec:
   containers:
     - name: fleet-sa-app

@@ -1,0 +1,61 @@
+# =============================================================================
+# Entity mapping - route_deviation pack - SOURCE: customer-demo (swap proof)
+# =============================================================================
+# Proves the data contract is source-agnostic. Binds the SAME logical entities to
+# a DIFFERENTLY-SHAPED mock customer source (CUSTOMER_RAW_DEMO.ROUTE_DEVIATION):
+#   - every column renamed
+#   - durations in SECONDS (transform -> minutes)
+#   - deviation flags as 0/1 INT (transform -> boolean)
+#   - paths as WKT strings (transform -> TO_GEOGRAPHY)
+# Regenerating with this mapping repoints FLEET_APP.ROUTE_DEVIATION.* at this
+# source; dashboards + SV_ROUTE_DEVIATION are unchanged and return identical numbers.
+#   python3 generate.py --mapping entity-mapping.customer-demo.yaml
+
+source_id: customer-demo
+description: "Mock customer raw source with renamed columns / different units / WKT paths."
+
+entities:
+  - entity: TRIP_DEVIATION
+    source_table: CUSTOMER_RAW_DEMO.ROUTE_DEVIATION.RAW_TRIPS
+    materialization: view
+    mapping:
+      - { app_column: TRIP_ID,                   source_column: trip_identifier }
+      - { app_column: VEHICLE_ID,                source_column: veh }
+      - { app_column: DRIVER_ID,                 source_column: drv }
+      - { app_column: TRIP_DATE,                 source_column: trip_dt }
+      - { app_column: ROUTE_VARIATION,           source_column: variation }
+      - { app_column: ROUTE_DEVIATION_FACTOR,    source_column: dev_factor }
+      - { app_column: TRIP_TYPE,                 source_column: kind }
+      - { app_column: ACTUAL_DISTANCE_KM,        source_column: actual_km }
+      - { app_column: ACTUAL_DURATION_MIN,       source_column: actual_sec,   transform: "{src} / 60.0" }
+      - { app_column: EXPECTED_DISTANCE_KM,      source_column: expected_km }
+      - { app_column: EXPECTED_DURATION_MIN,     source_column: expected_sec, transform: "{src} / 60.0" }
+      - { app_column: STRAIGHT_LINE_DISTANCE_KM, source_column: straight_km }
+      - { app_column: ORIGIN_NAME,               source_column: from_name }
+      - { app_column: ORIGIN_CITY,               source_column: from_city }
+      - { app_column: DEST_NAME,                 source_column: to_name }
+      - { app_column: DEST_CITY,                 source_column: to_city }
+      - { app_column: DISTANCE_DEVIATION_KM,     source_column: excess_km_col }
+      - { app_column: DISTANCE_DEVIATION_PCT,    source_column: dist_dev_pct }
+      - { app_column: DURATION_DEVIATION_MIN,    source_column: excess_sec,   transform: "{src} / 60.0" }
+      - { app_column: DURATION_DEVIATION_PCT,    source_column: dur_dev_pct }
+      - { app_column: IS_DISTANCE_DEVIATION,     transform: "(flag_dist_i = 1)" }
+      - { app_column: IS_DURATION_DEVIATION,     transform: "(flag_dur_i = 1)" }
+      - { app_column: IS_ROUTE_DEVIATION,        transform: "(flag_route_i = 1)" }
+      - { app_column: ACTUAL_PATH,               source_column: actual_wkt,   transform: "TO_GEOGRAPHY({src})" }
+      - { app_column: EXPECTED_PATH,             source_column: expected_wkt, transform: "TO_GEOGRAPHY({src})" }
+
+  - entity: CONFIG
+    source_table: CUSTOMER_RAW_DEMO.ROUTE_DEVIATION.RAW_CONFIG
+    materialization: view
+    mapping:
+      - { app_column: VEHICLE_TYPE, source_column: veh_class }
+      - { app_column: REGION,       source_column: area }
+
+  - entity: DRIVER_DEVIATION_SUMMARY
+    source_table: null
+    materialization: derived
+
+  - entity: DAILY_DEVIATION_TRENDS
+    source_table: null
+    materialization: derived
