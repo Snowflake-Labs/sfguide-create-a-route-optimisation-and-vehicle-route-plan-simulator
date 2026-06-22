@@ -36,17 +36,18 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS]
     self_building: true
 
-  - name: taxi
-    app_schema: FLEET_APP.TAXI
-    probe: FLEET_APP.TAXI.VW_TRIP_SUMMARY
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS]
-    self_building: true
-
-  - name: food_delivery
-    app_schema: FLEET_APP.FOOD_DELIVERY
-    probe: FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY]
-    self_building: true
+  # FLEET_OPS — the ONE universal, mode-agnostic analytics layer (R6). Supersedes the
+  # retired taxi + food_delivery packs. Its schema, dataset-scoped intent UDTFs, and
+  # global-active views are authored in app/scoped_contract.sql (applied by install.py
+  # after unified_fleet); this pack's setup.sql only ensures the schema + role USAGE so
+  # install ordering + the surfacing probe resolve. depends_on unified_fleet (FLEET_OPS
+  # binds to the neutral FLEET_APP.UNIFIED_FLEET.F_VW_*_SCOPED contract).
+  - name: fleet_ops
+    app_schema: FLEET_APP.FLEET_OPS
+    depends_on: [unified_fleet]
+    probe: FLEET_APP.FLEET_OPS.VW_TRIPS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS]
+    self_building: true   # rebuilt from raw sources via the scoped_contract UDTFs
 
   - name: retail_catchment
     app_schema: FLEET_APP.RETAIL_CATCHMENT

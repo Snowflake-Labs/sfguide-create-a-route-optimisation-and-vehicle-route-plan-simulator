@@ -60,17 +60,15 @@ instructions:
     - SF pharmacy population/catchment health profile: tool_pharma_catchment
 
     ANALYTICS (Cortex Analyst over semantic views) — use for aggregate/historical questions:
-    - Raw fleet movement: GPS telemetry, actual trips, distance/duration, detours, speeding,
-      HOS violations, dwell status, planned schedules, by region/vehicle_type/driver/shift/POI
-      => query_fleet_operations
+    - Universal fleet analytics (any asset mode - car/hgv/ebike): trips (distance, duration,
+      speed, detours, status), operator breakdowns (shift, profile), and top origins,
+      by region/vehicle_type/operator => query_fleet_ops
     - Freight marketplace: offers, prices, price-vs-market, partner trust/credit, lane on-time
       reliability => query_freight_marketplace
     - Dwell analysis: dwell time, facility utilization, H3 congestion, per-driver SLA breaches
       => query_dwell_analytics
     - Route deviation: planned-vs-actual per trip, deviation rate, excess km, time lost, by driver
       => query_route_deviation
-    - Fleet taxis: taxi trips, distance, duration, speed by shift/driver => query_taxis
-    - Food delivery: deliveries, delivery time, couriers, restaurant order volume => query_food_delivery
     - Retail catchment: retail POI counts by category/city/state => query_retail_catchment
     - Route optimization / asset velocity: idle trailers, cost of idleness, projected savings,
       terminal lane demand => query_asset_velocity
@@ -195,8 +193,8 @@ tools:
         required: [pharmacy_description]
   - tool_spec:
       type: cortex_analyst_text_to_sql
-      name: query_fleet_operations
-      description: "Analytics over RAW fleet movement (Data Studio unified dataset): GPS telemetry (speed, speeding, HOS violations, dwell status), actual trips (distance, duration, detours), and planned schedules. Break down by region, vehicle type, driver profile, shift, and origin/destination POI. Use for 'how many trips', 'total/average distance or duration', 'detour rate', 'speeding rate', 'average speed', 'scheduled trips'."
+      name: query_fleet_ops
+      description: "Universal, mode-agnostic fleet analytics: trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins, broken down by region, asset mode (vehicle_type: car/hgv/ebike/...), and operator. Use for 'how many trips', 'total/average distance or duration', 'detour rate', 'average speed', 'busiest origins', 'operators by shift'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_freight_marketplace
@@ -209,14 +207,6 @@ tools:
       type: cortex_analyst_text_to_sql
       name: query_route_deviation
       description: "Analytics over route deviation: per-trip planned-vs-actual comparison with deviation distance/time and rates. Use for 'deviation rate by driver', 'trips that deviated', 'total excess km', 'time lost', 'daily deviation trend'."
-  - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: query_taxis
-      description: "Analytics over the Fleet Taxis demo: taxi trip summaries with distance, duration, and speed. Use for 'taxi trips by shift', 'average/ max speed', 'average trip distance', 'active drivers'."
-  - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: query_food_delivery
-      description: "Analytics over the Food Delivery demo: courier deliveries (time, distance, status) and restaurants (order volume, avg delivery time). Use for 'deliveries by status', 'average delivery time by courier', 'busiest restaurants', 'active couriers'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_retail_catchment
@@ -265,8 +255,8 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  query_fleet_operations:
-    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS
+  query_fleet_ops:
+    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_freight_marketplace:
@@ -279,14 +269,6 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
   query_route_deviation:
     semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
-    execution_environment:
-      warehouse: ROUTING_ANALYTICS
-  query_taxis:
-    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS
-    execution_environment:
-      warehouse: ROUTING_ANALYTICS
-  query_food_delivery:
-    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_retail_catchment:
