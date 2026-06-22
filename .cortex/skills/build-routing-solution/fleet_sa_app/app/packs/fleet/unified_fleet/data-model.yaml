@@ -1,0 +1,44 @@
+# Data model (logical contract) - Fleet domain pack: unified_fleet
+# Cross-database source (SYNTHETIC_DATASETS.UNIFIED). Pass-through views over the
+# already-materialized current-state views; dashboards SAMPLE for the map, so no
+# dynamic-table materialization is needed here. Large domain (~1.3M telemetry rows).
+pack: unified_fleet
+app_schema: FLEET_APP.UNIFIED_FLEET
+entities:
+  - name: FACT_TRIPS
+    description: "Per-trip fact: distance, duration, detour flag, region, vehicle type."
+    access_pattern: mapped
+    grain: "One row per trip"
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: DISTANCE_KM, type: FLOAT }
+      - { name: DURATION_MINUTES, type: FLOAT }
+      - { name: IS_DETOUR, type: BOOLEAN }
+  - name: FACT_VEHICLE_TELEMETRY
+    description: "Per-ping telemetry: speed, speeding/HOS flags, location."
+    access_pattern: mapped
+    grain: "One row per telemetry ping (~1.3M)"
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: SPEED_KMH, type: FLOAT }
+      - { name: IS_SPEEDING, type: BOOLEAN }
+      - { name: IS_HOS_VIOLATION, type: BOOLEAN }
+      - { name: LATITUDE, type: FLOAT }
+      - { name: LONGITUDE, type: FLOAT }
+  - name: DIM_TRIP_SCHEDULE
+    description: "Trip schedule dimension (used by SV_FLEET_OPERATIONS)."
+    access_pattern: mapped
+    grain: "One row per scheduled trip"
+    columns: [ { name: VEHICLE_ID, type: VARCHAR } ]
+  - name: DIM_FLEET
+    description: "Fleet/vehicle dimension."
+    access_pattern: mapped
+    grain: "One row per vehicle"
+    columns: [ { name: VEHICLE_ID, type: VARCHAR } ]
+  - name: DIM_POIS
+    description: "Points-of-interest dimension."
+    access_pattern: mapped
+    grain: "One row per POI"
+    columns: [ { name: POI_ID, type: VARCHAR } ]

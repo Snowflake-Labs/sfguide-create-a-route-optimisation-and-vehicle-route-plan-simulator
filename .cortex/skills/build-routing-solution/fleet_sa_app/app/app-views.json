@@ -589,7 +589,7 @@
       "trips": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT",
+          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -604,7 +604,7 @@
       "safety": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT",
+          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -619,7 +619,7 @@
       "byregion": {
         "component": "Chart",
         "data": {
-          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT GROUP BY REGION ORDER BY trips DESC",
+          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS GROUP BY REGION ORDER BY trips DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -631,7 +631,7 @@
       "bytype": {
         "component": "Chart",
         "data": {
-          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
+          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -652,7 +652,7 @@
       "vehicles": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
+          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": { "rowKey": "vehicle_id", "maxRows": 50 },
@@ -680,7 +680,7 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{speed_kmh} km/h",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT WHERE LATITUDE IS NOT NULL SAMPLE (5000 ROWS)",
+                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM FLEET_APP.UNIFIED_FLEET.VW_FACT_VEHICLE_TELEMETRY WHERE LATITUDE IS NOT NULL SAMPLE (5000 ROWS)",
                 "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
