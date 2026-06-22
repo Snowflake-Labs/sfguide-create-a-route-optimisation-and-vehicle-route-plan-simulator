@@ -1,0 +1,12 @@
+# Entity mapping - marketplace pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic freight-marketplace data."
+entities:
+  - entity: OFFER_ENRICHED
+    source_table: FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
+    materialization: view
+    passthrough: true
+  - entity: LANE_HISTORY
+    source_table: FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+    materialization: view
+    passthrough: true

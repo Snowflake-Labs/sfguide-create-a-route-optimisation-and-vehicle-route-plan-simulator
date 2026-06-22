@@ -1,0 +1,16 @@
+# Entity mapping - dhl_ntbo pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic DHL backload data (agent-only; feeds SV_DHL_BACKLOAD)."
+entities:
+  - entity: DHL_TRAILERS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_TRAILERS_ACTIVE
+    materialization: view
+    passthrough: true
+  - entity: DHL_ORDERS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_ORDERS_ACTIVE
+    materialization: view
+    passthrough: true
+  - entity: DHL_PROPOSALS
+    source_table: FLEET_INTELLIGENCE.DHL_NTBO.V_DHL_PROPOSALS_ACTIVE
+    materialization: view
+    passthrough: true

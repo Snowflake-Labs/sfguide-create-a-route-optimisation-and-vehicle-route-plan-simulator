@@ -1,0 +1,25 @@
+# Data model (logical contract) - Fleet domain pack: backload (backload matching)
+pack: backload
+app_schema: FLEET_APP.BACKLOAD_MATCHING
+entities:
+  - name: TRAILERS
+    description: "Trailers needing a backload (empty legs)."
+    access_pattern: mapped
+    grain: "One row per trailer"
+    primary_key: TRAILER_ID
+    columns:
+      - { name: TRAILER_ID, type: VARCHAR }
+      - { name: DROPOFF_CITY, type: VARCHAR }
+  - name: EXTERNAL_OFFERS
+    description: "External freight offers available to match against empty legs."
+    access_pattern: mapped
+    grain: "One row per offer"
+    primary_key: OFFER_ID
+    columns:
+      - { name: OFFER_ID, type: VARCHAR }
+      - { name: PICKUP_CITY, type: VARCHAR }
+  - name: PROPOSAL_DECISIONS
+    description: "Recorded accept/reject decisions (used by SV_BACKLOAD_MATCHING)."
+    access_pattern: mapped
+    grain: "One row per decision"
+    columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]

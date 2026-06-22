@@ -1,0 +1,25 @@
+# Data model (logical contract) - Fleet domain pack: marketplace (freight exchange)
+pack: marketplace
+app_schema: FLEET_APP.MARKETPLACE
+entities:
+  - name: OFFER_ENRICHED
+    description: "Freight offers with pickup/dropoff geo, market badge, status."
+    access_pattern: mapped
+    grain: "One row per offer"
+    primary_key: OFFER_ID
+    columns:
+      - { name: OFFER_ID, type: VARCHAR }
+      - { name: STATUS, type: VARCHAR }
+      - { name: PICKUP_CITY, type: VARCHAR }
+      - { name: DROPOFF_CITY, type: VARCHAR }
+      - { name: PICKUP_LAT, type: FLOAT }
+      - { name: PICKUP_LON, type: FLOAT }
+      - { name: DROPOFF_LAT, type: FLOAT }
+      - { name: DROPOFF_LON, type: FLOAT }
+      - { name: MARKET_BADGE, type: VARCHAR }
+      - { name: POSTED_AT, type: TIMESTAMP_NTZ }
+  - name: LANE_HISTORY
+    description: "Historical lane rates/volumes (used by SV_FREIGHT_MARKETPLACE)."
+    access_pattern: mapped
+    grain: "One row per lane/period"
+    columns: [ { name: LANE, type: VARCHAR } ]

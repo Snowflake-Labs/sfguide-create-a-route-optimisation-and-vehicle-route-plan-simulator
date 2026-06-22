@@ -1,0 +1,21 @@
+# Data model (logical contract) - Fleet domain pack: dhl_ntbo (DHL backload)
+# Agent-only: feeds SV_DHL_BACKLOAD (no dashboard). Contracted so the agent/Analyst
+# is fully on the FLEET_APP layer.
+pack: dhl_ntbo
+app_schema: FLEET_APP.DHL_NTBO
+entities:
+  - name: DHL_TRAILERS
+    description: "Active DHL trailers."
+    access_pattern: mapped
+    grain: "One row per active trailer"
+    columns: [ { name: TRAILER_ID, type: VARCHAR } ]
+  - name: DHL_ORDERS
+    description: "Active DHL orders."
+    access_pattern: mapped
+    grain: "One row per active order"
+    columns: [ { name: ORDER_ID, type: VARCHAR } ]
+  - name: DHL_PROPOSALS
+    description: "Active DHL backload proposals."
+    access_pattern: mapped
+    grain: "One row per proposal"
+    columns: [ { name: PROPOSAL_ID, type: VARCHAR } ]

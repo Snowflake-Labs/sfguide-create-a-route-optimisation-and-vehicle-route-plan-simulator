@@ -1,0 +1,16 @@
+# Entity mapping - backload pack - SOURCE: synthetic
+source_id: synthetic
+description: "Bundled synthetic backload-matching data."
+entities:
+  - entity: TRAILERS
+    source_table: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS
+    materialization: view
+    passthrough: true
+  - entity: EXTERNAL_OFFERS
+    source_table: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+    materialization: view
+    passthrough: true
+  - entity: PROPOSAL_DECISIONS
+    source_table: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.PROPOSAL_DECISIONS
+    materialization: view
+    passthrough: true
