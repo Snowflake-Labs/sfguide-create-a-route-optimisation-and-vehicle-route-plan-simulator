@@ -11,6 +11,21 @@ metadata:
 
 # Deploy Dwell & Congestion Analysis
 
+> **Two deployment paths.**
+> - **SA + synapse app (preferred for the data-contract app):** dwell ships as a
+>   self-building data-contract pack at
+>   `build-routing-solution/fleet_sa_app/app/packs/fleet/dwell/`
+>   (`data-model.yaml` + `entity-mapping.yaml`). Its `derived` primitives rebuild the
+>   full DAG (state-detection -> sessionization -> enrichment -> H3/SLA/facility/driver/daily)
+>   into `FLEET_APP.DWELL.*`, verified bit-for-bit against the pipeline below. Deploy it
+>   with the pack installer (`packs/_lib/install.py`), not by hand. To change the
+>   analytics, edit the pack's `data-model.yaml` and regenerate.
+> - **Control-app demo / source-of-truth (below):** the imperative 12-step Dynamic Table
+>   pipeline. This is the canonical reference the pack's derived SQL was distilled from,
+>   and the path the ORS Control App demo uses. Keep `references/sql-pipeline.sql` in sync
+>   when changing dwell logic — it is the spec the pack mirrors.
+
+
 Deploys a 12-step Dynamic Table pipeline that transforms vehicle telemetry into actionable dwell analytics: state detection, session grouping, H3 congestion heatmaps, SLA breach alerts, facility utilization, and fleet-wide daily trends. Vehicle-type agnostic -- works with trucks, taxis, e-bikes, e-scooters, or any fleet type. All data must come from active-dataset projection views (`V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, `V_DIM_TRIP_SCHEDULE_CURRENT`).
 
 ## Prerequisites

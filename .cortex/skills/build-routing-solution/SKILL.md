@@ -615,6 +615,36 @@ ORS services in `OPENROUTESERVICE_APP.CORE` MUST never auto-suspend while a regi
 
 Every procedure that flips these values to 0 must restore 14400 on ALL exit paths (success, timeout, early return, exception). A safety-net procedure `OPENROUTESERVICE_APP.CORE.RECONCILE_AUTO_SUSPEND()` is idempotent and self-heals drift (e.g. from a killed session); it is auto-called by `SUSPEND_ALL_SERVICES` and `SUSPEND_SERVICE`.
 
+## Data-contract domain packs (SA + synapse app data layer)
+
+The Solution-Accelerator app under `fleet_sa_app/` reads its analytics from neutral
+**data-contract packs**, not from the per-demo schemas directly. Each pack
+(`fleet_sa_app/app/packs/fleet/<domain>/`) is a logical contract — `data-model.yaml`
+(entities) + `entity-mapping.yaml` (source binding) — compiled by
+`packs/_lib/generate.py` into `FLEET_APP.<SCHEMA>.*` views/dynamic tables that the
+dashboards + semantic views bind to. Pointing the app at customer data is a mapping
+edit + regenerate, with no consumer changes.
+
+Most packs are **self-building**: their analytic layer is rebuilt from raw sources
+(`SYNTHETIC_DATASETS.UNIFIED`, base/reference tables) via `derived` primitives, so the
+app's data layer does not depend on the imperative per-demo pipelines below. The legacy
+per-domain skills (Step 8) remain the **control-app demo path** and the source-of-truth
+from which each pack's derived SQL was distilled.
+
+**Deploy / re-deploy the whole data layer (deterministic, idempotent):**
+
+```bash
+cd fleet_sa_app/app/packs
+python3 _lib/install.py --regenerate -c <connection>   # topo order; route_optimization after dwell
+python3 _lib/install.py --probe      -c <connection>   # which packs resolve with data
+```
+
+`manifest.yaml` declares pack order, inter-pack dependencies (e.g. route_optimization
+reads the dwell pack's `VW_DWELL_SESSIONS`), and a per-pack probe. The SA app's
+`/api/pack-status` uses the same probe to **surface a pack's dashboards/agent tools only
+when its data resolves**. To author or modify a domain, edit its `data-model.yaml` /
+`entity-mapping.yaml` and regenerate — see `packs/README.md` and `packs/_lib/PRIMITIVES.md`.
+
 ## Cleanup
 
 To remove all objects created by this skill:
