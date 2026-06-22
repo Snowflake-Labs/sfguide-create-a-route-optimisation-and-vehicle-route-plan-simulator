@@ -26,6 +26,12 @@ function collectSchemaProbes(
     fqnRe.lastIndex = 0;
     while ((m = fqnRe.exec(sql)) !== null) {
       const [, schema, view] = m;
+      // Skip table-function calls (e.g. TABLE(FLEET_APP.X.F_VW_*_SCOPED(...))):
+      // a UDTF can't be probed as a plain table (`SELECT 1 FROM fn LIMIT 1` fails),
+      // which would wrongly mark the schema empty and hide its dashboards. A
+      // function reference is always immediately followed by '('.
+      const next = sql[m.index + m[0].length];
+      if (next === '(') continue;
       if (!probes[schema]) probes[schema] = `${db}.${schema}.${view}`;
     }
   };
