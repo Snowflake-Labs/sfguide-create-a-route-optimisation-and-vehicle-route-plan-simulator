@@ -42,13 +42,16 @@ reusable product and fixes its substrate sizing.
 ```mermaid
 flowchart TD
   subgraph routing [Routing Platform - standalone product]
-    ors["ORS + VROOM + gateway (per-region SPCS)"]
-    core["CORE routing functions + ROUTING_AGENT.TOOL_*"]
     rmcp["ROUTING_MCP: directions / isochrone / optimize / poi / catchment / network-opt (domain-agnostic primitives)"]
+    contract["ROUTING_PLATFORM.CONTRACT: engine-agnostic API (provider arg) + RESOLVE_PROVIDER"]
+    providers["PROVIDERS: ors_internal (live) | ext_* (EAI stub) + registry/region map"]
+    tools["ROUTING_AGENT.TOOL_* (geocoding/shaping) -> CONTRACT"]
     ctrl["Routing admin/provisioning console (evolved control app)"]
-    core --> ors
-    rmcp --> core
-    ctrl --> core
+    orseng["OPENROUTESERVICE_APP = ORS provider: ORS + VROOM + gateway (per-region SPCS)"]
+    rmcp --> tools --> contract --> providers
+    providers -->|"ors_internal"| orseng
+    providers -.->|"external (stub)"| extapi["3rd-party HTTP routing API"]
+    ctrl --> orseng
   end
   subgraph appcore [Analytics App - domain-agnostic primitives]
     prims["Dashboard areas + map/chart/table DSL + agent + Analyst + routing tool surface"]
@@ -87,6 +90,33 @@ flowchart TD
 - **Routing substrate fix (priority):** resolve the live-routing blocker — ORS-Europe graph is 23.4 GB on a
   24 GB node, so its HTTP hangs. Right-size the ORS region compute pools (larger instance family) and/or trim
   per-region graphs; document a region->pool-size matrix. Verify directions/optimize render live end-to-end.
+
+### 4B.2 - Engine-agnostic Routing Contract (ROUTING_PLATFORM) -- DONE
+Decoupled the routing ENGINE from consumers so any engine (internal ORS or an external HTTP API)
+is swappable behind one neutral contract. Confirmed decisions: new neutral DB `ROUTING_PLATFORM`;
+per-call `provider` override with a per-region default; ORS adapter live, external stubbed.
+- New DB `ROUTING_PLATFORM` with schemas `CONTRACT` (engine-agnostic API), `PROVIDERS` (adapters +
+  registry), `ADMIN` (engine-neutral region/provider map), `ROUTING` (verbs' future home). Additive
+  grants to `FLEET_APP_USER/OPS/ADMIN`.
+- `PROVIDERS`: `ORS_*_RAW` thin pass-throughs to `OPENROUTESERVICE_APP.CORE._*_RAW` (the ONLY place
+  that names the ORS engine -> OPENROUTESERVICE_APP is reframed as "the ORS provider"); `EXT_UNSUPPORTED`
+  stub returns `PROVIDER_NOT_ENABLED`. Registry seeds `ors_internal` (enabled) + `ext_mapbox/here/google`
+  (disabled). `REGION_PROVIDER_MAP` seeds all 7 deployed regions -> `ors_internal`.
+- `CONTRACT`: `RESOLVE_PROVIDER` = COALESCE(per-call, region default, ors_internal); scalar `_DISPATCH_*`
+  CASE over adapters; public typed primitives `DIRECTIONS/ISOCHRONES/ISOCHRONES_CLIPPED/OPTIMIZATION/MATRIX/
+  ROUTING_STATUS` (+ `REGION_FOR_POINT`) each gaining a trailing `provider` arg. Canonical response shape =
+  ORS GeoJSON; external adapters must normalize to it.
+- Repointed all 7 `ROUTING_AGENT.TOOL_*` procs' internal `CORE.*` routing calls to `CONTRACT.*` (kept their
+  AI-geocoding/result-shaping orchestration; `REGION_FOR_POINT` + the ORS-lifecycle `ORS_SERVICE_<region>`
+  string deliberately left on the ORS path). Verbs/`ROUTING_MCP` unchanged -> no re-materialize.
+- `ADMIN`: `V_REGIONS` (neutral inventory) + guarded `SET_REGION_PROVIDER` (validates ENABLED). ORS graph/SPCS
+  provisioning stays in `OPENROUTESERVICE_APP` (provider-specific). DDL source of truth:
+  `routing_platform/setup.sql`; grants in `fleet_sa_app/app/role_binding.sql`.
+- VERIFIED live (wgb26798, ORS Europe running): `CONTRACT.DIRECTIONS` == engine-direct (461408.4 m / 30935.2 s
+  / 7753 pts); external override -> clean `PROVIDER_NOT_ENABLED`; `CALL TOOL_DIRECTIONS(...)` -> status SUCCESS
+  through the contract. No SA `ui/` changes (build unaffected).
+- NOTE: 4C's primitive/domain split consumes this contract. The `ext_*` adapters are stubs; an EAI/SECRET +
+  Python-UDF scaffold is documented (disabled) at the bottom of `routing_platform/setup.sql`.
 
 ### 4C - Domain-pack model + Fleet as the reference pack
 - Define a "domain pack" = `{app-config.json, app-views.json, agent-spec.json, semantic_models/, optional

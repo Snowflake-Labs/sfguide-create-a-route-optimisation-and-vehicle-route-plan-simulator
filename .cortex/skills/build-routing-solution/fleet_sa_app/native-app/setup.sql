@@ -16,6 +16,10 @@ CREATE APPLICATION ROLE IF NOT EXISTS app_admin;   -- installer/admin
 
 -- 2. Schemas holding the app objects. (Routing verbs + ROUTING_MCP live in the
 --    Routing Platform schema OPENROUTESERVICE_APP.ROUTING as of Step 4B.)
+--    Step 4B.2: the routing ENGINE is now engine-agnostic via ROUTING_PLATFORM.CONTRACT.*
+--    (provider dispatch: ors_internal -> OPENROUTESERVICE_APP engine; ext_* -> External
+--    Access Integration). The TOOL_* procs route through CONTRACT; consumers/agent are
+--    unchanged. DDL source of truth: routing_platform/setup.sql; grants in role_binding.sql.
 CREATE SCHEMA IF NOT EXISTS synapse_user;
 CREATE SCHEMA IF NOT EXISTS synapse_ops;
 CREATE SCHEMA IF NOT EXISTS synapse_admin;
