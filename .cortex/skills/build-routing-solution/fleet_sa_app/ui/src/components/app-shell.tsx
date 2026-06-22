@@ -8,7 +8,7 @@ import { ContextBar, type ContextBarField } from './context-bar';
 import { registerInlineComponents, registerToolMaps } from './inline';
 import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
 import { registerWorkflowViews } from '@/lib/framework-views';
-import { registerFleetViews } from '@/lib/fleet-views';
+import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
 import { AboutDialog } from './about-dialog';
 
@@ -21,8 +21,15 @@ export interface AppConfig {
   snowflake?: { database: string; schema: string; warehouse?: string };
   hasWorkflows?: boolean;
   contextBar?: ContextBarField[];
-  // Domain-pack selector: which custom showcase views to register (4C loader).
+  // Domain packs whose custom showcase views to register (4C loader). Each id
+  // must exist in lib/packs/registry.ts. The legacy single `domainPack` string
+  // is still honored and coerced to `[domainPack]`. A neutral app ships
+  // `domainPacks: []` (pure-YAML dashboards, no domain code).
+  domainPacks?: string[];
   domainPack?: string;
+  // Neutral data-layer database the YAML views + surfacing gate bind to
+  // (defaults to FLEET_APP for back-compat).
+  dataLayer?: { database?: string };
   // Routing/tool config; mapTools render their output on the inline deck.gl map.
   tools?: { mapTools?: string[] };
 }
@@ -101,15 +108,18 @@ export function AppShell() {
         }
 
         if (Object.keys(viewsConfig).length > 0) {
-          registerViewsFromConfig(viewsConfig, disabledSchemas);
+          registerViewsFromConfig(viewsConfig, disabledSchemas, appConfig.dataLayer?.database);
         }
         // Bind this domain's map-producing tools to the inline map (config-driven).
         registerToolMaps(appConfig.tools?.mapTools ?? []);
-        // Register custom showcase views only for the fleet domain pack. A full
-        // config-driven pack loader replaces this branch in Step 4C. Pack-backed
-        // showcases are gated by the surfacing set.
-        if (appConfig.domainPack === 'fleet') {
-          registerFleetViews(disabledSchemas);
+        // Config-driven domain-pack loader: register each configured pack's
+        // custom showcase views via the registry — no domain import in the
+        // shell. Legacy single `domainPack` string is coerced to an array.
+        // Pack-backed showcases are gated by the surfacing set.
+        const resolvedPacks =
+          appConfig.domainPacks ?? (appConfig.domainPack ? [appConfig.domainPack] : []);
+        for (const id of resolvedPacks) {
+          PACK_REGISTRY[id]?.registerViews(disabledSchemas);
         }
         if (appConfig.snowflake?.database && appConfig.snowflake?.schema) {
           // Always set the FQN — it's used by the write layer and other framework features.

@@ -30,16 +30,19 @@ interface YamlViewDef {
 
 export type ViewsConfig = Record<string, Omit<YamlViewDef, 'id'>>;
 
-// Schemas a view's area queries reference, e.g. FLEET_APP.DWELL.VW_X -> "DWELL".
-const FQN_RE = /FLEET_APP\.([A-Za-z0-9_]+)\./g;
-function viewSchemas(view: YamlViewDef): Set<string> {
+// Neutral data-layer DB the dashboards bind to (config-driven; FLEET_APP default).
+const DEFAULT_DATA_LAYER_DB = 'FLEET_APP';
+
+// Schemas a view's area queries reference, e.g. <DB>.DWELL.VW_X -> "DWELL".
+function viewSchemas(view: YamlViewDef, db: string): Set<string> {
   const out = new Set<string>();
+  const fqnRe = new RegExp(`${db}\\.([A-Za-z0-9_]+)\\.`, 'g');
   for (const area of Object.values(view.areas ?? {})) {
     const q = (area?.data as { query?: string } | undefined)?.query;
     if (typeof q !== 'string') continue;
     let m: RegExpExecArray | null;
-    FQN_RE.lastIndex = 0;
-    while ((m = FQN_RE.exec(q)) !== null) out.add(m[1]);
+    fqnRe.lastIndex = 0;
+    while ((m = fqnRe.exec(q)) !== null) out.add(m[1]);
   }
   return out;
 }
@@ -57,11 +60,16 @@ function createLazyViewComponent(viewDef: YamlViewDef) {
 // Surfacing gate: a view whose query references a schema in `disabledSchemas`
 // (the pack's data did not resolve - see /api/pack-status) is registered but
 // hidden, so the view-picker (which filters !hidden) omits it. Pass an empty
-// set to surface everything.
-export function registerViewsFromConfig(config: ViewsConfig, disabledSchemas?: Set<string>): void {
+// set to surface everything. `dataLayerDb` is the neutral DB prefix used to
+// derive each view's schema set (defaults to FLEET_APP for fleet back-compat).
+export function registerViewsFromConfig(
+  config: ViewsConfig,
+  disabledSchemas?: Set<string>,
+  dataLayerDb: string = DEFAULT_DATA_LAYER_DB,
+): void {
   const views: YamlViewDef[] = Object.entries(config).map(([id, def]) => ({ id, ...def } as YamlViewDef));
   for (const view of views) {
-    const schemas = disabledSchemas?.size ? viewSchemas(view) : null;
+    const schemas = disabledSchemas?.size ? viewSchemas(view, dataLayerDb) : null;
     const gatedOff = schemas ? [...schemas].some((s) => disabledSchemas!.has(s)) : false;
     const registration: ViewDef = {
       id: view.id,

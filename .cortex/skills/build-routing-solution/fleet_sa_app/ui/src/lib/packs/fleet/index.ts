@@ -1,15 +1,20 @@
 import { lazy } from 'react';
-import { viewRegistry } from './view-registry';
+import { viewRegistry } from '@/lib/view-registry';
 
-// Registers the Tier-3 showcase views (custom full-page components, not YAML
-// area-views). Called from app-shell on load. Both call User routing verbs via
-// /api/tool and render results on a deck.gl map.
+// Fleet domain pack: registers the Tier-3 showcase views (custom full-page
+// components, not YAML area-views). Both call User routing verbs via /api/tool
+// and render results on a deck.gl map.
+//
 // `disabledSchemas` (from /api/pack-status) gates the data-backed showcases:
 // freight_exchange (MARKETPLACE) and backload_matching (BACKLOAD_MATCHING) are
 // skipped when their pack's data is absent. The routing/ops showcases
 // (vrp_simulator, emergency_wizard, ops_console) are tool-driven, not pack-backed,
 // so they always register.
-export function registerFleetViews(disabledSchemas?: Set<string>): void {
+//
+// This module is the fleet entry in lib/packs/registry.ts. The app-shell loads
+// it generically via the configured `domainPacks` array — there is no fleet
+// import in the shell itself (Step 4C).
+export function registerViews(disabledSchemas?: Set<string>): void {
   const off = (schema: string) => disabledSchemas?.has(schema) ?? false;
 
   viewRegistry.register({

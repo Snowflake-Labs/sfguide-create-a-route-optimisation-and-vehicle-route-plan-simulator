@@ -36,6 +36,12 @@ export interface RegionConfig {
   schemas?: string[];
 }
 
+export interface DataLayerConfig {
+  // Neutral database the YAML dashboards + surfacing-gate probe bind to.
+  // Defaults to FLEET_APP when absent (fleet back-compat).
+  database?: string;
+}
+
 export interface ContextBarField {
   id: string;
   type?: string;
@@ -53,6 +59,7 @@ export interface ServerConfig {
   tools?: ToolsConfig;
   ops?: OpsConfig;
   region?: RegionConfig;
+  dataLayer?: DataLayerConfig;
 }
 
 const cache = new Map<string, ServerConfig>();

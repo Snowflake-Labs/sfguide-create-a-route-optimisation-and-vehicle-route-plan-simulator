@@ -4,23 +4,29 @@ import { resolve } from 'path';
 import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
+import { getServerConfig } from '@/lib/server-config';
 
 // Surfacing gate signal. A domain pack's dashboards/agent tools should only appear
-// when the pack's data resolves. We derive the set of FLEET_APP.<SCHEMA>.<VIEW>
+// when the pack's data resolves. We derive the set of <DB>.<SCHEMA>.<VIEW>
 // objects the configured views actually query, probe one representative view per
 // schema (LIMIT 1), and return { schema: present }. The app-shell hides views whose
 // schema is absent/empty. Mirrors packs/_lib/install.py --probe.
-const FQN_RE = /FLEET_APP\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/g;
+// The data-layer DB defaults to FLEET_APP but is config-driven (dataLayer.database).
+const DEFAULT_DATA_LAYER_DB = 'FLEET_APP';
 
-function collectSchemaProbes(viewsConfig: Record<string, unknown>): Record<string, string> {
+function collectSchemaProbes(
+  viewsConfig: Record<string, unknown>,
+  db: string,
+): Record<string, string> {
   // schema -> a representative fully-qualified view to probe
   const probes: Record<string, string> = {};
+  const fqnRe = new RegExp(`${db}\\.([A-Za-z0-9_]+)\\.([A-Za-z0-9_]+)`, 'g');
   const scan = (sql: string) => {
     let m: RegExpExecArray | null;
-    FQN_RE.lastIndex = 0;
-    while ((m = FQN_RE.exec(sql)) !== null) {
+    fqnRe.lastIndex = 0;
+    while ((m = fqnRe.exec(sql)) !== null) {
       const [, schema, view] = m;
-      if (!probes[schema]) probes[schema] = `FLEET_APP.${schema}.${view}`;
+      if (!probes[schema]) probes[schema] = `${db}.${schema}.${view}`;
     }
   };
   for (const def of Object.values(viewsConfig)) {
@@ -47,7 +53,8 @@ async function handleGet() {
     return NextResponse.json({ schemas: status });
   }
 
-  const probes = collectSchemaProbes(viewsConfig);
+  const dataLayerDb = getServerConfig().dataLayer?.database ?? DEFAULT_DATA_LAYER_DB;
+  const probes = collectSchemaProbes(viewsConfig, dataLayerDb);
   await Promise.all(
     Object.entries(probes).map(async ([schema, fqn]) => {
       try {
