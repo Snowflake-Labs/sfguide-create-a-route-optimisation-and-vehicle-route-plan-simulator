@@ -476,3 +476,38 @@ GRANT USAGE ON FUNCTION FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED(VARCHAR, VAR
 GRANT USAGE ON FUNCTION FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+-- ---------------------------------------------------------------------------
+-- FLEET_OPS global-active VIEWS (thin wrappers over the UDTFs with typed-NULL
+-- args -> the region's ACTIVE dataset). Two consumers:
+--   1) the surfacing gate / manifest probe (a resolvable FLEET_OPS schema object),
+--   2) SV_FLEET_OPS (Cortex Analyst semantic views bind to views, not UDTFs).
+-- The dashboards use the per-session F_VW_*_SCOPED UDTFs directly; these views are
+-- the agent/global-default equivalent (same single logic source, NULL scope args).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_APP.FLEET_OPS.VW_TRIPS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.FLEET_OPS.VW_TRIP_SUMMARY
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.FLEET_OPS.VW_OPERATOR_PERFORMANCE
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.FLEET_OPS.VW_TOP_ORIGINS
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TOP_ORIGINS_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+CREATE OR REPLACE VIEW FLEET_APP.FLEET_OPS.VW_ASSET_ATTRIBUTES
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_ASSET_ATTRIBUTES_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
