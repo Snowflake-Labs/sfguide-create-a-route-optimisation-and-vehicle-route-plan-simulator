@@ -1,17 +1,15 @@
 {
   "name": "@fleet-kit/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
-  "description": "Shared, framework-agnostic UI/data primitives for the Routing Platform admin console and the Analytics App. Populated in R1 of APP_RESTRUCTURE_PLAN.",
+  "description": "Shared, framework-agnostic UI/data primitives for the Routing Platform admin console and the Analytics App (R1 of APP_RESTRUCTURE_PLAN).",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
     ".": "./dist/index.js",
-    "./map": "./dist/map/index.js",
-    "./sf-client": "./dist/sf-client/index.js",
     "./sf-auth": "./dist/sf-auth/index.js",
     "./sql-utils": "./dist/sql-utils/index.js",
-    "./types": "./dist/types/index.js"
+    "./map": "./dist/map/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -20,5 +18,9 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.0"
+  }
 }

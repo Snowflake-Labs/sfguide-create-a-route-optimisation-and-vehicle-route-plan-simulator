@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@fleet-kit/core": "file:../../../../../packages/fleet-kit",
     "@deck.gl/aggregation-layers": "~9.2.11",
     "@deck.gl/core": "~9.2.11",
     "@deck.gl/extensions": "~9.2.11",

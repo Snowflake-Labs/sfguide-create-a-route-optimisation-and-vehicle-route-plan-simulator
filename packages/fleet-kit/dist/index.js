@@ -9,5 +9,5 @@
 //   @fleet-kit/core/map        layer-spec DSL types (deck.gl compiler joins in R1 increment 2)  [types]
 //
 // See .cortex/skills/build-routing-solution/fleet_sa_app/APP_RESTRUCTURE_PLAN.md (R1).
-
 export const FLEET_KIT_VERSION = "0.1.0";
+//# sourceMappingURL=index.js.map
