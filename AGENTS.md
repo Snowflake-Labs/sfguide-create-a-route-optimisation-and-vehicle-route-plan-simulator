@@ -8,6 +8,21 @@ Cortex Code skills that deploy routing, fleet intelligence, and geospatial analy
 
 Skills live in `.cortex/skills/`. Each is a self-contained deployment playbook an AI agent follows step-by-step.
 
+## Architecture Tenets (synapse + Solution Accelerator)
+
+**MANDATORY before evolving the SA app, synapse tool bundles, routing contract, or data-contract packs:** read [`TENETS.md`](TENETS.md). It codifies the load-bearing invariants of the agent-first analytics app (`feature/sa-synapse-app`) so future changes preserve swappability, role isolation, auditability, and reproducible deploys:
+
+1. **Two swappable seams** — routing-engine seam (`ROUTING_PLATFORM.CONTRACT.*`) + data seam (data-contract packs). Consumers bind to neutral contracts, never a named engine or physical source.
+2. **Best-of-both topology, one repo** — SA owns UI/agent/distribution; synapse owns the typed/audited tool layer; upstream SA + synapse repos are read-only references, everything vendored here.
+3. **Role-scoped bundles = isolation** — User/Ops/Admin each get their own MCP server; the consumer agent attaches the User MCP only.
+4. **Config-driven, not code-edited** — a domain swap requires zero TS edits; `app-config.json` is the single config surface, fleet literals are fallbacks only.
+5. **Self-building, contract-bound data** — analytic layer rebuilt from raw sources, bit-for-bit verifiable; dashboards/SVs read the neutral `FLEET_APP` contract.
+6. **Hybrid provisioning** — heavy substrate (graphs, image pipeline) stays in the control app; SA+synapse is the thin surface.
+7. **Audited envelope** — every verb flows through the synapse envelope (`VERB_ATTEMPT` + idempotency); no direct unaudited tool calls.
+8. **New-deployment-first** — fixes land in pack/config/synapse source so a fresh deploy is correct; live hotfix is always secondary.
+
+See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
+
 ## Repository Structure
 
 ```
