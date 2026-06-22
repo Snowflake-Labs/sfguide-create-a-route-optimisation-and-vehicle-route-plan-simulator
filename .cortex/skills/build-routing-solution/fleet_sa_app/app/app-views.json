@@ -18,7 +18,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED",
+          "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -33,7 +33,7 @@
       "trends": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
+          "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_APP.DWELL.VW_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -48,7 +48,7 @@
       "facilities": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -85,7 +85,7 @@
               "pickable": true,
               "tooltip": "<b>{h3_index}</b><br/>Dwells: {dwell_count}<br/>Avg: {avg_dwell_min} min",
               "data": {
-                "query": "SELECT H3_CELL_R7 AS h3_index, SUM(SESSION_COUNT) AS dwell_count, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell_min FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = TO_NUMBER(:selected_hour) GROUP BY H3_CELL_R7 LIMIT 5000",
+                "query": "SELECT H3_CELL_R7 AS h3_index, SUM(SESSION_COUNT) AS dwell_count, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell_min FROM FLEET_APP.DWELL.VW_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = TO_NUMBER(:selected_hour) GROUP BY H3_CELL_R7 LIMIT 5000",
                 "params": { "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
@@ -104,7 +104,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT LOCATION_ID) AS facilities, SUM(TOTAL_SESSIONS) AS total_visits, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell, ROUND(MAX(MAX_DWELL_MIN),0) AS max_dwell FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION",
+          "query": "SELECT COUNT(DISTINCT LOCATION_ID) AS facilities, SUM(TOTAL_SESSIONS) AS total_visits, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell, ROUND(MAX(MAX_DWELL_MIN),0) AS max_dwell FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -119,7 +119,7 @@
       "byfac": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SUBSTR(LOCATION_NAME,1,22) AS facility_name, SUM(TOTAL_DWELL_MIN) AS dwell_min FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY dwell_min DESC LIMIT 12",
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,22) AS facility_name, SUM(TOTAL_DWELL_MIN) AS dwell_min FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY dwell_min DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -131,7 +131,7 @@
       "bytype": {
         "component": "Chart",
         "data": {
-          "query": "SELECT COALESCE(FACILITY_TYPE,'unknown') AS facility_type, SUM(TOTAL_SESSIONS) AS visits FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY FACILITY_TYPE ORDER BY visits DESC",
+          "query": "SELECT COALESCE(FACILITY_TYPE,'unknown') AS facility_type, SUM(TOTAL_SESSIONS) AS visits FROM FLEET_APP.DWELL.VW_FACILITY_UTILIZATION GROUP BY FACILITY_TYPE ORDER BY visits DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -152,7 +152,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS drivers, SUM(SLA_BREACH_COUNT) AS sla_breaches, SUM(CRITICAL_BREACH_COUNT) AS critical_breaches, ROUND(AVG(AVG_SESSION_MIN),1) AS avg_session FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY",
+          "query": "SELECT COUNT(*) AS drivers, SUM(SLA_BREACH_COUNT) AS sla_breaches, SUM(CRITICAL_BREACH_COUNT) AS critical_breaches, ROUND(AVG(AVG_SESSION_MIN),1) AS avg_session FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -167,7 +167,7 @@
       "breaches": {
         "component": "Chart",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SLA_BREACH_COUNT AS breaches FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY ORDER BY breaches DESC LIMIT 12",
+          "query": "SELECT VEHICLE_ID AS driver, SLA_BREACH_COUNT AS breaches FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY ORDER BY breaches DESC LIMIT 12",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -179,7 +179,7 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, DRIVER_PROFILE AS profile, HOME_BASE_NAME AS home_base, TOTAL_DWELL_HOURS AS dwell_hours, SLA_BREACH_COUNT AS sla_breaches, CRITICAL_BREACH_COUNT AS critical FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY ORDER BY sla_breaches DESC LIMIT 100",
+          "query": "SELECT VEHICLE_ID AS driver, DRIVER_PROFILE AS profile, HOME_BASE_NAME AS home_base, TOTAL_DWELL_HOURS AS dwell_hours, SLA_BREACH_COUNT AS sla_breaches, CRITICAL_BREACH_COUNT AS critical FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY ORDER BY sla_breaches DESC LIMIT 100",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }
@@ -195,7 +195,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS alerts, SUM(IFF(SLA_STATUS='CRITICAL',1,0)) AS critical, SUM(IFF(SLA_STATUS='WARNING',1,0)) AS warning, ROUND(AVG(MINUTES_OVER_WARNING),1) AS avg_over FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS",
+          "query": "SELECT COUNT(*) AS alerts, SUM(IFF(SLA_STATUS='CRITICAL',1,0)) AS critical, SUM(IFF(SLA_STATUS='WARNING',1,0)) AS warning, ROUND(AVG(MINUTES_OVER_WARNING),1) AS avg_over FROM FLEET_APP.DWELL.VW_SLA_ALERTS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -210,7 +210,7 @@
       "bystatus": {
         "component": "Chart",
         "data": {
-          "query": "SELECT SLA_STATUS AS status, COUNT(*) AS alerts FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS GROUP BY SLA_STATUS ORDER BY alerts DESC",
+          "query": "SELECT SLA_STATUS AS status, COUNT(*) AS alerts FROM FLEET_APP.DWELL.VW_SLA_ALERTS GROUP BY SLA_STATUS ORDER BY alerts DESC",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
@@ -222,7 +222,7 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
+          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }

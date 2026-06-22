@@ -1,0 +1,74 @@
+# Data model (logical contract) - Fleet domain pack: dwell
+pack: dwell
+app_schema: FLEET_APP.DWELL
+entities:
+  - name: DWELL_SESSIONS
+    description: "Per-session dwell fact: where/how long vehicles stop, facility, H3 cell, SLA."
+    access_pattern: mapped
+    grain: "One row per dwell session"
+    primary_key: SESSION_ID
+    columns:
+      - { name: SESSION_ID, type: VARCHAR }
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: DWELL_MINUTES, type: FLOAT }
+      - { name: LOCATION_NAME, type: VARCHAR }
+      - { name: FACILITY_TYPE, type: VARCHAR }
+      - { name: H3_CELL_R7, type: VARCHAR }
+  - name: DRIVER_DWELL_SUMMARY
+    description: "Per-driver dwell rollup with SLA breaches and home base."
+    access_pattern: mapped
+    grain: "One row per driver"
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: DRIVER_PROFILE, type: VARCHAR }
+      - { name: HOME_BASE_NAME, type: VARCHAR }
+      - { name: SLA_BREACH_COUNT, type: NUMBER }
+      - { name: CRITICAL_BREACH_COUNT, type: NUMBER }
+      - { name: AVG_SESSION_MIN, type: FLOAT }
+      - { name: TOTAL_DWELL_HOURS, type: FLOAT }
+  - name: DAILY_TRENDS
+    description: "Daily dwell trend (sessions, active vehicles)."
+    access_pattern: mapped
+    grain: "One row per date"
+    columns:
+      - { name: TREND_DATE, type: DATE }
+      - { name: TOTAL_SESSIONS, type: NUMBER }
+      - { name: ACTIVE_VEHICLES, type: NUMBER }
+  - name: FACILITY_UTILIZATION
+    description: "Per-facility utilization (visits, dwell minutes)."
+    access_pattern: mapped
+    grain: "One row per facility/location"
+    columns:
+      - { name: LOCATION_ID, type: VARCHAR }
+      - { name: LOCATION_NAME, type: VARCHAR }
+      - { name: FACILITY_TYPE, type: VARCHAR }
+      - { name: TOTAL_SESSIONS, type: NUMBER }
+      - { name: TOTAL_DWELL_MIN, type: FLOAT }
+      - { name: AVG_DWELL_MIN, type: FLOAT }
+      - { name: MAX_DWELL_MIN, type: FLOAT }
+  - name: H3_CONGESTION
+    description: "H3 cell congestion by hour bucket."
+    access_pattern: mapped
+    grain: "One row per H3 cell / hour bucket"
+    columns:
+      - { name: H3_CELL_R7, type: VARCHAR }
+      - { name: HOUR_BUCKET, type: TIMESTAMP_NTZ }
+      - { name: SESSION_COUNT, type: NUMBER }
+      - { name: AVG_DWELL_MIN, type: FLOAT }
+  - name: SLA_ALERTS
+    description: "Per-session SLA alert records."
+    access_pattern: mapped
+    grain: "One row per alert"
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
+      - { name: LOCATION_NAME, type: VARCHAR }
+      - { name: SLA_STATUS, type: VARCHAR }
+      - { name: DWELL_MINUTES, type: FLOAT }
+      - { name: MINUTES_OVER_WARNING, type: FLOAT }
+  - name: CONFIG
+    description: "Single-row region/vehicle context."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION, type: VARCHAR }

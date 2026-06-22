@@ -1,0 +1,22 @@
+# Entity mapping - dwell pack - SOURCE: customer-demo (JOIN proof)
+# Demonstrates the generator's source_join + qualified source_column + transform
+# support: the customer's dwell fact lacks driver attributes, so DWELL_SESSIONS is
+# enriched by JOINing a separate driver dimension. Regenerating with this mapping
+# repoints FLEET_APP.DWELL at the joined source; consumers are unchanged.
+#   python3 ../_lib/generate.py --model data-model.yaml --mapping entity-mapping.customer-demo.yaml --out /tmp/dwell_cust.sql
+source_id: customer-demo
+description: "Mock customer dwell source: fact joined to a separate driver dimension."
+entities:
+  - entity: DWELL_SESSIONS
+    source_table: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED m
+    source_join:
+      - "LEFT JOIN FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY d ON d.VEHICLE_ID = m.VEHICLE_ID"
+    materialization: view
+    mapping:
+      - { app_column: SESSION_ID,    source_column: m.SESSION_ID }
+      - { app_column: VEHICLE_ID,    source_column: m.VEHICLE_ID }
+      - { app_column: DWELL_MINUTES, source_column: m.DWELL_MINUTES }
+      - { app_column: LOCATION_NAME, source_column: m.LOCATION_NAME }
+      - { app_column: FACILITY_TYPE, source_column: m.FACILITY_TYPE }
+      - { app_column: H3_CELL_R7,    source_column: m.H3_CELL_R7 }
+      - { app_column: HOME_BASE_NAME, source_column: d.HOME_BASE_NAME }   # enriched via JOIN
