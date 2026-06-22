@@ -8,7 +8,9 @@
 > - Start at R0. Do NOT consolidate to a single host before R3 (4D).
 >
 > PROGRESS LOG (update as phases complete):
-> - R0: IN PROGRESS — workspace scaffolding + guardrails.
+> - R0: DONE (commit 9d2470a) — `packages/fleet-kit/` shell + .gitignore dist negation; suspended idle ORS_SERVICE_EUROPE+SANFRANCISCO; baseline builds green.
+> - R1.1: DONE (commit 897c8bc) — extracted 3 zero-dep modules to `@fleet-kit/core` (`sf-auth`, `sql-utils`, `map` layer-spec TYPES); consumer consumes kit via `file:` dep + re-export shims; consumer build green, sf-auth inlined into 9 server route bundles.
+> - R1.2: PENDING (needs deploy-verify) — extract `map-fit` + `layer-compiler` (deck.gl). GOTCHA: kit's `@deck.gl/*` imports must dedupe to the consumer's single deck.gl copy (symlinked `file:` pkg resolves from `packages/` tree where deck.gl is NOT hoisted -> duplicate-instance breaks ALL maps). Fix = Next `transpilePackages:['@fleet-kit/core']` + deck.gl/h3-js as PEER deps; only true verification is a visual map render after redeploy.
 
 ## 1. Context (verified read-only)
 
