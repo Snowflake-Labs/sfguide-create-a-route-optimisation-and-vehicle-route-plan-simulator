@@ -18,9 +18,21 @@ Usage:
 
 Entity kinds (data-model access_pattern / mapping materialization):
   mapped / context  -> view (or dynamic table) selecting mapped columns from source_table (+ optional source_join)
-  derived           -> view computing expr/group_by from the derived_from entity's app object
+  derived           -> computed from sibling pack objects. Two forms:
+                       (a) expr/group_by rollup over a single `derived_from` entity (simple aggregates), or
+                       (b) `sql:` raw SELECT body (windows, sessionization, joins, H3, multi-step DAG).
+                           In `sql:` bodies use `{schema}` for the pack schema and `{src}` for the
+                           fully-qualified `derived_from` view; reference any sibling as `{schema}.VW_<NAME>`.
+Dependencies / ordering:
+  Entities are emitted in TOPOLOGICAL order. A derived entity depends on its `derived_from` (if set)
+  plus any names listed in `depends_on:` (use this when a `sql:` body reads several sibling views).
 Materialization:
-  view (default) | dynamic_table (uses entity.target_lag or model.dynamic_target_lag, entity.warehouse or model.warehouse)
+  view (default) | dynamic_table (uses entity.target_lag or model.dynamic_target_lag, entity.warehouse or model.warehouse).
+  A `mapped` leaf or any `derived` entity may be materialized as a dynamic_table to build the DAG self-sufficiently.
+SV-repoint:
+  Any entity may declare `replaces: <PHYSICAL_FQN>` (or a list) -> sv-repoint also rebinds that physical
+  name to this pack's VW_<entity>. Lets a semantic view follow physical DTs that have been absorbed as
+  `derived` entities (those have no source_table of their own).
 """
 import argparse, os, sys
 try:
@@ -75,6 +87,14 @@ def create_stmt(schema: str, name: str, body: str, mat: str, entity: dict, model
 
 def gen_mapped(schema, entity, binding, model):
     name = obj_name(entity["name"])
+    # Source-shaping escape hatch (lives in the MAPPING layer because it is
+    # source-specific: WHERE/QUALIFY/CASE that binds a messy source to the clean
+    # contract). Use {src} for the binding's source_table. Keeps data-model.yaml
+    # source-agnostic; a customer swap supplies its own sql/mapping here.
+    raw = binding.get("sql")
+    if raw:
+        body = raw.replace("{src}", binding.get("source_table", "")).rstrip().rstrip(";")
+        return create_stmt(schema, name, body, materialization(entity, binding, model), entity, model)
     # passthrough: synthetic source already matches the contract 1:1 -> SELECT *
     # (data-model.yaml documents the logical columns; a real customer replaces this
     # with explicit column mappings/transforms).
@@ -88,7 +108,15 @@ def gen_mapped(schema, entity, binding, model):
 
 def gen_derived(schema, entity, model):
     name = obj_name(entity["name"])
-    src_view = f"{schema}.{obj_name(entity['derived_from'])}"
+    src_view = f"{schema}.{obj_name(entity['derived_from'])}" if entity.get("derived_from") else None
+    raw = entity.get("sql")
+    if raw:
+        # Escape hatch: author supplies a full SELECT body. Substitute {schema}
+        # (pack schema) and {src} (the derived_from view, if any). Sibling refs
+        # are written explicitly as {schema}.VW_<NAME>.
+        body = raw.replace("{src}", src_view or "").replace("{schema}", schema).rstrip().rstrip(";")
+        return create_stmt(schema, name, body, entity.get("materialization", "view"), entity, model)
+    # Simple rollup form: expr/group_by over a single derived_from view.
     gb = entity.get("group_by", [])
     sel = []
     for c in entity["columns"]:
@@ -101,6 +129,48 @@ def gen_derived(schema, entity, model):
     gb_sql = ("\nGROUP BY " + ", ".join(gb)) if gb else ""
     body = f"SELECT\n  " + ",\n  ".join(sel) + f"\nFROM {src_view}{gb_sql}"
     return create_stmt(schema, name, body, entity.get("materialization", "view"), entity, model)
+
+
+def entity_deps(entity):
+    """Intra-pack entity names this entity must be created after."""
+    deps = set()
+    df = entity.get("derived_from")
+    if df:
+        deps.add(df)
+    for d in entity.get("depends_on", []) or []:
+        deps.add(d)
+    return deps
+
+
+def topo_order(entities):
+    """Stable topological sort. mapped/context (no intra-pack deps) come first;
+    derived entities follow their inputs. Preserves declaration order on ties.
+    Raises on a missing dep or a cycle so authoring errors surface at generate time."""
+    by_name = {e["name"]: e for e in entities}
+    order = []
+    state = {}  # name -> 0 visiting, 1 done
+
+    def visit(name, stack):
+        if state.get(name) == 1:
+            return
+        if state.get(name) == 0:
+            raise SystemExit(f"Cycle in entity dependencies: {' -> '.join(stack + [name])}")
+        ent = by_name.get(name)
+        if ent is None:
+            raise SystemExit(f"Entity '{name}' referenced as a dependency but not defined")
+        state[name] = 0
+        for dep in sorted(entity_deps(ent)):
+            visit(dep, stack + [name])
+        state[name] = 1
+        order.append(ent)
+
+    # Outer walk: sources/context first, then derived -- so a derived `sql:` body
+    # that references VW_CONFIG or a mapped leaf always finds it already created.
+    # Explicit derived->derived deps are still honored by the recursive visit.
+    phase = {"mapped": 0, "context": 0, "derived": 1}
+    for e in sorted(entities, key=lambda x: phase.get(x["access_pattern"], 2)):
+        visit(e["name"], [])
+    return order
 
 
 def load(model_path, mapping_path):
@@ -119,12 +189,11 @@ def gen_setup(model, mapping):
         f"CREATE DATABASE IF NOT EXISTS {db} COMMENT='{{\"origin\":\"sf_sit-is-fleet\",\"name\":\"build-routing-solution\",\"attributes\":{{\"component\":\"data-contract-app-layer\"}}}}';",
         f"CREATE SCHEMA IF NOT EXISTS {schema} COMMENT='Stable logical layer for the {model.get('pack','?')} pack (generated from data-model + entity-mapping).';\n",
     ]
-    order = {"mapped": 0, "context": 0, "derived": 1}
-    for ent in sorted(model["entities"], key=lambda e: order.get(e["access_pattern"], 2)):
+    for ent in topo_order(model["entities"]):
         ap = ent["access_pattern"]
         if ap in ("mapped", "context"):
             b = bindings.get(ent["name"])
-            if not b or b.get("materialization") == "derived" or not (b.get("mapping") or b.get("passthrough")):
+            if not b or b.get("materialization") == "derived" or not (b.get("mapping") or b.get("passthrough") or b.get("sql")):
                 continue
             out.append(gen_mapped(schema, ent, b, model))
         elif ap == "derived":
@@ -152,6 +221,16 @@ def gen_sv_repoint(model, mapping, sv_list):
             # strip any trailing alias from source_table for the replace key
             base = st.split()[0]
             repl.append((base, f"{schema}.{obj_name(b['entity'])}"))
+    # `replaces:` on a data-model entity rebinds an absorbed physical table
+    # (e.g. a former DT now computed as a `derived` entity) to its VW_.
+    for ent in model["entities"]:
+        reps = ent.get("replaces")
+        if not reps:
+            continue
+        if isinstance(reps, str):
+            reps = [reps]
+        for r in reps:
+            repl.append((r.split()[0], f"{schema}.{obj_name(ent['name'])}"))
     lines = ["DECLARE", "  ddl STRING;", "BEGIN"]
     for sv in [s.strip() for s in sv_list.split(",") if s.strip()]:
         sv_schema = ".".join(sv.split(".")[:2])
@@ -171,8 +250,20 @@ def main():
     ap.add_argument("--mapping", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--sv-repoint", default=None, help="comma-separated SV FQNs to rebind to this pack's views")
+    ap.add_argument("--app-schema", default=None, help="override model.app_schema (e.g. a scratch FLEET_APP_VERIFY.<pack> schema for bit-for-bit checks)")
+    ap.add_argument("--materialization", default=None, choices=["view", "dynamic_table"],
+                    help="force ALL entities to this materialization (e.g. 'view' for instant verification, no DT refresh wait)")
     args = ap.parse_args()
     model, mapping = load(args.model, args.mapping)
+    if args.app_schema:
+        model["app_schema"] = args.app_schema
+    if args.materialization:
+        # Stamp every entity so create_stmt/materialization() resolve to the override.
+        for e in model.get("entities", []):
+            e["materialization"] = args.materialization
+        for b in mapping.get("entities", []):
+            b.pop("materialization", None)
+            b.pop("materialization_override", None)
     if args.sv_repoint:
         sql = gen_sv_repoint(model, mapping, args.sv_repoint)
         open(args.out, "w").write(sql)

@@ -1,20 +1,140 @@
-# Data model (logical contract) - Fleet domain pack: taxi
+# =============================================================================
+# Data model (logical contract) - Fleet domain pack: taxi  (SELF-BUILDING)
+# =============================================================================
+# Absorbs the former FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
+# compute into the pack: thin raw-source leaves (mapped; source-specific shaping
+# in entity-mapping.yaml) + TRIP_SUMMARY as a derived enrichment primitive over
+# those leaves. Swap boundary = the raw SYNTHETIC_DATASETS.UNIFIED tables. The
+# pack no longer depends on the legacy TAXIS schema view. TRIP_SUMMARY keeps the
+# same columns dashboards + SV_TAXIS bind to.
+# =============================================================================
+
 pack: taxi
 app_schema: FLEET_APP.TAXI
+
 entities:
-  - name: TRIP_SUMMARY
-    description: "Per-trip taxi summary: distance, duration, speed, shift, route geometry."
+  # ---- Raw-source leaves (mapped; CONFIG-filtered projections) --------------
+  - name: TRIPS
+    description: "Raw taxi trips for the active vehicle/region."
     access_pattern: mapped
     grain: "One row per trip"
     primary_key: TRIP_ID
     columns:
-      - { name: TRIP_ID, type: VARCHAR, nullable: false }
-      - { name: DRIVER_ID, type: VARCHAR }
-      - { name: REGION, type: VARCHAR }
+      - { name: VEHICLE_ID,        type: VARCHAR }
+      - { name: TRIP_ID,           type: VARCHAR }
+      - { name: TRIP_START,        type: TIMESTAMP_NTZ }
+      - { name: TRIP_END,          type: TIMESTAMP_NTZ }
+      - { name: ORIGIN_POI_ID,     type: VARCHAR }
+      - { name: DESTINATION_POI_ID, type: VARCHAR }
+      - { name: DURATION_MINUTES,  type: FLOAT }
+      - { name: DISTANCE_KM,       type: FLOAT }
+      - { name: ROUTE_GEOG,        type: GEOGRAPHY }
+      - { name: ORIGIN,            type: GEOGRAPHY }
+      - { name: DESTINATION,       type: GEOGRAPHY }
+      - { name: REGION,            type: VARCHAR }
+
+  - name: TELEMETRY
+    description: "Raw pings (speed per trip) for the active vehicle type."
+    access_pattern: mapped
+    grain: "One row per ping"
+    columns:
+      - { name: TRIP_ID,   type: VARCHAR }
+      - { name: SPEED_KMH, type: FLOAT }
+
+  - name: POIS
+    description: "POI lookup (origin/destination naming)."
+    access_pattern: mapped
+    grain: "One row per POI"
+    primary_key: LOCATION_ID
+    columns:
+      - { name: LOCATION_ID, type: VARCHAR }
+      - { name: NAME,        type: VARCHAR }
+      - { name: CATEGORY,    type: VARCHAR }
+      - { name: LAT,         type: FLOAT }
+      - { name: LNG,         type: FLOAT }
+
+  - name: FLEET
+    description: "Fleet shift lookup for the active vehicle type."
+    access_pattern: mapped
+    grain: "One row per vehicle"
+    primary_key: VEHICLE_ID
+    columns:
+      - { name: VEHICLE_ID, type: VARCHAR }
       - { name: SHIFT_TYPE, type: VARCHAR }
+
+  # ---- Consumer-facing derived primitive (was VW_TRIP_SUMMARY) --------------
+  - name: TRIP_SUMMARY
+    description: "Per-trip taxi summary: distance, duration, speed, shift, route geometry, origin/dest names."
+    access_pattern: derived
+    derived_from: TRIPS
+    depends_on: [TELEMETRY, POIS, FLEET]
+    materialization: view
+    replaces: FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
+    columns:
+      - { name: DRIVER_ID,            type: VARCHAR }
+      - { name: TRIP_ID,              type: VARCHAR }
+      - { name: TRIP_START_TIME,      type: TIMESTAMP_NTZ }
+      - { name: TRIP_END_TIME,        type: TIMESTAMP_NTZ }
+      - { name: ORIGIN_ADDRESS,       type: VARCHAR }
+      - { name: DESTINATION_ADDRESS,  type: VARCHAR }
+      - { name: ROUTE_DURATION_SECS,  type: FLOAT }
       - { name: ROUTE_DISTANCE_METERS, type: FLOAT }
-      - { name: ROUTE_DURATION_SECS, type: FLOAT }
-      - { name: AVERAGE_KMH, type: FLOAT }
-      - { name: ORIGIN_ADDRESS, type: VARCHAR }
-      - { name: DESTINATION_ADDRESS, type: VARCHAR }
-      - { name: GEOMETRY, type: GEOGRAPHY }
+      - { name: GEOMETRY,             type: GEOGRAPHY }
+      - { name: ORIGIN,               type: GEOGRAPHY }
+      - { name: DESTINATION,          type: GEOGRAPHY }
+      - { name: SHIFT_TYPE,           type: VARCHAR }
+      - { name: REGION,               type: VARCHAR }
+      - { name: AVERAGE_KMH,          type: FLOAT }
+      - { name: MAX_KMH,              type: FLOAT }
+    sql: |
+      WITH trip_speeds AS (
+          SELECT TRIP_ID, MAX(SPEED_KMH) AS MAX_KMH
+          FROM {schema}.VW_TELEMETRY
+          GROUP BY TRIP_ID
+      ),
+      dedup_pois AS (
+          SELECT LOCATION_ID, NAME, CATEGORY, LAT, LNG,
+                 ROW_NUMBER() OVER (PARTITION BY LOCATION_ID ORDER BY NAME) AS RN
+          FROM {schema}.VW_POIS
+      ),
+      dedup_fleet AS (
+          SELECT VEHICLE_ID, SHIFT_TYPE,
+                 ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY SHIFT_TYPE) AS RN
+          FROM {schema}.VW_FLEET
+      )
+      SELECT
+          t.VEHICLE_ID AS DRIVER_ID,
+          t.TRIP_ID,
+          t.TRIP_START AS TRIP_START_TIME,
+          t.TRIP_END AS TRIP_END_TIME,
+          COALESCE(po.NAME, 'Unknown') AS ORIGIN_ADDRESS,
+          COALESCE(pd.NAME, 'Unknown') AS DESTINATION_ADDRESS,
+          t.DURATION_MINUTES * 60 AS ROUTE_DURATION_SECS,
+          t.DISTANCE_KM * 1000 AS ROUTE_DISTANCE_METERS,
+          t.ROUTE_GEOG AS GEOMETRY,
+          t.ORIGIN,
+          t.DESTINATION,
+          CASE f.SHIFT_TYPE
+              WHEN '6-14' THEN 'Morning'
+              WHEN '14-22' THEN 'Afternoon'
+              WHEN '22-6' THEN 'Night'
+              ELSE f.SHIFT_TYPE
+          END AS SHIFT_TYPE,
+          t.REGION,
+          CASE WHEN t.DURATION_MINUTES > 0
+               THEN t.DISTANCE_KM / (t.DURATION_MINUTES / 60)
+               ELSE 0 END AS AVERAGE_KMH,
+          ts.MAX_KMH
+      FROM {src} t
+      LEFT JOIN dedup_pois po ON t.ORIGIN_POI_ID = po.LOCATION_ID AND po.RN = 1
+      LEFT JOIN dedup_pois pd ON t.DESTINATION_POI_ID = pd.LOCATION_ID AND pd.RN = 1
+      LEFT JOIN dedup_fleet f ON t.VEHICLE_ID = f.VEHICLE_ID AND f.RN = 1
+      LEFT JOIN trip_speeds ts ON t.TRIP_ID = ts.TRIP_ID
+
+  - name: CONFIG
+    description: "Region/vehicle control row (writable physical control table)."
+    access_pattern: context
+    grain: "One row"
+    columns:
+      - { name: VEHICLE_TYPE, type: VARCHAR }
+      - { name: REGION,       type: VARCHAR }

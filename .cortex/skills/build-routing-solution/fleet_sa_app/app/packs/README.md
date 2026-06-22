@@ -7,12 +7,28 @@ swappable source; a customer points the solution at their tables by editing the
 pack's `entity-mapping.yaml` and regenerating - **consumers do not change**.
 
 ## Pattern (per pack, under `fleet/<domain>/`)
-- `data-model.yaml` - logical entities/columns (the contract).
+- `data-model.yaml` - logical entities/columns (the contract). Entities are `mapped`
+  (bound to a source), `derived` (COMPUTED by the solution), or `context`.
 - `entity-mapping.yaml` - binds the contract to the active source (synthetic).
+  Source-specific shaping (WHERE/QUALIFY/CASE) goes in a per-entity `sql:` block here.
 - `entity-mapping.customer-demo.yaml` - optional swap proof (different shape).
 - `setup.sql` - generated DDL (do not hand-edit).
 - Generate: `python3 ../../_lib/generate.py --model <pack>/data-model.yaml --mapping <pack>/entity-mapping.yaml --out <pack>/setup.sql`
 - SV repoint: add `--sv-repoint <DB.SCHEMA.SV,...>` to emit a base-table rebind script.
+- Verify variant: `--app-schema FLEET_APP_VERIFY.<pack> --materialization view` builds the
+  whole chain as instant views in a scratch schema for bit-for-bit checks (no DT refresh wait).
+
+## Self-building packs (`derived` primitives)
+A pack can REBUILD its analytic layer instead of facading pre-built physical DTs.
+A `derived` entity computes from sibling pack objects via either:
+- `expr` + `group_by` (simple rollups), or
+- a `sql:` body (windows, sessionization, joins, H3, multi-step DAG). In `sql:` use
+  `{src}` (the `derived_from` view) and `{schema}.VW_<NAME>` for siblings.
+Entities emit in topological order (`derived_from` + `depends_on`). Any entity may set
+`materialization: dynamic_table` and `replaces: <PHYSICAL_FQN>` (so SV-repoint rebinds the
+absorbed DT). `dwell` is the reference self-building pack: one mapped telemetry leaf +
+a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
+
 
 ## Packs (all migrated to FLEET_APP)
 | Pack | FLEET_APP schema | Consumers |
@@ -22,7 +38,7 @@ pack's `entity-mapping.yaml` and regenerating - **consumers do not change**.
 | food_delivery | FLEET_APP.FOOD_DELIVERY | food_delivery; SV_FOOD_DELIVERY |
 | retail_catchment | FLEET_APP.RETAIL_CATCHMENT | retail_catchment; SV_RETAIL_CATCHMENT |
 | route_optimization | FLEET_APP.ROUTE_OPTIMIZATION | asset_velocity; SV_ASSET_VELOCITY |
-| dwell | FLEET_APP.DWELL | dwell_overview/congestion/facilities/drivers/sla; SV_DWELL_ANALYTICS |
+| dwell | FLEET_APP.DWELL | dwell_overview/congestion/facilities/drivers/sla; SV_DWELL_ANALYTICS (self-building: derived DT chain) |
 | unified_fleet | FLEET_APP.UNIFIED_FLEET | fleet_operations, fleet_map; SV_FLEET_OPERATIONS (cross-DB) |
 | marketplace | FLEET_APP.MARKETPLACE | freight_exchange (TSX); SV_FREIGHT_MARKETPLACE |
 | backload | FLEET_APP.BACKLOAD_MATCHING | backload_matching (TSX); SV_BACKLOAD_MATCHING |
