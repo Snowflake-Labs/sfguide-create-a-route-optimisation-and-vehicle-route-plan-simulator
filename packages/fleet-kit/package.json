@@ -19,8 +19,19 @@
   "files": [
     "dist"
   ],
+  "peerDependencies": {
+    "@deck.gl/core": "~9.2.11",
+    "@deck.gl/layers": "~9.2.11",
+    "@deck.gl/geo-layers": "~9.2.11",
+    "h3-js": "^4.1.0"
+  },
   "devDependencies": {
+    "@deck.gl/core": "~9.2.11",
+    "@deck.gl/layers": "~9.2.11",
+    "@deck.gl/geo-layers": "~9.2.11",
+    "@types/geojson": "^7946.0.14",
     "@types/node": "^20.0.0",
+    "h3-js": "^4.1.0",
     "typescript": "^5.7.0"
   }
 }
