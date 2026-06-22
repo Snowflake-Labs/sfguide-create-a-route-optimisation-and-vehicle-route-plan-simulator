@@ -16,11 +16,27 @@ fleet_sa_app/
     app-config.json         # name/desc, snowflake db.schema, region+vehicle contextBar
     install.json            # logical user/ops/admin role binding (Native App, Phase 2F)
     views/                  # per-view YAML dashboards (added in Phase 2B)
+    packs/                  # data-contract domain packs (FLEET_APP.*); see packs/README.md
+      _substrate/           # neutral SF substrate (SYNTHETIC_DATASETS.NEUTRAL.*)
+      starter/              # NEUTRAL reference pack (STARTER_APP) - proves domain-agnostic core
+    starter/                # NEUTRAL app bundle (domainPacks:[], pure-YAML dashboards)
   ui/                       # vendored SA Next.js host (Next 15 / React 19)
     src/app/api/region/     # NEW: hybrid region/vehicle CONFIG-write endpoint (Phase 2A)
     src/components/context-bar.tsx  # NEW: region/vehicle enum pickers (Phase 2A)
+    src/lib/packs/          # config-driven domain-pack loader (registry.ts + fleet/)
     .npmrc                  # vendored: points @snowflake/* at internal Artifactory
 ```
+
+## Domain-pack loader (Step 4C)
+
+The app core is domain-agnostic. `app-config.json` selects which custom showcase
+views to register via `domainPacks: string[]` (legacy `domainPack` string is
+coerced). The app-shell loops over `domainPacks` and calls each id's
+`registerViews()` from `ui/src/lib/packs/registry.ts` - there is NO fleet import
+in the shell. `dataLayer.database` (default `FLEET_APP`) sets the neutral DB the
+YAML dashboards + surfacing gate bind to. The neutral `starter` bundle ships
+`domainPacks: []` (pure-YAML dashboards, no domain code) over `STARTER_APP`. See
+`app/packs/README.md` for authoring a pack.
 
 ## Region / vehicle context (Hybrid)
 

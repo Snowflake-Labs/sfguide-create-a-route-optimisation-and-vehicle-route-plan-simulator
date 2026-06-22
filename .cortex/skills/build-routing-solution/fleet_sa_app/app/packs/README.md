@@ -6,6 +6,28 @@ consumers (dashboards in `app/app-views.json`, custom TSX views, and the
 swappable source; a customer points the solution at their tables by editing the
 pack's `entity-mapping.yaml` and regenerating - **consumers do not change**.
 
+The `dataLayer.database` in a pack's app bundle (`app-config.json`) tells the SA
+host which neutral DB its YAML dashboards + surfacing gate bind to. It defaults
+to `FLEET_APP`; the neutral starter pack sets it to `STARTER_APP`.
+
+## Neutral substrate (`_substrate/neutral-sf.sql`)
+A first-class, domain-agnostic relabeling of the San Francisco synthetic dataset
+into `SYNTHETIC_DATASETS.NEUTRAL.{LOCATIONS,MOVEMENTS,ASSETS}` (zero-copy views,
+no fleet/vehicle vocabulary in the column names). The neutral `starter` pack maps
+from this substrate, proving the data layer is not fleet-bound. Apply with
+`snow sql -c <conn> -f _substrate/neutral-sf.sql`.
+
+## Neutral starter pack (`starter/`)
+The reference non-fleet pack. Same data-contract pattern, but:
+- `app_schema: STARTER_APP.CORE` (a NEUTRAL database - the generator derives the
+  DB from `app_schema`, so no generator change is needed).
+- maps from the neutral substrate above (pass-through leaves + one derived daily
+  rollup).
+- ships its own semantic view DDL as a committed artifact (`starter/sv_starter.sql`)
+  - the reference for "SV as committed source" (the 10 fleet `SV_*` are not yet).
+- its app bundle lives in `app/starter/` and sets `domainPacks: []` + pure-YAML
+  dashboards (no custom TSX), so the SA core runs it with zero domain code.
+
 ## Pattern (per pack, under `fleet/<domain>/`)
 - `data-model.yaml` - logical entities/columns (the contract). Entities are `mapped`
   (bound to a source), `derived` (COMPUTED by the solution), or `context`.
@@ -64,6 +86,20 @@ a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
   (no analytics tables to contract).
 - `/api/region` reads/writes the physical `<domain>.CONFIG` tables (writable);
   FLEET_APP views are read-only, so the region write path stays on physical CONFIG.
+
+## Author your own domain
+A complete domain is three layers, none of which edit the app core:
+1. **Data-contract pack** (here, `<id>/`): `data-model.yaml` + `entity-mapping.yaml`
+   -> generate `setup.sql` (+ optional `sv_*.sql`). Pick a neutral `app_schema`
+   (its DB becomes your `dataLayer.database`).
+2. **App bundle** (`app/<id>/`): `app-config.json` (`domainPacks`, `dataLayer.database`,
+   contextBar, sampleQuestions), `app-views.json` (pure-YAML dashboards), and an
+   optional `agent-spec.json` (Cortex Analyst over your SV).
+3. **Optional UI pack module** (`ui/src/lib/packs/<id>/index.ts`): only if you need
+   custom full-page TSX views. Register the pack id in `ui/src/lib/packs/registry.ts`;
+   the app-shell loads it generically from the `domainPacks` array - there is NO
+   per-domain branch in the shell. The neutral `starter` pack ships NO UI module
+   (pure YAML), the strongest proof the core is domain-agnostic.
 
 ## Notes
 - Grants: database-level + FUTURE grants in `app/role_binding.sql` cover all packs.
