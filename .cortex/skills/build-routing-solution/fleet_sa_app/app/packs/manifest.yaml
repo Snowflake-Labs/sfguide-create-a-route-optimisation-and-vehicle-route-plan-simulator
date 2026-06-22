@@ -1,0 +1,80 @@
+# =============================================================================
+# Domain-pack manifest - drives deterministic install order + runtime surfacing.
+# =============================================================================
+# Consumed by:
+#   _lib/install.py        - regenerate + apply every pack's setup.sql in
+#                            dependency order (idempotent).
+#   the SA app surfacing gate (/api/pack-status) - a pack's dashboards + agent
+#                            tools register only when its `probe` view resolves
+#                            with rows.
+#
+# Per pack:
+#   name         logical pack id (dir under fleet/)
+#   app_schema   neutral FLEET_APP.<schema> the consumers bind to
+#   depends_on   other packs that must install first (inter-pack contract deps)
+#   probe        a consumer view; install/gate treat COUNT(*) > 0 as "present"
+#   semantic_views  SVs repointed onto this pack (doc; repoint via generate.py --sv-repoint)
+#   self_building   true once the analytic layer is rebuilt from raw sources
+# =============================================================================
+
+packs:
+  - name: route_deviation
+    app_schema: FLEET_APP.ROUTE_DEVIATION
+    probe: FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION]
+    self_building: true
+
+  - name: dwell
+    app_schema: FLEET_APP.DWELL
+    probe: FLEET_APP.DWELL.VW_DWELL_SESSIONS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS]
+    self_building: true
+
+  - name: taxi
+    app_schema: FLEET_APP.TAXI
+    probe: FLEET_APP.TAXI.VW_TRIP_SUMMARY
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS]
+    self_building: true
+
+  - name: food_delivery
+    app_schema: FLEET_APP.FOOD_DELIVERY
+    probe: FLEET_APP.FOOD_DELIVERY.VW_DELIVERIES
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY]
+    self_building: true
+
+  - name: retail_catchment
+    app_schema: FLEET_APP.RETAIL_CATCHMENT
+    probe: FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT]
+    self_building: false   # binds base tables directly (already at swap boundary)
+
+  - name: unified_fleet
+    app_schema: FLEET_APP.UNIFIED_FLEET
+    probe: FLEET_APP.UNIFIED_FLEET.VW_FACT_TRIPS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS]
+    self_building: false   # binds shared SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT
+
+  - name: route_optimization
+    app_schema: FLEET_APP.ROUTE_OPTIMIZATION
+    depends_on: [dwell]    # IDLE_TRAILERS reads FLEET_APP.DWELL.VW_DWELL_SESSIONS
+    probe: FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY]
+    self_building: true
+
+  - name: marketplace
+    app_schema: FLEET_APP.MARKETPLACE
+    probe: FLEET_APP.MARKETPLACE.VW_OFFER_ENRICHED
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE]
+    self_building: true
+
+  - name: backload
+    app_schema: FLEET_APP.BACKLOAD_MATCHING
+    probe: FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING]
+    self_building: true
+
+  - name: dhl_ntbo
+    app_schema: FLEET_APP.DHL_NTBO
+    probe: FLEET_APP.DHL_NTBO.VW_DHL_PROPOSALS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD]
+    self_building: true
