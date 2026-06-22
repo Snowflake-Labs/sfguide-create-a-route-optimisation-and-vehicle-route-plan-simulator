@@ -27,4 +27,6 @@ export function registerInlineComponents() {
   inlineRegistry.register({ toolName: 'compute_isochrone', component: routeMap });
   inlineRegistry.register({ toolName: 'find_poi', component: routeMap });
   inlineRegistry.register({ toolName: 'pharma_catchment', component: routeMap });
+  inlineRegistry.register({ toolName: 'pharma_optimization', component: routeMap });
+  inlineRegistry.register({ toolName: 'supply_chain', component: routeMap });
 }

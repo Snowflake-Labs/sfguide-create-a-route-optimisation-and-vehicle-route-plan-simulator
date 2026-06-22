@@ -10,12 +10,13 @@
 -- directly on the provider account (wgb26798) rather than as an installed app.
 
 -- 1. Application roles (the consumer grants these to user roles).
-CREATE APPLICATION ROLE IF NOT EXISTS app_user;   -- consumers: dashboards + agent (User tools)
-CREATE APPLICATION ROLE IF NOT EXISTS app_ops;     -- operators: config/region (Step 3 surface)
+CREATE APPLICATION ROLE IF NOT EXISTS app_user;   -- consumers: dashboards + agent (User tools + Analyst)
+CREATE APPLICATION ROLE IF NOT EXISTS app_ops;     -- operators: service lifecycle / region / health (Ops bundle)
 CREATE APPLICATION ROLE IF NOT EXISTS app_admin;   -- installer/admin
 
 -- 2. Schemas holding the app objects.
 CREATE SCHEMA IF NOT EXISTS synapse_user;
+CREATE SCHEMA IF NOT EXISTS synapse_ops;
 CREATE SCHEMA IF NOT EXISTS synapse_admin;
 CREATE SCHEMA IF NOT EXISTS config;
 
@@ -27,9 +28,20 @@ GRANT USAGE ON SCHEMA synapse_user TO APPLICATION ROLE app_user;
 --   GRANT USAGE ON AGENT      synapse_user.FLEET_AGENT     TO APPLICATION ROLE app_user;
 --   (each User proc) GRANT USAGE ON PROCEDURE ... TO APPLICATION ROLE app_user;
 
+-- Ops bundle (Step 3): role-gated; bound to app_ops only, NEVER to app_user.
+-- The Ops agent + MCP server give operators service lifecycle / region / health.
+GRANT USAGE ON SCHEMA synapse_ops TO APPLICATION ROLE app_ops;
+--   GRANT USAGE ON MCP SERVER synapse_ops.FLEET_OPS_MCP  TO APPLICATION ROLE app_ops;
+--   GRANT USAGE ON AGENT      synapse_ops.FLEET_OPS_AGENT TO APPLICATION ROLE app_ops;
+--   (each Ops proc) GRANT USAGE ON PROCEDURE ... TO APPLICATION ROLE app_ops;
+
 -- Admin bundle is bound to app_admin only; never to app_user.
 GRANT USAGE ON SCHEMA synapse_admin TO APPLICATION ROLE app_admin;
 --   GRANT USAGE ON MCP SERVER synapse_admin.FLEET_ADMIN_MCP TO APPLICATION ROLE app_admin;
+
+-- NOTE (live / provider-account path): the running deploy on wgb26798 binds real
+-- ACCOUNT roles (FLEET_APP_USER / FLEET_APP_OPS / FLEET_APP_ADMIN) and the SPCS
+-- endpoint service role via app/role_binding.sql, rather than application roles.
 
 -- 4. Tier-B config stage: Ops edits app-config.json / app-views.json / agent
 --    prompts here, then restarts the UI service to reload (no image rebuild).

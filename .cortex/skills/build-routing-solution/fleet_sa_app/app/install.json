@@ -1,5 +1,5 @@
 {
-  "$comment": "Logical->actual role binding for the Fleet Intelligence app. Consumed by the Native App packaging step (Phase 2F). synapse emits GRANTs against IDENTIFIER($<logical>_role); the operator remaps logical roles to real account roles here at install time. Step 2 ships the 'user' and 'admin' bundles; 'ops' is declared for binding completeness but its SA-native surface is deferred to Step 3 (the control-app console remains the interim ops surface).",
+  "$comment": "Logical->actual role binding for the Fleet Intelligence app. Consumed by the Native App packaging step. synapse emits GRANTs against IDENTIFIER($<logical>_role); the operator remaps logical roles to real account roles here at install time. As of Step 3 all three bundles (user / ops / admin) are ACTIVE with their own MCP servers and (user/ops) Cortex Agents. Production role binding applied on wgb26798 (Phase 3E): FLEET_APP_USER / FLEET_APP_OPS / FLEET_APP_ADMIN.",
   "appId": "com.snowflake.solution-accelerator.fleet-intelligence",
   "version": "0.1.0",
   "roles": {
@@ -11,11 +11,12 @@
       "status": "active"
     },
     "ops": {
-      "description": "Operations: service lifecycle, region/matrix provisioning, config + view edits. DECLARED ONLY in Step 2; SA-native surface and MCP server deferred to Step 3. Interim surface = ORS control-app console.",
+      "description": "Operations: service lifecycle (suspend/resume), active region, substrate health. Reachable via the role-gated FLEET_OPS_AGENT and the in-app Ops console (/api/ops). NOT attached to the consumer agent. Heavy provisioning (region/matrix builds, Data Studio) remains in the control app per the hybrid design.",
       "logicalRole": "ops",
       "defaultBinding": "FLEET_APP_OPS",
-      "mcpServer": null,
-      "status": "deferred"
+      "mcpServer": "FLEET_OPS_MCP",
+      "agent": "FLEET_OPS_AGENT",
+      "status": "active"
     },
     "admin": {
       "description": "Installer: app install, agent creation, routing-substrate prereq checks, role binding. Admin MCP server is NOT attached to the consumer agent.",

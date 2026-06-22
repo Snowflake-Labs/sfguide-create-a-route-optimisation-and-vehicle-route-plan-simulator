@@ -19,10 +19,7 @@
         "component": "MetricCards",
         "data": {
           "query": "SELECT COUNT(DISTINCT SESSION_ID) AS total_trips, ROUND(AVG(DWELL_MINUTES),1) AS avg_dwell, SUM(CASE WHEN DWELL_MINUTES <= 30 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(*),0) AS sla_frac, COUNT(DISTINCT VEHICLE_ID) AS active_drivers FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED",
-          "params": {
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type"
-          },
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
               { "column": "total_trips", "label": "Total Trips", "format": "number" },
@@ -37,10 +34,7 @@
         "component": "Chart",
         "data": {
           "query": "SELECT SUBSTR(TO_VARCHAR(TREND_DATE),6) AS day, total_dwells, total_trips FROM ( SELECT TREND_DATE, TOTAL_SESSIONS AS total_dwells, ACTIVE_VEHICLES AS total_trips FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS ORDER BY TREND_DATE DESC LIMIT 30 ) ORDER BY day ASC",
-          "params": {
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type"
-          }
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
           "title": "Daily Trends (Last 30 Days)",
@@ -55,17 +49,12 @@
         "component": "Chart",
         "data": {
           "query": "SELECT SUBSTR(LOCATION_NAME,1,20) AS facility_name, SUM(TOTAL_SESSIONS) AS total_visits FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY total_visits DESC LIMIT 10",
-          "params": {
-            "region": "context.region",
-            "vehicle_type": "context.vehicle_type"
-          }
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
           "title": "Top 10 Facilities by Visits",
           "xAxis": { "field": "facility_name", "fieldType": "category" },
-          "series": [
-            { "type": "bar", "field": "total_visits", "label": "Visits" }
-          ]
+          "series": [ { "type": "bar", "field": "total_visits", "label": "Visits" } ]
         }
       }
     }
@@ -74,22 +63,12 @@
     "label": "Congestion Map",
     "description": "H3 dwell-density hexagons by hour of day (drag the slider to change the hour).",
     "layout": {
-      "default": {
-        "columns": "1fr",
-        "rows": "auto 1fr",
-        "grid": "\"controls\"\n\"map\""
-      }
+      "default": { "columns": "1fr", "rows": "auto 1fr", "grid": "\"controls\"\n\"map\"" }
     },
     "areas": {
       "controls": {
         "component": "Slider",
-        "config": {
-          "label": "Hour of day",
-          "min": 0,
-          "max": 23,
-          "step": 1,
-          "default": 19
-        },
+        "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 19 },
         "emits": { "selected_hour": "" }
       },
       "map": {
@@ -107,11 +86,602 @@
               "tooltip": "<b>{h3_index}</b><br/>Dwells: {dwell_count}<br/>Avg: {avg_dwell_min} min",
               "data": {
                 "query": "SELECT H3_CELL_R7 AS h3_index, SUM(SESSION_COUNT) AS dwell_count, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell_min FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = TO_NUMBER(:selected_hour) GROUP BY H3_CELL_R7 LIMIT 5000",
-                "params": {
-                  "selected_hour": "viewState.selected_hour",
-                  "region": "context.region",
-                  "vehicle_type": "context.vehicle_type"
-                }
+                "params": { "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "dwell_facilities": {
+    "label": "Facility Utilization",
+    "description": "Dwell load by facility and facility type \u2014 where vehicles spend the most time.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byfac bytype\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT LOCATION_ID) AS facilities, SUM(TOTAL_SESSIONS) AS total_visits, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell, ROUND(MAX(MAX_DWELL_MIN),0) AS max_dwell FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "facilities", "label": "Facilities", "format": "number" },
+              { "column": "total_visits", "label": "Total Visits", "format": "number" },
+              { "column": "avg_dwell", "label": "Avg Dwell (min)", "format": "number_2dp" },
+              { "column": "max_dwell", "label": "Max Dwell (min)", "format": "number" }
+            ]
+          }
+        }
+      },
+      "byfac": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT SUBSTR(LOCATION_NAME,1,22) AS facility_name, SUM(TOTAL_DWELL_MIN) AS dwell_min FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY LOCATION_NAME ORDER BY dwell_min DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Top Facilities by Total Dwell",
+          "xAxis": { "field": "facility_name", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "dwell_min", "label": "Dwell (min)" } ]
+        }
+      },
+      "bytype": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT COALESCE(FACILITY_TYPE,'unknown') AS facility_type, SUM(TOTAL_SESSIONS) AS visits FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION GROUP BY FACILITY_TYPE ORDER BY visits DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Visits by Facility Type",
+          "xAxis": { "field": "facility_type", "fieldType": "category" },
+          "series": [ { "type": "pie", "field": "visits", "label": "Visits" } ]
+        }
+      }
+    }
+  },
+  "dwell_drivers": {
+    "label": "Driver Performance",
+    "description": "Per-driver dwell totals and SLA breaches \u2014 click a column header to sort.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"breaches table\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS drivers, SUM(SLA_BREACH_COUNT) AS sla_breaches, SUM(CRITICAL_BREACH_COUNT) AS critical_breaches, ROUND(AVG(AVG_SESSION_MIN),1) AS avg_session FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "drivers", "label": "Drivers", "format": "number" },
+              { "column": "sla_breaches", "label": "SLA Breaches", "format": "number" },
+              { "column": "critical_breaches", "label": "Critical Breaches", "format": "number" },
+              { "column": "avg_session", "label": "Avg Session (min)", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "breaches": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS driver, SLA_BREACH_COUNT AS breaches FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY ORDER BY breaches DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Top Drivers by SLA Breaches",
+          "xAxis": { "field": "driver", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "breaches", "label": "SLA Breaches" } ]
+        }
+      },
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS driver, DRIVER_PROFILE AS profile, HOME_BASE_NAME AS home_base, TOTAL_DWELL_HOURS AS dwell_hours, SLA_BREACH_COUNT AS sla_breaches, CRITICAL_BREACH_COUNT AS critical FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY ORDER BY sla_breaches DESC LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
+      }
+    }
+  },
+  "dwell_sla": {
+    "label": "SLA Alerts",
+    "description": "Dwell sessions that breached SLA thresholds, by severity.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"bystatus table\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS alerts, SUM(IFF(SLA_STATUS='CRITICAL',1,0)) AS critical, SUM(IFF(SLA_STATUS='WARNING',1,0)) AS warning, ROUND(AVG(MINUTES_OVER_WARNING),1) AS avg_over FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "alerts", "label": "Total Alerts", "format": "number" },
+              { "column": "critical", "label": "Critical", "format": "number" },
+              { "column": "warning", "label": "Warning", "format": "number" },
+              { "column": "avg_over", "label": "Avg Min Over", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "bystatus": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT SLA_STATUS AS status, COUNT(*) AS alerts FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS GROUP BY SLA_STATUS ORDER BY alerts DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Alerts by Status",
+          "xAxis": { "field": "status", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "alerts", "label": "Alerts" } ]
+        }
+      },
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
+      }
+    }
+  },
+  "deviation_overview": {
+    "label": "Route Deviation",
+    "description": "Planned vs actual route adherence \u2014 daily trend and worst drivers.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"trend drivers\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0)) AS deviation_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0))*1.0/NULLIF(COUNT(*),0) AS deviation_frac, ROUND(SUM(DISTANCE_DEVIATION_KM),0) AS excess_km FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "total_trips", "label": "Total Trips", "format": "number" },
+              { "column": "deviation_trips", "label": "Deviated Trips", "format": "number" },
+              { "column": "deviation_frac", "label": "Deviation Rate", "format": "percent" },
+              { "column": "excess_km", "label": "Excess KM", "format": "number" }
+            ]
+          }
+        }
+      },
+      "trend": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT TO_VARCHAR(TRIP_DATE) AS day, DEVIATION_RATE_PCT AS deviation_rate, TOTAL_TRIPS AS trips FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Daily Deviation Rate",
+          "xAxis": { "field": "day", "fieldType": "category" },
+          "series": [
+            { "type": "area", "field": "deviation_rate", "label": "Deviation %", "color": "#FF6B35" },
+            { "type": "line", "field": "trips", "label": "Trips", "yAxis": "right", "color": "#29B5E8" }
+          ]
+        }
+      },
+      "drivers": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT DRIVER_ID AS driver, DEVIATION_RATE_PCT AS deviation_rate FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.DRIVER_DEVIATION_SUMMARY ORDER BY deviation_rate DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Worst Drivers by Deviation Rate",
+          "xAxis": { "field": "driver", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "deviation_rate", "label": "Deviation %" } ]
+        }
+      }
+    }
+  },
+  "deviation_routes": {
+    "label": "Route Comparison",
+    "description": "Actual (red) vs expected (blue) driven paths for the most-deviating trips.",
+    "layout": {
+      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
+    },
+    "areas": {
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "expected",
+              "geojsonColumn": "expected_geojson",
+              "color": [41, 181, 232, 180],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual",
+              "geojsonColumn": "actual_geojson",
+              "color": [209, 55, 78, 220],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      },
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_NAME,1,18) AS origin, SUBSTR(DEST_NAME,1,18) AS destination, ROUND(DISTANCE_DEVIATION_PCT,1) AS dev_pct, ROUND(DISTANCE_DEVIATION_KM,1) AS excess_km FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS WHERE IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
+      }
+    }
+  },
+  "taxi_overview": {
+    "label": "Taxi Overview",
+    "description": "Taxi fleet trip volume, speed, and shift mix.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byshift byregion\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT DRIVER_ID) AS drivers, ROUND(AVG(ROUTE_DISTANCE_METERS)/1000,1) AS avg_dist_km, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "total_trips", "label": "Total Trips", "format": "number" },
+              { "column": "drivers", "label": "Active Drivers", "format": "number" },
+              { "column": "avg_dist_km", "label": "Avg Distance (km)", "format": "number_2dp" },
+              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "byshift": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT COALESCE(SHIFT_TYPE,'unknown') AS shift, COUNT(*) AS trips FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY GROUP BY SHIFT_TYPE ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Trips by Shift",
+          "xAxis": { "field": "shift", "fieldType": "category" },
+          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
+        }
+      },
+      "byregion": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT COALESCE(REGION,'unknown') AS region, ROUND(AVG(AVERAGE_KMH),1) AS avg_speed FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY GROUP BY REGION ORDER BY avg_speed DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Avg Speed by Region",
+          "xAxis": { "field": "region", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "avg_speed", "label": "Avg Speed (km/h)" } ]
+        }
+      }
+    }
+  },
+  "taxi_routes": {
+    "label": "Taxi Routes",
+    "description": "Driven taxi trip paths (longest trips shown) on the map.",
+    "layout": {
+      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
+    },
+    "areas": {
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "routes",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 160],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      },
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
+      }
+    }
+  },
+  "food_delivery": {
+    "label": "Food Delivery",
+    "description": "Courier delivery performance and busiest restaurants.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"restaurants scatter\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT DELIVERY_ID) AS deliveries, COUNT(DISTINCT COURIER_ID) AS couriers, ROUND(AVG(DELIVERY_TIME_MIN),1) AS avg_time, ROUND(AVG(DISTANCE_KM),1) AS avg_dist FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "deliveries", "label": "Deliveries", "format": "number" },
+              { "column": "couriers", "label": "Couriers", "format": "number" },
+              { "column": "avg_time", "label": "Avg Time (min)", "format": "number_2dp" },
+              { "column": "avg_dist", "label": "Avg Distance (km)", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "restaurants": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT SUBSTR(RESTAURANT_NAME,1,22) AS restaurant, TOTAL_ORDERS AS orders FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED ORDER BY orders DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Busiest Restaurants by Orders",
+          "xAxis": { "field": "restaurant", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "orders", "label": "Orders" } ]
+        }
+      },
+      "scatter": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT ROUND(DISTANCE_KM,1) AS distance_km, ROUND(DELIVERY_TIME_MIN,1) AS delivery_time_min FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES WHERE DELIVERY_TIME_MIN IS NOT NULL AND DISTANCE_KM IS NOT NULL LIMIT 400",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Delivery Time vs Distance",
+          "xAxis": { "field": "distance_km", "fieldType": "number" },
+          "series": [ { "type": "scatter", "field": "delivery_time_min", "label": "Delivery time (min)" } ]
+        }
+      }
+    }
+  },
+  "retail_catchment": {
+    "label": "Retail Catchment",
+    "description": "Retail points of interest by category and location.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"bycat map\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "pois", "label": "Total POIs", "format": "number" },
+              { "column": "categories", "label": "Categories", "format": "number" },
+              { "column": "cities", "label": "Cities", "format": "number" },
+              { "column": "states", "label": "States", "format": "number" }
+            ]
+          }
+        }
+      },
+      "bycat": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT BASIC_CATEGORY AS category, COUNT(*) AS pois FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS GROUP BY BASIC_CATEGORY ORDER BY pois DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "POIs by Category",
+          "xAxis": { "field": "category", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "pois", "label": "POIs" } ]
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "pois",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [41, 181, 232, 160],
+              "radius": 60,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 6,
+              "pickable": true,
+              "tooltip": "<b>{poi_name}</b><br/>{category}",
+              "data": {
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL LIMIT 5000",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "asset_velocity": {
+    "label": "Asset Velocity",
+    "description": "Idle trailers, cost of idleness, and where they are parked.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byseverity map\"" }
+    },
+    "areas": {
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "idle_trailers", "label": "Idle Trailers", "format": "number" },
+              { "column": "cost_usd", "label": "Cost of Idleness ($)", "format": "number" },
+              { "column": "savings_usd", "label": "Projected Savings ($)", "format": "number" },
+              { "column": "avg_idle_days", "label": "Avg Idle Days", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "byseverity": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Trailers by Idle Severity",
+          "xAxis": { "field": "severity", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "trailers", "label": "Trailers" } ]
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "idle",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [255, 107, 53, 200],
+              "radius": 400,
+              "radiusMinPixels": 5,
+              "radiusMaxPixels": 16,
+              "pickable": true,
+              "tooltip": "<b>{vehicle_id}</b><br/>{severity}<br/>Idle {idle_days} days",
+              "data": {
+                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL LIMIT 2000",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "fleet_operations": {
+    "label": "Fleet Operations",
+    "description": "Unified fleet telemetry and trips: volume, detours, and safety events.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bytype\"" }
+    },
+    "areas": {
+      "trips": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS trips, ROUND(SUM(DISTANCE_KM),0) AS total_km, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(DURATION_MINUTES),1) AS avg_duration FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "trips", "label": "Trips", "format": "number" },
+              { "column": "total_km", "label": "Total KM", "format": "number" },
+              { "column": "detours", "label": "Detour Trips", "format": "number" },
+              { "column": "avg_duration", "label": "Avg Duration (min)", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "safety": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "mapping": {
+            "metrics": [
+              { "column": "pings", "label": "GPS Pings", "format": "number" },
+              { "column": "speeding", "label": "Speeding Events", "format": "number" },
+              { "column": "hos", "label": "HOS Violations", "format": "number" },
+              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" }
+            ]
+          }
+        }
+      },
+      "byregion": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT GROUP BY REGION ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Trips by Region",
+          "xAxis": { "field": "region", "fieldType": "category" },
+          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
+        }
+      },
+      "bytype": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT VEHICLE_TYPE AS vehicle_type, COUNT(*) AS trips FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT GROUP BY VEHICLE_TYPE ORDER BY trips DESC",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": {
+          "title": "Trips by Vehicle Type",
+          "xAxis": { "field": "vehicle_type", "fieldType": "category" },
+          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
+        }
+      }
+    }
+  },
+  "fleet_map": {
+    "label": "Fleet Map",
+    "description": "Live vehicle telemetry points \u2014 click a vehicle to highlight its pings.",
+    "layout": {
+      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"vehicles map\"" }
+    },
+    "areas": {
+      "vehicles": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS vehicle_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT GROUP BY VEHICLE_ID ORDER BY pings DESC LIMIT 50",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": { "rowKey": "vehicle_id", "maxRows": 50 },
+        "emits": { "selected_vehicle": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "telemetry",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "base": [120, 120, 130, 120],
+                "active": [41, 181, 232, 255],
+                "matchColumn": "vehicle_id",
+                "whenViewStateEquals": "selected_vehicle"
+              },
+              "radius": 40,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 6,
+              "pickable": true,
+              "tooltip": "<b>{vehicle_id}</b><br/>{speed_kmh} km/h",
+              "data": {
+                "query": "SELECT VEHICLE_ID AS vehicle_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT WHERE LATITUDE IS NOT NULL SAMPLE (5000 ROWS)",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
           ]

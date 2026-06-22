@@ -9,7 +9,7 @@
   "accountUrl": "pm-fleet-test.snowflakecomputing.com",
   "mcpServerName": "FLEET_ADMIN_MCP",
   "roles": {
-    "admin": "ACCOUNTADMIN"
+    "admin": "FLEET_APP_ADMIN"
   },
   "materializedAt": "2026-06-21T16:21:14.096Z",
   "materializedFrom": "git:0e05ff8a7d1ff58946e7bd4ac79e79784f46c157"

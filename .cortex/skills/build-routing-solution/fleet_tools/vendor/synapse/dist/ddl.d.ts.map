@@ -1,0 +1,1 @@
+{"version":3,"file":"ddl.d.ts","sourceRoot":"","sources":["../src/ddl.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;GAgBG;AACH,MAAM,WAAW,iBAAiB;IAChC,8BAA8B;IAC9B,KAAK,CAAC,EAAE,MAAM,CAAC;IACf,6DAA6D;IAC7D,WAAW,CAAC,EAAE,MAAM,CAAC;IACrB,0FAA0F;IAC1F,MAAM,CAAC,EAAE,OAAO,CAAC;CAClB;AAED,wBAAgB,aAAa,CAAC,IAAI,GAAE,iBAAsB,GAAG,MAAM,CAkBlE"}

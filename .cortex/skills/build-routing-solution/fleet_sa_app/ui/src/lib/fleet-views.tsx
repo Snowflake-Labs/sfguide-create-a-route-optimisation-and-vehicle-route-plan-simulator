@@ -26,4 +26,41 @@ export function registerFleetViews(): void {
       })),
     ),
   });
+
+  viewRegistry.register({
+    id: 'freight_exchange',
+    label: 'Freight Exchange',
+    description: 'Browse live freight offers on a map, draft AI counter-offers, and plan round trips.',
+    component: lazy(() =>
+      import('@/components/views/areas/freight-exchange').then((mod) => ({
+        default: mod.FreightExchangeView,
+      })),
+    ),
+  });
+
+  viewRegistry.register({
+    id: 'backload_matching',
+    label: 'Backload Matching',
+    description: 'Match empty trailers to external offers and plan the empty repositioning leg.',
+    component: lazy(() =>
+      import('@/components/views/areas/backload-matching').then((mod) => ({
+        default: mod.BackloadMatchingView,
+      })),
+    ),
+  });
+
+  // Ops console: operator-only platform control (service lifecycle, region, health).
+  // Reaches the OPS synapse verbs via /api/ops; data-layer access is gated by the
+  // app role (FLEET_APP_OPS) in production (Phase 3E).
+  viewRegistry.register({
+    id: 'ops_console',
+    label: 'Ops Console',
+    description: 'Operator controls: suspend/resume services, set the active region, and check platform health.',
+    tags: ['ops', 'admin'],
+    component: lazy(() =>
+      import('@/components/views/areas/ops-console').then((mod) => ({
+        default: mod.OpsConsoleView,
+      })),
+    ),
+  });
 }

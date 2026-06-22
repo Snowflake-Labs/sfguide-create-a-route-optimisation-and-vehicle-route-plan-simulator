@@ -3,17 +3,41 @@
     "orchestration": "auto"
   },
   "instructions": {
-    "response": "You are the Fleet Intelligence routing assistant. You help users plan and analyze vehicle routes: directions between places, drive-time isochrones (reachability), multi-stop route optimization, points-of-interest searches within a travel-time area, and pharmacy/site catchments. Use the routing tools to answer; summarize results concisely and, when a tool returns map geometry, tell the user it is shown on the map. Respect the active region and vehicle context. Do NOT fabricate coordinates or distances \u2014 always call a tool.",
-    "orchestration": "TOOL ROUTING:\n- For 'how do I get from A to B' / 'route between' -> get_directions.\n- For 'what can I reach within N minutes of X' / 'reachability' -> compute_isochrone.\n- For 'plan/optimize routes for these stops' / multiple deliveries across vehicles -> optimize_routes (needs a depot and vehicle count).\n- For 'find <category> within N minutes of X' (fuel, parking, supermarket, etc.) -> find_poi.\n- For pharmacy/site catchment or reachable demand -> pharma_catchment.\nWhen the user does not specify a profile, pass null and let the active vehicle profile apply. When a region is not specified for optimization, pass null for the active region. Prefer a single tool call that answers the question; do not chain tools unless the user asks for multiple things.",
+    "response": "You are the Fleet Intelligence assistant. You help users with two things: (1) PLANNING/ANALYZING ROUTES via routing tools - directions between places, drive-time isochrones (reachability), multi-stop route optimization, points-of-interest within a travel-time area, and pharmacy/site catchments; and (2) ANSWERING ANALYTICAL QUESTIONS about fleet operations across domains (dwell, fleet operations/telemetry, route deviation, asset velocity, taxis, food delivery, retail catchment, freight marketplace, backload matching, DHL backload) using the Cortex Analyst tools over semantic views. Summarize results concisely. When a routing tool returns map geometry, tell the user it is shown on the map. Respect the active region and vehicle context. Do NOT fabricate coordinates, distances, or metrics - always call a tool.",
+    "orchestration": "TOOL ROUTING:\nROUTING (geometry/planning) -> MCP routing tools:\n- 'how do I get from A to B' / 'route between' -> get_directions.\n- 'what can I reach within N minutes of X' / 'reachability' -> compute_isochrone.\n- 'plan/optimize routes for these stops' / multiple deliveries across vehicles -> optimize_routes (needs a depot and vehicle count).\n- 'find <category> within N minutes of X' (fuel, parking, supermarket, etc.) -> find_poi.\n- pharmacy/site catchment or reachable demand -> pharma_catchment.\n- optimize pharmacy deliveries / plan the pharma distribution run -> pharma_optimization (pass profile or null).\n- optimize the supply-chain / distribution-network routes -> supply_chain (pass profile or null).\nANALYTICS (aggregations/trends/breakdowns over existing data) -> the matching Cortex Analyst tool:\n- dwell time, facility utilization, congestion, SLA breaches -> query_dwell.\n- telemetry, speed, speeding, HOS violations, planned vs actual trips by region/vehicle/driver -> query_fleet_operations.\n- planned vs actual route deviation distance/time/rate -> query_route_deviation.\n- idle trailers, cost of idleness, lane demand, repositioning savings -> query_asset_velocity.\n- taxi trip distance/duration/speed by driver/shift/route -> query_taxis.\n- courier deliveries and restaurant order volume -> query_food_delivery.\n- retail POIs by category/city/state -> query_retail_catchment.\n- freight offers, market rate benchmarking, partner reliability -> query_freight_marketplace.\n- external offers vs available trailers and recorded matching decisions -> query_backload_matching.\n- DHL NTBO proposals, empty km, pickup slack -> query_dhl_backload.\nUse data_to_chart to visualize tabular analytics results when a chart aids understanding. When a profile or region is unspecified for routing, pass null to use the active context. Prefer a single tool call that answers the question; do not chain tools unless the user asks for multiple things.",
     "sample_questions": [
       { "question": "Get directions from the Manchester depot to Leeds city centre" },
       { "question": "What can a van reach within 15 minutes of the depot?" },
-      { "question": "Optimize routes for these 8 delivery stops from the depot with 2 vehicles" },
-      { "question": "Find fuel stations within 10 minutes of the depot" }
+      { "question": "What is the average dwell time by facility?" },
+      { "question": "Which drivers have the highest route deviation rate?" },
+      { "question": "How many freight offers are above the market rate?" }
     ]
   },
-  "tools": [],
-  "tool_resources": {},
+  "tools": [
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_dwell", "description": "Analytics over vehicle dwell sessions: where/how long vehicles stop, facility utilization, H3 congestion, and per-driver SLA breaches. Use for dwell-time, facility, congestion, and SLA questions. Not for live routing or directions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_fleet_operations", "description": "Analytics over unified fleet telemetry/trips/schedule: GPS speed, speeding, HOS violations, dwell status, actual vs planned trips, broken down by region, vehicle type, driver profile, shift, and origin/destination. Use for telemetry and trip-performance questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_route_deviation", "description": "Analytics comparing actual driven routes vs planned routes per trip: deviation distance/time and rates by driver, route variation, and origin/destination. Use for route-adherence/deviation questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_asset_velocity", "description": "Analytics over idle trailers with cost of idleness and projected savings, plus terminal lane demand for repositioning. Use for asset-utilization, idleness-cost, and repositioning questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_taxis", "description": "Analytics over trip-level taxi telemetry summary: distance, duration, speed by driver, shift, region, and route. Use for taxi fleet performance questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_food_delivery", "description": "Analytics over courier deliveries (time, distance, status) joined to restaurants (order volume, avg delivery time). Use for food-delivery performance questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_retail_catchment", "description": "Analytics over retail points of interest by category/city/state, plus precomputed POI counts per city. Use for retail catchment and POI-distribution questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_freight_marketplace", "description": "Analytics over live freight offers with market-rate benchmarking, partner trust, routed distances, and historical partner-lane reliability. Use for freight marketplace and rate-benchmark questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_backload_matching", "description": "Analytics over external freight offers, available trailers, and recorded matching decisions (score, empty km, net benefit). Use for backload matching coverage and decision questions." } },
+    { "tool_spec": { "type": "cortex_analyst_text_to_sql", "name": "query_dhl_backload", "description": "Analytics over DHL NTBO backload proposals: empty trailers, dispatchable orders, and generated trailer->order proposals (empty km, pickup slack). Use for DHL NTBO empty-km/savings and proposal-coverage questions." } },
+    { "tool_spec": { "type": "data_to_chart", "name": "data_to_chart", "description": "Generates visualizations from tabular data returned by the analytics tools." } }
+  ],
+  "tool_resources": {
+    "query_dwell": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS" },
+    "query_fleet_operations": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPERATIONS" },
+    "query_route_deviation": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION" },
+    "query_asset_velocity": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY" },
+    "query_taxis": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_TAXIS" },
+    "query_food_delivery": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FOOD_DELIVERY" },
+    "query_retail_catchment": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT" },
+    "query_freight_marketplace": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE" },
+    "query_backload_matching": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING" },
+    "query_dhl_backload": { "semantic_view": "FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD" }
+  },
   "mcp_servers": [
     {
       "server_spec": {

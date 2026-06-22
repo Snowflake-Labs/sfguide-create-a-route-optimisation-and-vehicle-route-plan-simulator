@@ -17,6 +17,8 @@ const VERBS: Record<string, number> = {
   get_directions: 2,
   find_poi: 5,
   pharma_catchment: 3,
+  pharma_optimization: 1,
+  supply_chain: 1,
 };
 
 async function handlePost(req: Request) {

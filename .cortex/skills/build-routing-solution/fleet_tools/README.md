@@ -8,9 +8,12 @@ produces its OWN Snowflake-managed MCP server (per-bundle servers = role isolati
 |---|---|---|---|---|
 | `user/` | `user` | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `pharma_catchment` | `FLEET_USER_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_USER` |
 | `admin/` | `admin` | `set_active_region`, `check_substrate` | `FLEET_ADMIN_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_ADMIN` |
+| `ops/` | `ops` | `set_active_region`, `service_control`, `service_status`, `healthcheck` | `FLEET_OPS_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_OPS` |
 
-Only `FLEET_USER_MCP` is attached to the consumer Cortex Agent. `FLEET_ADMIN_MCP` is bound to
-the admin role and is not reachable by an end-user agent session.
+Only `FLEET_USER_MCP` is attached to the consumer Cortex Agent (`FLEET_AGENT`). `FLEET_ADMIN_MCP`
+is bound to the admin role. `FLEET_OPS_MCP` is bound to the ops role and attached to a SEPARATE
+role-gated agent `FLEET_OPS_AGENT` (NOT the consumer agent) — so an end-user agent session can
+never see or invoke an Ops verb. The in-app Ops console reaches these verbs via `/api/ops`.
 
 ## Design
 
@@ -33,15 +36,16 @@ fleet_tools/
 ## Build / deploy
 
 ```bash
-# one-time: build the synapse framework (install ONLY the package; the workspace install hangs)
-cd /Users/obielov/Documents/GitHub/synapse/packages/synapse && npm install && npm run build
+# one-time: install the VENDORED synapse framework's deps (public npm only; no
+# external path). The framework's built dist/ is committed under vendor/synapse/.
+cd vendor/synapse && npm install --omit=dev && cd -
 
-# per app: install (file:-links synapse), materialize, deploy
+# per app: install (file:-links the vendored synapse), materialize, deploy
 cd fleet_tools/user
 npm install
 npx synapse materialize --install ../_installed/wgb26798/fleet-user-tools
 npx synapse deploy      --install ../_installed/wgb26798/fleet-user-tools   # snow sql -f via fleet_test_evals
-# repeat for fleet_tools/admin
+# repeat for fleet_tools/admin and fleet_tools/ops
 ```
 
 `install.json` (in each `_installed/.../` target) binds logical roles to actual Snowflake roles
@@ -56,10 +60,13 @@ the `snowCliConn` (`fleet_test_evals` = wgb26798), warehouse, db, schema, and `m
   a runtime `package.json` into the target and would clobber the source one.
 - Don't use `LIKE ... ESCAPE '\'` in proc SQL (Snowflake backslash mangling); use `STARTSWITH`.
 
-## Caveat (tier C)
+## Self-contained (tier C)
 
-synapse is currently `file:`-linked from its own repo (absolute path). For a portable/forkable
-quickstart, vendor the synapse package into this repo before publishing.
+The synapse framework is **vendored** into this repo at `fleet_tools/vendor/synapse/`
+(its built `dist/` is committed; `node_modules/` is installed from public npm). All three
+apps depend on it via `"@snowflake/synapse": "file:../vendor/synapse"` — no absolute or
+external path — so the branch is a forkable, self-contained tier-C template. To refresh the
+vendored framework, re-copy `dist/` + `package.json` from an upstream synapse build.
 
 ## Verified (wgb26798)
 

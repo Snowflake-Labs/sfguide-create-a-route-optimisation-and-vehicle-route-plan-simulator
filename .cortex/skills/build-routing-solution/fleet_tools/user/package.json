@@ -9,7 +9,7 @@
     "materialize": "synapse materialize"
   },
   "dependencies": {
-    "@snowflake/synapse": "file:/Users/obielov/Documents/GitHub/synapse/packages/synapse"
+    "@snowflake/synapse": "file:../vendor/synapse"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
