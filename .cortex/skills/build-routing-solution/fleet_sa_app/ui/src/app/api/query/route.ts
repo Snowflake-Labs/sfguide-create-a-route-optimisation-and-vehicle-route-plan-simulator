@@ -44,6 +44,31 @@ function validateParams(params?: Record<string, string | null>): void {
   }
 }
 
+// Databases an agent-emitted (dynamic) query may reference. FLEET_APP is the
+// neutral data contract; SNOWFLAKE.CORTEX.COMPLETE backs the asset-velocity
+// rationale. This is a fast pre-filter for clear errors — the AUTHORITATIVE
+// boundary is the owner's-rights proc FLEET_APP.CORE.QUERY_DYNAMIC, which runs
+// as FLEET_APP_DYNAMIC_READER and physically cannot reach other databases.
+const ALLOWED_DYNAMIC_DBS = new Set(['FLEET_APP', 'SNOWFLAKE']);
+
+function validateDynamicAllowlist(sql: string): void {
+  // Match any 3-part qualified name (DB.SCHEMA.OBJECT), covering both
+  // `FROM/JOIN db.schema.obj` and `TABLE(db.schema.fn(...))` forms.
+  const re = /\b([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) {
+    const db = m[1].toUpperCase();
+    if (!ALLOWED_DYNAMIC_DBS.has(db)) {
+      throw new Error(
+        `Dynamic query may only reference ${[...ALLOWED_DYNAMIC_DBS].join(', ')}; found '${m[1]}'`,
+      );
+    }
+  }
+}
+
+const DYNAMIC_QUERY_TAG =
+  '{"origin":"sf_sit-is-fleet","name":"oss-render-view","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}';
+
 function resolveParams(sql: string, params?: Record<string, string | null>): string {
   if (!params) return sql;
   let resolved = sql;
@@ -58,9 +83,22 @@ function resolveParams(sql: string, params?: Record<string, string | null>): str
   return resolved;
 }
 
-async function executeStatement(sql: string): Promise<StatementResponse> {
+interface ExecOpts {
+  bindings?: Record<string, { type: string; value: string }>;
+  queryTag?: string;
+}
+
+async function executeStatement(sql: string, opts: ExecOpts = {}): Promise<StatementResponse> {
   const auth = getSnowflakeAuth();
   const url = `${auth.baseUrl}/api/v2/statements`;
+  const body: Record<string, unknown> = {
+    statement: sql,
+    timeout: 60,
+    warehouse: WAREHOUSE,
+    role: ROLE,
+  };
+  if (opts.bindings) body.bindings = opts.bindings;
+  if (opts.queryTag) body.parameters = { QUERY_TAG: opts.queryTag };
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -69,12 +107,7 @@ async function executeStatement(sql: string): Promise<StatementResponse> {
       Accept: 'application/json',
       'X-Snowflake-Authorization-Token-Type': auth.tokenType,
     },
-    body: JSON.stringify({
-      statement: sql,
-      timeout: 60,
-      warehouse: WAREHOUSE,
-      role: ROLE,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -116,6 +149,7 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     const body = await request.json();
     const rawSql = body.sql as string;
     const params = body.params as Record<string, string | null> | undefined;
+    const dynamic = body.dynamic === true;
 
     if (!rawSql) {
       return NextResponse.json({ error: 'sql is required' }, { status: 400 });
@@ -130,9 +164,22 @@ async function handleQuery(request: NextRequest): Promise<Response> {
     const sqlPreview = sql.replace(/\s+/g, ' ').trim().slice(0, 120);
 
     const sfStart = Date.now();
-    logger.debug('sf-exec', { sql: sqlPreview, warehouse: WAREHOUSE, role: ROLE });
+    logger.debug('sf-exec', { sql: sqlPreview, warehouse: WAREHOUSE, role: ROLE, dynamic });
 
-    let result = await executeStatement(sql);
+    // Agent-emitted queries run through the owner's-rights boundary proc so the
+    // caller's secondary roles cannot leak in. The SQL is bound (not inlined) to
+    // avoid dollar-quoting hazards. validateDynamicAllowlist is a fast pre-filter;
+    // FLEET_APP_DYNAMIC_READER (the proc owner) is the authoritative boundary.
+    let result: StatementResponse;
+    if (dynamic) {
+      validateDynamicAllowlist(sql);
+      result = await executeStatement('CALL FLEET_APP.CORE.QUERY_DYNAMIC(?)', {
+        bindings: { '1': { type: 'TEXT', value: sql } },
+        queryTag: DYNAMIC_QUERY_TAG,
+      });
+    } else {
+      result = await executeStatement(sql);
+    }
     const hadHandle = !!(result.statementHandle && !result.data);
 
     if (hadHandle) {

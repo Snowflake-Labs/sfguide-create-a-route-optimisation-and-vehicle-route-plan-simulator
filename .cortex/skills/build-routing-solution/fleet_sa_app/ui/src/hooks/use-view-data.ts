@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/lib/store';
+import { DYNAMIC_VIEW_ID } from '@/lib/load-views';
 
 interface QueryResult {
   columns: Array<{ key: string; label: string }>;
@@ -43,6 +44,9 @@ export function useViewData(
   const viewState = useAppStore((s) => s.panel.viewState);
   const context = useAppStore((s) => s.context);
   const viewsVersion = useAppStore((s) => s.viewsVersion);
+  // Queries for the ephemeral agent-emitted page run through the owner's-rights
+  // dynamic boundary (/api/query dynamic:true). Trusted shipped views do not.
+  const isDynamic = useAppStore((s) => s.panel.activeViewId === DYNAMIC_VIEW_ID);
   const [data, setData] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +75,7 @@ export function useViewData(
       const res = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sql: query, params: resolvedParams }),
+        body: JSON.stringify({ sql: query, params: resolvedParams, dynamic: isDynamic }),
         signal: controller.signal,
       });
 
@@ -96,7 +100,7 @@ export function useViewData(
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, paramsKey, viewsVersion]);
+  }, [query, paramsKey, viewsVersion, isDynamic]);
 
   useEffect(() => {
     fetchData();
