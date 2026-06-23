@@ -1,7 +1,7 @@
 /*
  * extend_routing_agent.sql — adds 9 Cortex Analyst (text-to-SQL) tools to the
  * existing FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT, one per semantic view
- * in FLEET_INTELLIGENCE.SEMANTIC, while preserving the 7 existing ORS/pharma
+ * in FLEET_INTELLIGENCE.SEMANTIC, while preserving the 7 existing ORS/demo
  * procedure tools. Re-creates ONLY the AGENT object (the procedures already exist).
  *
  * Deploy: snow sql -c fleet_test_evals -f semantic/extend_routing_agent.sql
@@ -24,7 +24,7 @@ instructions:
 
     A) LIVE ROUTING tools (OpenRouteService procedures) for on-demand geospatial calls:
        directions, isochrones (reachability), POI-in-isochrone, multi-stop optimization,
-       and the San Francisco pharmaceutical supply-chain demo tools.
+       and the config-driven catchment / delivery / network-optimization demo tools.
 
     B) ANALYTICS tools (Cortex Analyst over semantic views) for questions about DATA
        already generated/stored by the solution — both the raw Data Studio telemetry
@@ -55,9 +55,9 @@ instructions:
       Map travel mode to profile: cycle/bike/ebike -> cycling-electric; truck/HGV/freight -> driving-hgv;
       drive/by car/unspecified -> driving-car.
     - Multi-stop optimization (ad hoc locations): tool_optimization
-    - SF pharma supply chain (all pharmacies, 3 vehicles, pre-loaded): tool_supply_chain
-    - SF pharma 30-stop fleet demo: tool_pharma_optimization
-    - SF pharmacy population/catchment health profile: tool_pharma_catchment
+    - Full distribution-network plan (all key sites, 3 vehicles, pre-loaded): tool_network_optimization
+    - Pre-geocoded 30-stop fleet delivery demo: tool_delivery_optimization
+    - Drive-time catchment / area profile around a site: tool_catchment
 
     ANALYTICS (Cortex Analyst over semantic views) — use for aggregate/historical questions:
     - Universal fleet analytics (any asset mode - car/hgv/ebike): trips (distance, duration,
@@ -69,7 +69,7 @@ instructions:
       => query_dwell_analytics
     - Route deviation: planned-vs-actual per trip, deviation rate, excess km, time lost, by driver
       => query_route_deviation
-    - Retail catchment: retail POI counts by category/city/state => query_retail_catchment
+    - Catchment: POI counts by category/city/state => query_catchment
     - Route optimization / asset velocity: idle trailers, cost of idleness, projected savings,
       terminal lane demand => query_asset_velocity
     - Backload matching: matching decisions, empty/deadhead km, net benefit, by source/type
@@ -156,8 +156,8 @@ tools:
         required: [delivery_locations, depot_location, num_vehicles]
   - tool_spec:
       type: generic
-      name: tool_supply_chain
-      description: "Run the FULL pre-configured pharmaceutical supply chain delivery plan for San Francisco. Uses ALL pre-loaded data. Do NOT ask the user for any data. Requires setup-agent-playground."
+      name: tool_network_optimization
+      description: "Run the FULL pre-configured distribution-network delivery plan. Uses ALL pre-loaded data. Do NOT ask the user for any data. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
@@ -166,8 +166,8 @@ tools:
             description: "Transport mode. Default: driving-car"
   - tool_spec:
       type: generic
-      name: tool_pharma_optimization
-      description: "Run the pre-configured 30-stop SF pharmaceutical fleet delivery optimization with 3 specialist vehicles. Do NOT ask the user for addresses. Requires setup-agent-playground."
+      name: tool_delivery_optimization
+      description: "Run the pre-configured 30-stop fleet delivery optimization with 3 skill-tier vehicles. Do NOT ask the user for addresses. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
@@ -176,21 +176,21 @@ tools:
             description: "Transport mode. Default: driving-car"
   - tool_spec:
       type: generic
-      name: tool_pharma_catchment
-      description: "Analyse population health demographics within a drive-time catchment of a San Francisco pharmacy. Requires setup-agent-playground."
+      name: tool_catchment
+      description: "Analyse the area within a drive-time catchment of a site. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
-          pharmacy_description:
+          site_description:
             type: string
-            description: "Description of the pharmacy location, e.g. 'Walgreens at 498 Castro Street, San Francisco'"
+            description: "Description of the site location, e.g. 'a store at 498 Castro Street'"
           range_minutes:
             type: number
             description: "Drive time in minutes for catchment area. Default: 10"
           profile:
             type: string
             description: "Transport mode. Default: driving-car"
-        required: [pharmacy_description]
+        required: [site_description]
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_fleet_ops
@@ -209,8 +209,8 @@ tools:
       description: "Analytics over route deviation: per-trip planned-vs-actual comparison with deviation distance/time and rates. Use for 'deviation rate by driver', 'trips that deviated', 'total excess km', 'time lost', 'daily deviation trend'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
-      name: query_retail_catchment
-      description: "Analytics over the Retail Catchment demo: retail points of interest by category, city, and state. Use for 'how many POIs by category/city', 'competition density', 'distinct categories'."
+      name: query_catchment
+      description: "Analytics over the Catchment demo: points of interest by category, city, and state. Use for 'how many POIs by category/city', 'competition density', 'distinct categories'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_asset_velocity
@@ -240,19 +240,19 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_supply_chain:
+  tool_network_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_pharma_optimization:
+  tool_delivery_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_pharma_catchment:
+  tool_catchment:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_fleet_ops:
@@ -271,8 +271,8 @@ tool_resources:
     semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  query_retail_catchment:
-    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT
+  query_catchment:
+    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_asset_velocity:

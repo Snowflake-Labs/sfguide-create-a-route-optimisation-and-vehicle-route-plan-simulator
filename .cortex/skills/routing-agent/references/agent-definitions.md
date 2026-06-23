@@ -5,12 +5,12 @@ SQL and Python definitions for the OpenRouteService Routing Agent.
 > **Note:** The canonical, deployable definitions live in
 > [`deploy-agent.sql`](deploy-agent.sql). This document captures the core
 > tools (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION) and the
-> base agent spec for reference. Three additional pharma-specific tools
-> (`TOOL_SUPPLY_CHAIN`, `TOOL_PHARMA_OPTIMIZATION`, `TOOL_PHARMA_CATCHMENT`)
+> base agent spec for reference. Three additional config-driven demo tools
+> (`TOOL_NETWORK_OPTIMIZATION`, `TOOL_DELIVERY_OPTIMIZATION`, `TOOL_CATCHMENT`)
 > are also defined in `deploy-agent.sql` and are wired into the same
 > `ROUTING_AGENT` Cortex Agent. They require the
 > [`setup-agent-playground`](../../setup-agent-playground/SKILL.md) skill
-> to have run for the SF demo data tables to exist.
+> to have run for the demo data tables to exist.
 
 ---
 

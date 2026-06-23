@@ -2,12 +2,12 @@ import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
 
-export const supply_chain = defineProc({
-  name: 'supply_chain',
+export const delivery_optimization = defineProc({
+  name: 'delivery_optimization',
   description:
-    'Run the supply-chain routing optimization across the configured network for the ' +
-    'active region (idle-asset repositioning / multi-stop distribution). Use for ' +
-    '"optimize the supply chain routes" or "plan the distribution network run".',
+    'Run the pre-configured fleet delivery optimization: plan optimized multi-stop delivery ' +
+    'routes across the configured site network for the active region. Use for "optimize ' +
+    'deliveries" or "plan the distribution run".',
   roles: ['user'],
   args: {
     profile: t
@@ -19,7 +19,7 @@ export const supply_chain = defineProc({
     result: t.object({}).describe('Optimization response: optimized routes and summary metrics.'),
   },
   execute: async (args, ctx) => {
-    const result = await callTool(ctx.conn, Procs.supplyChain, [args.profile]);
+    const result = await callTool(ctx.conn, Procs.deliveryOptimization, [args.profile]);
     return { result };
   },
 });

@@ -680,15 +680,15 @@ $$;
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_SUPPLY_CHAIN: Pharmaceutical supply chain plan (SF-only demo).
--- Reads SF_TOP_PHARMACIES, SF_HEALTH_DEMOGRAPHICS, SF_DRUG_FORMULARY
--- (created by setup-agent-playground). Builds a 3-vehicle VROOM payload
--- and returns the optimized routes with population-derived drug demand.
--- The proc compiles lazily, so it can be created BEFORE the data tables
--- exist — but it will only execute correctly once setup-agent-playground
--- has been run.
+-- TOOL_NETWORK_OPTIMIZATION: Distribution-network delivery plan (config-driven demo).
+-- Reads DEMO_KEY_SITES, DEMO_AREA_DEMOGRAPHICS, DEMO_DEMAND_CATALOG and the
+-- depot/region from DEMO_DEPOT (created by setup-agent-playground). Builds a
+-- 3-vehicle VROOM payload and returns the optimized routes with
+-- demand-signal-derived item demand. The proc compiles lazily, so it can be
+-- created BEFORE the data tables exist — but it will only execute correctly
+-- once setup-agent-playground has been run.
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
@@ -699,60 +699,72 @@ $$
 try {
     var depotLon = -122.3946;
     var depotLat = 37.7941;
-    var depotName = 'SF Medical Supply Depot, 1 Market St';
+    var depotName = 'Central Supply Depot';
+    var region = 'SanFrancisco';
+    try {
+        var depotStmt = snowflake.createStatement({
+            sqlText: "SELECT LONGITUDE, LATITUDE, NAME, REGION " +
+                     "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
+        });
+        var depotRes = depotStmt.execute();
+        if (depotRes.next()) {
+            depotLon = depotRes.getColumnValue(1); depotLat = depotRes.getColumnValue(2);
+            depotName = depotRes.getColumnValue(3); region = depotRes.getColumnValue(4);
+        }
+    } catch(e) { /* fall back to defaults */ }
 
-    var pharmaStmt = snowflake.createStatement({
-        sqlText: "SELECT PHARMACY_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, PRIORITY " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES ORDER BY PRIORITY"
+    var siteStmt = snowflake.createStatement({
+        sqlText: "SELECT SITE_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, PRIORITY " +
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES ORDER BY PRIORITY"
     });
-    var pharmaRes = pharmaStmt.execute();
-    var pharmacies = [];
-    while (pharmaRes.next()) {
-        pharmacies.push({
-            id: pharmaRes.getColumnValue(1),
-            name: pharmaRes.getColumnValue(2),
-            address: pharmaRes.getColumnValue(3),
-            longitude: pharmaRes.getColumnValue(4),
-            latitude: pharmaRes.getColumnValue(5),
-            priority: pharmaRes.getColumnValue(6)
+    var siteRes = siteStmt.execute();
+    var sites = [];
+    while (siteRes.next()) {
+        sites.push({
+            id: siteRes.getColumnValue(1),
+            name: siteRes.getColumnValue(2),
+            address: siteRes.getColumnValue(3),
+            longitude: siteRes.getColumnValue(4),
+            latitude: siteRes.getColumnValue(5),
+            priority: siteRes.getColumnValue(6)
         });
     }
 
-    var drugStmt = snowflake.createStatement({
-        sqlText: "SELECT DRUG_ID, CONDITION, DRUG_NAME, DRUG_CATEGORY, DELIVERY_SKILL, " +
+    var itemStmt = snowflake.createStatement({
+        sqlText: "SELECT ITEM_ID, SEGMENT, ITEM_NAME, ITEM_CATEGORY, DELIVERY_SKILL, " +
                  "SKILL_LABEL, UNITS_PER_1000, PRIORITY " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY ORDER BY PRIORITY"
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG ORDER BY PRIORITY"
     });
-    var drugRes = drugStmt.execute();
-    var formulary = [];
-    while (drugRes.next()) {
-        formulary.push({
-            drug_id: drugRes.getColumnValue(1),
-            condition: drugRes.getColumnValue(2),
-            drug_name: drugRes.getColumnValue(3),
-            drug_category: drugRes.getColumnValue(4),
-            delivery_skill: drugRes.getColumnValue(5),
-            skill_label: drugRes.getColumnValue(6),
-            units_per_1000: drugRes.getColumnValue(7),
-            priority: drugRes.getColumnValue(8)
+    var itemRes = itemStmt.execute();
+    var catalog = [];
+    while (itemRes.next()) {
+        catalog.push({
+            item_id: itemRes.getColumnValue(1),
+            segment: itemRes.getColumnValue(2),
+            item_name: itemRes.getColumnValue(3),
+            item_category: itemRes.getColumnValue(4),
+            delivery_skill: itemRes.getColumnValue(5),
+            skill_label: itemRes.getColumnValue(6),
+            units_per_1000: itemRes.getColumnValue(7),
+            priority: itemRes.getColumnValue(8)
         });
     }
 
     var demoStmt = snowflake.createStatement({
         sqlText: "SELECT NEIGHBORHOOD, TOTAL_POPULATION, DIABETES_PCT, HYPERTENSION_PCT, " +
                  "CARDIOVASCULAR_PCT, RESPIRATORY_PCT, MOBILITY_ISSUES_PCT " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS"
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS"
     });
     var demoRes = demoStmt.execute();
-    var totalDiabetes = 0, totalHypertension = 0, totalCardio = 0, totalResp = 0, totalMobility = 0, totalPop = 0;
+    var seg1 = 0, seg2 = 0, seg3 = 0, seg4 = 0, seg5 = 0, totalPop = 0;
     while (demoRes.next()) {
         var pop = demoRes.getColumnValue(2);
         totalPop += pop;
-        totalDiabetes += demoRes.getColumnValue(3) * pop / 100;
-        totalHypertension += demoRes.getColumnValue(4) * pop / 100;
-        totalCardio += demoRes.getColumnValue(5) * pop / 100;
-        totalResp += demoRes.getColumnValue(6) * pop / 100;
-        totalMobility += demoRes.getColumnValue(7) * pop / 100;
+        seg1 += demoRes.getColumnValue(3) * pop / 100;
+        seg2 += demoRes.getColumnValue(4) * pop / 100;
+        seg3 += demoRes.getColumnValue(5) * pop / 100;
+        seg4 += demoRes.getColumnValue(6) * pop / 100;
+        seg5 += demoRes.getColumnValue(7) * pop / 100;
     }
 
     var priorityWeights = { 1: 0.25, 2: 0.15, 3: 0.10 };
@@ -760,52 +772,52 @@ try {
     var jobDetails = [];
     var jobId = 1;
 
-    for (var p = 0; p < pharmacies.length; p++) {
-        var pharmacy = pharmacies[p];
-        var weight = priorityWeights[pharmacy.priority] || 0.10;
+    for (var p = 0; p < sites.length; p++) {
+        var site = sites[p];
+        var weight = priorityWeights[site.priority] || 0.10;
         var primarySkill = (p % 3) + 1;
 
-        var conditions = {
-            'DIABETES': totalDiabetes * weight,
-            'HYPERTENSION': totalHypertension * weight,
-            'CARDIOVASCULAR': totalCardio * weight,
-            'RESPIRATORY': totalResp * weight,
-            'MOBILITY': totalMobility * weight
+        var segments = {
+            'DIABETES': seg1 * weight,
+            'HYPERTENSION': seg2 * weight,
+            'CARDIOVASCULAR': seg3 * weight,
+            'RESPIRATORY': seg4 * weight,
+            'MOBILITY': seg5 * weight
         };
 
-        var pharmaOrders = [];
-        for (var d = 0; d < formulary.length; d++) {
-            var drug = formulary[d];
-            if (drug.delivery_skill !== primarySkill) continue;
-            var condPop = conditions[drug.condition] || 0;
-            var units = Math.round(condPop / 1000 * drug.units_per_1000);
+        var siteOrders = [];
+        for (var d = 0; d < catalog.length; d++) {
+            var item = catalog[d];
+            if (item.delivery_skill !== primarySkill) continue;
+            var segPop = segments[item.segment] || 0;
+            var units = Math.round(segPop / 1000 * item.units_per_1000);
             if (units > 0) {
-                pharmaOrders.push({
-                    drug_name: drug.drug_name, drug_category: drug.drug_category,
-                    skill: drug.delivery_skill, skill_label: drug.skill_label,
-                    units: units, priority: drug.priority
+                siteOrders.push({
+                    item_name: item.item_name, item_category: item.item_category,
+                    skill: item.delivery_skill, skill_label: item.skill_label,
+                    units: units, priority: item.priority
                 });
             }
         }
-        pharmaOrders.sort(function(a, b) { return a.priority - b.priority || b.units - a.units; });
-        var topOrders = pharmaOrders.slice(0, 5);
+        siteOrders.sort(function(a, b) { return a.priority - b.priority || b.units - a.units; });
+        var topOrders = siteOrders.slice(0, 5);
 
         if (topOrders.length > 0) {
-            var drugNames = topOrders.map(function(o2) { return o2.drug_name; });
+            var itemNames = topOrders.map(function(o2) { return o2.item_name; });
             var totalUnits = 0;
             for (var t = 0; t < topOrders.length; t++) totalUnits += topOrders[t].units;
 
             vroomJobs.push({
                 id: jobId,
-                location: [pharmacy.longitude, pharmacy.latitude],
+                location: [site.longitude, site.latitude],
                 amount: [1], skills: [primarySkill],
-                description: pharmacy.name + ' - ' + topOrders[0].skill_label + ': ' + drugNames.join(', ')
+                description: site.name + ' - ' + topOrders[0].skill_label + ': ' + itemNames.join(', ')
             });
             jobDetails.push({
-                job_id: jobId, pharmacy: pharmacy.name, address: pharmacy.address,
-                longitude: pharmacy.longitude, latitude: pharmacy.latitude,
+                job_id: jobId, site: site.name, name: site.name, address: site.address,
+                longitude: site.longitude, latitude: site.latitude,
                 skill: primarySkill, skill_label: topOrders[0].skill_label,
-                drugs: drugNames, total_units: totalUnits
+                items: itemNames, total_units: totalUnits
             });
             jobId++;
         }
@@ -814,19 +826,19 @@ try {
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [vroomJobs.length], skills: [1],
-          description: 'Cold Chain Van (Insulin, Biologics, Nitroglycerin)' },
+          description: 'Cold Chain Vehicle (Refrigerated goods)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [vroomJobs.length], skills: [2],
-          description: 'Controlled Substances Van (Opioids, Anticoagulants, Steroids)' },
+          description: 'Restricted / Controlled Goods Vehicle' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [vroomJobs.length], skills: [3],
-          description: 'Standard Delivery Van (Oral medications, Inhalers, Topicals)' }
+          description: 'Standard Delivery Vehicle' }
     ];
 
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
     var optSQL = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
                  "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
-    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, 'SanFrancisco'] });
+    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
         return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails };
@@ -852,26 +864,26 @@ try {
 
     return {
         status: 'SUCCESS', num_vehicles: 3,
-        total_jobs: vroomJobs.length, pharmacies_served: pharmacies.length,
+        total_jobs: vroomJobs.length, sites_served: sites.length,
         jobs: jobDetails, vehicles: vehicles,
         routes: routesWithGeometry, unassigned: response.unassigned || [],
         depot: { longitude: depotLon, latitude: depotLat, name: depotName },
         geometry: geojson,
         demand_summary: {
             cold_chain_stops: skill1Jobs.length,
-            controlled_substance_stops: skill2Jobs.length,
-            standard_medicine_stops: skill3Jobs.length,
-            cold_chain_drugs: skill1Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, []),
-            controlled_drugs: skill2Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, []),
-            standard_drugs: skill3Jobs.map(function(j) { return j.drugs; }).reduce(function(a, b) { return a.concat(b); }, [])
+            restricted_stops: skill2Jobs.length,
+            standard_stops: skill3Jobs.length,
+            cold_chain_items: skill1Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, []),
+            restricted_items: skill2Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, []),
+            standard_items: skill3Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, [])
         },
-        population_basis: {
+        demand_basis: {
             total_population: totalPop,
-            diabetes_patients: Math.round(totalDiabetes),
-            hypertension_patients: Math.round(totalHypertension),
-            cardiovascular_patients: Math.round(totalCardio),
-            respiratory_patients: Math.round(totalResp),
-            mobility_patients: Math.round(totalMobility)
+            segment_1_demand: Math.round(seg1),
+            segment_2_demand: Math.round(seg2),
+            segment_3_demand: Math.round(seg3),
+            segment_4_demand: Math.round(seg4),
+            segment_5_demand: Math.round(seg5)
         }
     };
 } catch(err) {
@@ -879,14 +891,15 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_PHARMA_OPTIMIZATION: Pre-geocoded SF pharma fleet demo.
--- 30 stops with 3 specialist vehicles (cold chain, controlled, standard).
--- Reads SF_PHARMA_JOBS (created by setup-agent-playground).
+-- TOOL_DELIVERY_OPTIMIZATION: Pre-geocoded fleet delivery demo.
+-- 30 stops with 3 skill-tier vehicles (cold chain, restricted, standard).
+-- Reads DEMO_DELIVERY_STOPS and depot/region from DEMO_DEPOT
+-- (created by setup-agent-playground).
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
@@ -897,10 +910,23 @@ $$
 try {
     var depotLon = -122.3946;
     var depotLat =  37.7941;
+    var depotName = 'Central Supply Depot';
+    var region = 'SanFrancisco';
+    try {
+        var depotStmt = snowflake.createStatement({
+            sqlText: "SELECT LONGITUDE, LATITUDE, NAME, REGION " +
+                     "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
+        });
+        var depotRes = depotStmt.execute();
+        if (depotRes.next()) {
+            depotLon = depotRes.getColumnValue(1); depotLat = depotRes.getColumnValue(2);
+            depotName = depotRes.getColumnValue(3); region = depotRes.getColumnValue(4);
+        }
+    } catch(e) { /* fall back to defaults */ }
 
     var jobsStmt = snowflake.createStatement({
         sqlText: "SELECT JOB_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, SKILL, SKILL_LABEL, AMOUNT " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS ORDER BY JOB_ID"
+                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS ORDER BY JOB_ID"
     });
     var jobsRes = jobsStmt.execute();
     var vroomJobs = [];
@@ -918,23 +944,23 @@ try {
         jobMeta.push({ name: name, address: address, longitude: lon, latitude: lat, skill: skill, skill_label: skillLbl });
     }
     if (vroomJobs.length === 0) {
-        return { error: 'No jobs found in SF_PHARMA_JOBS table. Run setup-agent-playground first.', status: 'FAILED' };
+        return { error: 'No jobs found in DEMO_DELIVERY_STOPS table. Run setup-agent-playground first.', status: 'FAILED' };
     }
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [12], skills: [1],
-          description: 'Cold Chain Van (Vaccines & Refrigerated)' },
+          description: 'Cold Chain Vehicle (Refrigerated)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [12], skills: [2],
-          description: 'Controlled Substances Van (Licensed Pharmacist)' },
+          description: 'Restricted / Controlled Goods Vehicle' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: PROFILE, capacity: [12], skills: [3],
-          description: 'Standard Delivery Van' }
+          description: 'Standard Delivery Vehicle' }
     ];
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
     var optSQL = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
                  "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
-    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, 'SanFrancisco'] });
+    var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
         return { error: 'OPTIMIZATION returned no results', status: 'FAILED' };
@@ -948,7 +974,7 @@ try {
         jobs: jobMeta, vehicles: vehicles,
         routes: response.routes || [], unassigned: response.unassigned || [],
         summary: response.summary || {},
-        depot: { longitude: depotLon, latitude: depotLat, name: 'SF Medical Supply Depot, 1 Market St' },
+        depot: { longitude: depotLon, latitude: depotLat, name: depotName },
         geometry: geojson
     };
 } catch(err) {
@@ -956,16 +982,16 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_PHARMA_CATCHMENT: Population health profile within drive-time
--- catchment of a SF pharmacy. Reads SF_HEALTH_DEMOGRAPHICS.
+-- TOOL_CATCHMENT: Area profile within a drive-time catchment of a site.
+-- Reads DEMO_AREA_DEMOGRAPHICS and the active region from DEMO_DEPOT.
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT(
-    PHARMACY_DESCRIPTION VARCHAR,
-    RANGE_MINUTES        FLOAT DEFAULT 10,
-    PROFILE              VARCHAR DEFAULT 'driving-car'
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT(
+    SITE_DESCRIPTION VARCHAR,
+    RANGE_MINUTES    FLOAT DEFAULT 10,
+    PROFILE          VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
 LANGUAGE JAVASCRIPT
@@ -973,28 +999,39 @@ EXECUTE AS OWNER
 AS
 $$
 try {
+    var region = 'SanFrancisco';
+    try {
+        var depotStmt = snowflake.createStatement({
+            sqlText: "SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
+        });
+        var depotRes = depotStmt.execute();
+        if (depotRes.next()) { region = depotRes.getColumnValue(1) || region; }
+    } catch(e) { /* fall back to default region */ }
+
+    var geoPrompt = 'Return ONLY a JSON object with the latitude and longitude of this location'
+        + (region ? (' in ' + region) : '') + '. Location: ';
     var geocodeSQL = "SELECT AI_COMPLETE(" +
         "'claude-sonnet-4-5'," +
-        "CONCAT('Return ONLY a JSON object with the latitude and longitude of this location in San Francisco. Location: ', ?)," +
+        "CONCAT(?, ?)," +
         "{'temperature': 0, 'max_tokens': 100}," +
         "{'type': 'json', 'schema': {'type': 'object', 'properties': {" +
             "'latitude': {'type': 'number'}, 'longitude': {'type': 'number'}, 'name': {'type': 'string'}" +
         "}, 'required': ['latitude', 'longitude', 'name']}}" +
         ") AS result";
-    var geocodeStmt = snowflake.createStatement({ sqlText: geocodeSQL, binds: [PHARMACY_DESCRIPTION] });
+    var geocodeStmt = snowflake.createStatement({ sqlText: geocodeSQL, binds: [geoPrompt, SITE_DESCRIPTION] });
     var geocodeRes = geocodeStmt.execute();
     geocodeRes.next();
     var rawGeo = geocodeRes.getColumnValue(1);
     var loc = (typeof rawGeo === 'string') ? JSON.parse(rawGeo) : rawGeo;
     if (!loc || !loc.latitude || !loc.longitude) {
-        return { error: 'Could not geocode pharmacy location', status: 'FAILED' };
+        return { error: 'Could not geocode site location', status: 'FAILED' };
     }
     var isoSQL = "SELECT ST_ASGEOJSON(d.GEOJSON) AS GEOJSON_STR, " +
                  "d.RESPONSE:features[0]:properties:area::FLOAT AS AREA_M2 " +
                  "FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, ?, ?, ?::NUMBER, ?)) d LIMIT 1";
     var isoStmt = snowflake.createStatement({
         sqlText: isoSQL,
-        binds: [PROFILE, loc.longitude, loc.latitude, RANGE_MINUTES, 'SanFrancisco']
+        binds: [PROFILE, loc.longitude, loc.latitude, RANGE_MINUTES, region]
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
@@ -1012,7 +1049,7 @@ try {
                   "PCT_ELDERLY, PCT_CHILDREN, DIABETES_PCT, HYPERTENSION_PCT, " +
                   "CARDIOVASCULAR_PCT, RESPIRATORY_PCT, MOBILITY_ISSUES_PCT, " +
                   "INCOME_BRACKET, CAR_OWNERSHIP_PCT, TRANSIT_ACCESS " +
-                  "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS " +
+                  "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS " +
                   "WHERE ST_WITHIN(" +
                   "  TO_GEOGRAPHY(OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(LONGITUDE::FLOAT,LATITUDE::FLOAT)))," +
                   "  TO_GEOGRAPHY('" + isoGeojsonStr + "')" +
@@ -1061,9 +1098,10 @@ try {
     if (neighbourhoods.length === 0) {
         return {
             status: 'SUCCESS',
-            pharmacy: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
+            site: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
+            center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
             range_minutes: RANGE_MINUTES, geometry: isoGeojson, area_km2: areaKm2,
-            message: 'No population data found within catchment area. Try increasing range_minutes or run setup-agent-playground.',
+            message: 'No area data found within catchment. Try increasing range_minutes or run setup-agent-playground.',
             population_points: [], summary: {}
         };
     }
@@ -1078,7 +1116,7 @@ try {
     var highRisk = neighbourhoods.filter(function(n) { return n.risk_score >= 55; });
     return {
         status: 'SUCCESS',
-        pharmacy: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
+        site: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
         center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
         range_minutes: RANGE_MINUTES, geometry: isoGeojson,
         area_km2: Math.round(areaKm2 * 100) / 100,
@@ -1095,9 +1133,9 @@ try {
             income_medium_pct: Math.round(medIncome / totalPop * 1000) / 10,
             income_high_pct: Math.round(highIncome / totalPop * 1000) / 10,
             top_morbidity: avgDiab > avgHyp ? 'Diabetes' : 'Hypertension',
-            accessibility_note: pctNoCar > 40 ? 'HIGH dependency on pharmacy — majority of population has no car' :
+            accessibility_note: pctNoCar > 40 ? 'HIGH dependency on the site — majority of population has no car' :
                                 pctNoCar > 25 ? 'MODERATE car-free population — good transit access needed' :
-                                'Most residents have car access to pharmacy'
+                                'Most residents have car access to the site'
         }
     };
 } catch(err) {
@@ -1105,7 +1143,7 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- CREATE AGENT with tool bindings
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
@@ -1126,8 +1164,8 @@ instructions:
     3. Multi-stop delivery route optimization
     4. Finding points of interest (cafes, restaurants, shops, parks, etc.) reachable
        within X minutes of a location, by combining an isochrone with Overture Maps POI data.
-    5. Pharmaceutical supply chain planning (San Francisco demo) — pharmacy catchment
-       analysis, drug demand estimation, and multi-vehicle delivery optimization.
+    5. Catchment, delivery, and distribution-network planning (config-driven demo) — drive-time
+       catchment analysis around a site, demand estimation, and multi-vehicle delivery optimization.
 
     CRITICAL RULES - YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
 
@@ -1185,14 +1223,14 @@ instructions:
       one of those.
       Pass a single lowercase category keyword for poi_category (e.g. "cafe", "restaurant",
       "bar", "pharmacy", "park", "supermarket", "hotel").
-    - Pharmaceutical supply chain (full SF plan, all pharmacies, 3 specialist vehicles):
-      Use tool_supply_chain. This tool has ALL data pre-loaded — do NOT ask the user
-      for pharmacy addresses or depot info.
-    - Pharma fleet delivery demo (30 pre-geocoded SF stops with 3 vehicles):
-      Use tool_pharma_optimization.
-    - Population health / catchment analysis around a SF pharmacy:
-      Use tool_pharma_catchment.
-    - The pharma tools (tool_supply_chain, tool_pharma_optimization, tool_pharma_catchment)
+    - Full distribution-network plan (all key sites, 3 skill-tier vehicles):
+      Use tool_network_optimization. This tool has ALL data pre-loaded — do NOT ask the user
+      for site addresses or depot info.
+    - Pre-geocoded fleet delivery demo (30 stops with 3 vehicles):
+      Use tool_delivery_optimization.
+    - Area / catchment analysis around a site:
+      Use tool_catchment.
+    - The demo tools (tool_network_optimization, tool_delivery_optimization, tool_catchment)
       require setup-agent-playground to have run. If they return "No jobs found" or similar,
       surface that message to the user.
     - ALWAYS use a tool for routing/POI questions. NEVER answer from general knowledge.
@@ -1276,8 +1314,8 @@ tools:
         required: [delivery_locations, depot_location, num_vehicles]
   - tool_spec:
       type: generic
-      name: tool_supply_chain
-      description: "Run the FULL pre-configured pharmaceutical supply chain delivery plan for San Francisco. Uses ALL pre-loaded data: 6 SF top pharmacies, SF health demographics (55 neighborhoods), drug formulary (25 drugs across 5 conditions), and 3 specialist vehicles (cold chain, controlled substances, standard). Depot at 1 Market Street. Do NOT ask the user for any data. Requires setup-agent-playground."
+      name: tool_network_optimization
+      description: "Run the FULL pre-configured distribution-network delivery plan. Uses ALL pre-loaded data: key sites, area demographics (demand signals), a demand catalog, and 3 skill-tier vehicles (cold chain, restricted/controlled, standard). Depot and region read from config. Do NOT ask the user for any data. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
@@ -1286,8 +1324,8 @@ tools:
             description: "Transport mode. Default: driving-car"
   - tool_spec:
       type: generic
-      name: tool_pharma_optimization
-      description: "Run the pre-configured 30-stop SF pharmaceutical fleet delivery optimization with 3 specialist vehicles (cold chain van, controlled substances van, standard delivery van). Do NOT ask the user for addresses. Requires setup-agent-playground."
+      name: tool_delivery_optimization
+      description: "Run the pre-configured 30-stop fleet delivery optimization with 3 skill-tier vehicles (cold chain, restricted/controlled, standard). Do NOT ask the user for addresses. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
@@ -1296,21 +1334,21 @@ tools:
             description: "Transport mode. Default: driving-car"
   - tool_spec:
       type: generic
-      name: tool_pharma_catchment
-      description: "Analyse population health demographics within a drive-time catchment of a San Francisco pharmacy. Returns morbidity rates (diabetes, hypertension, cardiovascular, respiratory, mobility), population counts, income/car-ownership distribution, and a per-neighborhood risk score. Requires setup-agent-playground."
+      name: tool_catchment
+      description: "Analyse the area within a drive-time catchment of a site. Returns area demand-signal rates, population counts, income/car-ownership distribution, and a per-area risk/priority score. Requires setup-agent-playground."
       input_schema:
         type: object
         properties:
-          pharmacy_description:
+          site_description:
             type: string
-            description: "Description of the pharmacy location, e.g. 'Walgreens at 498 Castro Street, San Francisco'"
+            description: "Description of the site location, e.g. 'a store at 498 Castro Street'"
           range_minutes:
             type: number
             description: "Drive time in minutes for catchment area. Default: 10"
           profile:
             type: string
             description: "Transport mode. Default: driving-car"
-        required: [pharmacy_description]
+        required: [site_description]
 tool_resources:
   tool_directions:
     type: procedure
@@ -1332,19 +1370,19 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_supply_chain:
+  tool_network_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_pharma_optimization:
+  tool_delivery_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  tool_pharma_catchment:
+  tool_catchment:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;
@@ -1354,6 +1392,6 @@ SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
 UNION ALL SELECT 'TOOL_POI_IN_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_POI_IN_ISOCHRONE'
 UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_SUPPLY_CHAIN', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_SUPPLY_CHAIN'
-UNION ALL SELECT 'TOOL_PHARMA_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_PHARMA_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_PHARMA_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_PHARMA_CATCHMENT';
+UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
+UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
+UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_CATCHMENT';

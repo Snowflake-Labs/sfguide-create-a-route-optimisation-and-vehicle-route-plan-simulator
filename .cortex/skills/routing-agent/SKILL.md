@@ -19,11 +19,11 @@ The agent registers seven tools:
 - `tool_isochrone` — multi-region reachability polygons.
 - `tool_poi_in_isochrone` — Overture Maps POI search inside an isochrone.
 - `tool_optimization` — multi-region multi-vehicle VRP via VROOM.
-- `tool_supply_chain` — full SF pharma supply-chain plan (depot + 6 pharmacies + 3 specialist vans).
-- `tool_pharma_optimization` — 30 pre-geocoded SF pharmacy stops with skill-bound vehicles.
-- `tool_pharma_catchment` — drive-time catchment morbidity profile for a SF pharmacy.
+- `tool_network_optimization` — full distribution-network plan (depot + key sites + 3 skill-tier vehicles).
+- `tool_delivery_optimization` — 30 pre-geocoded stops with skill-bound vehicles.
+- `tool_catchment` — drive-time catchment / area profile for a site.
 
-The first four are functional immediately after this skill runs. The three pharma
+The first four are functional immediately after this skill runs. The three demo
 tools require seed data deployed by [`setup-agent-playground`](../setup-agent-playground/SKILL.md);
 they fail gracefully with a "run setup-agent-playground" message if the data is missing.
 

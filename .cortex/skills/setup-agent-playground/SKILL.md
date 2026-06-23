@@ -1,6 +1,6 @@
 ---
 name: setup-agent-playground
-description: "Deploy SF pharma demo data tables required by the Agent Playground's pharma supply-chain scenario (TOOL_SUPPLY_CHAIN, TOOL_PHARMA_OPTIMIZATION, TOOL_PHARMA_CATCHMENT). Run AFTER $build-routing-solution and $routing-agent. Creates SF_PHARMA_JOBS (30), SF_HEALTH_DEMOGRAPHICS (55), SF_DRUG_FORMULARY (25), SF_TOP_PHARMACIES (6), the FOOD_DELIVERY DELIVERIES view, updates the 6 fleet CONFIG tables to SanFrancisco/ebike defaults, and uploads agent-demos.json to the ORS stage. Triggers: setup agent playground, install agent demo data, deploy pharma demo, missing pharma data, agent playground scenarios missing, agent-demos.json missing, pharma supply chain demo, SF_PHARMA_JOBS, SF_HEALTH_DEMOGRAPHICS, SF_DRUG_FORMULARY, SF_TOP_PHARMACIES."
+description: "Deploy industry-agnostic SF demo data tables required by the Agent Playground's catchment/delivery/network scenarios (TOOL_NETWORK_OPTIMIZATION, TOOL_DELIVERY_OPTIMIZATION, TOOL_CATCHMENT). Run AFTER $build-routing-solution and $routing-agent. Creates DEMO_DELIVERY_STOPS (30), DEMO_AREA_DEMOGRAPHICS (55), DEMO_DEMAND_CATALOG (25), DEMO_KEY_SITES (6), DEMO_DEPOT (1), the FOOD_DELIVERY DELIVERIES view, updates the 6 fleet CONFIG tables to SanFrancisco/ebike defaults, and uploads agent-demos.json to the ORS stage. Triggers: setup agent playground, install agent demo data, deploy demo data, missing demo data, agent playground scenarios missing, agent-demos.json missing, catchment demo, delivery optimization demo, network optimization demo, DEMO_DELIVERY_STOPS, DEMO_AREA_DEMOGRAPHICS, DEMO_DEMAND_CATALOG, DEMO_KEY_SITES."
 depends_on:
   - build-routing-solution
   - routing-agent
@@ -12,14 +12,14 @@ metadata:
 
 # Setup Agent Playground
 
-Deploys the San Francisco pharmaceutical supply-chain demo data and uploads the
+Deploys the industry-agnostic SF catchment/delivery/network demo data and uploads the
 Agent Playground scenario config (`agent-demos.json`) to the ORS stage. After
-this skill runs, the Routing Agent's three pharma tools (`TOOL_SUPPLY_CHAIN`,
-`TOOL_PHARMA_OPTIMIZATION`, `TOOL_PHARMA_CATCHMENT`) become functional and the
-control-app Agent Playground page shows all three scenarios (Pharma Supply
-Chain, Retail & Catchment, Fleet Logistics).
+this skill runs, the Routing Agent's three demo tools (`TOOL_NETWORK_OPTIMIZATION`,
+`TOOL_DELIVERY_OPTIMIZATION`, `TOOL_CATCHMENT`) become functional and the
+control-app Agent Playground page shows all three scenarios (Catchment &
+Delivery, Site & Catchment, Fleet Logistics).
 
-> **Important:** The pharma stored procedures themselves are created by
+> **Important:** The demo stored procedures themselves are created by
 > `$routing-agent`. This skill only seeds the data tables and uploads the
 > scenario config — it does NOT create procedures.
 
@@ -28,7 +28,7 @@ Chain, Retail & Catchment, Fleet Logistics).
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `DATABASE` | `FLEET_INTELLIGENCE` | Demo database (created by build-routing-solution) |
-| `DATA_SCHEMA` | `ROUTE_OPTIMIZATION` | Schema that holds the 4 SF data tables |
+| `DATA_SCHEMA` | `ROUTE_OPTIMIZATION` | Schema that holds the demo data tables |
 | `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for setup statements |
 | `STAGE` | `OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE` | Stage receiving `agent-demos.json` |
 | `REGION` | `SanFrancisco` | Region the demo data is geocoded for |
@@ -38,7 +38,7 @@ Chain, Retail & Catchment, Fleet Logistics).
 
 - `$build-routing-solution` deployed (creates `OPENROUTESERVICE_APP`,
   `ORS_SPCS_STAGE`, the 6 fleet CONFIG tables, and the SanFrancisco region).
-- `$routing-agent` deployed (creates the 3 pharma stored procedures along with
+- `$routing-agent` deployed (creates the 3 demo stored procedures along with
   the multi-region tools).
 - A role that can read/write the schemas listed in **Required Privileges**.
 
@@ -47,8 +47,8 @@ Chain, Retail & Catchment, Fleet Logistics).
 | Privilege | Scope | Reason |
 |-----------|-------|--------|
 | USAGE | DATABASE FLEET_INTELLIGENCE | Access the fleet schemas |
-| USAGE | SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION | Create the 4 SF data tables |
-| CREATE TABLE | SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION | Create the 4 data tables |
+| USAGE | SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION | Create the demo data tables |
+| CREATE TABLE | SCHEMA FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION | Create the demo data tables |
 | INSERT, UPDATE | All 6 CONFIG tables | Update vehicle/region defaults |
 | CREATE VIEW | SCHEMA FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY | Create DELIVERIES view |
 | USAGE | DATABASE OPENROUTESERVICE_APP | Upload agent-demos.json to stage |
@@ -72,11 +72,12 @@ file:
 2. Updates the 6 fleet CONFIG tables to `VEHICLE_TYPE = 'ebike'` and
    `REGION = 'SanFrancisco'`.
 3. Creates the `FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES` view.
-4. Creates and seeds 4 SF data tables:
-   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS` (30 rows)
-   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS` (55 rows)
-   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY` (25 rows)
-   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES` (6 rows)
+4. Creates and seeds the demo data tables:
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS` (30 rows)
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS` (55 rows)
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG` (25 rows)
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES` (6 rows)
+   - `FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT` (1 row — depot + region)
 5. Creates `OPENROUTESERVICE_APP.CORE.JSON_FORMAT` (idempotent).
 
 Every CREATE statement carries the standard `oss-setup-agent-playground`
@@ -117,14 +118,15 @@ After both steps complete, all of the following must be true:
    UNION ALL SELECT 'ROUTE_OPTIMIZATION',                REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
    UNION ALL SELECT 'RETAIL_CATCHMENT',                  REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CONFIG;
    ```
-2. 4 data tables with correct row counts:
+2. Demo data tables with correct row counts:
    ```sql
-   SELECT 'SF_PHARMA_JOBS' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS
-   UNION ALL SELECT 'SF_HEALTH_DEMOGRAPHICS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS
-   UNION ALL SELECT 'SF_DRUG_FORMULARY',      COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY
-   UNION ALL SELECT 'SF_TOP_PHARMACIES',      COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES;
+   SELECT 'DEMO_DELIVERY_STOPS' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS
+   UNION ALL SELECT 'DEMO_AREA_DEMOGRAPHICS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS
+   UNION ALL SELECT 'DEMO_DEMAND_CATALOG',    COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG
+   UNION ALL SELECT 'DEMO_KEY_SITES',         COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES
+   UNION ALL SELECT 'DEMO_DEPOT',             COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT;
    ```
-   Expected counts: 30, 55, 25, 6.
+   Expected counts: 30, 55, 25, 6, 1.
 3. `agent-demos.json` is on the stage:
    ```sql
    LIST @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/;
@@ -139,7 +141,7 @@ After both steps complete, all of the following must be true:
 | Issue | Fix |
 |-------|-----|
 | "Object does not exist" for CONFIG tables | `$build-routing-solution` has not completed — run it first. |
-| "Unknown function TOOL_PHARMA_CATCHMENT" | `$routing-agent` not run — run it before this skill. |
+| "Unknown function TOOL_CATCHMENT" | `$routing-agent` not run — run it before this skill. |
 | Scenarios not appearing in the Agent Playground | `agent-demos.json` not on stage — re-run Step 2. |
 | "OPTIMIZATION returned no results" | VROOM service suspended — `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()`. |
 | "Isochrone geometry is null" | ORS not ready — `SELECT SYSTEM$GET_SERVICE_STATUS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE_SANFRANCISCO');` |
@@ -149,10 +151,11 @@ After both steps complete, all of the following must be true:
 ```sql
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-setup-agent-playground","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_PHARMA_JOBS;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_HEALTH_DEMOGRAPHICS;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_DRUG_FORMULARY;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.SF_TOP_PHARMACIES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT;
 DROP VIEW  IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES;
 REMOVE @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/agent-demos.json;
 ```
