@@ -92,18 +92,12 @@ CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.routing_gateway_service
    AUTO_SUSPEND_SECS = 14400
    COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"OPENROUTESERVICE_APP.CORE"}}';
 
--- ors_control_app has public endpoints, which are incompatible with AUTO_SUSPEND_SECS.
--- It also requires QUERY_WAREHOUSE and EXTERNAL_ACCESS_INTEGRATIONS, which must appear
--- before the FROM SPECIFICATION clause.
-CREATE SERVICE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ors_control_app
-   IN COMPUTE POOL OPENROUTESERVICE_APP_COMPUTE_POOL
-   FROM @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app
-   SPECIFICATION_FILE = 'ors_control_app_service.yaml'
-   MIN_INSTANCES = 1
-   MAX_INSTANCES = 1
-   QUERY_WAREHOUSE = ROUTING_ANALYTICS
-   EXTERNAL_ACCESS_INTEGRATIONS = (ORS_OSM_EAI, ORS_CARTO_EAI)
-   COMMENT = '{"origin":"sf_sit-is-fleet","name":"build-routing-solution","version":"1.0","attributes":{"component":"ui"}}';
+-- NOTE (Phase C): the legacy Vite `ors_control_app` UI service is NOT created here.
+-- install-fleet-apps ships the control surface as FLEET_SA_APP + FLEET_ADMIN_APP
+-- (deployed in orchestrator layer 8) and never stages `ors_control_app_service.yaml`,
+-- so creating it here would fail-fast every fresh engine build. The engine modules
+-- own only the routing substrate (ORS/VROOM/gateway/downloader); the app layer is
+-- provisioned separately by deploy_fleet_sa_app.sh / deploy_fleet_admin_app.sh.
 
 -- =============================================================================
 -- VERSION_INFO
