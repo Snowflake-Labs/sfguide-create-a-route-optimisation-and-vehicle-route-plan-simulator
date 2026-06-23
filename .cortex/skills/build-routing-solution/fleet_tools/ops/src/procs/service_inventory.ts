@@ -26,7 +26,9 @@ export const service_inventory = defineProc({
       .describe('Metadata for the primary compute pool (state, nodes, family).'),
     // Map of poolName -> { state, instance_family, min/max/active/idle_nodes, num_services }.
     compute_pools: t.object({}).describe('All compute pools keyed by name.'),
-    // Array of { name, status, compute_pool, min/max/current/target_instances, auto_suspend_secs }.
+    // Array of { name, fq_name?, status, compute_pool, min/max/current/target_instances, auto_suspend_secs }.
+    // Includes the ORS CORE services plus the Fleet app's own services
+    // (FLEET_SA_APP, FLEET_ADMIN_APP), which carry fq_name for cross-schema control.
     services: t.array(t.object({})).describe('All non-job services with their compute pool.'),
   },
   execute: async (_args, ctx) => {
@@ -37,6 +39,49 @@ export const service_inventory = defineProc({
     } catch {
       parsed = {};
     }
+    const services: Record<string, unknown>[] = Array.isArray(parsed.services)
+      ? (parsed.services as Record<string, unknown>[])
+      : [];
+
+    // GET_STATUS only scopes SHOW SERVICES to OPENROUTESERVICE_APP.CORE, so the
+    // Fleet app's own services (FLEET_SA_APP, FLEET_ADMIN_APP), which run in the
+    // shared OPENROUTESERVICE_APP_COMPUTE_POOL but live in a different schema, are
+    // missing. Fetch them here so the Ops Console can nest them under their real
+    // compute pool with live status instead of as a detached, status-less row.
+    // Each carries fq_name so the UI targets the correct schema for control verbs.
+    // Best-effort: a privilege/visibility miss leaves the base inventory intact.
+    try {
+      const appsJson = await ctx.conn.execScalar<string>(
+        `EXECUTE IMMEDIATE $sf$
+DECLARE r STRING DEFAULT '[]';
+BEGIN
+  SHOW SERVICES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER;
+  SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+    'name', "name",
+    'fq_name', 'FLEET_INTELLIGENCE.SYNAPSE_USER.' || "name",
+    'status', "status",
+    'compute_pool', "compute_pool",
+    'min_instances', "min_instances",
+    'max_instances', "max_instances",
+    'current_instances', "current_instances",
+    'target_instances', "target_instances",
+    'auto_suspend_secs', "auto_suspend_secs"
+  )), ARRAY_CONSTRUCT())::STRING
+  INTO :r
+  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+  WHERE "is_job" = 'false';
+  RETURN r;
+END
+$sf$`,
+      );
+      const apps = appsJson == null ? [] : (JSON.parse(String(appsJson)) as Record<string, unknown>[]);
+      if (Array.isArray(apps)) {
+        for (const app of apps) services.push(app);
+      }
+    } catch {
+      /* leave base inventory intact on privilege/visibility miss */
+    }
+
     return {
       compute_pool: typeof parsed.compute_pool === 'string' ? (parsed.compute_pool as string) : 'UNKNOWN',
       compute_pool_info:
@@ -47,7 +92,7 @@ export const service_inventory = defineProc({
         parsed.compute_pools && typeof parsed.compute_pools === 'object'
           ? (parsed.compute_pools as Record<string, unknown>)
           : {},
-      services: Array.isArray(parsed.services) ? (parsed.services as Record<string, unknown>[]) : [],
+      services,
     };
   },
 });

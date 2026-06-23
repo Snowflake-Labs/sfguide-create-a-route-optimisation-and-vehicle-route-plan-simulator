@@ -12,14 +12,19 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
-// The app's own service is not in OPENROUTESERVICE_APP.CORE, so GET_STATUS does
-// not return it. It is listed as a standalone row above the pool sections.
+// The app's own service lives in FLEET_INTELLIGENCE.SYNAPSE_USER, not in
+// OPENROUTESERVICE_APP.CORE. The service_inventory verb now appends the Fleet
+// app services (carrying fq_name) so they nest under their real compute pool.
+// This standalone constant is the fallback row, rendered only when the SA app
+// is absent from the grouped inventory (e.g. older OPS bundle / visibility miss).
 const APP_SERVICE = 'FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP';
-// Services discovered via service_inventory are bare names in this schema.
+// Services discovered via service_inventory are bare names in this schema unless
+// they carry an explicit fq_name (the Fleet app services do).
 const ORS_SCHEMA = 'OPENROUTESERVICE_APP.CORE';
 
 interface ServiceInfo {
   name: string;
+  fq_name?: string;
   status?: string;
   compute_pool?: string;
   min_instances?: number;
@@ -129,6 +134,11 @@ export function OpsConsoleView() {
   const services = inventory?.services ?? [];
   const computePools = inventory?.compute_pools ?? {};
   const runningCount = services.filter((s) => RUNNING(s.status)).length;
+  // The SA app now arrives in the grouped inventory (nested under its pool). Only
+  // fall back to the detached standalone row when it is absent (older OPS bundle).
+  const appInInventory = services.some(
+    (s) => (s.fq_name ?? '').toUpperCase() === APP_SERVICE || s.name.toUpperCase() === 'FLEET_SA_APP',
+  );
 
   // Group services by compute pool (mirrors the control app Service Manager).
   const poolGroups = useMemo(() => {
@@ -171,6 +181,14 @@ export function OpsConsoleView() {
     const isRunning = RUNNING(svc?.status);
     const isSuspended = svc?.status === 'SUSPENDED';
     const isControlApp = displayName.toUpperCase() === 'ORS_CONTROL_APP';
+    // Suspending the SA app would terminate the very UI issuing the request.
+    const isSelf = displayName.toUpperCase() === 'FLEET_SA_APP' || fqName.toUpperCase() === APP_SERVICE;
+    const noSuspend = isControlApp || isSelf;
+    const noSuspendTitle = isControlApp
+      ? 'ORS_CONTROL_APP cannot suspend itself'
+      : isSelf
+        ? 'FLEET_SA_APP cannot suspend itself (it serves this UI)'
+        : undefined;
     const instances = svc?.max_instances != null
       ? `${svc.current_instances ?? '?'} / ${svc.max_instances}${svc.min_instances != null && svc.min_instances !== svc.max_instances ? ` (min ${svc.min_instances})` : ''}`
       : '\u2014';
@@ -183,7 +201,7 @@ export function OpsConsoleView() {
         {drift && <span style={badge('warn')} title="AUTO_SUSPEND_SECS=0 while running. Call CORE.RECONCILE_AUTO_SUSPEND() if no provisioning is in flight.">drift</span>}
         <button onClick={() => status(fqName)} disabled={busy === `${fqName}:STATUS`} style={btn(busy === `${fqName}:STATUS`)}>Status</button>
         <button onClick={() => control(fqName, 'RESUME')} disabled={busy === `${fqName}:RESUME` || isRunning} style={btn(busy === `${fqName}:RESUME` || isRunning)}>Resume</button>
-        <button onClick={() => control(fqName, 'SUSPEND')} disabled={busy === `${fqName}:SUSPEND` || isSuspended || isControlApp} style={btn(busy === `${fqName}:SUSPEND` || isSuspended || isControlApp)} title={isControlApp ? 'ORS_CONTROL_APP cannot suspend itself' : undefined}>Suspend</button>
+        <button onClick={() => control(fqName, 'SUSPEND')} disabled={busy === `${fqName}:SUSPEND` || isSuspended || noSuspend} style={btn(busy === `${fqName}:SUSPEND` || isSuspended || noSuspend)} title={noSuspendTitle}>Suspend</button>
       </div>
     );
   };
@@ -217,10 +235,14 @@ export function OpsConsoleView() {
           </div>
         </div>
 
-        {/* App's own service (not part of OPENROUTESERVICE_APP.CORE / GET_STATUS) */}
-        <div style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)', paddingBottom: '8px', marginBottom: '8px' }}>
-          {renderServiceRow(APP_SERVICE, APP_SERVICE)}
-        </div>
+        {/* Fallback: render the SA app standalone only when the inventory did not
+            include it (older OPS bundle / visibility miss). Normally it nests
+            under its compute pool below. */}
+        {!appInInventory && (
+          <div style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)', paddingBottom: '8px', marginBottom: '8px' }}>
+            {renderServiceRow(APP_SERVICE, APP_SERVICE)}
+          </div>
+        )}
 
         {invLoading && !inventory ? (
           <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)' }}>{'Loading service inventory\u2026'}</div>
@@ -243,7 +265,7 @@ export function OpsConsoleView() {
                     </div>
                     <span style={badge(poolBadgeKind(meta?.state))}>{meta?.state || 'UNKNOWN'}</span>
                   </div>
-                  {svcs.map((svc) => renderServiceRow(`${ORS_SCHEMA}.${svc.name}`, svc.name, svc))}
+                  {svcs.map((svc) => renderServiceRow(svc.fq_name ?? `${ORS_SCHEMA}.${svc.name}`, svc.name, svc))}
                 </div>
               );
             })}
