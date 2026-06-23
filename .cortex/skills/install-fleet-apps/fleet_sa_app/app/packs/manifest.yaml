@@ -70,20 +70,5 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY]
     self_building: true
 
-  - name: marketplace
-    app_schema: FLEET_APP.MARKETPLACE
-    probe: FLEET_APP.MARKETPLACE.VW_OFFER_ENRICHED
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FREIGHT_MARKETPLACE]
-    self_building: true
-
-  - name: backload
-    app_schema: FLEET_APP.BACKLOAD_MATCHING
-    probe: FLEET_APP.BACKLOAD_MATCHING.VW_TRAILERS
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING]
-    self_building: true
-
-  - name: dhl_ntbo
-    app_schema: FLEET_APP.DHL_NTBO
-    probe: FLEET_APP.DHL_NTBO.VW_DHL_PROPOSALS
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DHL_BACKLOAD]
-    self_building: true
+  # NOTE: the industry-vertical packs (marketplace / backload / dhl_ntbo) are
+  # intentionally EXCLUDED from this vehicle/industry-agnostic installer.

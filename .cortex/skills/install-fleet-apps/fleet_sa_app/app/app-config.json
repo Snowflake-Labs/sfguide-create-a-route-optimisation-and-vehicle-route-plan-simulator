@@ -10,7 +10,7 @@
   "capabilities": [
     "Inspect fleet status, demand density, trips, operator performance, and top origins for any asset mode",
     "Analyze dwell and congestion hotspots, route deviation, and asset utilization by region",
-    "Optimize multi-stop routes, compute drive-time isochrones, and match backload freight",
+    "Optimize multi-stop routes, compute drive-time isochrones, and analyze fleet operations",
     "Switch the active region and dataset (mode) across every dashboard and routing tool"
   ],
   "sampleQuestions": [
@@ -185,6 +185,6 @@
     "maintenance_lead": { "label": "Maintenance Lead", "defaultView": "asset_velocity", "categories": ["Core", "Asset Pool"] },
     "planner": { "label": "Planner / Optimizer", "defaultView": "plan_vs_actual_performance", "categories": ["Core", "Optimization"] },
     "executive": { "label": "Executive", "defaultView": "dwell_overview", "categories": ["Core"] },
-    "admin": { "label": "Admin / Solution Owner", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization", "Freight", "Location", "Asset Pool", "Admin"] }
+    "admin": { "label": "Admin / Solution Owner", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization", "Location", "Asset Pool", "Admin"] }
   }
 }

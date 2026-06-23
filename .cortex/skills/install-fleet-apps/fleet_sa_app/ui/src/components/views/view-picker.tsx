@@ -35,7 +35,7 @@ export function ViewPicker() {
 
   // Group views into ordered nav sections by category (report core-vs-pack taxonomy).
   // Unknown categories sort after the known order, alphabetically.
-  const CATEGORY_ORDER = ['Core', 'Optimization', 'Freight', 'Location', 'Asset Pool', 'Admin'];
+  const CATEGORY_ORDER = ['Core', 'Optimization', 'Location', 'Asset Pool', 'Admin'];
   const groupedViews = useMemo(() => {
     const byCat = new Map<string, typeof views>();
     for (const v of views) {

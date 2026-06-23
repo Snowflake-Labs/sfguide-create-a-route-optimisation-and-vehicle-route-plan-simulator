@@ -22,7 +22,7 @@ interface YamlViewDef {
   label: string;
   description: string;
   hidden?: boolean;
-  // Nav grouping section (e.g. "Core", "Optimization", "Freight"). Omitted => "Core".
+  // Nav grouping section (e.g. "Core", "Optimization", "Location"). Omitted => "Core".
   category?: string;
   // Config-driven role tagging (simulated view filter). Omitted => all roles.
   roles?: AppRole[];

@@ -65,7 +65,7 @@ a **dashboard view** (`app/app-views.json`), an **agent tool/orchestration**
 | Catchment | `catchment` + ISOCHRONES verb | ISOCHRONES-verb intent (`ROUTING_PLATFORM.CONTRACT`) |
 | Asset Utilization | `asset_velocity`, `SV_ASSET_VELOCITY`, `query_asset_velocity` | HGV economics via the **optional attribute set**, not a vehicle pack |
 | Optimization (VRP) | `vrp_simulator` (programmatic view) | `/api/tool` + `ROUTING_PLATFORM.CONTRACT.OPTIMIZATION` |
-| Freight Matching | `backload_matching`, `freight_exchange` (programmatic) + `SV_BACKLOAD_MATCHING`, `SV_FREIGHT_MARKETPLACE`, `SV_DHL_BACKLOAD` | `/api/tool` + contract |
+| Freight Matching | EXCLUDED from the install-fleet-apps agnostic installer (industry-vertical: marketplace / backload / dhl_ntbo). Re-add only for a freight-specific deployment. | n/a |
 
 ## Mode-neutrality rules (enforced)
 
