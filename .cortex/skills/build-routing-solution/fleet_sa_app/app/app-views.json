@@ -680,7 +680,7 @@
     "label": "Retail Catchment",
     "description": "Retail points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
-      "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"pois map\"" }
+      "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
     },
     "areas": {
       "metrics": {
@@ -697,6 +697,11 @@
             ]
           }
         }
+      },
+      "density": {
+        "component": "Checkbox",
+        "config": { "label": "Address density", "default": false },
+        "emits": { "show_density": "" }
       },
       "filter": {
         "component": "FilterBar",
@@ -723,6 +728,20 @@
         "config": {
           "noPad": true,
           "layers": [
+            {
+              "type": "h3",
+              "id": "address-density",
+              "hexColumn": "h3_index",
+              "valueColumn": "addr",
+              "extruded": false,
+              "colorScale": [[255, 230, 180, 90], [255, 140, 0, 200]],
+              "pickable": true,
+              "tooltip": "Addresses: {addr}",
+              "data": {
+                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.RETAIL_CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND COALESCE(:show_density,'false') = 'true' GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
+                "params": { "show_density": "viewState.show_density", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            },
             {
               "type": "scatterplot",
               "id": "competitors",
@@ -769,7 +788,7 @@
     "label": "Asset Velocity",
     "description": "Idle trailers, cost of idleness, and where they are parked \u2014 set a minimum idle and click a trailer to highlight it.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
     },
     "areas": {
       "controls": {
@@ -864,6 +883,13 @@
         },
         "config": { "rowKey": "vehicle_id", "maxRows": 200 },
         "emits": { "selected_trailer": "selection" }
+      },
+      "rationale": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle trailer ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'trailer') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_trailer",
+          "params": { "selected_trailer": "viewState.selected_trailer", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
       }
     }
   },
