@@ -189,9 +189,20 @@
     "label": "SLA Alerts",
     "description": "Dwell sessions that breached SLA thresholds, by severity.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"bystatus table\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"bystatus table\"" }
     },
     "areas": {
+      "filter": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "severity",
+            "label": "Severity",
+            "data": { "query": "SELECT DISTINCT SLA_STATUS AS value, SLA_STATUS AS label FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE SLA_STATUS IS NOT NULL ORDER BY 1" },
+            "emits": { "selected_severity": "selection" }
+          }
+        ]
+      },
       "metrics": {
         "component": "MetricCards",
         "data": {
@@ -222,8 +233,8 @@
       "table": {
         "component": "Table",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
+          "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
       }
     }
@@ -333,7 +344,7 @@
     "label": "Fleet Status",
     "description": "Asset activity, distance, and safety events for the active fleet (any vehicle mode).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bystatus\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bystatus\"\n\"map map\"" }
     },
     "areas": {
       "trips": {
@@ -389,6 +400,26 @@
           "xAxis": { "field": "status", "fieldType": "category" },
           "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
         }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "recent-routes",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 150],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 100",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
       }
     }
   },
@@ -441,11 +472,19 @@
   },
   "fleetops_density": {
     "label": "Demand Density",
-    "description": "H3 hexbin of GPS activity by hour of day (drag the slider to change the hour).",
+    "description": "H3 hexbin of GPS activity by hour of day (pick a metric, drag the slider to change the hour).",
     "layout": {
-      "default": { "columns": "1fr", "rows": "auto 1fr", "grid": "\"controls\"\n\"map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
     },
     "areas": {
+      "metric": {
+        "component": "ComboBox",
+        "data": {
+          "query": "SELECT 'pings' AS value, 'Activity (pings)' AS label UNION ALL SELECT 'speed','Avg Speed (km/h)'"
+        },
+        "config": { "label": "Metric", "placeholder": "Activity (pings)" },
+        "emits": { "selected_metric": "selection" }
+      },
       "controls": {
         "component": "Slider",
         "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 12 },
@@ -459,14 +498,14 @@
             {
               "type": "h3",
               "hexColumn": "h3_index",
-              "valueColumn": "ping_count",
+              "valueColumn": "metric_value",
               "extruded": true,
               "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
               "pickable": true,
               "tooltip": "<b>{h3_index}</b><br/>Pings: {ping_count}<br/>Avg: {avg_speed} km/h",
               "data": {
-                "query": "SELECT H3_INDEX AS h3_index, SUM(PING_COUNT) AS ping_count, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_H3_DENSITY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:selected_hour AS NUMBER))) GROUP BY H3_INDEX LIMIT 5000",
-                "params": { "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+                "query": "SELECT H3_INDEX AS h3_index, SUM(PING_COUNT) AS ping_count, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed, CASE WHEN :selected_metric = 'speed' THEN ROUND(AVG(AVG_SPEED_KMH),1) ELSE SUM(PING_COUNT) END AS metric_value FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_H3_DENSITY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:selected_hour AS NUMBER))) GROUP BY H3_INDEX LIMIT 5000",
+                "params": { "selected_metric": "viewState.selected_metric", "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]
@@ -639,9 +678,9 @@
   },
   "retail_catchment": {
     "label": "Retail Catchment",
-    "description": "Retail points of interest by category and location.",
+    "description": "Retail points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"bycat map\"" }
+      "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"pois map\"" }
     },
     "areas": {
       "metrics": {
@@ -659,17 +698,25 @@
           }
         }
       },
-      "bycat": {
-        "component": "Chart",
+      "filter": {
+        "component": "FilterBar",
+        "filters": [
+          {
+            "name": "category",
+            "label": "Category",
+            "data": { "query": "SELECT BASIC_CATEGORY AS value, BASIC_CATEGORY AS label FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE BASIC_CATEGORY IS NOT NULL GROUP BY BASIC_CATEGORY ORDER BY COUNT(*) DESC LIMIT 30" },
+            "emits": { "selected_category": "selection" }
+          }
+        ]
+      },
+      "pois": {
+        "component": "ClickableTable",
         "data": {
-          "query": "SELECT BASIC_CATEGORY AS category, COUNT(*) AS pois FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS GROUP BY BASIC_CATEGORY ORDER BY pois DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 500",
+          "params": { "selected_category": "viewState.selected_category", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
-        "config": {
-          "title": "POIs by Category",
-          "xAxis": { "field": "category", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "pois", "label": "POIs" } ]
-        }
+        "config": { "rowKey": "poi_name", "maxRows": 500 },
+        "emits": { "selected_poi": "selection" }
       },
       "map": {
         "component": "Map",
@@ -678,18 +725,39 @@
           "layers": [
             {
               "type": "scatterplot",
+              "id": "competitors",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [209, 55, 78, 200],
+              "radius": 90,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 8,
+              "pickable": true,
+              "tooltip": "<b>{poi_name}</b><br/>{category} (competitor)",
+              "data": {
+                "query": "SELECT r.POI_NAME AS poi_name, r.BASIC_CATEGORY AS category, r.LONGITUDE AS lng, r.LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS r WHERE :selected_poi IS NOT NULL AND r.POI_NAME <> :selected_poi AND r.LATITUDE IS NOT NULL AND ST_DWITHIN(ST_MAKEPOINT(r.LONGITUDE, r.LATITUDE), (SELECT ST_MAKEPOINT(LONGITUDE, LATITUDE) FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE POI_NAME = :selected_poi LIMIT 1), 2000) LIMIT 500",
+                "params": { "selected_poi": "viewState.selected_poi", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            },
+            {
+              "type": "scatterplot",
               "id": "pois",
               "lng": "lng",
               "lat": "lat",
-              "fillColor": [41, 181, 232, 160],
+              "fillColor": {
+                "base": [41, 181, 232, 160],
+                "active": [255, 200, 0, 255],
+                "matchColumn": "poi_name",
+                "whenViewStateEquals": "selected_poi"
+              },
               "radius": 60,
               "radiusMinPixels": 2,
-              "radiusMaxPixels": 6,
+              "radiusMaxPixels": 7,
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category}",
               "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL LIMIT 5000",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
+                "params": { "selected_category": "viewState.selected_category", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
           ]
@@ -699,16 +767,21 @@
   },
   "asset_velocity": {
     "label": "Asset Velocity",
-    "description": "Idle trailers, cost of idleness, and where they are parked \u2014 click a trailer to highlight it.",
+    "description": "Idle trailers, cost of idleness, and where they are parked \u2014 set a minimum idle and click a trailer to highlight it.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"byseverity map\"\n\"table table\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"" }
     },
     "areas": {
+      "controls": {
+        "component": "Slider",
+        "config": { "label": "Min idle (minutes)", "min": 0, "max": 20160, "step": 60, "default": 0 },
+        "emits": { "idle_min": "" }
+      },
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
+          "query": "SELECT COUNT(DISTINCT VEHICLE_ID) AS idle_trailers, ROUND(SUM(COST_OF_IDLENESS_USD),0) AS cost_usd, ROUND(SUM(PROJECTED_SAVINGS_USD),0) AS savings_usd, ROUND(AVG(IDLE_DAYS),1) AS avg_idle_days FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min)",
+          "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
               { "column": "idle_trailers", "label": "Idle Trailers", "format": "number" },
@@ -722,8 +795,8 @@
       "byseverity": {
         "component": "Chart",
         "data": {
-          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT IDLE_SEVERITY AS severity, COUNT(*) AS trailers FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) GROUP BY IDLE_SEVERITY ORDER BY trailers DESC",
+          "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": {
           "title": "Trailers by Idle Severity",
@@ -736,6 +809,22 @@
         "config": {
           "noPad": true,
           "layers": [
+            {
+              "type": "scatterplot",
+              "id": "demand",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [41, 122, 232, 170],
+              "radius": 300,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 14,
+              "pickable": true,
+              "tooltip": "<b>{terminal_name}</b><br/>Demand: {demand_score}",
+              "data": {
+                "query": "SELECT TERMINAL_NAME AS terminal_name, DEMAND_SCORE AS demand_score, TERMINAL_LNG AS lng, TERMINAL_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_LANE_DEMAND WHERE TERMINAL_LAT IS NOT NULL ORDER BY DEMAND_SCORE DESC LIMIT 500",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            },
             {
               "type": "scatterplot",
               "id": "idle",
@@ -753,8 +842,8 @@
               "pickable": true,
               "tooltip": "<b>{vehicle_id}</b><br/>{severity}<br/>Idle {idle_days} days",
               "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL LIMIT 2000",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT VEHICLE_ID AS vehicle_id, IDLE_SEVERITY AS severity, IDLE_DAYS AS idle_days, LAST_LNG AS lng, LAST_LAT AS lat FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE LAST_LAT IS NOT NULL AND LAST_LNG IS NOT NULL AND (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) LIMIT 2000",
+                "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
           ]
@@ -763,8 +852,8 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 200",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 200",
+          "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": { "rowKey": "vehicle_id", "maxRows": 200 },
         "emits": { "selected_trailer": "selection" }
