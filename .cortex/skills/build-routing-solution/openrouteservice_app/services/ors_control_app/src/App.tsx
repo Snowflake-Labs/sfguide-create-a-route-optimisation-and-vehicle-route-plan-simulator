@@ -87,7 +87,7 @@ const SOLUTION_ACCELERATORS: NavGroup[] = [
   { key: 'asset-velocity', label: 'Asset Velocity', icon: Gauge },
   { key: 'backload', label: 'Backload Matching', icon: PackageCheck },
   { key: 'freight-exchange', label: 'Freight Exchange', icon: ShoppingBasket },
-  { key: 'retail', label: 'Retail Catchment', icon: Store },
+  { key: 'retail', label: 'Catchment', icon: Store },
   { key: 'emergency', label: 'Emergency Response', icon: AlertTriangle },
   { key: 'agent', label: 'Routing Agent', icon: Bot },
 ];

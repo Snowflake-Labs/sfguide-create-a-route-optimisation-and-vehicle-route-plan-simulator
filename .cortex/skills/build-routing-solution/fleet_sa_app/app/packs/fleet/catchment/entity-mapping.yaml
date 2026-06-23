@@ -3,14 +3,14 @@ source_id: synthetic
 description: "Bundled synthetic catchment data."
 entities:
   - entity: POIS
-    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+    source_table: FLEET_INTELLIGENCE.CATCHMENT.POIS
     materialization: view
     passthrough: true
   - entity: CITIES_BY_STATE
-    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
+    source_table: FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
     materialization: view
     passthrough: true
   - entity: REGIONAL_ADDRESSES
-    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
+    source_table: FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
     materialization: view
     passthrough: true

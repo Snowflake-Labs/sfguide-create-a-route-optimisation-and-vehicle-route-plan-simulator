@@ -148,7 +148,7 @@ DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION(VARC
 
 -- 12. Drop tables (from all schemas — discovery-driven)
 -- Example:
--- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS;
+-- DROP TABLE IF EXISTS FLEET_INTELLIGENCE.CATCHMENT.POIS;
 -- DROP TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY;
 
 -- 13. Drop stages
@@ -170,7 +170,7 @@ DROP FILE FORMAT IF EXISTS OPENROUTESERVICE_APP.CORE.PARQUET_FF;
 -- 16. Drop schemas (CASCADE handles any remaining objects)
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.RETAIL_CATCHMENT CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CATCHMENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY CASCADE;
@@ -269,7 +269,7 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 | fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |
 | dwell-analysis | `oss-dwell-analysis` | DWELL_ANALYSIS schema, 8 dynamic tables, task, geofence/SLA tables, views |
-| retail-catchment | `oss-retail-catchment` | RETAIL_CATCHMENT schema, POIs, addresses, cities, region config |
+| retail-catchment | `oss-retail-catchment` | CATCHMENT schema, POIs, addresses, cities, region config |
 | route-optimization | `oss-route-optimization` | ROUTE_OPTIMIZATION schema, notebooks, CONFIG, PLACES, LOOKUP |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` | ROUTING_AGENT schema, Cortex agent, tool procedures |
 

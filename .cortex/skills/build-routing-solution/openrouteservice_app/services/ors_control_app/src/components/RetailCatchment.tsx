@@ -10,7 +10,7 @@ import RecenterButton from '../shared/RecenterButton';
 import { coordsFromGeoJSON, type LngLat } from '../shared/mapFit';
 
 const RC_DB = 'FLEET_INTELLIGENCE';
-const RC_SCHEMA = 'RETAIL_CATCHMENT';
+const RC_SCHEMA = 'CATCHMENT';
 
 const PROFILE_LABELS: Record<string, string> = {
   'driving-car': 'Car',
@@ -26,7 +26,7 @@ const PROFILE_LABELS: Record<string, string> = {
 
 // POI categories used by the retail-catchment SQL pipeline. Kept in sync with
 // references/sql-pipeline.md Step 5b so that the live Overture path returns
-// the same kinds of stores as the cached RETAIL_POIS table.
+// the same kinds of stores as the cached POIS table.
 const POI_CATEGORIES = [
   'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
   'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
@@ -196,7 +196,7 @@ export default function RetailCatchment() {
       // the result set, ST_WITHIN drops anything outside the polygon).
       ? `SELECT p.POI_ID, p.POI_NAME AS NAME, p.BASIC_CATEGORY AS CATEGORY,
                 ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT
-         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS p
+         FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
          ${boundaryJoin(region.ors_key)}
          WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
            AND ${BOUNDARY_FILTER}
@@ -223,7 +223,7 @@ export default function RetailCatchment() {
   const fetchDensity = useCallback(async (region: ProvisionedRegion, res: number) => {
     const sql = region.region === 'SanFrancisco'
       ? `SELECT H3_POINT_TO_CELL_STRING(p.GEOMETRY, ${res}) AS H3_INDEX, COUNT(*) AS CNT
-         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES p
+         FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES p
          ${boundaryJoin(region.ors_key)}
          WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
            AND ${BOUNDARY_FILTER}
@@ -271,7 +271,7 @@ export default function RetailCatchment() {
     const compSql = region.region === 'SanFrancisco'
       ? `SELECT p.POI_ID, p.POI_NAME AS NAME, p.BASIC_CATEGORY AS CATEGORY,
                 ST_X(p.GEOMETRY) AS LNG, ST_Y(p.GEOMETRY) AS LAT
-         FROM FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS p
+         FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p
          ${boundaryJoin(region.ors_key)}
          WHERE p.REGION = '${region.region.replace(/'/g, "''")}'
            AND ${BOUNDARY_FILTER}
@@ -353,7 +353,7 @@ export default function RetailCatchment() {
 
   return (
     <div className="panel">
-      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Retail Catchment</h2>
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>Catchment</h2>
       <p className="subtitle">Multi-zone isochrone catchment analysis</p>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>

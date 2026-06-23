@@ -68,7 +68,7 @@ graph LR
         DEL[FLEET_INTELLIGENCE_FOOD_DELIVERY]
         RD[ROUTE_DEVIATION]
         DW[DWELL_ANALYSIS]
-        RC[RETAIL_CATCHMENT]
+        RC[CATCHMENT]
         RO[ROUTE_OPTIMIZATION]
         RA[ROUTING_AGENT]
     end
@@ -128,7 +128,7 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 | `FLEET_INTELLIGENCE_FOOD_DELIVERY` | fleet-intelligence-food-delivery | CONFIG, `DELIVERIES` view, `RESTAURANTS_ENRICHED` view |
 | `ROUTE_DEVIATION` | route-deviation | CONFIG, 5 projection views, `TRIP_DEVIATION_ANALYSIS`, deviation trends |
 | `DWELL_ANALYSIS` | dwell-analysis | CONFIG, 8 Dynamic Tables, `SLA_ALERT_LOG`, geofences, SLA thresholds |
-| `RETAIL_CATCHMENT` | retail-catchment | `RETAIL_POIS`, regional addresses, competitor data |
+| `CATCHMENT` | retail-catchment | `POIS`, regional addresses, competitor data |
 | `ROUTE_OPTIMIZATION` | route-optimization | Overture Maps places, CARTO data, VRP notebooks |
 | `ROUTING_AGENT` | routing-agent | 3 tool procedures + Cortex Agent definition |
 
@@ -159,7 +159,7 @@ Deploy flow: `npm run build` then Docker build (linux/amd64), push to SPCS regis
 | **Fleet Taxis** | Fleet Overview, Driver Routes, Heat Map (3 pages) | `FLEET_INTELLIGENCE_TAXIS` tables |
 | **Route Deviation** | Deviation Dashboard, Route Comparison, Route Inspector (3 pages) | `ROUTE_DEVIATION` ETL tables |
 | **Route Optimization** | VRP simulator with interactive map | `ROUTE_OPTIMIZATION` + live ORS calls |
-| **Retail Catchment** | Isochrone analysis with competitor mapping | `RETAIL_CATCHMENT` + live ORS calls |
+| **Catchment** | Isochrone analysis with competitor mapping | `CATCHMENT` + live ORS calls |
 | **Routing Agent** | Natural-language chat interface with interactive map | Live Cortex Agent calls |
 | **Travel Time Explorer** | H3 hexagon travel-time visualization | `TRAVEL_MATRIX` tables |
 | **Data Studio** | Synthetic telemetry data generation | Writes to `SYNTHETIC_DATASETS.UNIFIED` |

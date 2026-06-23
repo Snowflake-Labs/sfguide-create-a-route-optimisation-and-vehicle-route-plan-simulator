@@ -1,14 +1,14 @@
 -- SV_CATCHMENT — Catchment demo semantic view
--- Source: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS + CITIES_BY_STATE
+-- Source: FLEET_INTELLIGENCE.CATCHMENT.POIS + CITIES_BY_STATE
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOMETRY GEOGRAPHY column excluded; lat/lon retained on base view but not modeled as metrics.
 
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
 
   TABLES (
-    pois AS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
+    pois AS FLEET_INTELLIGENCE.CATCHMENT.POIS
       PRIMARY KEY (POI_ID)
-    , cities AS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
+    , cities AS FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
       PRIMARY KEY (REGION, STATE, CITY)
   )
 
@@ -40,7 +40,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
 
   AI_SQL_GENERATION 'Catchment semantic view.
 Entities (two independent facts):
-- pois (RETAIL_POIS): one row per POI. Use total_pois grouped by basic_category, city, or state for density/competition questions.
+- pois (POIS): one row per POI. Use total_pois grouped by basic_category, city, or state for density/competition questions.
 - cities (CITIES_BY_STATE): precomputed POI counts per city.
 Conventions:
 - "how many coffee shops in X" -> total_pois filtered by basic_category and city.

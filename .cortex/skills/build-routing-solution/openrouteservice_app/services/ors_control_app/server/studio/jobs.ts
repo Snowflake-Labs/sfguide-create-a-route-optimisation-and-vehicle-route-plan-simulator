@@ -705,7 +705,7 @@ export function subscribeJob(jobId: string, cb: SseCallback): () => void {
 // centroid instead of (0, 0).
 //
 // CONFIG tables (DWELL_ANALYSIS, ROUTE_DEVIATION, FLEET_INTELLIGENCE_TAXIS,
-// FLEET_INTELLIGENCE_FOOD_DELIVERY, RETAIL_CATCHMENT, ROUTE_OPTIMIZATION) are
+// FLEET_INTELLIGENCE_FOOD_DELIVERY, CATCHMENT, ROUTE_OPTIMIZATION) are
 // updated to point at the freshly generated (region, vehicleType) so all
 // downstream projection views immediately reflect the new dataset.
 // ===========================================================================
