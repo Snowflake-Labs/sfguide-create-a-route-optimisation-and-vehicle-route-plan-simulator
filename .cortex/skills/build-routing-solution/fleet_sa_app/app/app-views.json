@@ -736,9 +736,9 @@
       }
     }
   },
-  "retail_catchment": {
-    "label": "Retail Catchment",
-    "description": "Retail points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
+  "catchment": {
+    "label": "Catchment",
+    "description": "Points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
       "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
     },
@@ -746,7 +746,7 @@
       "metrics": {
         "component": "MetricCards",
         "data": {
-          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS",
+          "query": "SELECT COUNT(*) AS pois, COUNT(DISTINCT BASIC_CATEGORY) AS categories, COUNT(DISTINCT CITY) AS cities, COUNT(DISTINCT STATE) AS states FROM FLEET_APP.CATCHMENT.VW_POIS",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
           "mapping": {
             "metrics": [
@@ -769,7 +769,7 @@
           {
             "name": "category",
             "label": "Category",
-            "data": { "query": "SELECT BASIC_CATEGORY AS value, BASIC_CATEGORY AS label FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE BASIC_CATEGORY IS NOT NULL GROUP BY BASIC_CATEGORY ORDER BY COUNT(*) DESC LIMIT 30" },
+            "data": { "query": "SELECT BASIC_CATEGORY AS value, BASIC_CATEGORY AS label FROM FLEET_APP.CATCHMENT.VW_POIS WHERE BASIC_CATEGORY IS NOT NULL GROUP BY BASIC_CATEGORY ORDER BY COUNT(*) DESC LIMIT 30" },
             "emits": { "selected_category": "selection" }
           }
         ]
@@ -777,7 +777,7 @@
       "pois": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 500",
+          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 500",
           "params": { "selected_category": "viewState.selected_category", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
         "config": { "rowKey": "poi_name", "maxRows": 500 },
@@ -798,7 +798,7 @@
               "pickable": true,
               "tooltip": "Addresses: {addr}",
               "data": {
-                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.RETAIL_CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND COALESCE(:show_density,'false') = 'true' GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
+                "query": "SELECT H3_POINT_TO_CELL_STRING(GEOMETRY, 8) AS h3_index, COUNT(*) AS addr FROM FLEET_APP.CATCHMENT.VW_REGIONAL_ADDRESSES WHERE GEOMETRY IS NOT NULL AND COALESCE(:show_density,'false') = 'true' GROUP BY 1 ORDER BY addr DESC LIMIT 5000",
                 "params": { "show_density": "viewState.show_density", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             },
@@ -814,7 +814,7 @@
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category} (competitor)",
               "data": {
-                "query": "SELECT r.POI_NAME AS poi_name, r.BASIC_CATEGORY AS category, r.LONGITUDE AS lng, r.LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS r WHERE :selected_poi IS NOT NULL AND r.POI_NAME <> :selected_poi AND r.LATITUDE IS NOT NULL AND ST_DWITHIN(ST_MAKEPOINT(r.LONGITUDE, r.LATITUDE), (SELECT ST_MAKEPOINT(LONGITUDE, LATITUDE) FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE POI_NAME = :selected_poi LIMIT 1), 2000) LIMIT 500",
+                "query": "SELECT r.POI_NAME AS poi_name, r.BASIC_CATEGORY AS category, r.LONGITUDE AS lng, r.LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS r WHERE :selected_poi IS NOT NULL AND r.POI_NAME <> :selected_poi AND r.LATITUDE IS NOT NULL AND ST_DWITHIN(ST_MAKEPOINT(r.LONGITUDE, r.LATITUDE), (SELECT ST_MAKEPOINT(LONGITUDE, LATITUDE) FROM FLEET_APP.CATCHMENT.VW_POIS WHERE POI_NAME = :selected_poi LIMIT 1), 2000) LIMIT 500",
                 "params": { "selected_poi": "viewState.selected_poi", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             },
@@ -835,7 +835,7 @@
               "pickable": true,
               "tooltip": "<b>{poi_name}</b><br/>{category}",
               "data": {
-                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
+                "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category, LONGITUDE AS lng, LATITUDE AS lat FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) LIMIT 5000",
                 "params": { "selected_category": "viewState.selected_category", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }

@@ -1,9 +1,9 @@
-# Data model (logical contract) - Fleet domain pack: retail_catchment
-pack: retail_catchment
-app_schema: FLEET_APP.RETAIL_CATCHMENT
+# Data model (logical contract) - Fleet domain pack: catchment
+pack: catchment
+app_schema: FLEET_APP.CATCHMENT
 entities:
-  - name: RETAIL_POIS
-    description: "Retail points of interest with category and location."
+  - name: POIS
+    description: "Points of interest with category and location."
     access_pattern: mapped
     grain: "One row per POI"
     primary_key: POI_NAME

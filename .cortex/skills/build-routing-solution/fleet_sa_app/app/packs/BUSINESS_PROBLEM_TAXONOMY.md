@@ -62,7 +62,7 @@ a **dashboard view** (`app/app-views.json`), an **agent tool/orchestration**
 |---|---|---|
 | Dwell & Congestion | `dwell_*` dashboards, `SV_DWELL_ANALYTICS`, `query_dwell` | **global-default scoped** (DT substrate; per-session re-key deferred — Tenet 6) |
 | Route Deviation | `deviation_*`, `SV_ROUTE_DEVIATION`, `query_route_deviation` | **global-default scoped** (deferred re-key) |
-| Catchment | `retail_catchment` + ISOCHRONES verb | ISOCHRONES-verb intent (`ROUTING_PLATFORM.CONTRACT`) |
+| Catchment | `catchment` + ISOCHRONES verb | ISOCHRONES-verb intent (`ROUTING_PLATFORM.CONTRACT`) |
 | Asset Utilization | `asset_velocity`, `SV_ASSET_VELOCITY`, `query_asset_velocity` | HGV economics via the **optional attribute set**, not a vehicle pack |
 | Optimization (VRP) | `vrp_simulator` (programmatic view) | `/api/tool` + `ROUTING_PLATFORM.CONTRACT.OPTIMIZATION` |
 | Freight Matching | `backload_matching`, `freight_exchange` (programmatic) + `SV_BACKLOAD_MATCHING`, `SV_FREIGHT_MARKETPLACE`, `SV_DHL_BACKLOAD` | `/api/tool` + contract |

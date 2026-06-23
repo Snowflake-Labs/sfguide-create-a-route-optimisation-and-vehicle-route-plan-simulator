@@ -73,7 +73,7 @@ a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
 | route_deviation | FLEET_APP.ROUTE_DEVIATION | deviation_overview, deviation_routes; SV_ROUTE_DEVIATION |
 | taxi | FLEET_APP.TAXI | taxi_overview, taxi_routes; SV_TAXIS |
 | food_delivery | FLEET_APP.FOOD_DELIVERY | food_delivery; SV_FOOD_DELIVERY |
-| retail_catchment | FLEET_APP.RETAIL_CATCHMENT | retail_catchment; SV_RETAIL_CATCHMENT |
+| catchment | FLEET_APP.CATCHMENT | catchment; SV_CATCHMENT |
 | route_optimization | FLEET_APP.ROUTE_OPTIMIZATION | asset_velocity; SV_ASSET_VELOCITY |
 | dwell | FLEET_APP.DWELL | dwell_overview/congestion/facilities/drivers/sla; SV_DWELL_ANALYTICS (self-building: derived DT chain) |
 | unified_fleet | FLEET_APP.UNIFIED_FLEET | fleet_operations, fleet_map; SV_FLEET_OPERATIONS (cross-DB) |

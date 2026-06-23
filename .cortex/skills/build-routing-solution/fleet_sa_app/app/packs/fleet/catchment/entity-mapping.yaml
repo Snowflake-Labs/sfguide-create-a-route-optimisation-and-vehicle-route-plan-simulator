@@ -1,8 +1,8 @@
-# Entity mapping - retail_catchment pack - SOURCE: synthetic
+# Entity mapping - catchment pack - SOURCE: synthetic
 source_id: synthetic
-description: "Bundled synthetic retail-catchment data."
+description: "Bundled synthetic catchment data."
 entities:
-  - entity: RETAIL_POIS
+  - entity: POIS
     source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
     materialization: view
     passthrough: true

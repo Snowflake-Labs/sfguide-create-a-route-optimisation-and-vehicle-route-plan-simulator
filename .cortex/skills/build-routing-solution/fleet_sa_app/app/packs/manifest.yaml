@@ -49,10 +49,10 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS]
     self_building: true   # rebuilt from raw sources via the scoped_contract UDTFs
 
-  - name: retail_catchment
-    app_schema: FLEET_APP.RETAIL_CATCHMENT
-    probe: FLEET_APP.RETAIL_CATCHMENT.VW_RETAIL_POIS
-    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT]
+  - name: catchment
+    app_schema: FLEET_APP.CATCHMENT
+    probe: FLEET_APP.CATCHMENT.VW_POIS
+    semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT]
     self_building: false   # binds base tables directly (already at swap boundary)
 
   - name: unified_fleet
