@@ -109,6 +109,12 @@
       "id": "dataset_id",
       "type": "dataset",
       "label": "Dataset"
+    },
+    {
+      "id": "date_range_start",
+      "type": "date_range",
+      "label": "Date range",
+      "default": "last_365_days"
     }
   ]
 }
