@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { temporal } from 'zundo';
 import type { Message, MessagePart, PanelContext, ChatStatus, AppRole, DisplayConfig } from './types';
 import { viewRegistry } from './view-registry';
+import { registerDynamicView } from './load-views';
+import { parseDynamicSpec } from './view-spec-schema';
 
 interface ChatSlice {
   messages: Message[];
@@ -46,6 +48,7 @@ interface AppActions {
   setChatError: (error: string | null) => void;
   setSuggestions: (suggestions: string[]) => void;
   showView: (viewId: string, state?: Record<string, unknown>) => void;
+  showDynamicView: (raw: unknown, title?: string | null) => void;
   updateViewState: (patch: Record<string, unknown>) => void;
   setDirty: (isDirty: boolean) => void;
   setContext: (key: string, value: unknown) => void;
@@ -268,6 +271,16 @@ export const useAppStore = create<AppStore>()(
                     get().showView(output.viewId, output.state);
                   }
                 }
+
+                // render_view (synapse verb on ROUTING_MCP): the tool_result output is
+                // the agent-emitted view spec. Validate + register as an ephemeral page.
+                if (
+                  part.type === 'tool_result' &&
+                  (part.toolName === 'render_view' || part.toolName.endsWith('__render_view'))
+                ) {
+                  const output = part.output as { result?: unknown; title?: string } | undefined;
+                  get().showDynamicView(output?.result ?? output, output?.title ?? null);
+                }
               } catch {
                 // skip malformed chunks
               }
@@ -289,6 +302,27 @@ export const useAppStore = create<AppStore>()(
             viewState: state ?? {},
             hasUnsavedChanges: false,
           },
+        }));
+      },
+
+      // Validate + register an agent-emitted spec as the single ephemeral page,
+      // then open it. Invalid specs surface a chat error instead of rendering
+      // (or silently dropping) malformed/untrusted content.
+      showDynamicView: (raw: unknown, title?: string | null) => {
+        const parsed = parseDynamicSpec(raw);
+        if (!parsed.ok) {
+          set((s) => ({
+            chat: { ...s.chat, error: `Generated view was invalid: ${parsed.errors[0]}` },
+          }));
+          return;
+        }
+        if (title && title.trim() !== '') {
+          parsed.spec.label = title.slice(0, 200);
+        }
+        const id = registerDynamicView(parsed.spec);
+        set((s) => ({
+          viewsVersion: s.viewsVersion + 1,
+          panel: { ...s.panel, activeViewId: id, viewState: {}, hasUnsavedChanges: false },
         }));
       },
 

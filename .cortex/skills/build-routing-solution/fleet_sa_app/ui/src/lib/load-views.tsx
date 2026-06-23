@@ -1,5 +1,6 @@
 import { lazy } from 'react';
 import type { ViewDef, AppRole } from './types';
+import type { ParsedViewDef } from '@/components/views/view-renderer';
 import { viewRegistry } from './view-registry';
 import { getDisplayConfigGlobal, interpolateTokens } from './display-config';
 
@@ -88,4 +89,28 @@ export function registerViewsFromConfig(
     };
     viewRegistry.register(registration);
   }
+}
+
+// Reserved id for the single ephemeral, agent-emitted page. Hidden from the
+// view-picker / persona nav; opened directly by id via showView (which bypasses
+// the role-filtered list()), so it renders under any selectedRole.
+export const DYNAMIC_VIEW_ID = '__dynamic__';
+
+// Register (overwrite) the single ephemeral dynamic view from an already-parsed,
+// validated spec. Tokens in label/description are interpolated to match the app
+// vocabulary (mirrors registerViewsFromConfig). Returns the id to activate.
+export function registerDynamicView(spec: ParsedViewDef): string {
+  const display = getDisplayConfigGlobal();
+  const viewSpec: ParsedViewDef = { ...spec, id: DYNAMIC_VIEW_ID };
+  const registration: ViewDef = {
+    id: DYNAMIC_VIEW_ID,
+    label: interpolateTokens(spec.label, display),
+    description: interpolateTokens(spec.description, display),
+    hidden: true, // never in the picker / persona nav
+    category: 'Core',
+    roles: undefined, // visible under any selected role (opened directly by id)
+    component: createLazyViewComponent(viewSpec as unknown as YamlViewDef),
+  };
+  viewRegistry.register(registration);
+  return DYNAMIC_VIEW_ID;
 }
