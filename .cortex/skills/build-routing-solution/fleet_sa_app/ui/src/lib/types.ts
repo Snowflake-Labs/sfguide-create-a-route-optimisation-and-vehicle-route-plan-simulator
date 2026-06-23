@@ -1,4 +1,7 @@
 import type { ComponentType, LazyExoticComponent } from 'react';
+import type { AppRole } from './roles';
+
+export type { AppRole };
 
 export interface Message {
   id: string;
@@ -40,6 +43,9 @@ export interface ViewDef {
   icon?: string;
   tags?: string[];
   category?: string;
+  // Minimum role tiers allowed to see this view (simulated client-side filter).
+  // Omitted => visible to all roles. Honors hierarchy admin > ops > user.
+  roles?: AppRole[];
 }
 
 export interface InlineComponentDef<TProps = Record<string, unknown>> {

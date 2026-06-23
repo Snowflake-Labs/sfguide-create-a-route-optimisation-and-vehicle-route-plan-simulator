@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import type { ViewDef } from './types';
+import type { ViewDef, AppRole } from './types';
 import { viewRegistry } from './view-registry';
 
 interface AreaDef {
@@ -20,6 +20,8 @@ interface YamlViewDef {
   label: string;
   description: string;
   hidden?: boolean;
+  // Config-driven role tagging (simulated view filter). Omitted => all roles.
+  roles?: AppRole[];
   layout: {
     default: LayoutDef;
     tablet?: LayoutDef;
@@ -76,6 +78,7 @@ export function registerViewsFromConfig(
       label: view.label,
       description: view.description,
       hidden: view.hidden || gatedOff,
+      roles: view.roles,
       component: createLazyViewComponent(view),
     };
     viewRegistry.register(registration);

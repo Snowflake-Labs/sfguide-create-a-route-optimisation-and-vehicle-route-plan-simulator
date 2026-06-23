@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, ChatStatus } from './types';
+import type { Message, MessagePart, PanelContext, ChatStatus, AppRole } from './types';
 import { viewRegistry } from './view-registry';
 
 interface ChatSlice {
@@ -28,6 +28,10 @@ interface AppState {
   viewContextEnabled: boolean;
   snowflakeFqn: string | null;
   abortController: AbortController | null;
+  // Simulated role-evaluation state. `selectedRole` drives which views/capabilities
+  // the UI surfaces; `detectedRole` is the user's real role from /api/whoami (hint only).
+  selectedRole: AppRole;
+  detectedRole: AppRole | null;
 }
 
 interface AppActions {
@@ -48,6 +52,8 @@ interface AppActions {
   setViewContextEnabled: (enabled: boolean) => void;
   dismissToolPending: (toolName: string, entityKey: string) => void;
   setSnowflakeFqn: (fqn: string) => void;
+  setSelectedRole: (role: AppRole) => void;
+  setDetectedRole: (role: AppRole) => void;
 }
 
 export type AppStore = AppState & AppActions;
@@ -80,6 +86,8 @@ export const useAppStore = create<AppStore>()(
       viewContextEnabled: true,
       snowflakeFqn: null,
       abortController: null,
+      selectedRole: 'admin' as AppRole,
+      detectedRole: null,
 
       addUserMessage: (text: string) => {
         const msg: Message = {
@@ -309,6 +317,16 @@ export const useAppStore = create<AppStore>()(
         set({ snowflakeFqn: fqn });
       },
 
+      setSelectedRole: (role: AppRole) => {
+        set({ selectedRole: role });
+        // Re-filter the view-picker (its memo depends on viewsVersion).
+        get().bumpViewsVersion();
+      },
+
+      setDetectedRole: (role: AppRole) => {
+        set({ detectedRole: role });
+      },
+
       dismissToolPending: (toolName: string, entityKey: string) => {
         set((s) => ({
           chat: {
@@ -328,7 +346,7 @@ export const useAppStore = create<AppStore>()(
       },
 
       getPanelContext: (): PanelContext => {
-        const { panel, context, viewContextEnabled } = get();
+        const { panel, context, viewContextEnabled, selectedRole } = get();
         if (!viewContextEnabled) {
           return { activeView: null, viewState: {}, availableViews: [], context, hasUnsavedChanges: false };
         }
@@ -341,7 +359,7 @@ export const useAppStore = create<AppStore>()(
             description: def?.description || '',
           };
         }
-        const availableViews = viewRegistry.list().map((v: { id: string; label: string; description: string }) => ({
+        const availableViews = viewRegistry.list(selectedRole).map((v: { id: string; label: string; description: string }) => ({
           id: v.id,
           label: v.label,
           description: v.description,

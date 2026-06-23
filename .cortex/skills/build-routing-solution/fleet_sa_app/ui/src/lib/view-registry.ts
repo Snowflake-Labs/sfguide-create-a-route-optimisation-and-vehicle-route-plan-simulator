@@ -1,4 +1,5 @@
 import type { ViewDef } from './types';
+import { canRoleSeeView, type AppRole } from './roles';
 
 class ViewRegistry {
   private views = new Map<string, ViewDef>();
@@ -11,9 +12,9 @@ class ViewRegistry {
     return this.views.get(id);
   }
 
-  search(query: string): ViewDef[] {
+  search(query: string, role?: AppRole): ViewDef[] {
     const q = query.toLowerCase();
-    return this.list().filter(
+    return this.list(role).filter(
       (v) =>
         v.label.toLowerCase().includes(q) ||
         v.description.toLowerCase().includes(q) ||
@@ -21,8 +22,12 @@ class ViewRegistry {
     );
   }
 
-  list(): ViewDef[] {
-    return Array.from(this.views.values()).filter((v) => !v.hidden);
+  // Lists non-hidden views. When `role` is provided, also filters to views the
+  // selected role is allowed to see (simulated client-side role filter).
+  list(role?: AppRole): ViewDef[] {
+    return Array.from(this.views.values()).filter(
+      (v) => !v.hidden && (role === undefined || canRoleSeeView(role, v)),
+    );
   }
 }
 

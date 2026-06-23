@@ -1,5 +1,7 @@
 'use client';
 
+import { RoleSelector } from './role-selector';
+
 interface HeaderProps {
   name?: string;
   onAboutClick?: () => void;
@@ -37,6 +39,7 @@ export function Header({ name = 'Data App', onAboutClick }: HeaderProps) {
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <RoleSelector />
         <button
           aria-label="Settings"
           style={{

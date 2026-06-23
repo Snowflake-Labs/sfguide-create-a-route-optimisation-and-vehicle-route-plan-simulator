@@ -73,6 +73,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
     label: 'Ops Console',
     description: 'Operator controls: suspend/resume services, set the active region, and check platform health.',
     tags: ['ops', 'admin'],
+    roles: ['ops'],
     component: lazy(() =>
       import('@/components/views/areas/ops-console').then((mod) => ({
         default: mod.OpsConsoleView,

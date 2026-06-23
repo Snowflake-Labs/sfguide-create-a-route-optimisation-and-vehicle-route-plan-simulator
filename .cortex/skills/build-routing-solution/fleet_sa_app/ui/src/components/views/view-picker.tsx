@@ -12,6 +12,7 @@ export function ViewPicker() {
   const activeViewId = useAppStore((s) => s.panel.activeViewId);
   const showView = useAppStore((s) => s.showView);
   const viewsVersion = useAppStore((s) => s.viewsVersion);
+  const selectedRole = useAppStore((s) => s.selectedRole);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -28,10 +29,22 @@ export function ViewPicker() {
   }, [open]);
 
   const views = useMemo(() => {
-    return query ? viewRegistry.search(query) : viewRegistry.list();
-  }, [query, viewsVersion]);
+    return query ? viewRegistry.search(query, selectedRole) : viewRegistry.list(selectedRole);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, viewsVersion, selectedRole]);
 
   const activeView = activeViewId ? viewRegistry.get(activeViewId) : undefined;
+
+  // If a role switch makes the active view disallowed, redirect to the first
+  // view the selected role can see (keeps the panel from rendering a hidden view).
+  useEffect(() => {
+    if (!activeViewId) return;
+    const allowed = viewRegistry.list(selectedRole);
+    if (!allowed.some((v) => v.id === activeViewId) && allowed.length > 0) {
+      showView(allowed[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRole, viewsVersion, activeViewId]);
 
   if (!mounted || viewsVersion === 0) {
     return null;

@@ -7,7 +7,7 @@ import { Header } from './header';
 import { ContextBar, type ContextBarField } from './context-bar';
 import { registerInlineComponents, registerToolMaps } from './inline';
 import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
-import { registerWorkflowViews } from '@/lib/framework-views';
+import { registerWorkflowViews, registerRoleAccessView } from '@/lib/framework-views';
 import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
 import { AboutDialog } from './about-dialog';
@@ -66,6 +66,22 @@ export function AppShell() {
   const setContext = useAppStore((s) => s.setContext);
   const bumpViewsVersion = useAppStore((s) => s.bumpViewsVersion);
   const setSnowflakeFqn = useAppStore((s) => s.setSnowflakeFqn);
+  const setDetectedRole = useAppStore((s) => s.setDetectedRole);
+  const setSelectedRole = useAppStore((s) => s.setSelectedRole);
+
+  // Seed the role dropdown from the user's detected role (hint only; the
+  // operator can still pick any role to evaluate). Failures are non-fatal.
+  useEffect(() => {
+    fetch('/api/whoami')
+      .then((r) => r.json())
+      .then((w: { detectedRole?: 'user' | 'ops' | 'admin' }) => {
+        if (w.detectedRole) {
+          setDetectedRole(w.detectedRole);
+          setSelectedRole(w.detectedRole);
+        }
+      })
+      .catch(() => {});
+  }, [setDetectedRole, setSelectedRole]);
 
   useEffect(() => {
     Promise.all([
@@ -112,6 +128,8 @@ export function AppShell() {
         }
         // Bind this domain's map-producing tools to the inline map (config-driven).
         registerToolMaps(appConfig.tools?.mapTools ?? []);
+        // Always-on role-evaluation view (works for any domain pack).
+        registerRoleAccessView();
         // Config-driven domain-pack loader: register each configured pack's
         // custom showcase views via the registry — no domain import in the
         // shell. Legacy single `domainPack` string is coerced to an array.
