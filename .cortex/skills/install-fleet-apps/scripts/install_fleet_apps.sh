@@ -54,7 +54,9 @@ step() { STEP_STATUS+=("$1|$2"); }
 
 # helper: does a SHOW return the named object? args: <show-sql> <name-regex>
 obj_exists() {
-  snow sql -c "$CONNECTION" --format=plain -q "$1" 2>/dev/null | grep -qiE "$2"
+  # NOTE: snow CLI >=3.x has no 'plain' format (valid: TABLE/JSON/JSON_EXT/CSV).
+  # CSV gives unbordered, greppable rows; object names appear as plain cells.
+  snow sql -c "$CONNECTION" --format=CSV -q "$1" 2>/dev/null | grep -qiE "$2"
 }
 
 # ── 0. preflight ────────────────────────────────────────────────
@@ -96,7 +98,7 @@ fi
 # ── 2. data (reuse rows else seed the agnostic SF/ebike preset) ──
 if [ "${SKIP_DATA:-0}" != "1" ]; then
   note "[2/8] resolving data layer..."
-  HAVE_DATA=$(snow sql -c "$CONNECTION" --format=plain -q \
+  HAVE_DATA=$(snow sql -c "$CONNECTION" --format=CSV -q \
     "SELECT IFF((SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS)>0 AND (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS)>0,'YES','NO');" \
     2>/dev/null | grep -iE '^(YES|NO)$' | head -1 || echo "NO")
   if [ "$HAVE_DATA" = "YES" ]; then
@@ -104,7 +106,11 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
   else
     note "  seeding agnostic SF/ebike preset (references/seed-data.md)"
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_seedprep.log 2>&1 || true
-    snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite >/tmp/ifa_stage.log 2>&1 \
+    # Strip macOS .DS_Store cruft so --recursive does not upload it into leaf parquet dirs.
+    find "$REPO_ROOT/datasets" -name '.DS_Store' -delete 2>/dev/null || true
+    # datasets/ has nested subdirs (intro/, metadata/, synthetic_ebikes/<table>/...) that the
+    # loader COPY INTOs from by path, so the upload MUST preserve directory structure (--recursive).
+    snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite --recursive >/tmp/ifa_stage.log 2>&1 \
       || { echo "ERROR: staging seed parquet failed"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1; }
     sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
       "$REPO_ROOT/datasets/load-seed-data.sql" > /tmp/ifa_loader.sql
@@ -112,6 +118,18 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
       || note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
   fi
+  # Vehicle-profile catalog (DIM_VEHICLE_PROFILE / DIM_VEHICLE_DWELL_SLA) + the
+  # DIM_FLEET asset-column stamp the unified_fleet/dwell packs + scoped_contract
+  # need. SQL port of the admin-app Studio TS so a from-scratch install does not
+  # need the admin app to boot first. MUST run BEFORE projection_views.sql because
+  # it drops V_DIM_FLEET_CURRENT (SELECT f.*) to ALTER DIM_FLEET. Idempotent.
+  snow sql -c "$CONNECTION" -f "$SCRIPTS/vehicle_profile_catalog.sql" >/tmp/ifa_vpcatalog.log 2>&1 \
+    || note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"
+  # Agnostic V_*_CURRENT projection views (the packs bind to these). Authored here
+  # in SQL because the agnostic install does not run the admin-app boot (init.ts)
+  # before the pack step. Idempotent; safe whether seeding ran or data was reused.
+  snow sql -c "$CONNECTION" -f "$SCRIPTS/projection_views.sql" >/tmp/ifa_projviews.log 2>&1 \
+    || note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"
   step "2 data" OK
 else
   step "2 data" SKIPPED
@@ -143,6 +161,16 @@ fi
 # ── 4. data-contract packs (ALL 7 agnostic packs, unconditional) ──
 if [ "${SKIP_PACKS:-0}" != "1" ]; then
   note "[4/8] installing agnostic FLEET_APP packs..."
+  # Pack setup.sql (and the neutral substrate) GRANT to the FLEET_APP_* roles. The
+  # FULL role binding (object grants + QUERY_DYNAMIC, which needs FLEET_APP.CORE) runs
+  # in step 6 AFTER packs, so just ensure the role names exist here (idempotent) to
+  # break the circular dependency (pack grants <-> role binding).
+  snow sql -c "$CONNECTION" -q "
+    CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
+    CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
+    CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
+    CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER;
+  " >/tmp/ifa_preroles.log 2>&1 || note "  WARN: role pre-create reported errors (see /tmp/ifa_preroles.log)"
   python3 "$PACKS_INSTALL" --regenerate -c "$CONNECTION" >/tmp/ifa_packs.log 2>&1 \
     || { echo "ERROR: pack install failed"; tail -40 /tmp/ifa_packs.log; step "4 packs" FAILED; exit 1; }
   python3 "$PACKS_INSTALL" --probe -c "$CONNECTION" 2>/dev/null | tail -20 || true
@@ -189,8 +217,8 @@ if [ "${SKIP_APPS:-0}" != "1" ]; then
     || { echo "ERROR: SA app deploy failed"; step "8 apps" FAILED; exit 1; }
   COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
     || { echo "ERROR: admin app deploy failed"; step "8 apps" FAILED; exit 1; }
-  SA_URL=$(snow sql -c "$CONNECTION" --format=plain -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-sa-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
-  ADMIN_URL=$(snow sql -c "$CONNECTION" --format=plain -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-admin-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
+  SA_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-sa-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
+  ADMIN_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-admin-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
   step "8 apps" OK
 else
   step "8 apps" SKIPPED
@@ -201,7 +229,7 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 {
   echo "# install-fleet-apps friction log — $(date)"
   echo
-  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=plain -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
+  echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
   echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI stage=$SPEC_STAGE_NAME"
   [ -n "$SA_URL" ]    && echo "- SA app:    $SA_URL"

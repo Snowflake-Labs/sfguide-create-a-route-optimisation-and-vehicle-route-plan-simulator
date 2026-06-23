@@ -24,7 +24,7 @@ command -v node >/dev/null 2>&1 || { echo "ERROR: node not found"; exit 1; }
 command -v snow >/dev/null 2>&1 || { echo "ERROR: snow not found"; exit 1; }
 
 # Resolve the active account (lowercased) for the per-account install dir.
-ACCOUNT=$(snow sql -c "$CONNECTION" --format=plain -q "SELECT LOWER(CURRENT_ACCOUNT());" 2>/dev/null \
+ACCOUNT=$(snow sql -c "$CONNECTION" --format=CSV -q "SELECT LOWER(CURRENT_ACCOUNT());" 2>/dev/null \
   | grep -iE '^[a-z0-9_-]+$' | head -1)
 [ -n "$ACCOUNT" ] || { echo "ERROR: could not resolve CURRENT_ACCOUNT() via $CONNECTION"; exit 1; }
 echo "[synapse] account=$ACCOUNT connection=$CONNECTION"
@@ -52,6 +52,13 @@ for row in "${BUNDLES[@]}"; do
   echo "[synapse] === $SRC ($APP_NAME) -> $DB.$SCHEMA.$MCP ==="
   mkdir -p "$TARGET"
 
+  # The materialized install.sql does `USE SCHEMA <SCHEMA>` but does not CREATE it.
+  # On a fresh install the target schema may not exist yet (e.g.
+  # OPENROUTESERVICE_APP.ROUTING — the routing-verb home — or the SYNAPSE_OPS /
+  # SYNAPSE_ADMIN bundle schemas), so ensure it first. Idempotent.
+  snow sql -c "$CONNECTION" -q "CREATE SCHEMA IF NOT EXISTS $DB.$SCHEMA COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"sql\"}}';" >/tmp/synapse_${SRC}_schema.log 2>&1 \
+    || { echo "ERROR: could not ensure schema $DB.$SCHEMA"; tail -20 /tmp/synapse_${SRC}_schema.log; exit 1; }
+
   # Per-account install.json (binds connection + logical->actual role).
   cat > "$TARGET/install.json" <<JSON
 {
@@ -78,6 +85,6 @@ JSON
 done
 
 echo "[synapse] verifying MCP servers..."
-snow sql -c "$CONNECTION" -q "SHOW MCP SERVERS;" --format=plain 2>/dev/null \
+snow sql -c "$CONNECTION" -q "SHOW MCP SERVERS;" --format=CSV 2>/dev/null \
   | grep -iE 'ROUTING_MCP|FLEET_OPS_MCP|FLEET_ADMIN_MCP' || echo "  (none listed yet)"
 echo "[synapse] done."

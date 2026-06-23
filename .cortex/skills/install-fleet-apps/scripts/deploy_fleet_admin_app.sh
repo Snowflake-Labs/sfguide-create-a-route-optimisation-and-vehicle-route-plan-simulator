@@ -120,7 +120,7 @@ fi
 
 # ── 3. Resolve endpoint URL ─────────────────────────────────────
 echo "[7/7] Resolve endpoint URL..."
-URL=$(snow sql -c "$CONNECTION" --format=plain -q "
+URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))

@@ -33,10 +33,13 @@ GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP"
 CONFIG_STAGE="@FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE/config"
+SCHEMA_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER"
+STAGE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE"
 # Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
 # else FLEET-owned) and passed in via env; defaults preserve standalone use.
 IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
+COMPUTE_POOL="${COMPUTE_POOL:-OPENROUTESERVICE_APP_COMPUTE_POOL}"
 
 # ── 0. Pre-flight ───────────────────────────────────────────────
 echo "[0/7] Pre-flight checks..."
@@ -102,6 +105,12 @@ fi
 
 # ── 2. Upload the editable app bundle (tier-B config-extensibility) ──
 if [ "${SKIP_CONFIG:-0}" != "1" ]; then
+  # First-deploy bootstrap: the service schema + config/spec stage must exist
+  # before any stage copy or CREATE SERVICE. Idempotent (IF NOT EXISTS).
+  snow sql -c "$CONNECTION" -q "
+    CREATE SCHEMA IF NOT EXISTS $SCHEMA_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+    CREATE STAGE IF NOT EXISTS $STAGE_FQN COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+  " >/tmp/fleet_sa_bootstrap.log 2>&1 || { echo "ERROR: schema/stage bootstrap failed"; tail -20 /tmp/fleet_sa_bootstrap.log; exit 1; }
   echo "[4/7] Upload app-config.json / app-views.json to $CONFIG_STAGE ..."
   for f in app-config.json app-views.json; do
     snow stage copy "$APP_DIR/app/$f" "$CONFIG_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
@@ -118,7 +127,14 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
   sed -E "s|(fleet_sa_app:)[^\"' ]+|\1$IMAGE_TAG|" "$SERVICE_YAML" > "$STAGE_YAML"
   snow stage copy "$STAGE_YAML" "$CONFIG_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 
-  echo "[6/7] ALTER SERVICE FROM SPECIFICATION + RESUME..."
+  echo "[6/7] CREATE SERVICE IF NOT EXISTS (first deploy) -> SUSPEND -> ALTER FROM SPEC -> set EAI -> RESUME..."
+  snow sql -c "$CONNECTION" -q "
+    CREATE SERVICE IF NOT EXISTS $SERVICE_FQN
+      IN COMPUTE POOL $COMPUTE_POOL
+      FROM ${CONFIG_STAGE}
+      SPECIFICATION_FILE = 'fleet_sa_app_service.yaml'
+      COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+  " >/tmp/fleet_sa_create.log 2>&1 || { echo "ERROR: create service failed"; tail -30 /tmp/fleet_sa_create.log; exit 1; }
   snow sql -c "$CONNECTION" -q "
     ALTER SERVICE IF EXISTS $SERVICE_FQN SUSPEND;
     ALTER SERVICE $SERVICE_FQN
@@ -136,7 +152,7 @@ fi
 
 # ── 4. Resolve endpoint URL ─────────────────────────────────────
 echo "[7/7] Resolve endpoint URL..."
-URL=$(snow sql -c "$CONNECTION" --format=plain -q "
+URL=$(snow sql -c "$CONNECTION" --format=CSV -q "
   SHOW ENDPOINTS IN SERVICE $SERVICE_FQN;
   SELECT 'https://' || \"ingress_url\"
   FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
