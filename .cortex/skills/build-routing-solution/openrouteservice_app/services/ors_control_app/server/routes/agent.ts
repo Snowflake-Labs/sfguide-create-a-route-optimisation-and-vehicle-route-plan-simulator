@@ -48,19 +48,19 @@ export function createAgentRouter(): Router {
         params: ['location_description', 'range_minutes', 'poi_category', 'profile', 'max_results'],
         defaults: { profile, range_minutes: '10', max_results: '25' },
       },
-      tool_supply_chain: {
-        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_SUPPLY_CHAIN',
+      tool_network_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION',
         params: ['profile'],
         defaults: { profile },
       },
-      tool_pharma_optimization: {
-        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_OPTIMIZATION',
+      tool_delivery_optimization: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION',
         params: ['profile'],
         defaults: { profile },
       },
-      tool_pharma_catchment: {
-        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_PHARMA_CATCHMENT',
-        params: ['pharmacy_description', 'range_minutes', 'profile'],
+      tool_catchment: {
+        proc: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT',
+        params: ['site_description', 'range_minutes', 'profile'],
         defaults: { profile, range_minutes: '10' },
       },
     };
@@ -75,16 +75,16 @@ export function createAgentRouter(): Router {
   // ------------------------------------------------------------------
   const FALLBACK_AGENT_CONFIG = {
     version: '1.0',
-    default_scenario: 'pharma',
+    default_scenario: 'catchment',
     max_token_limit: 8000,
     scenarios: [
       {
-        id: 'pharma',
-        label: 'Pharma Supply Chain',
-        icon: '\u{1F48A}',
-        description: 'Pharmaceutical delivery planning',
+        id: 'catchment',
+        label: 'Catchment & Delivery',
+        icon: '\u{1F4CD}',
+        description: 'Catchment analysis and delivery planning',
         prompts: [
-          { label: '1. Catchment', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within 10 min drive of 498 Castro Street, San Francisco' },
+          { label: '1. Catchment', icon: '\u{1F4CD}', prompt: 'Show me the area profile within 10 min drive of 498 Castro Street, San Francisco' },
         ],
       },
     ],
@@ -200,7 +200,7 @@ export function createAgentRouter(): Router {
         `tool_directions (point-to-point routing), tool_isochrone (drive/cycle/walk-time reachability polygons), ` +
         `tool_poi_in_isochrone (Overture Maps POI search inside an isochrone, e.g. pharmacies, restaurants, shops), ` +
         `tool_route_optimization (multi-vehicle VRP with depot + stops). ` +
-        (isSF ? `Because the region is San Francisco, also include: tool_supply_chain, tool_pharma_optimization, tool_pharma_catchment. ` : '') +
+        (isSF ? `You may also include the pre-configured demo tools: tool_network_optimization, tool_delivery_optimization, tool_catchment. ` : '') +
         `\n\nRules:` +
         `\n- Use REAL street addresses, neighbourhoods, or landmarks within "${regionLabel}". Do NOT invent SF addresses for non-SF regions.` +
         `\n- Each prompt must read like a natural-language question a dispatcher would ask.` +

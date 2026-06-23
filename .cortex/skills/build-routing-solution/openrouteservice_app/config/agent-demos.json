@@ -1,19 +1,19 @@
 {
   "version": "1.0",
-  "default_scenario": "pharma",
+  "default_scenario": "catchment",
   "max_token_limit": 8000,
   "scenarios": [
     {
-      "id": "pharma",
-      "label": "Pharma Supply Chain",
-      "icon": "💊",
-      "description": "Pharmaceutical delivery planning — catchment analysis, drug demand, route optimisation",
+      "id": "catchment",
+      "label": "Catchment & Delivery",
+      "icon": "📍",
+      "description": "Catchment analysis, demand signals, and route optimisation",
       "prompts": [
-        { "label": "1. Catchment analysis", "icon": "🏥", "prompt": "Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco" },
-        { "label": "2. Drug demand", "icon": "💊", "prompt": "Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates." },
-        { "label": "3. Patient directions", "icon": "🗺️", "prompt": "Give me driving directions from 742 Valencia Street, San Francisco to Walgreens at 498 Castro Street" },
-        { "label": "4. Cycling access", "icon": "🚲", "prompt": "Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco for patients without cars" },
-        { "label": "5. Supply chain plan", "icon": "🚚", "prompt": "Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles" }
+        { "label": "1. Catchment analysis", "icon": "📍", "prompt": "Show me the area profile within a 10 minute drive of 498 Castro Street, San Francisco" },
+        { "label": "2. Demand signals", "icon": "📊", "prompt": "Based on that catchment population, which demand segments are highest? Consider the area demographics." },
+        { "label": "3. Directions", "icon": "🗺️", "prompt": "Give me driving directions from 742 Valencia Street, San Francisco to 498 Castro Street" },
+        { "label": "4. Cycling access", "icon": "🚲", "prompt": "Show me a 5 minute cycling isochrone from 498 Castro Street, San Francisco" },
+        { "label": "5. Network plan", "icon": "🚚", "prompt": "Plan the full distribution-network delivery from the depot to all key sites using 3 vehicles" }
       ]
     },
     {
@@ -35,7 +35,7 @@
       "icon": "🚛",
       "description": "Fleet delivery optimisation — multi-vehicle routing with capacity and skills",
       "prompts": [
-        { "label": "1. Pharma fleet demo", "icon": "🚚", "prompt": "Run the SF pharmaceutical fleet delivery demo" },
+        { "label": "1. Fleet delivery demo", "icon": "🚚", "prompt": "Run the SF fleet delivery optimization demo" },
         { "label": "2. HGV directions", "icon": "🚛", "prompt": "Get driving directions for a heavy goods vehicle from the Port of San Francisco to 4150 Clement Street" },
         { "label": "3. Bike courier", "icon": "🚲", "prompt": "Get cycling directions from 1 Market Street to 498 Castro Street, San Francisco" },
         { "label": "4. Reachability", "icon": "⏱️", "prompt": "Show me the area reachable within 20 minutes by HGV from the Port of San Francisco" },

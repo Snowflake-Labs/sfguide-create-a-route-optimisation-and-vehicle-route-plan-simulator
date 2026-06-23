@@ -115,8 +115,8 @@ export const POI_DISPLAY_NAMES: Record<string, string> = {
 };
 
 // Vehicle / skill / risk palettes used by extractAgentGeoData when rendering
-// optimization (TOOL_*_OPTIMIZATION, TOOL_SUPPLY_CHAIN) and population health
-// (TOOL_PHARMA_CATCHMENT) tool results.
+// optimization (TOOL_*_OPTIMIZATION, TOOL_NETWORK_OPTIMIZATION) and catchment
+// (TOOL_CATCHMENT) tool results.
 export const VEHICLE_ROUTE_COLORS: [number, number, number, number][] = [
   [66, 133, 244, 220],
   [255, 152, 0, 220],
@@ -132,9 +132,9 @@ export const SKILL_COLORS: Record<number, [number, number, number, number]> = {
 };
 
 export const SKILL_LABELS: Record<number, string> = {
-  1: 'Cold Chain / Vaccines',
-  2: 'Controlled Substances',
-  3: 'Standard Medicines',
+  1: 'Cold Chain',
+  2: 'Restricted / Controlled',
+  3: 'Standard',
 };
 
 export function skillColor(skill: number): [number, number, number, number] {
@@ -162,7 +162,7 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
           features.push(...(tr.geometry.features || []));
         }
       }
-      // TOOL_OPTIMIZATION / TOOL_SUPPLY_CHAIN / TOOL_PHARMA_OPTIMIZATION:
+      // TOOL_OPTIMIZATION / TOOL_NETWORK_OPTIMIZATION / TOOL_DELIVERY_OPTIMIZATION:
       // routes array with per-vehicle geometry. Tag each Feature with vehicle
       // id + colour so the map can render distinct lines and the legend can
       // identify them.
@@ -186,22 +186,22 @@ export function extractAgentGeoData(toolResults: any[]): GeoData {
           }
         }
       }
-      // TOOL_SUPPLY_CHAIN / TOOL_PHARMA_OPTIMIZATION: pre-geocoded job stops
-      // colored by VROOM skill (1=Cold Chain, 2=Controlled, 3=Standard).
+      // TOOL_NETWORK_OPTIMIZATION / TOOL_DELIVERY_OPTIMIZATION: pre-geocoded job stops
+      // colored by VROOM skill (1=Cold Chain, 2=Restricted, 3=Standard).
       if (tr.jobs && Array.isArray(tr.jobs)) {
         for (const job of tr.jobs) {
           if (job.longitude != null && job.latitude != null) {
             const skill: number = job.skill ?? (Array.isArray(job.skills) ? job.skills[0] : 0) ?? 0;
             poiPoints.push({
               position: [Number(job.longitude), Number(job.latitude)],
-              name: job.name || job.address || job.pharmacy || 'Stop',
+              name: job.name || job.address || job.site || 'Stop',
               category: SKILL_LABELS[skill] || job.skill_label || 'Delivery Stop',
               color: skill ? skillColor(skill) : [100, 149, 237, 240],
             });
           }
         }
       }
-      // TOOL_PHARMA_CATCHMENT: per-neighborhood demographics with risk score.
+      // TOOL_CATCHMENT: per-area demographics with risk score.
       if (Array.isArray(tr.population_points)) {
         for (const pt of tr.population_points) {
           if (pt.longitude == null || pt.latitude == null) continue;
@@ -386,14 +386,14 @@ export interface WorkflowStep {
 
 export const FALLBACK_SCENARIOS: DemoScenario[] = [
   {
-    id: 'pharma',
-    label: 'Pharma Supply Chain',
-    icon: '\u{1F48A}',
-    description: 'Pharmaceutical delivery planning',
+    id: 'catchment',
+    label: 'Catchment & Delivery',
+    icon: '\u{1F4CD}',
+    description: 'Catchment analysis and delivery planning',
     prompts: [
-      { label: '1. Catchment analysis', icon: '\u{1F3E5}', prompt: 'Show me the population health profile within a 10 minute drive of Walgreens at 498 Castro Street, San Francisco' },
-      { label: '2. Drug demand', icon: '\u{1F48A}', prompt: 'Based on that catchment population, what drugs would this pharmacy need most? Consider the diabetes, hypertension, cardiovascular and respiratory rates.' },
-      { label: '3. Supply chain plan', icon: '\u{1F69A}', prompt: 'Plan the full pharmaceutical supply chain delivery from the depot to all SF pharmacies using 3 specialist vehicles' },
+      { label: '1. Catchment analysis', icon: '\u{1F4CD}', prompt: 'Show me the area profile within a 10 minute drive of 498 Castro Street, San Francisco' },
+      { label: '2. Demand signals', icon: '\u{1F4CA}', prompt: 'Based on that catchment population, which demand segments are highest? Consider the area demographics.' },
+      { label: '3. Network plan', icon: '\u{1F69A}', prompt: 'Plan the full distribution-network delivery from the depot to all key sites using 3 vehicles' },
     ],
   },
 ];
