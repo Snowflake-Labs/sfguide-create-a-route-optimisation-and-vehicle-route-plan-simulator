@@ -60,7 +60,6 @@ build/
 **/_installed/**/.claude-plugin/
 
 # Native app build output
-build-routing-solution/Native_app/output/
 **/native_app/output/
 
 # Cortex Code session artifacts

@@ -37,7 +37,7 @@ a mode-AGNOSTIC dataset (`VEHICLE_TYPE = ebike` is just a data dimension):
    sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
      datasets/load-seed-data.sql | snow sql -c <conn> -i
    ```
-   The loader lives at repo-root `datasets/` (NOT under build-routing-solution),
+   The loader lives at repo-root `datasets/` (NOT under any skill folder),
    so it survives deprecation of the routing-engine skill.
 4. **Agnostic guard** — re-run `scripts/seed_data.sql`; its step 3 PURGES any
    industry-vertical rows the loader created (freight offers, partners, partner

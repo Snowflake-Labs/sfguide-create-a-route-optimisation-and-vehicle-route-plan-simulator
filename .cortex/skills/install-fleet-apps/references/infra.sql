@@ -4,7 +4,7 @@
 -- This file creates the SKILL-OWNED infra objects used when the equivalent
 -- OPENROUTESERVICE_APP objects are ABSENT. The orchestrator (install_fleet_apps.sh)
 -- probes first (SHOW ...) and runs this file ONLY when it must self-provision,
--- so a brand-new account with no build-routing-solution install still works and
+-- so a brand-new account with no pre-existing OPENROUTESERVICE_APP still works and
 -- a shared account reuses the existing OPENROUTESERVICE_APP infra (no duplicates).
 --
 -- All statements are idempotent (CREATE ... IF NOT EXISTS / CREATE OR REPLACE on

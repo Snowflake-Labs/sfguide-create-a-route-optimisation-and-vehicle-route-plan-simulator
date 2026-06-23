@@ -1,10 +1,10 @@
-# Build and Push Container Images
+# Build and Push the ORS Engine Container Images
 
-Authenticate, build, and push all 5 container images to the Snowflake SPCS image repository.
+Authenticate, build, and push the four ORS/VROOM engine container images to the Snowflake SPCS image repository. (The two app images — FLEET_SA_APP / FLEET_ADMIN_APP — are built by their own `deploy_fleet_*_app.sh` scripts, not here.)
 
-> **Working directory:** All commands below must be run from `.cortex/skills/build-routing-solution/`. Run `cd .cortex/skills/build-routing-solution` before starting.
+> **Working directory:** All commands below must be run from `.cortex/skills/install-fleet-apps/`. Run `cd .cortex/skills/install-fleet-apps` before starting.
 
-All paths below are relative to the skill directory (`.cortex/skills/build-routing-solution/`). Each build command uses `-f` and a build context path so no `cd` commands are needed.
+All paths below are relative to the skill directory (`.cortex/skills/install-fleet-apps/`). Each build command uses `-f` and a build context path so no `cd` commands are needed.
 
 ## 1. Authenticate with SPCS Image Registry
 
@@ -38,7 +38,7 @@ Use `$CONTAINER_CMD` (podman or docker) as detected in Step 2 of the main workfl
 
 ```bash
 # Load image tags from the single source of truth
-source openrouteservice_app/image-versions.env
+source image-versions.env
 
 # openrouteservice image
 $CONTAINER_CMD build --rm --platform linux/amd64 \
@@ -63,38 +63,7 @@ $CONTAINER_CMD build --rm --platform linux/amd64 \
   -t $REPO_URL/vroom-docker:$VROOM_DOCKER_TAG \
   openrouteservice_app/services/vroom
 $CONTAINER_CMD push $REPO_URL/vroom-docker:$VROOM_DOCKER_TAG
-
-# ors control app (React management UI)
-# On ARM Macs (Apple Silicon), esbuild crashes under QEMU amd64 emulation.
-# Build the React app and server locally first, then use --ignorefile to allow dist/ into context:
-cd openrouteservice_app/services/ors_control_app
-npm install --legacy-peer-deps && npm run build && npm run build:server
-$CONTAINER_CMD build --rm --platform linux/amd64 \
-  --ignorefile .dockerignore.prebuilt \
-  -f Dockerfile.runtime \
-  -t $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG .
-$CONTAINER_CMD push $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG
-cd ../../..
 ```
-
-**Note:** The ors_control_app build requires `cd` because `npm install` must run in the package directory. The `--ignorefile .dockerignore.prebuilt` flag uses an alternative ignore file that allows `dist/` and `dist-server/` into the build context. Do NOT rename or edit `.dockerignore`. The `Dockerfile.runtime` already exists in the directory — do NOT recreate it with a heredoc.
-
-> **Docker on ARM Mac:** Docker does not support the `--ignorefile` flag (it is Podman-only). Instead, temporarily swap the ignore file before building:
-> ```bash
-> source ../../../openrouteservice_app/image-versions.env
-> cp .dockerignore .dockerignore.bak && cp .dockerignore.prebuilt .dockerignore
-> docker build --rm --platform linux/amd64 \
->   -f Dockerfile.runtime \
->   -t $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG .
-> mv .dockerignore.bak .dockerignore
-> docker push $REPO_URL/ors_control_app:$ORS_CONTROL_APP_TAG
-> ```
-
-> **CRITICAL — shell operator precedence:** Run the npm commands and the `docker`/`podman` commands as **separate bash calls** (or at minimum separate lines). Do NOT chain them all with `&&` into one call with `|| true` at the end. Due to shell left-associativity, `a && b && c || true` means `(a && b && c) || true` — so if `npm run build` fails, `|| true` swallows the error and docker still runs with an incomplete dist, producing a white-page app.
-
-> **luma.gl version pins:** All four `@luma.gl/*` packages in `package.json` must be pinned to `~9.2.6` (not `^9.1.0` or `^9.2.x`). Using `^` allows npm to resolve `@luma.gl/core` and `@luma.gl/webgl` to `9.3.x`, which removed the `getVertexFormatFromAttribute` export still used by `@luma.gl/engine@9.2.6`, causing the vite build to fail.
-
-> `npm install --legacy-peer-deps` is required due to peer dependency conflicts between `@deck.gl@9.2.x` and `@luma.gl` packages. Vulnerability warnings in dev/build dependencies do not affect the runtime container.
 
 ## 4. Verify All Images Pushed
 
@@ -106,11 +75,11 @@ snow spcs image-repository list-images OPENROUTESERVICE_APP.core.image_repositor
 
 To see real-time progress, redirect stderr to a file: `podman push $URL 2>push.log && tail -5 push.log`
 
-Expected: 5 images with tags matching the Image Inventory below.
+Expected: 4 images with tags matching the Image Inventory below.
 
 ## Image Inventory
 
-Tag values are the single source of truth in [`openrouteservice_app/image-versions.env`](../openrouteservice_app/image-versions.env). The `source` command in the build/push block above loads them as shell variables.
+Tag values are the single source of truth in [`image-versions.env`](../image-versions.env). The `source` command in the build/push block above loads them as shell variables.
 
 | Service | Image | Tag variable |
 |---------|-------|--------------|
@@ -118,7 +87,6 @@ Tag values are the single source of truth in [`openrouteservice_app/image-versio
 | Downloader | downloader | `$DOWNLOADER_TAG` |
 | Gateway | routing_reverse_proxy | `$ROUTING_REVERSE_PROXY_TAG` |
 | VROOM | vroom-docker | `$VROOM_DOCKER_TAG` |
-| Control App | ors_control_app | `$ORS_CONTROL_APP_TAG` |
 
 ## Expected Duration
 
@@ -128,13 +96,12 @@ Tag values are the single source of truth in [`openrouteservice_app/image-versio
 | downloader | <100 MB | <1 min | 1-2 min |
 | routing_reverse_proxy | <100 MB | <1 min | 1-2 min |
 | vroom-docker | ~200 MB | 2-3 min | 3-5 min |
-| ors_control_app | ~150 MB | 2-3 min | 2-4 min |
 
 Total first push: 20-30 minutes. Subsequent pushes with cached layers: ~5 minutes.
 
 ## Pinned Upstream Base Images
 
-All upstream base images are pinned to explicit versions — never use `:latest`. Pinned versions are documented in `openrouteservice_app/image-versions.env` (variables `OPENROUTESERVICE_BASE_TAG`, `VROOM_BASE_TAG`).
+All upstream base images are pinned to explicit versions — never use `:latest`. Pinned versions are documented in `image-versions.env` (variables `OPENROUTESERVICE_BASE_TAG`, `VROOM_BASE_TAG`).
 
 | Service | Base image | Pinned version | Source |
 |---------|-----------|----------------|--------|
@@ -158,5 +125,4 @@ All upstream base images are pinned to explicit versions — never use `:latest`
 - **Authentication failure**: Run `snow spcs image-registry login` (Docker) or use session token (Podman) before pushing
 - **Podman machine not running**: `podman machine start`
 - **Docker daemon not running**: Start Docker Desktop
-- **ARM Mac esbuild crash**: Build React app locally first, use `--ignorefile .dockerignore.prebuilt` (see ors_control_app section above)
 - **Podman pushes to wrong registry**: Use manual `--creds` flag, see `references/troubleshooting.md`

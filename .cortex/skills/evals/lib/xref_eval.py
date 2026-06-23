@@ -106,9 +106,19 @@ def _check_skill(skill_md: Path, ignore_prefixes: list[str] | None = None) -> di
                 issues.append(f"Subskill '{subskill_name}' not mentioned in router SKILL.md")
 
     s3_pattern = re.compile(r"s3://fleet-intelligence/", re.IGNORECASE)
+    # Skip generated/gitignored build artifacts. These can contain non-UTF8
+    # bytes (e.g. compiled output) that crash read_text, and are never authored
+    # skill content. Matching on any path part keeps it robust across nesting.
+    _SKIP_DIRS = {"node_modules", ".next", "output", "dist", "dist-server", "__pycache__", ".turbo", ".git"}
     all_files = list(skill_dir.rglob("*.sql")) + list(skill_dir.rglob("*.md"))
     for f in all_files:
-        content = f.read_text(encoding="utf-8")
+        if _SKIP_DIRS & set(f.parts):
+            continue
+        try:
+            content = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            # Tolerate gitignored/binary build artifacts instead of aborting the run.
+            continue
         for m in s3_pattern.finditer(content):
             rel = f.relative_to(skill_dir)
             line_num = content[:m.start()].count("\n") + 1
