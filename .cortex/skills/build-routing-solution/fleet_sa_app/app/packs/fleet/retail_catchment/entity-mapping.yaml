@@ -10,3 +10,7 @@ entities:
     source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.CITIES_BY_STATE
     materialization: view
     passthrough: true
+  - entity: REGIONAL_ADDRESSES
+    source_table: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.REGIONAL_ADDRESSES
+    materialization: view
+    passthrough: true

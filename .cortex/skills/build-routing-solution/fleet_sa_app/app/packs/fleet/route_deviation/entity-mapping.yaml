@@ -65,3 +65,7 @@ entities:
   - entity: DAILY_DEVIATION_TRENDS
     source_table: null
     materialization: derived   # computed from TRIP_DEVIATION (see data-model.yaml)
+
+  - entity: TRIP_GPS_POINTS
+    source_table: null
+    materialization: derived   # per-point GPS from FACT_VEHICLE_TELEMETRY (see data-model.yaml sql)

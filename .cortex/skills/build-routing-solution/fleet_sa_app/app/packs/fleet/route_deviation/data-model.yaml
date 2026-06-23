@@ -95,6 +95,31 @@ entities:
       - { name: AVG_DISTANCE_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DISTANCE_DEVIATION_PCT)" }
       - { name: AVG_DURATION_DEVIATION_PCT, type: FLOAT,    expr: "AVG(DURATION_DEVIATION_PCT)" }
 
+  # ---- Derived: per-point GPS trace for the trip inspector ------------------
+  - name: TRIP_GPS_POINTS
+    description: "Per-GPS-point trace (speed, accuracy, detour, derived teleport) for the route inspector. Scoped by the route_deviation CONFIG region/vehicle."
+    access_pattern: derived
+    grain: "One row per GPS ping"
+    materialization: view
+    sql: |
+      SELECT
+        t.TRIP_ID, t.VEHICLE_ID, t.POINT_INDEX, t.TS,
+        t.SPEED_KMH, t.GPS_ACCURACY_M, t.IS_DETOUR,
+        t.POINT_GEOM,
+        ST_X(t.POINT_GEOM) AS LNG,
+        ST_Y(t.POINT_GEOM) AS LAT,
+        CASE WHEN ST_DISTANCE(
+                   t.POINT_GEOM,
+                   ST_MAKEPOINT(
+                     LAG(ST_X(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX),
+                     LAG(ST_Y(t.POINT_GEOM)) OVER (PARTITION BY t.TRIP_ID ORDER BY t.POINT_INDEX)
+                   )
+                 ) > 2000 THEN TRUE ELSE FALSE END AS IS_TELEPORT
+      FROM SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY t
+      WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+        AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+        AND t.POINT_GEOM IS NOT NULL
+
   # ---- Context: region/vehicle control row ----------------------------------
   - name: CONFIG
     description: "Single-row region/vehicle context for the pack."
