@@ -834,7 +834,14 @@
                 "base": [255, 107, 53, 200],
                 "active": [41, 181, 232, 255],
                 "matchColumn": "vehicle_id",
-                "whenViewStateEquals": "selected_trailer"
+                "whenViewStateEquals": "selected_trailer",
+                "baseColumn": "severity",
+                "basePalette": {
+                  "CRITICAL": [209, 55, 78, 220],
+                  "WARNING": [255, 160, 0, 220],
+                  "WATCH": [255, 210, 80, 200],
+                  "OK": [140, 140, 140, 180]
+                }
               },
               "radius": 400,
               "radiusMinPixels": 5,
@@ -857,6 +864,203 @@
         },
         "config": { "rowKey": "vehicle_id", "maxRows": 200 },
         "emits": { "selected_trailer": "selection" }
+      }
+    }
+  },
+  "dwell_trips": {
+    "label": "Trip Inspector",
+    "description": "Per-trip GPS path and dwell stops \u2014 click a trip to inspect its stops on the map.",
+    "layout": {
+      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"trips map\"" }
+    },
+    "areas": {
+      "trips": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT TRIP_ID AS trip_id, ANY_VALUE(VEHICLE_ID) AS vehicle, COUNT(*) AS dwells, ROUND(SUM(DWELL_MINUTES),0) AS dwell_min FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE TRIP_ID IS NOT NULL GROUP BY TRIP_ID ORDER BY dwell_min DESC NULLS LAST LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": { "rowKey": "trip_id", "maxRows": 100 },
+        "emits": { "selected_trip": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "trip-path",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 200],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(TO_GEOGRAPHY('LINESTRING(' || LISTAGG(ST_X(POINT_GEOM) || ' ' || ST_Y(POINT_GEOM), ', ') WITHIN GROUP (ORDER BY TS) || ')'))::STRING AS route_geojson FROM FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = :selected_trip AND POINT_GEOM IS NOT NULL GROUP BY TRIP_ID HAVING COUNT(*) >= 2",
+                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "dwell-stops",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "column": "sla",
+                "palette": { "OK": [46, 204, 113, 220], "WARNING": [255, 160, 0, 220], "CRITICAL": [209, 55, 78, 230] },
+                "default": [46, 204, 113, 220]
+              },
+              "radius": 120,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 12,
+              "pickable": true,
+              "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
+              "data": {
+                "query": "SELECT s.LOCATION_NAME AS name, ST_X(s.AVG_POINT) AS lng, ST_Y(s.AVG_POINT) AS lat, ROUND(s.DWELL_MINUTES,0) AS dwell_min, COALESCE(a.SLA_STATUS,'OK') AS sla FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS s LEFT JOIN FLEET_APP.DWELL.VW_SLA_ALERTS a ON s.VEHICLE_ID = a.VEHICLE_ID AND s.SESSION_ID = a.SESSION_ID WHERE s.TRIP_ID = :selected_trip AND s.AVG_POINT IS NOT NULL",
+                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "dwell_live": {
+    "label": "Live Operations",
+    "description": "Last-known asset positions by state, with the most recent dwell sessions.",
+    "layout": {
+      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
+    },
+    "areas": {
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "positions",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "column": "state",
+                "palette": { "MOVING": [41, 181, 232, 220], "IDLE": [255, 210, 80, 220], "DWELL_WAREHOUSE": [255, 140, 0, 220], "DWELL_DESTINATION": [255, 140, 0, 220], "DWELL_STORE": [255, 140, 0, 220], "DWELL_REST_STOP": [255, 140, 0, 220], "STOPPED": [209, 55, 78, 220] },
+                "default": [140, 140, 140, 180]
+              },
+              "radius": 200,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 9,
+              "pickable": true,
+              "tooltip": "<b>{vehicle_id}</b><br/>{state}",
+              "data": {
+                "query": "SELECT VEHICLE_ID AS vehicle_id, ST_X(POINT_GEOM) AS lng, ST_Y(POINT_GEOM) AS lat, STATUS AS state FROM FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY WHERE POINT_GEOM IS NOT NULL QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+              }
+            }
+          ]
+        }
+      },
+      "table": {
+        "component": "Table",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS vehicle, SUBSTR(LOCATION_NAME,1,24) AS location, STATUS AS state, ROUND(DWELL_MINUTES,0) AS dwell_min, TO_VARCHAR(SESSION_END) AS last_seen FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS ORDER BY SESSION_END DESC LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        }
+      }
+    }
+  },
+  "deviation_inspector": {
+    "label": "Route Inspector",
+    "description": "Per-trip GPS trace with teleport/detour points, accuracy filter, and speed profile.",
+    "layout": {
+      "default": { "columns": "1fr 1fr 1fr", "rows": "auto auto auto 1fr auto", "grid": "\"vehsel tripsel maxacc\"\n\"tele detour .\"\n\"metrics metrics metrics\"\n\"map map map\"\n\"speed speed speed\"" }
+    },
+    "areas": {
+      "vehsel": {
+        "component": "ComboBox",
+        "data": { "query": "SELECT DISTINCT VEHICLE_ID AS value, VEHICLE_ID AS label FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS ORDER BY 1 LIMIT 200" },
+        "config": { "label": "Vehicle", "placeholder": "Select vehicle" },
+        "emits": { "selected_vehicle": "selection" }
+      },
+      "tripsel": {
+        "component": "ComboBox",
+        "data": {
+          "query": "SELECT DISTINCT TRIP_ID AS value, TRIP_ID AS label FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE (:selected_vehicle IS NULL OR VEHICLE_ID = :selected_vehicle) ORDER BY 1 LIMIT 200",
+          "params": { "selected_vehicle": "viewState.selected_vehicle" }
+        },
+        "config": { "label": "Trip", "placeholder": "Select trip" },
+        "emits": { "selected_trip": "selection" }
+      },
+      "maxacc": {
+        "component": "Slider",
+        "config": { "label": "Max GPS accuracy (m)", "min": 5, "max": 100, "step": 5, "default": 100 },
+        "emits": { "max_acc": "" }
+      },
+      "tele": {
+        "component": "Checkbox",
+        "config": { "label": "Show teleports", "default": true },
+        "emits": { "show_teleports": "" }
+      },
+      "detour": {
+        "component": "Checkbox",
+        "config": { "label": "Show detours", "default": true },
+        "emits": { "show_detours": "" }
+      },
+      "metrics": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS points, SUM(IFF(IS_TELEPORT,1,0)) AS teleports, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip",
+          "params": { "selected_trip": "viewState.selected_trip" },
+          "mapping": { "metrics": [ { "column": "points", "label": "GPS Points", "format": "number" }, { "column": "teleports", "label": "Teleports", "format": "number" }, { "column": "detours", "label": "Detours", "format": "number" }, { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" } ] }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "gps-track",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 180],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT TRIP_ID, ST_ASGEOJSON(TO_GEOGRAPHY('LINESTRING(' || LISTAGG(LNG || ' ' || LAT, ', ') WITHIN GROUP (ORDER BY POINT_INDEX) || ')'))::STRING AS route_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip AND (:max_acc IS NULL OR GPS_ACCURACY_M <= :max_acc) GROUP BY TRIP_ID HAVING COUNT(*) >= 2",
+                "params": { "selected_trip": "viewState.selected_trip", "max_acc": "viewState.max_acc" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "gps-points",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "column": "point_kind",
+                "palette": { "teleport": [209, 55, 78, 230], "detour": [255, 160, 0, 230], "normal": [41, 181, 232, 200] },
+                "default": [41, 181, 232, 200]
+              },
+              "radius": 30,
+              "radiusMinPixels": 2,
+              "radiusMaxPixels": 6,
+              "pickable": true,
+              "tooltip": "<b>#{point_index}</b><br/>{point_kind}<br/>{speed_kmh} km/h<br/>acc {gps_accuracy_m} m",
+              "data": {
+                "query": "SELECT POINT_INDEX AS point_index, LNG AS lng, LAT AS lat, ROUND(SPEED_KMH,0) AS speed_kmh, ROUND(GPS_ACCURACY_M,0) AS gps_accuracy_m, CASE WHEN IS_TELEPORT THEN 'teleport' WHEN IS_DETOUR THEN 'detour' ELSE 'normal' END AS point_kind FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip AND (:max_acc IS NULL OR GPS_ACCURACY_M <= :max_acc) AND (CASE WHEN IS_TELEPORT THEN COALESCE(:show_teleports,'true') WHEN IS_DETOUR THEN COALESCE(:show_detours,'true') ELSE 'true' END = 'true') ORDER BY POINT_INDEX LIMIT 5000",
+                "params": { "selected_trip": "viewState.selected_trip", "max_acc": "viewState.max_acc", "show_teleports": "viewState.show_teleports", "show_detours": "viewState.show_detours" }
+              }
+            }
+          ]
+        }
+      },
+      "speed": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT POINT_INDEX AS idx, SPEED_KMH AS speed FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip ORDER BY POINT_INDEX LIMIT 2000",
+          "params": { "selected_trip": "viewState.selected_trip" }
+        },
+        "config": { "title": "Speed Profile", "xAxis": { "field": "idx", "fieldType": "number" }, "series": [ { "type": "line", "field": "speed", "label": "Speed (km/h)", "color": "#29B5E8" } ] }
       }
     }
   }
