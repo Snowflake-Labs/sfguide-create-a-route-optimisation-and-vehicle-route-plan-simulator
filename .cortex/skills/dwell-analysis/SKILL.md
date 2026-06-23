@@ -14,7 +14,7 @@ metadata:
 > **Two deployment paths.**
 > - **SA + synapse app (preferred for the data-contract app):** dwell ships as a
 >   self-building data-contract pack at
->   `build-routing-solution/fleet_sa_app/app/packs/fleet/dwell/`
+>   `install-fleet-apps/fleet_sa_app/app/packs/fleet/dwell/`
 >   (`data-model.yaml` + `entity-mapping.yaml`). Its `derived` primitives rebuild the
 >   full DAG (state-detection -> sessionization -> enrichment -> H3/SLA/facility/driver/daily)
 >   into `FLEET_APP.DWELL.*`, verified bit-for-bit against the pipeline below. Deploy it

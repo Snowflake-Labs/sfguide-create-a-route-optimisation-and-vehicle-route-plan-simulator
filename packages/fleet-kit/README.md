@@ -3,7 +3,7 @@
 The single home for the **framework-agnostic** UI and data primitives shared by the two
 frontends of this repo:
 
-- **Analytics App** (consumer + ops surfaces) — `.cortex/skills/build-routing-solution/fleet_sa_app/ui` (Next.js)
+- **Analytics App** (consumer + ops surfaces) — `.cortex/skills/install-fleet-apps/fleet_sa_app/ui` (Next.js)
 - **Routing Platform admin/build console** — `.cortex/skills/build-routing-solution/openrouteservice_app/services/ors_control_app` (being modernized onto Next in R5)
 
 ## Why this exists
@@ -13,7 +13,7 @@ client, SPCS OAuth/PAT auth, the SQL JSON-literal helper, chart/metric primitive
 package is the deduplicated source of truth so a fix lands once and both apps consume it.
 
 This is part of the "**2 products / 3 surfaces / 1 UI kit**" restructuring. See the phased
-plan at `../../.cortex/skills/build-routing-solution/fleet_sa_app/APP_RESTRUCTURE_PLAN.md`.
+plan at `../../.cortex/skills/install-fleet-apps/fleet_sa_app/APP_RESTRUCTURE_PLAN.md`.
 
 ## Status
 

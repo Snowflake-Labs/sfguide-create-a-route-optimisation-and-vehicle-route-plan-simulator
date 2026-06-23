@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-routing-solution / deploy_fleet_admin_app.sh
+# install-fleet-apps / deploy_fleet_admin_app.sh
 #
 # One-command deploy for the Routing Platform Admin/Build console (FLEET_ADMIN_APP)
 # on SPCS. Sibling to deploy_fleet_sa_app.sh; the admin app lives under
@@ -9,7 +9,7 @@
 # flow: build -> push -> render spec -> CREATE/ALTER SERVICE -> set EAI -> URL.
 #
 # Usage:
-#   bash .cortex/skills/build-routing-solution/scripts/deploy_fleet_admin_app.sh [connection]
+#   bash .cortex/skills/install-fleet-apps/scripts/deploy_fleet_admin_app.sh [connection]
 #
 # Default connection: fleet_test_evals
 #
@@ -23,17 +23,21 @@ set -euo pipefail
 
 CONNECTION=${1:-fleet_test_evals}
 REPO_ROOT=$(git rev-parse --show-toplevel)
-SKILL_DIR="$REPO_ROOT/.cortex/skills/build-routing-solution"
+SKILL_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps"
 APP_DIR="$SKILL_DIR/fleet_admin_app"
 UI_DIR="$APP_DIR/ui"
 SERVICE_YAML="$APP_DIR/fleet_admin_app_service.yaml"
-VERSION_FILE="$SKILL_DIR/openrouteservice_app/image-versions.env"
+VERSION_FILE="$SKILL_DIR/image-versions.env"
 GIT_SHA=$(git rev-parse --short HEAD)
 GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP"
-SPEC_STAGE="@OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/fleet_admin_app"
-IMAGE_REPO_SQL_NAME="OPENROUTESERVICE_APP.core.image_repository"
+# Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
+# else FLEET-owned) and passed in via env; defaults preserve standalone use.
+SPEC_STAGE_NAME="${SPEC_STAGE_NAME:-OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE}"
+SPEC_STAGE="@${SPEC_STAGE_NAME}/services/fleet_admin_app"
+IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 COMPUTE_POOL="${COMPUTE_POOL:-OPENROUTESERVICE_APP_COMPUTE_POOL}"
 
 # ── 0. Pre-flight ───────────────────────────────────────────────
@@ -89,7 +93,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
   STAGE_DIR=$(mktemp -d); trap 'rm -rf "$STAGE_DIR"' EXIT
   STAGE_YAML="$STAGE_DIR/fleet_admin_app_service.yaml"
   sed -E "s|(fleet_admin_app:)[^\"' ]+|\1$IMAGE_TAG|" "$SERVICE_YAML" > "$STAGE_YAML"
-  snow sql -c "$CONNECTION" -q "CREATE STAGE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE;" >/dev/null 2>&1 || true
+  snow sql -c "$CONNECTION" -q "CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME;" >/dev/null 2>&1 || true
   snow stage copy "$STAGE_YAML" "$SPEC_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 
   echo "[5/7] CREATE SERVICE IF NOT EXISTS (first deploy) ..."
@@ -98,7 +102,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
       IN COMPUTE POOL $COMPUTE_POOL
       FROM ${SPEC_STAGE}
       SPECIFICATION_FILE = 'fleet_admin_app_service.yaml'
-      COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-build-routing-solution\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
+      COMMENT = '{\"origin\":\"sf_sit-is-fleet\",\"name\":\"oss-install-fleet-apps\",\"version\":{\"major\":1,\"minor\":0},\"attributes\":{\"is_quickstart\":1,\"source\":\"app\"}}';
   " >/tmp/fleet_admin_create.log 2>&1 || { echo "ERROR: create service failed"; tail -30 /tmp/fleet_admin_create.log; exit 1; }
 
   echo "[6/7] SUSPEND -> ALTER FROM SPEC -> set EAI -> RESUME..."
@@ -107,7 +111,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN
       FROM ${SPEC_STAGE}
       SPECIFICATION_FILE = 'fleet_admin_app_service.yaml';
-    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI);
+    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_admin_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_admin_alter.log; exit 1; }
 else

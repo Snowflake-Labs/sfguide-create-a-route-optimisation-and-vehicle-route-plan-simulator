@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-routing-solution / deploy_fleet_sa_app.sh
+# install-fleet-apps / deploy_fleet_sa_app.sh
 #
 # One-command deploy for the Fleet Intelligence SA host (Solution Accelerator UI)
 # on SPCS. Sibling to deploy.sh (which deploys the ORS control app); kept separate
@@ -9,7 +9,7 @@
 # build -> push -> render spec -> upload config bundle -> ALTER SERVICE -> URL.
 #
 # Usage:
-#   bash .cortex/skills/build-routing-solution/scripts/deploy_fleet_sa_app.sh [connection]
+#   bash .cortex/skills/install-fleet-apps/scripts/deploy_fleet_sa_app.sh [connection]
 #
 # Default connection: fleet_test_evals
 #
@@ -23,17 +23,20 @@ set -euo pipefail
 
 CONNECTION=${1:-fleet_test_evals}
 REPO_ROOT=$(git rev-parse --show-toplevel)
-SKILL_DIR="$REPO_ROOT/.cortex/skills/build-routing-solution"
+SKILL_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps"
 APP_DIR="$SKILL_DIR/fleet_sa_app"
 UI_DIR="$APP_DIR/ui"
 SERVICE_YAML="$APP_DIR/fleet_sa_app_service.yaml"
-VERSION_FILE="$SKILL_DIR/openrouteservice_app/image-versions.env"
+VERSION_FILE="$SKILL_DIR/image-versions.env"
 GIT_SHA=$(git rev-parse --short HEAD)
 GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 SERVICE_FQN="FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP"
 CONFIG_STAGE="@FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_APP_STAGE/config"
-IMAGE_REPO_SQL_NAME="OPENROUTESERVICE_APP.core.image_repository"
+# Infra names are resolved by install_fleet_apps.sh (reuse OPENROUTESERVICE_APP
+# else FLEET-owned) and passed in via env; defaults preserve standalone use.
+IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
+CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
 
 # ── 0. Pre-flight ───────────────────────────────────────────────
 echo "[0/7] Pre-flight checks..."
@@ -123,8 +126,8 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
       SPECIFICATION_FILE = 'fleet_sa_app_service.yaml';
     -- CARTO basemap tile proxy (/api/tiles) needs egress to *.basemaps.cartocdn.com.
     -- EAIs are a service property (not expressible in the spec YAML), so set it here.
-    -- Reuses the ORS control app's ORS_CARTO_EAI (a/b/c/d.basemaps.cartocdn.com:443).
-    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = (ORS_CARTO_EAI);
+    -- Resolved infra: reuses ORS_CARTO_EAI when present, else FLEET_APP_CARTO_EAI.
+    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_sa_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_sa_alter.log; exit 1; }
 else

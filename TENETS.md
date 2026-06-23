@@ -12,9 +12,9 @@ the design — do not work around it. These complement (do not replace) the oper
 rules in `AGENTS.md` (commit discipline, tracking tags, geospatial conventions, fix discipline).
 
 Primary code locations referenced below:
-- SA host (vendored): `.cortex/skills/build-routing-solution/fleet_sa_app/ui/` + bundle `.../fleet_sa_app/app/`
-- synapse tool bundles: `.cortex/skills/build-routing-solution/fleet_tools/{user,admin,ops}/` + vendored framework `fleet_tools/vendor/synapse/`
-- Routing contract: `.cortex/skills/build-routing-solution/routing_platform/setup.sql`
+- SA host (vendored): `.cortex/skills/install-fleet-apps/fleet_sa_app/ui/` + bundle `.../fleet_sa_app/app/`
+- synapse tool bundles: `.cortex/skills/install-fleet-apps/fleet_tools/{user,admin,ops}/` + vendored framework `fleet_tools/vendor/synapse/`
+- Routing contract: `.cortex/skills/install-fleet-apps/routing_platform/setup.sql`
 - Data-contract packs: `.../fleet_sa_app/app/packs/<domain>/`
 
 ---
