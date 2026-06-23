@@ -134,6 +134,32 @@ $$
           OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
 $$;
 
+-- ---------------------------------------------------------------------------
+-- DIM_TRIP_SCHEDULE (region + vehicle scoped). Planned-work grain; powers the
+-- neutral dim_plan / fact_work_item / fact_stop (CORE) and the Dispatch board.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION SYNTHETIC_DATASETS.UNIFIED.F_DIM_TRIP_SCHEDULE_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR,
+  TRIP_DATE DATE, TRIP_SEQ NUMBER, ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR,
+  PLANNED_START TIMESTAMP_NTZ, PLANNED_END TIMESTAMP_NTZ, SHIFT_TYPE VARCHAR, ORS_PROFILE VARCHAR,
+  DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR, JOB_ID VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT s.SCHEDULE_ID, s.VEHICLE_ID, s.DRIVER_ID, s.VEHICLE_TYPE, s.REGION,
+         s.TRIP_DATE, s.TRIP_SEQ, s.ORIGIN_POI_ID, s.DESTINATION_POI_ID,
+         s.PLANNED_START, s.PLANNED_END, s.SHIFT_TYPE, s.ORS_PROFILE,
+         s.DISTANCE_KM, s.DURATION_MINUTES, s.STATUS, s.JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE s
+  JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+    ON d.DATASET_ID = s.JOB_ID AND d.REGION = s.REGION AND d.VEHICLE_TYPE = s.VEHICLE_TYPE
+  WHERE (P_REGION IS NULL OR s.REGION = P_REGION)
+    AND ( (P_DATASET_ID IS NOT NULL AND d.DATASET_ID = P_DATASET_ID)
+          OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
+$$;
+
 -- ============================================================================
 -- Contract-layer scope-arg functions (FLEET_APP.* neutral data contract)
 -- ============================================================================
@@ -226,6 +252,30 @@ GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_POIS_SCOPED(VARCHAR, VA
 GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
 GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
 GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+CREATE OR REPLACE FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR,
+  TRIP_DATE DATE, TRIP_SEQ NUMBER, ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR,
+  PLANNED_START TIMESTAMP_NTZ, PLANNED_END TIMESTAMP_NTZ, SHIFT_TYPE VARCHAR, ORS_PROFILE VARCHAR,
+  DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR, JOB_ID VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT * FROM TABLE(SYNTHETIC_DATASETS.UNIFIED.F_DIM_TRIP_SCHEDULE_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUNCTION FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(VARCHAR, VARCHAR) TO ROLE FLEET_APP_ADMIN;
+
+-- NOTE: the vehicle-type parameter catalog contract views
+-- (FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE / VW_VEHICLE_DWELL_SLA) are owned
+-- by the unified_fleet PACK (packs/fleet/unified_fleet), not here. They must be
+-- created before the dwell / route_deviation pack DTs that reference them, and
+-- scoped_contract.sql is applied AFTER all packs, so the unified_fleet pack
+-- (which installs first; those packs depend_on it) is the correct owner.
 
 -- ============================================================================
 -- FLEET_OPS — the ONE universal, mode-agnostic analytics layer (R6)
@@ -511,3 +561,364 @@ GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_OPS;
 GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.FLEET_OPS TO ROLE FLEET_APP_ADMIN;
+
+-- ============================================================================
+-- FLEET_APP.CORE — the NEUTRAL, industry/vehicle-agnostic data contract (R-agnostic)
+-- ============================================================================
+-- Implements the agnostic-view report's neutral schema (report section 6.2) as an
+-- ADDITIVE aliasing layer: no physical table is renamed. Every entity below is a
+-- thin projection over the guaranteed-present FLEET_APP.UNIFIED_FLEET.F_VW_*_SCOPED
+-- contract functions, re-expressed in NEUTRAL vocabulary so a domain swap is a
+-- config change (labels/units/icons), never a SQL edit:
+--   physical            neutral
+--   VEHICLE_ID      ->  entity_id        (mobile_asset)
+--   DRIVER_ID       ->  operator_id
+--   LOCATION_ID     ->  site_id
+--   TRIP_ID         ->  journey_id
+--   SCHEDULE_ID     ->  plan_id / work_item_id / stop_id
+--   telemetry ping  ->  fact_position
+--   safety flag     ->  fact_event
+-- Same pattern as FLEET_OPS: a scoped UDTF F_<ENTITY>_SCOPED(region, dataset_id)
+-- plus a global-active VW_<ENTITY> wrapper (NULL args) for surfacing-gate probes and
+-- Cortex Analyst semantic views. Mirrored into the control-app boot (init.ts
+-- ensureScopedDatasetContract) for new-deployment-first.
+--
+-- Scope (Phase 1): the always-present neutral core derived from trips, telemetry,
+-- POIs, fleet, and schedule. fact_alert (SLA) and a dwell-backed fact_stop are
+-- provided by the dwell pack contract (FLEET_APP.DWELL.*) when installed and are
+-- cross-linked, not duplicated here.
+-- ============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_APP.CORE
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"neutral-data-contract"}}';
+
+-- ---------------------------------------------------------------------------
+-- dim_metric_definition — neutral KPI vocabulary (report section 3.2). Static seed
+-- table: metric_name + display label key + unit + thresholds + direction. The UI
+-- config resolver (Phase 2) reads display_label_key/unit_code/thresholds so the
+-- same metric renders with domain-appropriate label/units without code edits.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS FLEET_APP.CORE.DIM_METRIC_DEFINITION (
+  METRIC_NAME VARCHAR, DISPLAY_LABEL_KEY VARCHAR, UNIT_CODE VARCHAR, AGGREGATION_METHOD VARCHAR,
+  GOOD_THRESHOLD FLOAT, WARN_THRESHOLD FLOAT, CRITICAL_THRESHOLD FLOAT, HIGHER_IS_BETTER_FLAG BOOLEAN
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Idempotent seed (truncate+insert) of the report's canonical neutral KPI set.
+DELETE FROM FLEET_APP.CORE.DIM_METRIC_DEFINITION;
+INSERT INTO FLEET_APP.CORE.DIM_METRIC_DEFINITION
+  (METRIC_NAME, DISPLAY_LABEL_KEY, UNIT_CODE, AGGREGATION_METHOD, GOOD_THRESHOLD, WARN_THRESHOLD, CRITICAL_THRESHOLD, HIGHER_IS_BETTER_FLAG)
+VALUES
+  ('idle_duration','metric.idle_duration','sec','avg',900,1800,3600,FALSE),
+  ('dwell_duration','metric.dwell_duration','sec','avg',1800,3600,7200,FALSE),
+  ('service_duration','metric.service_duration','sec','avg',NULL,NULL,NULL,FALSE),
+  ('wait_duration','metric.wait_duration','sec','avg',600,1800,3600,FALSE),
+  ('utilization_pct','metric.utilization_pct','pct','avg',0.85,0.65,0.50,TRUE),
+  ('availability_pct','metric.availability_pct','pct','avg',0.90,0.75,0.60,TRUE),
+  ('on_time_pct','metric.on_time_pct','pct','avg',0.95,0.85,0.75,TRUE),
+  ('eta_variance','metric.eta_variance','sec','avg',300,900,1800,FALSE),
+  ('route_adherence_pct','metric.route_adherence_pct','pct','avg',0.95,0.85,0.70,TRUE),
+  ('deviation_distance','metric.deviation_distance','m','sum',500,2000,5000,FALSE),
+  ('empty_distance_pct','metric.empty_distance_pct','pct','avg',0.15,0.30,0.45,FALSE),
+  ('events_per_100_units','metric.events_per_100_units','count','avg',1,3,5,FALSE),
+  ('cost_per_unit','metric.cost_per_unit','currency','avg',NULL,NULL,NULL,FALSE),
+  ('detention_cost','metric.detention_cost','currency','sum',NULL,NULL,NULL,FALSE),
+  ('site_throughput','metric.site_throughput','count','sum',NULL,NULL,NULL,TRUE),
+  ('turn_time','metric.turn_time','sec','avg',1800,3600,7200,FALSE),
+  ('health_open_issue_count','metric.health_open_issue_count','count','sum',0,2,5,FALSE),
+  ('safety_score','metric.safety_score','score','avg',80,60,40,TRUE),
+  ('tracking_quality_pct','metric.tracking_quality_pct','pct','avg',0.95,0.85,0.70,TRUE);
+
+-- ---------------------------------------------------------------------------
+-- dim_entity (mobile_asset) <- DIM_FLEET. capacity_json unions sparse mode attrs.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_DIM_ENTITY_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  ENTITY_ID VARCHAR, ENTITY_TYPE VARCHAR, ENTITY_LABEL VARCHAR, ENTITY_GROUP_ID VARCHAR,
+  CAPACITY_JSON VARIANT, HOME_SITE_ID VARCHAR, STATUS_ENUM VARCHAR, ICON_KEY VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT VEHICLE_ID AS ENTITY_ID, VEHICLE_TYPE AS ENTITY_TYPE, VEHICLE_ID AS ENTITY_LABEL,
+         OPERATING_MODE AS ENTITY_GROUP_ID,
+         OBJECT_CONSTRUCT('weight_tons', WEIGHT_TONS, 'height_m', HEIGHT_M, 'length_m', LENGTH_M,
+                          'width_m', WIDTH_M, 'axleload_t', AXLELOAD_T, 'battery_range_km', BATTERY_RANGE_KM,
+                          'hazmat', HAZMAT, 'subtype', VEHICLE_SUBTYPE)::VARIANT AS CAPACITY_JSON,
+         HOME_LOCATION_ID AS HOME_SITE_ID,
+         CAST(NULL AS VARCHAR) AS STATUS_ENUM,
+         VEHICLE_TYPE AS ICON_KEY,
+         REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- dim_operator <- distinct operators on trips, enriched with fleet profile.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_DIM_OPERATOR_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  OPERATOR_ID VARCHAR, OPERATOR_TYPE VARCHAR, OPERATOR_LABEL VARCHAR, TEAM_ID VARCHAR,
+  HOME_SITE_ID VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH t AS (
+    SELECT DRIVER_ID, VEHICLE_ID, REGION,
+           ROW_NUMBER() OVER (PARTITION BY DRIVER_ID ORDER BY TRIP_START) AS RN
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
+  ),
+  f AS (
+    SELECT VEHICLE_ID, DRIVER_PROFILE, HOME_LOCATION_ID,
+           ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY DRIVER_PROFILE) AS RN
+    FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_FLEET_SCOPED(P_REGION, P_DATASET_ID))
+  )
+  SELECT t.DRIVER_ID AS OPERATOR_ID,
+         ANY_VALUE(f.DRIVER_PROFILE) AS OPERATOR_TYPE,
+         t.DRIVER_ID AS OPERATOR_LABEL,
+         CAST(NULL AS VARCHAR) AS TEAM_ID,
+         ANY_VALUE(f.HOME_LOCATION_ID) AS HOME_SITE_ID,
+         ANY_VALUE(t.REGION) AS REGION
+  FROM t
+  LEFT JOIN f ON t.VEHICLE_ID = f.VEHICLE_ID AND f.RN = 1
+  WHERE t.RN = 1
+  GROUP BY t.DRIVER_ID
+$$;
+
+-- ---------------------------------------------------------------------------
+-- dim_site <- DIM_POIS. geofence_geog NULL (point POIs); category preserved.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_DIM_SITE_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  SITE_ID VARCHAR, SITE_TYPE VARCHAR, SITE_LABEL VARCHAR, SITE_CATEGORY VARCHAR,
+  SITE_GEOG GEOGRAPHY, GEOFENCE_GEOG GEOGRAPHY, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT LOCATION_ID AS SITE_ID, LOCATION_TYPE AS SITE_TYPE, NAME AS SITE_LABEL, CATEGORY AS SITE_CATEGORY,
+         POINT_GEOM AS SITE_GEOG, TO_GEOGRAPHY(NULL) AS GEOFENCE_GEOG, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_POIS_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- dim_plan <- DIM_TRIP_SCHEDULE. Planned movement for plan-vs-actual + dispatch.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_DIM_PLAN_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  PLAN_ID VARCHAR, PLAN_TYPE VARCHAR, PLAN_LABEL VARCHAR, ENTITY_ID VARCHAR, OPERATOR_ID VARCHAR,
+  ORIGIN_SITE_ID VARCHAR, DESTINATION_SITE_ID VARCHAR, PLANNED_START_TS TIMESTAMP_NTZ,
+  PLANNED_END_TS TIMESTAMP_NTZ, PLANNED_DISTANCE_VALUE FLOAT, PLANNED_DURATION_SEC FLOAT,
+  PLAN_DATE DATE, SEQUENCE_NUM NUMBER, STATUS_ENUM VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT SCHEDULE_ID AS PLAN_ID, 'route_plan' AS PLAN_TYPE, SCHEDULE_ID AS PLAN_LABEL,
+         VEHICLE_ID AS ENTITY_ID, DRIVER_ID AS OPERATOR_ID,
+         ORIGIN_POI_ID AS ORIGIN_SITE_ID, DESTINATION_POI_ID AS DESTINATION_SITE_ID,
+         PLANNED_START AS PLANNED_START_TS, PLANNED_END AS PLANNED_END_TS,
+         DISTANCE_KM AS PLANNED_DISTANCE_VALUE, DURATION_MINUTES * 60 AS PLANNED_DURATION_SEC,
+         TRIP_DATE AS PLAN_DATE, TRIP_SEQ AS SEQUENCE_NUM, STATUS AS STATUS_ENUM, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_journey <- FACT_TRIPS. Actual + planned path for plan-vs-actual.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  JOURNEY_ID VARCHAR, ENTITY_ID VARCHAR, OPERATOR_ID VARCHAR, ENTITY_TYPE VARCHAR,
+  ORIGIN_SITE_ID VARCHAR, DESTINATION_SITE_ID VARCHAR, START_TS TIMESTAMP_NTZ, END_TS TIMESTAMP_NTZ,
+  ACTUAL_PATH_GEOG GEOGRAPHY, PLANNED_PATH_GEOG GEOGRAPHY, ORIGIN GEOGRAPHY, DESTINATION GEOGRAPHY,
+  STATUS_ENUM VARCHAR, DISTANCE_VALUE FLOAT, PLANNED_DISTANCE_VALUE FLOAT, DURATION_SEC FLOAT,
+  IS_DEVIATION BOOLEAN, DEVIATION_DISTANCE_VALUE FLOAT, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT TRIP_ID AS JOURNEY_ID, VEHICLE_ID AS ENTITY_ID, DRIVER_ID AS OPERATOR_ID, VEHICLE_TYPE AS ENTITY_TYPE,
+         ORIGIN_POI_ID AS ORIGIN_SITE_ID, DESTINATION_POI_ID AS DESTINATION_SITE_ID,
+         TRIP_START AS START_TS, TRIP_END AS END_TS,
+         ROUTE_GEOG AS ACTUAL_PATH_GEOG, PLANNED_ROUTE_GEOG AS PLANNED_PATH_GEOG, ORIGIN, DESTINATION,
+         STATUS AS STATUS_ENUM, DISTANCE_KM AS DISTANCE_VALUE, PLANNED_DISTANCE_KM AS PLANNED_DISTANCE_VALUE,
+         DURATION_MINUTES * 60 AS DURATION_SEC,
+         IS_DETOUR AS IS_DEVIATION, DETOUR_DISTANCE_KM AS DEVIATION_DISTANCE_VALUE, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_TRIPS_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_position <- FACT_VEHICLE_TELEMETRY. Raw movement track (journey replay).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_POSITION_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  POSITION_ID VARCHAR, ENTITY_ID VARCHAR, JOURNEY_ID VARCHAR, TS TIMESTAMP_NTZ,
+  LOCATION_GEOG GEOGRAPHY, H3_CELL VARCHAR, SPEED_VALUE FLOAT, HEADING_VALUE FLOAT,
+  MOTION_STATUS_ENUM VARCHAR, DATA_QUALITY_ENUM VARCHAR, SOURCE_SYSTEM VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT TELEMETRY_ID AS POSITION_ID, VEHICLE_ID AS ENTITY_ID, TRIP_ID AS JOURNEY_ID, TS,
+         POINT_GEOM AS LOCATION_GEOG,
+         CASE WHEN POINT_GEOM IS NOT NULL THEN H3_POINT_TO_CELL_STRING(POINT_GEOM, 8) END AS H3_CELL,
+         SPEED_KMH AS SPEED_VALUE, HEADING_DEG AS HEADING_VALUE, STATUS AS MOTION_STATUS_ENUM,
+         CASE WHEN GPS_ACCURACY_M IS NULL THEN NULL WHEN GPS_ACCURACY_M <= 15 THEN 'good'
+              WHEN GPS_ACCURACY_M <= 50 THEN 'fair' ELSE 'poor' END AS DATA_QUALITY_ENUM,
+         'synthetic' AS SOURCE_SYSTEM, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_event <- discrete safety/compliance events derived from telemetry flags.
+-- One neutral event row per raised flag (speeding | hos_violation | detour).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_EVENT_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  EVENT_ID VARCHAR, EVENT_TYPE VARCHAR, EVENT_TS TIMESTAMP_NTZ, ENTITY_ID VARCHAR, JOURNEY_ID VARCHAR,
+  LOCATION_GEOG GEOGRAPHY, H3_CELL VARCHAR, SEVERITY_ENUM VARCHAR, METRIC_NAME VARCHAR,
+  METRIC_VALUE FLOAT, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  WITH tel AS (
+    SELECT * FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
+  )
+  SELECT TELEMETRY_ID || '-spd' AS EVENT_ID, 'speeding' AS EVENT_TYPE, TS AS EVENT_TS,
+         VEHICLE_ID AS ENTITY_ID, TRIP_ID AS JOURNEY_ID, POINT_GEOM AS LOCATION_GEOG,
+         CASE WHEN POINT_GEOM IS NOT NULL THEN H3_POINT_TO_CELL_STRING(POINT_GEOM, 8) END AS H3_CELL,
+         CASE WHEN SPEED_KMH - POSTED_SPEED_KMH > 20 THEN 'high'
+              WHEN SPEED_KMH - POSTED_SPEED_KMH > 10 THEN 'medium' ELSE 'low' END AS SEVERITY_ENUM,
+         'speed_over_limit_kmh' AS METRIC_NAME, SPEED_KMH - POSTED_SPEED_KMH AS METRIC_VALUE, REGION
+  FROM tel WHERE IS_SPEEDING = TRUE
+  UNION ALL
+  SELECT TELEMETRY_ID || '-hos', 'hos_violation', TS, VEHICLE_ID, TRIP_ID, POINT_GEOM,
+         CASE WHEN POINT_GEOM IS NOT NULL THEN H3_POINT_TO_CELL_STRING(POINT_GEOM, 8) END,
+         'high', 'hos_violation', 1, REGION
+  FROM tel WHERE IS_HOS_VIOLATION = TRUE
+  UNION ALL
+  SELECT TELEMETRY_ID || '-dtr', 'detour', TS, VEHICLE_ID, TRIP_ID, POINT_GEOM,
+         CASE WHEN POINT_GEOM IS NOT NULL THEN H3_POINT_TO_CELL_STRING(POINT_GEOM, 8) END,
+         'medium', 'detour', 1, REGION
+  FROM tel WHERE IS_DETOUR = TRUE
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_area_metric <- H3 + hour aggregation of telemetry (space-time density).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_AREA_METRIC_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR, P_H3_RES NUMBER)
+RETURNS TABLE (
+  H3_CELL VARCHAR, TS_BUCKET NUMBER, METRIC_NAME VARCHAR, METRIC_VALUE FLOAT,
+  EVENT_COUNT NUMBER, UNIQUE_ENTITY_COUNT NUMBER, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT H3_POINT_TO_CELL_STRING(POINT_GEOM, COALESCE(P_H3_RES, 7)) AS H3_CELL,
+         EXTRACT(HOUR FROM TS) AS TS_BUCKET, 'ping_count' AS METRIC_NAME, COUNT(*)::FLOAT AS METRIC_VALUE,
+         COUNT(*) AS EVENT_COUNT, COUNT(DISTINCT VEHICLE_ID) AS UNIQUE_ENTITY_COUNT, ANY_VALUE(REGION) AS REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_FACT_VEHICLE_TELEMETRY_SCOPED(P_REGION, P_DATASET_ID))
+  WHERE POINT_GEOM IS NOT NULL
+  GROUP BY 1, 2
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_work_item <- DIM_TRIP_SCHEDULE. Planned assignable units (dispatch board).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  WORK_ITEM_ID VARCHAR, WORK_ITEM_TYPE VARCHAR, ENTITY_ID VARCHAR, OPERATOR_ID VARCHAR,
+  ORIGIN_SITE_ID VARCHAR, DESTINATION_SITE_ID VARCHAR, REQUESTED_START_TS TIMESTAMP_NTZ,
+  REQUESTED_END_TS TIMESTAMP_NTZ, SEQUENCE_NUM NUMBER, STATUS_ENUM VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT SCHEDULE_ID AS WORK_ITEM_ID, 'scheduled_trip' AS WORK_ITEM_TYPE, VEHICLE_ID AS ENTITY_ID,
+         DRIVER_ID AS OPERATOR_ID, ORIGIN_POI_ID AS ORIGIN_SITE_ID, DESTINATION_POI_ID AS DESTINATION_SITE_ID,
+         PLANNED_START AS REQUESTED_START_TS, PLANNED_END AS REQUESTED_END_TS, TRIP_SEQ AS SEQUENCE_NUM,
+         STATUS AS STATUS_ENUM, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- fact_stop <- planned stop grain from DIM_TRIP_SCHEDULE (always present). A
+-- richer dwell-backed fact_stop (arrival/departure/dwell/service/wait) is provided
+-- by the dwell pack (FLEET_APP.DWELL.VW_DWELL_SESSIONS) when installed.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FLEET_APP.CORE.F_FACT_STOP_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+RETURNS TABLE (
+  STOP_ID VARCHAR, JOURNEY_ID VARCHAR, ENTITY_ID VARCHAR, SITE_ID VARCHAR, ARRIVAL_TS TIMESTAMP_NTZ,
+  DEPARTURE_TS TIMESTAMP_NTZ, DWELL_DURATION_SEC FLOAT, WAIT_DURATION_SEC FLOAT, SERVICE_DURATION_SEC FLOAT,
+  SEQUENCE_NUM NUMBER, SLA_STATUS_ENUM VARCHAR, STOP_GRAIN VARCHAR, REGION VARCHAR
+)
+COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+$$
+  SELECT SCHEDULE_ID || '-dest' AS STOP_ID, CAST(NULL AS VARCHAR) AS JOURNEY_ID, VEHICLE_ID AS ENTITY_ID,
+         DESTINATION_POI_ID AS SITE_ID, PLANNED_END AS ARRIVAL_TS, CAST(NULL AS TIMESTAMP_NTZ) AS DEPARTURE_TS,
+         CAST(NULL AS FLOAT) AS DWELL_DURATION_SEC, CAST(NULL AS FLOAT) AS WAIT_DURATION_SEC,
+         CAST(NULL AS FLOAT) AS SERVICE_DURATION_SEC, TRIP_SEQ AS SEQUENCE_NUM,
+         CAST(NULL AS VARCHAR) AS SLA_STATUS_ENUM, 'planned' AS STOP_GRAIN, REGION
+  FROM TABLE(FLEET_APP.UNIFIED_FLEET.F_VW_DIM_TRIP_SCHEDULE_SCOPED(P_REGION, P_DATASET_ID))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Global-active VIEWS (NULL scope) over each neutral UDTF: surfacing-gate probes
+-- + Cortex Analyst semantic views. Dashboards use the F_*_SCOPED UDTFs per-session.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_DIM_ENTITY
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_DIM_ENTITY_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_DIM_OPERATOR
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_DIM_OPERATOR_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_DIM_SITE
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_DIM_PLAN
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_DIM_PLAN_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_JOURNEY
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_POSITION
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_EVENT
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_AREA_METRIC
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_AREA_METRIC_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS NUMBER)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_WORK_ITEM
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+CREATE OR REPLACE VIEW FLEET_APP.CORE.VW_FACT_STOP
+  COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-agnostic-contract","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+  AS SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)));
+
+-- ---------------------------------------------------------------------------
+-- Grants: neutral CORE contract to the consumer + ops/admin roles.
+-- ---------------------------------------------------------------------------
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT SELECT ON ALL VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON ALL FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_USER;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_OPS;
+GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN;

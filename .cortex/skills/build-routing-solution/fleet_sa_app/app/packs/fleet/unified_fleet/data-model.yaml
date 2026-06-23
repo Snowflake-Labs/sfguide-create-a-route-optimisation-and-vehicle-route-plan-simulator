@@ -42,3 +42,13 @@ entities:
     access_pattern: mapped
     grain: "One row per POI"
     columns: [ { name: POI_ID, type: VARCHAR } ]
+  - name: VEHICLE_PROFILE
+    description: "Per-vehicle-type parameter catalog: asset dims + evaluation thresholds (dwell SLA driver, deviation ratio, teleport m). Single source for mode-specific knobs."
+    access_pattern: mapped
+    grain: "One row per vehicle type"
+    columns: [ { name: VEHICLE_TYPE, type: VARCHAR } ]
+  - name: VEHICLE_DWELL_SLA
+    description: "Per-(vehicle type x location type) dwell SLA thresholds (warn/critical minutes + geofence buffer). Consumed by the dwell pack."
+    access_pattern: mapped
+    grain: "One row per (vehicle type, location type)"
+    columns: [ { name: VEHICLE_TYPE, type: VARCHAR } ]

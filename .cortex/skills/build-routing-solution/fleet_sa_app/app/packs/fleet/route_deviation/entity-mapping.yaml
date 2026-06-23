@@ -45,9 +45,24 @@ entities:
       - { app_column: DISTANCE_DEVIATION_PCT,    source_column: DISTANCE_DEVIATION_PCT }
       - { app_column: DURATION_DEVIATION_MIN,    source_column: DURATION_DEVIATION_MIN }
       - { app_column: DURATION_DEVIATION_PCT,    source_column: DURATION_DEVIATION_PCT }
-      - { app_column: IS_DISTANCE_DEVIATION,     source_column: IS_DISTANCE_DEVIATION }
+      # Deviation flags are recomputed from the per-vehicle-type catalog ratio
+      # (FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE.DEVIATION_DISTANCE_RATIO for
+      # the active CONFIG vehicle type) instead of the upstream hardcoded 0.20.
+      # IS_ROUTE_DEVIATION preserves the upstream detour-driven component
+      # (source IS_ROUTE_DEVIATION that was NOT a distance deviation) and ORs in
+      # the new catalog-driven distance deviation.
+      - app_column: IS_DISTANCE_DEVIATION
+        transform: |
+          ((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
+             (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+              WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
       - { app_column: IS_DURATION_DEVIATION,     source_column: IS_DURATION_DEVIATION }
-      - { app_column: IS_ROUTE_DEVIATION,        source_column: IS_ROUTE_DEVIATION }
+      - app_column: IS_ROUTE_DEVIATION
+        transform: |
+          (((ABS(ACTUAL_DISTANCE_KM - EXPECTED_DISTANCE_KM) / NULLIF(EXPECTED_DISTANCE_KM, 0)) >
+              (SELECT DEVIATION_DISTANCE_RATIO FROM FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
+               WHERE VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1) LIMIT 1))
+           OR (IS_ROUTE_DEVIATION AND NOT IS_DISTANCE_DEVIATION))
       - { app_column: ACTUAL_PATH,               source_column: ACTUAL_PATH }
       - { app_column: EXPECTED_PATH,             source_column: EXPECTED_PATH }
 

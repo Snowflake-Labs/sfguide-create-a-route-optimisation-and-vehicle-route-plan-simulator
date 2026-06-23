@@ -137,11 +137,14 @@ export async function insertDimFleet(fleet: any[], config: GenerationConfig, sno
     `${escVal(m.shift_start + '-' + m.shift_end)},${m.shift_start},${m.shift_end},` +
     `${escVal(m.home_poi.location_id)},${escVal(m.profile_type)},${escVal(config.mode)},` +
     `${m.base_speed_kmh},${m.battery_pct > 0 ? config.battery?.range_km || 'NULL' : 'NULL'},` +
-    `${escVal(jobId)})`
+    `${escVal(jobId)},` +
+    `${escVal(m.weight_tons ?? null)},${escVal(m.height_m ?? null)},${escVal(m.length_m ?? null)},` +
+    `${escVal(m.width_m ?? null)},${escVal(m.axleload_t ?? null)},${escVal(m.hazmat ?? false)},${escVal(m.vehicle_subtype ?? null)})`
   ).join(',\n');
   const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_FLEET
     (VEHICLE_ID,REGION,VEHICLE_TYPE,ORS_PROFILE,SHIFT_TYPE,SHIFT_START_HOUR,SHIFT_END_HOUR,
-     HOME_LOCATION_ID,DRIVER_PROFILE,OPERATING_MODE,BASE_SPEED_KMH,BATTERY_RANGE_KM,JOB_ID)
+     HOME_LOCATION_ID,DRIVER_PROFILE,OPERATING_MODE,BASE_SPEED_KMH,BATTERY_RANGE_KM,JOB_ID,
+     WEIGHT_TONS,HEIGHT_M,LENGTH_M,WIDTH_M,AXLELOAD_T,HAZMAT,VEHICLE_SUBTYPE)
     VALUES ${values}`;
   try {
     await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);

@@ -9,6 +9,8 @@
 import { currentRegionScalar } from './region.js';
 import { log } from '../diagnostics.js';
 import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables.js';
+import { ensureVehicleProfileCatalog } from '../studio/vehicle-profile-catalog.js';
+
 
 // Tracking tag for ROUTE_OPTIMIZATION (Asset Velocity) objects.
 const TRACK_RO_AV = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
@@ -151,25 +153,36 @@ function assetVelocityStmts(): { sql: string; db?: string; schema?: string }[] {
           FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f, cfg
           WHERE f.REGION = cfg.REGION AND f.VEHICLE_TYPE = cfg.VEHICLE_TYPE
           QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.JOB_ID DESC NULLS LAST) = 1
+        ),
+        -- Catalog-driven subtype buckets: flatten DIM_VEHICLE_PROFILE.SUBTYPE_DIST
+        -- into [CUM_LO, CUM_HI) ranges per VEHICLE_TYPE so a legacy row with a
+        -- NULL VEHICLE_SUBTYPE can be assigned deterministically by HASH bucket.
+        -- No CASE-on-vehicle-type: modes with no SUBTYPE_DIST simply contribute
+        -- no rows here, so the COALESCE falls through to NULL.
+        subtype_ranges AS (
+          SELECT vp.VEHICLE_TYPE,
+                 d.value:subtype::string AS SUBTYPE,
+                 SUM(d.value:pct::number) OVER (PARTITION BY vp.VEHICLE_TYPE ORDER BY d.index)
+                   - d.value:pct::number AS CUM_LO,
+                 SUM(d.value:pct::number) OVER (PARTITION BY vp.VEHICLE_TYPE ORDER BY d.index) AS CUM_HI
+          FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp,
+               LATERAL FLATTEN(input => vp.SUBTYPE_DIST) d
         )
         SELECT
           f.VEHICLE_ID, f.REGION, f.VEHICLE_TYPE, f.ORS_PROFILE, f.OPERATING_MODE,
-          CASE
-            WHEN f.OPERATING_MODE <> 'trucking' THEN NULL
-            WHEN f.BKT <  60 THEN 'DRY'
-            WHEN f.BKT <  85 THEN 'REEFER'
-            WHEN f.BKT <  97 THEN 'FLAT'
-            ELSE 'TANKER'
-          END AS VEHICLE_SUBTYPE,
-          CASE WHEN f.OPERATING_MODE = 'trucking' AND f.BKT = 99 THEN TRUE ELSE FALSE END AS HAZMAT,
-          CASE WHEN f.OPERATING_MODE = 'trucking'
-               THEN ROUND(38 + (MOD(ABS(HASH(f.VEHICLE_ID || '_w')), 600) / 100.0), 2)
-               ELSE 2.0 END AS WEIGHT_TONS,
-          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 4.00 ELSE 2.00 END AS HEIGHT_M,
-          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 16.50 ELSE 4.50 END AS LENGTH_M,
-          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 2.55 ELSE 1.85 END AS WIDTH_M,
-          CASE WHEN f.OPERATING_MODE = 'trucking' THEN 11.50 ELSE 1.20 END AS AXLELOAD_T
-        FROM filtered f`,
+          COALESCE(f.VEHICLE_SUBTYPE, sr.SUBTYPE)        AS VEHICLE_SUBTYPE,
+          COALESCE(f.HAZMAT, FALSE)                      AS HAZMAT,
+          COALESCE(f.WEIGHT_TONS, vp.WEIGHT_TONS)        AS WEIGHT_TONS,
+          COALESCE(f.HEIGHT_M,    vp.HEIGHT_M)           AS HEIGHT_M,
+          COALESCE(f.LENGTH_M,    vp.LENGTH_M)           AS LENGTH_M,
+          COALESCE(f.WIDTH_M,     vp.WIDTH_M)            AS WIDTH_M,
+          COALESCE(f.AXLELOAD_T,  vp.AXLELOAD_T)         AS AXLELOAD_T
+        FROM filtered f
+        LEFT JOIN FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE vp
+          ON vp.VEHICLE_TYPE = f.VEHICLE_TYPE
+        LEFT JOIN subtype_ranges sr
+          ON sr.VEHICLE_TYPE = f.VEHICLE_TYPE
+         AND f.BKT >= sr.CUM_LO AND f.BKT < sr.CUM_HI`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
@@ -279,10 +292,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
   } catch (e: any) {
     log('WARN', 'Init', `ensureUnifiedTables failed: ${e?.message?.slice(0, 200)}`);
   }
+  // Vehicle-type parameter catalog — single source of truth for per-mode asset
+  // dimensions + evaluation thresholds (dwell SLA, deviation ratio, teleport m).
+  // Must run before the V_*_CURRENT views / contract UDTFs and before any
+  // generation stamps DIM_FLEET from it. Idempotent (CREATE IF NOT EXISTS +
+  // MERGE upsert) so re-tuned defaults propagate on every boot.
+  try {
+    await ensureVehicleProfileCatalog(sqlFn);
+  } catch (e: any) {
+    log('WARN', 'Init', `ensureVehicleProfileCatalog failed: ${e?.message?.slice(0, 200)}`);
+  }
   const TRACK = `'{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_FX = `'{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const stmts: { sql: string; db?: string; schema?: string }[] = [
+    // Asset-attribute migration for existing installs (boot-only). DIM_FLEET's
+    // V_DIM_FLEET_CURRENT view is `SELECT f.*`, so ADD COLUMN invalidates its
+    // declared column count — drop it FIRST, then add columns; the view is
+    // recreated unconditionally later in this same boot (CREATE OR REPLACE
+    // V_DIM_FLEET_CURRENT below). Fresh installs already get these columns from
+    // the DIM_FLEET CREATE TABLE in studio/ensure-tables.ts. This migration is
+    // intentionally NOT in ensure-tables.ts (which also runs at generation
+    // time) so a generation run never drops the view without recreating it.
+    { sql: `DROP VIEW IF EXISTS SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS NUMBER(6,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS LENGTH_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WIDTH_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     // VEHICLE_CLASS_PROFILE — single source of truth for per-vehicle-class
     // capacity, costs, ORS profile, and UI label. Lives in
     // OPENROUTESERVICE_APP.CORE so any page on any preset can read it.

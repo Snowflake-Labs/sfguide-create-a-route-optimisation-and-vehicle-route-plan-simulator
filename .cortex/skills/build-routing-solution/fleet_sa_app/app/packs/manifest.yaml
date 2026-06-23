@@ -26,12 +26,14 @@ packs:
 
   - name: route_deviation
     app_schema: FLEET_APP.ROUTE_DEVIATION
+    depends_on: [unified_fleet]    # VW_TRIP_DEVIATION / VW_TRIP_GPS_POINTS read the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_PROFILE
     probe: FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ROUTE_DEVIATION]
     self_building: true
 
   - name: dwell
     app_schema: FLEET_APP.DWELL
+    depends_on: [unified_fleet]    # VW_SLA_ALERTS reads the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA
     probe: FLEET_APP.DWELL.VW_DWELL_SESSIONS
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_DWELL_ANALYTICS]
     self_building: true

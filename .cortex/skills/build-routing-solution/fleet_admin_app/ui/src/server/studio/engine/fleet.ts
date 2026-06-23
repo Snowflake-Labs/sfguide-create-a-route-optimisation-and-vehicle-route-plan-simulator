@@ -20,6 +20,26 @@ import type { POI, FleetMember } from './types';
 import {
   binPoisByLatLng, binDegForArea, bboxAreaKm2,
 } from './spatial';
+import { vehicleProfileFor, SubtypeShare } from '../vehicle-profile-catalog';
+
+// Stable FNV-1a hash so VEHICLE_SUBTYPE / HAZMAT assignment is reproducible per
+// vehicle_id (mirrors the legacy HASH(VEHICLE_ID) bucketing) and independent of
+// the run RNG.
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+// Pick a subtype from the catalog distribution by HASH bucket. Returns null when
+// the mode has no subtype distribution (car / ebike) — no vehicle-type branch.
+function pickSubtype(dist: SubtypeShare[] | null | undefined, vehicleId: string): string | null {
+  if (!dist || dist.length === 0) return null;
+  const bucket = hashStr(`${vehicleId}|sub`) % 100;
+  let cum = 0;
+  for (const s of dist) { cum += s.pct; if (bucket < cum) return s.subtype; }
+  return dist[dist.length - 1].subtype;
+}
 
 export interface BuildFleetDiagnostics {
   bin_deg: number;
@@ -62,6 +82,9 @@ export function buildFleetWithDiagnostics(
   if (homePois.length === 0) homePois.push(...pois.slice(0, Math.min(10, pois.length)));
 
   const vt = resolveVehicleType(config);
+  // Per-mode asset attributes come from the catalog row — looked up ONCE, never
+  // branched on vehicle type. Modes absent from the catalog fall back to nulls.
+  const assetRow = vehicleProfileFor(vt);
 
   // ---------------------------------------------------------------------
   // Layer 1: stratified home POI assignment (region-agnostic).
@@ -108,8 +131,13 @@ export function buildFleetWithDiagnostics(
       : vt === 'hgv' ? rngFloat(rng, 60, 85)
       : rngFloat(rng, 30, 55);
 
+    const vehicleId = `V-${config.ors_profile.slice(0, 3).toUpperCase()}-${i.toString().padStart(5, '0')}`;
+    const subtype = pickSubtype(assetRow?.subtypeDist, vehicleId);
+    const hazmat = subtype === 'TANKER'
+      && (hashStr(`${vehicleId}|hz`) % 100) / 100 < (assetRow?.hazmatProb ?? 0);
+
     fleet.push({
-      vehicle_id: `V-${config.ors_profile.slice(0, 3).toUpperCase()}-${i.toString().padStart(5, '0')}`,
+      vehicle_id: vehicleId,
       driver_id: `DRV-${i.toString().padStart(5, '0')}`,
       home_poi: home,
       shift_start: shift.start,
@@ -122,6 +150,13 @@ export function buildFleetWithDiagnostics(
       base_speed_kmh: baseSpeed,
       vehicle_type: vt,
       battery_pct: vt === 'ebike' ? 100 : -1,
+      weight_tons: assetRow?.weightTons ?? null,
+      height_m: assetRow?.heightM ?? null,
+      length_m: assetRow?.lengthM ?? null,
+      width_m: assetRow?.widthM ?? null,
+      axleload_t: assetRow?.axleloadT ?? null,
+      hazmat,
+      vehicle_subtype: subtype,
     });
   }
 

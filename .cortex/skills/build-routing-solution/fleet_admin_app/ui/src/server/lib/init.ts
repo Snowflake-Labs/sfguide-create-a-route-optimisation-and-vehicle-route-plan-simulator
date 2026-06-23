@@ -9,6 +9,7 @@
 import { currentRegionScalar } from './region';
 import { log } from '../diagnostics';
 import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables';
+import { ensureVehicleProfileCatalog } from '../studio/vehicle-profile-catalog';
 
 // Tracking tag for ROUTE_OPTIMIZATION (Asset Velocity) objects.
 const TRACK_RO_AV = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
@@ -279,10 +280,36 @@ export async function ensureBackloadAndAssetVelocityObjects(
   } catch (e: any) {
     log('WARN', 'Init', `ensureUnifiedTables failed: ${e?.message?.slice(0, 200)}`);
   }
+  // Vehicle-type parameter catalog — single source of truth for per-mode asset
+  // dimensions + evaluation thresholds (dwell SLA, deviation ratio, teleport m).
+  // Must run before the V_*_CURRENT views / contract UDTFs and before any
+  // generation stamps DIM_FLEET from it. Idempotent (CREATE IF NOT EXISTS +
+  // MERGE upsert) so re-tuned defaults propagate on every boot.
+  try {
+    await ensureVehicleProfileCatalog(sqlFn);
+  } catch (e: any) {
+    log('WARN', 'Init', `ensureVehicleProfileCatalog failed: ${e?.message?.slice(0, 200)}`);
+  }
   const TRACK = `'{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_FX = `'{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const stmts: { sql: string; db?: string; schema?: string }[] = [
+    // Asset-attribute migration for existing installs (boot-only). DIM_FLEET's
+    // V_DIM_FLEET_CURRENT view is `SELECT f.*`, so ADD COLUMN invalidates its
+    // declared column count — drop it FIRST, then add columns; the view is
+    // recreated unconditionally later in this same boot (CREATE OR REPLACE
+    // V_DIM_FLEET_CURRENT below). Fresh installs already get these columns from
+    // the DIM_FLEET CREATE TABLE in studio/ensure-tables.ts. This migration is
+    // intentionally NOT in ensure-tables.ts (which also runs at generation
+    // time) so a generation run never drops the view without recreating it.
+    { sql: `DROP VIEW IF EXISTS SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WEIGHT_TONS NUMBER(6,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HEIGHT_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS LENGTH_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS WIDTH_M NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS AXLELOAD_T NUMBER(4,2)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS HAZMAT BOOLEAN`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET ADD COLUMN IF NOT EXISTS VEHICLE_SUBTYPE VARCHAR(16)`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
     // VEHICLE_CLASS_PROFILE — single source of truth for per-vehicle-class
     // capacity, costs, ORS profile, and UI label. Lives in
     // OPENROUTESERVICE_APP.CORE so any page on any preset can read it.

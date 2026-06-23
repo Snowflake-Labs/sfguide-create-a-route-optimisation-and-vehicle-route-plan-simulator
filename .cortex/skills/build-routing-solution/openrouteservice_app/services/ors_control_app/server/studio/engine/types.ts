@@ -85,6 +85,16 @@ export interface FleetMember {
   base_speed_kmh: number;
   vehicle_type: string;
   battery_pct: number;
+  // Sparse asset attributes, stamped from FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
+  // (the per-mode catalog) — never branched on vehicle_type. Modes with no
+  // trailer subtype carry vehicle_subtype = null and hazmat = false.
+  weight_tons: number | null;
+  height_m: number | null;
+  length_m: number | null;
+  width_m: number | null;
+  axleload_t: number | null;
+  hazmat: boolean;
+  vehicle_subtype: string | null;
   ghost_start_day?: number;
   ghost_end_day?: number;
 }

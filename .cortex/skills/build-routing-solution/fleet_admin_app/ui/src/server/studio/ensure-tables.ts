@@ -38,7 +38,9 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       SHIFT_START_HOUR INT, SHIFT_END_HOUR INT,
       HOME_LOCATION_ID VARCHAR, DRIVER_PROFILE VARCHAR(20),
       OPERATING_MODE VARCHAR(30), BASE_SPEED_KMH FLOAT, BATTERY_RANGE_KM FLOAT,
-      JOB_ID VARCHAR
+      JOB_ID VARCHAR,
+      WEIGHT_TONS NUMBER(6,2), HEIGHT_M NUMBER(4,2), LENGTH_M NUMBER(4,2),
+      WIDTH_M NUMBER(4,2), AXLELOAD_T NUMBER(4,2), HAZMAT BOOLEAN, VEHICLE_SUBTYPE VARCHAR(16)
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_POIS (
       LOCATION_ID VARCHAR, REGION VARCHAR(100), NAME VARCHAR,

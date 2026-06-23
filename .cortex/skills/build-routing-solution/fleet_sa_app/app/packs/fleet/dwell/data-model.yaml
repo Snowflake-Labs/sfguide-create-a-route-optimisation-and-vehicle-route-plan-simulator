@@ -52,6 +52,7 @@ entities:
     primary_key: VEHICLE_ID
     columns:
       - { name: VEHICLE_ID,     type: VARCHAR }
+      - { name: VEHICLE_TYPE,   type: VARCHAR }
       - { name: DRIVER_PROFILE, type: VARCHAR }
       - { name: OPERATING_MODE, type: VARCHAR }
       - { name: HOME_BASE_NAME, type: VARCHAR }
@@ -133,6 +134,7 @@ entities:
       - { name: LOCATION_NAME, type: VARCHAR }
       - { name: FACILITY_TYPE, type: VARCHAR }
       - { name: H3_CELL_R7, type: VARCHAR }
+      - { name: VEHICLE_TYPE, type: VARCHAR }
     sql: |
       SELECT
         s.VEHICLE_ID, s.SESSION_ID, s.TRIP_ID, s.STATUS, s.LOCATION_ID,
@@ -142,7 +144,7 @@ entities:
         COALESCE(d.CITY, 'N/A') AS CITY,
         COALESCE(d.BASIC_CATEGORY, rs.REST_TYPE, s.STATUS) AS FACILITY_TYPE,
         COALESCE(d.LOCATION_TYPE, 'REST_STOP') AS LOC_TYPE,
-        tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
+        tf.VEHICLE_TYPE, tf.HOME_BASE_NAME, tf.OPERATING_MODE, tf.DRIVER_PROFILE
       FROM {src} s
       LEFT JOIN {schema}.VW_DESTINATIONS d ON s.LOCATION_ID = d.ID
       LEFT JOIN {schema}.VW_REST_STOPS rs ON s.LOCATION_ID = rs.REST_STOP_ID
@@ -174,7 +176,7 @@ entities:
       GROUP BY H3_CELL_R7, HOUR_BUCKET
 
   - name: SLA_ALERTS
-    description: "SLA breach alerts (WARNING/CRITICAL). Thresholds inlined as the SLA primitive's reference config."
+    description: "SLA breach alerts (WARNING/CRITICAL). Thresholds are vehicle-type-aware, read from the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA (keyed by VEHICLE_TYPE x LOCATION_TYPE)."
     access_pattern: derived
     derived_from: DWELL_SESSIONS
     materialization: dynamic_table
@@ -186,32 +188,23 @@ entities:
       - { name: DWELL_MINUTES, type: FLOAT }
       - { name: MINUTES_OVER_WARNING, type: FLOAT }
     sql: |
-      WITH thresholds AS (
-        SELECT column1 AS LOCATION_TYPE, column2 AS WARNING_MINUTES, column3 AS CRITICAL_MINUTES
-        FROM VALUES
-          ('WAREHOUSE', 5, 15),
-          ('DESTINATION', 3, 10),
-          ('REST_STOP', 5, 12),
-          ('STORE', 2, 8),
-          ('DETOUR', 2, 5),
-          ('IDLE', 120, 240)
-      )
       SELECT
         e.VEHICLE_ID, e.SESSION_ID, e.STATUS, e.LOCATION_ID,
         e.SESSION_START, e.SESSION_END, e.DWELL_SECONDS, e.DWELL_MINUTES,
         e.PING_COUNT, e.AVG_POINT, e.H3_CELL_R7,
         e.LOCATION_NAME, e.CITY, e.FACILITY_TYPE, e.LOC_TYPE,
         e.HOME_BASE_NAME, e.OPERATING_MODE, e.DRIVER_PROFILE,
-        t.WARNING_MINUTES, t.CRITICAL_MINUTES,
+        t.WARNING_MIN AS WARNING_MINUTES, t.CRITICAL_MIN AS CRITICAL_MINUTES,
         CASE
-          WHEN e.DWELL_MINUTES >= t.CRITICAL_MINUTES THEN 'CRITICAL'
-          WHEN e.DWELL_MINUTES >= t.WARNING_MINUTES THEN 'WARNING'
+          WHEN e.DWELL_MINUTES >= t.CRITICAL_MIN THEN 'CRITICAL'
+          WHEN e.DWELL_MINUTES >= t.WARNING_MIN THEN 'WARNING'
         END AS SLA_STATUS,
-        ROUND(e.DWELL_MINUTES - t.WARNING_MINUTES, 1) AS MINUTES_OVER_WARNING
+        ROUND(e.DWELL_MINUTES - t.WARNING_MIN, 1) AS MINUTES_OVER_WARNING
       FROM {src} e
-      JOIN thresholds t
-        ON REPLACE(e.STATUS, 'DWELL_', '') = t.LOCATION_TYPE
-      WHERE e.DWELL_MINUTES >= t.WARNING_MINUTES AND (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
+      JOIN FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA t
+        ON t.VEHICLE_TYPE = e.VEHICLE_TYPE
+       AND t.LOCATION_TYPE = REPLACE(e.STATUS, 'DWELL_', '')
+      WHERE e.DWELL_MINUTES >= t.WARNING_MIN AND (e.STATUS LIKE 'DWELL%' OR e.STATUS = 'IDLE')
 
   - name: FACILITY_UTILIZATION
     description: "Daily facility visit stats."
