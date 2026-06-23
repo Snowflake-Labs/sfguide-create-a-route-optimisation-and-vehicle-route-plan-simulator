@@ -177,5 +177,14 @@
       "density": "last_30_days",
       "safety": "last_30_days"
     }
+  },
+  "personas": {
+    "dispatcher": { "label": "Dispatcher / Control Room", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization"] },
+    "fleet_manager": { "label": "Fleet / Operations Manager", "defaultView": "dwell_overview", "categories": ["Core", "Asset Pool"] },
+    "safety_officer": { "label": "Safety Officer", "defaultView": "safety_risk_scorecard", "categories": ["Core"] },
+    "maintenance_lead": { "label": "Maintenance Lead", "defaultView": "asset_velocity", "categories": ["Core", "Asset Pool"] },
+    "planner": { "label": "Planner / Optimizer", "defaultView": "plan_vs_actual_performance", "categories": ["Core", "Optimization"] },
+    "executive": { "label": "Executive", "defaultView": "dwell_overview", "categories": ["Core"] },
+    "admin": { "label": "Admin / Solution Owner", "defaultView": "live_asset_operations", "categories": ["Core", "Optimization", "Freight", "Location", "Asset Pool", "Admin"] }
   }
 }

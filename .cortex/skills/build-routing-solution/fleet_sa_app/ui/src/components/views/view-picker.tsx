@@ -33,6 +33,27 @@ export function ViewPicker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, viewsVersion, selectedRole]);
 
+  // Group views into ordered nav sections by category (report core-vs-pack taxonomy).
+  // Unknown categories sort after the known order, alphabetically.
+  const CATEGORY_ORDER = ['Core', 'Optimization', 'Freight', 'Location', 'Asset Pool', 'Admin'];
+  const groupedViews = useMemo(() => {
+    const byCat = new Map<string, typeof views>();
+    for (const v of views) {
+      const cat = v.category ?? 'Core';
+      if (!byCat.has(cat)) byCat.set(cat, []);
+      byCat.get(cat)!.push(v);
+    }
+    return [...byCat.entries()].sort((a, b) => {
+      const ia = CATEGORY_ORDER.indexOf(a[0]);
+      const ib = CATEGORY_ORDER.indexOf(b[0]);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return a[0].localeCompare(b[0]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [views]);
+
   const activeView = activeViewId ? viewRegistry.get(activeViewId) : undefined;
 
   // If a role switch makes the active view disallowed, redirect to the first
@@ -116,30 +137,37 @@ export function ViewPicker() {
               }}
             />
           </div>
-          {views.map((v) => (
-            <button
-              key={v.id}
-              onClick={() => {
-                showView(v.id);
-                setOpen(false);
-                setQuery('');
-              }}
-              style={{
-                display: 'block',
-                width: '100%',
-                padding: '8px 12px',
-                border: 'none',
-                backgroundColor: v.id === activeViewId ? 'var(--surface-accent, #e0edff)' : 'transparent',
-                cursor: 'pointer',
-                textAlign: 'left',
-                fontSize: '13px',
-              }}
-            >
-              <div style={{ fontWeight: 500, color: 'var(--text-primary, #111827)' }}>{v.label}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginTop: '2px' }}>
-                {v.description}
+          {groupedViews.map(([category, catViews]) => (
+            <div key={category}>
+              <div style={{ padding: '6px 12px 2px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary, #9ca3af)', backgroundColor: 'var(--surface-secondary, #f9fafb)', position: 'sticky', top: 0 }}>
+                {category}
               </div>
-            </button>
+              {catViews.map((v) => (
+                <button
+                  key={v.id}
+                  onClick={() => {
+                    showView(v.id);
+                    setOpen(false);
+                    setQuery('');
+                  }}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    padding: '8px 12px',
+                    border: 'none',
+                    backgroundColor: v.id === activeViewId ? 'var(--surface-accent, #e0edff)' : 'transparent',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontSize: '13px',
+                  }}
+                >
+                  <div style={{ fontWeight: 500, color: 'var(--text-primary, #111827)' }}>{v.label}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginTop: '2px' }}>
+                    {v.description}
+                  </div>
+                </button>
+              ))}
+            </div>
           ))}
           {views.length === 0 && (
             <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-tertiary, #9ca3af)', textAlign: 'center' }}>

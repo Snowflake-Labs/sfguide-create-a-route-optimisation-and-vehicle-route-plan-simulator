@@ -8,6 +8,7 @@ export function registerRoleAccessView(): void {
     id: 'role_access',
     label: 'Role Access',
     description: 'Evaluate what each role (User / Ops / Admin) can see and do. Pick a role in the header to compare.',
+    category: 'Admin',
     component: lazy(() =>
       import('@/components/views/areas/role-access').then((mod) => ({
         default: mod.RoleAccessView,

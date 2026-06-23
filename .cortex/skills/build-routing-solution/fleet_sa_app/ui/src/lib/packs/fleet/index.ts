@@ -21,6 +21,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
     id: 'vrp_simulator',
     label: 'Route Optimization Simulator',
     description: 'Plan multi-stop vehicle routes from a depot and view them on the map.',
+    category: 'Optimization',
     component: lazy(() =>
       import('@/components/views/areas/vrp-simulator').then((mod) => ({
         default: mod.VrpSimulatorView,
@@ -32,6 +33,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
     id: 'emergency_wizard',
     label: 'Emergency Response Coverage',
     description: 'Compute the drive-time reachability around an incident location.',
+    category: 'Optimization',
     component: lazy(() =>
       import('@/components/views/areas/emergency-wizard').then((mod) => ({
         default: mod.EmergencyWizardView,
@@ -44,6 +46,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
       id: 'freight_exchange',
       label: 'Freight Exchange',
       description: 'Browse live freight offers on a map, draft AI counter-offers, and plan round trips.',
+      category: 'Freight',
       component: lazy(() =>
         import('@/components/views/areas/freight-exchange').then((mod) => ({
           default: mod.FreightExchangeView,
@@ -57,6 +60,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
       id: 'backload_matching',
       label: 'Backload Matching',
       description: 'Match empty trailers to external offers and plan the empty repositioning leg.',
+      category: 'Freight',
       component: lazy(() =>
         import('@/components/views/areas/backload-matching').then((mod) => ({
           default: mod.BackloadMatchingView,
@@ -72,6 +76,7 @@ export function registerViews(disabledSchemas?: Set<string>): void {
     id: 'ops_console',
     label: 'Ops Console',
     description: 'Operator controls: suspend/resume services, set the active region, and check platform health.',
+    category: 'Admin',
     tags: ['ops', 'admin'],
     roles: ['ops'],
     component: lazy(() =>

@@ -21,6 +21,8 @@ interface YamlViewDef {
   label: string;
   description: string;
   hidden?: boolean;
+  // Nav grouping section (e.g. "Core", "Optimization", "Freight"). Omitted => "Core".
+  category?: string;
   // Config-driven role tagging (simulated view filter). Omitted => all roles.
   roles?: AppRole[];
   layout: {
@@ -80,6 +82,7 @@ export function registerViewsFromConfig(
       label: interpolateTokens(view.label, display),
       description: interpolateTokens(view.description, display),
       hidden: view.hidden || gatedOff,
+      category: view.category ?? 'Core',
       roles: view.roles,
       component: createLazyViewComponent(view),
     };

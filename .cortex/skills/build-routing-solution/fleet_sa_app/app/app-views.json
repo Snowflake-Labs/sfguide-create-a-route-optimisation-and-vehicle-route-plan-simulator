@@ -1,6 +1,7 @@
 {
   "live_asset_operations": {
     "label": "Live {{labels.entity}} Operations",
+    "category": "Core",
     "description": "Where is every {{labels.entity}} now — live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
     "layout": {
       "default": { "columns": "340px 1fr", "rows": "auto 1fr", "grid": "\"kpi kpi\"\n\"entities map\"" },
@@ -66,6 +67,7 @@
   },
   "journey_inspector": {
     "label": "{{labels.journey}} Inspector",
+    "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
     "layout": {
       "default": { "columns": "320px 1fr", "rows": "1.4fr auto", "grid": "\"journeys map\"\n\"speed speed\"" }
@@ -144,6 +146,7 @@
   },
   "responsible_party_performance": {
     "label": "{{labels.operator}} Performance",
+    "category": "Core",
     "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"kpi kpi\"\n\"factor table\"\n\"map map\"" }
@@ -205,6 +208,7 @@
   },
   "space_time_density": {
     "label": "Space-Time Density",
+    "category": "Core",
     "description": "Where activity concentrates over space and time — H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
@@ -248,6 +252,7 @@
   },
   "plan_vs_actual_performance": {
     "label": "Plan-vs-Actual Performance",
+    "category": "Core",
     "description": "Which {{labels.journey_plural}} diverge from plan, where, and by how much (merges Route Deviation and Route Comparison).",
     "layout": {
       "default": { "columns": "1fr", "rows": "auto 1.3fr auto", "grid": "\"kpi\"\n\"map\"\n\"table\"" }
@@ -313,6 +318,7 @@
   },
   "dispatch_execution_board": {
     "label": "Dispatch Execution Board",
+    "category": "Core",
     "description": "Manage scheduled {{labels.work_item}}s against plan \u2014 jobs list, resource board, and planned-vs-actual by day.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1.2fr auto", "grid": "\"kpi kpi\"\n\"jobs map\"\n\"resource timeline\"" }
@@ -398,6 +404,7 @@
   },
   "safety_risk_scorecard": {
     "label": "Safety / Risk Scorecard",
+    "category": "Core",
     "description": "Operational risk by severity \u2014 click a KPI tile to filter, review the event queue, and map hot spots.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1.2fr", "grid": "\"kpi kpi\"\n\"factor queue\"\n\"map map\"" }
@@ -471,6 +478,7 @@
   },
   "dwell_overview": {
     "label": "Dwell Overview",
+    "category": "Core",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
     "layout": {
       "default": {
@@ -531,6 +539,7 @@
   },
   "dwell_facilities": {
     "label": "Facility Utilization",
+    "category": "Core",
     "description": "Dwell load by facility and facility type \u2014 where vehicles spend the most time.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byfac bytype\"" }
@@ -579,6 +588,7 @@
   },
   "dwell_sla": {
     "label": "SLA Alerts",
+    "category": "Core",
     "description": "Dwell sessions that breached SLA thresholds, by severity.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"bystatus table\"\n\"detail detail\"" }
@@ -663,6 +673,7 @@
   },
   "fleetops_origins": {
     "label": "Top Origins",
+    "category": "Core",
     "description": "Busiest origin locations by trip volume \u2014 where journeys begin (any origin type).",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byorigin map\"" }
@@ -723,6 +734,7 @@
   },
   "catchment": {
     "label": "Catchment",
+    "category": "Location",
     "description": "Points of interest \u2014 filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
       "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
@@ -831,6 +843,7 @@
   },
   "asset_velocity": {
     "label": "Asset Velocity",
+    "category": "Asset Pool",
     "description": "Idle trailers, cost of idleness, and where they are parked \u2014 set a minimum idle and click a trailer to highlight it.",
     "layout": {
       "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
