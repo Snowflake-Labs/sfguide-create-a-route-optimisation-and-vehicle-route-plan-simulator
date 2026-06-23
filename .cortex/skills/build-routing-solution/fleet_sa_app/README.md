@@ -77,7 +77,7 @@ npm run dev
 The chat uses **agent-object mode** pointed at `FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_AGENT`
 (created in Phase 2D), which exposes the routing tools via the `OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP` server (Step 4B). Routing
 tool results render as deck.gl maps in chat via the inline registry (`get_directions`,
-`optimize_routes`, `compute_isochrone`, `find_poi`, `pharma_catchment` -> `RouteMapInline`).
+`optimize_routes`, `compute_isochrone`, `find_poi`, `catchment` -> `RouteMapInline`).
 
 `app-views.json` lives at `app/app-views.json` (the two ported dashboards).
 

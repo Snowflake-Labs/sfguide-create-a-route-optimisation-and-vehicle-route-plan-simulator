@@ -6,7 +6,7 @@ produces its OWN Snowflake-managed MCP server (per-bundle servers = role isolati
 
 | App (`<app>/`) | Role | Procs | MCP server | Schema |
 |---|---|---|---|---|
-| `user/` (app `routing-tools`) | `user` | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `pharma_catchment`, `pharma_optimization`, `supply_chain` | `ROUTING_MCP` | `OPENROUTESERVICE_APP.ROUTING` |
+| `user/` (app `routing-tools`) | `user` | `get_directions`, `compute_isochrone`, `optimize_routes`, `find_poi`, `catchment`, `delivery_optimization`, `network_optimization` | `ROUTING_MCP` | `OPENROUTESERVICE_APP.ROUTING` |
 | `admin/` | `admin` | `set_active_region`, `check_substrate` | `FLEET_ADMIN_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_ADMIN` |
 | `ops/` | `ops` | `set_active_region`, `service_control`, `service_status`, `healthcheck` | `FLEET_OPS_MCP` | `FLEET_INTELLIGENCE.SYNAPSE_OPS` |
 
