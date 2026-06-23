@@ -109,13 +109,21 @@ export function FreightExchangeView() {
   }, [filtered, selected]);
 
   const fitCoords = useMemo<LngLat[]>(() => {
+    // Focus on the selected offer's lane (pickup -> dropoff) when one is picked;
+    // otherwise frame all filtered offers.
+    if (selected) {
+      return [
+        [selected.p_lon, selected.p_lat],
+        [selected.d_lon, selected.d_lat],
+      ];
+    }
     const out: LngLat[] = [];
     for (const o of filtered) {
       out.push([o.p_lon, o.p_lat]);
       out.push([o.d_lon, o.d_lat]);
     }
     return out;
-  }, [filtered]);
+  }, [filtered, selected]);
 
   const openOffer = (o: Offer) => {
     setSelected(o);
@@ -238,7 +246,7 @@ export function FreightExchangeView() {
       </div>
 
       <div style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-default, #e5e7eb)', minHeight: 300 }}>
-        <MapView layers={layers} fitTo={{ coords: fitCoords }} />
+        <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey: selected?.offer_id ?? '' }} />
       </div>
 
       {selected && (

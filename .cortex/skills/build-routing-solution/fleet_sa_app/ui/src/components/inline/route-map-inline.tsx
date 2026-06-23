@@ -63,6 +63,16 @@ export function RouteMapInline(props: Record<string, unknown>) {
 
   const fitCoords = useMemo<LngLat[]>(() => coordsFromGeoJSON(fc), [fc]);
 
+  // A stable token for the current result geometry. Each new computed result
+  // (directions / isochrone / VRP) changes the token, which makes MapView
+  // re-frame the camera on the fresh result even after the user has panned.
+  const focusKey = useMemo(() => {
+    if (fitCoords.length === 0) return '';
+    const first = fitCoords[0];
+    const last = fitCoords[fitCoords.length - 1];
+    return `${fitCoords.length}:${first[0]},${first[1]}:${last[0]},${last[1]}`;
+  }, [fitCoords]);
+
   const layers = useMemo<Layer[]>(() => {
     if (features.length === 0) return [];
     return [
@@ -93,7 +103,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: 360, borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-default, #e5e7eb)' }}>
-      <MapView layers={layers} fitTo={{ coords: fitCoords }} />
+      <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey }} />
     </div>
   );
 }

@@ -25,6 +25,14 @@ interface FitToOptions {
   minZoom?: number;
   maxZoom?: number;
   regionKey?: string;
+  // When this changes to a non-empty value, force a one-shot fit to the current
+  // coords — even if the user has panned/zoomed or the coords are already in
+  // view. Used to focus the camera on a freshly selected object (trip, driver,
+  // offer, computed result). Clearing the selection (empty focusKey) does NOT
+  // move the camera. The forced fit waits for the coords signature to actually
+  // change so it lands on the new (narrowed) coords, not the stale set still
+  // showing during an in-flight refetch.
+  focusKey?: string;
 }
 
 interface MapViewProps {
@@ -93,6 +101,9 @@ export default function MapView({
   const lastRegionRef = useRef<string | undefined>(fitTo?.regionKey);
   const forceFitRef = useRef(false);
   const userMovedRef = useRef(false);
+  const lastFocusRef = useRef<string | undefined>(fitTo?.focusKey);
+  const focusPendingRef = useRef(false);
+  const focusBaselineSigRef = useRef<string>('');
   const basemap = useMemo(() => cartoBasemap(), []);
 
   useEffect(() => {
@@ -126,6 +137,7 @@ export default function MapView({
   const fitMinZoom = fitTo?.minZoom;
   const fitMaxZoom = fitTo?.maxZoom;
   const fitRegionKey = fitTo?.regionKey;
+  const fitFocusKey = fitTo?.focusKey;
   const fitSig = useMemo(() => coordsSignature(fitCoords ?? null), [fitCoords]);
 
   if (lastRegionRef.current !== fitRegionKey) {
@@ -134,10 +146,25 @@ export default function MapView({
     userMovedRef.current = false;
   }
 
+  // A selection became active or changed: mark a pending forced fit and capture
+  // the current coords signature as a baseline. The fit fires only once the
+  // signature changes (fresh narrowed coords arrived), so it lands on the
+  // selected object instead of the stale full set. Clearing the selection
+  // (empty focusKey) records the change but does NOT pend a fit — camera stays.
+  if (lastFocusRef.current !== fitFocusKey) {
+    lastFocusRef.current = fitFocusKey;
+    if (fitFocusKey) {
+      focusPendingRef.current = true;
+      focusBaselineSigRef.current = fitSig;
+      userMovedRef.current = false;
+    }
+  }
+
   useEffect(() => {
     if (!dims) return;
     if (!fitTo || !fitCoords || fitCoords.length === 0) return;
-    const firstFit = !hasFittedRef.current || forceFitRef.current;
+    const forcedByFocus = focusPendingRef.current && fitSig !== focusBaselineSigRef.current;
+    const firstFit = !hasFittedRef.current || forceFitRef.current || forcedByFocus;
     if (!firstFit) {
       if (userMovedRef.current) return;
       if (coordsWithinView(fitCoords, viewStateRef.current, dims.width, dims.height)) return;
@@ -155,9 +182,10 @@ export default function MapView({
     if (next && isValidViewState(next)) {
       hasFittedRef.current = true;
       forceFitRef.current = false;
+      if (forcedByFocus) focusPendingRef.current = false;
       setViewState(prev => ({ ...prev, ...next }));
     }
-  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fallbackViewState, fitTo, recenterTick]);
+  }, [dims, fitSig, fitCoords, fitPadding, fitMinZoom, fitMaxZoom, fitRegionKey, fitFocusKey, fallbackViewState, fitTo, recenterTick]);
 
   if (initialViewState && initialViewState !== prevInitRef.current) {
     const changed = !prevInitRef.current ||

@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   MetricCardsArea,
   ViewChartArea,
@@ -102,6 +103,25 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
   const areaNames = Object.keys(viewDef.areas);
   const scrollableAreas = getScrollableAreas(layout.grid, layout.rows || 'auto');
 
+  // viewState keys that represent a user selection (emit-type "selection" from a
+  // ClickableTable / ComboBox), as opposed to filters (Slider / Checkbox emit "").
+  // Passed to Map areas so they can focus the camera on the selected object.
+  // Memoized so its identity is stable across renders (Map areas use it in effect
+  // deps; a fresh array each render would re-trigger their fetch effects).
+  const selectionKeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          Object.values(viewDef.areas).flatMap((a) =>
+            Object.entries(a.emits ?? {})
+              .filter(([, emitType]) => emitType === 'selection')
+              .map(([key]) => key),
+          ),
+        ),
+      ),
+    [viewDef],
+  );
+
   return (
     <div
       style={{
@@ -139,7 +159,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
               padding: noPad ? '0' : '16px',
             }}
           >
-            <Component areaConfig={areaConfig} />
+            <Component areaConfig={areaConfig} selectionKeys={selectionKeys} />
           </div>
         );
       })}

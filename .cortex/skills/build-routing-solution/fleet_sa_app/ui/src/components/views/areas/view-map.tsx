@@ -18,28 +18,80 @@ interface ViewMapAreaProps {
   areaConfig: {
     config: MapAreaConfig;
   };
+  // viewState keys that represent a user selection (from ViewRenderer). When one
+  // is active, the camera focuses on the selected object's coords only.
+  selectionKeys?: string[];
 }
 
 interface LayerFetcherProps {
   index: number;
   layer: LayerSpec;
   viewState: Record<string, unknown>;
-  onResult: (index: number, layer: Layer | null, fit: LngLat[], template: string | undefined) => void;
+  selectionKeys: string[];
+  onResult: (
+    index: number,
+    layer: Layer | null,
+    fitFull: LngLat[],
+    fitSel: LngLat[],
+    template: string | undefined,
+  ) => void;
+}
+
+/**
+ * Coords for the camera to focus on when a selection is active. A layer is
+ * "selection-bound" if its query is parametrized by a selection key, or its
+ * conditional fillColor highlights by a selection key. Context layers (neither)
+ * contribute no focus coords. Returns [] when no selection is active so the
+ * caller falls back to framing the full set.
+ */
+function selectionFitCoords(
+  layer: LayerSpec,
+  rows: Record<string, any>[],
+  viewState: Record<string, unknown>,
+  selectionKeys: string[],
+): LngLat[] {
+  if (!rows.length || selectionKeys.length === 0) return [];
+  const isSel = (k: string) => selectionKeys.includes(k);
+  const active = (k: string) => viewState[k] != null && viewState[k] !== '';
+
+  // Query-bound: a param maps to viewState.<selectionKey> and that key is set.
+  const params = (layer.data.params ?? {}) as Record<string, string>;
+  const queryBoundActive = Object.values(params).some((ref) => {
+    const m = /^viewState\.(.+)$/.exec(ref);
+    return m != null && isSel(m[1]) && active(m[1]);
+  });
+  if (queryBoundActive) {
+    // Rows are already narrowed by the SQL filter.
+    return layerFitCoords(layer, rows) as LngLat[];
+  }
+
+  // Color-bound: conditional fillColor highlights rows matching the selection.
+  const fc = (layer as any).fillColor;
+  if (fc && typeof fc === 'object' && typeof fc.whenViewStateEquals === 'string'
+      && isSel(fc.whenViewStateEquals) && active(fc.whenViewStateEquals)) {
+    const sel = String(viewState[fc.whenViewStateEquals]);
+    const matchCol = fc.matchColumn as string;
+    const matched = rows.filter((r) => String(r[matchCol]) === sel);
+    return layerFitCoords(layer, matched) as LngLat[];
+  }
+
+  return [];
 }
 
 /**
  * Fetches one layer's data and lifts the compiled deck.gl Layer + fit coords to
  * the parent. Renders nothing. One child per layer keeps hook order stable.
  */
-function LayerFetcher({ index, layer, viewState, onResult }: LayerFetcherProps) {
+function LayerFetcher({ index, layer, viewState, selectionKeys, onResult }: LayerFetcherProps) {
   const { data } = useViewData(layer.data.query, layer.data.params);
   const rows = useMemo(() => (data?.rows ?? []) as Record<string, any>[], [data]);
   useEffect(() => {
     const compiled = compileLayer(layer, rows, viewState, index);
-    const fit = layerFitCoords(layer, rows) as LngLat[];
-    onResult(index, compiled, fit, layer.tooltip);
+    const fitFull = layerFitCoords(layer, rows) as LngLat[];
+    const fitSel = selectionFitCoords(layer, rows, viewState, selectionKeys);
+    onResult(index, compiled, fitFull, fitSel, layer.tooltip);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, viewState]);
+  }, [rows, viewState, selectionKeys]);
   return null;
 }
 
@@ -53,7 +105,7 @@ function renderTooltip(template: string, object: Record<string, any>): string {
 
 const WORLD_FALLBACK = { longitude: 0, latitude: 30, zoom: 2, pitch: 0, bearing: 0 };
 
-export function ViewMapArea({ areaConfig }: ViewMapAreaProps) {
+export function ViewMapArea({ areaConfig, selectionKeys = [] }: ViewMapAreaProps) {
   const config = areaConfig.config;
   const specs = config.layers ?? [];
 
@@ -67,13 +119,15 @@ export function ViewMapArea({ areaConfig }: ViewMapAreaProps) {
   );
 
   const [layers, setLayers] = useState<Record<number, Layer | null>>({});
-  const [fits, setFits] = useState<Record<number, LngLat[]>>({});
+  const [fitsFull, setFitsFull] = useState<Record<number, LngLat[]>>({});
+  const [fitsSel, setFitsSel] = useState<Record<number, LngLat[]>>({});
   const [templates, setTemplates] = useState<Record<string, string>>({});
 
   const onResult = useCallback(
-    (index: number, layer: Layer | null, fit: LngLat[], template: string | undefined) => {
+    (index: number, layer: Layer | null, fitFull: LngLat[], fitSel: LngLat[], template: string | undefined) => {
       setLayers((prev) => ({ ...prev, [index]: layer }));
-      setFits((prev) => ({ ...prev, [index]: fit }));
+      setFitsFull((prev) => ({ ...prev, [index]: fitFull }));
+      setFitsSel((prev) => ({ ...prev, [index]: fitSel }));
       if (template) {
         const id = layer?.id ?? `spec-layer-${index}`;
         setTemplates((prev) => ({ ...prev, [id]: template }));
@@ -87,11 +141,23 @@ export function ViewMapArea({ areaConfig }: ViewMapAreaProps) {
     [specs, layers],
   );
 
+  // When a selection is active, focus on the selected object's coords only
+  // (excluding context layers); otherwise frame the full set of all layers.
   const fitCoords = useMemo<LngLat[]>(() => {
+    const sel: LngLat[] = [];
+    for (const i of Object.keys(fitsSel)) sel.push(...fitsSel[Number(i)]);
+    if (sel.length) return sel;
     const all: LngLat[] = [];
-    for (const i of Object.keys(fits)) all.push(...fits[Number(i)]);
+    for (const i of Object.keys(fitsFull)) all.push(...fitsFull[Number(i)]);
     return all;
-  }, [fits]);
+  }, [fitsSel, fitsFull]);
+
+  // Changes whenever a tracked selection value changes; drives MapView's
+  // one-shot focus fit. Empty when nothing is selected (camera stays on clear).
+  const focusKey = useMemo(
+    () => selectionKeys.map((k) => String(panelViewState[k] ?? '')).filter(Boolean).join('|'),
+    [selectionKeys, panelViewState],
+  );
 
   const fallback = useMemo(
     () => config.fallback ?? WORLD_FALLBACK,
@@ -113,11 +179,11 @@ export function ViewMapArea({ areaConfig }: ViewMapAreaProps) {
   return (
     <div style={{ position: 'relative', width: '100%', height: config.noPad ? '100%' : (config.height ?? 500), minHeight: 0 }}>
       {specs.map((ls, i) => (
-        <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} onResult={onResult} />
+        <LayerFetcher key={i} index={i} layer={ls} viewState={viewState} selectionKeys={selectionKeys} onResult={onResult} />
       ))}
       <MapView
         layers={orderedLayers}
-        fitTo={{ coords: fitCoords, regionKey }}
+        fitTo={{ coords: fitCoords, regionKey, focusKey }}
         fallbackViewState={fallback}
         getTooltip={getTooltip}
       />
