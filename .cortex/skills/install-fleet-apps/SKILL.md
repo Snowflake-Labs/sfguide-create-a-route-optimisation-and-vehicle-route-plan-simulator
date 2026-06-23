@@ -1,6 +1,6 @@
 ---
 name: install-fleet-apps
-description: "Primary one-command installer for the new synapse-based, vehicle/industry-AGNOSTIC fleet analytics architecture on Snowflake: the FLEET_SA_APP consumer app, the FLEET_ADMIN_APP build console, the three role-scoped synapse MCP tool bundles, the neutral FLEET_APP data contract, roles, and Cortex agents. Use when: install the fleet apps, deploy FLEET_SA_APP and FLEET_ADMIN_APP, set up the agnostic fleet analytics solution, install the synapse fleet stack, deploy the new fleet architecture. Self-owning and idempotent: detects-and-reuses-else-creates SPCS infra, seed data, and the ORS engine, so it does not require the build-routing-solution workflow to have run. Do NOT use for: provisioning the raw ORS/VROOM routing engine itself (that is delegated to build-routing-solution), changing routing maps/profiles (use routing-customization), or the legacy per-vehicle demo skills (fleet-intelligence-taxis, route-deviation, etc.). Triggers: install fleet apps, install-fleet-apps, deploy fleet sa app, deploy fleet admin app, install synapse fleet stack, set up agnostic fleet solution, new fleet architecture installer."
+description: "Primary one-command installer for the synapse-based, vehicle/industry-AGNOSTIC fleet analytics architecture on Snowflake: the FLEET_SA_APP consumer app, the FLEET_ADMIN_APP build console, the three role-scoped synapse MCP tool bundles, the neutral FLEET_APP data contract, roles, Cortex agents, and (optionally, via --with-engine) the live ORS/VROOM routing engine. Use when: install the fleet apps, deploy FLEET_SA_APP and FLEET_ADMIN_APP, set up the agnostic fleet analytics solution, install the synapse fleet stack, provision the routing engine. Self-owning and idempotent: detects-and-reuses-else-creates SPCS infra, seed data, and the ORS engine. Do NOT use for: changing routing maps/profiles (use routing-customization) or the legacy per-vehicle demo skills (fleet-intelligence-taxis, route-deviation, etc.). Triggers: install fleet apps, install-fleet-apps, deploy fleet sa app, deploy fleet admin app, install synapse fleet stack, set up agnostic fleet solution, provision routing engine, with-engine."
 depends_on:
   - routing-prerequisites
 metadata:
@@ -11,9 +11,9 @@ metadata:
 
 # Install Fleet Apps (primary agnostic installer)
 
-One command stands up the entire new-architecture analytics stack and is the **primary** installation path for it. `build-routing-solution` is a **secondary, delegated** component used only to provision the live ORS/VROOM routing engine when one is not already present.
+One command stands up the entire new-architecture analytics stack and is the **primary** installation path for it. It also **owns the live ORS/VROOM routing engine build** (Phase C): the optional `--with-engine` flag provisions the engine natively, so this skill is fully self-contained.
 
-This skill **owns** its artifacts (relocated here, not referenced from `build-routing-solution`), so the analytics stack keeps installing and running even if `build-routing-solution` and the legacy control app are deprecated. Only live routing verbs depend on an external ORS engine; dashboards, Cortex Analyst, and the agents work without it.
+This skill **owns** all of its artifacts (relocated here), so the stack installs and runs without any other skill. The analytics layer (dashboards, Cortex Analyst, agents) works with no engine; live routing verbs require the ORS engine, which `--with-engine` builds and provisions.
 
 ## Scope: vehicle/industry-AGNOSTIC only
 
@@ -59,7 +59,17 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 6. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
 7. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
 8. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
-9. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()`; binds verbs LIVE if present, else delegates to `build-routing-solution` (or installs verbs inert). See `references/routing-engine.md`.
+9. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent **and `--with-engine` is set**, builds + provisions it natively via `scripts/provision_engine.sh`; otherwise verbs install inert. See `references/routing-engine.md`.
+
+## Live routing engine (`--with-engine`)
+
+Live routing verbs (directions, isochrones, matrix, VRP optimization, find_poi, catchment) require the ORS/VROOM engine. The analytics stack installs and runs without it; pass `--with-engine` to build + provision it in the same run:
+
+```bash
+bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection <connection> --with-engine
+```
+
+This is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes), so it is off by default and skipped automatically when an engine is already present. `provision_engine.sh` ensures the `OPENROUTESERVICE_APP.CORE` infra, builds + pushes the 4 engine images (`references/build-images.md`), stages the map/config + service specs, loads SQL modules `01-08`/`15`, and lets module `03` bootstrap the default region. The engine keeps the `OPENROUTESERVICE_APP.CORE` namespace behind the `ROUTING_PLATFORM.CONTRACT` seam, and preserves the AUTO_SUSPEND_SECS, REBUILD_GRAPHS reuse, and per-region VROOM invariants (see `references/available-functions.md`, `references/snowflake-scripting-guidelines.md`, `references/snowflake-sql-gotchas.md`, `references/troubleshooting.md`).
 
 ## Configuration
 
@@ -114,6 +124,10 @@ DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 - `references/infra.sql` — detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` — agnostic seed-data probe + load path.
 - `references/synapse-bundles.md` — per-account materialize + deploy.
-- `references/routing-engine.md` — engine detection + delegation to build-routing-solution.
-- `PHASE_C_PLAN.md` — optional future work: absorb the ORS engine build substrate so build-routing-solution becomes deletable (run in a fresh context).
+- `references/routing-engine.md` — engine detection + native `--with-engine` provisioning.
+- `references/build-images.md` — build + push the 4 ORS/VROOM engine images.
+- `references/available-functions.md` — engine SQL functions, profiles, service limits, matrix builders.
+- `references/snowflake-scripting-guidelines.md` — SQL Scripting rules for the engine modules.
+- `references/snowflake-sql-gotchas.md` — engine SQL constraints (GET_SERVICE_STATUS, RESULT_SCAN, etc.).
+- `references/troubleshooting.md` — engine image build / registry / service troubleshooting.
 - `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` — the locked agnostic contract.
