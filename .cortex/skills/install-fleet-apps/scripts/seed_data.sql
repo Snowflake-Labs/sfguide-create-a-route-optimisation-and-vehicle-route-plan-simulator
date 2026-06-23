@@ -31,6 +31,44 @@ CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- 1b. ROUTE_OPTIMIZATION base tables that the canonical loader populates.
+--     The loader's PLACES/LOOKUP sections begin with `ALTER TABLE ... ADD COLUMN`
+--     and `COPY INTO`, assuming these tables already exist (in the legacy world
+--     the control-app boot / engine module 15 created them). On the agnostic path
+--     the engine modules run AFTER the data step, so without this pre-creation the
+--     loader aborts at the first ALTER (snow sql -f is stop-on-first-error) and
+--     never reaches DIM_DATASETS / the V_*_CURRENT projection views, silently
+--     breaking every demo. DDL mirrors engine module 15_route_optimization_seed.sql
+--     (JOB_ID is added by the loader's own ALTER). All IF NOT EXISTS = idempotent
+--     and a no-op once module 15 has run.
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES (
+    REGION    VARCHAR,
+    GEOMETRY  GEOGRAPHY,
+    PHONES    VARCHAR,
+    CATEGORY  VARCHAR,
+    NAME      VARCHAR,
+    ADDRESS   VARIANT,
+    ALTERNATE VARIANT
+)
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.LOOKUP (
+    REGION       STRING,
+    INDUSTRY     STRING,
+    PA           STRING,
+    PB           STRING,
+    PC           STRING,
+    IND          ARRAY,
+    IND2         ARRAY,
+    CTYPE        ARRAY,
+    STYPE        ARRAY,
+    SOURCE_TABLE STRING DEFAULT NULL,
+    DEPOT_CTYPE  ARRAY  DEFAULT NULL,
+    DEPOT_LABEL  STRING DEFAULT NULL
+)
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 2. FLEET-owned seed stage + parquet file format (retarget for the loader).
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE
   DIRECTORY = (ENABLE = TRUE)
