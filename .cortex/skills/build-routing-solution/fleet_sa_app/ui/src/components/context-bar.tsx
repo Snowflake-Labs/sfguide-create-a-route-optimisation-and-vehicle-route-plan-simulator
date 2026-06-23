@@ -102,6 +102,37 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
   );
 }
 
+// Date-range picker. The contextBar declares a single `date_range` field whose
+// id holds the START date; the END is stored under context.date_range_end (both
+// seeded in app-shell). Renders two native date inputs writing per-session context,
+// so any view whose query references :date_range_start / :date_range_end refetches.
+function DateRangePicker({ field }: { field: ContextBarField }) {
+  const start = useAppStore((s) => s.context[field.id]) as string | undefined;
+  const end = useAppStore((s) => s.context['date_range_end']) as string | undefined;
+  const setContext = useAppStore((s) => s.setContext);
+  const inputStyle: React.CSSProperties = { ...selectStyle, padding: '2px 6px' };
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <span style={labelStyle}>{field.label ?? 'Date range'}</span>
+      <input
+        type="date"
+        value={start ?? ''}
+        max={end ?? undefined}
+        onChange={(e) => setContext(field.id, e.target.value || null)}
+        style={inputStyle}
+      />
+      <span style={{ ...labelStyle, fontWeight: 400 }}>to</span>
+      <input
+        type="date"
+        value={end ?? ''}
+        min={start ?? undefined}
+        onChange={(e) => setContext('date_range_end', e.target.value || null)}
+        style={inputStyle}
+      />
+    </label>
+  );
+}
+
 // Renders the per-session context pickers (region / vehicle / dataset).
 //
 // R2.2: selection is PURELY client-side context. Changing a picker sets
@@ -116,7 +147,8 @@ export function ContextBar({ fields }: { fields: ContextBarField[] }) {
 
   const enumFields = fields.filter((f) => f.type === 'enum' && (f.options?.length ?? 0) > 0);
   const datasetFields = fields.filter((f) => f.type === 'dataset');
-  if (enumFields.length === 0 && datasetFields.length === 0) return null;
+  const dateRangeFields = fields.filter((f) => f.type === 'date_range');
+  if (enumFields.length === 0 && datasetFields.length === 0 && dateRangeFields.length === 0) return null;
 
   return (
     <div
@@ -151,6 +183,9 @@ export function ContextBar({ fields }: { fields: ContextBarField[] }) {
       })}
       {datasetFields.map((field) => (
         <DatasetPicker key={field.id} field={field} />
+      ))}
+      {dateRangeFields.map((field) => (
+        <DateRangePicker key={field.id} field={field} />
       ))}
     </div>
   );

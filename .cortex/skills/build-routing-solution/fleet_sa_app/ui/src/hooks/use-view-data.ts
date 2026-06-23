@@ -14,6 +14,8 @@ interface UseViewDataResult {
   loading: boolean;
   error: string | null;
   refetch: () => void;
+  // Epoch ms when the current data last arrived (for freshness indicators); null until first load.
+  fetchedAt: number | null;
 }
 
 function resolveParamValue(
@@ -44,6 +46,7 @@ export function useViewData(
   const [data, setData] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const resolvedParams = paramRefs
@@ -80,6 +83,7 @@ export function useViewData(
       const result: QueryResult = await res.json();
       if (!controller.signal.aborted) {
         setData(result);
+        setFetchedAt(Date.now());
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -99,5 +103,5 @@ export function useViewData(
     return () => abortRef.current?.abort();
   }, [fetchData]);
 
-  return { data, loading, error, refetch: fetchData };
+  return { data, loading, error, refetch: fetchData, fetchedAt };
 }

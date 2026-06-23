@@ -1,6 +1,7 @@
 'use client';
 
 import { useViewData } from '@/hooks/use-view-data';
+import { useAppStore } from '@/lib/store';
 import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
 
 interface MetricMapping {
@@ -11,6 +12,9 @@ interface MetricMapping {
   unit?: string;
   // Optional: metric_name (display.thresholds) used to color the value good/warn/critical.
   metric?: string;
+  // Optional: value written to the emit viewState key when this tile is clicked
+  // (KPI-tile-as-filter). Defaults to the column name when omitted.
+  emit?: string;
 }
 
 interface MetricCardsAreaProps {
@@ -20,6 +24,9 @@ interface MetricCardsAreaProps {
       params?: Record<string, string>;
       mapping?: { metrics?: MetricMapping[] };
     };
+    // When present, clicking a card toggles the first emit key in viewState to the
+    // card's emit value, so downstream areas filter on the selected KPI.
+    emits?: Record<string, string>;
   };
 }
 
@@ -53,6 +60,9 @@ function formatValue(value: unknown, format?: string): string {
 export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
   const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const display = useDisplayConfig();
+  const updateViewState = useAppStore((s) => s.updateViewState);
+  const viewState = useAppStore((s) => s.panel.viewState);
+  const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
   const metrics = areaConfig.data.mapping?.metrics || [];
 
   if (loading) {
@@ -78,15 +88,20 @@ export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
         const raw = row[m.column];
         const suffix = unitSuffix(display, m.unit);
         const color = m.metric ? thresholdColor(display, m.metric, Number(raw)) : undefined;
+        const emitVal = m.emit ?? m.column;
+        const clickable = !!emitKey;
+        const isSel = clickable && String(viewState[emitKey!]) === String(emitVal);
         return (
           <div
             key={m.column}
+            onClick={clickable ? () => updateViewState({ [emitKey!]: isSel ? null : emitVal }) : undefined}
             style={{
               flex: '1 1 140px',
               padding: '16px',
               borderRadius: '12px',
-              border: '1px solid var(--border-default, #e5e7eb)',
-              backgroundColor: 'var(--surface-primary, #fff)',
+              border: `1px solid ${isSel ? 'var(--border-accent, #93b4f5)' : 'var(--border-default, #e5e7eb)'}`,
+              backgroundColor: isSel ? 'var(--surface-accent, #eff6ff)' : 'var(--surface-primary, #fff)',
+              cursor: clickable ? 'pointer' : 'default',
             }}
           >
             <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>

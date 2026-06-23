@@ -8,6 +8,7 @@
 
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { FreshnessBadge } from './freshness-badge';
 
 interface TableColumn {
   field: string;
@@ -24,13 +25,28 @@ interface ViewClickableTableAreaProps {
       rowKey: string;
       columns?: TableColumn[];
       maxRows?: number;
+      // Initial sort applied before rendering (exception-first triage default).
+      defaultSort?: { column: string; direction?: 'asc' | 'desc' };
+      // Pin rows whose `column` value is in `values` to the top (severity/at-risk first).
+      exceptionFirst?: { column: string; values: string[] };
+      // Show an "updated Ns ago" badge above the table (live operational views).
+      showFreshness?: boolean;
     };
     emits?: Record<string, string>;
   };
 }
 
+function compareValues(a: unknown, b: unknown, dir: 'asc' | 'desc'): number {
+  const na = Number(a);
+  const nb = Number(b);
+  let cmp: number;
+  if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
+  else cmp = String(a ?? '').localeCompare(String(b ?? ''));
+  return dir === 'desc' ? -cmp : cmp;
+}
+
 export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaProps) {
-  const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const { data, loading, error, fetchedAt } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
@@ -45,7 +61,25 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
   if (error) {
     return <div style={{ padding: '16px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   }
-  const rows = (data?.rows ?? []).slice(0, config?.maxRows ?? 200);
+  let rows = data?.rows ?? [];
+  // Exception-first triage sort: pin flagged rows to the top, then optional default sort.
+  if (rows.length) {
+    const exc = config?.exceptionFirst;
+    const ds = config?.defaultSort;
+    if (exc || ds) {
+      const excSet = exc ? new Set(exc.values.map(String)) : null;
+      rows = [...rows].sort((a, b) => {
+        if (excSet && exc) {
+          const af = excSet.has(String(a[exc.column])) ? 0 : 1;
+          const bf = excSet.has(String(b[exc.column])) ? 0 : 1;
+          if (af !== bf) return af - bf;
+        }
+        if (ds) return compareValues(a[ds.column], b[ds.column], ds.direction ?? 'desc');
+        return 0;
+      });
+    }
+  }
+  rows = rows.slice(0, config?.maxRows ?? 200);
   if (!rows.length) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
   }
@@ -62,6 +96,11 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
 
   return (
     <div style={{ height: '100%', overflow: 'auto' }}>
+      {config?.showFreshness && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '6px 12px 0' }}>
+          <FreshnessBadge fetchedAt={fetchedAt} />
+        </div>
+      )}
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
         <thead>
           <tr>
