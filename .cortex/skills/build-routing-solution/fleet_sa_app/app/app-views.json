@@ -299,8 +299,8 @@
               "width": 4,
               "widthMinPixels": 2,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             },
             {
@@ -311,19 +311,21 @@
               "width": 4,
               "widthMinPixels": 2,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
+                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
               }
             }
           ]
         }
       },
       "table": {
-        "component": "Table",
+        "component": "ClickableTable",
         "data": {
           "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_NAME,1,18) AS origin, SUBSTR(DEST_NAME,1,18) AS destination, ROUND(DISTANCE_DEVIATION_PCT,1) AS dev_pct, ROUND(DISTANCE_DEVIATION_KM,1) AS excess_km FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE IS_ROUTE_DEVIATION ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        }
+        },
+        "config": { "rowKey": "trip_id", "maxRows": 20 },
+        "emits": { "selected_trip": "selection" }
       }
     }
   },
@@ -492,27 +494,29 @@
               "width": 3,
               "widthMinPixels": 1,
               "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
+                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]
         }
       },
       "table": {
-        "component": "Table",
+        "component": "ClickableTable",
         "data": {
           "query": "SELECT TRIP_ID AS trip_id, OPERATOR_ID AS operator, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min, ROUND(AVERAGE_KMH,1) AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        }
+        },
+        "config": { "rowKey": "trip_id", "maxRows": 60 },
+        "emits": { "selected_trip": "selection" }
       }
     }
   },
   "fleetops_operators": {
     "label": "Operator Performance",
-    "description": "Per-operator productivity: trips, distance, and speed, with shift and profile.",
+    "description": "Per-operator productivity \u2014 click an operator to map its trips.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byops table\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"byops table\"\n\"map map\"" }
     },
     "areas": {
       "metrics": {
@@ -543,10 +547,32 @@
         }
       },
       "table": {
-        "component": "Table",
+        "component": "ClickableTable",
         "data": {
           "query": "SELECT OPERATOR_ID AS operator, COALESCE(SHIFT_TYPE,'-') AS shift, COALESCE(DRIVER_PROFILE,'-') AS profile, TRIPS AS trips, TOTAL_DISTANCE_KM AS total_km, AVG_SPEED_KMH AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ORDER BY trips DESC LIMIT 100",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "rowKey": "operator", "maxRows": 100 },
+        "emits": { "selected_operator": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "operator-routes",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 170],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:selected_operator IS NULL OR OPERATOR_ID = :selected_operator) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 200",
+                "params": { "selected_operator": "viewState.selected_operator", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
         }
       }
     }
@@ -673,9 +699,9 @@
   },
   "asset_velocity": {
     "label": "Asset Velocity",
-    "description": "Idle trailers, cost of idleness, and where they are parked.",
+    "description": "Idle trailers, cost of idleness, and where they are parked \u2014 click a trailer to highlight it.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byseverity map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"byseverity map\"\n\"table table\"" }
     },
     "areas": {
       "metrics": {
@@ -715,7 +741,12 @@
               "id": "idle",
               "lng": "lng",
               "lat": "lat",
-              "fillColor": [255, 107, 53, 200],
+              "fillColor": {
+                "base": [255, 107, 53, 200],
+                "active": [41, 181, 232, 255],
+                "matchColumn": "vehicle_id",
+                "whenViewStateEquals": "selected_trailer"
+              },
               "radius": 400,
               "radiusMinPixels": 5,
               "radiusMaxPixels": 16,
@@ -728,6 +759,15 @@
             }
           ]
         }
+      },
+      "table": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 200",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
+        },
+        "config": { "rowKey": "vehicle_id", "maxRows": 200 },
+        "emits": { "selected_trailer": "selection" }
       }
     }
   }
