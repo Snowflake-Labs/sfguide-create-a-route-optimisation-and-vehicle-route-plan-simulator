@@ -28,6 +28,7 @@ import argparse, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACKS_DIR = os.path.dirname(HERE)                 # .../app/packs
 FLEET_DIR = os.path.join(PACKS_DIR, "fleet")
+SUBSTRATE_DIR = os.path.join(PACKS_DIR, "_substrate")  # neutral zero-copy substrate(s)
 MANIFEST = os.path.join(PACKS_DIR, "manifest.yaml")
 GENERATOR = os.path.join(HERE, "generate.py")
 APP_DIR = os.path.dirname(PACKS_DIR)              # .../app
@@ -42,6 +43,19 @@ try:
     import yaml
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
+
+
+def pack_dir(name):
+    """Resolve a pack's source directory. Most packs live under packs/fleet/<name>,
+    but the standalone `starter` pack (own STARTER_APP DB) lives at packs/<name>.
+    Prefer packs/fleet/<name> when present, else fall back to packs/<name>."""
+    fleet = os.path.join(FLEET_DIR, name)
+    if os.path.isdir(fleet):
+        return fleet
+    flat = os.path.join(PACKS_DIR, name)
+    if os.path.isdir(flat):
+        return flat
+    return fleet
 
 
 def load_manifest():
@@ -80,7 +94,7 @@ def run(cmd):
 
 def regenerate(pack):
     name = pack["name"]
-    d = os.path.join(FLEET_DIR, name)
+    d = pack_dir(name)
     model = os.path.join(d, "data-model.yaml")
     mapping = os.path.join(d, "entity-mapping.yaml")
     out = os.path.join(d, "setup.sql")
@@ -94,16 +108,28 @@ def regenerate(pack):
 
 
 def apply_pack(pack, conn):
-    setup = os.path.join(FLEET_DIR, pack["name"], "setup.sql")
+    """Apply a pack's setup.sql. Best-effort: returns True on success, False on
+    failure (missing setup.sql, or upstream demo-data not yet present). The
+    manifest surfacing-gate is the runtime authority on which packs are live, so a
+    pack that cannot install yet (e.g. dwell before the dwell-analysis demo seeds
+    FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG) must NOT abort the whole install."""
+    setup = os.path.join(pack_dir(pack["name"]), "setup.sql")
     if not os.path.exists(setup):
-        sys.exit(f"{pack['name']}: setup.sql missing - run with --regenerate or generate it first")
+        print(f"  [skip] {pack['name']}: setup.sql missing - run with --regenerate")
+        return False
     cmd = ["snow", "sql", "-f", setup]
     if conn:
         cmd += ["-c", conn]
     r = run(cmd)
     if r.returncode != 0:
-        sys.exit(f"apply failed for {pack['name']}:\n{r.stdout}\n{r.stderr}")
+        # Surface the first error line so the cause (usually a missing upstream
+        # object from a not-yet-run demo) is visible, but keep going.
+        err = (r.stdout + "\n" + r.stderr).strip().splitlines()
+        hint = next((l.strip() for l in err if "does not exist" in l.lower() or "error" in l.lower()), "see snow output")
+        print(f"  [FAIL] {pack['name']}: {hint}")
+        return False
     print(f"  [ok] {pack['name']} applied")
+    return True
 
 
 def regenerate_repoint(pack):
@@ -114,7 +140,7 @@ def regenerate_repoint(pack):
     NOT author the SV. Idempotent (no-op REPLACE once already on FLEET_APP)."""
     svs = pack.get("semantic_views") or []
     name = pack["name"]
-    d = os.path.join(FLEET_DIR, name)
+    d = pack_dir(name)
     model = os.path.join(d, "data-model.yaml")
     mapping = os.path.join(d, "entity-mapping.yaml")
     out = os.path.join(d, "sv_repoint.sql")
@@ -134,7 +160,7 @@ def regenerate_repoint(pack):
 def repoint_pack(pack, conn):
     if not (pack.get("semantic_views")):
         return
-    out = os.path.join(FLEET_DIR, pack["name"], "sv_repoint.sql")
+    out = os.path.join(pack_dir(pack["name"]), "sv_repoint.sql")
     if not os.path.exists(out):
         sys.exit(f"{pack['name']}: sv_repoint.sql missing - run with --regenerate")
     cmd = ["snow", "sql", "-f", out]
@@ -176,6 +202,27 @@ def probe_pack(pack, conn):
     return (pack["name"], (digits[-1] if digits else 0))
 
 
+def apply_substrate(conn):
+    """Apply every _substrate/*.sql (e.g. neutral-sf.sql) BEFORE the pack loop.
+    These create the neutral zero-copy views (SYNTHETIC_DATASETS.NEUTRAL.*) that
+    the starter pack maps from. Idempotent (CREATE OR REPLACE VIEW). Skipped
+    silently if the dir is absent. Roles referenced by the substrate's GRANTs are
+    pre-created by the orchestrator before this runs."""
+    if not os.path.isdir(SUBSTRATE_DIR):
+        return
+    for fn in sorted(os.listdir(SUBSTRATE_DIR)):
+        if not fn.endswith(".sql"):
+            continue
+        path = os.path.join(SUBSTRATE_DIR, fn)
+        cmd = ["snow", "sql", "-f", path]
+        if conn:
+            cmd += ["-c", conn]
+        r = run(cmd)
+        if r.returncode != 0:
+            sys.exit(f"substrate apply failed for {fn}:\n{r.stdout}\n{r.stderr}")
+        print(f"  [ok] substrate {fn} applied")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--connection", "-c", default=None, help="snow CLI connection name")
@@ -207,21 +254,34 @@ def main():
             print(f"  {p['name']:20s} {p['app_schema']}{dep}")
         return
 
+    # Neutral substrate (SYNTHETIC_DATASETS.NEUTRAL.*) the starter pack maps from.
+    # Applied once, before any pack setup.sql.
+    print("== neutral substrate (_substrate/*.sql) ==")
+    apply_substrate(args.connection)
+
+    installed, failed = [], []
     for p in packs:
         print(f"== {p['name']} ({p['app_schema']}) ==")
         if args.regenerate:
             regenerate(p)
             if args.sv_repoint:
                 regenerate_repoint(p)
-        apply_pack(p, args.connection)
-        if args.sv_repoint:
-            repoint_pack(p, args.connection)
+        ok = apply_pack(p, args.connection)
+        if ok:
+            installed.append(p["name"])
+            if args.sv_repoint:
+                repoint_pack(p, args.connection)
+        else:
+            failed.append(p["name"])
     # Per-session scope-arg data contract: apply once after packs, only when the
     # unified_fleet pack (owner of FLEET_APP.UNIFIED_FLEET) is in the install set.
     if not args.skip_contract and any(p["name"] == CONTRACT_PACK for p in packs):
         print("== scope-arg data contract (scoped_contract.sql) ==")
         apply_contract(args.connection)
     print("done.")
+    print(f"  installed: {', '.join(installed) or '(none)'}")
+    if failed:
+        print(f"  not-yet-resolved (best-effort; surface after their demo data exists): {', '.join(failed)}")
 
 
 if __name__ == "__main__":
