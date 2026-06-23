@@ -6,11 +6,10 @@
   "database": "FLEET_INTELLIGENCE",
   "schema": "SYNAPSE_ADMIN",
   "snowCliConn": "fleet_test_evals",
-  "accountUrl": "pm-fleet-test.snowflakecomputing.com",
   "mcpServerName": "FLEET_ADMIN_MCP",
   "roles": {
     "admin": "FLEET_APP_ADMIN"
   },
-  "materializedAt": "2026-06-21T16:21:14.096Z",
-  "materializedFrom": "git:0e05ff8a7d1ff58946e7bd4ac79e79784f46c157"
+  "materializedFrom": "git:293580af3665da3147cc69c61ff19d00ae509a18",
+  "materializedAt": "2026-06-23T20:46:50.215Z"
 }

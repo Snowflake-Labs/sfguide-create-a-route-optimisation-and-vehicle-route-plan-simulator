@@ -6,11 +6,10 @@
   "database": "OPENROUTESERVICE_APP",
   "schema": "ROUTING",
   "snowCliConn": "fleet_test_evals",
-  "accountUrl": "pm-fleet-test.snowflakecomputing.com",
   "mcpServerName": "ROUTING_MCP",
   "roles": {
     "user": "FLEET_APP_USER"
   },
-  "materializedAt": "2026-06-23T12:47:00.105Z",
-  "materializedFrom": "git:c2dbce4758fa1e722030cd55ac9a6afd2b128bde"
+  "materializedFrom": "git:293580af3665da3147cc69c61ff19d00ae509a18",
+  "materializedAt": "2026-06-23T20:46:13.814Z"
 }
