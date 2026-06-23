@@ -11,6 +11,6 @@
   "roles": {
     "ops": "FLEET_APP_OPS"
   },
-  "materializedAt": "2026-06-22T06:03:36.751Z",
-  "materializedFrom": "git:6786d42219ecd882d3cc78adc552709d8a90f996"
+  "materializedAt": "2026-06-23T08:42:15.818Z",
+  "materializedFrom": "git:f1e4e9bb0553cb65b4b0b04717933f033b8fac85"
 }
