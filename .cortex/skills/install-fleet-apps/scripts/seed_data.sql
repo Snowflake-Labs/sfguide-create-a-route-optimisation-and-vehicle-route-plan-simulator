@@ -21,6 +21,19 @@
 
 ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"seed"}}';
 
+-- 0. Analytics warehouse. The canonical loader (datasets/load-seed-data.sql) and
+--    the analytic layer both run `USE WAREHOUSE ROUTING_ANALYTICS`. On a truly
+--    clean account this warehouse does not exist yet (the engine + analytic_layer
+--    create it, but BOTH run AFTER this data step), so the loader would abort on
+--    its very first statement and no UNIFIED tables (DIM_FLEET/FACT_TRIPS/...)
+--    would load. Ensure it here so the data step is self-sufficient. Idempotent.
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 1. Shared analytic schemas (also created by the routing engine when present).
 CREATE DATABASE IF NOT EXISTS SYNTHETIC_DATASETS
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
