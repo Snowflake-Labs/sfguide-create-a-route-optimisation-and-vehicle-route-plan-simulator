@@ -1,11 +1,16 @@
 'use client';
 
 import { useViewData } from '@/hooks/use-view-data';
+import { useDisplayConfig, interpolateTokens, thresholdColor, unitSuffix } from '@/lib/display-config';
 
 interface MetricMapping {
   column: string;
   label: string;
   format?: string;
+  // Optional: units-token key (display.units) appended as a suffix, e.g. "speed" -> "km/h".
+  unit?: string;
+  // Optional: metric_name (display.thresholds) used to color the value good/warn/critical.
+  metric?: string;
 }
 
 interface MetricCardsAreaProps {
@@ -47,6 +52,7 @@ function formatValue(value: unknown, format?: string): string {
 
 export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
   const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const display = useDisplayConfig();
   const metrics = areaConfig.data.mapping?.metrics || [];
 
   if (loading) {
@@ -68,25 +74,30 @@ export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
 
   return (
     <div style={{ display: 'flex', gap: '16px', padding: '16px', flexWrap: 'wrap' }}>
-      {metrics.map((m) => (
-        <div
-          key={m.column}
-          style={{
-            flex: '1 1 140px',
-            padding: '16px',
-            borderRadius: '12px',
-            border: '1px solid var(--border-default, #e5e7eb)',
-            backgroundColor: 'var(--surface-primary, #fff)',
-          }}
-        >
-          <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
-            {m.label}
+      {metrics.map((m) => {
+        const raw = row[m.column];
+        const suffix = unitSuffix(display, m.unit);
+        const color = m.metric ? thresholdColor(display, m.metric, Number(raw)) : undefined;
+        return (
+          <div
+            key={m.column}
+            style={{
+              flex: '1 1 140px',
+              padding: '16px',
+              borderRadius: '12px',
+              border: '1px solid var(--border-default, #e5e7eb)',
+              backgroundColor: 'var(--surface-primary, #fff)',
+            }}
+          >
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+              {interpolateTokens(m.label, display)}
+            </div>
+            <div style={{ fontSize: '24px', fontWeight: 700, color: color ?? 'var(--text-primary, #111827)' }}>
+              {formatValue(raw, m.format)}{suffix ? <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-secondary, #6b7280)', marginLeft: '4px' }}>{suffix}</span> : null}
+            </div>
           </div>
-          <div style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary, #111827)' }}>
-            {formatValue(row[m.column], m.format)}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

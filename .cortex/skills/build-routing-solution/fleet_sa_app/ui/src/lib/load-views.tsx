@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 import type { ViewDef, AppRole } from './types';
 import { viewRegistry } from './view-registry';
+import { getDisplayConfigGlobal, interpolateTokens } from './display-config';
 
 interface AreaDef {
   component: string;
@@ -70,13 +71,14 @@ export function registerViewsFromConfig(
   dataLayerDb: string = DEFAULT_DATA_LAYER_DB,
 ): void {
   const views: YamlViewDef[] = Object.entries(config).map(([id, def]) => ({ id, ...def } as YamlViewDef));
+  const display = getDisplayConfigGlobal();
   for (const view of views) {
     const schemas = disabledSchemas?.size ? viewSchemas(view, dataLayerDb) : null;
     const gatedOff = schemas ? [...schemas].some((s) => disabledSchemas!.has(s)) : false;
     const registration: ViewDef = {
       id: view.id,
-      label: view.label,
-      description: view.description,
+      label: interpolateTokens(view.label, display),
+      description: interpolateTokens(view.description, display),
       hidden: view.hidden || gatedOff,
       roles: view.roles,
       component: createLazyViewComponent(view),

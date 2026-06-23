@@ -11,6 +11,7 @@ import { registerWorkflowViews, registerRoleAccessView } from '@/lib/framework-v
 import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
 import type { DisplayConfig } from '@/lib/types';
+import { setDisplayConfigGlobal } from '@/lib/display-config';
 import { AboutDialog } from './about-dialog';
 
 export interface AppConfig {
@@ -71,6 +72,7 @@ export function AppShell() {
   const setSnowflakeFqn = useAppStore((s) => s.setSnowflakeFqn);
   const setDetectedRole = useAppStore((s) => s.setDetectedRole);
   const setSelectedRole = useAppStore((s) => s.setSelectedRole);
+  const setDisplayConfig = useAppStore((s) => s.setDisplayConfig);
 
   // Seed the role dropdown from the user's detected role (hint only; the
   // operator can still pick any role to evaluate). Failures are non-fatal.
@@ -94,6 +96,13 @@ export function AppShell() {
     ])
       .then(([appConfig, viewsConfig, packStatus]: [AppConfig, ViewsConfig, { schemas?: Record<string, boolean> }]) => {
         setAppConfig({ ...DEFAULT_APP_CONFIG, ...appConfig });
+
+        // Publish the display config (labels/units/thresholds) to the store AND the
+        // module mirror BEFORE registering views, so view-label/description token
+        // interpolation in load-views can resolve against it.
+        const display: DisplayConfig | null = appConfig.display ?? null;
+        setDisplayConfig(display);
+        setDisplayConfigGlobal(display);
 
         // Surfacing gate: schemas whose pack data did not resolve are hidden.
         const schemaStatus = packStatus?.schemas ?? {};
@@ -155,7 +164,7 @@ export function AppShell() {
         console.error('[AppShell] Failed to load config:', err);
         setConfigError('Failed to load app configuration');
       });
-  }, [setContext, bumpViewsVersion, setSnowflakeFqn]);
+  }, [setContext, bumpViewsVersion, setSnowflakeFqn, setDisplayConfig]);
 
   const handleMouseDown = useCallback(() => {
     dragging.current = true;

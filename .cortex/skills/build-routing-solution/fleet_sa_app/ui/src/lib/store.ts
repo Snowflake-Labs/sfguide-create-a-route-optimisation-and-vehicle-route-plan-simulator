@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, ChatStatus, AppRole } from './types';
+import type { Message, MessagePart, PanelContext, ChatStatus, AppRole, DisplayConfig } from './types';
 import { viewRegistry } from './view-registry';
 
 interface ChatSlice {
@@ -28,6 +28,8 @@ interface AppState {
   viewContextEnabled: boolean;
   snowflakeFqn: string | null;
   abortController: AbortController | null;
+  // Zero-code retargeting surface from app-config.json (labels/units/thresholds).
+  displayConfig: DisplayConfig | null;
   // Simulated role-evaluation state. `selectedRole` drives which views/capabilities
   // the UI surfaces; `detectedRole` is the user's real role from /api/whoami (hint only).
   selectedRole: AppRole;
@@ -54,6 +56,7 @@ interface AppActions {
   setSnowflakeFqn: (fqn: string) => void;
   setSelectedRole: (role: AppRole) => void;
   setDetectedRole: (role: AppRole) => void;
+  setDisplayConfig: (cfg: DisplayConfig | null) => void;
 }
 
 export type AppStore = AppState & AppActions;
@@ -86,6 +89,7 @@ export const useAppStore = create<AppStore>()(
       viewContextEnabled: true,
       snowflakeFqn: null,
       abortController: null,
+      displayConfig: null,
       selectedRole: 'admin' as AppRole,
       detectedRole: null,
 
@@ -315,6 +319,10 @@ export const useAppStore = create<AppStore>()(
 
       setSnowflakeFqn: (fqn: string) => {
         set({ snowflakeFqn: fqn });
+      },
+
+      setDisplayConfig: (cfg: DisplayConfig | null) => {
+        set({ displayConfig: cfg });
       },
 
       setSelectedRole: (role: AppRole) => {
