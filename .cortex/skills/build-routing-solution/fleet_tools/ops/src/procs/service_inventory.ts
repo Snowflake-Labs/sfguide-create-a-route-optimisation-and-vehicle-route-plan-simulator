@@ -49,30 +49,26 @@ export const service_inventory = defineProc({
     // missing. Fetch them here so the Ops Console can nest them under their real
     // compute pool with live status instead of as a detached, status-less row.
     // Each carries fq_name so the UI targets the correct schema for control verbs.
+    // SHOW + RESULT_SCAN(LAST_QUERY_ID()) run as two sequential statements on the
+    // same proc session (the pattern CORE.GET_STATUS uses) -- do NOT wrap in
+    // EXECUTE IMMEDIATE, whose dollar-quoted body fails to parse here.
     // Best-effort: a privilege/visibility miss leaves the base inventory intact.
     try {
+      await ctx.conn.execScalar<string>('SHOW SERVICES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER');
       const appsJson = await ctx.conn.execScalar<string>(
-        `EXECUTE IMMEDIATE $sf$
-DECLARE r STRING DEFAULT '[]';
-BEGIN
-  SHOW SERVICES IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER;
-  SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
-    'name', "name",
-    'fq_name', 'FLEET_INTELLIGENCE.SYNAPSE_USER.' || "name",
-    'status', "status",
-    'compute_pool', "compute_pool",
-    'min_instances', "min_instances",
-    'max_instances', "max_instances",
-    'current_instances', "current_instances",
-    'target_instances', "target_instances",
-    'auto_suspend_secs', "auto_suspend_secs"
-  )), ARRAY_CONSTRUCT())::STRING
-  INTO :r
-  FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-  WHERE "is_job" = 'false';
-  RETURN r;
-END
-$sf$`,
+        `SELECT COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(
+            'name', "name",
+            'fq_name', 'FLEET_INTELLIGENCE.SYNAPSE_USER.' || "name",
+            'status', "status",
+            'compute_pool', "compute_pool",
+            'min_instances', "min_instances",
+            'max_instances', "max_instances",
+            'current_instances', "current_instances",
+            'target_instances', "target_instances",
+            'auto_suspend_secs', "auto_suspend_secs"
+          )), ARRAY_CONSTRUCT())::STRING
+          FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+          WHERE "is_job" = 'false'`,
       );
       const apps = appsJson == null ? [] : (JSON.parse(String(appsJson)) as Record<string, unknown>[]);
       if (Array.isArray(apps)) {
