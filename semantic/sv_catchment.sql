@@ -1,9 +1,9 @@
--- SV_RETAIL_CATCHMENT — Retail Catchment demo semantic view
+-- SV_CATCHMENT — Catchment demo semantic view
 -- Source: FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS + CITIES_BY_STATE
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- GEOMETRY GEOGRAPHY column excluded; lat/lon retained on base view but not modeled as metrics.
 
-CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT
+CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
 
   TABLES (
     pois AS FLEET_INTELLIGENCE.RETAIL_CATCHMENT.RETAIL_POIS
@@ -36,11 +36,11 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_RETAIL_CATCHMENT
     , cities.total_city_pois AS SUM(city_poi_count) WITH SYNONYMS ('total pois by city') COMMENT = 'Total POIs across cities (precomputed)'
   )
 
-  COMMENT = 'Retail Catchment demo: retail points of interest by category/city/state, plus precomputed POI counts per city.'
+  COMMENT = 'Catchment demo: points of interest by category/city/state, plus precomputed POI counts per city.'
 
-  AI_SQL_GENERATION 'Retail Catchment semantic view.
+  AI_SQL_GENERATION 'Catchment semantic view.
 Entities (two independent facts):
-- pois (RETAIL_POIS): one row per retail POI. Use total_pois grouped by basic_category, city, or state for density/competition questions.
+- pois (RETAIL_POIS): one row per POI. Use total_pois grouped by basic_category, city, or state for density/competition questions.
 - cities (CITIES_BY_STATE): precomputed POI counts per city.
 Conventions:
 - "how many coffee shops in X" -> total_pois filtered by basic_category and city.
