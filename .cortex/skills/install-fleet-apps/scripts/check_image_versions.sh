@@ -4,11 +4,10 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OPENROUTESERVICE_APP_DIR="${1:-$SKILL_DIR/openrouteservice_app}"
 
-VERSION_FILE="$SKILL_DIR/openrouteservice_app/image-versions.env"
+VERSION_FILE="$SKILL_DIR/image-versions.env"
 MANIFEST="$OPENROUTESERVICE_APP_DIR/app/manifest.yml"
 BUILD_MD="$SKILL_DIR/references/build-images.md"
 SKILL_MD="$SKILL_DIR/SKILL.md"
-README_MD="$SKILL_DIR/../../README.md"
 GUIDELINES_MD="$SKILL_DIR/references/snowflake-scripting-guidelines.md"
 
 if [ ! -f "$VERSION_FILE" ]; then
@@ -25,11 +24,14 @@ fi
 source "$VERSION_FILE"
 
 # Build parallel arrays (bash 3.x compatible — no declare -A)
-IMAGE_NAMES="openrouteservice downloader routing_reverse_proxy vroom-docker ors_control_app"
-IMAGE_TAGS="$OPENROUTESERVICE_TAG $DOWNLOADER_TAG $ROUTING_REVERSE_PROXY_TAG $VROOM_DOCKER_TAG $ORS_CONTROL_APP_TAG"
+# Phase C: only the four ORS/VROOM engine images are validated here. The legacy
+# ors_control_app was retired (superseded by fleet_admin_app); the two app images
+# (FLEET_SA_APP/FLEET_ADMIN_APP) are validated by their own deploy scripts.
+IMAGE_NAMES="openrouteservice downloader routing_reverse_proxy vroom-docker"
+IMAGE_TAGS="$OPENROUTESERVICE_TAG $DOWNLOADER_TAG $ROUTING_REVERSE_PROXY_TAG $VROOM_DOCKER_TAG"
 # Variable references that build-images.md / guidelines may use instead of literal tags.
 # These are acceptable because the variables are sourced from image-versions.env at build time.
-IMAGE_VARS="OPENROUTESERVICE_TAG DOWNLOADER_TAG ROUTING_REVERSE_PROXY_TAG VROOM_DOCKER_TAG ORS_CONTROL_APP_TAG"
+IMAGE_VARS="OPENROUTESERVICE_TAG DOWNLOADER_TAG ROUTING_REVERSE_PROXY_TAG VROOM_DOCKER_TAG"
 
 errors=0
 
@@ -114,29 +116,6 @@ for yaml_file in "$OPENROUTESERVICE_APP_DIR"/services/*/*.yaml; do
     done
   fi
 done
-
-for label_file in "SKILL.md:$SKILL_MD" "README.md:$README_MD"; do
-  label="${label_file%%:*}"
-  fpath="${label_file#*:}"
-  if [ -f "$fpath" ]; then
-    if grep -qF "image-versions.env" "$fpath" 2>/dev/null; then
-      continue
-    fi
-    if ! grep -qF "ors_control_app:${ORS_CONTROL_APP_TAG}" "$fpath" 2>/dev/null && \
-       ! grep -qF "ors_control_app (${ORS_CONTROL_APP_TAG})" "$fpath" 2>/dev/null; then
-      error "$label missing ors_control_app:${ORS_CONTROL_APP_TAG}"
-    fi
-  fi
-done
-
-expected_app_ver="${ORS_CONTROL_APP_TAG#v}"
-svc_yaml="$OPENROUTESERVICE_APP_DIR/services/ors_control_app/ors_control_app_service.yaml"
-if [ -f "$svc_yaml" ]; then
-  yaml_env_ver=$(grep 'APP_VERSION' "$svc_yaml" 2>/dev/null | sed 's/.*"\([0-9.]*\)".*/\1/' || true)
-  if [ -n "$yaml_env_ver" ] && [ "$yaml_env_ver" != "$expected_app_ver" ]; then
-    error "APP_VERSION env in service YAML is $yaml_env_ver, expected $expected_app_ver"
-  fi
-fi
 
 if [ $errors -gt 0 ]; then
   echo ""
