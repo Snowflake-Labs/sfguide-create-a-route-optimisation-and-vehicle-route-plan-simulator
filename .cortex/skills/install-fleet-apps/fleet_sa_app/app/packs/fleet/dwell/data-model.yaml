@@ -13,7 +13,7 @@
 #               views over SYNTHETIC_DATASETS.UNIFIED, shaped by a mapping `sql:`)
 #   derived  -> COMPUTED by the solution from another logical entity via a `sql:`
 #               body ({src}=derived_from view, {schema}=pack schema, siblings as
-#               {schema}.VW_<NAME>). Materialized as dynamic tables.
+#               {schema}.VW_<NAME>). Materialized as plain views (no LAG refresh).
 #   context  -> region/vehicle control row carried through.
 #
 # `replaces:` lets the SV-repoint rebind the old physical DT FQN to this VW_.
@@ -84,7 +84,7 @@ entities:
     description: "Layer 1 primitive: LAG-based state-change detection per vehicle."
     access_pattern: derived
     derived_from: VEHICLE_TELEMETRY
-    materialization: dynamic_table
+    materialization: view
     sql: |
       SELECT
           TELEMETRY_ID, VEHICLE_ID, TRIP_ID, TS, POINT_GEOM,
@@ -100,7 +100,7 @@ entities:
     description: "Layer 2 primitive: dwell sessionization (CONDITIONAL_CHANGE_EVENT) + H3 centroid."
     access_pattern: derived
     derived_from: STATE_CHANGES
-    materialization: dynamic_table
+    materialization: view
     sql: |
       WITH sessions AS (
         SELECT *,
@@ -125,7 +125,7 @@ entities:
     access_pattern: derived
     derived_from: SESSIONS_RAW
     depends_on: [DESTINATIONS, REST_STOPS, VEHICLE_FLEET]
-    materialization: dynamic_table
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DWELL_ENRICHED
     columns:
       - { name: VEHICLE_ID, type: VARCHAR }
@@ -155,8 +155,7 @@ entities:
     description: "Hourly H3 congestion heatmap."
     access_pattern: derived
     derived_from: DWELL_SESSIONS
-    materialization: dynamic_table
-    target_lag: "10 minutes"
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_H3_CONGESTION
     columns:
       - { name: H3_CELL_R7,   type: VARCHAR }
@@ -179,7 +178,7 @@ entities:
     description: "SLA breach alerts (WARNING/CRITICAL). Thresholds are vehicle-type-aware, read from the catalog FLEET_APP.UNIFIED_FLEET.VW_VEHICLE_DWELL_SLA (keyed by VEHICLE_TYPE x LOCATION_TYPE)."
     access_pattern: derived
     derived_from: DWELL_SESSIONS
-    materialization: dynamic_table
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_SLA_ALERTS
     columns:
       - { name: VEHICLE_ID,    type: VARCHAR }
@@ -210,8 +209,7 @@ entities:
     description: "Daily facility visit stats."
     access_pattern: derived
     derived_from: DWELL_SESSIONS
-    materialization: dynamic_table
-    target_lag: "10 minutes"
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_FACILITY_UTILIZATION
     columns:
       - { name: LOCATION_ID,    type: VARCHAR }
@@ -240,8 +238,7 @@ entities:
     access_pattern: derived
     derived_from: DWELL_SESSIONS
     depends_on: [SLA_ALERTS]
-    materialization: dynamic_table
-    target_lag: "10 minutes"
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DRIVER_DWELL_SUMMARY
     columns:
       - { name: VEHICLE_ID,     type: VARCHAR }
@@ -271,8 +268,7 @@ entities:
     description: "Fleet-wide daily dwell trend."
     access_pattern: derived
     derived_from: DWELL_SESSIONS
-    materialization: dynamic_table
-    target_lag: "10 minutes"
+    materialization: view
     replaces: FLEET_INTELLIGENCE.DWELL_ANALYSIS.DT_DAILY_TRENDS
     columns:
       - { name: TREND_DATE,     type: DATE }
