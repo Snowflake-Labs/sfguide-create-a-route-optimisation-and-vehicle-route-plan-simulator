@@ -64,6 +64,19 @@ echo "  branch=$GIT_BRANCH  sha=$GIT_SHA  tag=$IMAGE_TAG  connection=$CONNECTION
 
 # ── 1. Build the Next.js standalone bundle (prebuilt-.next Docker path) ──
 if [ "${SKIP_IMAGE:-0}" != "1" ]; then
+  # Defense-in-depth dedup: @fleet-kit/core is symlinked via a file: dependency
+  # and its devDependencies install a NESTED copy of @deck.gl/* + @luma.gl/*.
+  # With resolve.symlinks=false the kit resolves those from its realpath tree,
+  # yielding duplicate @luma.gl/shadertools ShaderAssembler singletons and the
+  # "DECKGL_FILTER_COLOR : no matching overloaded function found" shader crash.
+  # next.config.ts already aliases these to the consumer copy (authoritative);
+  # stripping the nested copies here keeps a fresh build correct even if the
+  # alias is ever removed. Safe no-op when the dirs are absent.
+  KIT_NM="$REPO_ROOT/packages/fleet-kit/node_modules"
+  if [ -d "$KIT_NM" ]; then
+    echo "[1/7] Strip nested deck.gl/luma.gl from $KIT_NM (dedup guard)..."
+    rm -rf "$KIT_NM/@deck.gl" "$KIT_NM/@luma.gl"
+  fi
   echo "[1/7] Build Next.js standalone (npm ci + npm run build)..."
   ( cd "$UI_DIR" && { [ -d node_modules ] || npm ci; } && npm run build ) \
     > /tmp/fleet_sa_build.log 2>&1 || { echo "ERROR: next build failed"; tail -40 /tmp/fleet_sa_build.log; exit 1; }
