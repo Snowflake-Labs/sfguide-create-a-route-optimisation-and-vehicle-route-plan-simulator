@@ -216,6 +216,24 @@ CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_FOR_POINT(LON FLOAT,
 RETURNS OBJECT COMMENT='Engine-neutral smallest-containing-region lookup (passthrough to region catalog).'
 AS $$ OPENROUTESERVICE_APP.CORE.REGION_FOR_POINT(LON, LAT) $$;
 
+-- Engine-neutral region-validity guard. Lets contract consumers (e.g. the synapse
+-- optimize_routes verb's validate hook) reject an unknown region up front instead
+-- of failing opaquely deep in the engine. NULL/empty -> TRUE so callers that omit
+-- region keep delegating to the active-region default. Bound to the contract so
+-- consumers never read OPENROUTESERVICE_APP.CORE.* directly (Tenet 1).
+CREATE OR REPLACE FUNCTION ROUTING_PLATFORM.CONTRACT.REGION_EXISTS(REGION VARCHAR)
+RETURNS BOOLEAN
+COMMENT='Engine-neutral check: is REGION a provisioned (DEPLOYED) region? NULL/empty -> TRUE (caller falls back to active region).'
+AS
+$$
+  REGION IS NULL
+  OR TRIM(REGION) = ''
+  OR EXISTS (
+    SELECT 1 FROM OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP m
+    WHERE UPPER(m.REGION) = UPPER(REGION) AND m.STATUS = 'DEPLOYED'
+  )
+$$;
+
 -- ===== ADMIN: engine-neutral region inventory + provider steering =============
 CREATE OR REPLACE VIEW ROUTING_PLATFORM.ADMIN.V_REGIONS
   COMMENT='Engine-neutral region inventory + default routing provider.'
