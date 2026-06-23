@@ -16,16 +16,21 @@
 #
 # Flags (re-run shortcuts only; there is NO use-case selection):
 #   --connection <name>   REQUIRED. Snow CLI connection.
+#   --with-engine         OPTIONAL. When the ORS engine is absent, build + provision
+#                         it natively (heavy: 4 SPCS images + a region graph, tens of
+#                         minutes). Also honored via PROVISION_ENGINE=1.
 #   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
 #   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1   (env vars)
 set -euo pipefail
 
 # ── arg parse ───────────────────────────────────────────────────
 CONNECTION=""
+WITH_ENGINE="${PROVISION_ENGINE:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --connection) CONNECTION="${2:-}"; shift 2;;
     --connection=*) CONNECTION="${1#*=}"; shift;;
+    --with-engine) WITH_ENGINE=1; shift;;
     *) echo "Unknown arg: $1"; exit 2;;
   esac
 done
@@ -121,9 +126,14 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   fi
   if obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
     note "  ORS engine detected -> routing verbs LIVE"
+  elif [ "$WITH_ENGINE" = "1" ]; then
+    note "  ORS engine ABSENT + --with-engine set -> provisioning natively (heavy)..."
+    bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
+      || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
+    note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
   else
     note "  ORS engine ABSENT -> routing verbs install inert."
-    note "  To enable live routing, provision via build-routing-solution (secondary). See references/routing-engine.md"
+    note "  To enable live routing, re-run with --with-engine. See references/routing-engine.md"
   fi
   step "3 routing" OK
 else
