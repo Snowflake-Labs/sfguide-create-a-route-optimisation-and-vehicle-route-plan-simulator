@@ -22,5 +22,43 @@
     "database": "STARTER_APP",
     "schema": "CORE"
   },
-  "hasWorkflows": false
+  "hasWorkflows": false,
+  "display": {
+    "labels": {
+      "entity": "Asset",
+      "entity_plural": "Assets",
+      "operator": "Operator",
+      "operator_plural": "Operators",
+      "site": "Location",
+      "site_plural": "Locations",
+      "journey": "Movement",
+      "journey_plural": "Movements",
+      "stop": "Stop",
+      "plan": "Plan",
+      "work_item": "Work Item"
+    },
+    "units": {
+      "distance": "km",
+      "speed": "km/h",
+      "duration": "min",
+      "currency": "USD",
+      "currency_symbol": "$"
+    },
+    "thresholds": {
+      "on_time_pct": { "good": 0.95, "warn": 0.85, "critical": 0.75, "higherIsBetter": true },
+      "utilization_pct": { "good": 0.85, "warn": 0.65, "critical": 0.50, "higherIsBetter": true }
+    },
+    "statusEnums": {
+      "motion_status": {
+        "moving": { "label": "Moving", "color": "#22c55e" },
+        "idle": { "label": "Idle", "color": "#f59e0b" },
+        "stopped": { "label": "Stopped", "color": "#9ca3af" },
+        "offline": { "label": "Offline", "color": "#ef4444" }
+      }
+    },
+    "defaultWindows": {
+      "operations": "last_7_days",
+      "executive": "last_30_days"
+    }
+  }
 }

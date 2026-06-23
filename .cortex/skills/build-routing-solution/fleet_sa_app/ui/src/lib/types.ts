@@ -48,6 +48,38 @@ export interface ViewDef {
   roles?: AppRole[];
 }
 
+// Zero-code retargeting surface (agnostic-view report section 6.3). Every field is
+// a neutral token -> domain value map so a domain swap is a config edit, never a code
+// change. Consumed by the UI display resolver (useDisplayConfig) + metric-cards.
+export interface DisplayThreshold {
+  good?: number;
+  warn?: number;
+  critical?: number;
+  // When true a higher value is better (utilization), else lower is better (dwell).
+  higherIsBetter?: boolean;
+}
+
+export interface DisplayStatusValue {
+  label: string;
+  color?: string;
+}
+
+export interface DisplayConfig {
+  // Neutral noun/metric token -> domain label. Resolver interpolates {{labels.x}}.
+  labels?: Record<string, string>;
+  // Neutral measure token -> unit suffix (e.g. distance -> "km", speed -> "km/h").
+  units?: Record<string, string>;
+  // metric_name -> threshold bands for KPI coloring (mirrors DIM_METRIC_DEFINITION,
+  // UI-overridable). Keyed by the neutral metric name.
+  thresholds?: Record<string, DisplayThreshold>;
+  // enum field -> value -> { label, color }. Drives status chips/legends.
+  statusEnums?: Record<string, Record<string, DisplayStatusValue>>;
+  // entity_type / icon key -> icon name (map markers, legends).
+  icons?: Record<string, string>;
+  // named window -> token (e.g. operations -> last_7_days). Per-persona defaults.
+  defaultWindows?: Record<string, string>;
+}
+
 export interface InlineComponentDef<TProps = Record<string, unknown>> {
   toolName: string;
   component: ComponentType<TProps>;

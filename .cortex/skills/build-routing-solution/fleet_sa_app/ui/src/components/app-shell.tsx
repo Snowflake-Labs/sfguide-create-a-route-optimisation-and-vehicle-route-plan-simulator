@@ -10,6 +10,7 @@ import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
 import { registerWorkflowViews, registerRoleAccessView } from '@/lib/framework-views';
 import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
+import type { DisplayConfig } from '@/lib/types';
 import { AboutDialog } from './about-dialog';
 
 export interface AppConfig {
@@ -32,6 +33,8 @@ export interface AppConfig {
   dataLayer?: { database?: string };
   // Routing/tool config; mapTools render their output on the inline deck.gl map.
   tools?: { mapTools?: string[] };
+  // Zero-code retargeting surface (labels/units/thresholds/statusEnums/icons/windows).
+  display?: DisplayConfig;
 }
 
 const DEFAULT_APP_CONFIG: AppConfig = {

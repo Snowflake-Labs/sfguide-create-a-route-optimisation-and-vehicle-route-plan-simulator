@@ -14,6 +14,7 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { logger } from './logger';
+import type { DisplayConfig } from './types';
 
 export interface ToolsConfig {
   // Fully-qualified schema holding the user routing verbs (e.g. DB.SCHEMA).
@@ -60,6 +61,8 @@ export interface ServerConfig {
   ops?: OpsConfig;
   region?: RegionConfig;
   dataLayer?: DataLayerConfig;
+  // Zero-code retargeting surface (labels/units/thresholds/statusEnums/icons/windows).
+  display?: DisplayConfig;
 }
 
 const cache = new Map<string, ServerConfig>();

@@ -116,5 +116,66 @@
       "label": "Date range",
       "default": "last_365_days"
     }
-  ]
+  ],
+  "display": {
+    "labels": {
+      "entity": "Vehicle",
+      "entity_plural": "Vehicles",
+      "operator": "Driver",
+      "operator_plural": "Drivers",
+      "site": "Facility",
+      "site_plural": "Facilities",
+      "journey": "Trip",
+      "journey_plural": "Trips",
+      "stop": "Stop",
+      "plan": "Route Plan",
+      "work_item": "Scheduled Trip",
+      "dwell": "Dwell",
+      "idle": "Idle",
+      "deviation": "Route Deviation"
+    },
+    "units": {
+      "distance": "km",
+      "speed": "km/h",
+      "duration": "min",
+      "currency": "USD",
+      "currency_symbol": "$",
+      "capacity": "t"
+    },
+    "thresholds": {
+      "dwell_duration": { "good": 1800, "warn": 3600, "critical": 7200, "higherIsBetter": false },
+      "on_time_pct": { "good": 0.95, "warn": 0.85, "critical": 0.75, "higherIsBetter": true },
+      "utilization_pct": { "good": 0.85, "warn": 0.65, "critical": 0.50, "higherIsBetter": true },
+      "route_adherence_pct": { "good": 0.95, "warn": 0.85, "critical": 0.70, "higherIsBetter": true },
+      "safety_score": { "good": 80, "warn": 60, "critical": 40, "higherIsBetter": true },
+      "eta_variance": { "good": 300, "warn": 900, "critical": 1800, "higherIsBetter": false }
+    },
+    "statusEnums": {
+      "motion_status": {
+        "moving": { "label": "Moving", "color": "#22c55e" },
+        "idle": { "label": "Idle", "color": "#f59e0b" },
+        "stopped": { "label": "Stopped", "color": "#9ca3af" },
+        "offline": { "label": "Offline", "color": "#ef4444" }
+      },
+      "sla_status": {
+        "ok": { "label": "On Time", "color": "#22c55e" },
+        "at_risk": { "label": "At Risk", "color": "#f59e0b" },
+        "breached": { "label": "Breached", "color": "#ef4444" }
+      }
+    },
+    "icons": {
+      "hgv": "truck",
+      "car": "car",
+      "ebike": "bike",
+      "cycling-regular": "bike",
+      "vessel": "ship",
+      "aircraft": "plane"
+    },
+    "defaultWindows": {
+      "operations": "last_7_days",
+      "executive": "last_30_days",
+      "density": "last_30_days",
+      "safety": "last_30_days"
+    }
+  }
 }
