@@ -149,17 +149,17 @@ async function filterRoutablePois(
   return filtered;
 }
 
-function mapCategoryToType(category: string, mode: string): string {
-  if (mode === 'food_delivery') {
-    if (['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'].includes(category)) return 'RESTAURANT';
-    return 'ADDRESS';
+// Map an Overture BASIC_CATEGORY to a LOCATION_TYPE using the profile's
+// declarative category_map (LOCATION_TYPE -> category lists, optional `_default`).
+// No vehicle-type/mode branching: a new mode supplies its own category_map.
+function mapCategoryToType(category: string, config: GenerationConfig): string {
+  const map = config.category_map;
+  if (!map) return 'LOCATION';
+  for (const [locType, cats] of Object.entries(map)) {
+    if (locType === '_default') continue;
+    if (Array.isArray(cats) && cats.includes(category)) return locType;
   }
-  if (mode === 'trucking') {
-    if (['warehouse', 'storage_facility', 'b2b_transportation_and_storage_service', 'industrial_facility_or_service'].includes(category)) return 'WAREHOUSE';
-    if (['gas_station', 'parking', 'transportation_location', 'ground_transport_facility_or_service'].includes(category)) return 'REST_STOP';
-    return 'DESTINATION';
-  }
-  return 'LOCATION';
+  return typeof map._default === 'string' ? map._default : 'LOCATION';
 }
 
 export async function loadPOIs(
@@ -204,7 +204,7 @@ export async function loadPOIs(
       const pois = rows.map((r: any) => ({
         location_id: r.LOCATION_ID || uuid(Math.random),
         name: r.NAME || 'Unknown',
-        location_type: mapCategoryToType(r.CATEGORY || '', config.mode),
+        location_type: mapCategoryToType(r.CATEGORY || '', config),
         lat: Number(r.LAT),
         lng: Number(r.LNG),
         category: r.CATEGORY || '',

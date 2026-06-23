@@ -74,11 +74,12 @@ export function buildFleetWithDiagnostics(
   const fleet: FleetMember[] = [];
   const { num_vehicles } = config.fleet;
   const profiles = Object.entries(config.driver_profiles);
-  const homePois = pois.filter(p =>
-    config.mode === 'food_delivery' ? p.location_type === 'RESTAURANT' :
-    config.mode === 'trucking' ? p.location_type === 'WAREHOUSE' :
-    true
-  );
+  // Home-base POIs by declarative location types (config-driven, mode-agnostic).
+  // Empty/unset => any POI. Replaces the former mode==='food_delivery'/'trucking' branch.
+  const homeTypes = config.home_location_types;
+  const homePois = (homeTypes && homeTypes.length)
+    ? pois.filter(p => homeTypes.includes(p.location_type))
+    : pois.slice();
   if (homePois.length === 0) homePois.push(...pois.slice(0, Math.min(10, pois.length)));
 
   const vt = resolveVehicleType(config);
@@ -127,9 +128,10 @@ export function buildFleetWithDiagnostics(
       // spread disabled). Preserves backwards-compatible behaviour.
       home = homePois[i % homePois.length];
     }
-    const baseSpeed = vt === 'ebike' ? rngFloat(rng, 15, 22)
-      : vt === 'hgv' ? rngFloat(rng, 60, 85)
-      : rngFloat(rng, 30, 55);
+    // Base speed range is a declarative profile knob (config.base_speed_kmh),
+    // not a per-vehicle-type code branch.
+    const spd = config.base_speed_kmh;
+    const baseSpeed = spd ? rngFloat(rng, spd.min, spd.max) : rngFloat(rng, 30, 55);
 
     const vehicleId = `V-${config.ors_profile.slice(0, 3).toUpperCase()}-${i.toString().padStart(5, '0')}`;
     const subtype = pickSubtype(assetRow?.subtypeDist, vehicleId);
@@ -149,7 +151,7 @@ export function buildFleetWithDiagnostics(
       speed_variance: profileCfg.speed_variance,
       base_speed_kmh: baseSpeed,
       vehicle_type: vt,
-      battery_pct: vt === 'ebike' ? 100 : -1,
+      battery_pct: config.battery ? 100 : -1,
       weight_tons: assetRow?.weightTons ?? null,
       height_m: assetRow?.heightM ?? null,
       length_m: assetRow?.lengthM ?? null,

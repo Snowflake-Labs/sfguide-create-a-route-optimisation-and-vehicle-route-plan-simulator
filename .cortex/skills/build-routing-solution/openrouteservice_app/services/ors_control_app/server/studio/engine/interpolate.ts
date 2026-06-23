@@ -109,7 +109,7 @@ function interpolateRouteLegacy(
 
   let elapsed = 0;
   while (elapsed < durationSec) {
-    if (vt === 'hgv' && lifecycle.dailyDrivingMin >= hosMaxDriveMin) {
+    if (Number.isFinite(hosMaxDriveMin) && lifecycle.dailyDrivingMin >= hosMaxDriveMin) {
       break;
     }
 
@@ -124,7 +124,7 @@ function interpolateRouteLegacy(
     const isSpeeding = rng() < vehicle.speeding_prob && speedKmh > postedSpeed * speedingThreshold;
     if (isSpeeding) speedKmh = postedSpeed * rngFloat(rng, 1.1, 1.25);
 
-    const isHosViolation = vt === 'hgv' &&
+    const isHosViolation =
       !!config.breaks?.max_daily_driving_hours &&
       lifecycle.dailyDrivingMin > config.breaks.max_daily_driving_hours * 60 &&
       rng() < vehicle.hos_violation_prob;
@@ -141,7 +141,7 @@ function interpolateRouteLegacy(
     const ts = new Date(lifecycle.currentTime.getTime() + elapsed * 1000);
 
     let batteryPct: number | null = null;
-    if (vt === 'ebike' && config.battery) {
+    if (config.battery) {
       const kmTraveled = progress * totalDist;
       const drain = kmTraveled * config.battery.drain_per_km;
       batteryPct = Math.max(0, vehicle.battery_pct - drain);
@@ -184,7 +184,7 @@ function interpolateRouteLegacy(
   lifecycle.dailyDrivingMin += durationSec / 60;
   lifecycle.minSinceBreak += durationSec / 60;
 
-  if (vt === 'ebike' && config.battery) {
+  if (config.battery) {
     vehicle.battery_pct = Math.max(0, vehicle.battery_pct - totalDist * config.battery.drain_per_km);
   }
 
@@ -200,6 +200,7 @@ function interpolateRouteHgvHos(
 ): TelemetryPoint[] {
   const points: TelemetryPoint[] = [];
   const breaks = config.breaks!;
+  const vt = resolveVehicleType(config);
   const pingMean = config.telemetry.ping_interval_moving.mean_sec;
   const pingStd = config.telemetry.ping_interval_moving.std_sec;
   const jitterCfg = config.telemetry.gps_jitter;
@@ -279,7 +280,7 @@ function interpolateRouteHgvHos(
     points.push({
       telemetry_id: uuid(rng),
       region: config.region,
-      vehicle_type: 'hgv',
+      vehicle_type: vt,
       vehicle_id: vehicle.vehicle_id,
       trip_id: tripId,
       ts,
@@ -296,7 +297,7 @@ function interpolateRouteHgvHos(
       location_id: null,
       location_type: null,
       ors_profile: config.ors_profile,
-      battery_pct: null,
+      battery_pct: vehicle.battery_pct > 0 ? vehicle.battery_pct : null,
       odometer_km: Math.round(lifecycle.odometerKm * 100) / 100,
       point_index: lifecycle.pointIndex++,
     });
@@ -333,13 +334,14 @@ export function interpolateRoute(
   if (totalDist === 0) return [];
 
   const durationSec = route.duration_sec || (totalDist / (lifecycle.vehicle.base_speed_kmh / 3.6));
-  const vt = resolveVehicleType(config);
   const overnight = config.overnight ?? DEFAULT_OVERNIGHT;
-  const useHgvHos = vt === 'hgv'
-    && !!config.breaks
+  // Duty-cycle rest (mid-route breaks + overnight) is enabled by the PRESENCE of
+  // config.breaks + overnight, not by vehicle type. Any mode that declares these
+  // gets the scheduled-rest interpolation path.
+  const useScheduledRest = !!config.breaks
     && overnight.enabled !== false;
 
-  if (useHgvHos) {
+  if (useScheduledRest) {
     return interpolateRouteHgvHos(
       route, config, lifecycle, tripId, rng, isDetour,
       coords as [number, number][], segments, totalDist, durationSec,

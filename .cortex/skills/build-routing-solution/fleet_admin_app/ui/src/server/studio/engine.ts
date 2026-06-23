@@ -182,7 +182,7 @@ export async function* generateTelemetry(
       const totalGhostDays = (member.ghost_end_day! - member.ghost_start_day!) + 1;
       const ghostStartTime = new Date(Date.UTC(currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(), 0, rngInt(memberRng, 0, 30)));
       const ghostLifecycle: VehicleLifecycle = {
-        vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
+        vehicle: { ...member, battery_pct: config.battery ? 100 : -1 },
         lat: member.home_poi.lat,
         lng: member.home_poi.lng,
         currentTime: ghostStartTime,
@@ -215,7 +215,7 @@ export async function* generateTelemetry(
 
     const shiftStart = member.shift_start;
     const lifecycle: VehicleLifecycle = {
-      vehicle: { ...member, battery_pct: vt === 'ebike' ? 100 : -1 },
+      vehicle: { ...member, battery_pct: config.battery ? 100 : -1 },
       lat: member.home_poi.lat,
       lng: member.home_poi.lng,
       currentTime: new Date(Date.UTC(currentDay.getUTCFullYear(), currentDay.getUTCMonth(), currentDay.getUTCDate(), shiftStart, rngInt(memberRng, 0, 30))),
@@ -248,7 +248,7 @@ export async function* generateTelemetry(
 
       if (config.breaks?.max_daily_driving_hours && lifecycle.dailyDrivingMin >= config.breaks.max_daily_driving_hours * 60) break;
 
-      if (vt === 'ebike' && config.battery && lifecycle.vehicle.battery_pct <= (config.battery.recharge_threshold_pct || 15)) {
+      if (config.battery && lifecycle.vehicle.battery_pct <= (config.battery.recharge_threshold_pct || 15)) {
         const rechargeDwell: DwellConfig = { median_min: 20, sigma: 0.3, max_min: 40 };
         points.push(...emitDwell(lifecycle, config, null, rechargeDwell, 'DWELL_RECHARGE', currentOriginPoi, memberRng));
         lifecycle.vehicle.battery_pct = 100;
@@ -258,7 +258,7 @@ export async function* generateTelemetry(
       const tripId = uuid(memberRng);
       const tripStartTime = new Date(lifecycle.currentTime);
 
-      const originDwellKey = config.mode === 'food_delivery' ? 'origin' : (currentOriginPoi.location_type === 'WAREHOUSE' ? 'warehouse' : 'origin');
+      const originDwellKey = currentOriginPoi.location_type === 'WAREHOUSE' ? 'warehouse' : 'origin';
       let originDwell = config.dwell[originDwellKey];
       if (!originDwell || !('median_min' in originDwell)) {
         originDwell = { median_min: 5, sigma: 0.5, max_min: 20 };

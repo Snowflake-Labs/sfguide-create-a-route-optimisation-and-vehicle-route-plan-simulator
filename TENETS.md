@@ -110,6 +110,30 @@ data = a new `entity-mapping.<customer>.yaml`, regenerate, done — dashboards a
 from raw sources, or pointing a semantic view's base table at a physical table instead of the
 `FLEET_APP` contract view. Hand edits drift and are silently overwritten on the next regenerate.
 
+### 5a. Generation is data/config-driven; physical naming is absorbed by the contract
+
+**Generation seam.** The synthetic data *generator* obeys the same config-driven rule as consumers.
+Built-in generation profiles are persisted as data in `FLEET_INTELLIGENCE.CORE.GENERATION_PROFILE_CATALOG`
+(seeded at control-app/admin boot from `studio/profiles.ts` `PROFILE_TEMPLATES`; the `/api/studio/templates`
+endpoint reads the catalog with a TS fallback). The generation *engine* never branches on vehicle type:
+per-mode behavior is driven by declarative profile fields — `base_speed_kmh`, `home_location_types`,
+`category_map`, `generates_freight` — and by the **presence** of `battery` / `breaks` / `overnight`
+(battery drain, HOS breaks, overnight rest). **Adding a new mode (vessel/aircraft) = inserting a profile
+row (or saving a preset), with zero generator code edits.** Mode-specific asset dims + evaluation
+thresholds come from the sibling `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` catalog (see Tenet 1).
+
+**Anti-pattern.** Re-introducing `vt === 'hgv'` / `config.mode === 'food_delivery'` branches in
+`server/studio/engine/*`, or hardcoding a generation knob in TypeScript instead of a profile field.
+
+**Accepted physical-schema decisions (intentionally NOT changed).** The few mode-specific physical
+column names — `DRIVER_ID` (FACT_TRIPS, DIM_TRIP_SCHEDULE), `DRIVER_PROFILE` (DIM_FLEET),
+`IS_HOS_VIOLATION` (telemetry) — are deliberately left as-is and neutralized by the `FLEET_APP` contract
+(`DRIVER_ID -> OPERATOR_ID`, canonical `FLEET_APP.CORE` renames). Renaming them at the physical layer is
+churn across CORE + FLEET_OPS + every `replaces:` binding for zero architectural gain — the contract seam
+exists precisely to absorb this. Likewise `DIM_POIS` is **REGION-scoped only** (no `VEHICLE_TYPE`): a POI
+set is shared across modes within a region, identified by `(REGION, JOB_ID)`.
+
+
 ---
 
 ## 6. Hybrid provisioning — heavy substrate stays in the control app

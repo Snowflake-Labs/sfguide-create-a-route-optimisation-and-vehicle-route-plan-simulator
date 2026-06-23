@@ -41,6 +41,8 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       dwell: { origin: { median_min: 3, sigma: 0.5, max_min: 12, long_wait_probability: 0.08 }, destination: { median_min: 2, sigma: 0.4, max_min: 20, long_wait_probability: 0.05 }, idle: { median_min: 5, sigma: 0.5, max_min: 20, long_wait_probability: 0.08 } },
       detour: { probability: 0.05, max_detour_factor: 1.4 },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
+      base_speed_kmh: { min: 30, max: 55 },
+      generates_freight: false,
       ghost_trailer: {
         probability: 0.05,
         start_day_min: 0,
@@ -82,6 +84,13 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       delivery_sla: { target_minutes: 30, warning_minutes: 25 },
       detour: { probability: 0.03, max_detour_factor: 1.3 },
       poi_categories: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
+      base_speed_kmh: { min: 15, max: 22 },
+      home_location_types: ['RESTAURANT'],
+      category_map: {
+        RESTAURANT: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
+        _default: 'ADDRESS',
+      },
+      generates_freight: false,
       ghost_trailer: {
         probability: 0.08,
         start_day_min: 0,
@@ -128,6 +137,14 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       },
       detour: { probability: 0.10, max_detour_factor: 1.5 },
       poi_categories: ['warehouse', 'gas_station', 'parking', 'storage_facility', 'b2b_transportation_and_storage_service', 'transportation_location', 'ground_transport_facility_or_service', 'industrial_facility_or_service'],
+      base_speed_kmh: { min: 60, max: 85 },
+      home_location_types: ['WAREHOUSE'],
+      category_map: {
+        WAREHOUSE: ['warehouse', 'storage_facility', 'b2b_transportation_and_storage_service', 'industrial_facility_or_service'],
+        REST_STOP: ['gas_station', 'parking', 'transportation_location', 'ground_transport_facility_or_service'],
+        _default: 'DESTINATION',
+      },
+      generates_freight: true,
       ghost_trailer: {
         probability: 0.10,
         start_day_min: 0,
@@ -205,6 +222,27 @@ export interface GenerationConfig {
   delivery_sla?: { target_minutes: number; warning_minutes: number };
   detour?: { probability: number; max_detour_factor: number };
   poi_categories?: string[];
+  // --- Declarative, mode-agnostic generation knobs (replace engine vt/mode
+  // branches; see studio/generation-profile-catalog.ts). Adding a new mode is a
+  // data/config change — a profile row carrying these fields — with no engine
+  // code edits. Capability behaviors (battery drain, HOS breaks, overnight rest)
+  // are driven purely by the PRESENCE of `battery` / `breaks` / `overnight`
+  // above, not by vehicle type.
+  // Per-vehicle base speed sampling range (km/h). Replaces the hardcoded
+  // `vt==='ebike'?15-22:vt==='hgv'?60-85:30-55` branch in engine/fleet.ts.
+  base_speed_kmh?: { min: number; max: number };
+  // Home-base POI location types for the fleet (null/empty => any POI). Replaces
+  // the `mode==='food_delivery'->RESTAURANT / 'trucking'->WAREHOUSE` branch.
+  home_location_types?: string[];
+  // Overture BASIC_CATEGORY -> LOCATION_TYPE mapping. Keys are target
+  // LOCATION_TYPE values mapped to the category lists that resolve to them;
+  // optional `_default` is the fallback LOCATION_TYPE (default 'LOCATION').
+  // Replaces mapCategoryToType(category, mode) in engine/routability.ts.
+  category_map?: Record<string, string[] | string>;
+  // Whether this mode participates in the freight marketplace (freight offers /
+  // partners / lane history). Defaults to generating when unset (back-compat
+  // for saved presets); set false for non-freight modes (taxi / courier).
+  generates_freight?: boolean;
   ghost_trailer?: {
     probability: number;
     start_day_min: number;

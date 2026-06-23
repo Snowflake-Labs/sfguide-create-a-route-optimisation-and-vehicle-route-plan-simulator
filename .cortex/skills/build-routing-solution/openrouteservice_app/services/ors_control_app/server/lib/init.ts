@@ -10,6 +10,7 @@ import { currentRegionScalar } from './region.js';
 import { log } from '../diagnostics.js';
 import { ensureTables as ensureUnifiedTables } from '../studio/ensure-tables.js';
 import { ensureVehicleProfileCatalog } from '../studio/vehicle-profile-catalog.js';
+import { ensureGenerationProfileCatalog } from '../studio/generation-profile-catalog.js';
 
 
 // Tracking tag for ROUTE_OPTIMIZATION (Asset Velocity) objects.
@@ -301,6 +302,14 @@ export async function ensureBackloadAndAssetVelocityObjects(
     await ensureVehicleProfileCatalog(sqlFn);
   } catch (e: any) {
     log('WARN', 'Init', `ensureVehicleProfileCatalog failed: ${e?.message?.slice(0, 200)}`);
+  }
+  // Generation profile catalog — persists the built-in generation templates as
+  // data so a new mode can be added by INSERTing a profile row (no engine edits).
+  // Idempotent (CREATE IF NOT EXISTS + MERGE upsert of built-in rows).
+  try {
+    await ensureGenerationProfileCatalog(sqlFn);
+  } catch (e: any) {
+    log('WARN', 'Init', `ensureGenerationProfileCatalog failed: ${e?.message?.slice(0, 200)}`);
   }
   const TRACK = `'{"origin":"sf_sit-is-fleet","name":"oss-backload-matching","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;

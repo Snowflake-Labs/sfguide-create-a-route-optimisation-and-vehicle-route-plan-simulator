@@ -810,10 +810,15 @@ export async function startGeneration(
       const pois = await loadPOIs(config, snowSql);
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
-      const partners = generatePartners(config, 80);
-      const partnerHistory = generatePartnerHistory(partners, config, 6);
+      // Freight marketplace data (offers / partners / lane history) is generated
+      // only for modes that declare generates_freight. Defaults to ON when unset
+      // (back-compat for saved presets); the built-in taxi/courier templates set
+      // it false so non-freight modes don't get semantically meaningless offers.
+      const wantsFreight = config.generates_freight !== false;
+      const partners = wantsFreight ? generatePartners(config, 80) : [];
+      const partnerHistory = wantsFreight ? generatePartnerHistory(partners, config, 6) : [];
       const offerCount = Math.max(1, Math.floor(Number(config.offers?.count ?? 300)));
-      const offers = generateFreightOffers(pois, config, offerCount, partners);
+      const offers = wantsFreight ? generateFreightOffers(pois, config, offerCount, partners) : [];
 
       // Region-agnostic spatial spread diagnostics. Logged once at fleet build
       // time so users can verify on any of the 5,194 regions in REGION_CATALOG

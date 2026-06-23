@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getJobs, getJob, cancelJob, subscribeJob, startGeneration, deleteJobData, getJobEvents,
          listDatasets, activateDataset, renameDataset, deleteDataset } from './jobs.js';
 import { GenerationConfig, PROFILE_TEMPLATES, defaultDistanceDistributionForArea } from './profiles.js';
+import { listGenerationProfiles } from './generation-profile-catalog.js';
 import { log } from '../diagnostics.js';
 import { normalizeRegion } from '../lib/region.js';
 import { bboxAreaKm2 } from './engine/spatial.js';
@@ -121,7 +122,23 @@ async function checkOrsReadiness(
 export function createStudioRouter(snowSql: SnowSqlFn): Router {
   const router = Router();
 
-  router.get('/templates', (_req, res) => {
+  router.get('/templates', async (_req, res) => {
+    // Prefer the data-driven catalog (so user-added profile rows show up);
+    // fall back to the in-memory built-in templates if it's unavailable.
+    const fromCatalog = await listGenerationProfiles(snowSql);
+    if (fromCatalog) {
+      res.json(fromCatalog.map(t => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        vehicleType: t.vehicleType,
+        orsProfile: t.orsProfile,
+        regionScale: t.regionScale,
+        feeds: t.feeds,
+        defaultConfig: t.defaultConfig,
+      })));
+      return;
+    }
     res.json(PROFILE_TEMPLATES.map(t => ({
       id: t.id,
       name: t.name,
