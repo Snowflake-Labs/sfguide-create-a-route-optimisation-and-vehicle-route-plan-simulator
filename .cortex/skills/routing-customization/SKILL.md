@@ -1,8 +1,8 @@
 ---
 name: routing-customization
-description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile. Do NOT use for: initial ORS deployment (use build-routing-solution), deploying demo apps, or reading ORS config only (use read-ors-configuration subskill directly). Triggers: change location, change map, change vehicle, change routing profile, change routing profiles."
+description: "Route customization requests to the correct subskills. Use when: changing location, changing map, changing vehicle, changing routing profile. Do NOT use for: initial ORS deployment (use install-fleet-apps), deploying demo apps, or reading ORS config only (use read-ors-configuration subskill directly). Triggers: change location, change map, change vehicle, change routing profile, change routing profiles."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0

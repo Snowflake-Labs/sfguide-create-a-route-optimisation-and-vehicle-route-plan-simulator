@@ -1,8 +1,8 @@
 ---
 name: setup-agent-playground
-description: "Deploy industry-agnostic SF demo data tables required by the Agent Playground's catchment/delivery/network scenarios (TOOL_NETWORK_OPTIMIZATION, TOOL_DELIVERY_OPTIMIZATION, TOOL_CATCHMENT). Run AFTER $build-routing-solution and $routing-agent. Creates DEMO_DELIVERY_STOPS (30), DEMO_AREA_DEMOGRAPHICS (55), DEMO_DEMAND_CATALOG (25), DEMO_KEY_SITES (6), DEMO_DEPOT (1), the FOOD_DELIVERY DELIVERIES view, updates the 6 fleet CONFIG tables to SanFrancisco/ebike defaults, and uploads agent-demos.json to the ORS stage. Triggers: setup agent playground, install agent demo data, deploy demo data, missing demo data, agent playground scenarios missing, agent-demos.json missing, catchment demo, delivery optimization demo, network optimization demo, DEMO_DELIVERY_STOPS, DEMO_AREA_DEMOGRAPHICS, DEMO_DEMAND_CATALOG, DEMO_KEY_SITES."
+description: "Deploy industry-agnostic SF demo data tables required by the Agent Playground's catchment/delivery/network scenarios (TOOL_NETWORK_OPTIMIZATION, TOOL_DELIVERY_OPTIMIZATION, TOOL_CATCHMENT). Run AFTER $install-fleet-apps and $routing-agent. Creates DEMO_DELIVERY_STOPS (30), DEMO_AREA_DEMOGRAPHICS (55), DEMO_DEMAND_CATALOG (25), DEMO_KEY_SITES (6), DEMO_DEPOT (1), the FOOD_DELIVERY DELIVERIES view, updates the 6 fleet CONFIG tables to SanFrancisco/ebike defaults, and uploads agent-demos.json to the ORS stage. Triggers: setup agent playground, install agent demo data, deploy demo data, missing demo data, agent playground scenarios missing, agent-demos.json missing, catchment demo, delivery optimization demo, network optimization demo, DEMO_DELIVERY_STOPS, DEMO_AREA_DEMOGRAPHICS, DEMO_DEMAND_CATALOG, DEMO_KEY_SITES."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
   - routing-agent
 metadata:
   author: Snowflake SIT-IS
@@ -27,7 +27,7 @@ Delivery, Site & Catchment, Fleet Logistics).
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `DATABASE` | `FLEET_INTELLIGENCE` | Demo database (created by build-routing-solution) |
+| `DATABASE` | `FLEET_INTELLIGENCE` | Demo database (created by install-fleet-apps) |
 | `DATA_SCHEMA` | `ROUTE_OPTIMIZATION` | Schema that holds the demo data tables |
 | `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for setup statements |
 | `STAGE` | `OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE` | Stage receiving `agent-demos.json` |
@@ -36,7 +36,7 @@ Delivery, Site & Catchment, Fleet Logistics).
 
 ## Prerequisites
 
-- `$build-routing-solution` deployed (creates `OPENROUTESERVICE_APP`,
+- `$install-fleet-apps` deployed (creates `OPENROUTESERVICE_APP`,
   `ORS_SPCS_STAGE`, the 6 fleet CONFIG tables, and the SanFrancisco region).
 - `$routing-agent` deployed (creates the 3 demo stored procedures along with
   the multi-region tools).
@@ -140,7 +140,7 @@ After both steps complete, all of the following must be true:
 
 | Issue | Fix |
 |-------|-----|
-| "Object does not exist" for CONFIG tables | `$build-routing-solution` has not completed — run it first. |
+| "Object does not exist" for CONFIG tables | `$install-fleet-apps` has not completed — run it first. |
 | "Unknown function TOOL_CATCHMENT" | `$routing-agent` not run — run it before this skill. |
 | Scenarios not appearing in the Agent Playground | `agent-demos.json` not on stage — re-run Step 2. |
 | "OPTIMIZATION returned no results" | VROOM service suspended — `CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES()`. |

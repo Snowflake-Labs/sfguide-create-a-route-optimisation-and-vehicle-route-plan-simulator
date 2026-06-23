@@ -2,7 +2,7 @@
 name: fleet-intelligence-taxis
 description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
   - routing-customization
 metadata:
   author: Snowflake SIT-IS
@@ -96,7 +96,7 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 ## Quick Start
 
-The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `build-routing-solution` Step 8). No ORS calls needed.
+The fastest path to a working demo. Creates projection views over `SYNTHETIC_DATASETS.UNIFIED` tables (loaded by `install-fleet-apps` Step 8). No ORS calls needed.
 
 These projection views are now dataset-scoped (`V_FACT_TRIPS_CURRENT`, `V_FACT_VEHICLE_TELEMETRY_CURRENT`, `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`). Run Data Studio for the target preset before expecting rows.
 

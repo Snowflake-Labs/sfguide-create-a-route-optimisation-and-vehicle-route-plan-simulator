@@ -273,7 +273,7 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 | route-optimization | `oss-route-optimization` | ROUTE_OPTIMIZATION schema, notebooks, CONFIG, PLACES, LOOKUP |
 | routing-agent | `oss-deploy-snowflake-intelligence-routing-agent` | ROUTING_AGENT schema, Cortex agent, tool procedures |
 
-> **Note:** `build-routing-solution` is the foundation skill. Dropping its objects (databases, warehouse) will cascade to all downstream skills. Only drop it when tearing down the entire environment.
+> **Note:** `install-fleet-apps` is the foundation skill. Dropping its objects (databases, warehouse) will cascade to all downstream skills. Only drop it when tearing down the entire environment.
 
 ## Troubleshooting
 

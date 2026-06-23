@@ -32,7 +32,7 @@ See `TENETS.md` for each tenet's *how to apply* + the anti-pattern it prevents.
   │   ├── references/        # Detailed SQL, code, docs (loaded on demand)
   │   └── assets/            # Notebooks and other deployable artifacts
   ├── evals/                 # Eval framework (trigger, quality, xref)
-build-routing-solution/      # ORS app build artifacts (Dockerfiles, configs)
+build-routing-solution/      # RETIRED (Phase C): ORS engine build absorbed into install-fleet-apps; tombstone + legacy control app pending deletion
 docs/                        # Documentation (dev/ and guides/)
 archive/                     # Archived materials
 ```
@@ -47,7 +47,7 @@ python3 .cortex/skills/evals/run_evals.py
 # Invoke the skill-optimiser skill in Cortex Code: "audit skill <name>"
 
 # Validate ORS image tags match image-versions.env (also run by deploy.sh pre-flight)
-bash .cortex/skills/build-routing-solution/scripts/check_image_versions.sh
+bash .cortex/skills/install-fleet-apps/scripts/check_image_versions.sh
 
 # Validate ORS services are running
 snow sql -q "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;"
@@ -66,8 +66,8 @@ No global build/lint step — each skill is independently deployable via its own
 
 | Skill | Category | Purpose |
 |-------|----------|---------|
-| `install-fleet-apps` | infrastructure | **PRIMARY** installer for the new synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents. Self-owning (relocated artifacts, self-provisioned infra, static seed). Delegates only the ORS engine to build-routing-solution. |
-| `build-routing-solution` | infrastructure | Builds and deploys the ORS app on SPCS. **Secondary** to install-fleet-apps: the delegated provider of the live ORS/VROOM routing engine behind the `ROUTING_PLATFORM.CONTRACT` seam. |
+| `install-fleet-apps` | infrastructure | **PRIMARY** and sole installer for the synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents + (via `--with-engine`) the live ORS/VROOM routing engine. Self-owning: relocated artifacts, self-provisioned infra, static seed, and the engine build substrate (SQL modules + 4 engine images + build scripts). |
+| `build-routing-solution` | infrastructure (RETIRED) | Phase C tombstone. The ORS engine build was absorbed into `install-fleet-apps` (`--with-engine`). This folder only redirects there; its legacy Vite control app awaits deletion after a clean-account e2e. |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
@@ -113,7 +113,7 @@ Key rules:
 - **App behavior fixes** (React/server) -> the source under `services/ors_control_app/` PLUS an image-version bump (`image-versions.env` + service YAML + `references/snowflake-scripting-guidelines.md`, enforced by `check_image_versions.sh`). NOT just a redeploy of an unchanged image.
 - **Config/pointer/seed fixes** -> seed them in the loader or the boot init (data-derived, not hardcoded), so a fresh install never depends on a demo skill or a restart to become correct.
 
-Before considering any fix done, reason through the fresh-install path (`build-routing-solution` Steps 1-8): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
+Before considering any fix done, reason through the fresh-install path (`install-fleet-apps` orchestrator layers 0-8, plus `--with-engine` for the routing engine): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
 
 ## Error Logging
 
@@ -173,7 +173,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Friction Logging
 
-**MANDATORY:** After every `build-routing-solution` execution (regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
+**MANDATORY:** After every `install-fleet-apps` execution (especially `--with-engine`, regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
 
 File name: `friction-log_{YYYY-MM-DD}_{HH-MM}.md`
 
@@ -220,7 +220,13 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Create a new branch per change or per topic** — there is exactly one branch per user (`feat/<GITHUB_LOGIN>-feat`). No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same branch.
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
-## Control App Image Deployment (ors_control_app)
+## Control App Image Deployment (ors_control_app) — LEGACY / pending deletion
+
+> **Note (Phase C):** the live ORS/VROOM **engine** images are now built by
+> `install-fleet-apps` (`references/build-images.md` + `scripts/provision_engine.sh`).
+> The block below covers only the legacy Vite `ors_control_app` UI (superseded by
+> `fleet_admin_app`); it still lives under `build-routing-solution/` and will be
+> deleted after a clean-account `--with-engine` e2e confirms parity.
 
 When changing any source file (`src/`, `server/`, or config), rebuild and push the Docker image.
 The multi-stage `Dockerfile.runtime` compiles both the React frontend and the server automatically —
@@ -306,35 +312,32 @@ WHERE name = 'ors-control-app';
 
 ```mermaid
 graph TD
-    RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY]
-    IFA -.->|"delegates ORS engine only"| BRS[build-routing-solution secondary]
-    RP --> BRS
-    BRS --> RC[routing-customization]
-    BRS --> RO[route-optimization]
-    BRS --> FIT[fleet-intelligence-taxis]
-    BRS --> FIFD[fleet-intelligence-food-delivery]
-    BRS --> RET[retail-catchment]
-    BRS --> RD[route-deviation]
-    BRS --> RA[routing-agent]
+    RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY + engine via --with-engine]
+    IFA --> RC[routing-customization]
+    IFA --> RO[route-optimization]
+    IFA --> FIT[fleet-intelligence-taxis]
+    IFA --> FIFD[fleet-intelligence-food-delivery]
+    IFA --> RET[retail-catchment]
+    IFA --> RD[route-deviation]
+    IFA --> RA[routing-agent]
     RA --> SAP[setup-agent-playground]
     RO --> BM[backload-matching]
-    BRS --> BM
+    IFA --> BM
     BM --> FX[freight-exchange]
-    BRS --> FX
+    IFA --> FX
     RC --> FIT
     RC --> FIFD
     RC --> RD
  RD --> DA[dwell-analysis]
 
  style IFA fill:#6c6,stroke:#333
- style BRS fill:#f96,stroke:#333
  style RP fill:#9cf,stroke:#333
  style RC fill:#9cf,stroke:#333
 ```
 
-**Legend:** Green = primary installer (new architecture). Orange = ORS engine infrastructure (secondary/delegated). Blue = configuration/prerequisites. White = legacy demo/feature skills.
+**Legend:** Green = primary + sole installer (owns the analytics stack AND the ORS engine build via `--with-engine`). Blue = configuration/prerequisites. White = legacy demo/feature skills.
 
-`install-fleet-apps` is the primary path for the new agnostic architecture; it self-provisions infra/data and only delegates the live ORS engine to `build-routing-solution`. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) remain under `build-routing-solution` and are NOT part of the agnostic installer.
+`install-fleet-apps` is the single infrastructure skill: it self-provisions infra/data, builds + provisions the live ORS engine (`--with-engine`), and owns the FLEET_APP data contract. `build-routing-solution` is retired (Phase C) — a tombstone redirecting here. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) now depend on `install-fleet-apps` and are NOT part of the agnostic installer.
 
 ## Common Patterns
 

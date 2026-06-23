@@ -68,7 +68,7 @@ Downloads a new OpenStreetMap region map and update the configuration files.
    ```
    - If map exists, ask user if they want to re-download
 
-2. **Run** the download script from `build-routing-solution/scripts/`:
+2. **Run** the download script from `install-fleet-apps/scripts/`:
    ```bash
    python download_map.py \
      "https://download.geofabrik.de/europe/<region>-latest.osm.pbf" \

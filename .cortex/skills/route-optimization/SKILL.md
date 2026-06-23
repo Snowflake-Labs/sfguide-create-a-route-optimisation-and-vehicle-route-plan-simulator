@@ -2,7 +2,7 @@
 name: route-optimization
 description: "Deploy the Route Optimization demo including Marketplace data and notebook. Use when: setting up the route optimization demo after ORS app deployment. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis), route deviation analysis (use route-deviation), or retail catchment analysis. Triggers: deploy route optimization demo, setup route optimization demo, run route optimization demo."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0

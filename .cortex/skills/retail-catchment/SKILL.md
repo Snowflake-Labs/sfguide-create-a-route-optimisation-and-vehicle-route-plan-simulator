@@ -2,7 +2,7 @@
 name: retail-catchment
 description: "Deploy the Retail Catchment Analysis demo with Overture Maps data. Use when: setting up retail catchment demo, deploying catchment analysis, creating retail location analysis app, retail isochrone analysis, competitor mapping demo. Do NOT use for: fleet intelligence demos (use fleet-intelligence-taxis or fleet-intelligence-food-delivery), route optimization (use route-optimization), route deviation analysis (use route-deviation), or dwell analysis (use dwell-analysis). Triggers: retail demo catchment, deploy retail catchment demo, retail isochrone analysis, competitor mapping demo, retail location analysis, trade area analysis."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0
@@ -91,7 +91,7 @@ If any services are SUSPENDED, resume them:
 CALL OPENROUTESERVICE_APP.CORE.RESUME_ALL_SERVICES();
 ```
 
-**STOP** if ORS is not installed. Direct user to `build-routing-solution` skill.
+**STOP** if ORS is not installed. Direct user to `install-fleet-apps` skill.
 
 ### Step 3: Get Carto Overture Datasets from Marketplace
 

@@ -2,7 +2,7 @@
 name: emergency-response
 description: "Deploy the Emergency Response evacuation-planning demo: a single-page, multi-step React wizard that finds at-risk ZIP codes for a flood or wildfire scenario (FEMA National Risk Index), seeds CareConnect PACE centers plus synthetic participant addresses from Overture Maps inside drive-time isochrones, and solves a capacitated multi-depot evacuation VRP with ORS OPTIMIZATION. Use when: setting up emergency response demo, evacuation planning, hazard risk by ZIP, flood or wildfire exposure, CareConnect / PACE / paratransit evacuation routing, participant pickup optimization. Do NOT use for: standard fleet tracking (use fleet-intelligence-taxis), retail trade area analysis (use retail-catchment), route deviation analytics (use route-deviation), generic dispatch (use route-optimization). Triggers: emergency response, evacuation planning, hazard risk, wildfire risk, flood risk, ZIP risk, FEMA National Risk Index, NRI, evacuation routing, participant pickup, CareConnect, PACE."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 2.0.0
@@ -22,7 +22,7 @@ The wizard is fully client-driven: every step issues a read-only `SELECT` via `/
 
 ## Prerequisites
 
-1. ORS app deployed via `build-routing-solution`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`UsCalifornia`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
+1. ORS app deployed via `install-fleet-apps`. The state(s) you demo must have a **DEPLOYED + RUNNING** ORS region (verify with `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;`). The shipped `STATE_REGION_MAP` covers CA→`UsCalifornia`, CO→`UsColorado`, PA→`UsPennsylvania`. Add rows for more states as their graphs are provisioned.
 2. **FEMA National Risk Index (Free)** — Marketplace listing `GZSTZKU9FH9` → `FEMA_NATIONAL_RISK_INDEX.NRI_SCH.NRI_COUNTIES` (auto-installed in Step 0a of `references/sql-pipeline.sql`).
 3. **US ZIP metadata + geometry** share → `U_S__ZIP_CODE_METADATA_WITH_GEOMETRY.PUBLIC.{ZIP_CODE_META_SHARE, ZIP_CODE_GEOMETRY_SHARE}`.
 4. **Overture Maps addresses** share → `OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS`.

@@ -2,7 +2,7 @@
 name: backload-matching
 description: "Deploy the Backload Matching Engine demo: a fleet-wide VRP solve over idle-bound trailers + internal volumes + external freight-exchange offers, anchored on the OPENROUTESERVICE_APP.CORE.OPTIMIZATION function. The page picks one or many trailers, calls OPTIMIZATION once, and renders empty/loaded legs, KPI savings, and a Cortex rationale. Use when: setting up the DHL Freight backload demo, asset velocity / trailer rotation use cases, freight-exchange aggregation, internal-first vs external-second proposals, multi-trailer joint dispatch. Do NOT use for: route optimization VRP from PLACES (use route-optimization), route deviation analysis (use route-deviation), retail catchment (use retail-catchment), fleet intelligence taxi/food-delivery demos, or single-leg directions tests (use FunctionTester). Triggers: backload, backload matching, empty mile, empty leg, asset velocity, trailer rotation, freight exchange, freight exchanges, idle trailer, idle-bound trailer, Timocom, WTransnet, Teleroute, B2P, DHL, DHL Freight, dispatcher proposal, internal-first match, supply chain action engine, NTBO, line-haul VRP, drop-and-hook."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
   - route-optimization
 metadata:
   author: Snowflake SIT-IS
@@ -28,7 +28,7 @@ See `references/use-case-narrative.md` for the full story. Summary anchored in t
 
 ## Prerequisites
 
-- `build-routing-solution` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
+- `install-fleet-apps` deployed (OPENROUTESERVICE_APP database with all ORS services running). The demo runs against whatever region/vehicle preset is currently active in the Control App — no specific region required.
 - `route-optimization` deployed.
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` (DIM_FLEET, FACT_TRIPS) — not strictly required for the page, but kept as a dependency since this skill was scoped against that dataset.
 - Run Data Studio for the target `(region, vehicle_type)` first so `V_DIM_FLEET_CURRENT`, `V_DIM_POIS_CURRENT`, and `V_FACT_FREIGHT_OFFERS_CURRENT` are populated. The page no longer has an in-page "Generate seed data" action.
@@ -116,7 +116,7 @@ Idempotent: skips regions that already have offers. New presets generated after 
 
 The new page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`:
 
-1. Bump image tag in `build-routing-solution/openrouteservice_app/services/ors_control_app/ors_control_app_service.yaml`.
+1. Bump image tag in the control-app service YAML (legacy `ors_control_app`; the engine build substrate now lives under `install-fleet-apps/openrouteservice_app/`).
 2. `docker build --platform linux/amd64 -f Dockerfile.runtime -t <repo>/ors_control_app:vX.Y.Z .`
 3. `docker push <repo>/ors_control_app:vX.Y.Z`
 4. `snow stage copy ors_control_app_service.yaml @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/services/ors_control_app/ -c <ACTIVE_CONNECTION> --overwrite`
@@ -154,7 +154,7 @@ DROP TABLE  IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.CONFIG;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING;
 ```
 
-Note: this skill does NOT delete from `SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS` since that table is owned by `build-routing-solution` (Data Studio output) and is shared. Use the cleanup script in `build-routing-solution` if you also want to remove the freight-offer data per preset.
+Note: this skill does NOT delete from `SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS` since that table is owned by `install-fleet-apps` (Data Studio output) and is shared. Use the cleanup script in `install-fleet-apps` if you also want to remove the freight-offer data per preset.
 
 The Control App image rollback is handled by re-deploying the previous image tag from the registry; the new page becomes inaccessible automatically when the schema is dropped (the page surfaces an empty state).
 

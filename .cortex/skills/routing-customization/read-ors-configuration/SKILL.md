@@ -91,6 +91,6 @@ Detects the map region/location and routing profiles from the ORS configuration 
 
 | Issue | Solution |
 |-------|----------|
-| DESCRIBE SERVICE fails | ORS App not installed or service not created. Install via `build-routing-solution` skill |
+| DESCRIBE SERVICE fails | ORS App not installed or service not created. Install via `install-fleet-apps` skill |
 | Config file download fails | Service may be running with default config. Check stage path matches `<REGION_NAME>` from Step 1 |
 | No profiles found in config | Config file may be malformed. Check `ors.engine.profiles` section exists in the YAML |

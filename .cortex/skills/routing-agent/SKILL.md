@@ -2,7 +2,7 @@
 name: routing-agent
 description: "Create Snowflake Intelligence agent for OpenRouteService routing functions. Use when: setting up ORS demo, creating route planning agent, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing agent, ORS agent, routing intelligence."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
   version: 1.1.0
@@ -239,7 +239,7 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
 | Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;` and resume suspended services |
-| Tool returns `Parameter 'profile' has incorrect value of 'unknown'` | The requested profile is not loaded in this ORS install. The default `build-routing-solution` install loads `driving-car`, `driving-hgv`, `cycling-electric` only. Other ORS profile names (e.g. `cycling-regular`, `cycling-mountain`, `foot-walking`) are valid identifiers but require a different `p_profiles` value when calling `build-routing-solution`. See `.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql` (the `all_profiles` list) for the full set of selectable profile names. |
+| Tool returns `Parameter 'profile' has incorrect value of 'unknown'` | The requested profile is not loaded in this ORS install. The default `install-fleet-apps` install loads `driving-car`, `driving-hgv`, `cycling-electric` only. Other ORS profile names (e.g. `cycling-regular`, `cycling-mountain`, `foot-walking`) are valid identifiers but require a different `p_profiles` value when calling `install-fleet-apps`. See `.cortex/skills/build-routing-solution/openrouteservice_app/app/modules/03_region_management.sql` (the `all_profiles` list) for the full set of selectable profile names. |
 | Agent says "OpenRouteService is currently unreachable" for POI questions (e.g. "what cafes can I reach") | This is the agent confabulating because it had no POI search tool. Re-run `deploy-agent.sql` to install `TOOL_POI_IN_ISOCHRONE` and ensure `OVERTURE_MAPS__PLACES` is acquired from Marketplace. |
 | `TOOL_POI_IN_ISOCHRONE` returns count=0 | Try a broader category (e.g. `restaurant` instead of `specialty bistro`) or a longer travel range. Confirm `SELECT COUNT(*) FROM OVERTURE_MAPS__PLACES.CARTO.PLACE` returns rows. |
 

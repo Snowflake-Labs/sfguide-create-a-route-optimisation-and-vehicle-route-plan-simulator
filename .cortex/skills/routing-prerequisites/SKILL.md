@@ -1,6 +1,6 @@
 ---
 name: routing-prerequisites
-description: "Check and install build prerequisites for the Routing Solution project. Use when: verifying environment setup before building, checking if Docker/Podman/snow CLI are installed, confirming readiness to build. Do NOT use for: building the routing solution itself (use build-routing-solution), deploying demos, or changing ORS configuration. Triggers: check prerequisites, check build prerequisites, am I ready to build, what do I need installed, verify environment setup, Docker installed, Podman installed, snow CLI installed."
+description: "Check and install build prerequisites for the Routing Solution project. Use when: verifying environment setup before building, checking if Docker/Podman/snow CLI are installed, confirming readiness to build. Do NOT use for: building the routing solution itself (use install-fleet-apps), deploying demos, or changing ORS configuration. Triggers: check prerequisites, check build prerequisites, am I ready to build, what do I need installed, verify environment setup, Docker installed, Podman installed, snow CLI installed."
 metadata:
   author: Snowflake SIT-IS
   version: 1.0.0

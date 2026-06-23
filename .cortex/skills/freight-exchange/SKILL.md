@@ -2,7 +2,7 @@
 name: freight-exchange
 description: "Deploy the Freight Exchange page: a dispatcher-grade marketplace cockpit that mirrors what users do today on Timocom, WTransnet, Teleroute, B2P (NA: DAT, Truckstop, Convoy, Uber Freight). Adds a parallel React route to the ORS Control App that lets dispatchers browse, filter, and inspect synthesized freight offers per active preset, with trust scores (credit/KYC/blacklist), market-rate badges (vs. weekly p25/p50/p75 USD/km from a RATE_INDEX dynamic table), and partner lane history. Reads from FLEET_INTELLIGENCE.MARKETPLACE projection views over per-preset SYNTHETIC_DATASETS.UNIFIED data, so switching preset auto-refreshes the page. Use when: setting up the Freight Exchange demo, dispatcher cockpit, freight marketplace, load board, trust-score badges, market-rate badges, Timocom-style UI parity. Do NOT use for: solver-led fleet-wide backload (use backload-matching), route-optimization VRP, route-deviation, retail-catchment, fleet-intelligence taxi/food-delivery demos. Triggers: freight exchange, freight marketplace, load board, dispatcher cockpit, browse offers, filter offers, trust badge, market rate, lane history, partner credit score, Timocom UI, WTransnet UI, Teleroute UI, B2P UI, DAT UI, Truckstop UI, marketplace page, MARKETPLACE schema."
 depends_on:
-  - build-routing-solution
+  - install-fleet-apps
   - backload-matching
 metadata:
   author: Snowflake SIT-IS
@@ -24,7 +24,7 @@ Phases C (action engine: post / chat / bid / saved searches + alerts) and D (com
 
 ## Prerequisites
 
-- `build-routing-solution` deployed (OPENROUTESERVICE_APP database, all ORS services running). The page reads only from Snowflake; ORS routing functions are not currently called from this page.
+- `install-fleet-apps` deployed (OPENROUTESERVICE_APP database, all ORS services running). The page reads only from Snowflake; ORS routing functions are not currently called from this page.
 - `backload-matching` deployed (provides the FACT_FREIGHT_OFFERS projection pattern this skill builds on).
 - Synthetic datasets seeded under `SYNTHETIC_DATASETS.UNIFIED.*` for at least one preset (`DIM_FLEET`, `FACT_FREIGHT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`). Newly-generated presets after this skill ships populate `DIM_PARTNERS` + `FACT_PARTNER_HISTORY` natively. For older presets, re-run a Data Studio job for that preset to seed them.
 - For route previews, `/api/fx/offer-route` is cache-first on `FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT`; Data Studio precomputes this cache for active presets.
@@ -87,11 +87,11 @@ snow sql -f .cortex/skills/freight-exchange/references/bootstrap.sql -c <ACTIVE_
 
 This creates `FLEET_INTELLIGENCE.MARKETPLACE.{CONFIG, VW_OFFERS, VW_PARTNERS, VW_PARTNER_HISTORY, VW_LANE_HISTORY, RATE_INDEX, VW_OFFER_ENRICHED}`. The same DDL is also embedded in `services/ors_control_app/server/lib/init.ts` and runs on every container start.
 
-> **CRITICAL on a fresh `build-routing-solution` install — run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (build-routing-solution Step 6) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a Step 8 item in build-routing-solution, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
+> **CRITICAL on a fresh `install-fleet-apps` install — run this AFTER seed data loads.** `init.ts` seeds `MARKETPLACE.CONFIG` at container boot, but the boot (install-fleet-apps engine boot) happens BEFORE seed data loads (Step 7). The CONFIG row is data-derived from `SYNTHETIC_DATASETS.UNIFIED`, so at boot it derives nothing, `CONFIG` stays empty, and `VW_OFFERS` returns 0 even though seed `FACT_FREIGHT_OFFERS` has rows. The container does not auto-restart after the seed load, so you MUST run this `bootstrap.sql` here (post-seed) to re-derive `CONFIG`. This is why Freight Exchange is a post-seed step in install-fleet-apps, not a boot-time guarantee. The self-healing MERGE makes it idempotent.
 
 ### Step 4: Rebuild and Redeploy ORS Control App (only for page source changes)
 
-> **Not required in the standard build-routing-solution flow.** The Freight Exchange page already ships in the control-app image (>= v1.1.78), so a fresh install only needs Step 3 (`bootstrap.sql`). Rebuild only when you have changed the page's React/server source.
+> **Not required in the standard install-fleet-apps flow.** The Freight Exchange page already ships in the control-app image (>= v1.1.78), so a fresh install only needs Step 3 (`bootstrap.sql`). Rebuild only when you have changed the page's React/server source.
 
 The page lives inside the existing `ors_control_app` SPCS service. Follow the `Control App Image Deployment` block in `AGENTS.md`.
 
@@ -171,7 +171,7 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
 -- to those columns now.
 ```
 
-> Note: the `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, and the new enrichment columns on `FACT_FREIGHT_OFFERS` are owned by `build-routing-solution` (Data Studio output) and shared. Use the `routing-solution-cleanup` skill if you also want to remove those rows.
+> Note: the `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, and the new enrichment columns on `FACT_FREIGHT_OFFERS` are owned by `install-fleet-apps` (Data Studio output) and shared. Use the `routing-solution-cleanup` skill if you also want to remove those rows.
 
 ## Out of Scope
 
