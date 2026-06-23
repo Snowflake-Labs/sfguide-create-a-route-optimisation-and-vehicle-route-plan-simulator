@@ -115,4 +115,5 @@ DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 - `references/seed-data.md` — agnostic seed-data probe + load path.
 - `references/synapse-bundles.md` — per-account materialize + deploy.
 - `references/routing-engine.md` — engine detection + delegation to build-routing-solution.
+- `PHASE_C_PLAN.md` — optional future work: absorb the ORS engine build substrate so build-routing-solution becomes deletable (run in a fresh context).
 - `fleet_sa_app/app/packs/BUSINESS_PROBLEM_TAXONOMY.md` — the locked agnostic contract.
