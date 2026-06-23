@@ -44,6 +44,54 @@ CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CORE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- 1a. OPENROUTESERVICE_APP.CORE engine namespace + REGION_CATALOG stub.
+--     The canonical loader is engine-coupled: its FIRST table is
+--     `CREATE OR REPLACE TABLE OPENROUTESERVICE_APP.CORE.INTRO_TRIPS` and it later
+--     creates `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.CORE.REGION_REGISTRY_V`
+--     which LEFT JOINs `OPENROUTESERVICE_APP.CORE.REGION_CATALOG`. On the
+--     agnostic path the engine (which owns OPENROUTESERVICE_APP) is built LATER
+--     (step 3) or not at all, so without these the loader aborts (snow sql -f is
+--     stop-on-first-error) BEFORE creating FLEET_INTELLIGENCE.CORE.DIM_DATASETS
+--     (the active-dataset registry the V_*_CURRENT projection views + every pack
+--     depend on). Pre-creating the engine DB + CORE schema + an EMPTY REGION_CATALOG
+--     stub lets the loader compile those statements and run all the way through
+--     DIM_DATASETS; it then aborts harmlessly at the engine-only LOAD_SEED_CATALOG
+--     CALL (which comes AFTER DIM_DATASETS), and the orchestrator WARNs + continues.
+--     DDL mirrors engine module 03_region_management.sql. Idempotent: the engine's
+--     own `CREATE TABLE IF NOT EXISTS` + LOAD_SEED_CATALOG later reuse/populate it.
+CREATE DATABASE IF NOT EXISTS OPENROUTESERVICE_APP
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE SCHEMA IF NOT EXISTS OPENROUTESERVICE_APP.CORE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+CREATE TABLE IF NOT EXISTS OPENROUTESERVICE_APP.CORE.REGION_CATALOG (
+    CATALOG_ID         VARCHAR NOT NULL,
+    SOURCE             VARCHAR NOT NULL,
+    REGION_NAME        VARCHAR NOT NULL,
+    REGION_KEY         VARCHAR NOT NULL,
+    LOOKUP_NAME        VARCHAR,
+    HIERARCHY          VARCHAR,
+    CONTINENT          VARCHAR,
+    COUNTRY            VARCHAR,
+    ISO_COUNTRY_A2     VARCHAR(2),
+    ISO_COUNTRY_A3     VARCHAR(3),
+    ISO_SUBDIVISION    VARCHAR,
+    UN_M49             INT,
+    PBF_URL            VARCHAR,
+    PBF_SIZE_MB        FLOAT,
+    LEVEL              VARCHAR NOT NULL,
+    MIN_LAT            FLOAT,
+    MAX_LAT            FLOAT,
+    MIN_LON            FLOAT,
+    MAX_LON            FLOAT,
+    BOUNDARY           GEOGRAPHY,
+    BOUNDARY_SOURCE    VARCHAR,
+    BOUNDARY_VERTICES  INT,
+    BOUNDARY_AREA_KM2  FLOAT,
+    BOUNDARY_BAKED_AT  DATE,
+    UPDATED_AT         TIMESTAMP_NTZ DEFAULT SYSDATE()
+)
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 1b. ROUTE_OPTIMIZATION base tables that the canonical loader populates.
 --     The loader's PLACES/LOOKUP sections begin with `ALTER TABLE ... ADD COLUMN`
 --     and `COPY INTO`, assuming these tables already exist (in the legacy world
