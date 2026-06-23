@@ -1092,6 +1092,30 @@ export async function ensureBackloadAndAssetVelocityObjects(
         $$`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
+    {
+      sql: `CREATE OR REPLACE FUNCTION SYNTHETIC_DATASETS.UNIFIED.F_DIM_TRIP_SCHEDULE_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
+        RETURNS TABLE (
+          SCHEDULE_ID VARCHAR, VEHICLE_ID VARCHAR, DRIVER_ID VARCHAR, VEHICLE_TYPE VARCHAR, REGION VARCHAR,
+          TRIP_DATE DATE, TRIP_SEQ NUMBER, ORIGIN_POI_ID VARCHAR, DESTINATION_POI_ID VARCHAR,
+          PLANNED_START TIMESTAMP_NTZ, PLANNED_END TIMESTAMP_NTZ, SHIFT_TYPE VARCHAR, ORS_PROFILE VARCHAR,
+          DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR, JOB_ID VARCHAR
+        )
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-app-restructure","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        $$
+          SELECT s.SCHEDULE_ID, s.VEHICLE_ID, s.DRIVER_ID, s.VEHICLE_TYPE, s.REGION,
+                 s.TRIP_DATE, s.TRIP_SEQ, s.ORIGIN_POI_ID, s.DESTINATION_POI_ID,
+                 s.PLANNED_START, s.PLANNED_END, s.SHIFT_TYPE, s.ORS_PROFILE,
+                 s.DISTANCE_KM, s.DURATION_MINUTES, s.STATUS, s.JOB_ID
+          FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE s
+          JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+            ON d.DATASET_ID = s.JOB_ID AND d.REGION = s.REGION AND d.VEHICLE_TYPE = s.VEHICLE_TYPE
+          WHERE (P_REGION IS NULL OR s.REGION = P_REGION)
+            AND ( (P_DATASET_ID IS NOT NULL AND d.DATASET_ID = P_DATASET_ID)
+                  OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
+        $$`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
     // OPS "activate dataset" primitive (R4): promote a dataset to the GLOBAL
     // active scope while preserving one-active-per-(region,vehicle). Called by the
     // OPS-gated consumer route /api/ops/activate-dataset. Mirror source:
