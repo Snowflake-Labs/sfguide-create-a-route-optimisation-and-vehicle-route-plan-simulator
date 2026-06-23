@@ -311,6 +311,164 @@
       }
     }
   },
+  "dispatch_execution_board": {
+    "label": "Dispatch Execution Board",
+    "description": "Manage scheduled {{labels.work_item}}s against plan \u2014 jobs list, resource board, and planned-vs-actual by day.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1.2fr auto", "grid": "\"kpi kpi\"\n\"jobs map\"\n\"resource timeline\"" }
+    },
+    "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS scheduled, COUNT(DISTINCT ENTITY_ID) AS entities, COUNT(DISTINCT OPERATOR_ID) AS operators, COUNT(DISTINCT DESTINATION_SITE_ID) AS dest_sites FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
+          "mapping": {
+            "metrics": [
+              { "column": "scheduled", "label": "Scheduled {{labels.work_item}}s", "format": "number" },
+              { "column": "entities", "label": "{{labels.entity_plural}}", "format": "number" },
+              { "column": "operators", "label": "{{labels.operator_plural}}", "format": "number" },
+              { "column": "dest_sites", "label": "Destination {{labels.site_plural}}", "format": "number" }
+            ]
+          }
+        }
+      },
+      "jobs": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT WORK_ITEM_ID AS job_id, ENTITY_ID AS entity, OPERATOR_ID AS operator, ORIGIN_SITE_ID AS origin, DESTINATION_SITE_ID AS destination, TO_VARCHAR(REQUESTED_START_TS,'MM-DD HH24:MI') AS planned_start, COALESCE(STATUS_ENUM,'scheduled') AS status FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY REQUESTED_START_TS DESC NULLS LAST LIMIT 200",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "rowKey": "job_id", "maxRows": 200, "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["MISSED", "LATE", "DELAYED"] }, "showFreshness": true },
+        "emits": { "selected_entity": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "dest-sites",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [41, 122, 232, 170],
+              "radius": 200,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 14,
+              "pickable": true,
+              "tooltip": "<b>{site}</b><br/>Jobs: {jobs}",
+              "data": {
+                "query": "SELECT s.SITE_LABEL AS site, ST_X(s.SITE_GEOG) AS lng, ST_Y(s.SITE_GEOG) AS lat, COUNT(*) AS jobs FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) w JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) s ON w.DESTINATION_SITE_ID = s.SITE_ID WHERE s.SITE_GEOG IS NOT NULL GROUP BY s.SITE_LABEL, ST_X(s.SITE_GEOG), ST_Y(s.SITE_GEOG) ORDER BY jobs DESC LIMIT 2000",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "entity-actual",
+              "geojsonColumn": "route_geojson",
+              "color": [209, 55, 78, 200],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity LIMIT 100",
+                "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      },
+      "resource": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT ENTITY_ID AS entity, COUNT(*) AS jobs FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY ENTITY_ID ORDER BY jobs DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "title": "Jobs per {{labels.entity}}", "xAxis": { "field": "entity", "fieldType": "category" }, "series": [ { "type": "bar", "field": "jobs", "label": "Jobs" } ] }
+      },
+      "timeline": {
+        "component": "Chart",
+        "data": {
+          "query": "WITH p AS (SELECT PLAN_DATE AS d, COUNT(*) AS planned FROM TABLE(FLEET_APP.CORE.F_DIM_PLAN_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR PLAN_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR PLAN_DATE <= :date_range_end::DATE) GROUP BY PLAN_DATE), a AS (SELECT DATE(START_TS) AS d, COUNT(*) AS actual FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY DATE(START_TS)) SELECT TO_VARCHAR(COALESCE(p.d,a.d)) AS day, COALESCE(p.planned,0) AS planned, COALESCE(a.actual,0) AS actual FROM p FULL OUTER JOIN a ON p.d = a.d ORDER BY day",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "title": "Planned vs Actual by Day", "xAxis": { "field": "day", "fieldType": "category" }, "series": [ { "type": "area", "field": "planned", "label": "Planned", "color": "#29B5E8" }, { "type": "line", "field": "actual", "label": "Actual", "color": "#FF6B35" } ] }
+      }
+    }
+  },
+  "safety_risk_scorecard": {
+    "label": "Safety / Risk Scorecard",
+    "description": "Operational risk by severity \u2014 click a KPI tile to filter, review the event queue, and map hot spots.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1.2fr", "grid": "\"kpi kpi\"\n\"factor queue\"\n\"map map\"" }
+    },
+    "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS total_events, SUM(IFF(SEVERITY_ENUM='high',1,0)) AS high, SUM(IFF(SEVERITY_ENUM='medium',1,0)) AS medium, SUM(IFF(SEVERITY_ENUM='low',1,0)) AS low FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR EVENT_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR EVENT_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
+          "mapping": {
+            "metrics": [
+              { "column": "total_events", "label": "All Events", "format": "number", "emit": "all" },
+              { "column": "high", "label": "High", "format": "number", "emit": "high" },
+              { "column": "medium", "label": "Medium", "format": "number", "emit": "medium" },
+              { "column": "low", "label": "Low", "format": "number", "emit": "low" }
+            ]
+          }
+        },
+        "emits": { "selected_severity": "selection" }
+      },
+      "factor": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT EVENT_TYPE AS event_type, COUNT(*) AS events FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:selected_severity IS NULL OR :selected_severity = 'all' OR SEVERITY_ENUM = :selected_severity) GROUP BY EVENT_TYPE ORDER BY events DESC",
+          "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "title": "Events by Type", "xAxis": { "field": "event_type", "fieldType": "category" }, "series": [ { "type": "bar", "field": "events", "label": "Events" } ] }
+      },
+      "queue": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT EVENT_ID AS event_id, EVENT_TYPE AS type, SEVERITY_ENUM AS severity, ENTITY_ID AS entity, TO_VARCHAR(EVENT_TS,'MM-DD HH24:MI') AS ts FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:selected_severity IS NULL OR :selected_severity = 'all' OR SEVERITY_ENUM = :selected_severity) AND (:date_range_start IS NULL OR EVENT_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR EVENT_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY EVENT_TS DESC LIMIT 200",
+          "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "rowKey": "event_id", "maxRows": 200, "defaultSort": { "column": "severity", "direction": "asc" }, "exceptionFirst": { "column": "severity", "values": ["high", "medium"] }, "showFreshness": true },
+        "emits": { "selected_entity": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "events",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "base": [140, 140, 140, 160],
+                "active": [41, 181, 232, 255],
+                "matchColumn": "entity_id",
+                "whenViewStateEquals": "selected_entity",
+                "baseColumn": "severity",
+                "basePalette": { "high": [209, 55, 78, 230], "medium": [255, 160, 0, 220], "low": [255, 210, 80, 200] }
+              },
+              "radius": 80,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 10,
+              "pickable": true,
+              "tooltip": "<b>{type}</b><br/>{severity}<br/>{entity_id}",
+              "data": {
+                "query": "SELECT EVENT_TYPE AS type, SEVERITY_ENUM AS severity, ENTITY_ID AS entity_id, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND (:selected_severity IS NULL OR :selected_severity = 'all' OR SEVERITY_ENUM = :selected_severity) AND (:date_range_start IS NULL OR EVENT_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR EVENT_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) LIMIT 5000",
+                "params": { "selected_severity": "viewState.selected_severity", "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
   "dwell_overview": {
     "label": "Dwell Overview",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
