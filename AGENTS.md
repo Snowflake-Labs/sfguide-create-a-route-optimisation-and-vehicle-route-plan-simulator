@@ -66,7 +66,8 @@ No global build/lint step — each skill is independently deployable via its own
 
 | Skill | Category | Purpose |
 |-------|----------|---------|
-| `build-routing-solution` | infrastructure | Builds and deploys the ORS app on SPCS |
+| `install-fleet-apps` | infrastructure | **PRIMARY** installer for the new synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents. Self-owning (relocated artifacts, self-provisioned infra, static seed). Delegates only the ORS engine to build-routing-solution. |
+| `build-routing-solution` | infrastructure | Builds and deploys the ORS app on SPCS. **Secondary** to install-fleet-apps: the delegated provider of the live ORS/VROOM routing engine behind the `ROUTING_PLATFORM.CONTRACT` seam. |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
@@ -305,7 +306,9 @@ WHERE name = 'ors-control-app';
 
 ```mermaid
 graph TD
-    RP[routing-prerequisites] --> BRS[build-routing-solution]
+    RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY]
+    IFA -.->|"delegates ORS engine only"| BRS[build-routing-solution secondary]
+    RP --> BRS
     BRS --> RC[routing-customization]
     BRS --> RO[route-optimization]
     BRS --> FIT[fleet-intelligence-taxis]
@@ -323,14 +326,15 @@ graph TD
     RC --> RD
  RD --> DA[dwell-analysis]
 
+ style IFA fill:#6c6,stroke:#333
  style BRS fill:#f96,stroke:#333
  style RP fill:#9cf,stroke:#333
  style RC fill:#9cf,stroke:#333
 ```
 
-**Legend:** Orange = core infrastructure. Blue = configuration/prerequisites. White = demo/feature skills.
+**Legend:** Green = primary installer (new architecture). Orange = ORS engine infrastructure (secondary/delegated). Blue = configuration/prerequisites. White = legacy demo/feature skills.
 
-Deploy order (top → bottom). Teardown order (bottom → top).
+`install-fleet-apps` is the primary path for the new agnostic architecture; it self-provisions infra/data and only delegates the live ORS engine to `build-routing-solution`. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) remain under `build-routing-solution` and are NOT part of the agnostic installer.
 
 ## Common Patterns
 
