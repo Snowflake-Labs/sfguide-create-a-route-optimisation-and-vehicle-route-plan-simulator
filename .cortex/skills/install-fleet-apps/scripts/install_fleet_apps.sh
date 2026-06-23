@@ -8,7 +8,8 @@
 # secondary, delegated provider for the ORS engine only.
 #
 # Layers (detect-and-reuse-else-create throughout):
-#   0 preflight -> 1 infra -> 2 data -> 3 routing contract+engine -> 4 packs
+#   0 preflight -> 1 infra -> 2 data -> 3 routing contract+engine
+#   -> 3.5 analytic layer (FLEET_INTELLIGENCE.* the packs read) -> 4 packs
 #   -> 5 synapse tools -> 6 roles -> 7 agents -> 8 apps -> friction log
 #
 # Usage:
@@ -19,7 +20,7 @@
 #   --with-engine         OPTIONAL. When the ORS engine is absent, build + provision
 #                         it natively (heavy: 4 SPCS images + a region graph, tens of
 #                         minutes). Also honored via PROVISION_ENGINE=1.
-#   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
+#   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ANALYTIC=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
 #   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1   (env vars)
 set -euo pipefail
 
@@ -43,6 +44,7 @@ REF="$SKILL_DIR/references"
 PACKS_INSTALL="$SKILL_DIR/fleet_sa_app/app/packs/_lib/install.py"
 ROLE_BINDING="$SKILL_DIR/fleet_sa_app/app/role_binding.sql"
 ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
+ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 START_TS=$(date +%s)
 LOG_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/logs"
 mkdir -p "$LOG_DIR"
@@ -156,6 +158,22 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   step "3 routing" OK
 else
   step "3 routing" SKIPPED
+fi
+
+# ── 3.5 analytic layer (agnostic FLEET_INTELLIGENCE.* objects the packs read) ──
+# Authors the analytic objects the demo packs read that the pack DDL does NOT
+# build itself: DWELL_ANALYSIS.CONFIG, ROUTE_DEVIATION CONFIG + projection views +
+# TRIP_DEVIATION_ANALYSIS (a plain VIEW, no DT refresh), the ROUTE_OPTIMIZATION
+# CONFIG safety-net, and the Overture-sourced CATCHMENT tables. Runs AFTER the
+# engine (so REGION_CATALOG boundaries exist) and BEFORE packs. Best-effort: a
+# catchment failure (no Overture coverage) must not abort the install.
+if [ "${SKIP_ANALYTIC:-0}" != "1" ]; then
+  note "[3.5/8] analytic layer (dwell/route_deviation views + Overture catchment)..."
+  snow sql -c "$CONNECTION" -f "$ANALYTIC_SQL" >/tmp/ifa_analytic.log 2>&1 \
+    || note "  WARN: analytic layer reported errors (catchment may need Overture coverage); see /tmp/ifa_analytic.log"
+  step "3.5 analytic" OK
+else
+  step "3.5 analytic" SKIPPED
 fi
 
 # ── 4. data-contract packs (ALL 7 agnostic packs, unconditional) ──

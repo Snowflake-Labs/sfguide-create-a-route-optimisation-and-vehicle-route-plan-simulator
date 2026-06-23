@@ -54,12 +54,13 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 1. **Preflight** — tools, connection, account.
 2. **Infra** — image repository, compute pool, CARTO EAI (+ network rule), spec stage. Reuses `OPENROUTESERVICE_APP` equivalents if present; otherwise creates skill-owned objects. See `references/infra.sql`.
 3. **Data** — probes the agnostic source tables; reuses existing rows, else loads `scripts/seed_data.sql`. See `references/seed-data.md`.
-4. **Data contract** — `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
-5. **Synapse tools** — per-account materialize + deploy of the `user`/`ops`/`admin` bundles (`ROUTING_MCP`, `FLEET_OPS_MCP`, `FLEET_ADMIN_MCP`). See `references/synapse-bundles.md`.
-6. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
-7. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
-8. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
-9. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent **and `--with-engine` is set**, builds + provisions it natively via `scripts/provision_engine.sh`; otherwise verbs install inert. See `references/routing-engine.md`.
+4. **Analytic layer** — authors the agnostic `FLEET_INTELLIGENCE.*` objects the packs read but do not build themselves: `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW, no DT refresh), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables (`POIS`/`CITIES_BY_STATE`/`REGIONAL_ADDRESSES` with real address/city/state/postcode — the installer acquires the two Overture Marketplace listings idempotently). Runs `scripts/analytic_layer.sql`, best-effort (a catchment failure never aborts the install); gate off with `SKIP_ANALYTIC=1`.
+5. **Data contract** — `python3 fleet_sa_app/app/packs/_lib/install.py --regenerate -c <connection>` builds the 7 agnostic `FLEET_APP.*` packs; `--probe` confirms each resolves.
+6. **Synapse tools** — per-account materialize + deploy of the `user`/`ops`/`admin` bundles (`ROUTING_MCP`, `FLEET_OPS_MCP`, `FLEET_ADMIN_MCP`). See `references/synapse-bundles.md`.
+7. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
+8. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
+9. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
+10. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent **and `--with-engine` is set**, builds + provisions it natively via `scripts/provision_engine.sh`; otherwise verbs install inert. See `references/routing-engine.md`.
 
 ## Live routing engine (`--with-engine`)
 
@@ -81,7 +82,7 @@ This is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes), 
 | `CARTO_EAI` | resolved (`ORS_CARTO_EAI` else `FLEET_APP_CARTO_EAI`) | basemap tile egress |
 | `SPEC_STAGE` | resolved | service-spec stage |
 | `REGION` | `SanFrancisco` | seed-data region when seeding is required |
-| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_PACKS` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` | `0` | shorten idempotent re-runs |
+| `SKIP_INFRA` / `SKIP_DATA` / `SKIP_ANALYTIC` / `SKIP_PACKS` / `SKIP_TOOLS` / `SKIP_ROLES` / `SKIP_AGENTS` / `SKIP_APPS` / `SKIP_ROUTING` | `0` | shorten idempotent re-runs |
 
 ## Required Privileges
 

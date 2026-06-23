@@ -1,0 +1,406 @@
+-- =============================================================================
+-- install-fleet-apps : agnostic analytic layer (FLEET-owned, skill-owned source)
+-- =============================================================================
+-- Creates the FLEET_INTELLIGENCE.* analytic objects the demo packs read that are
+-- NOT produced by the pack DDL itself. Historically these were authored by the
+-- per-vehicle demo skills (dwell-analysis / route-deviation / retail-catchment)
+-- and/or the control-app boot (init.ts), neither of which runs on the agnostic
+-- install before the pack step. Authoring them here (orchestrator step 3.5, after
+-- the engine, before packs) makes a from-scratch install self-contained.
+--
+-- Design rules:
+--   * No DYNAMIC TABLES -- the route-deviation analytic object is a plain VIEW
+--     (no LAG refresh cost). The dwell pack's own DTs are converted to views via
+--     its data-model.yaml (separate change), not here.
+--   * Catchment KEEPS the Overture Marketplace approach (SV_CATCHMENT models
+--     ADDRESS/POSTCODE/CITY/STATE, so they cannot be synthesized). The two Overture
+--     listings are acquired idempotently below.
+--   * CONFIG pointers are derived from the active DIM_DATASETS row (configurable,
+--     not hardcoded) with an ('ebike','SanFrancisco') fallback.
+--   * Idempotent (CREATE ... IF NOT EXISTS / CREATE OR REPLACE VIEW). Tracking
+--     tags (query_tag + COMMENT) on every object per AGENTS.md.
+--
+-- Ordering note: snow sql -f stops on the first error, and the orchestrator runs
+-- this whole file WARN-on-error. So the cheap, always-resolvable sections (DWELL,
+-- ROUTE_DEVIATION, ROUTE_OPTIMIZATION CONFIG) run FIRST; the CATCHMENT section
+-- (Overture listing + REGION_CATALOG dependencies, most likely to fail on a
+-- coverage-less region or engine-less install) runs LAST so a catchment failure
+-- never blocks the other three.
+-- =============================================================================
+
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","module":"analytic-layer"}}';
+
+-- Warehouse the analytic layer runs on (independent of --with-engine).
+CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- =============================================================================
+-- 1. DWELL  (pack needs only FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Seed only when empty: prefer the active dataset row, else fall back.
+INSERT INTO FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+-- =============================================================================
+-- 2. ROUTE_DEVIATION  (CONFIG + 5 projection views + TRIP_DEVIATION_ANALYSIS view)
+--    Ported from .cortex/skills/route-deviation/references/seed-data.sql with the
+--    TRIP_DEVIATION_ANALYSIS DYNAMIC TABLE converted to a plain VIEW. The pack's
+--    own VW_DRIVER_DEVIATION_SUMMARY / VW_DAILY_DEVIATION_TRENDS are built by the
+--    pack from FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION, so they are NOT ported.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    t.TELEMETRY_ID, t.VEHICLE_ID, t.TRIP_ID, t.TS, t.POINT_GEOM,
+    t.SPEED_KMH, t.HEADING_DEG, t.STATUS,
+    t.IS_SPEEDING, t.IS_HOS_VIOLATION, t.IS_DETOUR,
+    t.GPS_ACCURACY_M, t.LOCATION_ID, t.LOCATION_TYPE,
+    t.POINT_INDEX, t.ODOMETER_KM, t.POSTED_SPEED_KMH,
+    t.VEHICLE_TYPE, t.REGION
+FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_VEHICLE_TELEMETRY_CURRENT t
+WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    t.TRIP_ID, t.VEHICLE_ID, t.DRIVER_ID,
+    t.ORIGIN_POI_ID, t.DESTINATION_POI_ID,
+    t.ORIGIN_LAT, t.ORIGIN_LON, t.ORIGIN,
+    t.DESTINATION_LAT, t.DESTINATION_LON, t.DESTINATION,
+    t.ROUTE_GEOG AS ACTUAL_PATH,
+    t.DISTANCE_KM AS ACTUAL_DISTANCE_KM,
+    t.DURATION_MINUTES AS ACTUAL_DURATION_MIN,
+    t.PLANNED_ROUTE_GEOG AS EXPECTED_PATH,
+    t.PLANNED_DISTANCE_KM AS EXPECTED_DISTANCE_KM,
+    t.IS_DETOUR, t.DETOUR_DISTANCE_KM,
+    t.TRIP_START, t.TRIP_END, t.STATUS, t.ORS_PROFILE,
+    t.VEHICLE_TYPE, t.REGION
+FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
+WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+  AND t.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1);
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_FLEET
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    f.VEHICLE_ID, f.DRIVER_PROFILE, f.OPERATING_MODE,
+    f.REGION AS HOME_CITY, f.VEHICLE_TYPE, f.REGION
+FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_FLEET_CURRENT f
+WHERE f.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+  AND f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY f.VEHICLE_ID ORDER BY f.VEHICLE_ID) = 1;
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_SCHEDULE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    s.SCHEDULE_ID,
+    s.VEHICLE_ID,
+    s.VEHICLE_TYPE AS TRIP_TYPE,
+    s.ORIGIN_POI_ID AS ORIGIN_ID,
+    s.DESTINATION_POI_ID AS DEST_ID,
+    s.SHIFT_TYPE AS ROUTE_VARIATION,
+    NULL AS ROUTE_DEVIATION_FACTOR,
+    s.DISTANCE_KM * 1000 AS ROUTE_DISTANCE_M,
+    s.DURATION_MINUTES * 60 AS ROUTE_DURATION_SEC,
+    s.PLANNED_START AS SCHEDULED_START,
+    s.ORS_PROFILE,
+    s.REGION
+FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_TRIP_SCHEDULE_CURRENT s
+WHERE s.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1);
+
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_POIS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+SELECT
+    p.LOCATION_ID AS ID, p.NAME, p.LOCATION_TYPE,
+    p.CATEGORY, p.LAT, p.LNG, p.POINT_GEOM, p.REGION
+FROM SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p
+WHERE p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG LIMIT 1)
+QUALIFY ROW_NUMBER() OVER (PARTITION BY p.LOCATION_ID ORDER BY p.NAME) = 1;
+
+-- TRIP_DEVIATION_ANALYSIS: was a DYNAMIC TABLE in the demo skill; here a plain VIEW.
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS
+WITH trip_points AS (
+    SELECT TRIP_ID, COUNT(*) AS POINT_COUNT
+    FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_VEHICLE_TELEMETRY
+    GROUP BY TRIP_ID
+),
+dedup_pois AS (
+    SELECT ID, NAME, REGION,
+           ROW_NUMBER() OVER (PARTITION BY ID ORDER BY NAME) AS RN
+    FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_POIS
+)
+SELECT
+    t.TRIP_ID, t.VEHICLE_ID, t.DRIVER_ID,
+    DATE(t.TRIP_START) AS TRIP_DATE,
+    s.ROUTE_VARIATION,
+    CASE WHEN t.EXPECTED_DISTANCE_KM > 0
+         THEN ROUND(t.ACTUAL_DISTANCE_KM / t.EXPECTED_DISTANCE_KM, 4)
+         ELSE 1.0 END AS ROUTE_DEVIATION_FACTOR,
+    s.TRIP_TYPE,
+    ROUND(t.ACTUAL_DISTANCE_KM, 2) AS ACTUAL_DISTANCE_KM,
+    ROUND(t.ACTUAL_DURATION_MIN, 2) AS ACTUAL_DURATION_MIN,
+    ROUND(TIMESTAMPDIFF('SECOND', t.TRIP_START, t.TRIP_END) / 60.0, 2) AS TOTAL_DURATION_MIN,
+    t.TRIP_START AS ACTUAL_START_TS,
+    t.TRIP_END AS ACTUAL_END_TS,
+    COALESCE(tp.POINT_COUNT, 0) AS POINT_COUNT,
+    ROUND(t.EXPECTED_DISTANCE_KM, 2) AS EXPECTED_DISTANCE_KM,
+    ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0 AND t.ACTUAL_DURATION_MIN > 0
+               THEN t.EXPECTED_DISTANCE_KM * t.ACTUAL_DURATION_MIN / NULLIF(t.ACTUAL_DISTANCE_KM, 0)
+               ELSE t.ACTUAL_DURATION_MIN END, 2) AS EXPECTED_DURATION_MIN,
+    ROUND(ST_DISTANCE(t.ORIGIN, t.DESTINATION) / 1000, 2) AS STRAIGHT_LINE_DISTANCE_KM,
+    COALESCE(po.NAME, 'Unknown') AS ORIGIN_NAME,
+    COALESCE(po.REGION, 'N/A') AS ORIGIN_CITY,
+    COALESCE(pd.NAME, 'Unknown') AS DEST_NAME,
+    COALESCE(pd.REGION, 'N/A') AS DEST_CITY,
+    ROUND(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM, 2) AS DISTANCE_DEVIATION_KM,
+    ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
+               THEN (t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / t.EXPECTED_DISTANCE_KM * 100
+               ELSE 0 END, 2) AS DISTANCE_DEVIATION_PCT,
+    ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0 AND t.ACTUAL_DURATION_MIN > 0
+               THEN t.ACTUAL_DURATION_MIN - (t.EXPECTED_DISTANCE_KM * t.ACTUAL_DURATION_MIN / NULLIF(t.ACTUAL_DISTANCE_KM, 0))
+               ELSE 0 END, 2) AS DURATION_DEVIATION_MIN,
+    ROUND(CASE WHEN t.EXPECTED_DISTANCE_KM > 0
+               THEN ((t.ACTUAL_DISTANCE_KM / NULLIF(t.EXPECTED_DISTANCE_KM, 0)) - 1) * 100
+               ELSE 0 END, 2) AS DURATION_DEVIATION_PCT,
+    CASE WHEN ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+         THEN TRUE ELSE FALSE END AS IS_DISTANCE_DEVIATION,
+    CASE WHEN t.IS_DETOUR THEN TRUE ELSE FALSE END AS IS_DURATION_DEVIATION,
+    CASE WHEN t.IS_DETOUR
+           OR ABS(t.ACTUAL_DISTANCE_KM - t.EXPECTED_DISTANCE_KM) / NULLIF(t.EXPECTED_DISTANCE_KM, 0) > 0.20
+         THEN TRUE ELSE FALSE END AS IS_ROUTE_DEVIATION,
+    t.ACTUAL_PATH,
+    t.EXPECTED_PATH
+FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_DEVIATION t
+LEFT JOIN FLEET_INTELLIGENCE.ROUTE_DEVIATION.VW_TRIP_SCHEDULE s ON t.TRIP_ID = s.SCHEDULE_ID
+LEFT JOIN trip_points tp ON t.TRIP_ID = tp.TRIP_ID
+LEFT JOIN dedup_pois po ON t.ORIGIN_POI_ID = po.ID AND po.RN = 1
+LEFT JOIN dedup_pois pd ON t.DESTINATION_POI_ID = pd.ID AND pd.RN = 1
+WHERE t.ACTUAL_PATH IS NOT NULL;
+
+-- =============================================================================
+-- 3. ROUTE_OPTIMIZATION CONFIG safety-net
+--    The canonical loader (datasets/load-seed-data.sql) creates + seeds this from
+--    the active DIM_DATASETS row, but it runs WARN-on-error / stop-on-first-error,
+--    so a fresh install could skip it. Re-ensure idempotently here. Seed ONLY when
+--    empty so loader-provided values are never clobbered.
+-- =============================================================================
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS DAILY_RENTAL_RATE_AVOIDED_USD NUMBER(10,2);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS RENTAL_CAPTURE_RATE NUMBER(4,3);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS MAX_REPOSITION_MINUTES NUMBER(6,0);
+ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG ADD COLUMN IF NOT EXISTS AVOID_FEATURES VARCHAR(200);
+
+INSERT INTO FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+  (VEHICLE_TYPE, REGION, DAILY_RENTAL_RATE_AVOIDED_USD, RENTAL_CAPTURE_RATE, MAX_REPOSITION_MINUTES, AVOID_FEATURES)
+SELECT VEHICLE_TYPE, REGION, 80.00, 0.600, 600, 'tollways,ferries' FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+-- =============================================================================
+-- 4. CATCHMENT  (Overture Marketplace; real ADDRESS/CITY/STATE/POSTCODE, no synth)
+--    Runs LAST: depends on the two Overture listings + (optionally) REGION_CATALOG.
+--    A failure here (no Overture coverage / engine absent) does NOT block 1-3.
+-- =============================================================================
+-- 4a. Acquire the Overture listings (idempotent; no-op when already imported).
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9KR');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__PLACES FROM LISTING GZT0Z4CM1E9KR;
+CALL SYSTEM$ACCEPT_LEGAL_TERMS('DATA_EXCHANGE_LISTING', 'GZT0Z4CM1E9NQ');
+CREATE DATABASE IF NOT EXISTS OVERTURE_MAPS__ADDRESSES FROM LISTING GZT0Z4CM1E9NQ;
+
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.CONFIG (
+  VEHICLE_TYPE VARCHAR NOT NULL,
+  REGION       VARCHAR NOT NULL
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CONFIG (VEHICLE_TYPE, REGION)
+SELECT VEHICLE_TYPE, REGION FROM (
+  SELECT VEHICLE_TYPE, REGION, 1 AS PRI FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE
+  UNION ALL SELECT 'ebike', 'SanFrancisco', 2
+) s
+WHERE NOT EXISTS (SELECT 1 FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG)
+QUALIFY ROW_NUMBER() OVER (ORDER BY PRI) = 1;
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.POIS (
+  REGION          VARCHAR NOT NULL,
+  POI_ID          VARCHAR,
+  POI_NAME        VARCHAR,
+  BASIC_CATEGORY  VARCHAR,
+  LONGITUDE       FLOAT,
+  LATITUDE        FLOAT,
+  GEOMETRY        GEOGRAPHY,
+  ADDRESS         VARCHAR,
+  CITY            VARCHAR,
+  STATE           VARCHAR,
+  POSTCODE        VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE (
+  REGION    VARCHAR NOT NULL,
+  STATE     VARCHAR,
+  CITY      VARCHAR,
+  POI_COUNT INT
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES (
+  REGION    VARCHAR NOT NULL,
+  ID        VARCHAR,
+  GEOMETRY  GEOGRAPHY,
+  LONGITUDE FLOAT,
+  LATITUDE  FLOAT,
+  CITY      VARCHAR,
+  POSTCODE  VARCHAR
+) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Single-row driver: active region key + bbox (from the active dataset's DIM_POIS
+-- extent, +0.1deg margin -- engine-independent, data-derived, not hardcoded) +
+-- boundary polygon from REGION_CATALOG when the engine is present (NULL-safe refine).
+CREATE OR REPLACE TEMP TABLE FLEET_INTELLIGENCE.CATCHMENT._AL_REGION AS
+WITH active AS (
+  SELECT REGION, VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1
+),
+ext AS (
+  SELECT MIN(p.LNG) AS MNLON, MIN(p.LAT) AS MNLAT, MAX(p.LNG) AS MXLON, MAX(p.LAT) AS MXLAT
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS p
+  JOIN active a ON p.REGION = a.REGION
+),
+bnd AS (
+  SELECT TO_GEOGRAPHY(ST_ASWKT(rc.BOUNDARY)) AS BOUNDARY
+  FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc
+  JOIN active a ON (UPPER(rc.LOOKUP_NAME) = UPPER(a.REGION) OR UPPER(rc.REGION_KEY) = UPPER(a.REGION))
+  WHERE rc.BOUNDARY IS NOT NULL
+  ORDER BY COALESCE(rc.BOUNDARY_AREA_KM2, 1e15) ASC
+  LIMIT 1
+)
+SELECT
+  a.REGION                                   AS REGION_KEY,
+  COALESCE(e.MNLON, -123.0) - 0.1            AS BBOX_MIN_LON,
+  COALESCE(e.MNLAT,   36.8) - 0.1            AS BBOX_MIN_LAT,
+  COALESCE(e.MXLON, -121.5) + 0.1            AS BBOX_MAX_LON,
+  COALESCE(e.MXLAT,   38.5) + 0.1            AS BBOX_MAX_LAT,
+  (SELECT BOUNDARY FROM bnd)                 AS BOUNDARY
+FROM active a CROSS JOIN ext e;
+
+DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.POIS
+SELECT
+    d.REGION_KEY AS REGION,
+    p.ID AS POI_ID,
+    p.NAMES:primary::VARCHAR AS POI_NAME,
+    p.BASIC_CATEGORY,
+    ST_X(p.GEOMETRY) AS LONGITUDE,
+    ST_Y(p.GEOMETRY) AS LATITUDE,
+    p.GEOMETRY,
+    COALESCE(p.ADDRESSES[0]:freeform::VARCHAR, '') AS ADDRESS,
+    p.ADDRESSES[0]:locality::VARCHAR AS CITY,
+    p.ADDRESSES[0]:region::VARCHAR AS STATE,
+    p.ADDRESSES[0]:postcode::VARCHAR AS POSTCODE
+FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p
+CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+WHERE p.BASIC_CATEGORY IN (
+    'coffee_shop', 'fast_food_restaurant', 'restaurant', 'casual_eatery',
+    'grocery_store', 'convenience_store', 'gas_station', 'pharmacy',
+    'clothing_store', 'electronics_store', 'specialty_store', 'gym',
+    'beauty_salon', 'hair_salon', 'bakery', 'bar', 'supermarket'
+)
+AND p.GEOMETRY IS NOT NULL
+AND p.ADDRESSES[0]:region IS NOT NULL
+AND ST_X(p.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+AND ST_Y(p.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(p.GEOMETRY, d.BOUNDARY));
+
+DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+SELECT
+    REGION, STATE, CITY, COUNT(*) AS POI_COUNT
+FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+WHERE CITY IS NOT NULL
+  AND REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1)
+GROUP BY REGION, STATE, CITY
+HAVING COUNT(*) > 10
+ORDER BY STATE, POI_COUNT DESC;
+
+DELETE FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+WHERE REGION = (SELECT REGION_KEY FROM FLEET_INTELLIGENCE.CATCHMENT._AL_REGION LIMIT 1);
+INSERT INTO FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+SELECT
+    d.REGION_KEY AS REGION,
+    a.ID,
+    a.GEOMETRY,
+    ST_X(a.GEOMETRY) AS LONGITUDE,
+    ST_Y(a.GEOMETRY) AS LATITUDE,
+    a.ADDRESS_LEVELS[1]:value::VARCHAR AS CITY,
+    a.POSTCODE
+FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a
+CROSS JOIN FLEET_INTELLIGENCE.CATCHMENT._AL_REGION d
+WHERE a.COUNTRY = 'US'
+AND a.GEOMETRY IS NOT NULL
+AND ST_X(a.GEOMETRY) BETWEEN d.BBOX_MIN_LON AND d.BBOX_MAX_LON
+AND ST_Y(a.GEOMETRY) BETWEEN d.BBOX_MIN_LAT AND d.BBOX_MAX_LAT
+AND (d.BOUNDARY IS NULL OR ST_INTERSECTS(a.GEOMETRY, d.BOUNDARY));
+
+-- Validation summary (last statement; non-fatal).
+SELECT 'DWELL.CONFIG' AS OBJ, COUNT(*) AS N FROM FLEET_INTELLIGENCE.DWELL_ANALYSIS.CONFIG
+UNION ALL SELECT 'ROUTE_DEVIATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.CONFIG
+UNION ALL SELECT 'ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_DEVIATION.TRIP_DEVIATION_ANALYSIS
+UNION ALL SELECT 'ROUTE_OPTIMIZATION.CONFIG', COUNT(*) FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.CONFIG
+UNION ALL SELECT 'CATCHMENT.POIS', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS
+UNION ALL SELECT 'CATCHMENT.CITIES_BY_STATE', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
+UNION ALL SELECT 'CATCHMENT.REGIONAL_ADDRESSES', COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES;
