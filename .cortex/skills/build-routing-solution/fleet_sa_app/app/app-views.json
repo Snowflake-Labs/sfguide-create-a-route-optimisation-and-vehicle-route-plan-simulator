@@ -1,4 +1,316 @@
 {
+  "live_asset_operations": {
+    "label": "Live {{labels.entity}} Operations",
+    "description": "Where is every {{labels.entity}} now — live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
+    "layout": {
+      "default": { "columns": "340px 1fr", "rows": "auto 1fr", "grid": "\"kpi kpi\"\n\"entities map\"" },
+      "mobile": { "columns": "1fr", "rows": "auto auto 1fr", "grid": "\"kpi\"\n\"entities\"\n\"map\"" }
+    },
+    "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT ENTITY_ID) AS active_entities, COUNT(*) AS pings, SUM(IFF(MOTION_STATUS_ENUM ILIKE 'MOVING',1,0)) AS moving, ROUND(AVG(SPEED_VALUE),1) AS avg_speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
+          "mapping": {
+            "metrics": [
+              { "column": "active_entities", "label": "Active {{labels.entity_plural}}", "format": "number" },
+              { "column": "moving", "label": "Moving Pings", "format": "number" },
+              { "column": "pings", "label": "GPS Pings", "format": "number" },
+              { "column": "avg_speed", "label": "Avg Speed", "format": "number_2dp", "unit": "speed" }
+            ]
+          }
+        }
+      },
+      "entities": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT ENTITY_ID AS entity_id, COUNT(*) AS pings, ROUND(AVG(SPEED_VALUE),0) AS avg_speed, MAX(MOTION_STATUS_ENUM) AS state FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY ENTITY_ID ORDER BY pings DESC LIMIT 50",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "rowKey": "entity_id", "maxRows": 50, "showFreshness": true },
+        "emits": { "selected_entity": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "scatterplot",
+              "id": "positions",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "base": [140, 140, 140, 180],
+                "active": [41, 181, 232, 255],
+                "matchColumn": "entity_id",
+                "whenViewStateEquals": "selected_entity",
+                "baseColumn": "state",
+                "basePalette": { "MOVING": [41, 181, 232, 220], "IDLE": [255, 210, 80, 220], "DWELL_WAREHOUSE": [255, 140, 0, 220], "DWELL_DESTINATION": [255, 140, 0, 220], "DWELL_STORE": [255, 140, 0, 220], "DWELL_REST_STOP": [255, 140, 0, 220], "STOPPED": [209, 55, 78, 220] }
+              },
+              "radius": 200,
+              "radiusMinPixels": 3,
+              "radiusMaxPixels": 9,
+              "pickable": true,
+              "tooltip": "<b>{entity_id}</b><br/>{state}",
+              "data": {
+                "query": "SELECT ENTITY_ID AS entity_id, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, MOTION_STATUS_ENUM AS state FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY TS DESC) = 1",
+                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "journey_inspector": {
+    "label": "{{labels.journey}} Inspector",
+    "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
+    "layout": {
+      "default": { "columns": "320px 1fr", "rows": "1.4fr auto", "grid": "\"journeys map\"\n\"speed speed\"" }
+    },
+    "areas": {
+      "journeys": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT JOURNEY_ID AS journey_id, ENTITY_ID AS entity, OPERATOR_ID AS operator, ROUND(DISTANCE_VALUE,1) AS dist_km, ROUND(DURATION_SEC/60,1) AS dur_min, IFF(IS_DEVIATION,'yes','no') AS deviated FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY DISTANCE_VALUE DESC NULLS LAST LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "rowKey": "journey_id", "maxRows": 100, "defaultSort": { "column": "deviated", "direction": "desc" }, "exceptionFirst": { "column": "deviated", "values": ["yes"] } },
+        "emits": { "selected_journey": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "planned",
+              "geojsonColumn": "planned_geojson",
+              "color": [41, 181, 232, 160],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(PLANNED_PATH_GEOG)::STRING AS planned_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE PLANNED_PATH_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 5",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual",
+              "geojsonColumn": "route_geojson",
+              "color": [209, 55, 78, 220],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY START_TS DESC LIMIT 50",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "events",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": {
+                "column": "severity",
+                "palette": { "high": [209, 55, 78, 230], "medium": [255, 160, 0, 230], "low": [255, 210, 80, 200] },
+                "default": [209, 55, 78, 220]
+              },
+              "radius": 80,
+              "radiusMinPixels": 4,
+              "radiusMaxPixels": 12,
+              "pickable": true,
+              "tooltip": "<b>{event_type}</b><br/>{severity}",
+              "data": {
+                "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 5000",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      },
+      "speed": {
+        "component": "Chart",
+        "data": {
+          "query": "SELECT TO_VARCHAR(TS,'HH24:MI:SS') AS t, ROUND(SPEED_VALUE,1) AS speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY TS LIMIT 500",
+          "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "title": "Speed Profile", "xAxis": { "field": "t", "fieldType": "category" }, "series": [ { "type": "line", "field": "speed", "label": "Speed", "color": "#29B5E8" } ] }
+      }
+    }
+  },
+  "responsible_party_performance": {
+    "label": "{{labels.operator}} Performance",
+    "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"kpi kpi\"\n\"factor table\"\n\"map map\"" }
+    },
+    "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(DISTINCT OPERATOR_ID) AS operators, COUNT(*) AS journeys, ROUND(AVG(DISTANCE_VALUE),2) AS avg_dist, SUM(IFF(IS_DEVIATION,1,0)) AS deviations FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
+          "mapping": {
+            "metrics": [
+              { "column": "operators", "label": "{{labels.operator_plural}}", "format": "number" },
+              { "column": "journeys", "label": "{{labels.journey_plural}}", "format": "number" },
+              { "column": "avg_dist", "label": "Avg Distance", "format": "number_2dp", "unit": "distance" },
+              { "column": "deviations", "label": "Deviated {{labels.journey_plural}}", "format": "number" }
+            ]
+          }
+        }
+      },
+      "factor": {
+        "component": "Chart",
+        "data": {
+          "query": "WITH j AS (SELECT JOURNEY_ID, OPERATOR_ID FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), e AS (SELECT JOURNEY_ID, COUNT(*) AS ev_count FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY JOURNEY_ID) SELECT j.OPERATOR_ID AS operator, COALESCE(SUM(e.ev_count),0) AS events FROM j LEFT JOIN e ON e.JOURNEY_ID = j.JOURNEY_ID GROUP BY j.OPERATOR_ID ORDER BY events DESC LIMIT 12",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "title": "Top {{labels.operator_plural}} by Safety Events", "xAxis": { "field": "operator", "fieldType": "category" }, "series": [ { "type": "bar", "field": "events", "label": "Events" } ] }
+      },
+      "table": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "WITH j AS (SELECT JOURNEY_ID, OPERATOR_ID, DISTANCE_VALUE, IS_DEVIATION FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), e AS (SELECT JOURNEY_ID, COUNT(*) AS ev_count FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY JOURNEY_ID) SELECT j.OPERATOR_ID AS operator, COUNT(DISTINCT j.JOURNEY_ID) AS journeys, ROUND(SUM(j.DISTANCE_VALUE),0) AS total_km, SUM(IFF(j.IS_DEVIATION,1,0)) AS deviations, COALESCE(SUM(e.ev_count),0) AS safety_events FROM j LEFT JOIN e ON e.JOURNEY_ID = j.JOURNEY_ID GROUP BY j.OPERATOR_ID ORDER BY safety_events DESC NULLS LAST LIMIT 100",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "rowKey": "operator", "maxRows": 100, "defaultSort": { "column": "safety_events", "direction": "desc" } },
+        "emits": { "selected_operator": "selection" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "operator-journeys",
+              "geojsonColumn": "route_geojson",
+              "color": [41, 181, 232, 170],
+              "width": 3,
+              "widthMinPixels": 1,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS route_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND (:selected_operator IS NULL OR OPERATOR_ID = :selected_operator) ORDER BY DISTANCE_VALUE DESC NULLS LAST LIMIT 200",
+                "params": { "selected_operator": "viewState.selected_operator", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "space_time_density": {
+    "label": "Space-Time Density",
+    "description": "Where activity concentrates over space and time — H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
+    "layout": {
+      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
+    },
+    "areas": {
+      "metric": {
+        "component": "ComboBox",
+        "data": {
+          "query": "SELECT 'pings' AS value, 'Activity (pings)' AS label UNION ALL SELECT 'entities','Unique {{labels.entity_plural}}'"
+        },
+        "config": { "label": "Metric", "placeholder": "Activity (pings)" },
+        "emits": { "selected_metric": "selection" }
+      },
+      "controls": {
+        "component": "Slider",
+        "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 12, "format": "hour", "play": true },
+        "emits": { "selected_hour": "" }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "h3",
+              "hexColumn": "h3_index",
+              "valueColumn": "metric_value",
+              "extruded": true,
+              "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
+              "pickable": true,
+              "tooltip": "<b>{h3_index}</b><br/>Pings: {ping_count}<br/>Entities: {entities}",
+              "data": {
+                "query": "SELECT H3_CELL AS h3_index, SUM(EVENT_COUNT) AS ping_count, MAX(UNIQUE_ENTITY_COUNT) AS entities, CASE WHEN :selected_metric = 'entities' THEN MAX(UNIQUE_ENTITY_COUNT) ELSE SUM(EVENT_COUNT) END AS metric_value FROM TABLE(FLEET_APP.CORE.F_FACT_AREA_METRIC_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(8 AS NUMBER))) WHERE TS_BUCKET = TO_NUMBER(:selected_hour) GROUP BY H3_CELL LIMIT 5000",
+                "params": { "selected_metric": "viewState.selected_metric", "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "plan_vs_actual_performance": {
+    "label": "Plan-vs-Actual Performance",
+    "description": "Which {{labels.journey_plural}} diverge from plan, where, and by how much (merges Route Deviation and Route Comparison).",
+    "layout": {
+      "default": { "columns": "1fr", "rows": "auto 1.3fr auto", "grid": "\"kpi\"\n\"map\"\n\"table\"" }
+    },
+    "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "SELECT COUNT(*) AS total_journeys, SUM(IFF(IS_DEVIATION,1,0)) AS deviated, SUM(IFF(IS_DEVIATION,1,0))*1.0/NULLIF(COUNT(*),0) AS deviation_frac, ROUND(SUM(DEVIATION_DISTANCE_VALUE),0) AS excess_km FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
+          "mapping": {
+            "metrics": [
+              { "column": "total_journeys", "label": "{{labels.journey_plural}}", "format": "number" },
+              { "column": "deviated", "label": "Deviated", "format": "number" },
+              { "column": "deviation_frac", "label": "Deviation Rate", "format": "percent" },
+              { "column": "excess_km", "label": "Excess Distance", "format": "number", "unit": "distance" }
+            ]
+          }
+        }
+      },
+      "map": {
+        "component": "Map",
+        "config": {
+          "noPad": true,
+          "layers": [
+            {
+              "type": "path",
+              "id": "planned",
+              "geojsonColumn": "planned_geojson",
+              "color": [41, 181, 232, 180],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(PLANNED_PATH_GEOG)::STRING AS planned_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE PLANNED_PATH_GEOG IS NOT NULL AND IS_DEVIATION AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY DEVIATION_DISTANCE_VALUE DESC NULLS LAST LIMIT 20",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "actual",
+              "geojsonColumn": "actual_geojson",
+              "color": [209, 55, 78, 220],
+              "width": 4,
+              "widthMinPixels": 2,
+              "data": {
+                "query": "SELECT JOURNEY_ID AS journey_id, ST_ASGEOJSON(ACTUAL_PATH_GEOG)::STRING AS actual_geojson FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND IS_DEVIATION AND (:selected_journey IS NULL OR JOURNEY_ID = :selected_journey) ORDER BY DEVIATION_DISTANCE_VALUE DESC NULLS LAST LIMIT 20",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            }
+          ]
+        }
+      },
+      "table": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT JOURNEY_ID AS journey_id, OPERATOR_ID AS operator, ENTITY_ID AS entity, ROUND(DISTANCE_VALUE,1) AS actual_km, ROUND(PLANNED_DISTANCE_VALUE,1) AS planned_km, ROUND(DEVIATION_DISTANCE_VALUE,1) AS excess_km FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE IS_DEVIATION AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY DEVIATION_DISTANCE_VALUE DESC NULLS LAST LIMIT 20",
+          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+        },
+        "config": { "rowKey": "journey_id", "maxRows": 20 },
+        "emits": { "selected_journey": "selection" }
+      }
+    }
+  },
   "dwell_overview": {
     "label": "Dwell Overview",
     "description": "Fleet dwell-time analytics and SLA monitoring (scoped to the active region and vehicle).",
@@ -59,41 +371,6 @@
       }
     }
   },
-  "dwell_congestion": {
-    "label": "Congestion Map",
-    "description": "H3 dwell-density hexagons by hour of day (drag the slider to change the hour).",
-    "layout": {
-      "default": { "columns": "1fr", "rows": "auto 1fr", "grid": "\"controls\"\n\"map\"" }
-    },
-    "areas": {
-      "controls": {
-        "component": "Slider",
-        "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 19 },
-        "emits": { "selected_hour": "" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "h3",
-              "hexColumn": "h3_index",
-              "valueColumn": "dwell_count",
-              "extruded": true,
-              "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
-              "pickable": true,
-              "tooltip": "<b>{h3_index}</b><br/>Dwells: {dwell_count}<br/>Avg: {avg_dwell_min} min",
-              "data": {
-                "query": "SELECT H3_CELL_R7 AS h3_index, SUM(SESSION_COUNT) AS dwell_count, ROUND(AVG(AVG_DWELL_MIN),1) AS avg_dwell_min FROM FLEET_APP.DWELL.VW_H3_CONGESTION WHERE EXTRACT(HOUR FROM HOUR_BUCKET) = TO_NUMBER(:selected_hour) AND (:date_range_start IS NULL OR HOUR_BUCKET >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR HOUR_BUCKET < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY H3_CELL_R7 LIMIT 5000",
-                "params": { "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
   "dwell_facilities": {
     "label": "Facility Utilization",
     "description": "Dwell load by facility and facility type \u2014 where vehicles spend the most time.",
@@ -138,79 +415,6 @@
           "title": "Visits by Facility Type",
           "xAxis": { "field": "facility_type", "fieldType": "category" },
           "series": [ { "type": "pie", "field": "visits", "label": "Visits" } ]
-        }
-      }
-    }
-  },
-  "dwell_drivers": {
-    "label": "Driver Performance",
-    "description": "Per-driver dwell totals and SLA breaches \u2014 click a column header to sort.",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"breaches table\"\n\"detail detail\"" }
-    },
-    "areas": {
-      "metrics": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS drivers, SUM(SLA_BREACH_COUNT) AS sla_breaches, SUM(CRITICAL_BREACH_COUNT) AS critical_breaches, ROUND(AVG(AVG_SESSION_MIN),1) AS avg_session FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" },
-          "mapping": {
-            "metrics": [
-              { "column": "drivers", "label": "Drivers", "format": "number" },
-              { "column": "sla_breaches", "label": "SLA Breaches", "format": "number" },
-              { "column": "critical_breaches", "label": "Critical Breaches", "format": "number" },
-              { "column": "avg_session", "label": "Avg Session (min)", "format": "number_2dp" }
-            ]
-          }
-        }
-      },
-      "breaches": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SLA_BREACH_COUNT AS breaches FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY ORDER BY breaches DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        },
-        "config": {
-          "title": "Top Drivers by SLA Breaches",
-          "xAxis": { "field": "driver", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "breaches", "label": "SLA Breaches" } ]
-        }
-      },
-      "table": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT VEHICLE_ID AS driver, DRIVER_PROFILE AS profile, HOME_BASE_NAME AS home_base, TOTAL_DWELL_HOURS AS dwell_hours, SLA_BREACH_COUNT AS sla_breaches, CRITICAL_BREACH_COUNT AS critical FROM FLEET_APP.DWELL.VW_DRIVER_DWELL_SUMMARY ORDER BY sla_breaches DESC LIMIT 100",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        },
-        "config": { "rowKey": "driver", "maxRows": 100 },
-        "emits": { "selected_driver": "selection" }
-      },
-      "detail": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "scatterplot",
-              "id": "driver-track",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "column": "state",
-                "palette": { "MOVING": [41, 181, 232, 220], "IDLE": [255, 210, 80, 220], "DWELL_WAREHOUSE": [255, 140, 0, 220], "DWELL_DESTINATION": [255, 140, 0, 220], "DWELL_STORE": [255, 140, 0, 220], "DWELL_REST_STOP": [255, 140, 0, 220], "STOPPED": [209, 55, 78, 220] },
-                "default": [140, 140, 140, 180]
-              },
-              "radius": 120,
-              "radiusMinPixels": 3,
-              "radiusMaxPixels": 9,
-              "pickable": true,
-              "tooltip": "<b>{vehicle_id}</b><br/>{state}<br/>{speed_kmh} km/h",
-              "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, ST_X(POINT_GEOM) AS lng, ST_Y(POINT_GEOM) AS lat, STATUS AS state, ROUND(SPEED_KMH,0) AS speed_kmh FROM FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY WHERE :selected_driver IS NOT NULL AND VEHICLE_ID = :selected_driver AND POINT_GEOM IS NOT NULL AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY TS LIMIT 5000",
-                "params": { "selected_driver": "viewState.selected_driver", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
         }
       }
     }
@@ -266,7 +470,7 @@
           "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
           "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "driver", "maxRows": 100 },
+        "config": { "rowKey": "driver", "maxRows": 100, "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["CRITICAL", "WARNING"] }, "showFreshness": true },
         "emits": { "selected_driver": "selection" }
       },
       "detail": {
@@ -292,383 +496,6 @@
               "data": {
                 "query": "SELECT LOCATION_NAME AS name, ST_X(AVG_POINT) AS lng, ST_Y(AVG_POINT) AS lat, ROUND(DWELL_MINUTES,0) AS dwell_min, SLA_STATUS AS sla FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE :selected_driver IS NOT NULL AND VEHICLE_ID = :selected_driver AND AVG_POINT IS NOT NULL AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY SESSION_START LIMIT 5000",
                 "params": { "selected_driver": "viewState.selected_driver", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "deviation_overview": {
-    "label": "Route Deviation",
-    "description": "Planned vs actual route adherence \u2014 daily trend and worst drivers.",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"trend drivers\"" }
-    },
-    "areas": {
-      "metrics": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0)) AS deviation_trips, SUM(IFF(IS_ROUTE_DEVIATION,1,0))*1.0/NULLIF(COUNT(*),0) AS deviation_frac, ROUND(SUM(DISTANCE_DEVIATION_KM),0) AS excess_km FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE (:date_range_start IS NULL OR TRIP_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR TRIP_DATE <= :date_range_end::DATE)",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
-          "mapping": {
-            "metrics": [
-              { "column": "total_trips", "label": "Total Trips", "format": "number" },
-              { "column": "deviation_trips", "label": "Deviated Trips", "format": "number" },
-              { "column": "deviation_frac", "label": "Deviation Rate", "format": "percent" },
-              { "column": "excess_km", "label": "Excess KM", "format": "number" }
-            ]
-          }
-        }
-      },
-      "trend": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT TO_VARCHAR(TRIP_DATE) AS day, DEVIATION_RATE_PCT AS deviation_rate, TOTAL_TRIPS AS trips FROM FLEET_APP.ROUTE_DEVIATION.VW_DAILY_DEVIATION_TRENDS ORDER BY TRIP_DATE",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        },
-        "config": {
-          "title": "Daily Deviation Rate",
-          "xAxis": { "field": "day", "fieldType": "category" },
-          "series": [
-            { "type": "area", "field": "deviation_rate", "label": "Deviation %", "color": "#FF6B35" },
-            { "type": "line", "field": "trips", "label": "Trips", "yAxis": "right", "color": "#29B5E8" }
-          ]
-        }
-      },
-      "drivers": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT DRIVER_ID AS driver, DEVIATION_RATE_PCT AS deviation_rate FROM FLEET_APP.ROUTE_DEVIATION.VW_DRIVER_DEVIATION_SUMMARY ORDER BY deviation_rate DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type" }
-        },
-        "config": {
-          "title": "Worst Drivers by Deviation Rate",
-          "xAxis": { "field": "driver", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "deviation_rate", "label": "Deviation %" } ]
-        }
-      }
-    }
-  },
-  "deviation_routes": {
-    "label": "Route Comparison",
-    "description": "Actual (red) vs expected (blue) driven paths for the most-deviating trips.",
-    "layout": {
-      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
-    },
-    "areas": {
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "expected",
-              "geojsonColumn": "expected_geojson",
-              "color": [41, 181, 232, 180],
-              "width": 4,
-              "widthMinPixels": 2,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(EXPECTED_PATH)::STRING AS expected_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE EXPECTED_PATH IS NOT NULL AND IS_ROUTE_DEVIATION AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) AND (:date_range_start IS NULL OR TRIP_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR TRIP_DATE <= :date_range_end::DATE) ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
-                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            },
-            {
-              "type": "path",
-              "id": "actual",
-              "geojsonColumn": "actual_geojson",
-              "color": [209, 55, 78, 220],
-              "width": 4,
-              "widthMinPixels": 2,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(ACTUAL_PATH)::STRING AS actual_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE ACTUAL_PATH IS NOT NULL AND IS_ROUTE_DEVIATION AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) AND (:date_range_start IS NULL OR TRIP_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR TRIP_DATE <= :date_range_end::DATE) ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
-                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      },
-      "table": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT TRIP_ID AS trip_id, DRIVER_ID AS driver, SUBSTR(ORIGIN_NAME,1,18) AS origin, SUBSTR(DEST_NAME,1,18) AS destination, ROUND(DISTANCE_DEVIATION_PCT,1) AS dev_pct, ROUND(DISTANCE_DEVIATION_KM,1) AS excess_km FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_DEVIATION WHERE IS_ROUTE_DEVIATION AND (:date_range_start IS NULL OR TRIP_DATE >= :date_range_start::DATE) AND (:date_range_end IS NULL OR TRIP_DATE <= :date_range_end::DATE) ORDER BY DISTANCE_DEVIATION_PCT DESC LIMIT 20",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": { "rowKey": "trip_id", "maxRows": 20 },
-        "emits": { "selected_trip": "selection" }
-      }
-    }
-  },
-  "fleetops_status": {
-    "label": "Fleet Status",
-    "description": "Asset activity, distance, and safety events for the active fleet (any vehicle mode).",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"trips trips\"\n\"safety safety\"\n\"byregion bystatus\"\n\"map map\"" }
-    },
-    "areas": {
-      "trips": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(DISTINCT TRIP_ID) AS total_trips, COUNT(DISTINCT OPERATOR_ID) AS operators, ROUND(AVG(DISTANCE_KM),1) AS avg_dist_km, SUM(IFF(IS_DETOUR,1,0)) AS detours FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TRIP_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
-          "mapping": {
-            "metrics": [
-              { "column": "total_trips", "label": "Total Trips", "format": "number" },
-              { "column": "operators", "label": "Active Operators", "format": "number" },
-              { "column": "avg_dist_km", "label": "Avg Distance (km)", "format": "number_2dp" },
-              { "column": "detours", "label": "Detour Trips", "format": "number" }
-            ]
-          }
-        }
-      },
-      "safety": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding, SUM(IFF(IS_HOS_VIOLATION,1,0)) AS hos, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" },
-          "mapping": {
-            "metrics": [
-              { "column": "pings", "label": "GPS Pings", "format": "number" },
-              { "column": "speeding", "label": "Speeding Events", "format": "number" },
-              { "column": "hos", "label": "HOS Violations", "format": "number" },
-              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" }
-            ]
-          }
-        }
-      },
-      "byregion": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT REGION AS region, COUNT(*) AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TRIP_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY REGION ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": {
-          "title": "Trips by Region",
-          "xAxis": { "field": "region", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
-        }
-      },
-      "bystatus": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT COALESCE(STATUS,'unknown') AS status, COUNT(*) AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIPS_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TRIP_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY STATUS ORDER BY trips DESC",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": {
-          "title": "Trips by Status",
-          "xAxis": { "field": "status", "fieldType": "category" },
-          "series": [ { "type": "pie", "field": "trips", "label": "Trips" } ]
-        }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "recent-routes",
-              "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 150],
-              "width": 3,
-              "widthMinPixels": 1,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:date_range_start IS NULL OR TRIP_START_TIME >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START_TIME < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 100",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "fleetops_map": {
-    "label": "Asset Map",
-    "description": "Live asset telemetry positions \u2014 click an operator to highlight its pings.",
-    "layout": {
-      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"operators map\"" }
-    },
-    "areas": {
-      "operators": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT OPERATOR_ID AS operator_id, COUNT(*) AS pings, SUM(IFF(IS_SPEEDING,1,0)) AS speeding FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY OPERATOR_ID ORDER BY pings DESC LIMIT 50",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": { "rowKey": "operator_id", "maxRows": 50 },
-        "emits": { "selected_operator": "selection" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "scatterplot",
-              "id": "telemetry",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "base": [120, 120, 130, 120],
-                "active": [41, 181, 232, 255],
-                "matchColumn": "operator_id",
-                "whenViewStateEquals": "selected_operator"
-              },
-              "radius": 40,
-              "radiusMinPixels": 2,
-              "radiusMaxPixels": 6,
-              "pickable": true,
-              "tooltip": "<b>{operator_id}</b><br/>{speed_kmh} km/h",
-              "data": {
-                "query": "SELECT OPERATOR_ID AS operator_id, LONGITUDE AS lng, LATITUDE AS lat, ROUND(SPEED_KMH,0) AS speed_kmh FROM (SELECT OPERATOR_ID, LONGITUDE, LATITUDE, SPEED_KMH FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TELEMETRY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LATITUDE IS NOT NULL AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))) SAMPLE (5000 ROWS)",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "fleetops_density": {
-    "label": "Demand Density",
-    "description": "H3 hexbin of GPS activity by hour of day (pick a metric, drag the slider to change the hour).",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
-    },
-    "areas": {
-      "metric": {
-        "component": "ComboBox",
-        "data": {
-          "query": "SELECT 'pings' AS value, 'Activity (pings)' AS label UNION ALL SELECT 'speed','Avg Speed (km/h)'"
-        },
-        "config": { "label": "Metric", "placeholder": "Activity (pings)" },
-        "emits": { "selected_metric": "selection" }
-      },
-      "controls": {
-        "component": "Slider",
-        "config": { "label": "Hour of day", "min": 0, "max": 23, "step": 1, "default": 12 },
-        "emits": { "selected_hour": "" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "h3",
-              "hexColumn": "h3_index",
-              "valueColumn": "metric_value",
-              "extruded": true,
-              "colorScale": [[1, 152, 189, 200], [209, 55, 78, 200]],
-              "pickable": true,
-              "tooltip": "<b>{h3_index}</b><br/>Pings: {ping_count}<br/>Avg: {avg_speed} km/h",
-              "data": {
-                "query": "SELECT H3_INDEX AS h3_index, SUM(PING_COUNT) AS ping_count, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed, CASE WHEN :selected_metric = 'speed' THEN ROUND(AVG(AVG_SPEED_KMH),1) ELSE SUM(PING_COUNT) END AS metric_value FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_H3_DENSITY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR), CAST(:selected_hour AS NUMBER))) GROUP BY H3_INDEX LIMIT 5000",
-                "params": { "selected_metric": "viewState.selected_metric", "selected_hour": "viewState.selected_hour", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "fleetops_trips": {
-    "label": "Trip Inspection",
-    "description": "Driven trip paths (longest trips shown) with per-trip distance, duration, and speed.",
-    "layout": {
-      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
-    },
-    "areas": {
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "routes",
-              "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 160],
-              "width": 3,
-              "widthMinPixels": 1,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:selected_trip IS NULL OR TRIP_ID = :selected_trip) AND (:date_range_start IS NULL OR TRIP_START_TIME >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START_TIME < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
-                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      },
-      "table": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT TRIP_ID AS trip_id, OPERATOR_ID AS operator, SUBSTR(ORIGIN_ADDRESS,1,22) AS origin, SUBSTR(DESTINATION_ADDRESS,1,22) AS destination, ROUND(ROUTE_DISTANCE_METERS/1000,1) AS dist_km, ROUND(ROUTE_DURATION_SECS/60,1) AS dur_min, ROUND(AVERAGE_KMH,1) AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:date_range_start IS NULL OR TRIP_START_TIME >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TRIP_START_TIME < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 60",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": { "rowKey": "trip_id", "maxRows": 60 },
-        "emits": { "selected_trip": "selection" }
-      }
-    }
-  },
-  "fleetops_operators": {
-    "label": "Operator Performance",
-    "description": "Per-operator productivity \u2014 click an operator to map its trips.",
-    "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"byops table\"\n\"map map\"" }
-    },
-    "areas": {
-      "metrics": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS operators, SUM(TRIPS) AS total_trips, ROUND(AVG(AVG_SPEED_KMH),1) AS avg_speed, ROUND(AVG(AVG_DISTANCE_KM),2) AS avg_dist FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
-          "mapping": {
-            "metrics": [
-              { "column": "operators", "label": "Operators", "format": "number" },
-              { "column": "total_trips", "label": "Total Trips", "format": "number" },
-              { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" },
-              { "column": "avg_dist", "label": "Avg Distance (km)", "format": "number_2dp" }
-            ]
-          }
-        }
-      },
-      "byops": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT OPERATOR_ID AS operator, TRIPS AS trips FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ORDER BY trips DESC LIMIT 12",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": {
-          "title": "Top Operators by Trips",
-          "xAxis": { "field": "operator", "fieldType": "category" },
-          "series": [ { "type": "bar", "field": "trips", "label": "Trips" } ]
-        }
-      },
-      "table": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT OPERATOR_ID AS operator, COALESCE(SHIFT_TYPE,'-') AS shift, COALESCE(DRIVER_PROFILE,'-') AS profile, TRIPS AS trips, TOTAL_DISTANCE_KM AS total_km, AVG_SPEED_KMH AS avg_kmh FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_OPERATOR_PERF_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) ORDER BY trips DESC LIMIT 100",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
-        },
-        "config": { "rowKey": "operator", "maxRows": 100 },
-        "emits": { "selected_operator": "selection" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "operator-routes",
-              "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 170],
-              "width": 3,
-              "widthMinPixels": 1,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(GEOMETRY)::STRING AS route_geojson FROM TABLE(FLEET_APP.FLEET_OPS.F_VW_TRIP_SUMMARY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE GEOMETRY IS NOT NULL AND (:selected_operator IS NULL OR OPERATOR_ID = :selected_operator) ORDER BY ROUTE_DISTANCE_METERS DESC LIMIT 200",
-                "params": { "selected_operator": "viewState.selected_operator", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
             }
           ]
@@ -941,7 +768,7 @@
           "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 200",
           "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "vehicle_id", "maxRows": 200 },
+        "config": { "rowKey": "vehicle_id", "maxRows": 200, "defaultSort": { "column": "cost_usd", "direction": "desc" }, "exceptionFirst": { "column": "severity", "values": ["CRITICAL", "WARNING"] } },
         "emits": { "selected_trailer": "selection" }
       },
       "rationale": {
@@ -950,208 +777,6 @@
           "query": "SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', 'You are a fleet dispatcher. In 2 sentences recommend a concrete repositioning action for idle trailer ' || VEHICLE_ID || ' (' || COALESCE(VEHICLE_SUBTYPE,'trailer') || ') idle ' || ROUND(IDLE_DAYS,1) || ' days at ' || LAST_LOCATION_NAME || ', idleness cost $' || ROUND(COST_OF_IDLENESS_USD,0) || '.') AS ai_rationale FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE VEHICLE_ID = :selected_trailer",
           "params": { "selected_trailer": "viewState.selected_trailer", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         }
-      }
-    }
-  },
-  "dwell_trips": {
-    "label": "Trip Inspector",
-    "description": "Per-trip GPS path and dwell stops \u2014 click a trip to inspect its stops on the map.",
-    "layout": {
-      "default": { "columns": "320px 1fr", "rows": "1fr", "grid": "\"trips map\"" }
-    },
-    "areas": {
-      "trips": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT TRIP_ID AS trip_id, ANY_VALUE(VEHICLE_ID) AS vehicle, COUNT(*) AS dwells, ROUND(SUM(DWELL_MINUTES),0) AS dwell_min FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE TRIP_ID IS NOT NULL AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) GROUP BY TRIP_ID ORDER BY dwell_min DESC NULLS LAST LIMIT 100",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": { "rowKey": "trip_id", "maxRows": 100 },
-        "emits": { "selected_trip": "selection" }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "trip-path",
-              "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 200],
-              "width": 4,
-              "widthMinPixels": 2,
-              "data": {
-                "query": "SELECT TRIP_ID AS trip_id, ST_ASGEOJSON(TO_GEOGRAPHY('LINESTRING(' || LISTAGG(ST_X(POINT_GEOM) || ' ' || ST_Y(POINT_GEOM), ', ') WITHIN GROUP (ORDER BY TS) || ')'))::STRING AS route_geojson FROM FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY WHERE TRIP_ID = :selected_trip AND POINT_GEOM IS NOT NULL GROUP BY TRIP_ID HAVING COUNT(*) >= 2",
-                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
-              }
-            },
-            {
-              "type": "scatterplot",
-              "id": "dwell-stops",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "column": "sla",
-                "palette": { "OK": [46, 204, 113, 220], "WARNING": [255, 160, 0, 220], "CRITICAL": [209, 55, 78, 230] },
-                "default": [46, 204, 113, 220]
-              },
-              "radius": 120,
-              "radiusMinPixels": 4,
-              "radiusMaxPixels": 12,
-              "pickable": true,
-              "tooltip": "<b>{name}</b><br/>{sla}<br/>Dwell {dwell_min} min",
-              "data": {
-                "query": "SELECT s.LOCATION_NAME AS name, ST_X(s.AVG_POINT) AS lng, ST_Y(s.AVG_POINT) AS lat, ROUND(s.DWELL_MINUTES,0) AS dwell_min, COALESCE(a.SLA_STATUS,'OK') AS sla FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS s LEFT JOIN FLEET_APP.DWELL.VW_SLA_ALERTS a ON s.VEHICLE_ID = a.VEHICLE_ID AND s.SESSION_ID = a.SESSION_ID WHERE s.TRIP_ID = :selected_trip AND s.AVG_POINT IS NOT NULL",
-                "params": { "selected_trip": "viewState.selected_trip", "region": "context.region", "vehicle_type": "context.vehicle_type" }
-              }
-            }
-          ]
-        }
-      }
-    }
-  },
-  "dwell_live": {
-    "label": "Live Operations",
-    "description": "Last-known asset positions by state, with the most recent dwell sessions.",
-    "layout": {
-      "default": { "columns": "1fr", "rows": "1.4fr auto", "grid": "\"map\"\n\"table\"" }
-    },
-    "areas": {
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "scatterplot",
-              "id": "positions",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "base": [140, 140, 140, 180],
-                "active": [41, 181, 232, 255],
-                "matchColumn": "vehicle_id",
-                "whenViewStateEquals": "selected_driver",
-                "baseColumn": "state",
-                "basePalette": { "MOVING": [41, 181, 232, 220], "IDLE": [255, 210, 80, 220], "DWELL_WAREHOUSE": [255, 140, 0, 220], "DWELL_DESTINATION": [255, 140, 0, 220], "DWELL_STORE": [255, 140, 0, 220], "DWELL_REST_STOP": [255, 140, 0, 220], "STOPPED": [209, 55, 78, 220] }
-              },
-              "radius": 200,
-              "radiusMinPixels": 3,
-              "radiusMaxPixels": 9,
-              "pickable": true,
-              "tooltip": "<b>{vehicle_id}</b><br/>{state}",
-              "data": {
-                "query": "SELECT VEHICLE_ID AS vehicle_id, ST_X(POINT_GEOM) AS lng, ST_Y(POINT_GEOM) AS lat, STATUS AS state FROM FLEET_APP.DWELL.VW_VEHICLE_TELEMETRY WHERE POINT_GEOM IS NOT NULL AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) QUALIFY ROW_NUMBER() OVER (PARTITION BY VEHICLE_ID ORDER BY TS DESC) = 1",
-                "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-              }
-            }
-          ]
-        }
-      },
-      "table": {
-        "component": "ClickableTable",
-        "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle, SUBSTR(LOCATION_NAME,1,24) AS location, STATUS AS state, ROUND(DWELL_MINUTES,0) AS dwell_min, TO_VARCHAR(SESSION_END) AS last_seen FROM FLEET_APP.DWELL.VW_DWELL_SESSIONS WHERE (:date_range_start IS NULL OR SESSION_END >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_END < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY SESSION_END DESC LIMIT 100",
-          "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
-        },
-        "config": { "rowKey": "vehicle", "maxRows": 100 },
-        "emits": { "selected_driver": "selection" }
-      }
-    }
-  },
-  "deviation_inspector": {
-    "label": "Route Inspector",
-    "description": "Per-trip GPS trace with teleport/detour points, accuracy filter, and speed profile.",
-    "layout": {
-      "default": { "columns": "1fr 1fr 1fr", "rows": "auto auto auto 1fr auto", "grid": "\"vehsel tripsel maxacc\"\n\"tele detour .\"\n\"metrics metrics metrics\"\n\"map map map\"\n\"speed speed speed\"" }
-    },
-    "areas": {
-      "vehsel": {
-        "component": "ComboBox",
-        "data": { "query": "SELECT DISTINCT VEHICLE_ID AS value, VEHICLE_ID AS label FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS ORDER BY 1 LIMIT 200" },
-        "config": { "label": "Vehicle", "placeholder": "Select vehicle" },
-        "emits": { "selected_vehicle": "selection" }
-      },
-      "tripsel": {
-        "component": "ComboBox",
-        "data": {
-          "query": "SELECT DISTINCT TRIP_ID AS value, TRIP_ID AS label FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE (:selected_vehicle IS NULL OR VEHICLE_ID = :selected_vehicle) ORDER BY 1 LIMIT 200",
-          "params": { "selected_vehicle": "viewState.selected_vehicle" }
-        },
-        "config": { "label": "Trip", "placeholder": "Select trip" },
-        "emits": { "selected_trip": "selection" }
-      },
-      "maxacc": {
-        "component": "Slider",
-        "config": { "label": "Max GPS accuracy (m)", "min": 5, "max": 100, "step": 5, "default": 100 },
-        "emits": { "max_acc": "" }
-      },
-      "tele": {
-        "component": "Checkbox",
-        "config": { "label": "Show teleports", "default": true },
-        "emits": { "show_teleports": "" }
-      },
-      "detour": {
-        "component": "Checkbox",
-        "config": { "label": "Show detours", "default": true },
-        "emits": { "show_detours": "" }
-      },
-      "metrics": {
-        "component": "MetricCards",
-        "data": {
-          "query": "SELECT COUNT(*) AS points, SUM(IFF(IS_TELEPORT,1,0)) AS teleports, SUM(IFF(IS_DETOUR,1,0)) AS detours, ROUND(AVG(SPEED_KMH),1) AS avg_speed FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip",
-          "params": { "selected_trip": "viewState.selected_trip" },
-          "mapping": { "metrics": [ { "column": "points", "label": "GPS Points", "format": "number" }, { "column": "teleports", "label": "Teleports", "format": "number" }, { "column": "detours", "label": "Detours", "format": "number" }, { "column": "avg_speed", "label": "Avg Speed (km/h)", "format": "number_2dp" } ] }
-        }
-      },
-      "map": {
-        "component": "Map",
-        "config": {
-          "noPad": true,
-          "layers": [
-            {
-              "type": "path",
-              "id": "gps-track",
-              "geojsonColumn": "route_geojson",
-              "color": [41, 181, 232, 180],
-              "width": 3,
-              "widthMinPixels": 1,
-              "data": {
-                "query": "SELECT TRIP_ID, ST_ASGEOJSON(TO_GEOGRAPHY('LINESTRING(' || LISTAGG(LNG || ' ' || LAT, ', ') WITHIN GROUP (ORDER BY POINT_INDEX) || ')'))::STRING AS route_geojson FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip AND (:max_acc IS NULL OR GPS_ACCURACY_M <= :max_acc) GROUP BY TRIP_ID HAVING COUNT(*) >= 2",
-                "params": { "selected_trip": "viewState.selected_trip", "max_acc": "viewState.max_acc" }
-              }
-            },
-            {
-              "type": "scatterplot",
-              "id": "gps-points",
-              "lng": "lng",
-              "lat": "lat",
-              "fillColor": {
-                "column": "point_kind",
-                "palette": { "teleport": [209, 55, 78, 230], "detour": [255, 160, 0, 230], "normal": [41, 181, 232, 200] },
-                "default": [41, 181, 232, 200]
-              },
-              "radius": 30,
-              "radiusMinPixels": 2,
-              "radiusMaxPixels": 6,
-              "pickable": true,
-              "tooltip": "<b>#{point_index}</b><br/>{point_kind}<br/>{speed_kmh} km/h<br/>acc {gps_accuracy_m} m",
-              "data": {
-                "query": "SELECT POINT_INDEX AS point_index, LNG AS lng, LAT AS lat, ROUND(SPEED_KMH,0) AS speed_kmh, ROUND(GPS_ACCURACY_M,0) AS gps_accuracy_m, CASE WHEN IS_TELEPORT THEN 'teleport' WHEN IS_DETOUR THEN 'detour' ELSE 'normal' END AS point_kind FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip AND (:max_acc IS NULL OR GPS_ACCURACY_M <= :max_acc) AND (CASE WHEN IS_TELEPORT THEN COALESCE(:show_teleports,'true') WHEN IS_DETOUR THEN COALESCE(:show_detours,'true') ELSE 'true' END = 'true') ORDER BY POINT_INDEX LIMIT 5000",
-                "params": { "selected_trip": "viewState.selected_trip", "max_acc": "viewState.max_acc", "show_teleports": "viewState.show_teleports", "show_detours": "viewState.show_detours" }
-              }
-            }
-          ]
-        }
-      },
-      "speed": {
-        "component": "Chart",
-        "data": {
-          "query": "SELECT POINT_INDEX AS idx, SPEED_KMH AS speed FROM FLEET_APP.ROUTE_DEVIATION.VW_TRIP_GPS_POINTS WHERE TRIP_ID = :selected_trip ORDER BY POINT_INDEX LIMIT 2000",
-          "params": { "selected_trip": "viewState.selected_trip" }
-        },
-        "config": { "title": "Speed Profile", "xAxis": { "field": "idx", "fieldType": "number" }, "series": [ { "type": "line", "field": "speed", "label": "Speed (km/h)", "color": "#29B5E8" } ] }
       }
     }
   }
