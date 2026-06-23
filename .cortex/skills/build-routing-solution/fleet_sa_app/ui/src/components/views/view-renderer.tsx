@@ -13,6 +13,7 @@ import {
   ViewCheckboxArea,
 } from './areas';
 import { EntityDetailArea } from './areas/entity-detail';
+import type { AreaComponentName } from '@/lib/area-components';
 
 export interface AreaConfig {
   component: string;
@@ -42,7 +43,11 @@ export interface ParsedViewDef {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyAreaComponent = React.ComponentType<any>;
 
-const AREA_COMPONENTS: Record<string, AnyAreaComponent> = {
+// Area component names live in a lightweight, React-free module so the dynamic
+// spec validator can import them without the renderer's component tree. The
+// explicit Record<AreaComponentName, ...> annotation makes this map exhaustive
+// over the name list (a missing key is a compile error).
+const AREA_COMPONENTS: Record<AreaComponentName, AnyAreaComponent> = {
   MetricCards: MetricCardsArea,
   Chart: ViewChartArea,
   Table: ViewTableArea,
@@ -136,7 +141,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
     >
       {areaNames.map((areaName) => {
         const areaConfig = viewDef.areas[areaName];
-        const Component = AREA_COMPONENTS[areaConfig.component];
+        const Component = AREA_COMPONENTS[areaConfig.component as AreaComponentName];
 
         if (!Component) {
           return (
