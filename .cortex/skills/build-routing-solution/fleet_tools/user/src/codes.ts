@@ -22,3 +22,30 @@ export const SUPPORTED_PROFILES = [
   'cycling-regular',
   'foot-walking',
 ] as const;
+
+// Error codes for the render_view verb (agent-emitted dynamic pages).
+export const RenderCodes = {
+  /** spec_json did not parse as JSON, or was not a JSON object. */
+  INVALID_SPEC_JSON: 'INVALID_SPEC_JSON',
+  /** spec is missing layout.default.grid or has no areas. */
+  INVALID_SPEC_SHAPE: 'INVALID_SPEC_SHAPE',
+  /** an area references a component not in the renderer's allowlist. */
+  UNKNOWN_COMPONENT: 'UNKNOWN_COMPONENT',
+} as const;
+
+// Renderer area components an agent may emit. MUST stay in sync with
+// AREA_COMPONENTS in fleet_sa_app/ui/src/components/views/view-renderer.tsx.
+// The client-side zod validator (view-spec-schema.ts) is the authoritative
+// gate; this list gives the agent a typed early failure to self-correct.
+export const RENDER_COMPONENTS = [
+  'MetricCards',
+  'Chart',
+  'Table',
+  'ComboBox',
+  'FilterBar',
+  'Map',
+  'Slider',
+  'ClickableTable',
+  'Checkbox',
+  'EntityDetail',
+] as const;
