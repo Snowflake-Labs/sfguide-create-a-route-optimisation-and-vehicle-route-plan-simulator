@@ -5,23 +5,24 @@ import { useAppStore } from '@/lib/store';
 
 interface ViewComboBoxAreaProps {
   areaConfig: {
-    data: {
+    data?: {
       query: string;
       params?: Record<string, string>;
       mapping?: { value: string; label: string };
     };
-    config?: { label?: string; placeholder?: string; allowClear?: boolean };
+    config?: { label?: string; placeholder?: string; allowClear?: boolean; options?: Array<{ value: string; label?: string }> };
     emits?: Record<string, string>;
   };
 }
 
 export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
-  const { data, loading } = useViewData(areaConfig.data.query, areaConfig.data.params);
+  const staticOptions = areaConfig.config?.options;
+  const { data, loading } = useViewData(staticOptions ? undefined : areaConfig.data?.query, areaConfig.data?.params);
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
-  const valueField = areaConfig.data.mapping?.value || 'value';
-  const labelField = areaConfig.data.mapping?.label || 'label';
+  const valueField = areaConfig.data?.mapping?.value || 'value';
+  const labelField = areaConfig.data?.mapping?.label || 'label';
 
   const emitKey = areaConfig.emits ? Object.keys(areaConfig.emits)[0] : null;
   const currentValue = emitKey ? (viewState[emitKey] as string) || '' : '';
@@ -34,7 +35,9 @@ export function ViewComboBoxArea({ areaConfig }: ViewComboBoxAreaProps) {
     }
   };
 
-  const options = data?.rows || [];
+  const options: Array<Record<string, unknown>> = staticOptions
+    ? staticOptions.map((o) => ({ value: o.value, label: o.label ?? o.value }))
+    : (data?.rows || []);
 
   return (
     <div style={{ padding: '12px 16px' }}>

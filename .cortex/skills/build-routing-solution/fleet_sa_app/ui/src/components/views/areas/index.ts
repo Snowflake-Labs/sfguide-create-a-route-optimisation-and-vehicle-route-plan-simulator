@@ -6,3 +6,4 @@ export { ViewFilterBarArea } from './view-filter-bar';
 export { ViewMapArea } from './view-map';
 export { ViewSliderArea } from './view-slider';
 export { ViewClickableTableArea } from './view-clickable-table';
+export { ViewCheckboxArea } from './view-checkbox';

@@ -9,6 +9,7 @@ import {
   ViewMapArea,
   ViewSliderArea,
   ViewClickableTableArea,
+  ViewCheckboxArea,
 } from './areas';
 import { EntityDetailArea } from './areas/entity-detail';
 
@@ -49,6 +50,7 @@ const AREA_COMPONENTS: Record<string, AnyAreaComponent> = {
   Map: ViewMapArea,
   Slider: ViewSliderArea,
   ClickableTable: ViewClickableTableArea,
+  Checkbox: ViewCheckboxArea,
   EntityDetail: EntityDetailArea,
 };
 

@@ -13,8 +13,21 @@ function colorAccessor(color, viewState, fallback) {
         return fallback;
     if (Array.isArray(color))
         return color;
+    // CategoricalColor: per-row color by a column value via a palette.
+    if ('palette' in color) {
+        const cat = color;
+        return (d) => cat.palette[String(d[cat.column])] ?? cat.default ?? fallback;
+    }
+    // ConditionalColor: highlight the selected row; otherwise optional category palette.
     const cmp = viewState[color.whenViewStateEquals];
-    return (d) => String(d[color.matchColumn]) === String(cmp) ? color.active : color.base;
+    return (d) => {
+        if (String(d[color.matchColumn]) === String(cmp))
+            return color.active;
+        if (color.baseColumn && color.basePalette) {
+            return color.basePalette[String(d[color.baseColumn])] ?? color.base;
+        }
+        return color.base;
+    };
 }
 /** Build a PathLayer data array from rows (GeoJSON LineString or start->end). */
 function pathData(spec, rows) {
