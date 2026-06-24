@@ -81,8 +81,8 @@ fallback when no region is provisioned).
 
 | Surface | Object | Best for | Bounded by |
 |---|---|---|---|
-| **Deterministic verb** | `query_overture_places` -> `ROUTING_AGENT.TOOL_OVERTURE_SEARCH` | region/bbox-bounded place search, counts, map-ready rows | region OR explicit bbox + hard LIMIT |
-| **Deterministic verb** | `query_overture_addresses` -> `ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES` | address density/coverage | region OR explicit bbox + hard LIMIT |
+| **Deterministic verb** | `query_overture_places` -> `ROUTING_TOOLS.TOOL_OVERTURE_SEARCH` | region/bbox-bounded place search, counts, map-ready rows | region OR explicit bbox + hard LIMIT |
+| **Deterministic verb** | `query_overture_addresses` -> `ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES` | address density/coverage | region OR explicit bbox + hard LIMIT |
 | **Region SV (Analyst)** | `query_catchment` -> `FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT` | "how many / per-city" counts within the active fleet region (POIs + addresses) | active region (data pre-scoped by `analytic_layer.sql`) |
 | **Global SV (Analyst)** | `query_overture_global` -> `OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW` | worldwide place filtering/listing + attributes (brand, website) + data confidence | Analyst-generated filters only |
 
@@ -106,6 +106,16 @@ verbs remain the contract-bound path. The consumer role (`FLEET_APP_USER`) needs
 `GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES` for the Analyst
 tool to read it (granted in `role_binding.sql`); the verbs run owner's-rights and
 do not depend on that grant.
+
+## Rendering results on the inline chat map
+
+In `list` mode, `TOOL_OVERTURE_SEARCH` and `TOOL_OVERTURE_ADDRESSES` also return a
+`geometry` field holding a GeoJSON `FeatureCollection` of `Point` features
+(`properties`: name/category/city for places, city/postcode for addresses). The SA
+app's inline chat map (`RouteMapInline`) deep-scans tool output for GeoJSON, so the
+places/addresses plot automatically once the verb is listed in `tools.mapTools`
+(`app-config.json`). Aggregate modes (`city` / `category`) return `NULL` geometry —
+correct for a counts answer (no map). Point markers expose name/category on hover.
 
 ## Where these objects are defined
 
