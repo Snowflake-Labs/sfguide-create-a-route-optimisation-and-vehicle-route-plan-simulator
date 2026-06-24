@@ -119,6 +119,17 @@ DROP COMPUTE POOL IF EXISTS FLEET_APPS_COMPUTE_POOL;
 
 > Use the `routing-solution-cleanup` skill to auto-discover all tagged objects via COMMENT tracking.
 
+## Object ownership (analytic layer)
+
+The agnostic `FLEET_INTELLIGENCE.*` analytic objects the packs read are owned by skill SQL and authored in the data + analytic steps, in this order:
+
+- `scripts/seed_data.sql` — ensures `ROUTING_ANALYTICS`, the engine-namespace stubs the loader needs (`OPENROUTESERVICE_APP.CORE` + `REGION_CATALOG`), and the `ROUTE_OPTIMIZATION` base tables, then runs the canonical loader (`UNIFIED.*` + `DIM_DATASETS`).
+- `scripts/vehicle_profile_catalog.sql` — `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` + the `DIM_FLEET` asset-column stamp.
+- `scripts/projection_views.sql` — the dataset-scoped `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views.
+- `scripts/analytic_layer.sql` (step 3.5) — `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables.
+
+These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design); its legacy DWELL asset-velocity views are gated on `DWELL_ANALYSIS.DT_DWELL_ENRICHED` (absent on the agnostic install → skipped) and its `MARKETPLACE`/`BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. The legacy `build-routing-solution` Vite control app (also containing an `init.ts`) is slated for retirement once a clean-account `--with-engine` e2e confirms parity; there is no obligation to keep it in sync.
+
 ## References
 
 - `references/conventions.md` — query_tag + COMMENT tracking literals.
