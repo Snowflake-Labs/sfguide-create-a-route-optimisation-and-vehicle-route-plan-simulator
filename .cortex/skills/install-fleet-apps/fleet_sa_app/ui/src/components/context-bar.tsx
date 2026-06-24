@@ -1,7 +1,30 @@
 'use client';
 
 import { useAppStore } from '@/lib/store';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+
+const DATE_PRESETS = [
+  { label: 'Last 7 days', days: 7 },
+  { label: 'Last 30 days', days: 30 },
+  { label: 'Last 90 days', days: 90 },
+  { label: 'Last 6 months', days: 180 },
+  { label: 'Last 12 months', days: 365 },
+  { label: 'All time', days: 0 },
+];
+
+function getDateLabel(value: unknown, endValue?: unknown): string {
+  if (!value) return 'All time';
+  const dateStr = String(value);
+  if (endValue) {
+    return `${dateStr} \u2192 ${String(endValue)}`;
+  }
+  const today = new Date();
+  const target = new Date(dateStr);
+  const diffDays = Math.round((today.getTime() - target.getTime()) / (1000 * 60 * 60 * 24));
+  const match = DATE_PRESETS.find((p) => Math.abs(p.days - diffDays) < 3);
+  if (match) return match.label;
+  return `Since ${dateStr}`;
+}
 
 export interface ContextBarField {
   id: string;
@@ -37,6 +60,7 @@ interface DatasetOption {
   dataset_id: string;
   label: string;
   is_active: boolean;
+  vehicle_type: string;
 }
 
 // Dynamic dataset picker (R2.2). Lists datasets for the active region from
@@ -59,7 +83,8 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sql:
-              'SELECT DATASET_ID AS dataset_id, LABEL AS label, IS_ACTIVE AS is_active ' +
+              'SELECT DATASET_ID AS dataset_id, LABEL AS label, IS_ACTIVE AS is_active, ' +
+              'VEHICLE_TYPE AS vehicle_type ' +
               'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE REGION = :region ' +
               'ORDER BY IS_ACTIVE DESC, CREATED_AT DESC',
             params: { region },
@@ -76,6 +101,13 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
         if (!current || !ids.has(current)) {
           const active = rows.find((r) => r.is_active) ?? rows[0];
           setContext(field.id, active ? active.dataset_id : null);
+          // Dataset drives vehicle_type: keep the read-only Vehicle label in
+          // sync with the selected dataset's VEHICLE_TYPE so dashboards/agent
+          // never see a stale vehicle that disagrees with the active dataset.
+          if (active?.vehicle_type) setContext('vehicle_type', active.vehicle_type);
+        } else {
+          const sel = rows.find((r) => r.dataset_id === current);
+          if (sel?.vehicle_type) setContext('vehicle_type', sel.vehicle_type);
         }
       } catch {
         /* non-fatal: dashboards fall back to the active dataset when dataset_id is null */
@@ -94,7 +126,11 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
       <span style={labelStyle}>{field.label ?? 'Dataset'}</span>
       <select
         value={current ?? ''}
-        onChange={(e) => setContext(field.id, e.target.value)}
+        onChange={(e) => {
+          setContext(field.id, e.target.value);
+          const sel = options.find((o) => o.dataset_id === e.target.value);
+          if (sel?.vehicle_type) setContext('vehicle_type', sel.vehicle_type);
+        }}
         style={selectStyle}
       >
         {options.map((opt) => (
@@ -115,25 +151,157 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
   const start = useAppStore((s) => s.context[field.id]) as string | undefined;
   const end = useAppStore((s) => s.context['date_range_end']) as string | undefined;
   const setContext = useAppStore((s) => s.setContext);
-  const inputStyle: React.CSSProperties = { ...selectStyle, padding: '2px 6px' };
+  const [open, setOpen] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowCustom(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const applyCustom = useCallback(() => {
+    if (customStart) {
+      setContext(field.id, customStart);
+      setContext('date_range_end', customEnd || null);
+    }
+    setOpen(false);
+    setShowCustom(false);
+  }, [customStart, customEnd, setContext, field.id]);
+
+  const menuBtn: React.CSSProperties = {
+    display: 'block',
+    width: '100%',
+    padding: '8px 14px',
+    border: 'none',
+    backgroundColor: 'transparent',
+    textAlign: 'left',
+    cursor: 'pointer',
+    fontSize: '13px',
+    color: 'var(--text-primary, #111827)',
+  };
+
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
       <span style={labelStyle}>{field.label ?? 'Date range'}</span>
-      <input
-        type="date"
-        value={start ?? ''}
-        max={end ?? undefined}
-        onChange={(e) => setContext(field.id, e.target.value || null)}
-        style={inputStyle}
-      />
-      <span style={{ ...labelStyle, fontWeight: 400 }}>to</span>
-      <input
-        type="date"
-        value={end ?? ''}
-        min={start ?? undefined}
-        onChange={(e) => setContext('date_range_end', e.target.value || null)}
-        style={inputStyle}
-      />
+      <div ref={ref} style={{ position: 'relative' }}>
+        <button
+          onClick={() => setOpen(!open)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '4px 10px',
+            border: '1px solid var(--border-default, #d1d5db)',
+            borderRadius: '6px',
+            backgroundColor: 'var(--surface-primary, #fff)',
+            cursor: 'pointer',
+            fontSize: '13px',
+            color: 'var(--text-primary, #111827)',
+          }}
+        >
+          <span style={{ color: 'var(--text-secondary, #6b7280)' }}>{'\uD83D\uDCC5'}</span>
+          {getDateLabel(start, end)}
+          <span style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '10px' }}>{'\u25BC'}</span>
+        </button>
+        {open && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '100%',
+              left: 0,
+              marginTop: '4px',
+              backgroundColor: 'var(--surface-primary, #fff)',
+              border: '1px solid var(--border-default, #e5e7eb)',
+              borderRadius: '8px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+              zIndex: 100,
+              minWidth: '160px',
+              overflow: 'hidden',
+            }}
+          >
+            {DATE_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => {
+                  if (preset.days === 0) {
+                    setContext(field.id, null);
+                    setContext('date_range_end', null);
+                  } else {
+                    const d = new Date();
+                    d.setDate(d.getDate() - preset.days);
+                    setContext(field.id, d.toISOString().split('T')[0]);
+                    setContext('date_range_end', null);
+                  }
+                  setOpen(false);
+                  setShowCustom(false);
+                }}
+                style={menuBtn}
+                onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--surface-secondary, #f3f4f6)')}
+                onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+              >
+                {preset.label}
+              </button>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border-default, #e5e7eb)', margin: '4px 0' }} />
+            {!showCustom ? (
+              <button
+                onClick={() => setShowCustom(true)}
+                style={menuBtn}
+                onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--surface-secondary, #f3f4f6)')}
+                onMouseOut={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+              >
+                {'Custom range\u2026'}
+              </button>
+            ) : (
+              <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', minWidth: '32px' }}>From</span>
+                  <input
+                    type="date"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    style={{ flex: 1, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', minWidth: '32px' }}>To</span>
+                  <input
+                    type="date"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    style={{ flex: 1, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '12px' }}
+                  />
+                </div>
+                <button
+                  onClick={applyCustom}
+                  disabled={!customStart}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: customStart ? 'var(--interactive-primary, #2563eb)' : '#d1d5db',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: customStart ? 'pointer' : 'default',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </label>
   );
 }
@@ -217,7 +385,17 @@ export function ContextBar({ fields }: { fields: ContextBarField[] }) {
   const enumFields = fields.filter((f) => f.type === 'enum' && (f.options?.length ?? 0) > 0);
   const datasetFields = fields.filter((f) => f.type === 'dataset');
   const dateRangeFields = fields.filter((f) => f.type === 'date_range');
-  if (enumFields.length === 0 && datasetFields.length === 0 && dateRangeFields.length === 0) return null;
+  // Read-only fields (e.g. vehicle_type) display the current context value as a
+  // label rather than a control. The value is driven elsewhere (the dataset
+  // picker syncs vehicle_type), so the user never edits it directly.
+  const readonlyFields = fields.filter((f) => f.type === 'readonly');
+  if (
+    enumFields.length === 0 &&
+    datasetFields.length === 0 &&
+    dateRangeFields.length === 0 &&
+    readonlyFields.length === 0
+  )
+    return null;
 
   return (
     <div
@@ -254,6 +432,17 @@ export function ContextBar({ fields }: { fields: ContextBarField[] }) {
       {datasetFields.map((field) => (
         <DatasetPicker key={field.id} field={field} />
       ))}
+      {readonlyFields.map((field) => {
+        const raw = context[field.id] as string | undefined;
+        if (!raw) return null;
+        const pretty = field.options?.find((o) => o.value === raw)?.label ?? raw;
+        return (
+          <label key={field.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={labelStyle}>{field.label ?? field.id}</span>
+            <span style={{ fontSize: '13px', color: 'var(--text-primary, #111827)' }}>{pretty}</span>
+          </label>
+        );
+      })}
       {dateRangeFields.map((field) => (
         <DateRangePicker key={field.id} field={field} />
       ))}

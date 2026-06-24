@@ -4,7 +4,6 @@ import { Suspense, Component, type ReactNode } from 'react';
 import { useAppStore } from '@/lib/store';
 import { viewRegistry } from '@/lib/view-registry';
 import { ViewPicker } from './view-picker';
-import { ContextBar } from './context-bar';
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -43,7 +42,6 @@ export function ViewPanel() {
       <div style={{ flexShrink: 0, padding: '12px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
         <ViewPicker />
       </div>
-      <ContextBar />
       <div style={{ flex: 1, overflow: 'auto' }}>
         {viewDef ? (
           <ViewErrorBoundary>
