@@ -1,7 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { resolveProfile } from '../codes.js';
 
 export const catchment = defineProc({
   name: 'catchment',
@@ -28,7 +27,7 @@ export const catchment = defineProc({
     const result = await callTool(ctx.conn, Procs.catchment, [
       args.site_description,
       args.range_minutes,
-      resolveProfile(args.profile),
+      args.profile,
     ]);
     return { result };
   },

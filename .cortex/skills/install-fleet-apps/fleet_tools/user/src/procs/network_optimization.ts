@@ -1,7 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { resolveProfile } from '../codes.js';
 
 export const network_optimization = defineProc({
   name: 'network_optimization',
@@ -20,7 +19,7 @@ export const network_optimization = defineProc({
     result: t.object({}).describe('Optimization response: optimized routes and summary metrics.'),
   },
   execute: async (args, ctx) => {
-    const result = await callTool(ctx.conn, Procs.networkOptimization, [resolveProfile(args.profile)]);
+    const result = await callTool(ctx.conn, Procs.networkOptimization, [args.profile]);
     return { result };
   },
 });
