@@ -137,13 +137,17 @@ else
   step "2 data" SKIPPED
 fi
 
-# ── 3. routing contract (owned) + engine detect/delegate ────────
+# ── 3. engine detect/delegate, THEN the routing contract (owned) ────────
 if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   note "[3/8] routing contract + engine..."
-  if [ -f "$ROUTING_SETUP" ]; then
-    snow sql -c "$CONNECTION" -f "$ROUTING_SETUP" >/tmp/ifa_contract.log 2>&1 \
-      || note "  WARN: routing contract setup reported errors (see /tmp/ifa_contract.log)"
-  fi
+  # Engine FIRST. The contract (routing_platform/setup.sql) references engine
+  # objects at compile time -- its region->provider MERGE reads
+  # OPENROUTESERVICE_APP.CORE.REGION_ORS_MAP and its PROVIDERS.ORS_*_RAW adapters
+  # wrap the OPENROUTESERVICE_APP gateway functions. snow sql -f is
+  # stop-on-first-error, so applying the contract BEFORE the engine exists aborts
+  # at the first engine reference and leaves the 30 ROUTING_PLATFORM.CONTRACT.*
+  # functions uncreated (routing verbs / MCP+agent routing tools dead until a
+  # second run). So provision/detect the engine first, then apply the contract.
   if obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
     note "  ORS engine detected -> routing verbs LIVE"
   elif [ "$WITH_ENGINE" = "1" ]; then
@@ -154,6 +158,16 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   else
     note "  ORS engine ABSENT -> routing verbs install inert."
     note "  To enable live routing, re-run with --with-engine. See references/routing-engine.md"
+  fi
+  # Apply the engine-agnostic routing contract AFTER the engine so all referenced
+  # objects (REGION_ORS_MAP + gateway functions) exist and every CONTRACT.* verb
+  # compiles. Engine functions exist as soon as the SQL modules load (independent
+  # of the async graph build), so this is safe immediately post-provision. When
+  # the engine is absent (no --with-engine) the contract still runs best-effort
+  # and installs inert, matching the note above.
+  if [ -f "$ROUTING_SETUP" ]; then
+    snow sql -c "$CONNECTION" -f "$ROUTING_SETUP" >/tmp/ifa_contract.log 2>&1 \
+      || note "  WARN: routing contract setup reported errors (engine absent? see /tmp/ifa_contract.log)"
   fi
   step "3 routing" OK
 else
