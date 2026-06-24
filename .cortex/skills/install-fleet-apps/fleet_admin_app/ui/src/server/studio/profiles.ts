@@ -43,6 +43,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
       base_speed_kmh: { min: 30, max: 55 },
       generates_freight: false,
+      // Universal-generation entities (Overture + free Marketplace). Enabled on
+      // the canonical seed preset so one Data Studio run produces anchors,
+      // demographics, hazard zones, and the demand catalog. Demographics/hazard
+      // are US-only (SafeGraph / FEMA) and gracefully yield 0 rows elsewhere;
+      // anchors/demand work for any region with Overture coverage.
+      generates_anchors: true,
+      generates_demographics: true,
+      generates_hazard: true,
+      generates_demand: true,
       ghost_trailer: {
         probability: 0.05,
         start_day_min: 0,
