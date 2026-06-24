@@ -5,6 +5,19 @@ eval_types:
   - xref
   - sql
 
+# Skills kept in the repo as standalone demos/tombstones but NOT part of the
+# vehicle/industry-AGNOSTIC architecture (install-fleet-apps). They are excluded
+# from eval pass/fail accounting so the agnostic surface is the thing the gate
+# protects. The folders still exist and remain invocable; remove a name here to
+# bring it back under eval enforcement.
+exclude_skills:
+  - fleet-intelligence-food-delivery   # legacy per-vehicle demo (not in agnostic installer)
+  - fleet-intelligence-taxis           # legacy per-vehicle demo
+  - backload-matching                  # legacy industry-vertical demo (excluded pack)
+  - freight-exchange                   # legacy industry-vertical demo (excluded pack)
+  - retail-catchment                   # legacy industry-vertical demo
+  - build-routing-solution             # RETIRED (Phase C tombstone; superseded by install-fleet-apps --with-engine)
+
 scoring:
   quality_pass_threshold: 10  # out of 13
   trigger_match_min_pct: 80  # % of should_trigger prompts that match
