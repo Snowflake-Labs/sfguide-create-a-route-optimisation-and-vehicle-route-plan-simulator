@@ -45,6 +45,7 @@ PACKS_INSTALL="$SKILL_DIR/fleet_sa_app/app/packs/_lib/install.py"
 ROLE_BINDING="$SKILL_DIR/fleet_sa_app/app/role_binding.sql"
 ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
+SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 START_TS=$(date +%s)
 LOG_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/logs"
 mkdir -p "$LOG_DIR"
@@ -209,6 +210,24 @@ if [ "${SKIP_PACKS:-0}" != "1" ]; then
   step "4 packs" OK
 else
   step "4 packs" SKIPPED
+fi
+
+# ── 4.5 semantic views (Cortex Analyst SVs the consumer agent binds to) ──
+# Authors FLEET_INTELLIGENCE.SEMANTIC + the 5 agnostic SVs that FLEET_AGENT's
+# cortex_analyst_text_to_sql tools reference (agent-spec.json). Without this the
+# agent fails every question with "Schema 'FLEET_INTELLIGENCE.SEMANTIC' does not
+# exist". Runs AFTER packs (binds DWELL/ASSET_VELOCITY onto the pack-built
+# FLEET_APP.* views) and the analytic layer (ROUTE_DEVIATION + CATCHMENT sources),
+# and BEFORE roles (step 6 grants SELECT on these SVs) and agents (step 7).
+# Idempotent (CREATE OR REPLACE). Best-effort: a single SV failure (e.g. CATCHMENT
+# without Overture coverage) must not abort the install.
+if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
+  note "[4.5/8] creating Cortex Analyst semantic views (FLEET_INTELLIGENCE.SEMANTIC)..."
+  snow sql -c "$CONNECTION" -f "$SEMANTIC_VIEWS_SQL" >/tmp/ifa_semantic.log 2>&1 \
+    || note "  WARN: some semantic views failed (missing source views?); see /tmp/ifa_semantic.log"
+  step "4.5 semantic" OK
+else
+  step "4.5 semantic" SKIPPED
 fi
 
 # ── 5. synapse tool bundles ─────────────────────────────────────
