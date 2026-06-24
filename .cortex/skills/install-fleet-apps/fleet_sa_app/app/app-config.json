@@ -85,11 +85,10 @@
       "id": "region",
       "type": "enum",
       "label": "Region",
-      "default": "Europe",
+      "default": "SanFrancisco",
       "configColumn": "REGION",
+      "source": "SELECT DISTINCT REGION AS value, REGION AS label FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE ORDER BY 1",
       "options": [
-        { "value": "Europe", "label": "Europe" },
-        { "value": "Germany", "label": "Germany" },
         { "value": "SanFrancisco", "label": "San Francisco" }
       ]
     },

@@ -10,6 +10,11 @@ export interface ContextBarField {
   default?: string;
   configColumn?: string;
   options?: Array<{ value: string; label: string }>;
+  // Optional read-only SELECT returning (value, label) rows to populate an enum
+  // dynamically. When present, the enum lists ONLY what the query returns (e.g.
+  // installed regions from DIM_DATASETS) and `options` is the static fallback
+  // used while loading or if the query yields nothing.
+  source?: string;
 }
 
 const selectStyle: React.CSSProperties = {
@@ -133,6 +138,70 @@ function DateRangePicker({ field }: { field: ContextBarField }) {
   );
 }
 
+// Dynamic enum picker: when a contextBar enum declares `source` (a read-only
+// SELECT returning value,label rows), the options are fetched at runtime so the
+// control lists ONLY what is actually installed (e.g. regions present in
+// DIM_DATASETS) rather than a hardcoded list. Falls back to the static `options`
+// (and never shows an uninstalled choice). Auto-selects `default` when present in
+// the fetched set, else the first row.
+function DynamicEnumPicker({ field }: { field: ContextBarField }) {
+  const current = useAppStore((s) => s.context[field.id]) as string | undefined;
+  const setContext = useAppStore((s) => s.setContext);
+  const [options, setOptions] = useState<Array<{ value: string; label: string }>>(field.options ?? []);
+
+  useEffect(() => {
+    if (!field.source) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sql: field.source }),
+        });
+        if (!res.ok) return;
+        const body = (await res.json()) as { rows?: Array<{ value?: string; label?: string }> };
+        const rows = (body.rows ?? [])
+          .filter((r) => r.value != null && r.value !== '')
+          .map((r) => ({ value: String(r.value), label: String(r.label ?? r.value) }));
+        if (cancelled || rows.length === 0) return;
+        setOptions(rows);
+        const vals = new Set(rows.map((r) => r.value));
+        if (!current || !vals.has(current)) {
+          const fallback = field.default && vals.has(field.default) ? field.default : rows[0].value;
+          setContext(field.id, fallback);
+        }
+      } catch {
+        /* non-fatal: keep the static fallback options */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (options.length === 0) return null;
+
+  const currentVal = current ?? field.default ?? options[0]?.value ?? '';
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <span style={labelStyle}>{field.label ?? field.id}</span>
+      <select
+        value={currentVal}
+        onChange={(e) => setContext(field.id, e.target.value)}
+        style={selectStyle}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 // Renders the per-session context pickers (region / vehicle / dataset).
 //
 // R2.2: selection is PURELY client-side context. Changing a picker sets
@@ -163,6 +232,7 @@ export function ContextBar({ fields }: { fields: ContextBarField[] }) {
       }}
     >
       {enumFields.map((field) => {
+        if (field.source) return <DynamicEnumPicker key={field.id} field={field} />;
         const currentVal = (context[field.id] as string | undefined) ?? field.default ?? '';
         return (
           <label key={field.id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
