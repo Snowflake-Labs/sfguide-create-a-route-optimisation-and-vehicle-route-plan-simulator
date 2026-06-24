@@ -19,10 +19,11 @@
       "status": "active"
     },
     "admin": {
-      "description": "Installer: app install, agent creation, routing-substrate prereq checks, role binding. Admin MCP server is NOT attached to the consumer agent.",
+      "description": "Installer: app install, agent creation, routing-substrate prereq checks, role binding. Reachable via the role-gated FLEET_ADMIN_AGENT and FLEET_ADMIN_MCP. NOT attached to the consumer agent.",
       "logicalRole": "admin",
       "defaultBinding": "FLEET_APP_ADMIN",
       "mcpServer": "FLEET_ADMIN_MCP",
+      "agent": "FLEET_ADMIN_AGENT",
       "status": "active"
     }
   },

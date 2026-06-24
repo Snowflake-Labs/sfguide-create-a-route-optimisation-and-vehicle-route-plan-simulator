@@ -2,10 +2,14 @@
 #
 # install-fleet-apps / create_agents.sh
 #
-# Creates the two Cortex Agents the new architecture needs, from the trimmed
+# Creates the three Cortex Agents the new architecture needs, from the trimmed
 # (agnostic) specs under fleet_sa_app/app/:
-#   - FLEET_AGENT      (consumer) from agent-spec.json      -> attaches ROUTING_MCP
-#   - FLEET_OPS_AGENT  (operator) from ops-agent-spec.json  -> attaches FLEET_OPS_MCP
+#   - FLEET_AGENT       (consumer) from agent-spec.json       -> attaches ROUTING_MCP
+#   - FLEET_OPS_AGENT   (operator) from ops-agent-spec.json   -> attaches FLEET_OPS_MCP
+#   - FLEET_ADMIN_AGENT (installer) from admin-agent-spec.json -> attaches FLEET_ADMIN_MCP
+#
+# Each agent attaches exactly one role-scoped MCP bundle (Tenet 3 role isolation);
+# the admin agent makes the previously-dormant FLEET_ADMIN_MCP reachable.
 #
 # Idempotent: CREATE OR REPLACE AGENT. The synapse MCP servers referenced by the
 # specs must exist first (run the synapse bundle install), and the SYNAPSE_USER
@@ -20,8 +24,9 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 APP_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/fleet_sa_app/app"
 USER_SPEC="$APP_DIR/agent-spec.json"
 OPS_SPEC="$APP_DIR/ops-agent-spec.json"
+ADMIN_SPEC="$APP_DIR/admin-agent-spec.json"
 
-for f in "$USER_SPEC" "$OPS_SPEC"; do
+for f in "$USER_SPEC" "$OPS_SPEC" "$ADMIN_SPEC"; do
   [ -f "$f" ] || { echo "ERROR: missing agent spec $f"; exit 1; }
   python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" \
     || { echo "ERROR: $f is not valid JSON"; exit 1; }
@@ -47,8 +52,15 @@ SQL_FILE=$(mktemp); trap 'rm -f "$SQL_FILE"' EXIT
   echo "  FROM SPECIFICATION \$\$"
   cat "$OPS_SPEC"
   echo "\$\$;"
+  echo
+  echo "CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_AGENT"
+  echo "  COMMENT = '$TRACK'"
+  echo "  PROFILE = '{\"display_name\": \"Fleet Admin\", \"color\": \"orange\"}'"
+  echo "  FROM SPECIFICATION \$\$"
+  cat "$ADMIN_SPEC"
+  echo "\$\$;"
 } > "$SQL_FILE"
 
-echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT via $CONNECTION ..."
+echo "[create_agents] applying FLEET_AGENT + FLEET_OPS_AGENT + FLEET_ADMIN_AGENT via $CONNECTION ..."
 snow sql -c "$CONNECTION" -f "$SQL_FILE"
 echo "[create_agents] done."
