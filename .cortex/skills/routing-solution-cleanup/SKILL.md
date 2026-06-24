@@ -71,7 +71,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-routing-s
 
 ## Step 2: Discover All Objects
 
-Run the discovery queries from [`references/discovery-queries.sql`](references/discovery-queries.sql).
+Run the discovery queries from [references/discovery-queries.sql](references/discovery-queries.sql).
 
 Execute each query and collect results. Some queries use `SHOW` + `RESULT_SCAN` patterns; these must be run as two consecutive statements in the same session or via `snowflake_sql_execute`.
 
@@ -79,7 +79,7 @@ Execute each query and collect results. Some queries use `SHOW` + `RESULT_SCAN` 
 
 ## Step 3: Generate DROP Statements
 
-Based on discovery results, generate DROP statements in **strict dependency order** (most-dependent first):
+Based on discovery results, generate DROP statements in **strict dependency order** (most-dependent first). The canonical ordered teardown is in [references/drop-order.sql](references/drop-order.sql); use it as the template and keep only the objects that discovery actually found.
 
 ### Phase 1 — App (stops SPCS services)
 
