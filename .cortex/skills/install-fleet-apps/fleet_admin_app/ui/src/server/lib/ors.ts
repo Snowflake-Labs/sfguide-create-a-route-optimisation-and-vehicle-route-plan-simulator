@@ -6,6 +6,11 @@ import { sanitizeIdentifier, escapeString } from './sanitize';
 import { safeRegionIdent, normalizeRegion, isDefaultRegion } from './region';
 
 const DEFAULT_PROFILES = ['driving-car', 'driving-hgv', 'cycling-electric'];
+// Profiles the shipped bootstrap config (staged_files/ors-config.yml) actually
+// enables for the built-in region. Used as the default-region fallback when the
+// staged config cannot be read/parsed, so we never invent a profile (e.g.
+// driving-hgv) that the engine was never told to build.
+const DEFAULT_REGION_FALLBACK_PROFILES = ['driving-car', 'cycling-electric'];
 let cachedDefaultExpectedProfiles: string[] | null = null;
 
 // Issue a minimal /directions canary against the per-region ORS service.
@@ -117,8 +122,8 @@ export async function waitForOrsGraphReady(
 
 // Return the list of routing profiles expected to be loaded for the given
 // region. For the default region, we parse the ors-config.yml on the SPCS
-// stage. For other regions, we look at the most recent provision job.
-// Falls back to DEFAULT_PROFILES.
+// stage (default-region fallback: DEFAULT_REGION_FALLBACK_PROFILES). For other
+// regions, we look at the most recent provision job (fallback: DEFAULT_PROFILES).
 export async function getExpectedProfiles(region: string): Promise<string[]> {
   if (isDefaultRegion(region)) {
     if (cachedDefaultExpectedProfiles) return cachedDefaultExpectedProfiles;
@@ -126,26 +131,34 @@ export async function getExpectedProfiles(region: string): Promise<string[]> {
       const rows = await runSql(`SELECT "$1" AS CONTENT FROM @${SF_DATABASE}.CORE.ORS_SPCS_STAGE/SanFrancisco/ors-config.yml (FILE_FORMAT => (TYPE='CSV' FIELD_DELIMITER=NONE RECORD_DELIMITER=NONE))`);
       const content = rows?.[0]?.CONTENT;
       if (content && typeof content === 'string') {
-        const profileMatches = content.match(/profiles:\s*([\s\S]*?)(?:^\S|$)/m);
-        if (profileMatches) {
-          const profiles: string[] = [];
-          const enabledPattern = /([\w-]+):\s*\n[\s\S]*?enabled:\s*true/gm;
-          const block = profileMatches[1];
-          let m;
-          while ((m = enabledPattern.exec(block)) !== null) {
-            profiles.push(m[1]);
-          }
-          if (profiles.length > 0) {
-            cachedDefaultExpectedProfiles = profiles;
-            return profiles;
-          }
+        // Each profile block is rendered as:
+        //   <name>:
+        //     enabled: <true|false>
+        // Pair every profile name with ITS OWN adjacent enabled flag and keep
+        // only the enabled ones. The previous lazy regex
+        // (`[\s\S]*?enabled:\s*true`) skipped across disabled blocks, wrongly
+        // capturing disabled profiles (e.g. driving-hgv) and dropping enabled
+        // ones (e.g. cycling-electric) -> phantom "Pending" rows in the admin
+        // UI. Only a `<name>:` line immediately followed by an `enabled:` line
+        // matches, so endpoint keys (matrix/isochrones/...) are never picked up.
+        const profiles: string[] = [];
+        const profileLine = /^[ \t]+([\w-]+):[ \t]*\r?\n[ \t]+enabled:[ \t]*(true|false)\b/gm;
+        let m;
+        while ((m = profileLine.exec(content)) !== null) {
+          if (m[2] === 'true') profiles.push(m[1]);
+        }
+        if (profiles.length > 0) {
+          cachedDefaultExpectedProfiles = profiles;
+          return profiles;
         }
       }
     } catch (e: any) {
       console.log(`[getExpectedProfiles] Could not parse config from stage: ${e.message}`);
     }
-    cachedDefaultExpectedProfiles = DEFAULT_PROFILES;
-    return DEFAULT_PROFILES;
+    // Parse failed: fall back to the profiles the shipped bootstrap config
+    // actually enables. Do NOT cache the fallback so a transient stage-read
+    // failure can recover on the next call.
+    return DEFAULT_REGION_FALLBACK_PROFILES;
   }
   try {
     const safeRegion = sanitizeIdentifier(region);
