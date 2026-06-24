@@ -133,8 +133,20 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
     find "$REPO_ROOT/datasets" -name '.DS_Store' -delete 2>/dev/null || true
     # datasets/ has nested subdirs (intro/, metadata/, synthetic_ebikes/<table>/...) that the
     # loader COPY INTOs from by path, so the upload MUST preserve directory structure (--recursive).
+    # NOTE: ~85 MB uploaded file-by-file (per-file MD5/compress) — expect a few minutes with no
+    # per-file progress output; it is not stalled.
+    note "  uploading ~85 MB seed parquet (file-by-file; expect a few minutes)..."
     snow stage copy "$REPO_ROOT/datasets/" @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/ -c "$CONNECTION" --overwrite --recursive >/tmp/ifa_stage.log 2>&1 \
       || { echo "ERROR: staging seed parquet failed"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1; }
+    # Sanity check: a silent 0-file upload (e.g. wrong path, glob mismatch) otherwise only
+    # surfaces much later as empty tables. Fail fast here with a clear message.
+    STAGED_FILES=$(snow sql -c "$CONNECTION" --format=CSV -q \
+      "LIST @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE; SELECT COUNT(*) AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));" \
+      2>/dev/null | grep -oE '^[0-9]+$' | tail -1 || echo 0)
+    if [ "${STAGED_FILES:-0}" -lt 1 ]; then
+      echo "ERROR: seed stage @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE has 0 files after copy (expected the datasets/ tree)"; tail -20 /tmp/ifa_stage.log; step "2 data" FAILED; exit 1
+    fi
+    note "  staged $STAGED_FILES seed files"
     sed 's|OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE|FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE|g; s|OPENROUTESERVICE_APP.CORE.PARQUET_FF|FLEET_INTELLIGENCE.CORE.PARQUET_FF|g' \
       "$REPO_ROOT/datasets/load-seed-data.sql" > /tmp/ifa_loader.sql
     snow sql -c "$CONNECTION" -f /tmp/ifa_loader.sql >/tmp/ifa_load.log 2>&1 \
