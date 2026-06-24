@@ -10,14 +10,14 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-sn
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
@@ -180,10 +180,10 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_ISOCHRONE: Wraps ORS ISOCHRONES with AI geocoding
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -327,11 +327,11 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_POI_IN_ISOCHRONE: Find Overture Maps POIs (cafes, restaurants, shops, etc.) reachable within X minutes of a location.
 -- Combines ISOCHRONES_CLIPPED with OVERTURE_MAPS__PLACES.CARTO.PLACE via ST_WITHIN.
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE(
     LOCATION_DESCRIPTION VARCHAR,
     RANGE_MINUTES NUMBER,
     POI_CATEGORY VARCHAR,
@@ -548,7 +548,7 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ============================================================================
 -- TOOL_OVERTURE_SEARCH: Region-wide (NON-isochrone) Overture Maps Places search.
@@ -556,7 +556,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, 
 --   bounded by either a provisioned region's REGION_CATALOG.BOUNDARY polygon OR an
 --   explicit bbox. Complements TOOL_POI_IN_ISOCHRONE (which is drive-time bound).
 --
--- Cost-safe by construction (the geosql discipline, Snowflake-flavored):
+-- Cost-safe by construction:
 --   1. bbox prefilter (ST_X/ST_Y BETWEEN) for partition pruning, THEN
 --   2. ST_WITHIN(BOUNDARY) authoritative polygon refine (NULL-safe -> bbox-only
 --      when no boundary / bbox mode), THEN
@@ -568,7 +568,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, 
 --   'category' (counts by basic_category). POI_CATEGORY is optional; when given it
 --   matches BASIC_CATEGORY / CATEGORIES:primary with an equality + LIKE fallback.
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_SEARCH(
     REGION VARCHAR DEFAULT NULL,
     POI_CATEGORY VARCHAR DEFAULT NULL,
     GROUP_BY VARCHAR DEFAULT NULL,
@@ -724,7 +724,7 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH(VARCHAR, VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_SEARCH(VARCHAR, VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- ============================================================================
 -- TOOL_OVERTURE_ADDRESSES: Region/bbox-bounded Overture address density.
@@ -733,7 +733,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH(VARCHAR, V
 --   NULL-safe ST_WITHIN(BOUNDARY) + hard LIMIT). GROUP_BY: 'city' (default;
 --   address counts per city) or 'list' (sampled individual addresses).
 -- ============================================================================
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES(
     REGION VARCHAR DEFAULT NULL,
     GROUP_BY VARCHAR DEFAULT NULL,
     MAX_RESULTS NUMBER DEFAULT 100,
@@ -858,10 +858,10 @@ EXCEPTION
 END;
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES(VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES(VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- TOOL_ROUTE_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
@@ -987,7 +987,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
         return {'error': f'OPTIMIZATION FAILED: {str(e)}', 'status': 'FAILED'}
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_NETWORK_OPTIMIZATION: Distribution-network delivery plan (config-driven demo).
@@ -998,7 +998,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR
 -- created BEFORE the data tables exist — but it will only execute correctly
 -- once setup-agent-playground has been run.
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
@@ -1201,7 +1201,7 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_DELIVERY_OPTIMIZATION: Pre-geocoded fleet delivery demo.
@@ -1209,7 +1209,7 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION(VARCH
 -- Reads DEMO_DELIVERY_STOPS and depot/region from DEMO_DEPOT
 -- (created by setup-agent-playground).
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
 )
 RETURNS VARIANT
@@ -1292,13 +1292,13 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
 -- TOOL_CATCHMENT: Area profile within a drive-time catchment of a site.
 -- Reads DEMO_AREA_DEMOGRAPHICS and the active region from DEMO_DEPOT.
 ----------------------------------------------------------------------
-CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT(
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT(
     SITE_DESCRIPTION VARCHAR,
     RANGE_MINUTES    FLOAT DEFAULT 10,
     PROFILE          VARCHAR DEFAULT 'driving-car'
@@ -1453,7 +1453,7 @@ try {
 }
 $$;
 
-ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- CREATE AGENT with tool bindings
 CREATE OR REPLACE AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT
@@ -1662,46 +1662,46 @@ tools:
 tool_resources:
   tool_directions:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_isochrone:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_poi_in_isochrone:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_network_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_delivery_optimization:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   tool_catchment:
     type: procedure
-    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT
+    identifier: FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
 $$;
 
 -- Validation
-SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
-UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
-UNION ALL SELECT 'TOOL_POI_IN_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_POI_IN_ISOCHRONE'
-UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
-UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_AGENT' AND PROCEDURE_NAME = 'TOOL_CATCHMENT';
+SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
+UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
+UNION ALL SELECT 'TOOL_POI_IN_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_POI_IN_ISOCHRONE'
+UNION ALL SELECT 'TOOL_ROUTE_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ROUTE_OPTIMIZATION'
+UNION ALL SELECT 'TOOL_NETWORK_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_NETWORK_OPTIMIZATION'
+UNION ALL SELECT 'TOOL_DELIVERY_OPTIMIZATION', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DELIVERY_OPTIMIZATION'
+UNION ALL SELECT 'TOOL_CATCHMENT', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_CATCHMENT';

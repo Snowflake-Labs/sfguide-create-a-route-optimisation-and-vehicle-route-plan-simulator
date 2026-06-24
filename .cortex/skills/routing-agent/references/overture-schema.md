@@ -1,9 +1,9 @@
 # Overture Maps Reference (Snowflake)
 
 How this accelerator queries Overture Maps data, and the three agent-facing
-surfaces that expose it. This encodes the cost-safe discipline learned from the
-`geosql` skill, adapted to Snowflake + the fleet stack (region boundaries instead
-of bbox-only, audited synapse verbs instead of free-form SQL).
+surfaces that expose it. The querying is cost-safe by construction and tuned for
+the fleet stack (region boundaries instead of bbox-only, audited synapse verbs
+instead of free-form SQL).
 
 ## Marketplace shares
 
@@ -50,7 +50,7 @@ Common `BASIC_CATEGORY` values: `coffee_shop`, `restaurant`, `fast_food_restaura
 `hotel`, `bank`, `school`. Category matching uses equality on `BASIC_CATEGORY`
 and `CATEGORIES:primary` plus a `LIKE '%cat%'` fallback, so partial names work.
 
-## Cost-safe query discipline (the geosql lesson, Snowflake-flavored)
+## Cost-safe query discipline
 
 Every Overture query MUST be bounded. The canonical pattern, used by both the
 verbs and `analytic_layer.sql`:
@@ -73,10 +73,9 @@ ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC
 LIMIT 1;
 ```
 
-Unlike geosql (which resolves an area from `division_area` to a bbox), this stack
-already bakes a real boundary polygon for every provisioned region, so we filter
-with the polygon and only use bbox as the cheap prefilter (or as a fallback when
-no region is provisioned).
+This stack already bakes a real boundary polygon for every provisioned region, so
+we filter with the polygon and only use bbox as the cheap prefilter (or as a
+fallback when no region is provisioned).
 
 ## Three agent-facing surfaces
 

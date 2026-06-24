@@ -6,8 +6,8 @@ import { OvertureCodes, OVERTURE_PLACES_GROUP_BY } from '../codes.js';
 /**
  * Region-wide (NON-isochrone) Overture Maps Places search. Complements `find_poi`
  * (which is drive-time bound): this verb answers "how many / list / which cities"
- * questions across a whole region or an explicit bbox, with the geosql cost-safe
- * discipline enforced by the underlying TOOL_OVERTURE_SEARCH proc (bbox prune +
+ * questions across a whole region or an explicit bbox, with cost-safe bounding
+ * enforced by the underlying TOOL_OVERTURE_SEARCH proc (bbox prune +
  * ST_WITHIN(BOUNDARY) refine + hard LIMIT capped at 500).
  */
 export const query_overture_places = defineProc({
