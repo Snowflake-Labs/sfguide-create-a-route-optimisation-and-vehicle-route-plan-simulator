@@ -9,4 +9,6 @@
 export const OpsCodes = {
   /** region is not a provisioned (DEPLOYED) routing region. */
   REGION_NOT_PROVISIONED: 'REGION_NOT_PROVISIONED',
+  /** set_active_context was called with neither region nor vehicle_type. */
+  NO_CONTEXT_VALUE: 'NO_CONTEXT_VALUE',
 } as const;

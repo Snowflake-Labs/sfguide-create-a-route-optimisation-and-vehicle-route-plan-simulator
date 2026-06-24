@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { query, run } from '@/lib/snowflake';
+import { query } from '@/lib/snowflake';
 import { logger } from '@/lib/logger';
 import { withLogging } from '@/lib/api-handler';
 import { getServerConfig } from '@/lib/server-config';
@@ -66,15 +66,9 @@ function resolveRegion(): ResolvedRegion {
   };
 }
 
-function resolveSchemas(cfg: ResolvedRegion, requested?: string[]): string[] {
-  if (!requested || requested.length === 0) return [cfg.schemas[0]];
-  const out: string[] = [];
-  for (const raw of requested) {
-    const s = String(raw).trim().toUpperCase();
-    if (IDENT.test(s) && cfg.schemas.includes(s)) out.push(s);
-  }
-  return out.length > 0 ? out : [cfg.schemas[0]];
-}
+const DEFAULT_OPS_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_OPS';
+// Verb name (in the ops schema) is fixed; only region/vehicle_type are bound.
+const VERB = 'set_active_context';
 
 async function handleGet() {
   const cfg = resolveRegion();
@@ -101,9 +95,15 @@ async function handleGet() {
   }
 }
 
-// POST writes the SHARED per-schema CONFIG (the GLOBAL active scope). As of R3/R4
+// POST promotes the SHARED per-schema CONFIG (the GLOBAL active scope). As of R3/R4
 // this is an OPS/ADMIN-only "promote active scope" action — consumers do per-session
 // selection via the contextBar (which no longer calls this) + scope-arg functions.
+//
+// The mutation now flows through the audited synapse verb set_active_context
+// (Tenet 7) instead of a raw UPDATE: the verb writes the CONFIG tables inside the
+// envelope (recorded in VERB_ATTEMPT) and rejects an unprovisioned region. Only
+// region / vehicle_type are accepted (the two real contextBar config columns);
+// the verb owns the dashboard-schema fan-out.
 async function handlePost(req: Request) {
   const g = await requireOps(req);
   if (!g.ok) {
@@ -118,40 +118,36 @@ async function handlePost(req: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const cfg = resolveRegion();
+  const region = typeof body.region === 'string' && body.region.trim() ? body.region.trim() : null;
+  const vehicleType =
+    typeof body.vehicle_type === 'string' && body.vehicle_type.trim() ? body.vehicle_type.trim() : null;
 
-  // Build SET pairs for any body key matching a known contextBar field id with
-  // a non-empty string value. (`schemas` is a control key, not a context value.)
-  const sets: string[] = [];
-  const binds: (string | number | null)[] = [];
-  const applied: Record<string, string> = {};
-  for (const [fieldId, col] of Object.entries(cfg.contextColumns)) {
-    const v = body[fieldId];
-    if (typeof v === 'string' && v.length > 0) {
-      sets.push(`${col} = ?`);
-      binds.push(v);
-      applied[fieldId] = v;
-    }
+  if (!region && !vehicleType) {
+    return NextResponse.json({ error: 'Provide at least one context value (region, vehicle_type)' }, { status: 400 });
   }
 
-  if (sets.length === 0) {
-    return NextResponse.json(
-      { error: `Provide at least one context value (${Object.keys(cfg.contextColumns).join(', ')})` },
-      { status: 400 },
-    );
-  }
+  // Optional client-supplied idempotency key (opt-in replay safety; A1 pattern).
+  const idemKey =
+    typeof body.idempotency_key === 'string' && body.idempotency_key.trim() ? body.idempotency_key.trim() : null;
 
-  const schemas = resolveSchemas(cfg, Array.isArray(body.schemas) ? (body.schemas as string[]) : undefined);
-  const updated: Record<string, number> = {};
+  const opsSchema = getServerConfig().ops?.schema ?? DEFAULT_OPS_SCHEMA;
   try {
-    for (const schema of schemas) {
-      const n = await run(`UPDATE ${cfg.db}.${schema}.CONFIG SET ${sets.join(', ')}`, binds);
-      updated[schema] = n;
+    // CALL <opsSchema>.set_active_context(region, vehicle_type, IDEMPOTENCY_KEY)
+    const rows = await query(`CALL ${opsSchema}.${VERB}(?, ?, ?)`, [region, vehicleType, idemKey]);
+    const raw = rows[0] ? Object.values(rows[0] as Record<string, unknown>)[0] : null;
+    let result: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        result = JSON.parse(raw);
+      } catch {
+        /* leave as string */
+      }
     }
-    return NextResponse.json({ ok: true, applied, updated });
+    const r = (result ?? {}) as { applied?: Record<string, string>; updated?: Record<string, number> };
+    return NextResponse.json({ ok: true, applied: r.applied ?? {}, updated: r.updated ?? {} });
   } catch (err) {
-    logger.error('region-set', { schemas, applied }, err);
-    return NextResponse.json({ error: 'Failed to set active context' }, { status: 500 });
+    logger.error('region-set', { region, vehicleType }, err);
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed to set active context' }, { status: 500 });
   }
 }
 

@@ -20,6 +20,7 @@ const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_OPS';
 // verb -> number of business args (excluding the trailing IDEMPOTENCY_KEY).
 const DEFAULT_VERBS: Record<string, number> = {
   set_active_region: 1,
+  set_active_context: 2,
   service_control: 2,
   service_status: 1,
   service_inventory: 0,

@@ -48,6 +48,7 @@
     "schema": "FLEET_INTELLIGENCE.SYNAPSE_OPS",
     "verbs": {
       "set_active_region": 1,
+      "set_active_context": 2,
       "service_control": 2,
       "service_status": 1,
       "service_inventory": 0,
