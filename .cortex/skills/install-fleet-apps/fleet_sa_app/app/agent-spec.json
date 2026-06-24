@@ -25,6 +25,9 @@
         "question": "How many coffee shops are in the active region, by city?"
       },
       {
+        "question": "Show hospitals in the active region on the map"
+      },
+      {
         "question": "Build me a safety scorecard dashboard for the active region"
       }
     ]

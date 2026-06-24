@@ -8,7 +8,7 @@
 // User routing tools so directions / isochrones / POIs / catchments render as a
 // map instead of raw JSON.
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from '../views/areas/map-view';
@@ -81,6 +81,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
         data: fc,
         filled: true,
         stroked: true,
+        pickable: true,
         getFillColor: [41, 181, 232, 60],
         getLineColor: [41, 181, 232, 220],
         getLineWidth: 3,
@@ -93,6 +94,20 @@ export function RouteMapInline(props: Record<string, unknown>) {
     ];
   }, [features, fc]);
 
+  // Hover tooltip from a feature's properties (e.g. Overture place name/category,
+  // address city/postcode). Returns null for features with no properties so
+  // geometry-only results (directions / isochrones) show no tooltip.
+  const getTooltip = useCallback((info: { object?: GeoJSON.Feature }) => {
+    const props = info?.object?.properties as Record<string, unknown> | null | undefined;
+    if (!props) return null;
+    const title = props.name != null ? String(props.name) : '';
+    const meta = [props.category, props.city, props.postcode]
+      .filter((v) => v != null && v !== '')
+      .map(String);
+    const text = [title, meta.join(' \u00b7 ')].filter(Boolean).join('\n');
+    return text ? { text } : null;
+  }, []);
+
   if (features.length === 0) {
     return (
       <div style={{ padding: '12px', fontSize: '13px', color: 'var(--text-secondary, #6b7280)' }}>
@@ -103,7 +118,7 @@ export function RouteMapInline(props: Record<string, unknown>) {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: 360, borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-default, #e5e7eb)' }}>
-      <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey }} />
+      <MapView layers={layers} fitTo={{ coords: fitCoords, focusKey }} getTooltip={getTooltip} />
     </div>
   );
 }

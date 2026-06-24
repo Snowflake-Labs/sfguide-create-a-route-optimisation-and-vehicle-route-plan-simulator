@@ -595,6 +595,7 @@ DECLARE
     v_cat VARCHAR;
     v_cat_l VARCHAR;
     v_has_cat BOOLEAN;
+    v_geometry VARIANT;
     v_mode VARCHAR;
     v_max NUMBER;
     v_bounds VARCHAR;
@@ -682,20 +683,26 @@ BEGIN
 
     IF (v_mode = 'city') THEN
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''city'', city, ''state'', state, ''poi_count'', cnt))' ||
-                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt, NULL AS geometry FROM (' ||
                  '  SELECT p.ADDRESSES[0]:locality::STRING AS city, p.ADDRESSES[0]:region::STRING AS state, COUNT(*) AS cnt' ||
                  v_bounds ||
                  '   AND p.ADDRESSES[0]:locality IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
     ELSEIF (v_mode = 'category') THEN
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''basic_category'', basic_cat, ''poi_count'', cnt))' ||
-                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt, NULL AS geometry FROM (' ||
                  '  SELECT p.BASIC_CATEGORY AS basic_cat, COUNT(*) AS cnt' ||
                  v_bounds ||
                  '   AND p.BASIC_CATEGORY IS NOT NULL GROUP BY 1 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
     ELSE
+        -- list mode also emits a GeoJSON FeatureCollection of Point features so the
+        -- inline chat map can plot the places (RouteMapInline deep-scans for GeoJSON).
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''name'', name, ''longitude'', lon, ''latitude'', lat,' ||
                  '   ''primary_category'', primary_cat, ''basic_category'', basic_cat, ''city'', city, ''state'', state))' ||
-                 '         WITHIN GROUP (ORDER BY name) AS out_rows, COUNT(*) AS cnt FROM (' ||
+                 '         WITHIN GROUP (ORDER BY name) AS out_rows, COUNT(*) AS cnt,' ||
+                 '       OBJECT_CONSTRUCT(''type'', ''FeatureCollection'', ''features'',' ||
+                 '         COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(''type'', ''Feature'',' ||
+                 '           ''geometry'', OBJECT_CONSTRUCT(''type'', ''Point'', ''coordinates'', ARRAY_CONSTRUCT(lon, lat)),' ||
+                 '           ''properties'', OBJECT_CONSTRUCT(''name'', name, ''category'', basic_cat, ''city'', city))), ARRAY_CONSTRUCT())) AS geometry FROM (' ||
                  '  SELECT p.NAMES:primary::STRING AS name, ST_X(p.GEOMETRY) AS lon, ST_Y(p.GEOMETRY) AS lat,' ||
                  '         p.CATEGORIES:primary::STRING AS primary_cat, p.BASIC_CATEGORY AS basic_cat,' ||
                  '         p.ADDRESSES[0]:locality::STRING AS city, p.ADDRESSES[0]:region::STRING AS state' ||
@@ -709,7 +716,7 @@ BEGIN
         v_has_cat, v_cat_l, v_cat_l, v_cat_l, v_cat_l));
     LET dc CURSOR FOR res;
     OPEN dc;
-    FETCH dc INTO v_rows, v_cnt;
+    FETCH dc INTO v_rows, v_cnt, v_geometry;
     CLOSE dc;
 
     RETURN OBJECT_CONSTRUCT(
@@ -720,7 +727,8 @@ BEGIN
         'bbox', OBJECT_CONSTRUCT('min_lon', v_xmn, 'min_lat', v_ymn, 'max_lon', v_xmx, 'max_lat', v_ymx),
         'boundary_refined', v_region_found,
         'count', COALESCE(v_cnt, 0),
-        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()));
+        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()),
+        'geometry', v_geometry);
 EXCEPTION
     WHEN OTHER THEN
         RETURN OBJECT_CONSTRUCT('error', 'TOOL_OVERTURE_SEARCH failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
@@ -756,6 +764,7 @@ DECLARE
     v_ymn FLOAT;
     v_ymx FLOAT;
     v_region_found BOOLEAN DEFAULT FALSE;
+    v_geometry VARIANT;
     v_mode VARCHAR;
     v_max NUMBER;
     v_bounds VARCHAR;
@@ -825,15 +834,21 @@ BEGIN
         '         ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)) )';
 
     IF (v_mode = 'list') THEN
+        -- list mode also emits a GeoJSON FeatureCollection of Point features so the
+        -- inline chat map can plot the addresses (RouteMapInline deep-scans for GeoJSON).
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''id'', id, ''longitude'', lon, ''latitude'', lat,' ||
-                 '   ''city'', city, ''postcode'', postcode)) AS out_rows, COUNT(*) AS cnt FROM (' ||
+                 '   ''city'', city, ''postcode'', postcode)) AS out_rows, COUNT(*) AS cnt,' ||
+                 '       OBJECT_CONSTRUCT(''type'', ''FeatureCollection'', ''features'',' ||
+                 '         COALESCE(ARRAY_AGG(OBJECT_CONSTRUCT(''type'', ''Feature'',' ||
+                 '           ''geometry'', OBJECT_CONSTRUCT(''type'', ''Point'', ''coordinates'', ARRAY_CONSTRUCT(lon, lat)),' ||
+                 '           ''properties'', OBJECT_CONSTRUCT(''city'', city, ''postcode'', postcode))), ARRAY_CONSTRUCT())) AS geometry FROM (' ||
                  '  SELECT a.ID AS id, ST_X(a.GEOMETRY) AS lon, ST_Y(a.GEOMETRY) AS lat,' ||
                  '         a.ADDRESS_LEVELS[1]:value::STRING AS city, a.POSTCODE::STRING AS postcode' ||
                  v_bounds ||
                  '   LIMIT ' || v_max::STRING || ')';
     ELSE
         v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''city'', city, ''address_count'', cnt))' ||
-                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt, NULL AS geometry FROM (' ||
                  '  SELECT a.ADDRESS_LEVELS[1]:value::STRING AS city, COUNT(*) AS cnt' ||
                  v_bounds ||
                  '   AND a.ADDRESS_LEVELS[1]:value IS NOT NULL GROUP BY 1 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
@@ -844,7 +859,7 @@ BEGIN
         v_region, v_region, v_region));
     LET dc CURSOR FOR res;
     OPEN dc;
-    FETCH dc INTO v_rows, v_cnt;
+    FETCH dc INTO v_rows, v_cnt, v_geometry;
     CLOSE dc;
 
     RETURN OBJECT_CONSTRUCT(
@@ -854,7 +869,8 @@ BEGIN
         'bbox', OBJECT_CONSTRUCT('min_lon', v_xmn, 'min_lat', v_ymn, 'max_lon', v_xmx, 'max_lat', v_ymx),
         'boundary_refined', v_region_found,
         'count', COALESCE(v_cnt, 0),
-        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()));
+        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()),
+        'geometry', v_geometry);
 EXCEPTION
     WHEN OTHER THEN
         RETURN OBJECT_CONSTRUCT('error', 'TOOL_OVERTURE_ADDRESSES failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
