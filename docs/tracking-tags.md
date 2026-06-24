@@ -206,11 +206,10 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 
 | Object | Type | Location |
 |--------|------|----------|
-| `FLEET_INTELLIGENCE.ROUTING_AGENT` | Schema | Database |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OPTIMIZATION` | Procedure | Schema |
-| `FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT` | Cortex Agent | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS` | Schema | Database |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS` | Procedure | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE` | Procedure | Schema |
+| `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION` | Procedure | Schema |
 
 ### travel-time-matrix
 

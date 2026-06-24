@@ -33,7 +33,7 @@ the per-account script never reuses them, so a clean install works on any accoun
 
 ## Engine coupling note
 
-The User bundle's verbs wrap `FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_*` ->
+The User bundle's verbs wrap `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` ->
 `ROUTING_PLATFORM.CONTRACT.*` -> the ORS provider. They install regardless of
 engine state but only execute live routing when an ORS engine is present (see
 `routing-engine.md`). `ROUTING_MCP` lives in `OPENROUTESERVICE_APP.ROUTING`

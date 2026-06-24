@@ -18,7 +18,7 @@ never see or invoke an Ops verb. The in-app Ops console reaches these verbs via 
 ## Design
 
 - **Wrap, don't rewrite.** Each User verb is a thin `defineProc` whose `execute` does
-  `CALL FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_*(...)` and returns the VARIANT. The synapse
+  `CALL FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*(...)` and returns the VARIANT. The synapse
   envelope adds typed args, validation, audit logging (`verb_attempt` HYBRID TABLE),
   idempotency (trailing `IDEMPOTENCY_KEY`), and role-scoped GRANTs over the proven procs.
 - **Per-bundle MCP servers.** synapse emits one MCP server per app and roles only drive

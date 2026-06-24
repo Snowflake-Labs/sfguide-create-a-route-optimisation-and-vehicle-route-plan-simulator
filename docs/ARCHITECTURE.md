@@ -70,7 +70,7 @@ graph LR
         DW[DWELL_ANALYSIS]
         RC[CATCHMENT]
         RO[ROUTE_OPTIMIZATION]
-        RA[ROUTING_AGENT]
+        RA[ROUTING_TOOLS]
     end
 
     UNI -->|projection views| TAX
@@ -130,7 +130,7 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 | `DWELL_ANALYSIS` | dwell-analysis | CONFIG, 8 Dynamic Tables, `SLA_ALERT_LOG`, geofences, SLA thresholds |
 | `CATCHMENT` | retail-catchment | `POIS`, regional addresses, competitor data |
 | `ROUTE_OPTIMIZATION` | route-optimization | Overture Maps places, CARTO data, VRP notebooks |
-| `ROUTING_AGENT` | routing-agent | 3 tool procedures + Cortex Agent definition |
+| `ROUTING_TOOLS` | routing-agent | 9 routing/demo TOOL_* procedures (relocated from `ROUTING_AGENT`; standalone Cortex Agent retired in favor of the app-level FLEET_AGENT) |
 
 ## ORS Control App
 

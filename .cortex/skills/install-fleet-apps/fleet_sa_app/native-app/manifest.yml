@@ -27,7 +27,7 @@ configuration:
 
 references:
   - routing_substrate:
-      label: "Routing substrate (FLEET_INTELLIGENCE.CORE / ROUTING_AGENT)"
+      label: "Routing substrate (FLEET_INTELLIGENCE.CORE / ROUTING_TOOLS)"
       description: "Provisioned ORS/VROOM routing functions the User tools wrap."
       privileges: [USAGE]
       object_type: SCHEMA

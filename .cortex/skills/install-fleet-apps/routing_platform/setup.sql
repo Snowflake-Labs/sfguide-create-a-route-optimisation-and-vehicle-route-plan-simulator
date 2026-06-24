@@ -2,7 +2,7 @@
 -- ROUTING_PLATFORM — engine-agnostic routing contract (Step 4B.2)
 -- =============================================================================
 -- Source of truth for the engine-agnostic routing layer. Consumers (synapse
--- ROUTING_MCP verbs, ROUTING_AGENT.TOOL_* procs, dashboards, agents) depend ONLY
+-- ROUTING_MCP verbs, ROUTING_TOOLS.TOOL_* procs, dashboards, agents) depend ONLY
 -- on ROUTING_PLATFORM.CONTRACT.*. The contract dispatches each call to a routing
 -- PROVIDER:
 --   * ors_internal  -> OPENROUTESERVICE_APP (ORS/VROOM SPCS engine, via _*_RAW)

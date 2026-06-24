@@ -1,5 +1,5 @@
 // Fully-qualified names of the existing routing procedures the User verbs wrap.
-// Source of truth for these is the deployed ROUTING_AGENT schema; renaming is a
+// Source of truth for these is the deployed ROUTING_TOOLS schema; renaming is a
 // one-line change here.
 //
 // Engine-agnostic (Step 4B.2): these TOOL_* procs keep their AI-geocoding /
@@ -10,13 +10,13 @@
 // region->provider default + optional per-call provider override. The verbs
 // therefore route engine-agnostically without naming any engine.
 export const Procs = {
-  directions: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS',
-  isochrone: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE',
-  optimization: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION',
-  poiInIsochrone: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE',
-  overtureSearch: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH',
-  overtureAddresses: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES',
-  catchment: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT',
-  deliveryOptimization: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DELIVERY_OPTIMIZATION',
-  networkOptimization: 'FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_NETWORK_OPTIMIZATION',
+  directions: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS',
+  isochrone: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE',
+  optimization: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION',
+  poiInIsochrone: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE',
+  overtureSearch: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_SEARCH',
+  overtureAddresses: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_OVERTURE_ADDRESSES',
+  catchment: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT',
+  deliveryOptimization: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION',
+  networkOptimization: 'FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION',
 } as const;
