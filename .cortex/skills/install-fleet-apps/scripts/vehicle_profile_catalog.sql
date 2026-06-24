@@ -51,7 +51,7 @@ INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
 SELECT 'hgv','driving-hgv','trucking',40.00,4.00,16.50,2.55,11.50,0.18,
        PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500
 UNION ALL
-SELECT 'car','driving-car','driving',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000
+SELECT 'car','driving-car','urban_mobility',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000
 UNION ALL
 SELECT 'ebike','cycling-electric','food_delivery',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300;
 
