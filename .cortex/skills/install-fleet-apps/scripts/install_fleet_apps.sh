@@ -62,6 +62,7 @@ ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-age
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 START_TS=$(date +%s)
+ROUTING_SUBSTRATE="(routing step not run)"   # set by step 3; surfaced in friction log + summary
 LOG_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/logs"
 mkdir -p "$LOG_DIR"
 FRICTION_LOG="$LOG_DIR/friction-log_$(date +%Y-%m-%d_%H-%M).md"
@@ -235,22 +236,28 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
     note "  deploying ROUTING_TOOLS.TOOL_* substrate (routing verb dependency)..."
     snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1 \
       || note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
-    # Assert all 9 TOOL_* procs exist so a missing-substrate regression fails
-    # loudly here rather than as a silent "routing service issues" at agent runtime.
+    # Assert all 9 TOOL_* procs exist. Non-fatal by design (matches the
+    # best-effort routing step), but a shortfall is recorded in ROUTING_SUBSTRATE
+    # so the friction log AND the final summary highlight it loudly instead of it
+    # surfacing as a silent "routing service issues" at agent runtime.
     TOOL_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
       "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
       2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
     if [ "${TOOL_N:-0}" -lt 9 ]; then
-      note "  WARN: expected 9 ROUTING_TOOLS.TOOL_* procs, found ${TOOL_N:-0} (routing verbs may fail; see /tmp/ifa_routing_tools.log)"
+      ROUTING_SUBSTRATE="DEGRADED: only ${TOOL_N:-0}/9 ROUTING_TOOLS.TOOL_* procs deployed — routing verbs will fail at agent runtime (see /tmp/ifa_routing_tools.log)"
+      note "  WARN: $ROUTING_SUBSTRATE"
     else
-      note "  ROUTING_TOOLS substrate OK (9 TOOL_* procs)"
+      ROUTING_SUBSTRATE="OK (9/9 ROUTING_TOOLS.TOOL_* procs)"
+      note "  ROUTING_TOOLS substrate $ROUTING_SUBSTRATE"
     fi
   else
-    note "  WARN: ROUTING_TOOLS source not found at $ROUTING_TOOLS_SQL (routing verbs will fail)"
+    ROUTING_SUBSTRATE="MISSING SOURCE: $ROUTING_TOOLS_SQL not found — routing verbs will fail"
+    note "  WARN: $ROUTING_SUBSTRATE"
   fi
   step "3 routing" OK
 else
   step "3 routing" SKIPPED
+  ROUTING_SUBSTRATE="SKIPPED (SKIP_ROUTING=1)"
 fi
 
 # ── 3.5 analytic layer (agnostic FLEET_INTELLIGENCE.* objects the packs read) ──
@@ -371,6 +378,13 @@ ELAPSED=$(( $(date +%s) - START_TS ))
   echo "|------|--------|"
   for s in "${STEP_STATUS[@]}"; do echo "| ${s%%|*} | ${s##*|} |"; done
   echo
+  echo "## Routing tool substrate"
+  echo "- ROUTING_TOOLS.TOOL_* (routing verb dependency): **${ROUTING_SUBSTRATE}**"
+  case "$ROUTING_SUBSTRATE" in
+    OK*) : ;;
+    *) echo "- ACTION: routing verbs (get_directions, optimize_routes, ...) depend on these procs; re-run \`routing-agent/references/deploy-agent.sql\` against \`$CONNECTION\` to restore them." ;;
+  esac
+  echo
   echo "## Friction points"
   echo "_None recorded automatically. Add manual observations here._"
 } > "$FRICTION_LOG"
@@ -380,5 +394,10 @@ echo "================================================================"
 echo " install-fleet-apps complete (${ELAPSED}s)"
 [ -n "$SA_URL" ]    && echo "   SA app:    $SA_URL"
 [ -n "$ADMIN_URL" ] && echo "   Admin app: $ADMIN_URL"
+case "$ROUTING_SUBSTRATE" in
+  OK*)       echo "   routing substrate: $ROUTING_SUBSTRATE" ;;
+  SKIPPED*)  echo "   routing substrate: $ROUTING_SUBSTRATE" ;;
+  *)         echo "   !! ROUTING SUBSTRATE DEGRADED: $ROUTING_SUBSTRATE" ;;
+esac
 echo "   friction log: $FRICTION_LOG"
 echo "================================================================"
