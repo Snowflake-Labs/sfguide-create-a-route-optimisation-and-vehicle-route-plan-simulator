@@ -42,6 +42,7 @@ export { probeRoutability } from './engine/routing';
 // Universal-generation engines (Overture + free Marketplace). Each writes a
 // region-scoped, JOB_ID-versioned SYNTHETIC_DATASETS.UNIFIED entity table.
 export { generateAnchors } from './engine/anchors';
+export { generateDemographics } from './engine/demographics';
 
 interface VehicleDayResult {
   vehicleId: string;

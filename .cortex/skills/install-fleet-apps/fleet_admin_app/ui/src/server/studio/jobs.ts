@@ -807,7 +807,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics } = await import('./engine.js');
       const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
       const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
@@ -910,6 +910,16 @@ export async function startGeneration(
         } catch (e: any) {
           log('WARN', 'Studio', `DIM_ANCHORS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Anchors generation failed: ${e.message?.slice(0, 150)}` });
+        }
+      }
+      if (config.generates_demographics) {
+        try {
+          const n = await generateDemographics(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${n} demographic areas`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${n} demographic areas` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `DIM_AREA_DEMOGRAPHICS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Demographics generation failed: ${e.message?.slice(0, 150)}` });
         }
       }
 
