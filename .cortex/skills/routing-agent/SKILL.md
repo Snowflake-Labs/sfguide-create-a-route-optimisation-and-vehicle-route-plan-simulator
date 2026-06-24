@@ -87,6 +87,8 @@ No seed data or pre-computed tables required. The routing agent consists of stor
 ## Workflow
 
 > All stored procedure and agent SQL definitions are in [references/agent-definitions.md](references/agent-definitions.md).
+>
+> For how the Overture Maps shares are queried (schema, the cost-safe bbox + `ST_WITHIN(BOUNDARY)` + LIMIT pattern, the `TOOL_OVERTURE_SEARCH` / `TOOL_OVERTURE_ADDRESSES` procs, and the three agent surfaces incl. the vendor PLACES semantic view), see [references/overture-schema.md](references/overture-schema.md).
 
 ### Step 1: Set Query Tag for Tracking
 
