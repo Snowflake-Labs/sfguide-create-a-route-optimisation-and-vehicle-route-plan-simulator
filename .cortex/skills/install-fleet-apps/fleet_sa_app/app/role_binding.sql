@@ -57,6 +57,12 @@ GRANT SELECT ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_AP
 -- are only present when the analytic-layer catchment step acquired them.
 GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO ROLE FLEET_APP_USER;
 GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO ROLE FLEET_APP_USER;
+-- Buildings (depot centroids), Divisions (real boundaries), SafeGraph Open
+-- Census (demographics). Acquired by the same analytic-layer step, so present
+-- by the time role binding runs (same ordering guarantee as the two above).
+GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__BUILDINGS TO ROLE FLEET_APP_USER;
+GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__DIVISIONS TO ROLE FLEET_APP_USER;
+GRANT IMPORTED PRIVILEGES ON DATABASE SAFEGRAPH_OPEN_CENSUS_FREE TO ROLE FLEET_APP_USER;
 
 -- Consumer agent + routing MCP + routing verbs (Step 4B: relocated to the
 -- Routing Platform schema OPENROUTESERVICE_APP.ROUTING; ROUTING_MCP replaces the
