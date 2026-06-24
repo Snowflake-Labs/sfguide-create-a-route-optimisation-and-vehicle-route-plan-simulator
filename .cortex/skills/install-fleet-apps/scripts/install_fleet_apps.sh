@@ -262,6 +262,32 @@ else
   ROUTING_SUBSTRATE="SKIPPED (SKIP_ROUTING=1)"
 fi
 
+# ── 3.4 seed REGION_CATALOG from the baked parquet ──────────────────────
+# The canonical loader (datasets/load-seed-data.sql) CALLs LOAD_SEED_CATALOG in
+# the data step (step 2), but that proc is only created by engine module
+# 03_region_management.sql in step 3 -- so the step-2 call aborts (WARN) and the
+# catalog is left EMPTY on a fresh install (regression vs the old app, which
+# deployed the engine before the loader ran). Re-run the seed here, now that the
+# proc exists, BEFORE step 3.5 (which assumes REGION_CATALOG boundaries exist).
+# Idempotent: the proc skips if the catalog already has rows. The baked parquet
+# was staged to @FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE/region_catalog/ in step 2.
+if obj_exists "SHOW PROCEDURES LIKE 'LOAD_SEED_CATALOG' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'LOAD_SEED_CATALOG'; then
+  note "[3.4] seeding REGION_CATALOG from baked parquet..."
+  CAT_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
+    "CALL OPENROUTESERVICE_APP.CORE.LOAD_SEED_CATALOG('@FLEET_INTELLIGENCE.CORE.SEED_DATA_STAGE'); SELECT COUNT(*) AS N FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG;" \
+    >/tmp/ifa_seed_catalog.log 2>&1 && grep -Eo '^[0-9]+$' /tmp/ifa_seed_catalog.log | tail -1 || echo 0)
+  if [ "${CAT_N:-0}" -lt 1 ]; then
+    note "  WARN: REGION_CATALOG still empty after seed (see /tmp/ifa_seed_catalog.log)"
+    step "3.4 region-catalog" FAILED
+  else
+    note "  REGION_CATALOG seeded: ${CAT_N} rows"
+    step "3.4 region-catalog" OK
+  fi
+else
+  note "[3.4] LOAD_SEED_CATALOG proc absent (engine skipped via --no-engine?) -> REGION_CATALOG not seeded"
+  step "3.4 region-catalog" SKIPPED
+fi
+
 # ── 3.5 analytic layer (agnostic FLEET_INTELLIGENCE.* objects the packs read) ──
 # Authors the analytic objects the demo packs read that the pack DDL does NOT
 # build itself: DWELL_ANALYSIS.CONFIG, ROUTE_DEVIATION CONFIG + projection views +
