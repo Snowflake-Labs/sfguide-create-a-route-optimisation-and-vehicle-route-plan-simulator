@@ -979,6 +979,57 @@ export async function ensureBackloadAndAssetVelocityObjects(
          AND d.IS_ACTIVE = TRUE`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
+    // Universal-generation entity views. These four tables are region-keyed
+    // (no VEHICLE_TYPE), so the CURRENT view joins on JOB_ID + REGION +
+    // IS_ACTIVE, exactly like V_DIM_POIS_CURRENT above.
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_ANCHORS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT a.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS a
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = a.JOB_ID
+         AND d.REGION = a.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_HAZARD_ZONES_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT h.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES h
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = h.JOB_ID
+         AND d.REGION = h.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_AREA_DEMOGRAPHICS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT g.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS g
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = g.JOB_ID
+         AND d.REGION = g.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_DEMAND_CATALOG_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT c.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG c
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = c.JOB_ID
+         AND d.REGION = c.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
     // -----------------------------------------------------------------
     // Per-session scope-arg data contract (R2.1 of APP_RESTRUCTURE_PLAN).
     // Multi-tenant-safe READ layer: resolve an EXPLICIT (region, dataset_id)

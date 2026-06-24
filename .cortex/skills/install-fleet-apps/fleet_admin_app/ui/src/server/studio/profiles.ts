@@ -272,6 +272,25 @@ export interface GenerationConfig {
   offers?: {
     count: number;
   };
+  // --- Universal-generation knobs (Overture + free Marketplace) ---------------
+  // Each flag gates a region-scoped, config-driven generator that writes a
+  // SYNTHETIC_DATASETS.UNIFIED entity table. All default OFF so existing presets
+  // are unchanged; the canonical seed preset enables them. See engine/anchors,
+  // engine/hazard, engine/demographics, engine/demand and studio/region-source.
+  //
+  // Location anchors (PACE/health centres, key sites, depots, delivery stops)
+  // from Overture Places + Buildings centroids -> DIM_ANCHORS.
+  generates_anchors?: boolean;
+  // ANCHOR_TYPE -> Overture BASIC_CATEGORY list. Depot is special-cased to a
+  // Buildings/POI centroid, so it needs no category list.
+  anchor_categories?: Record<string, string[]>;
+  // Area demographics from SafeGraph Open Census (block-group) -> DIM_AREA_DEMOGRAPHICS.
+  generates_demographics?: boolean;
+  // Hazard/disaster zones from FEMA NRI (+ optional Overture Divisions boundary)
+  // -> FACT_HAZARD_ZONES.
+  generates_hazard?: boolean;
+  // Neutral category-derived demand catalog -> DIM_DEMAND_CATALOG.
+  generates_demand?: boolean;
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {

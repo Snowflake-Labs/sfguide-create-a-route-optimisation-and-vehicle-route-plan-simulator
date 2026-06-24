@@ -93,6 +93,46 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       OUTCOME VARCHAR(20),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // -----------------------------------------------------------------
+    // Universal-generation entity tables (Overture + free Marketplace).
+    // All region-keyed (no VEHICLE_TYPE — they describe the place/area,
+    // not the fleet) and JOB_ID-versioned like DIM_POIS. V_*_CURRENT
+    // projection views live in init.ts.
+    // -----------------------------------------------------------------
+    // Location anchors: PACE/health centres, key sites, depots, delivery
+    // stops. Sourced from Overture Places (category-filtered) + Overture
+    // Buildings centroids (depots). Retires the static DEMO_* + CareConnect CSV.
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_ANCHORS (
+      ANCHOR_ID VARCHAR, REGION VARCHAR(100), ANCHOR_TYPE VARCHAR(40),
+      NAME VARCHAR, CATEGORY VARCHAR(60),
+      LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+      ADDRESS VARCHAR, CITY VARCHAR, STATE VARCHAR, POSTCODE VARCHAR,
+      SOURCE VARCHAR(40), JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Hazard / disaster zones: FEMA NRI (+ optional Divisions boundary).
+    // Generalises emergency-response's V_ZIP_RISK to any region.
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_HAZARD_ZONES (
+      ZONE_ID VARCHAR, REGION VARCHAR(100), STATE VARCHAR, COUNTY VARCHAR, FIPS VARCHAR(10),
+      HAZARD_TYPE VARCHAR(40), RISK_SCORE FLOAT, RISK_RATING VARCHAR(40), RISK_LEVEL INT,
+      GEOM GEOGRAPHY, SOURCE VARCHAR(40), JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Area demographics: SafeGraph Open Census (block-group) joined to region.
+    // Retires the static DEMO_AREA_DEMOGRAPHICS.
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_AREA_DEMOGRAPHICS (
+      AREA_ID VARCHAR, REGION VARCHAR(100), AREA_TYPE VARCHAR(20),
+      STATE_FIPS VARCHAR(4), COUNTY_FIPS VARCHAR(8),
+      LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+      TOTAL_POPULATION NUMBER, MEDIAN_AGE FLOAT, MEDIAN_HOUSEHOLD_INCOME NUMBER,
+      POP_ELDERLY NUMBER, POP_CHILDREN NUMBER, POPULATION_DENSITY FLOAT,
+      SOURCE VARCHAR(40), JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Demand catalog: neutral category-derived handling tiers (no domain
+    // labels). Retires the static DEMO_DEMAND_CATALOG.
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_DEMAND_CATALOG (
+      ITEM_ID VARCHAR, REGION VARCHAR(100), CATEGORY VARCHAR(60),
+      DEMAND_TIER INT, TIER_LABEL VARCHAR(40), HANDLING VARCHAR(60),
+      JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     { sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.GENERATION_JOBS (
       JOB_ID VARCHAR, PRESET_ID VARCHAR, PRESET_NAME VARCHAR, REGION VARCHAR(100),
       ORS_PROFILE VARCHAR(30), NUM_VEHICLES INT,
