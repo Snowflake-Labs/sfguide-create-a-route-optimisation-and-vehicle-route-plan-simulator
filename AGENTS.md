@@ -77,7 +77,7 @@ No global build/lint step — each skill is independently deployable via its own
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
 | `routing-agent` | advanced | Snowflake Intelligence agent wrapping ORS functions |
-| `setup-agent-playground` | demo-setup | Seeds industry-agnostic demo data + uploads agent-demos.json so the Agent Playground shows catchment/delivery/fleet scenarios |
+| `setup-agent-playground` | demo-setup | Uploads `agent-demos.json` so the Agent Playground shows catchment/delivery/network scenarios. The 3 demo tools now source live region-scoped Overture POIs (no static `DEMO_*` needed); the legacy static seed in `references/deploy-demo-data.sql` is deprecated/optional. `install-fleet-apps` already uploads `agent-demos.json` (step 4.6). |
 | `skill-optimiser` | developer-tools | Audits and optimizes skills per Anthropic best practices |
 | `routing-solution-cleanup` | developer-tools | Discovers and removes skill-created Snowflake objects via COMMENT tag |
 | `backload-matching` | demo | DHL Freight backload VRP demo: solves trailer<->load assignment via OPENROUTESERVICE_APP.CORE.OPTIMIZATION, with internal-first priority and Cortex rationale |

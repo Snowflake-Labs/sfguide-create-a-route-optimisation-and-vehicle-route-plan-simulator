@@ -12,6 +12,17 @@ metadata:
 
 # Setup Agent Playground
 
+> **Deprecated (demo-data seeding):** As of the dynamic-tools change, the three
+> demo tools (`TOOL_CATCHMENT`, `TOOL_DELIVERY_OPTIMIZATION`,
+> `TOOL_NETWORK_OPTIMIZATION`) source **live, region-scoped Overture data**
+> (`FLEET_INTELLIGENCE.CATCHMENT.POIS` / `REGIONAL_ADDRESSES`, BOUNDARY-constrained
+> and routable-filtered) and read the active region from
+> `FLEET_INTELLIGENCE.CATCHMENT.CONFIG`. They **no longer read the static `DEMO_*`
+> tables**. A fresh `install-fleet-apps` already uploads `agent-demos.json` (step
+> 4.6), so this skill is needed **only** to re-seed the legacy static `DEMO_*`
+> dataset for demos that still expect it, or to re-upload `agent-demos.json`
+> standalone. `references/deploy-demo-data.sql` is retained for that purpose.
+
 Deploys the industry-agnostic SF catchment/delivery/network demo data and uploads the
 Agent Playground scenario config (`agent-demos.json`) to the ORS stage. After
 this skill runs, the Routing Agent's three demo tools (`TOOL_NETWORK_OPTIMIZATION`,
@@ -91,7 +102,7 @@ from the repo:
 
 ```bash
 snow stage copy \
-  .cortex/skills/build-routing-solution/openrouteservice_app/config/agent-demos.json \
+  .cortex/skills/install-fleet-apps/openrouteservice_app/config/agent-demos.json \
   @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/ \
   --overwrite \
   -c <connection>
@@ -101,7 +112,7 @@ Or from a Workspace, via SQL:
 
 ```sql
 COPY FILES INTO @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/
-FROM 'snow://workspace/USER$.PUBLIC."<workspace-name>"/versions/live/.cortex/skills/build-routing-solution/openrouteservice_app/config/'
+FROM 'snow://workspace/USER$.PUBLIC."<workspace-name>"/versions/live/.cortex/skills/install-fleet-apps/openrouteservice_app/config/'
 FILES=('agent-demos.json');
 ```
 

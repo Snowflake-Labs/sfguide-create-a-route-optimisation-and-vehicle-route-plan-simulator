@@ -27,7 +27,7 @@
 #                         (or NO_ENGINE=1 / PROVISION_ENGINE=0) installs routing verbs
 #                         inert instead. --with-engine is accepted as a no-op (default).
 #   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ANALYTIC=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
-#   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1   (env vars)
+#   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1 SKIP_SEMANTIC=1 SKIP_DEMO=1   (env vars)
 set -euo pipefail
 
 # ── arg parse ───────────────────────────────────────────────────
@@ -61,6 +61,11 @@ ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
 ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-agent.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
+# Agent Playground scenario config (region-neutral). The 3 demo tools
+# (TOOL_CATCHMENT/DELIVERY/NETWORK) now source live region-scoped Overture POIs, so
+# NO static demo data is seeded; only this scenario config is uploaded so the
+# Playground surfaces the catchment/delivery/network scenarios out of the box.
+AGENT_DEMOS_JSON="$SKILL_DIR/openrouteservice_app/config/agent-demos.json"
 START_TS=$(date +%s)
 ROUTING_SUBSTRATE="(routing step not run)"   # set by step 3; surfaced in friction log + summary
 LOG_DIR="$REPO_ROOT/.cortex/skills/install-fleet-apps/logs"
@@ -334,6 +339,26 @@ if [ "${SKIP_SEMANTIC:-0}" != "1" ]; then
   step "4.5 semantic" OK
 else
   step "4.5 semantic" SKIPPED
+fi
+
+# ── 4.6 Agent Playground scenario config (no static demo data) ──────────
+# The 3 demo tools (TOOL_CATCHMENT/DELIVERY/NETWORK) source live region-scoped
+# Overture POIs, so there is NO demo-data seed. We only upload the region-neutral
+# scenario config so the Playground shows the catchment/delivery/network scenarios.
+# Needs the ORS stage (engine present); best-effort and never aborts the install.
+if [ "${SKIP_DEMO:-0}" != "1" ] && [ -f "$AGENT_DEMOS_JSON" ]; then
+  if obj_exists "SHOW STAGES LIKE 'ORS_SPCS_STAGE' IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'ORS_SPCS_STAGE'; then
+    note "[4.6] uploading agent-demos.json to the ORS config stage..."
+    snow sql -c "$CONNECTION" -q "CREATE FILE FORMAT IF NOT EXISTS OPENROUTESERVICE_APP.CORE.JSON_FORMAT TYPE=JSON STRIP_OUTER_ARRAY=FALSE;" >/tmp/ifa_demos.log 2>&1 || true
+    snow stage copy "$AGENT_DEMOS_JSON" @OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE/config/ --overwrite -c "$CONNECTION" >>/tmp/ifa_demos.log 2>&1 \
+      && step "4.6 playground-config" OK \
+      || { note "  WARN: agent-demos.json upload failed; see /tmp/ifa_demos.log"; step "4.6 playground-config" FAILED; }
+  else
+    note "[4.6] ORS stage absent (engine skipped via --no-engine?) -> agent-demos.json not uploaded"
+    step "4.6 playground-config" SKIPPED
+  fi
+else
+  step "4.6 playground-config" SKIPPED
 fi
 
 # ── 5. synapse tool bundles ─────────────────────────────────────

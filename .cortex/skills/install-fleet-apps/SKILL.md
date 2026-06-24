@@ -28,6 +28,14 @@ This installer is mode-agnostic by construction. `VEHICLE_TYPE` is a data dimens
 
 The installer always installs the **complete** agnostic set — there is no per-use-case selection prompt.
 
+> **Agent Playground demo tools are dynamic.** The `TOOL_CATCHMENT`,
+> `TOOL_DELIVERY_OPTIMIZATION`, and `TOOL_NETWORK_OPTIMIZATION` procs source live,
+> region-scoped Overture POIs (`FLEET_INTELLIGENCE.CATCHMENT.POIS` /
+> `REGIONAL_ADDRESSES`, BOUNDARY-constrained + routable-filtered) and read the
+> active region from `CATCHMENT.CONFIG` — no static demo seed is required. Step 4.6
+> uploads the region-neutral `agent-demos.json` scenario config to the ORS stage
+> (engine-present only; skip with `SKIP_DEMO=1`).
+
 ## Execution Rules
 
 1. All relative paths are relative to this skill's directory (`.cortex/skills/install-fleet-apps/`).
