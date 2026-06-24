@@ -92,7 +92,24 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
   echo "[4/7] Render service spec with tag $IMAGE_TAG + upload to $SPEC_STAGE ..."
   STAGE_DIR=$(mktemp -d); trap 'rm -rf "$STAGE_DIR"' EXIT
   STAGE_YAML="$STAGE_DIR/fleet_admin_app_service.yaml"
-  sed -E "s|(fleet_admin_app:)[^\"' ]+|\1$IMAGE_TAG|" "$SERVICE_YAML" > "$STAGE_YAML"
+  # Derive the spec image-path prefix from the RESOLVED image repo (see SA deploy
+  # script for rationale): on a from-scratch engine run infra resolves to the
+  # FLEET-owned repo first, so the hardcoded /openrouteservice_app/... path must be
+  # rewritten to match where the image was actually pushed. Lowercase, '.'->'/'.
+  IMAGE_REPO_PATH="/$(printf '%s' "$IMAGE_REPO_SQL_NAME" | tr '[:upper:]' '[:lower:]' | tr '.' '/')"
+  sed -E \
+    -e "s|(image:[[:space:]]*)[^[:space:]]*/fleet_admin_app:|\1${IMAGE_REPO_PATH}/fleet_admin_app:|" \
+    -e "s|(fleet_admin_app:)[^\"' ]+|\1$IMAGE_TAG|" \
+    "$SERVICE_YAML" > "$STAGE_YAML"
+  # Defense-in-depth: the rendered spec MUST reference the resolved repo + tag.
+  # Surfaces any future regression of the path/tag rewrite as a loud error HERE
+  # instead of an opaque "Image ... not found" at CREATE SERVICE.
+  EXPECT_IMG="${IMAGE_REPO_PATH}/fleet_admin_app:$IMAGE_TAG"
+  if ! grep -qF "$EXPECT_IMG" "$STAGE_YAML"; then
+    echo "ERROR: rendered spec does not reference expected image $EXPECT_IMG"
+    grep -nE 'image:' "$STAGE_YAML" || true
+    exit 1
+  fi
   snow sql -c "$CONNECTION" -q "CREATE STAGE IF NOT EXISTS $SPEC_STAGE_NAME;" >/dev/null 2>&1 || true
   snow stage copy "$STAGE_YAML" "$SPEC_STAGE/" -c "$CONNECTION" --overwrite >/dev/null
 

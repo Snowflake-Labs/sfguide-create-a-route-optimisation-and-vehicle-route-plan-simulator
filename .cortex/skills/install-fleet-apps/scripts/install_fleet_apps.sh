@@ -10,28 +10,37 @@
 # Layers (detect-and-reuse-else-create throughout):
 #   0 preflight -> 1 infra -> 2 data -> 3 routing contract+engine
 #   -> 3.5 analytic layer (FLEET_INTELLIGENCE.* the packs read) -> 4 packs
-#   -> 5 synapse tools -> 6 roles -> 7 agents -> 8 apps -> friction log
+#   -> 5 synapse tools -> 6 agents -> 7 apps -> 8 roles+grants -> friction log
+#   (roles/grants run LAST: role_binding.sql grants on SYNAPSE_USER objects —
+#    the 3 agents and the FLEET_SA_APP service role — which only exist after
+#    the agents+apps steps, so the single idempotent grants pass must follow them.)
 #
 # Usage:
 #   bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection <conn>
 #
 # Flags (re-run shortcuts only; there is NO use-case selection):
 #   --connection <name>   REQUIRED. Snow CLI connection.
-#   --with-engine         OPTIONAL. When the ORS engine is absent, build + provision
-#                         it natively (heavy: 4 SPCS images + a region graph, tens of
-#                         minutes). Also honored via PROVISION_ENGINE=1.
+#   --no-engine           OPTIONAL. Skip the live ORS engine build. By DEFAULT the
+#                         engine is built + provisioned natively when absent (heavy:
+#                         4 SPCS images + a region graph, tens of minutes); it is
+#                         auto-skipped when an engine is already present. --no-engine
+#                         (or NO_ENGINE=1 / PROVISION_ENGINE=0) installs routing verbs
+#                         inert instead. --with-engine is accepted as a no-op (default).
 #   SKIP_INFRA=1 SKIP_DATA=1 SKIP_ANALYTIC=1 SKIP_ROUTING=1 SKIP_PACKS=1 SKIP_TOOLS=1
 #   SKIP_ROLES=1 SKIP_AGENTS=1 SKIP_APPS=1   (env vars)
 set -euo pipefail
 
 # ── arg parse ───────────────────────────────────────────────────
+# Engine is ON by default. PROVISION_ENGINE=0 (or NO_ENGINE=1, or --no-engine) opts out.
 CONNECTION=""
-WITH_ENGINE="${PROVISION_ENGINE:-0}"
+WITH_ENGINE="${PROVISION_ENGINE:-1}"
+[ "${NO_ENGINE:-0}" = "1" ] && WITH_ENGINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --connection) CONNECTION="${2:-}"; shift 2;;
     --connection=*) CONNECTION="${1#*=}"; shift;;
-    --with-engine) WITH_ENGINE=1; shift;;
+    --with-engine) WITH_ENGINE=1; shift;;   # accepted as no-op (engine is default)
+    --no-engine) WITH_ENGINE=0; shift;;
     *) echo "Unknown arg: $1"; exit 2;;
   esac
 done
@@ -194,19 +203,19 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   if obj_exists "SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;" 'ORS_SERVICE|ROUTING_GATEWAY'; then
     note "  ORS engine detected -> routing verbs LIVE"
   elif [ "$WITH_ENGINE" = "1" ]; then
-    note "  ORS engine ABSENT + --with-engine set -> provisioning natively (heavy)..."
+    note "  ORS engine ABSENT -> provisioning natively by default (heavy)..."
     bash "$SCRIPTS/provision_engine.sh" "$CONNECTION" \
       || { echo "ERROR: engine provisioning failed"; step "3 routing" FAILED; exit 1; }
     note "  engine provisioned (ORS_SERVICE may still be building its graph; verbs go LIVE once RUNNING)"
   else
-    note "  ORS engine ABSENT -> routing verbs install inert."
-    note "  To enable live routing, re-run with --with-engine. See references/routing-engine.md"
+    note "  ORS engine ABSENT + --no-engine -> routing verbs install inert."
+    note "  To enable live routing, re-run without --no-engine. See references/routing-engine.md"
   fi
   # Apply the engine-agnostic routing contract AFTER the engine so all referenced
   # objects (REGION_ORS_MAP + gateway functions) exist and every CONTRACT.* verb
   # compiles. Engine functions exist as soon as the SQL modules load (independent
   # of the async graph build), so this is safe immediately post-provision. When
-  # the engine is absent (no --with-engine) the contract still runs best-effort
+  # the engine is skipped (--no-engine) the contract still runs best-effort
   # and installs inert, matching the note above.
   if [ -f "$ROUTING_SETUP" ]; then
     snow sql -c "$CONNECTION" -f "$ROUTING_SETUP" >/tmp/ifa_contract.log 2>&1 \
@@ -275,42 +284,49 @@ else
   step "5 tools" SKIPPED
 fi
 
-# ── 6. roles + grants ───────────────────────────────────────────
-if [ "${SKIP_ROLES:-0}" != "1" ]; then
-  note "[6/8] applying roles + grants..."
-  snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
-    || note "  WARN: some grants failed (objects may not exist yet); see /tmp/ifa_roles.log"
-  step "6 roles" OK
-else
-  step "6 roles" SKIPPED
-fi
-
-# ── 7. agents ───────────────────────────────────────────────────
+# ── 6. agents ───────────────────────────────────────────────────
 if [ "${SKIP_AGENTS:-0}" != "1" ]; then
-  note "[7/8] creating FLEET_AGENT + FLEET_OPS_AGENT..."
+  note "[6/8] creating FLEET_AGENT + FLEET_OPS_AGENT..."
   bash "$SCRIPTS/create_agents.sh" "$CONNECTION" \
-    || { echo "ERROR: agent creation failed"; step "7 agents" FAILED; exit 1; }
-  step "7 agents" OK
+    || { echo "ERROR: agent creation failed"; step "6 agents" FAILED; exit 1; }
+  step "6 agents" OK
 else
-  step "7 agents" SKIPPED
+  step "6 agents" SKIPPED
 fi
 
-# ── 8. apps (resolved infra threaded via exported env) ──────────
+# ── 7. apps (resolved infra threaded via exported env) ──────────
 SA_URL=""; ADMIN_URL=""
 if [ "${SKIP_APPS:-0}" != "1" ]; then
-  note "[8/8] deploying FLEET_SA_APP + FLEET_ADMIN_APP..."
+  note "[7/8] deploying FLEET_SA_APP + FLEET_ADMIN_APP..."
   # Defensive: the infra step always resolves COMPUTE_POOL now, but guard anyway
   # so a future regression fails loudly here instead of as an opaque unbound-var.
   : "${COMPUTE_POOL:?COMPUTE_POOL is unset — the infra step (1/8) must resolve it before apps}"
   bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
-    || { echo "ERROR: SA app deploy failed"; step "8 apps" FAILED; exit 1; }
+    || { echo "ERROR: SA app deploy failed"; step "7 apps" FAILED; exit 1; }
   COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
-    || { echo "ERROR: admin app deploy failed"; step "8 apps" FAILED; exit 1; }
+    || { echo "ERROR: admin app deploy failed"; step "7 apps" FAILED; exit 1; }
   SA_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_SA_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-sa-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
   ADMIN_URL=$(snow sql -c "$CONNECTION" --format=CSV -q "SHOW ENDPOINTS IN SERVICE FLEET_INTELLIGENCE.SYNAPSE_USER.FLEET_ADMIN_APP; SELECT 'https://'||\"ingress_url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\"='fleet-admin-app';" 2>/dev/null | grep -E '^https://' | head -1 || true)
-  step "8 apps" OK
+  step "7 apps" OK
 else
-  step "8 apps" SKIPPED
+  step "7 apps" SKIPPED
+fi
+
+# ── roles + grants (LAST: depends on SYNAPSE_USER objects from steps 7-8) ──
+# role_binding.sql grants USAGE on the 3 agents (step 7) and the
+# FLEET_SA_APP!ALL_ENDPOINTS_USAGE service role (step 8), all in
+# FLEET_INTELLIGENCE.SYNAPSE_USER. Running it earlier failed those grants on a
+# fresh install ("Schema ... SYNAPSE_USER does not exist"). It is fully
+# idempotent (no DROP/REVOKE), so this single authoritative pass after apps is
+# correct on both fresh installs and re-runs. Stays gated by SKIP_ROLES and
+# OUTSIDE the apps block so it still runs under SKIP_APPS=1 (apps pre-exist).
+if [ "${SKIP_ROLES:-0}" != "1" ]; then
+  note "[8/8] applying roles + grants (all objects present)..."
+  snow sql -c "$CONNECTION" -f "$ROLE_BINDING" >/tmp/ifa_roles.log 2>&1 \
+    || note "  WARN: some grants failed; see /tmp/ifa_roles.log"
+  step "8 roles" OK
+else
+  step "8 roles" SKIPPED
 fi
 
 # ── friction log + summary ──────────────────────────────────────
