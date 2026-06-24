@@ -214,4 +214,66 @@ FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
 HEADER = TRUE
 OVERWRITE = TRUE;
 
+--------------------------------------------------------------------------------
+-- DIM_ANCHORS (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_anchors/
+FROM (
+  SELECT
+    ANCHOR_ID, REGION, ANCHOR_TYPE, NAME, CATEGORY, LAT, LNG,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    ADDRESS, CITY, STATE, POSTCODE, SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_ANCHORS
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- FACT_HAZARD_ZONES (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_hazard_zones/
+FROM (
+  SELECT
+    ZONE_ID, REGION, STATE, COUNTY, FIPS, HAZARD_TYPE, RISK_SCORE, RISK_RATING, RISK_LEVEL,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_AREA_DEMOGRAPHICS (universal-generation; GEOM=GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_area_demographics/
+FROM (
+  SELECT
+    AREA_ID, REGION, AREA_TYPE, STATE_FIPS, COUNTY_FIPS, LAT, LNG,
+    ST_ASWKT(GEOM) AS GEOM_WKT,
+    TOTAL_POPULATION, MEDIAN_AGE, MEDIAN_HOUSEHOLD_INCOME,
+    POP_ELDERLY, POP_CHILDREN, POPULATION_DENSITY, SOURCE, JOB_ID
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_AREA_DEMOGRAPHICS
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
+--------------------------------------------------------------------------------
+-- DIM_DEMAND_CATALOG (universal-generation; no GEOGRAPHY)
+--------------------------------------------------------------------------------
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/dim_demand_catalog/
+FROM (
+  SELECT *
+  FROM SYNTHETIC_DATASETS.UNIFIED.DIM_DEMAND_CATALOG
+  WHERE JOB_ID = $JOB_ID
+)
+FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
+HEADER = TRUE
+OVERWRITE = TRUE;
+
 SELECT 'Export complete for JOB_ID=' || $JOB_ID AS STATUS;
