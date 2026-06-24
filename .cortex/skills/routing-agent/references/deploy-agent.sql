@@ -1059,7 +1059,7 @@ CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZA
     DEPOT_LOCATION VARCHAR,
     NUM_VEHICLES NUMBER,
     PROFILE VARCHAR DEFAULT 'driving-car',
-    REGION VARCHAR DEFAULT 'California'
+    REGION VARCHAR DEFAULT 'SanFrancisco'
 )
 RETURNS VARIANT
 LANGUAGE PYTHON
@@ -1077,6 +1077,9 @@ def _escape_sql_string(s: str) -> str:
 
 def run(session: Session, delivery_locations: str, depot_location: str, num_vehicles: int, profile: str, region: str) -> dict:
     try:
+        # An explicit NULL region bind from the verb bypasses the SQL DEFAULT, so
+        # coalesce here too. The provisioned default region is SanFrancisco.
+        region = region or 'SanFrancisco'
         safe_delivery = _escape_sql_string(delivery_locations)
         delivery_query = f"""
         SELECT AI_COMPLETE(
@@ -1212,13 +1215,13 @@ $$;
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_NETWORK_OPTIMIZATION: Distribution-network delivery plan (config-driven demo).
--- Reads DEMO_KEY_SITES, DEMO_AREA_DEMOGRAPHICS, DEMO_DEMAND_CATALOG and the
--- depot/region from DEMO_DEPOT (created by setup-agent-playground). Builds a
--- 3-vehicle VROOM payload and returns the optimized routes with
--- demand-signal-derived item demand. The proc compiles lazily, so it can be
--- created BEFORE the data tables exist — but it will only execute correctly
--- once setup-agent-playground has been run.
+-- TOOL_NETWORK_OPTIMIZATION: Distribution-network routing plan (region-scoped,
+-- domain-neutral). Sources key sites live from the active region's Overture POIs
+-- (FLEET_INTELLIGENCE.CATCHMENT.POIS, constrained to the region BOUNDARY and
+-- pre-filtered to road-network-routable points), derives a neutral handling tier
+-- per site from its category, computes the depot as the POI centroid, and builds
+-- a 3-vehicle VROOM payload. The active region comes from CATCHMENT.CONFIG. No
+-- static demo tables — works for any provisioned region with Overture coverage.
 ----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -1228,174 +1231,121 @@ LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-try {
-    var depotLon = -122.3946;
-    var depotLat = 37.7941;
-    var depotName = 'Central Supply Depot';
-    var region = 'SanFrancisco';
-    try {
-        var depotStmt = snowflake.createStatement({
-            sqlText: "SELECT LONGITUDE, LATITUDE, NAME, REGION " +
-                     "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
-        });
-        var depotRes = depotStmt.execute();
-        if (depotRes.next()) {
-            depotLon = depotRes.getColumnValue(1); depotLat = depotRes.getColumnValue(2);
-            depotName = depotRes.getColumnValue(3); region = depotRes.getColumnValue(4);
-        }
-    } catch(e) { /* fall back to defaults */ }
-
-    // Resolve the requested profile against the profiles actually built in the
-    // region (best-effort; ORS_STATUS failure -> [] -> rename-only behavior).
-    // The 2-arg SQL UDF is the single resolver + substitution detector.
+// Neutral handling-tier labels derived from a POI's category (no industry terms).
+var TIER_LABELS = { 1: 'Tier 1 - Priority', 2: 'Tier 2 - Restricted', 3: 'Tier 3 - Standard' };
+function execScalar(sqlText, binds) {
+    var rs = snowflake.createStatement({ sqlText: sqlText, binds: binds || [] }).execute();
+    return rs.next() ? rs.getColumnValue(1) : null;
+}
+function execScalarPair(sqlText, binds) {
+    var rs = snowflake.createStatement({ sqlText: sqlText, binds: binds || [] }).execute();
+    return rs.next() ? [rs.getColumnValue(1), rs.getColumnValue(2)] : null;
+}
+function resolveActiveRegion() {
+    var sqls = [
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+    ];
+    for (var i = 0; i < sqls.length; i++) {
+        try { var v = execScalar(sqls[i]); if (v) return v; } catch(e) { /* next */ }
+    }
+    return 'SanFrancisco';
+}
+function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var avStmt = snowflake.createStatement({
-            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)",
-            binds: [region]
-        });
-        var avRes = avStmt.execute();
-        if (avRes.next()) {
-            var avRaw = avRes.getColumnValue(1);
-            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
-        }
+        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
-    var profRes = {};
+    var res = {};
     try {
-        var prStmt = snowflake.createStatement({
-            sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
-            binds: [PROFILE, JSON.stringify(available)]
-        });
-        var prRes = prStmt.execute();
-        if (prRes.next()) {
-            var prRaw = prRes.getColumnValue(1);
-            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
-        }
-    } catch(e) { profRes = {}; }
+        var p = execScalar("SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
+                           [profile, JSON.stringify(available)]);
+        res = p ? ((typeof p === 'string') ? JSON.parse(p) : p) : {};
+    } catch(e) { res = {}; }
+    return res;
+}
+try {
+    var region = resolveActiveRegion();
+
+    var profRes = resolveProfileFor(PROFILE, region);
     var usedProfile = profRes.used || 'driving-car';
     var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
     var profNote = (profRes.note === undefined) ? null : profRes.note;
 
+    // Depot = centroid of the region's POIs (region-agnostic; no static depot).
+    var depotLon = null, depotLat = null;
+    try {
+        var dRs = snowflake.createStatement({
+            sqlText: "SELECT AVG(LONGITUDE) LO, AVG(LATITUDE) LA FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION = ?",
+            binds: [region] }).execute();
+        if (dRs.next()) {
+            var lo = Number(dRs.getColumnValue("LO")); var la = Number(dRs.getColumnValue("LA"));
+            if (!isNaN(lo) && !isNaN(la)) { depotLon = lo; depotLat = la; }
+        }
+    } catch(e) { /* depot stays null -> caught by guard */ }
+    var depotName = region + ' Distribution Hub';
+
+    // Keep only POIs that snap to the road network within the engine's snapping
+    // Key sites = deterministic top-N live POIs for the active region that SNAP
+    // to the road network. A single off-network point makes VROOM abort the whole
+    // solve, so the routable filter (MATRIX snapped_distance <= 350m) runs in SQL.
     var siteStmt = snowflake.createStatement({
-        sqlText: "SELECT SITE_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, PRIORITY " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_KEY_SITES ORDER BY PRIORITY"
+        sqlText:
+            "WITH cand AS (" +
+            "  SELECT p.POI_NAME, p.ADDRESS, p.LONGITUDE, p.LATITUDE, " +
+            "         MOD(ABS(HASH(p.BASIC_CATEGORY)),3)+1 AS TIER, p.BASIC_CATEGORY, " +
+            "         ROW_NUMBER() OVER (ORDER BY p.POI_ID) AS RN " +
+            "  FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p " +
+            "  JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc ON rc.BOUNDARY IS NOT NULL " +
+            "    AND (UPPER(rc.LOOKUP_NAME)=UPPER(?) OR UPPER(rc.REGION_KEY)=UPPER(?)) " +
+            "  WHERE p.REGION = ? AND p.LONGITUDE IS NOT NULL AND p.LATITUDE IS NOT NULL " +
+            "    AND ST_WITHIN(p.GEOMETRY, rc.BOUNDARY) " +
+            "  ORDER BY p.POI_ID LIMIT 40), " +
+            "a AS (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE,LATITUDE)) WITHIN GROUP (ORDER BY RN) AS C FROM cand), " +
+            "snap AS (SELECT f.INDEX AS IDX, f.VALUE:snapped_distance::FLOAT AS SD " +
+            "         FROM a, LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.MATRIX(?, C::ARRAY, ?):destinations) f) " +
+            "SELECT c.POI_NAME, c.ADDRESS, c.LONGITUDE, c.LATITUDE, c.TIER, c.BASIC_CATEGORY " +
+            "FROM cand c JOIN snap s ON s.IDX = c.RN - 1 " +
+            "WHERE s.SD IS NOT NULL AND s.SD <= 350 ORDER BY c.RN LIMIT 8",
+        binds: [region, region, region, usedProfile, region]
     });
     var siteRes = siteStmt.execute();
-    var sites = [];
-    while (siteRes.next()) {
-        sites.push({
-            id: siteRes.getColumnValue(1),
-            name: siteRes.getColumnValue(2),
-            address: siteRes.getColumnValue(3),
-            longitude: siteRes.getColumnValue(4),
-            latitude: siteRes.getColumnValue(5),
-            priority: siteRes.getColumnValue(6)
-        });
-    }
-
-    var itemStmt = snowflake.createStatement({
-        sqlText: "SELECT ITEM_ID, SEGMENT, ITEM_NAME, ITEM_CATEGORY, DELIVERY_SKILL, " +
-                 "SKILL_LABEL, UNITS_PER_1000, PRIORITY " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEMAND_CATALOG ORDER BY PRIORITY"
-    });
-    var itemRes = itemStmt.execute();
-    var catalog = [];
-    while (itemRes.next()) {
-        catalog.push({
-            item_id: itemRes.getColumnValue(1),
-            segment: itemRes.getColumnValue(2),
-            item_name: itemRes.getColumnValue(3),
-            item_category: itemRes.getColumnValue(4),
-            delivery_skill: itemRes.getColumnValue(5),
-            skill_label: itemRes.getColumnValue(6),
-            units_per_1000: itemRes.getColumnValue(7),
-            priority: itemRes.getColumnValue(8)
-        });
-    }
-
-    var demoStmt = snowflake.createStatement({
-        sqlText: "SELECT NEIGHBORHOOD, TOTAL_POPULATION, DIABETES_PCT, HYPERTENSION_PCT, " +
-                 "CARDIOVASCULAR_PCT, RESPIRATORY_PCT, MOBILITY_ISSUES_PCT " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS"
-    });
-    var demoRes = demoStmt.execute();
-    var seg1 = 0, seg2 = 0, seg3 = 0, seg4 = 0, seg5 = 0, totalPop = 0;
-    while (demoRes.next()) {
-        var pop = demoRes.getColumnValue(2);
-        totalPop += pop;
-        seg1 += demoRes.getColumnValue(3) * pop / 100;
-        seg2 += demoRes.getColumnValue(4) * pop / 100;
-        seg3 += demoRes.getColumnValue(5) * pop / 100;
-        seg4 += demoRes.getColumnValue(6) * pop / 100;
-        seg5 += demoRes.getColumnValue(7) * pop / 100;
-    }
-
-    var priorityWeights = { 1: 0.25, 2: 0.15, 3: 0.10 };
     var vroomJobs = [];
     var jobDetails = [];
     var jobId = 1;
-
-    for (var p = 0; p < sites.length; p++) {
-        var site = sites[p];
-        var weight = priorityWeights[site.priority] || 0.10;
-        var primarySkill = (p % 3) + 1;
-
-        var segments = {
-            'DIABETES': seg1 * weight,
-            'HYPERTENSION': seg2 * weight,
-            'CARDIOVASCULAR': seg3 * weight,
-            'RESPIRATORY': seg4 * weight,
-            'MOBILITY': seg5 * weight
-        };
-
-        var siteOrders = [];
-        for (var d = 0; d < catalog.length; d++) {
-            var item = catalog[d];
-            if (item.delivery_skill !== primarySkill) continue;
-            var segPop = segments[item.segment] || 0;
-            var units = Math.round(segPop / 1000 * item.units_per_1000);
-            if (units > 0) {
-                siteOrders.push({
-                    item_name: item.item_name, item_category: item.item_category,
-                    skill: item.delivery_skill, skill_label: item.skill_label,
-                    units: units, priority: item.priority
-                });
-            }
-        }
-        siteOrders.sort(function(a, b) { return a.priority - b.priority || b.units - a.units; });
-        var topOrders = siteOrders.slice(0, 5);
-
-        if (topOrders.length > 0) {
-            var itemNames = topOrders.map(function(o2) { return o2.item_name; });
-            var totalUnits = 0;
-            for (var t = 0; t < topOrders.length; t++) totalUnits += topOrders[t].units;
-
-            vroomJobs.push({
-                id: jobId,
-                location: [site.longitude, site.latitude],
-                amount: [1], skills: [primarySkill],
-                description: site.name + ' - ' + topOrders[0].skill_label + ': ' + itemNames.join(', ')
-            });
-            jobDetails.push({
-                job_id: jobId, site: site.name, name: site.name, address: site.address,
-                longitude: site.longitude, latitude: site.latitude,
-                skill: primarySkill, skill_label: topOrders[0].skill_label,
-                items: itemNames, total_units: totalUnits
-            });
-            jobId++;
-        }
+    while (siteRes.next()) {
+        var name = siteRes.getColumnValue(1);
+        var address = siteRes.getColumnValue(2);
+        var lon = siteRes.getColumnValue(3);
+        var lat = siteRes.getColumnValue(4);
+        var tier = siteRes.getColumnValue(5);
+        var category = siteRes.getColumnValue(6);
+        var tierLbl = TIER_LABELS[tier] || ('Tier ' + tier);
+        vroomJobs.push({ id: jobId, location: [lon, lat], amount: [1], skills: [tier],
+                         description: name + ' - ' + tierLbl });
+        jobDetails.push({ job_id: jobId, site: name, name: name, address: address,
+                          longitude: lon, latitude: lat, skill: tier, skill_label: tierLbl,
+                          category: category });
+        jobId++;
+    }
+    if (vroomJobs.length === 0 || depotLon === null) {
+        return { error: 'No routable POI coverage for region ' + region + '. The analytic layer (CATCHMENT.POIS) has no road-network-routable places for this region.',
+                 status: 'FAILED', region: region,
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
 
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: usedProfile, capacity: [vroomJobs.length], skills: [1],
-          description: 'Cold Chain Vehicle (Refrigerated goods)' },
+          description: 'Tier 1 vehicle (priority handling)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: usedProfile, capacity: [vroomJobs.length], skills: [2],
-          description: 'Restricted / Controlled Goods Vehicle' },
+          description: 'Tier 2 vehicle (restricted handling)' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
           profile: usedProfile, capacity: [vroomJobs.length], skills: [3],
-          description: 'Standard Delivery Vehicle' }
+          description: 'Tier 3 vehicle (standard handling)' }
     ];
 
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
@@ -1404,7 +1354,7 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails,
+        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails, region: region,
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1423,34 +1373,33 @@ try {
             steps: route.steps || [], geometry: route.geometry || []
         });
     }
-    var skill1Jobs = jobDetails.filter(function(j) { return j.skill === 1; });
-    var skill2Jobs = jobDetails.filter(function(j) { return j.skill === 2; });
-    var skill3Jobs = jobDetails.filter(function(j) { return j.skill === 3; });
+    var tier1 = jobDetails.filter(function(j) { return j.skill === 1; });
+    var tier2 = jobDetails.filter(function(j) { return j.skill === 2; });
+    var tier3 = jobDetails.filter(function(j) { return j.skill === 3; });
+
+    // Neutral demand signal: regional POI + address coverage (best-effort).
+    var totalPois = null, addressCount = null;
+    try { totalPois = execScalar("SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION = ?", [region]); } catch(e) {}
+    try { addressCount = execScalar("SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES WHERE REGION = ?", [region]); } catch(e) {}
 
     return {
         status: 'SUCCESS', num_vehicles: 3,
-        total_jobs: vroomJobs.length, sites_served: sites.length,
+        total_jobs: vroomJobs.length, sites_served: jobDetails.length, region: region,
         requested_profile: PROFILE, used_profile: usedProfile,
         profile_substituted: profSubstituted, profile_note: profNote,
         jobs: jobDetails, vehicles: vehicles,
         routes: routesWithGeometry, unassigned: response.unassigned || [],
         depot: { longitude: depotLon, latitude: depotLat, name: depotName },
         geometry: geojson,
-        demand_summary: {
-            cold_chain_stops: skill1Jobs.length,
-            restricted_stops: skill2Jobs.length,
-            standard_stops: skill3Jobs.length,
-            cold_chain_items: skill1Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, []),
-            restricted_items: skill2Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, []),
-            standard_items: skill3Jobs.map(function(j) { return j.items; }).reduce(function(a, b) { return a.concat(b); }, [])
+        tier_summary: {
+            tier_1_stops: tier1.length,
+            tier_2_stops: tier2.length,
+            tier_3_stops: tier3.length
         },
         demand_basis: {
-            total_population: totalPop,
-            segment_1_demand: Math.round(seg1),
-            segment_2_demand: Math.round(seg2),
-            segment_3_demand: Math.round(seg3),
-            segment_4_demand: Math.round(seg4),
-            segment_5_demand: Math.round(seg5)
+            region: region,
+            total_pois: totalPois,
+            address_count: addressCount
         }
     };
 } catch(err) {
@@ -1461,10 +1410,12 @@ $$;
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_NETWORK_OPTIMIZATION(VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 ----------------------------------------------------------------------
--- TOOL_DELIVERY_OPTIMIZATION: Pre-geocoded fleet delivery demo.
--- 30 stops with 3 skill-tier vehicles (cold chain, restricted, standard).
--- Reads DEMO_DELIVERY_STOPS and depot/region from DEMO_DEPOT
--- (created by setup-agent-playground).
+-- TOOL_DELIVERY_OPTIMIZATION: Region-scoped, domain-neutral delivery plan.
+-- Sources ~30 delivery stops live from the active region's Overture POIs
+-- (CATCHMENT.POIS, BOUNDARY-constrained + routable-filtered), assigns a neutral
+-- handling tier per stop from its category, computes the depot as the POI
+-- centroid, and runs a 3-vehicle VROOM solve. Active region from CATCHMENT.CONFIG.
+-- No static demo tables.
 ----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(
     PROFILE VARCHAR DEFAULT 'driving-car'
@@ -1474,87 +1425,126 @@ LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-try {
-    var depotLon = -122.3946;
-    var depotLat =  37.7941;
-    var depotName = 'Central Supply Depot';
-    var region = 'SanFrancisco';
-    try {
-        var depotStmt = snowflake.createStatement({
-            sqlText: "SELECT LONGITUDE, LATITUDE, NAME, REGION " +
-                     "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
-        });
-        var depotRes = depotStmt.execute();
-        if (depotRes.next()) {
-            depotLon = depotRes.getColumnValue(1); depotLat = depotRes.getColumnValue(2);
-            depotName = depotRes.getColumnValue(3); region = depotRes.getColumnValue(4);
-        }
-    } catch(e) { /* fall back to defaults */ }
-
-    // Resolve the requested profile against the profiles actually built in the
-    // region (best-effort; ORS_STATUS failure -> [] -> rename-only behavior).
+// Neutral handling-tier labels derived from a POI's category (no industry terms).
+var TIER_LABELS = { 1: 'Tier 1 - Priority', 2: 'Tier 2 - Restricted', 3: 'Tier 3 - Standard' };
+function execScalarPair(sqlText, binds) {
+    var st = snowflake.createStatement({ sqlText: sqlText, binds: binds || [] });
+    var rs = st.execute();
+    return rs.next() ? [rs.getColumnValue(1), rs.getColumnValue(2)] : null;
+}
+function resolveActiveRegion() {
+    // Active region from the neutral catchment config; fall back to the active
+    // dataset, then the provisioned default. No hardcoded coords anywhere.
+    var sqls = [
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+    ];
+    for (var i = 0; i < sqls.length; i++) {
+        try {
+            var rs = snowflake.createStatement({ sqlText: sqls[i] }).execute();
+            if (rs.next()) { var r = rs.getColumnValue(1); if (r) return r; }
+        } catch(e) { /* try next */ }
+    }
+    return 'SanFrancisco';
+}
+function resolveProfileFor(profile, region) {
+    // Best-effort: resolve the requested profile against the profiles actually
+    // built in the region. ORS_STATUS failure -> [] -> rename-only behavior.
     var available = [];
     try {
-        var avStmt = snowflake.createStatement({
-            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)",
-            binds: [region]
-        });
-        var avRes = avStmt.execute();
-        if (avRes.next()) {
-            var avRaw = avRes.getColumnValue(1);
-            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
-        }
+        var avRs = snowflake.createStatement({
+            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", binds: [region]
+        }).execute();
+        if (avRs.next()) { var a = avRs.getColumnValue(1); available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : []; }
     } catch(e) { available = []; }
-    var profRes = {};
+    var res = {};
     try {
-        var prStmt = snowflake.createStatement({
+        var prRs = snowflake.createStatement({
             sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
-            binds: [PROFILE, JSON.stringify(available)]
-        });
-        var prRes = prStmt.execute();
-        if (prRes.next()) {
-            var prRaw = prRes.getColumnValue(1);
-            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
-        }
-    } catch(e) { profRes = {}; }
+            binds: [profile, JSON.stringify(available)]
+        }).execute();
+        if (prRs.next()) { var p = prRs.getColumnValue(1); res = p ? ((typeof p === 'string') ? JSON.parse(p) : p) : {}; }
+    } catch(e) { res = {}; }
+    return res;
+}
+try {
+    var region = resolveActiveRegion();
+
+    var profRes = resolveProfileFor(PROFILE, region);
     var usedProfile = profRes.used || 'driving-car';
     var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
     var profNote = (profRes.note === undefined) ? null : profRes.note;
 
+    // Depot = centroid of the region's POIs (region-agnostic; no static depot).
+    var depotLon = null, depotLat = null;
+    try {
+        var dRs = snowflake.createStatement({
+            sqlText: "SELECT AVG(LONGITUDE) LO, AVG(LATITUDE) LA FROM FLEET_INTELLIGENCE.CATCHMENT.POIS WHERE REGION = ?",
+            binds: [region] }).execute();
+        if (dRs.next()) {
+            var lo = Number(dRs.getColumnValue("LO")); var la = Number(dRs.getColumnValue("LA"));
+            if (!isNaN(lo) && !isNaN(la)) { depotLon = lo; depotLat = la; }
+        }
+    } catch(e) { /* depot stays null -> caught by guard */ }
+    var depotName = region + ' Distribution Hub';
+
+    // Delivery stops = deterministic top-N live POIs for the active region that
+    // SNAP to the road network. A single off-network point makes VROOM abort the
+    // whole solve, so the routable filter (MATRIX snapped_distance <= 350m) runs
+    // in SQL: candidates -> MATRIX destinations -> FLATTEN -> keep snappable.
     var jobsStmt = snowflake.createStatement({
-        sqlText: "SELECT JOB_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, SKILL, SKILL_LABEL, AMOUNT " +
-                 "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS ORDER BY JOB_ID"
+        sqlText:
+            "WITH cand AS (" +
+            "  SELECT p.POI_NAME, p.ADDRESS, p.LONGITUDE, p.LATITUDE, " +
+            "         MOD(ABS(HASH(p.BASIC_CATEGORY)),3)+1 AS TIER, p.BASIC_CATEGORY, " +
+            "         ROW_NUMBER() OVER (ORDER BY p.POI_ID) AS RN " +
+            "  FROM FLEET_INTELLIGENCE.CATCHMENT.POIS p " +
+            "  JOIN OPENROUTESERVICE_APP.CORE.REGION_CATALOG rc ON rc.BOUNDARY IS NOT NULL " +
+            "    AND (UPPER(rc.LOOKUP_NAME)=UPPER(?) OR UPPER(rc.REGION_KEY)=UPPER(?)) " +
+            "  WHERE p.REGION = ? AND p.LONGITUDE IS NOT NULL AND p.LATITUDE IS NOT NULL " +
+            "    AND ST_WITHIN(p.GEOMETRY, rc.BOUNDARY) " +
+            "  ORDER BY p.POI_ID LIMIT 80), " +
+            "a AS (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LONGITUDE,LATITUDE)) WITHIN GROUP (ORDER BY RN) AS C FROM cand), " +
+            "snap AS (SELECT f.INDEX AS IDX, f.VALUE:snapped_distance::FLOAT AS SD " +
+            "         FROM a, LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.MATRIX(?, C::ARRAY, ?):destinations) f) " +
+            "SELECT c.POI_NAME, c.ADDRESS, c.LONGITUDE, c.LATITUDE, c.TIER, c.BASIC_CATEGORY " +
+            "FROM cand c JOIN snap s ON s.IDX = c.RN - 1 " +
+            "WHERE s.SD IS NOT NULL AND s.SD <= 350 ORDER BY c.RN LIMIT 30",
+        binds: [region, region, region, usedProfile, region]
     });
     var jobsRes = jobsStmt.execute();
     var vroomJobs = [];
     var jobMeta = [];
+    var jid = 1;
     while (jobsRes.next()) {
-        var id = jobsRes.getColumnValue(1);
-        var name = jobsRes.getColumnValue(2);
-        var address = jobsRes.getColumnValue(3);
-        var lon = jobsRes.getColumnValue(4);
-        var lat = jobsRes.getColumnValue(5);
-        var skill = jobsRes.getColumnValue(6);
-        var skillLbl = jobsRes.getColumnValue(7);
-        var amount = jobsRes.getColumnValue(8);
-        vroomJobs.push({ id: id, location: [lon, lat], amount: [amount], skills: [skill], description: name });
-        jobMeta.push({ name: name, address: address, longitude: lon, latitude: lat, skill: skill, skill_label: skillLbl });
+        var name = jobsRes.getColumnValue(1);
+        var address = jobsRes.getColumnValue(2);
+        var lon = jobsRes.getColumnValue(3);
+        var lat = jobsRes.getColumnValue(4);
+        var tier = jobsRes.getColumnValue(5);
+        var category = jobsRes.getColumnValue(6);
+        var tierLbl = TIER_LABELS[tier] || ('Tier ' + tier);
+        vroomJobs.push({ id: jid, location: [lon, lat], amount: [1], skills: [tier], description: name });
+        jobMeta.push({ name: name, address: address, longitude: lon, latitude: lat, skill: tier, skill_label: tierLbl, category: category });
+        jid++;
     }
-    if (vroomJobs.length === 0) {
-        return { error: 'No jobs found in DEMO_DELIVERY_STOPS table. Run setup-agent-playground first.', status: 'FAILED',
+    if (vroomJobs.length === 0 || depotLon === null) {
+        return { error: 'No routable POI coverage for region ' + region + '. The analytic layer (CATCHMENT.POIS) has no road-network-routable places for this region.',
+                 status: 'FAILED', region: region,
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
+    var cap = vroomJobs.length;
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: usedProfile, capacity: [12], skills: [1],
-          description: 'Cold Chain Vehicle (Refrigerated)' },
+          profile: usedProfile, capacity: [cap], skills: [1],
+          description: 'Tier 1 vehicle (priority handling)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: usedProfile, capacity: [12], skills: [2],
-          description: 'Restricted / Controlled Goods Vehicle' },
+          profile: usedProfile, capacity: [cap], skills: [2],
+          description: 'Tier 2 vehicle (restricted handling)' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: usedProfile, capacity: [12], skills: [3],
-          description: 'Standard Delivery Vehicle' }
+          profile: usedProfile, capacity: [cap], skills: [3],
+          description: 'Tier 3 vehicle (standard handling)' }
     ];
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
     var optSQL = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
@@ -1562,7 +1552,7 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED',
+        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', region: region,
                  requested_profile: PROFILE, used_profile: usedProfile,
                  profile_substituted: profSubstituted, profile_note: profNote };
     }
@@ -1571,7 +1561,7 @@ try {
     var geojsonRaw = optRes.getColumnValue(2);
     var geojson = geojsonRaw ? ((typeof geojsonRaw === 'string') ? JSON.parse(geojsonRaw) : geojsonRaw) : null;
     return {
-        status: 'SUCCESS', num_vehicles: 3,
+        status: 'SUCCESS', num_vehicles: 3, region: region,
         requested_profile: PROFILE, used_profile: usedProfile,
         profile_substituted: profSubstituted, profile_note: profNote,
         jobs: jobMeta, vehicles: vehicles,
@@ -1589,7 +1579,10 @@ ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DELIVERY_OPTIMIZATION(VARC
 
 ----------------------------------------------------------------------
 -- TOOL_CATCHMENT: Area profile within a drive-time catchment of a site.
--- Reads DEMO_AREA_DEMOGRAPHICS and the active region from DEMO_DEPOT.
+-- Geocodes the site, draws the drive-time isochrone, then profiles the live
+-- Overture POIs (CATCHMENT.POIS) and addresses (CATCHMENT.REGIONAL_ADDRESSES)
+-- within it — a neutral activity/coverage signal (no demographics). Active
+-- region from CATCHMENT.CONFIG.
 ----------------------------------------------------------------------
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT(
     SITE_DESCRIPTION VARCHAR,
@@ -1601,43 +1594,38 @@ LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-try {
-    var region = 'SanFrancisco';
-    try {
-        var depotStmt = snowflake.createStatement({
-            sqlText: "SELECT REGION FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DEPOT ORDER BY DEPOT_ID LIMIT 1"
-        });
-        var depotRes = depotStmt.execute();
-        if (depotRes.next()) { region = depotRes.getColumnValue(1) || region; }
-    } catch(e) { /* fall back to default region */ }
-
-    // Resolve the requested profile against the profiles actually built in the
-    // default region (best-effort; ORS_STATUS failure -> [] -> rename-only
-    // behavior), mirroring the geocoding tools. The 2-arg SQL UDF is the single
-    // resolver + substitution detector.
+function execScalar(sqlText, binds) {
+    var rs = snowflake.createStatement({ sqlText: sqlText, binds: binds || [] }).execute();
+    return rs.next() ? rs.getColumnValue(1) : null;
+}
+function resolveActiveRegion() {
+    var sqls = [
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+    ];
+    for (var i = 0; i < sqls.length; i++) {
+        try { var v = execScalar(sqls[i]); if (v) return v; } catch(e) { /* next */ }
+    }
+    return 'SanFrancisco';
+}
+function resolveProfileFor(profile, region) {
     var available = [];
     try {
-        var avStmt = snowflake.createStatement({
-            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles)"
-        });
-        var avRes = avStmt.execute();
-        if (avRes.next()) {
-            var avRaw = avRes.getColumnValue(1);
-            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
-        }
+        var a = execScalar("SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)", [region]);
+        available = a ? ((typeof a === 'string') ? JSON.parse(a) : a) : [];
     } catch(e) { available = []; }
-    var profRes = {};
+    var res = {};
     try {
-        var prStmt = snowflake.createStatement({
-            sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
-            binds: [PROFILE, JSON.stringify(available)]
-        });
-        var prRes = prStmt.execute();
-        if (prRes.next()) {
-            var prRaw = prRes.getColumnValue(1);
-            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
-        }
-    } catch(e) { profRes = {}; }
+        var p = execScalar("SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
+                           [profile, JSON.stringify(available)]);
+        res = p ? ((typeof p === 'string') ? JSON.parse(p) : p) : {};
+    } catch(e) { res = {}; }
+    return res;
+}
+try {
+    var region = resolveActiveRegion();
+
+    var profRes = resolveProfileFor(PROFILE, region);
     var usedProfile = profRes.used || 'driving-car';
     var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
     var profNote = (profRes.note === undefined) ? null : profRes.note;
@@ -1658,7 +1646,9 @@ try {
     var rawGeo = geocodeRes.getColumnValue(1);
     var loc = (typeof rawGeo === 'string') ? JSON.parse(rawGeo) : rawGeo;
     if (!loc || !loc.latitude || !loc.longitude) {
-        return { error: 'Could not geocode site location', status: 'FAILED' };
+        return { error: 'Could not geocode site location', status: 'FAILED',
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var isoSQL = "SELECT ST_ASGEOJSON(d.GEOJSON) AS GEOJSON_STR, " +
                  "d.RESPONSE:features[0]:properties:area::FLOAT AS AREA_M2 " +
@@ -1669,111 +1659,96 @@ try {
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
-        return { error: 'Isochrone returned no results for this location', status: 'FAILED' };
+        return { error: 'Isochrone returned no results for this location', status: 'FAILED',
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var isoGeoRaw = isoRes.getColumnValue(1);
     var areaM2 = isoRes.getColumnValue(2) || 0;
     var areaKm2 = Math.round(areaM2 / 1000000 * 100) / 100;
     var isoGeojson = isoGeoRaw ? ((typeof isoGeoRaw === 'string') ? JSON.parse(isoGeoRaw) : isoGeoRaw) : null;
     if (!isoGeojson) {
-        return { error: 'Isochrone geometry is null', status: 'FAILED' };
+        return { error: 'Isochrone geometry is null', status: 'FAILED',
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var isoGeojsonStr = JSON.stringify(isoGeojson).replace(/'/g, "''");
-    var demoSQL = "SELECT DEMO_ID, NEIGHBORHOOD, LATITUDE, LONGITUDE, TOTAL_POPULATION, " +
-                  "PCT_ELDERLY, PCT_CHILDREN, DIABETES_PCT, HYPERTENSION_PCT, " +
-                  "CARDIOVASCULAR_PCT, RESPIRATORY_PCT, MOBILITY_ISSUES_PCT, " +
-                  "INCOME_BRACKET, CAR_OWNERSHIP_PCT, TRANSIT_ACCESS " +
-                  "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_AREA_DEMOGRAPHICS " +
-                  "WHERE ST_WITHIN(" +
-                  "  TO_GEOGRAPHY(OBJECT_CONSTRUCT('type','Point','coordinates',ARRAY_CONSTRUCT(LONGITUDE::FLOAT,LATITUDE::FLOAT)))," +
-                  "  TO_GEOGRAPHY('" + isoGeojsonStr + "')" +
-                  ") ORDER BY TOTAL_POPULATION DESC";
-    var demoStmt = snowflake.createStatement({ sqlText: demoSQL });
-    var demoRes = demoStmt.execute();
-    var neighbourhoods = [];
-    var totalPop = 0, totalDiabetes = 0, totalHypertension = 0;
-    var totalCardio = 0, totalRespiratory = 0, totalMobility = 0;
-    var totalElderly = 0, totalChildren = 0, totalLowCar = 0;
-    var lowIncome = 0, medIncome = 0, highIncome = 0;
-    while (demoRes.next()) {
-        var pop = demoRes.getColumnValue(5);
-        var diab = demoRes.getColumnValue(8);
-        var hyp = demoRes.getColumnValue(9);
-        var card = demoRes.getColumnValue(10);
-        var resp = demoRes.getColumnValue(11);
-        var mob = demoRes.getColumnValue(12);
-        var inc = demoRes.getColumnValue(13);
-        var car = demoRes.getColumnValue(14);
-        var eld = demoRes.getColumnValue(6);
-        var chi = demoRes.getColumnValue(7);
-        var riskScore = Math.min(100, Math.round(diab * 1.5 + hyp * 0.8 + card * 1.2 + mob * 0.9));
-        neighbourhoods.push({
-            id: demoRes.getColumnValue(1), neighborhood: demoRes.getColumnValue(2),
-            latitude: demoRes.getColumnValue(3), longitude: demoRes.getColumnValue(4),
-            population: pop, pct_elderly: eld, pct_children: chi,
-            diabetes_pct: diab, hypertension_pct: hyp, cardiovascular_pct: card,
-            respiratory_pct: resp, mobility_issues_pct: mob,
-            income_bracket: inc, car_ownership_pct: car,
-            transit_access: demoRes.getColumnValue(15), risk_score: riskScore
+
+    // Profile the catchment from live Overture data: sample reachable POIs (for
+    // the map) + count POIs/addresses within the isochrone (neutral activity
+    // proxy; no demographics). Region-scoped, domain-neutral by construction.
+    var poiStmt = snowflake.createStatement({
+        sqlText: "SELECT POI_NAME, BASIC_CATEGORY, LONGITUDE, LATITUDE " +
+                 "FROM FLEET_INTELLIGENCE.CATCHMENT.POIS " +
+                 "WHERE REGION = ? AND ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('" + isoGeojsonStr + "')) " +
+                 "ORDER BY POI_ID LIMIT 200",
+        binds: [region]
+    });
+    var poiRes = poiStmt.execute();
+    var populationPoints = [];
+    while (poiRes.next()) {
+        populationPoints.push({
+            name: poiRes.getColumnValue(1),
+            category: poiRes.getColumnValue(2),
+            longitude: poiRes.getColumnValue(3),
+            latitude: poiRes.getColumnValue(4)
         });
-        totalPop += pop;
-        totalDiabetes += diab * pop;
-        totalHypertension += hyp * pop;
-        totalCardio += card * pop;
-        totalRespiratory += resp * pop;
-        totalMobility += mob * pop;
-        totalElderly += eld * pop;
-        totalChildren += chi * pop;
-        totalLowCar += (100 - car) * pop;
-        if (inc === 'LOW') lowIncome += pop;
-        else if (inc === 'MEDIUM') medIncome += pop;
-        else highIncome += pop;
     }
-    if (neighbourhoods.length === 0) {
+
+    // Accurate totals + top categories over ALL POIs in the catchment.
+    var poisInCatchment = 0, addressesInCatchment = null;
+    try {
+        poisInCatchment = execScalar(
+            "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.POIS " +
+            "WHERE REGION = ? AND ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('" + isoGeojsonStr + "'))", [region]) || 0;
+    } catch(e) { poisInCatchment = populationPoints.length; }
+    try {
+        addressesInCatchment = execScalar(
+            "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES " +
+            "WHERE REGION = ? AND ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('" + isoGeojsonStr + "'))", [region]);
+    } catch(e) { addressesInCatchment = null; }
+
+    var topCategories = [];
+    try {
+        var catStmt = snowflake.createStatement({
+            sqlText: "SELECT BASIC_CATEGORY, COUNT(*) C FROM FLEET_INTELLIGENCE.CATCHMENT.POIS " +
+                     "WHERE REGION = ? AND ST_WITHIN(GEOMETRY, TO_GEOGRAPHY('" + isoGeojsonStr + "')) " +
+                     "GROUP BY BASIC_CATEGORY ORDER BY C DESC LIMIT 8",
+            binds: [region]
+        });
+        var catRes = catStmt.execute();
+        while (catRes.next()) {
+            topCategories.push({ category: catRes.getColumnValue(1), count: catRes.getColumnValue(2) });
+        }
+    } catch(e) { /* leave empty */ }
+
+    if (populationPoints.length === 0) {
         return {
-            status: 'SUCCESS',
+            status: 'SUCCESS', region: region,
             site: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
             center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
             range_minutes: RANGE_MINUTES, geometry: isoGeojson, area_km2: areaKm2,
             requested_profile: PROFILE, used_profile: usedProfile,
             profile_substituted: profSubstituted, profile_note: profNote,
-            message: 'No area data found within catchment. Try increasing range_minutes or run setup-agent-playground.',
-            population_points: [], summary: {}
+            message: 'No POIs found within the catchment. Try increasing range_minutes.',
+            population_points: [], summary: { pois_in_catchment: 0, addresses_in_catchment: addressesInCatchment, top_categories: [], area_km2: areaKm2 }
         };
     }
-    var avgDiab = Math.round(totalDiabetes / totalPop * 10) / 10;
-    var avgHyp = Math.round(totalHypertension / totalPop * 10) / 10;
-    var avgCard = Math.round(totalCardio / totalPop * 10) / 10;
-    var avgResp = Math.round(totalRespiratory / totalPop * 10) / 10;
-    var avgMob = Math.round(totalMobility / totalPop * 10) / 10;
-    var avgEld = Math.round(totalElderly / totalPop * 10) / 10;
-    var avgChi = Math.round(totalChildren / totalPop * 10) / 10;
-    var pctNoCar = Math.round(totalLowCar / totalPop * 10) / 10;
-    var highRisk = neighbourhoods.filter(function(n) { return n.risk_score >= 55; });
     return {
-        status: 'SUCCESS',
+        status: 'SUCCESS', region: region,
         site: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
         center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
         range_minutes: RANGE_MINUTES, geometry: isoGeojson,
         area_km2: Math.round(areaKm2 * 100) / 100,
         requested_profile: PROFILE, used_profile: usedProfile,
         profile_substituted: profSubstituted, profile_note: profNote,
-        population_points: neighbourhoods,
+        population_points: populationPoints,
         summary: {
-            catchment_population: totalPop,
-            neighbourhoods_covered: neighbourhoods.length,
-            high_risk_neighbourhoods: highRisk.length,
-            avg_diabetes_pct: avgDiab, avg_hypertension_pct: avgHyp,
-            avg_cardiovascular_pct: avgCard, avg_respiratory_pct: avgResp,
-            avg_mobility_issues_pct: avgMob, pct_elderly: avgEld, pct_children: avgChi,
-            pct_without_car: pctNoCar,
-            income_low_pct: Math.round(lowIncome / totalPop * 1000) / 10,
-            income_medium_pct: Math.round(medIncome / totalPop * 1000) / 10,
-            income_high_pct: Math.round(highIncome / totalPop * 1000) / 10,
-            top_morbidity: avgDiab > avgHyp ? 'Diabetes' : 'Hypertension',
-            accessibility_note: pctNoCar > 40 ? 'HIGH dependency on the site — majority of population has no car' :
-                                pctNoCar > 25 ? 'MODERATE car-free population — good transit access needed' :
-                                'Most residents have car access to the site'
+            pois_in_catchment: poisInCatchment,
+            pois_shown: populationPoints.length,
+            addresses_in_catchment: addressesInCatchment,
+            top_categories: topCategories,
+            area_km2: Math.round(areaKm2 * 100) / 100
         }
     };
 } catch(err) {
