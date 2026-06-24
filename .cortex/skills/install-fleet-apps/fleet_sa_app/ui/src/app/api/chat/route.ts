@@ -43,6 +43,28 @@ export async function POST(request: NextRequest) {
     contextPrefix += '\n';
   }
 
+  // Active dashboard context (region / vehicle / dataset / date range) so the
+  // agent can state its scope and default routing args. The legacy control app
+  // injected an equivalent hidden turn; the SA app discarded panelContext.context
+  // until now. Routing verbs default region/profile to the active context when
+  // the user does not name a place; the analytics views are already scoped, but
+  // this lets the agent name its region and pick the right routing defaults.
+  const activeCtx = (panelContext?.context || {}) as Record<string, unknown>;
+  const ctxBits: string[] = [];
+  if (activeCtx.region) ctxBits.push(`region = ${activeCtx.region}`);
+  if (activeCtx.vehicle_type) ctxBits.push(`vehicle type = ${activeCtx.vehicle_type}`);
+  if (activeCtx.dataset_id) ctxBits.push(`dataset = ${activeCtx.dataset_id}`);
+  if (activeCtx.date_range_start || activeCtx.date_range_end) {
+    ctxBits.push(`date range = ${activeCtx.date_range_start ?? 'any'}..${activeCtx.date_range_end ?? 'any'}`);
+  }
+  let activeContextPrefix = '';
+  if (ctxBits.length > 0) {
+    activeContextPrefix =
+      `[Active context: ${ctxBits.join('; ')}. ` +
+      `When a routing tool needs a region or profile and the user did not name one, default to this region and vehicle. ` +
+      `State the active region when it is relevant to your answer. Do not override an explicit place the user names.]\n\n`;
+  }
+
   const cortexMessages = [
     ...history.map((m: { role: string; content: string }) => ({
       role: m.role,
@@ -50,7 +72,7 @@ export async function POST(request: NextRequest) {
     })),
     {
       role: 'user',
-      content: [{ type: 'text', text: contextPrefix + userMessage }],
+      content: [{ type: 'text', text: activeContextPrefix + contextPrefix + userMessage }],
     },
   ];
 
