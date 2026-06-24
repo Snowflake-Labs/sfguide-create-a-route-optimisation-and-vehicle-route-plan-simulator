@@ -14,7 +14,11 @@ spec:
         # the default) is per-region; missing region resolves to this name.
         # Set to the provisioned/active region so region=NULL routing tool calls
         # (TOOL_DIRECTIONS etc. do not pass a region) reach a live ORS service.
-        DEFAULT_REGION_NAME: Europe
+        # MUST match the seeded/default region the installer provisions
+        # (BOOTSTRAP_DEFAULT_REGION -> SanFrancisco). Never set this to a region
+        # that is not actually installed, or no-arg ROUTING_STATUS() reports a
+        # dead host / service_ready:false for an uninstalled region.
+        DEFAULT_REGION_NAME: SanFrancisco
         # Guardrail caps raised above defaults to fit demo workloads.
         # (#audit-pr-120 follow-up). Engine-side caps in ors-config.yml are
         # already permissive (matrix maximum_routes = 2,000,000 -> sqrt = 1414),
