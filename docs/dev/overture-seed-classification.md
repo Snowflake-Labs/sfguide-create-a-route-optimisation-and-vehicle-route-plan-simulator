@@ -1,5 +1,14 @@
 # Overture seed classification (roadmap note)
 
+> **SUPERSEDED by [`data-studio-universal-generation.md`](data-studio-universal-generation.md).**
+> This note concluded "do not attempt a broad migration" because demographics, hazard,
+> and business data "have no Overture analog". That conclusion has been **reversed**: free
+> Snowflake Marketplace datasets (Census demographics, FEMA hazard/disasters) fill those
+> gaps, and the new direction makes **Data Studio the single generator for all data**
+> (the first Data Studio run becomes the install seed). The classification table below is
+> retained as the historical starting skeleton, but the live verdicts now live in the
+> superseding doc.
+
 When asking "can we replace static seed X with Overture Maps data?", use this
 classification. The short answer: **Overture is reference map data** (where things
 are — places, addresses, roads, buildings, admin boundaries). It does **not**
