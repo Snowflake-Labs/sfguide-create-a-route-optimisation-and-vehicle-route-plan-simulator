@@ -91,11 +91,9 @@
   "contextBar": [
     {
       "id": "region",
-      "type": "enum",
+      "type": "readonly",
       "label": "Region",
-      "default": "SanFrancisco",
       "configColumn": "REGION",
-      "source": "SELECT DISTINCT REGION AS value, REGION AS label FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE ORDER BY 1",
       "options": [
         { "value": "SanFrancisco", "label": "San Francisco" }
       ]

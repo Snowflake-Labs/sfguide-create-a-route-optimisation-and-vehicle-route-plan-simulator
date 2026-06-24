@@ -61,20 +61,20 @@ interface DatasetOption {
   label: string;
   is_active: boolean;
   vehicle_type: string;
+  region: string;
 }
 
-// Dynamic dataset picker (R2.2). Lists datasets for the active region from
-// DIM_DATASETS and writes the chosen DATASET_ID into store context.dataset_id.
-// Dashboards bind it as a :param to the F_*_SCOPED contract functions, so the
-// selection is PER-SESSION (multi-tenant safe): it never writes any shared row.
+// Dynamic dataset picker (R2.2). Lists ALL datasets from DIM_DATASETS and
+// writes the chosen DATASET_ID into store context.dataset_id. The dataset is
+// the source of truth for REGION and VEHICLE_TYPE — selecting a dataset auto-
+// syncs both values into context so all 30+ dashboard queries binding :region
+// and :vehicle_type stay consistent.
 function DatasetPicker({ field }: { field: ContextBarField }) {
-  const region = useAppStore((s) => s.context.region) as string | undefined;
   const current = useAppStore((s) => s.context[field.id]) as string | undefined;
   const setContext = useAppStore((s) => s.setContext);
   const [options, setOptions] = useState<DatasetOption[]>([]);
 
   useEffect(() => {
-    if (!region) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -84,10 +84,9 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
           body: JSON.stringify({
             sql:
               'SELECT DATASET_ID AS dataset_id, LABEL AS label, IS_ACTIVE AS is_active, ' +
-              'VEHICLE_TYPE AS vehicle_type ' +
-              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE REGION = :region ' +
+              'VEHICLE_TYPE AS vehicle_type, REGION AS region ' +
+              'FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS ' +
               'ORDER BY IS_ACTIVE DESC, CREATED_AT DESC',
-            params: { region },
           }),
         });
         if (!res.ok) return;
@@ -95,19 +94,16 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
         const rows = body.rows ?? [];
         if (cancelled) return;
         setOptions(rows);
-        // Default to the active dataset (or first) whenever the current
-        // selection is absent or not valid for the newly selected region.
         const ids = new Set(rows.map((r) => r.dataset_id));
         if (!current || !ids.has(current)) {
           const active = rows.find((r) => r.is_active) ?? rows[0];
           setContext(field.id, active ? active.dataset_id : null);
-          // Dataset drives vehicle_type: keep the read-only Vehicle label in
-          // sync with the selected dataset's VEHICLE_TYPE so dashboards/agent
-          // never see a stale vehicle that disagrees with the active dataset.
           if (active?.vehicle_type) setContext('vehicle_type', active.vehicle_type);
+          if (active?.region) setContext('region', active.region);
         } else {
           const sel = rows.find((r) => r.dataset_id === current);
           if (sel?.vehicle_type) setContext('vehicle_type', sel.vehicle_type);
+          if (sel?.region) setContext('region', sel.region);
         }
       } catch {
         /* non-fatal: dashboards fall back to the active dataset when dataset_id is null */
@@ -117,7 +113,7 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [region]);
+  }, []);
 
   if (options.length === 0) return null;
 
@@ -130,6 +126,7 @@ function DatasetPicker({ field }: { field: ContextBarField }) {
           setContext(field.id, e.target.value);
           const sel = options.find((o) => o.dataset_id === e.target.value);
           if (sel?.vehicle_type) setContext('vehicle_type', sel.vehicle_type);
+          if (sel?.region) setContext('region', sel.region);
         }}
         style={selectStyle}
       >
