@@ -19,6 +19,51 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
     COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- ============================================================================
+-- RESOLVE_PROFILE: pure resolver shared by every TOOL_* proc. Given the caller's
+-- requested profile/vehicle, the canonical ORS profile the whitelist mapped it
+-- to, and the list of profiles ACTUALLY built in the target region (from
+-- ORS_STATUS), it returns the profile to use plus a transparency signal:
+--   { requested, used, substituted, reason, note, available }
+-- substituted is TRUE whenever `used` differs from the literal requested value
+-- (per product decision: announce ANY profile change, incl. ebike ->
+-- cycling-electric). reason is 'none' | 'renamed' | 'unavailable'. When the
+-- canonical profile is not built in the region, it falls back to a same-family
+-- built profile, else driving-car, else the first available — and the agent
+-- surfaces `note` to the user. AVAILABLE empty/unknown => no availability claim
+-- (only renames are flagged), preserving today's behavior when ORS_STATUS fails.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(REQUESTED STRING, CANONICAL STRING, AVAILABLE ARRAY)
+RETURNS OBJECT
+LANGUAGE JAVASCRIPT
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  function fam(p){ p=String(p||''); if(p.indexOf('driving')===0)return 'driving'; if(p.indexOf('cycling')===0)return 'cycling'; if(p.indexOf('foot')===0)return 'foot'; if(p==='wheelchair')return 'wheelchair'; return 'other'; }
+  var reqRaw = (REQUESTED===undefined||REQUESTED===null)?null:String(REQUESTED).trim();
+  var canon  = (CANONICAL===undefined||CANONICAL===null||String(CANONICAL).trim()==='')?'driving-car':String(CANONICAL).trim().toLowerCase();
+  var avail  = Array.isArray(AVAILABLE)?AVAILABLE.map(function(x){return String(x).toLowerCase();}):[];
+  var used, reason;
+  if(avail.length===0 || avail.indexOf(canon)>=0){ used=canon; reason='none'; }
+  else {
+    var f=fam(canon), same=null;
+    for(var i=0;i<avail.length;i++){ if(fam(avail[i])===f){ same=avail[i]; break; } }
+    used = same || (avail.indexOf('driving-car')>=0 ? 'driving-car' : avail[0]);
+    reason='unavailable';
+  }
+  var reqKey = reqRaw?reqRaw.toLowerCase():null;
+  var substituted = (reqKey!==null && reqKey!==used);
+  if(reason==='none' && substituted) reason='renamed';
+  var note=null;
+  if(substituted){
+    if(reason==='unavailable'){
+      note="The requested travel type '"+reqRaw+"' is not available in this region, so the route was computed using the '"+used+"' profile instead."+(avail.length?(" Available profiles: "+avail.join(', ')+"."):"");
+    } else {
+      note="Routed using the '"+used+"' profile for your requested travel type '"+reqRaw+"'.";
+    }
+  }
+  return { requested: reqRaw, used: used, substituted: substituted, reason: reason, note: note, available: avail };
+$$;
+
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
@@ -43,6 +88,9 @@ DECLARE
     v_detected_regions VARIANT;
     v_out_of_region_count INT;
     v_total_coords INT;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
 BEGIN
     -- Whitelist profile to prevent SQL injection when inlining into dynamic SQL.
     -- ORS DIRECTIONS does not honor bound parameters for the profile arg; inline it instead.
@@ -64,6 +112,17 @@ BEGIN
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
         ELSE 'driving-car'
     END;
+
+    -- Resolve the requested profile against the profiles actually built in the
+    -- region (best-effort; ORS_STATUS failure -> NULL -> rename-only behavior).
+    -- DIRECTIONS uses the default region, so query the default region's profiles.
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
 
     -- Step 1: Geocode. Pull locations + coords array out as bound variables
     -- so step 2 can pass them to DIRECTIONS without inlining a CTE-derived
@@ -129,7 +188,7 @@ BEGIN
             d.RESPONSE:features[0]:geometry,
             d.RESPONSE:error
         FROM TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
-            ''' || v_safe_profile || ''',
+            ''' || v_used || ''',
             OBJECT_CONSTRUCT(''coordinates'', PARSE_JSON(?))::VARIANT)) d';
 
     LET v_coords_str2 VARCHAR := v_coords::STRING;
@@ -175,7 +234,11 @@ BEGIN
 
     RETURN OBJECT_CONSTRUCT(
         'locations', v_locations,
-        'profile', v_profile,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
         'distance_km', ROUND(DIV0(v_distance_raw, 1000), 2),
         'duration_mins', ROUND(DIV0(v_duration_raw, 60), 1),
         'segments', v_segments,
@@ -212,6 +275,9 @@ DECLARE
     v_geometry VARIANT;
     v_ors_error VARIANT;
     v_detected_region OBJECT;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
 BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
@@ -231,6 +297,16 @@ BEGIN
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
         ELSE 'driving-car'
     END;
+
+    -- Resolve the requested profile against the profiles built in the region
+    -- (best-effort). Surfaces requested vs used + a note when they differ.
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
 
     -- First attempt: try with detected region (clips to region boundary).
     v_sql := 'WITH geocoded AS (
@@ -258,7 +334,7 @@ BEGIN
                    i.GEOJSON AS clipped_geom
             FROM validated v,
                  TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_safe_profile || ''',
+                     ''' || v_used || ''',
                      v.geocoded_result:longitude::FLOAT,
                      v.geocoded_result:latitude::FLOAT,
                      ?::NUMBER,
@@ -267,7 +343,7 @@ BEGIN
         SELECT
             geo AS center,
             ?::NUMBER AS range_minutes,
-            ''' || v_safe_profile || ''' AS profile,
+            ''' || v_used || ''' AS profile,
             iso_result:features[0]:properties:area::FLOAT AS area_raw,
             iso_result:features[0]:geometry AS geometry,
             iso_result:error AS ors_error,
@@ -330,7 +406,11 @@ BEGIN
     RETURN OBJECT_CONSTRUCT(
         'center', v_center,
         'range_minutes', v_range_minutes,
-        'profile', v_profile,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
         'area_km2', ROUND(DIV0(v_area_raw, 1000000), 2),
         'geometry', v_geometry,
         'detected_region', v_detected_region,
@@ -373,6 +453,9 @@ DECLARE
     v_detected_region OBJECT;
     v_pois VARIANT;
     v_poi_count NUMBER;
+    v_available ARRAY;
+    v_res VARIANT;
+    v_used VARCHAR;
 BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
@@ -392,6 +475,16 @@ BEGIN
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
         ELSE 'driving-car'
     END;
+
+    -- Resolve the requested profile against the profiles built in the region
+    -- (best-effort). Surfaces requested vs used + a note when they differ.
+    BEGIN
+        SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles) INTO :v_available;
+    EXCEPTION WHEN OTHER THEN
+        v_available := NULL;
+    END;
+    SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(:PROFILE, :v_safe_profile, :v_available) INTO :v_res;
+    v_used := COALESCE(v_res:used::STRING, v_safe_profile);
 
     -- Step 1: Geocode + isochrone (clipped to detected region)
     v_sql := 'WITH geocoded AS (
@@ -415,7 +508,7 @@ BEGIN
                    i.RESPONSE AS iso_result
             FROM validated v,
                  TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES_CLIPPED(
-                     ''' || v_safe_profile || ''',
+                     ''' || v_used || ''',
                      v.geocoded_result:longitude::FLOAT,
                      v.geocoded_result:latitude::FLOAT,
                      ?::NUMBER,
@@ -424,7 +517,7 @@ BEGIN
         SELECT
             geo AS center,
             ?::NUMBER AS range_minutes,
-            ''' || v_safe_profile || ''' AS profile,
+            ''' || v_used || ''' AS profile,
             iso_result:features[0]:geometry AS iso_geojson,
             iso_result:error AS ors_error,
             detected_region AS detected_region
@@ -541,7 +634,11 @@ BEGIN
         RETURN OBJECT_CONSTRUCT(
             'center', v_center,
             'range_minutes', v_range_minutes,
-            'profile', v_profile,
+            'profile', v_used,
+            'requested_profile', PROFILE,
+            'used_profile', v_used,
+            'profile_substituted', v_res:substituted,
+            'profile_note', v_res:note,
             'category', POI_CATEGORY,
             'detected_region', v_detected_region,
             'geometry', v_iso_geojson,
@@ -555,7 +652,11 @@ BEGIN
     RETURN OBJECT_CONSTRUCT(
         'center', v_center,
         'range_minutes', v_range_minutes,
-        'profile', v_profile,
+        'profile', v_used,
+        'requested_profile', PROFILE,
+        'used_profile', v_used,
+        'profile_substituted', v_res:substituted,
+        'profile_note', v_res:note,
         'category', POI_CATEGORY,
         'detected_region', v_detected_region,
         'geometry', v_iso_geojson,

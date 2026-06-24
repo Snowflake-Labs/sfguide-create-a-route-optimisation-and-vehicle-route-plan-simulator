@@ -1,7 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { resolveProfile } from '../codes.js';
 
 export const find_poi = defineProc({
   name: 'find_poi',
@@ -36,7 +35,7 @@ export const find_poi = defineProc({
       args.location_description,
       args.range_minutes,
       args.poi_category,
-      resolveProfile(args.profile),
+      args.profile,
       args.max_results,
     ]);
     return { result };

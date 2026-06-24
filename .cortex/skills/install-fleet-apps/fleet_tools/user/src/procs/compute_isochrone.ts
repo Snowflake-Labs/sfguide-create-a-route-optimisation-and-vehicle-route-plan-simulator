@@ -1,7 +1,6 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { resolveProfile } from '../codes.js';
 
 export const compute_isochrone = defineProc({
   name: 'compute_isochrone',
@@ -28,7 +27,7 @@ export const compute_isochrone = defineProc({
     const result = await callTool(ctx.conn, Procs.isochrone, [
       args.location_description,
       args.range_minutes,
-      resolveProfile(args.profile),
+      args.profile,
     ]);
     return { result };
   },
