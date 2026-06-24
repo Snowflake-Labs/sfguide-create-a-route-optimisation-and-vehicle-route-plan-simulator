@@ -7,9 +7,13 @@ import { getServerConfig } from '@/lib/server-config';
 // Calls a User-bundle synapse routing proc (the routing MCP verbs) for the
 // Tier-3 showcase pages (VRP simulator, Emergency wizard). The agent uses the
 // same procs via its MCP server; these pages call them directly with explicit
-// args. Verb + arity are allowlisted; a trailing NULL idempotency key is
-// appended. The schema + verb allowlist come from app-config.json `tools`
-// (env APP_CONFIG); the fleet literals below are the fallback when absent.
+// args. Verb + arity are allowlisted; the trailing synapse IDEMPOTENCY_KEY is
+// bound from the request (opt-in): a client may send `idempotency_key` to make
+// a call replay-safe (the envelope returns the prior result within a 24h window
+// instead of re-executing). When omitted it binds NULL (no replay check), so
+// behavior is unchanged for callers that do not opt in. The schema + verb
+// allowlist come from app-config.json `tools` (env APP_CONFIG); the fleet
+// literals below are the fallback when absent.
 
 const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_USER';
 
@@ -33,7 +37,7 @@ function resolveTools(): { schema: string; verbs: Record<string, number> } {
 }
 
 async function handlePost(req: Request) {
-  let body: { verb?: string; args?: unknown[] };
+  let body: { verb?: string; args?: unknown[]; idempotency_key?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -51,9 +55,19 @@ async function handlePost(req: Request) {
     return NextResponse.json({ error: `${verb} expects ${arity} args, got ${args.length}` }, { status: 400 });
   }
 
-  // Build placeholders: business args + trailing NULL idempotency key.
-  const placeholders = [...args.map(() => '?'), 'NULL'].join(', ');
-  const binds = args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a)));
+  // Opt-in idempotency: bind the client-supplied key (if any) into the trailing
+  // synapse IDEMPOTENCY_KEY param; otherwise bind NULL (no replay check).
+  const idemKey =
+    typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
+      ? body.idempotency_key.trim()
+      : null;
+
+  // Build placeholders: business args + trailing idempotency key (bound, not literal).
+  const placeholders = [...args.map(() => '?'), '?'].join(', ');
+  const binds = [
+    ...args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a))),
+    idemKey,
+  ];
 
   try {
     const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);

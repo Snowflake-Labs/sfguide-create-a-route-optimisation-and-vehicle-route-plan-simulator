@@ -6,8 +6,10 @@ import { getServerConfig } from '@/lib/server-config';
 import { requireOps } from '@/lib/ingress-identity';
 
 // Ops console backend. Calls the OPS-bundle synapse verbs (the ops MCP) in the
-// ops schema. Verb + arity are allowlisted; a trailing NULL idempotency key is
-// appended (synapse procs end with IDEMPOTENCY_KEY). The same verbs are
+// ops schema. Verb + arity are allowlisted; the trailing synapse IDEMPOTENCY_KEY
+// is bound from the request (opt-in): a client may send `idempotency_key` to make
+// a mutating verb (e.g. service_control) replay-safe within the envelope's 24h
+// window; when omitted it binds NULL (no replay check). The same verbs are
 // reachable by the role-gated ops agent; this route powers the in-app Ops
 // console. The schema + verb allowlist come from app-config.json `ops` (env
 // APP_CONFIG); the fleet literals below are the fallback when absent. Access is
@@ -41,7 +43,7 @@ async function handlePost(req: Request) {
     return NextResponse.json({ error: g.reason ?? 'Forbidden' }, { status: g.status });
   }
 
-  let body: { verb?: string; args?: unknown[] };
+  let body: { verb?: string; args?: unknown[]; idempotency_key?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -59,8 +61,18 @@ async function handlePost(req: Request) {
     return NextResponse.json({ error: `${verb} expects ${arity} args, got ${args.length}` }, { status: 400 });
   }
 
-  const placeholders = [...args.map(() => '?'), 'NULL'].join(', ');
-  const binds = args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a)));
+  // Opt-in idempotency: bind the client-supplied key (if any) into the trailing
+  // synapse IDEMPOTENCY_KEY param; otherwise bind NULL (no replay check).
+  const idemKey =
+    typeof body.idempotency_key === 'string' && body.idempotency_key.trim()
+      ? body.idempotency_key.trim()
+      : null;
+
+  const placeholders = [...args.map(() => '?'), '?'].join(', ');
+  const binds = [
+    ...args.map((a) => (a == null ? null : typeof a === 'number' ? a : String(a))),
+    idemKey,
+  ];
 
   try {
     const rows = await query(`CALL ${schema}.${verb}(${placeholders})`, binds as (string | number | null)[]);
