@@ -63,7 +63,7 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 7. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
 8. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
 9. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
-10. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. See `references/routing-engine.md`.
+10. **Routing engine + tool substrate** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. Then applies the engine-agnostic routing contract (`routing_platform/setup.sql`) and the 9 `FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_*` procedures (from `routing-agent/references/deploy-agent.sql`) that the synapse routing verbs wrap — without this substrate every `FLEET_AGENT` routing request fails ("routing service experiencing issues") even with a healthy engine. The installer asserts all 9 `TOOL_*` procs exist and warns loudly if any are missing. See `references/routing-engine.md`.
 
 ## Live routing engine (default; skip with `--no-engine`)
 

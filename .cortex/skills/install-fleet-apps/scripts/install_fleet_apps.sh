@@ -53,6 +53,12 @@ REF="$SKILL_DIR/references"
 PACKS_INSTALL="$SKILL_DIR/fleet_sa_app/app/packs/_lib/install.py"
 ROLE_BINDING="$SKILL_DIR/fleet_sa_app/app/role_binding.sql"
 ROUTING_SETUP="$SKILL_DIR/routing_platform/setup.sql"
+# Canonical source of the 9 ROUTING_TOOLS.TOOL_* procedures the synapse routing
+# verbs (OPENROUTESERVICE_APP.ROUTING.*) wrap. Without these the verbs CALL a
+# non-existent proc and every FLEET_AGENT routing request fails ("routing service
+# experiencing issues") even though the ORS engine is healthy. Single source of
+# truth per fleet_tools/user/src/catalog.ts; deployed in step 3 after the contract.
+ROUTING_TOOLS_SQL="$REPO_ROOT/.cortex/skills/routing-agent/references/deploy-agent.sql"
 ANALYTIC_SQL="$SCRIPTS/analytic_layer.sql"
 SEMANTIC_VIEWS_SQL="$SKILL_DIR/fleet_sa_app/app/semantic_views.sql"
 START_TS=$(date +%s)
@@ -220,6 +226,27 @@ if [ "${SKIP_ROUTING:-0}" != "1" ]; then
   if [ -f "$ROUTING_SETUP" ]; then
     snow sql -c "$CONNECTION" -f "$ROUTING_SETUP" >/tmp/ifa_contract.log 2>&1 \
       || note "  WARN: routing contract setup reported errors (engine absent? see /tmp/ifa_contract.log)"
+  fi
+  # ROUTING_TOOLS.TOOL_* substrate: the synapse routing verbs installed in step 5
+  # (OPENROUTESERVICE_APP.ROUTING.GET_DIRECTIONS, etc.) CALL these 9 procs. They
+  # depend on the contract above (ROUTING_PLATFORM.CONTRACT.*), so deploy them
+  # AFTER the contract and BEFORE the verbs/agents. Idempotent (CREATE OR REPLACE).
+  if [ -f "$ROUTING_TOOLS_SQL" ]; then
+    note "  deploying ROUTING_TOOLS.TOOL_* substrate (routing verb dependency)..."
+    snow sql -c "$CONNECTION" -f "$ROUTING_TOOLS_SQL" >/tmp/ifa_routing_tools.log 2>&1 \
+      || note "  WARN: ROUTING_TOOLS substrate reported errors; see /tmp/ifa_routing_tools.log"
+    # Assert all 9 TOOL_* procs exist so a missing-substrate regression fails
+    # loudly here rather than as a silent "routing service issues" at agent runtime.
+    TOOL_N=$(snow sql -c "$CONNECTION" --format=CSV -q \
+      "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA='ROUTING_TOOLS' AND STARTSWITH(PROCEDURE_NAME,'TOOL_');" \
+      2>/dev/null | grep -Eo '^[0-9]+' | head -1 || echo 0)
+    if [ "${TOOL_N:-0}" -lt 9 ]; then
+      note "  WARN: expected 9 ROUTING_TOOLS.TOOL_* procs, found ${TOOL_N:-0} (routing verbs may fail; see /tmp/ifa_routing_tools.log)"
+    else
+      note "  ROUTING_TOOLS substrate OK (9 TOOL_* procs)"
+    fi
+  else
+    note "  WARN: ROUTING_TOOLS source not found at $ROUTING_TOOLS_SQL (routing verbs will fail)"
   fi
   step "3 routing" OK
 else
