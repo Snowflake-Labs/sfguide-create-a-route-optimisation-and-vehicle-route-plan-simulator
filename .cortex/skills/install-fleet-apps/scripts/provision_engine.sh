@@ -38,12 +38,30 @@ ENGINE_REPO="OPENROUTESERVICE_APP.core.image_repository"
 note() { echo "[provision-engine] $*"; }
 
 # ── 0. preflight: container runtime ─────────────────────────────
+# Auto-detect prefers docker: a default podman machine is 2 GB and OOMs the ORS
+# image build, and Docker Desktop is usually larger-provisioned. Override with
+# CONTAINER_CMD=docker|podman.
 if [ -z "${CONTAINER_CMD:-}" ]; then
-  if command -v podman >/dev/null 2>&1; then CONTAINER_CMD=podman
-  elif command -v docker >/dev/null 2>&1; then CONTAINER_CMD=docker
-  else echo "ERROR: neither podman nor docker found"; exit 1; fi
+  if command -v docker >/dev/null 2>&1; then CONTAINER_CMD=docker
+  elif command -v podman >/dev/null 2>&1; then CONTAINER_CMD=podman
+  else echo "ERROR: neither docker nor podman found"; exit 1; fi
 fi
-note "container runtime: $CONTAINER_CMD"
+note "container runtime: $CONTAINER_CMD (override with CONTAINER_CMD=docker|podman)"
+# Warn on a small podman machine — the ORS image build is memory-heavy.
+if [ "$CONTAINER_CMD" = "podman" ] && command -v podman >/dev/null 2>&1; then
+  PODMAN_MEM_MB=$(podman machine inspect --format '{{.Resources.Memory}}' 2>/dev/null | head -1)
+  if [ -n "${PODMAN_MEM_MB:-}" ] && [ "${PODMAN_MEM_MB:-0}" -lt 4096 ] 2>/dev/null; then
+    note "  WARN: podman machine has ${PODMAN_MEM_MB} MB (<4 GB); image builds may OOM. Use CONTAINER_CMD=docker or grow the podman machine."
+  fi
+fi
+# crane gives a reliable SPCS manifest commit; `docker push` intermittently hangs
+# on the final manifest PUT (bearer token expires mid-upload). build_push prefers
+# crane when present (docker runtime only — crane reads ~/.docker/config.json).
+if command -v crane >/dev/null 2>&1; then
+  note "  crane found: using crane for SPCS image pushes (avoids docker-push manifest hang)"
+else
+  note "  crane NOT found: falling back to '$CONTAINER_CMD push' (may hang on SPCS manifest commit). Recommended: brew install crane"
+fi
 command -v snow >/dev/null 2>&1 || { echo "ERROR: 'snow' CLI not found"; exit 1; }
 snow sql -c "$CONN" -q "SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONN' does not work"; exit 1; }
@@ -89,13 +107,32 @@ if [ "${SKIP_IMAGES:-0}" != "1" ]; then
     | python3 -c "import sys,json;print(json.load(sys.stdin)['message'])")
   note "  registry=$REPO_URL"
 
+  # Push one image ref. Prefers crane (docker runtime only): `docker push` to the
+  # SPCS registry intermittently hangs on the final manifest PUT when the bearer
+  # token expires mid-upload; crane commits the manifest reliably. Refresh the
+  # registry token before each crane push so multi-image sequences don't expire.
+  # Falls back to the native push if crane is absent or the crane path errors.
+  push_image() { # <full-image-ref>
+    local ref="$1"
+    if command -v crane >/dev/null 2>&1 && [ "$CONTAINER_CMD" = "docker" ] && [ "${USE_CRANE_PUSH:-1}" = "1" ]; then
+      snow spcs image-registry login -c "$CONN" >/dev/null 2>&1 || true
+      local tar; tar="$(mktemp -t orsimg.XXXXXX).tar"
+      if "$CONTAINER_CMD" save "$ref" -o "$tar" && crane push "$tar" "$ref"; then
+        rm -f "$tar"; return 0
+      fi
+      rm -f "$tar"
+      echo "  crane push failed for $ref; falling back to '$CONTAINER_CMD push'"
+    fi
+    "$CONTAINER_CMD" push "$ref"
+  }
+
   build_push() { # <context-subdir> <image-name> <tag>
     note "  -> $2:$3"
     "$CONTAINER_CMD" build --rm --platform linux/amd64 \
       -t "$REPO_URL/$2:$3" "$ORS_APP_DIR/services/$1" >/tmp/ifa_img_$2.log 2>&1 \
       || { echo "ERROR: build $2 failed"; tail -40 /tmp/ifa_img_$2.log; exit 1; }
-    "$CONTAINER_CMD" push "$REPO_URL/$2:$3" >/tmp/ifa_push_$2.log 2>&1 \
-      || { echo "ERROR: push $2 failed (see /tmp/ifa_push_$2.log; if a layer hangs, use crane — see references/troubleshooting.md)"; tail -20 /tmp/ifa_push_$2.log; exit 1; }
+    push_image "$REPO_URL/$2:$3" >/tmp/ifa_push_$2.log 2>&1 \
+      || { echo "ERROR: push $2 failed (see /tmp/ifa_push_$2.log). For reliable SPCS pushes install crane: brew install crane"; tail -20 /tmp/ifa_push_$2.log; exit 1; }
   }
   build_push openrouteservice openrouteservice      "$OPENROUTESERVICE_TAG"
   build_push downloader       downloader            "$DOWNLOADER_TAG"

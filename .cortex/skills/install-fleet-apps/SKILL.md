@@ -39,6 +39,8 @@ The installer always installs the **complete** agnostic set — there is no per-
 ## Prerequisites
 
 - Container runtime (Podman or Docker) running; Node.js >= 20 + npm; Python 3; Snowflake CLI (`snow`).
+  - The engine build (`--with-engine`) auto-detects **docker first** (a default 2 GB podman machine OOMs the ORS image build). Force a runtime with `CONTAINER_CMD=docker|podman`.
+  - Install **crane** (`brew install crane`) for reliable SPCS image pushes — `docker push` to the SPCS registry intermittently hangs on the final manifest commit; `build_push` prefers crane when present (docker runtime). Disable with `USE_CRANE_PUSH=0`.
 - `export SNOWFLAKE_CLI_NO_UPDATE_CHECK=true`.
 - An active connection whose role can create databases, schemas, services, compute pools, image repositories, external access integrations, roles, and agents (see `## Required Privileges`).
 - Repository cloned; the four Carto/Overture Marketplace shares are optional (basemap egress is via the CARTO EAI).
