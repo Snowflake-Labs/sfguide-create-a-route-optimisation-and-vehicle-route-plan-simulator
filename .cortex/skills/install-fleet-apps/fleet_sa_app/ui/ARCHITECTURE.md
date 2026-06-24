@@ -1410,6 +1410,8 @@ This route was an unused arbitrary-`CALL` gateway: it forwarded raw client SQL t
 
 The unified write endpoint used by both the agent (via `ConfirmAction`) and the UI (via form Save buttons).
 
+> **Synapse audit coverage / Tenet 7 (deferred — C1-C2).** Unlike the routing, ops, and dataset-activation mutations (which now flow through audited synapse verbs — `/api/tool`, `/api/ops`, `set_active_context`, `activate_dataset`), `/api/write` and the workflow routes (`/api/mcp`, `/api/workflow/*`) do **not** yet flow through the synapse envelope. For the **fleet** deployment these paths are **dormant**: no `entity-manifest.json` is configured (so `getManifest()` throws and every `/api/write` call 500s) and `hasWorkflows` is `false` (so the workflow tools/routes are gated off). Converting entity CRUD and the workflow state machine into synapse verbs (`write_entity`, workflow verbs) is real net-new work on the **vendored SA framework** write/workflow model and would benefit any deployment that defines writable entities or enables workflows — it is intentionally deferred until such a deployment exists. **Revisit trigger:** when an app config defines `entities` in an `entity-manifest.json` or sets `hasWorkflows: true`, route those mutations through audited synapse verbs before shipping.
+
 ### Request shape
 
 ```ts
