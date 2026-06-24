@@ -11,7 +11,7 @@
 | View registry + picker | Done | Searchable, lazy-loaded views, click-outside dismiss; `hidden` flag for drilldown views |
 | View rendering pipeline | Done | YAML-driven CSS Grid, 5 area components, SQL data fetching |
 | SQL query API (`/api/query`) | Done | Snowflake SQL REST API proxy, param resolution, SELECT/WITH only |
-| Action API (`/api/action`) | Done | CALL statement endpoint for Snowflake stored procedures. Available for apps that use SPs; not used by CDP. |
+| Action API (`/api/action`) | Removed | Unused arbitrary-CALL gateway deleted for security (Tenet 7); CALL flows through audited synapse verbs via `/api/tool` + `/api/ops`. |
 | Write API (`/api/write`) | Done | Unified write endpoint for agent and UI; validates entity against entity-manifest.json; parameterized CREATE/UPDATE/DELETE/RESTORE; integer optimistic locking; returns undo token. **`expected_version` optional** — server resolves from DB snapshot if omitted |
 | App config (`/api/app-config`) | Done | Dynamic app title, About dialog, sample questions |
 | Chat↔View sync (`update_view` tool) | Done | Generic tool with client_side_execute; agent updates filters programmatically |
@@ -1003,7 +1003,6 @@ All communication goes through the app's Node.js server (running in SPCS). The b
 ```
 POST /api/chat                  → SSE stream (agent conversation, includes panel context injection)
 POST /api/query                 → execute SQL against Snowflake (view data fetching, SELECT/WITH only)
-POST /api/action                → execute CALL statement against Snowflake (stored procedure execution)
 POST /api/write                 → unified write: CREATE/UPDATE/DELETE/RESTORE with entity-manifest.json validation
 GET  /api/views-config          → serve app-views.json from APP_VIEWS_CONFIG path
 GET  /api/app-config            → serve app-config.json (name, description, sample questions)
@@ -1012,7 +1011,7 @@ POST /api/workflow/execute      → direct HTTP workflow execution (for UI use)
 POST /api/workflow/resume       → direct HTTP workflow resume/approval (for ApprovalAction + Workflow Detail)
 ```
 
-`/api/action` accepts only `CALL` statements — separate from `/api/query` (SELECT-only) for security.
+`/api/query` is SELECT-only; stored-procedure (`CALL`) execution flows through the audited synapse verbs via `/api/tool` and `/api/ops` (the former `/api/action` arbitrary-CALL gateway was removed — see below).
 
 `/api/mcp` is the primary entry point for the Cortex Agent's workflow tools. The `CDP_WORKFLOW_MCP` CUSTOM MCP SERVER points to this endpoint (`ENDPOINT = app, PATH = '/api/mcp'`).
 
@@ -1391,20 +1390,9 @@ These query `{database}.{schema}.WORKFLOW_INSTANCES` and `WORKFLOW_DEFINITIONS` 
 
 Any view that should only be reachable programmatically (not from the picker) sets `hidden: true` in its `ViewDef`. `viewRegistry.list()` filters these out; `viewRegistry.get(id)` still finds them. The `showView(id, state)` action navigates to them directly. `workflow_detail` is the canonical example.
 
-### `/api/action` — stored procedure execution
+### `/api/action` — REMOVED (Tenet 7)
 
-The `/api/query` route only accepts `SELECT`/`WITH` statements. `/api/action` is a framework endpoint for apps that use Snowflake stored procedures:
-- Accepts only `CALL` statements (validated on the server)
-- Returns the first row's first column, parsed as JSON
-- **Not used by CDP** — all CDP workflows run through the TypeScript engine via `/api/workflow/resume` and `/api/workflow/execute`
-
-```
-# Example .env.local for CDP app
-AGENT_TOOLS_CONFIG=../cdp/agent-tools.json
-APP_VIEWS_CONFIG=../cdp/app-views.json
-APP_CONFIG=../cdp/app-config.json
-AGENT_RESPONSE_INSTRUCTIONS=You are a CDP assistant...
-```
+This route was an unused arbitrary-`CALL` gateway: it forwarded raw client SQL to Snowflake with only a `CALL ` prefix check, bypassing the synapse verb allowlist + audited envelope (the Tenet 7 anti-pattern). It had no callers in the Fleet app, so it was deleted. Stored-procedure execution now flows exclusively through the role-scoped, audited synapse verbs via `/api/tool` (user) and `/api/ops` (ops), which allowlist the verb + arity and record every call in `VERB_ATTEMPT`.
 
 ---
 
