@@ -64,6 +64,61 @@ AS $$
   return { requested: reqRaw, used: used, substituted: substituted, reason: reason, note: note, available: avail };
 $$;
 
+-- ============================================================================
+-- RESOLVE_PROFILE (2-arg overload): same resolver as above but computes the
+-- canonical ORS profile internally from the caller's requested profile/vehicle
+-- via the CANON map (the same vehicle->profile whitelist the geocoding procs
+-- inline as a CASE). Use this from tools that do not maintain their own CASE
+-- whitelist (the optimization + catchment procs). The 3-arg form is unchanged
+-- and is still used by the geocoding procs, which compute canonical themselves.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(REQUESTED STRING, AVAILABLE ARRAY)
+RETURNS OBJECT
+LANGUAGE JAVASCRIPT
+COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+AS $$
+  function fam(p){ p=String(p||''); if(p.indexOf('driving')===0)return 'driving'; if(p.indexOf('cycling')===0)return 'cycling'; if(p.indexOf('foot')===0)return 'foot'; if(p==='wheelchair')return 'wheelchair'; return 'other'; }
+  // CANON map: mirror of the geocoding procs' CASE whitelist + DIM_VEHICLE_PROFILE.
+  // The engine builds 'cycling-electric' as the only cycling graph, so every
+  // cycling variant AND the 'ebike' vehicle_type canonicalize to it.
+  function canonical(req){
+    var k = String(req===undefined||req===null?'':req).trim().toLowerCase();
+    var MAP = {
+      'driving-car':'driving-car', 'car':'driving-car', 'van':'driving-car',
+      'driving-hgv':'driving-hgv', 'hgv':'driving-hgv', 'truck':'driving-hgv',
+      'cycling-regular':'cycling-electric', 'cycling-mountain':'cycling-electric',
+      'cycling-road':'cycling-electric', 'cycling-electric':'cycling-electric',
+      'ebike':'cycling-electric', 'e-bike':'cycling-electric', 'bike':'cycling-electric',
+      'bicycle':'cycling-electric', 'cycle':'cycling-electric',
+      'foot-walking':'foot-walking', 'foot-hiking':'foot-hiking', 'wheelchair':'wheelchair'
+    };
+    return MAP[k] || 'driving-car';
+  }
+  var reqRaw = (REQUESTED===undefined||REQUESTED===null)?null:String(REQUESTED).trim();
+  var canon  = canonical(reqRaw);
+  var avail  = Array.isArray(AVAILABLE)?AVAILABLE.map(function(x){return String(x).toLowerCase();}):[];
+  var used, reason;
+  if(avail.length===0 || avail.indexOf(canon)>=0){ used=canon; reason='none'; }
+  else {
+    var f=fam(canon), same=null;
+    for(var i=0;i<avail.length;i++){ if(fam(avail[i])===f){ same=avail[i]; break; } }
+    used = same || (avail.indexOf('driving-car')>=0 ? 'driving-car' : avail[0]);
+    reason='unavailable';
+  }
+  var reqKey = reqRaw?reqRaw.toLowerCase():null;
+  var substituted = (reqKey!==null && reqKey!==used);
+  if(reason==='none' && substituted) reason='renamed';
+  var note=null;
+  if(substituted){
+    if(reason==='unavailable'){
+      note="The requested travel type '"+reqRaw+"' is not available in this region, so the route was computed using the '"+used+"' profile instead."+(avail.length?(" Available profiles: "+avail.join(', ')+"."):"");
+    } else {
+      note="Routed using the '"+used+"' profile for your requested travel type '"+reqRaw+"'.";
+    }
+  }
+  return { requested: reqRaw, used: used, substituted: substituted, reason: reason, note: note, available: avail };
+$$;
+
 -- TOOL_DIRECTIONS: Wraps ORS DIRECTIONS with AI geocoding
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(
     LOCATIONS_DESCRIPTION VARCHAR,
@@ -1060,11 +1115,36 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
                 'description': loc['name']
             })
 
+        # Resolve the requested profile against the profiles actually built in
+        # the target region (best-effort; ORS_STATUS failure -> [] -> rename-only
+        # behavior). The SQL UDF is the single resolver + substitution detector.
+        try:
+            avail_raw = session.sql(
+                "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) AS K",
+                params=[region],
+            ).collect()[0]['K']
+            available = json.loads(avail_raw) if isinstance(avail_raw, str) else (avail_raw or [])
+        except Exception:
+            available = []
+        avail_json = json.dumps(available).replace("'", "''")
+        safe_profile = _escape_sql_string(profile or '')
+        res_raw = session.sql(
+            f"SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE('{safe_profile}', PARSE_JSON('{avail_json}')::ARRAY) AS R"
+        ).collect()[0]['R']
+        res = json.loads(res_raw) if isinstance(res_raw, str) else (res_raw or {})
+        used_profile = res.get('used') or 'driving-car'
+        prof_fields = {
+            'requested_profile': profile,
+            'used_profile': used_profile,
+            'profile_substituted': res.get('substituted'),
+            'profile_note': res.get('note'),
+        }
+
         vehicles = []
         for i in range(1, num_vehicles + 1):
             vehicles.append({
                 'id': i,
-                'profile': profile,
+                'profile': used_profile,
                 'start': [depot_data['longitude'], depot_data['latitude']],
                 'end': [depot_data['longitude'], depot_data['latitude']]
             })
@@ -1086,6 +1166,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
                 'error': f"OPTIMIZATION FAILED: OpenRouteService returned an error: {opt_data['error']}",
                 'deliveries_requested': delivery_data.get('locations', []),
                 'depot_requested': depot_data,
+                **prof_fields,
                 'status': 'FAILED'
             }
 
@@ -1095,6 +1176,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
                 'error': 'OPTIMIZATION FAILED: OpenRouteService could not compute routes for the requested locations. This typically means the locations are OUTSIDE the loaded map region. The routing engine only has map data for a specific geographic area.',
                 'deliveries_requested': delivery_data.get('locations', []),
                 'depot_requested': depot_data,
+                **prof_fields,
                 'status': 'FAILED'
             }
 
@@ -1104,6 +1186,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
                 'error': 'OPTIMIZATION FAILED: None of the delivery locations could be routed. This typically means ALL locations are OUTSIDE the loaded map region.',
                 'deliveries_requested': delivery_data.get('locations', []),
                 'depot_requested': depot_data,
+                **prof_fields,
                 'status': 'FAILED'
             }
 
@@ -1114,6 +1197,7 @@ def run(session: Session, delivery_locations: str, depot_location: str, num_vehi
             'routes': routes,
             'unassigned': unassigned,
             'summary': opt_data.get('summary', {}),
+            **prof_fields,
             'status': 'SUCCESS'
         }
 
@@ -1160,6 +1244,37 @@ try {
             depotName = depotRes.getColumnValue(3); region = depotRes.getColumnValue(4);
         }
     } catch(e) { /* fall back to defaults */ }
+
+    // Resolve the requested profile against the profiles actually built in the
+    // region (best-effort; ORS_STATUS failure -> [] -> rename-only behavior).
+    // The 2-arg SQL UDF is the single resolver + substitution detector.
+    var available = [];
+    try {
+        var avStmt = snowflake.createStatement({
+            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)",
+            binds: [region]
+        });
+        var avRes = avStmt.execute();
+        if (avRes.next()) {
+            var avRaw = avRes.getColumnValue(1);
+            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
+        }
+    } catch(e) { available = []; }
+    var profRes = {};
+    try {
+        var prStmt = snowflake.createStatement({
+            sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
+            binds: [PROFILE, JSON.stringify(available)]
+        });
+        var prRes = prStmt.execute();
+        if (prRes.next()) {
+            var prRaw = prRes.getColumnValue(1);
+            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
+        }
+    } catch(e) { profRes = {}; }
+    var usedProfile = profRes.used || 'driving-car';
+    var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
+    var profNote = (profRes.note === undefined) ? null : profRes.note;
 
     var siteStmt = snowflake.createStatement({
         sqlText: "SELECT SITE_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, PRIORITY " +
@@ -1273,13 +1388,13 @@ try {
 
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [vroomJobs.length], skills: [1],
+          profile: usedProfile, capacity: [vroomJobs.length], skills: [1],
           description: 'Cold Chain Vehicle (Refrigerated goods)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [vroomJobs.length], skills: [2],
+          profile: usedProfile, capacity: [vroomJobs.length], skills: [2],
           description: 'Restricted / Controlled Goods Vehicle' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [vroomJobs.length], skills: [3],
+          profile: usedProfile, capacity: [vroomJobs.length], skills: [3],
           description: 'Standard Delivery Vehicle' }
     ];
 
@@ -1289,7 +1404,9 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails };
+        return { error: 'OPTIMIZATION returned no results', status: 'FAILED', jobs: jobDetails,
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var rawResp = optRes.getColumnValue(1);
     var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
@@ -1313,6 +1430,8 @@ try {
     return {
         status: 'SUCCESS', num_vehicles: 3,
         total_jobs: vroomJobs.length, sites_served: sites.length,
+        requested_profile: PROFILE, used_profile: usedProfile,
+        profile_substituted: profSubstituted, profile_note: profNote,
         jobs: jobDetails, vehicles: vehicles,
         routes: routesWithGeometry, unassigned: response.unassigned || [],
         depot: { longitude: depotLon, latitude: depotLat, name: depotName },
@@ -1372,6 +1491,36 @@ try {
         }
     } catch(e) { /* fall back to defaults */ }
 
+    // Resolve the requested profile against the profiles actually built in the
+    // region (best-effort; ORS_STATUS failure -> [] -> rename-only behavior).
+    var available = [];
+    try {
+        var avStmt = snowflake.createStatement({
+            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles)",
+            binds: [region]
+        });
+        var avRes = avStmt.execute();
+        if (avRes.next()) {
+            var avRaw = avRes.getColumnValue(1);
+            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
+        }
+    } catch(e) { available = []; }
+    var profRes = {};
+    try {
+        var prStmt = snowflake.createStatement({
+            sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
+            binds: [PROFILE, JSON.stringify(available)]
+        });
+        var prRes = prStmt.execute();
+        if (prRes.next()) {
+            var prRaw = prRes.getColumnValue(1);
+            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
+        }
+    } catch(e) { profRes = {}; }
+    var usedProfile = profRes.used || 'driving-car';
+    var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
+    var profNote = (profRes.note === undefined) ? null : profRes.note;
+
     var jobsStmt = snowflake.createStatement({
         sqlText: "SELECT JOB_ID, NAME, ADDRESS, LONGITUDE, LATITUDE, SKILL, SKILL_LABEL, AMOUNT " +
                  "FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.DEMO_DELIVERY_STOPS ORDER BY JOB_ID"
@@ -1392,17 +1541,19 @@ try {
         jobMeta.push({ name: name, address: address, longitude: lon, latitude: lat, skill: skill, skill_label: skillLbl });
     }
     if (vroomJobs.length === 0) {
-        return { error: 'No jobs found in DEMO_DELIVERY_STOPS table. Run setup-agent-playground first.', status: 'FAILED' };
+        return { error: 'No jobs found in DEMO_DELIVERY_STOPS table. Run setup-agent-playground first.', status: 'FAILED',
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var vehicles = [
         { id: 1, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [12], skills: [1],
+          profile: usedProfile, capacity: [12], skills: [1],
           description: 'Cold Chain Vehicle (Refrigerated)' },
         { id: 2, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [12], skills: [2],
+          profile: usedProfile, capacity: [12], skills: [2],
           description: 'Restricted / Controlled Goods Vehicle' },
         { id: 3, start: [depotLon, depotLat], end: [depotLon, depotLat],
-          profile: PROFILE, capacity: [12], skills: [3],
+          profile: usedProfile, capacity: [12], skills: [3],
           description: 'Standard Delivery Vehicle' }
     ];
     var vroomPayload = JSON.stringify({ jobs: vroomJobs, vehicles: vehicles });
@@ -1411,7 +1562,9 @@ try {
     var optStmt = snowflake.createStatement({ sqlText: optSQL, binds: [vroomPayload, region] });
     var optRes = optStmt.execute();
     if (!optRes.next()) {
-        return { error: 'OPTIMIZATION returned no results', status: 'FAILED' };
+        return { error: 'OPTIMIZATION returned no results', status: 'FAILED',
+                 requested_profile: PROFILE, used_profile: usedProfile,
+                 profile_substituted: profSubstituted, profile_note: profNote };
     }
     var rawResp = optRes.getColumnValue(1);
     var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
@@ -1419,6 +1572,8 @@ try {
     var geojson = geojsonRaw ? ((typeof geojsonRaw === 'string') ? JSON.parse(geojsonRaw) : geojsonRaw) : null;
     return {
         status: 'SUCCESS', num_vehicles: 3,
+        requested_profile: PROFILE, used_profile: usedProfile,
+        profile_substituted: profSubstituted, profile_note: profNote,
         jobs: jobMeta, vehicles: vehicles,
         routes: response.routes || [], unassigned: response.unassigned || [],
         summary: response.summary || {},
@@ -1456,6 +1611,37 @@ try {
         if (depotRes.next()) { region = depotRes.getColumnValue(1) || region; }
     } catch(e) { /* fall back to default region */ }
 
+    // Resolve the requested profile against the profiles actually built in the
+    // default region (best-effort; ORS_STATUS failure -> [] -> rename-only
+    // behavior), mirroring the geocoding tools. The 2-arg SQL UDF is the single
+    // resolver + substitution detector.
+    var available = [];
+    try {
+        var avStmt = snowflake.createStatement({
+            sqlText: "SELECT OBJECT_KEYS(OPENROUTESERVICE_APP.CORE.ORS_STATUS(NULL):profiles)"
+        });
+        var avRes = avStmt.execute();
+        if (avRes.next()) {
+            var avRaw = avRes.getColumnValue(1);
+            available = avRaw ? ((typeof avRaw === 'string') ? JSON.parse(avRaw) : avRaw) : [];
+        }
+    } catch(e) { available = []; }
+    var profRes = {};
+    try {
+        var prStmt = snowflake.createStatement({
+            sqlText: "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(?, PARSE_JSON(?)::ARRAY)",
+            binds: [PROFILE, JSON.stringify(available)]
+        });
+        var prRes = prStmt.execute();
+        if (prRes.next()) {
+            var prRaw = prRes.getColumnValue(1);
+            profRes = prRaw ? ((typeof prRaw === 'string') ? JSON.parse(prRaw) : prRaw) : {};
+        }
+    } catch(e) { profRes = {}; }
+    var usedProfile = profRes.used || 'driving-car';
+    var profSubstituted = (profRes.substituted === undefined) ? null : profRes.substituted;
+    var profNote = (profRes.note === undefined) ? null : profRes.note;
+
     var geoPrompt = 'Return ONLY a JSON object with the latitude and longitude of this location'
         + (region ? (' in ' + region) : '') + '. Location: ';
     var geocodeSQL = "SELECT AI_COMPLETE(" +
@@ -1479,7 +1665,7 @@ try {
                  "FROM TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES(?, ?, ?, ?::NUMBER, ?)) d LIMIT 1";
     var isoStmt = snowflake.createStatement({
         sqlText: isoSQL,
-        binds: [PROFILE, loc.longitude, loc.latitude, RANGE_MINUTES, region]
+        binds: [usedProfile, loc.longitude, loc.latitude, RANGE_MINUTES, region]
     });
     var isoRes = isoStmt.execute();
     if (!isoRes.next()) {
@@ -1549,6 +1735,8 @@ try {
             site: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
             center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
             range_minutes: RANGE_MINUTES, geometry: isoGeojson, area_km2: areaKm2,
+            requested_profile: PROFILE, used_profile: usedProfile,
+            profile_substituted: profSubstituted, profile_note: profNote,
             message: 'No area data found within catchment. Try increasing range_minutes or run setup-agent-playground.',
             population_points: [], summary: {}
         };
@@ -1568,6 +1756,8 @@ try {
         center: { name: loc.name, longitude: loc.longitude, latitude: loc.latitude },
         range_minutes: RANGE_MINUTES, geometry: isoGeojson,
         area_km2: Math.round(areaKm2 * 100) / 100,
+        requested_profile: PROFILE, used_profile: usedProfile,
+        profile_substituted: profSubstituted, profile_note: profNote,
         population_points: neighbourhoods,
         summary: {
             catchment_population: totalPop,
