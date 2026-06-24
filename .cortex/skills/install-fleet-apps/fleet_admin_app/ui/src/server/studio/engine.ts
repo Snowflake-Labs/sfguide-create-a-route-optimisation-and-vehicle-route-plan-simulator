@@ -39,6 +39,9 @@ export { generatePartners, generatePartnerHistory } from './engine/partners';
 export { buildFleet } from './engine/fleet';
 export { loadPOIs } from './engine/routability';
 export { probeRoutability } from './engine/routing';
+// Universal-generation engines (Overture + free Marketplace). Each writes a
+// region-scoped, JOB_ID-versioned SYNTHETIC_DATASETS.UNIFIED entity table.
+export { generateAnchors } from './engine/anchors';
 
 interface VehicleDayResult {
   vehicleId: string;

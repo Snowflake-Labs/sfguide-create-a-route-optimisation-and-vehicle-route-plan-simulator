@@ -807,7 +807,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors } = await import('./engine.js');
       const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
       const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
@@ -896,6 +896,21 @@ export async function startGeneration(
       } catch (e: any) {
         log('WARN', 'Studio', `FACT_PARTNER_HISTORY insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
         broadcast(job, 'warning', { message: `FACT_PARTNER_HISTORY insert failed: ${e.message?.slice(0, 150)}` });
+      }
+
+      // Universal-generation entities (Overture + free Marketplace). Each is
+      // gated by a generates_* flag (default off) so existing presets are
+      // unchanged. All write region-scoped, JOB_ID-versioned rows BEFORE the
+      // atomic dataset flip below, so they join the new active dataset.
+      if (config.generates_anchors) {
+        try {
+          const n = await generateAnchors(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${n} anchors`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${n} anchors` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `DIM_ANCHORS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Anchors generation failed: ${e.message?.slice(0, 150)}` });
+        }
       }
 
       // Atomic switchover: now that all dimension/freight tables for this run
