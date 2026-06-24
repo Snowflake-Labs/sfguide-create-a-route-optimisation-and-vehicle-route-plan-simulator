@@ -550,6 +550,316 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- ============================================================================
+-- TOOL_OVERTURE_SEARCH: Region-wide (NON-isochrone) Overture Maps Places search.
+--   Answers "how many / list / which cities" questions over OVERTURE_MAPS__PLACES
+--   bounded by either a provisioned region's REGION_CATALOG.BOUNDARY polygon OR an
+--   explicit bbox. Complements TOOL_POI_IN_ISOCHRONE (which is drive-time bound).
+--
+-- Cost-safe by construction (the geosql discipline, Snowflake-flavored):
+--   1. bbox prefilter (ST_X/ST_Y BETWEEN) for partition pruning, THEN
+--   2. ST_WITHIN(BOUNDARY) authoritative polygon refine (NULL-safe -> bbox-only
+--      when no boundary / bbox mode), THEN
+--   3. a hard LIMIT (capped at 500) on returned rows/groups.
+-- Bounding: pass REGION (resolved via REGION_CATALOG) OR a full bbox
+--   (MIN_LON/MIN_LAT/MAX_LON/MAX_LAT). Region wins when both are supplied and the
+--   region resolves; an unresolved region falls back to the bbox when present.
+-- GROUP_BY: 'list' (default; individual places), 'city' (counts by city), or
+--   'category' (counts by basic_category). POI_CATEGORY is optional; when given it
+--   matches BASIC_CATEGORY / CATEGORIES:primary with an equality + LIKE fallback.
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH(
+    REGION VARCHAR DEFAULT NULL,
+    POI_CATEGORY VARCHAR DEFAULT NULL,
+    GROUP_BY VARCHAR DEFAULT NULL,
+    MAX_RESULTS NUMBER DEFAULT 100,
+    MIN_LON FLOAT DEFAULT NULL,
+    MIN_LAT FLOAT DEFAULT NULL,
+    MAX_LON FLOAT DEFAULT NULL,
+    MAX_LAT FLOAT DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_region VARCHAR;
+    v_xmn FLOAT;
+    v_xmx FLOAT;
+    v_ymn FLOAT;
+    v_ymx FLOAT;
+    v_region_found BOOLEAN DEFAULT FALSE;
+    v_cat VARCHAR;
+    v_cat_l VARCHAR;
+    v_has_cat BOOLEAN;
+    v_mode VARCHAR;
+    v_max NUMBER;
+    v_bounds VARCHAR;
+    v_sql VARCHAR;
+    v_rows VARIANT;
+    v_cnt NUMBER;
+    res RESULTSET;
+BEGIN
+    v_region := NULLIF(TRIM(COALESCE(REGION, '')), '');
+
+    -- Resolve the region's bbox from its boundary polygon (smallest matching
+    -- boundary wins, so a city boundary beats a country boundary of the same name).
+    IF (v_region IS NOT NULL) THEN
+        res := (EXECUTE IMMEDIATE
+            'SELECT ST_XMIN(BOUNDARY), ST_XMAX(BOUNDARY), ST_YMIN(BOUNDARY), ST_YMAX(BOUNDARY)
+             FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(?) OR UPPER(REGION_KEY) = UPPER(?))
+             ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC
+             LIMIT 1'
+            USING (v_region, v_region));
+        LET rc CURSOR FOR res;
+        OPEN rc;
+        FETCH rc INTO v_xmn, v_xmx, v_ymn, v_ymx;
+        CLOSE rc;
+        v_region_found := (v_xmn IS NOT NULL);
+    END IF;
+
+    -- Fallback to an explicit bbox when no region resolved. If the region was named
+    -- but not found AND no bbox was supplied, surface a typed, actionable error.
+    IF (NOT v_region_found) THEN
+        IF (MIN_LON IS NOT NULL AND MIN_LAT IS NOT NULL AND MAX_LON IS NOT NULL AND MAX_LAT IS NOT NULL) THEN
+            v_xmn := MIN_LON; v_xmx := MAX_LON; v_ymn := MIN_LAT; v_ymx := MAX_LAT;
+            v_region := NULL;  -- disable boundary refine; bbox is the only bound
+        ELSE
+            RETURN OBJECT_CONSTRUCT(
+                'error', CASE
+                    WHEN v_region IS NOT NULL THEN
+                        'OVERTURE SEARCH FAILED: region "' || REGION || '" has no boundary in REGION_CATALOG. Provision the region, or pass an explicit bbox (min_lon/min_lat/max_lon/max_lat).'
+                    ELSE
+                        'OVERTURE SEARCH FAILED: provide either a provisioned region or a full bbox (min_lon/min_lat/max_lon/max_lat).'
+                END,
+                'error_code', 'OVERTURE_REGION_NOT_FOUND',
+                'status', 'FAILED');
+        END IF;
+    END IF;
+
+    -- Category (optional). has_cat=FALSE bypasses the whole category predicate.
+    v_cat := NULLIF(TRIM(COALESCE(POI_CATEGORY, '')), '');
+    v_has_cat := (v_cat IS NOT NULL);
+    v_cat_l := COALESCE(LOWER(v_cat), '');
+
+    -- Mode.
+    v_mode := LOWER(NULLIF(TRIM(COALESCE(GROUP_BY, '')), ''));
+    IF (v_mode IS NULL) THEN v_mode := 'list'; END IF;
+    IF (v_mode NOT IN ('list', 'city', 'category')) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', 'OVERTURE SEARCH FAILED: group_by must be one of list, city, category (got "' || GROUP_BY || '").',
+            'error_code', 'OVERTURE_UNSUPPORTED_GROUP_BY',
+            'status', 'FAILED');
+    END IF;
+
+    -- Hard cap on returned rows/groups.
+    v_max := COALESCE(MAX_RESULTS, 100);
+    IF (v_max < 1) THEN v_max := 1; END IF;
+    IF (v_max > 500) THEN v_max := 500; END IF;
+
+    -- Shared FROM/WHERE: bbox prune + NULL-safe boundary refine + optional category.
+    -- 12 binds in order: xmn, xmx, ymn, ymx, region(IS NULL test), region, region,
+    -- has_cat, cat, cat, cat, cat.
+    v_bounds :=
+        ' FROM OVERTURE_MAPS__PLACES.CARTO.PLACE p' ||
+        ' WHERE ST_X(p.GEOMETRY) BETWEEN ? AND ?' ||
+        '   AND ST_Y(p.GEOMETRY) BETWEEN ? AND ?' ||
+        '   AND ( ? IS NULL OR ST_WITHIN(p.GEOMETRY, (' ||
+        '         SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG' ||
+        '         WHERE BOUNDARY IS NOT NULL' ||
+        '           AND (UPPER(LOOKUP_NAME) = UPPER(?) OR UPPER(REGION_KEY) = UPPER(?))' ||
+        '         ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)) )' ||
+        '   AND ( NOT ? OR (' ||
+        '         LOWER(p.BASIC_CATEGORY) = ?' ||
+        '         OR LOWER(p.CATEGORIES:primary::STRING) = ?' ||
+        '         OR LOWER(p.BASIC_CATEGORY) LIKE ''%'' || ? || ''%''' ||
+        '         OR LOWER(p.CATEGORIES:primary::STRING) LIKE ''%'' || ? || ''%'') )';
+
+    IF (v_mode = 'city') THEN
+        v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''city'', city, ''state'', state, ''poi_count'', cnt))' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '  SELECT p.ADDRESSES[0]:locality::STRING AS city, p.ADDRESSES[0]:region::STRING AS state, COUNT(*) AS cnt' ||
+                 v_bounds ||
+                 '   AND p.ADDRESSES[0]:locality IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
+    ELSEIF (v_mode = 'category') THEN
+        v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''basic_category'', basic_cat, ''poi_count'', cnt))' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '  SELECT p.BASIC_CATEGORY AS basic_cat, COUNT(*) AS cnt' ||
+                 v_bounds ||
+                 '   AND p.BASIC_CATEGORY IS NOT NULL GROUP BY 1 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
+    ELSE
+        v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''name'', name, ''longitude'', lon, ''latitude'', lat,' ||
+                 '   ''primary_category'', primary_cat, ''basic_category'', basic_cat, ''city'', city, ''state'', state))' ||
+                 '         WITHIN GROUP (ORDER BY name) AS out_rows, COUNT(*) AS cnt FROM (' ||
+                 '  SELECT p.NAMES:primary::STRING AS name, ST_X(p.GEOMETRY) AS lon, ST_Y(p.GEOMETRY) AS lat,' ||
+                 '         p.CATEGORIES:primary::STRING AS primary_cat, p.BASIC_CATEGORY AS basic_cat,' ||
+                 '         p.ADDRESSES[0]:locality::STRING AS city, p.ADDRESSES[0]:region::STRING AS state' ||
+                 v_bounds ||
+                 '   AND p.NAMES:primary IS NOT NULL LIMIT ' || v_max::STRING || ')';
+    END IF;
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (
+        v_xmn, v_xmx, v_ymn, v_ymx,
+        v_region, v_region, v_region,
+        v_has_cat, v_cat_l, v_cat_l, v_cat_l, v_cat_l));
+    LET dc CURSOR FOR res;
+    OPEN dc;
+    FETCH dc INTO v_rows, v_cnt;
+    CLOSE dc;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'SUCCESS',
+        'region', REGION,
+        'mode', v_mode,
+        'category', POI_CATEGORY,
+        'bbox', OBJECT_CONSTRUCT('min_lon', v_xmn, 'min_lat', v_ymn, 'max_lon', v_xmx, 'max_lat', v_ymx),
+        'boundary_refined', v_region_found,
+        'count', COALESCE(v_cnt, 0),
+        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()));
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_OVERTURE_SEARCH failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH(VARCHAR, VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- ============================================================================
+-- TOOL_OVERTURE_ADDRESSES: Region/bbox-bounded Overture address density.
+--   Answers "address count / coverage" questions over OVERTURE_MAPS__ADDRESSES.
+--   Same cost-safe bounding contract as TOOL_OVERTURE_SEARCH (bbox prune +
+--   NULL-safe ST_WITHIN(BOUNDARY) + hard LIMIT). GROUP_BY: 'city' (default;
+--   address counts per city) or 'list' (sampled individual addresses).
+-- ============================================================================
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES(
+    REGION VARCHAR DEFAULT NULL,
+    GROUP_BY VARCHAR DEFAULT NULL,
+    MAX_RESULTS NUMBER DEFAULT 100,
+    MIN_LON FLOAT DEFAULT NULL,
+    MIN_LAT FLOAT DEFAULT NULL,
+    MAX_LON FLOAT DEFAULT NULL,
+    MAX_LAT FLOAT DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE SQL
+AS
+$$
+DECLARE
+    v_region VARCHAR;
+    v_xmn FLOAT;
+    v_xmx FLOAT;
+    v_ymn FLOAT;
+    v_ymx FLOAT;
+    v_region_found BOOLEAN DEFAULT FALSE;
+    v_mode VARCHAR;
+    v_max NUMBER;
+    v_bounds VARCHAR;
+    v_sql VARCHAR;
+    v_rows VARIANT;
+    v_cnt NUMBER;
+    res RESULTSET;
+BEGIN
+    v_region := NULLIF(TRIM(COALESCE(REGION, '')), '');
+
+    IF (v_region IS NOT NULL) THEN
+        res := (EXECUTE IMMEDIATE
+            'SELECT ST_XMIN(BOUNDARY), ST_XMAX(BOUNDARY), ST_YMIN(BOUNDARY), ST_YMAX(BOUNDARY)
+             FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG
+             WHERE BOUNDARY IS NOT NULL
+               AND (UPPER(LOOKUP_NAME) = UPPER(?) OR UPPER(REGION_KEY) = UPPER(?))
+             ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC
+             LIMIT 1'
+            USING (v_region, v_region));
+        LET rc CURSOR FOR res;
+        OPEN rc;
+        FETCH rc INTO v_xmn, v_xmx, v_ymn, v_ymx;
+        CLOSE rc;
+        v_region_found := (v_xmn IS NOT NULL);
+    END IF;
+
+    IF (NOT v_region_found) THEN
+        IF (MIN_LON IS NOT NULL AND MIN_LAT IS NOT NULL AND MAX_LON IS NOT NULL AND MAX_LAT IS NOT NULL) THEN
+            v_xmn := MIN_LON; v_xmx := MAX_LON; v_ymn := MIN_LAT; v_ymx := MAX_LAT;
+            v_region := NULL;
+        ELSE
+            RETURN OBJECT_CONSTRUCT(
+                'error', CASE
+                    WHEN v_region IS NOT NULL THEN
+                        'OVERTURE ADDRESS SEARCH FAILED: region "' || REGION || '" has no boundary in REGION_CATALOG. Provision the region, or pass an explicit bbox.'
+                    ELSE
+                        'OVERTURE ADDRESS SEARCH FAILED: provide either a provisioned region or a full bbox (min_lon/min_lat/max_lon/max_lat).'
+                END,
+                'error_code', 'OVERTURE_REGION_NOT_FOUND',
+                'status', 'FAILED');
+        END IF;
+    END IF;
+
+    v_mode := LOWER(NULLIF(TRIM(COALESCE(GROUP_BY, '')), ''));
+    IF (v_mode IS NULL) THEN v_mode := 'city'; END IF;
+    IF (v_mode NOT IN ('list', 'city')) THEN
+        RETURN OBJECT_CONSTRUCT(
+            'error', 'OVERTURE ADDRESS SEARCH FAILED: group_by must be one of list, city (got "' || GROUP_BY || '").',
+            'error_code', 'OVERTURE_UNSUPPORTED_GROUP_BY',
+            'status', 'FAILED');
+    END IF;
+
+    v_max := COALESCE(MAX_RESULTS, 100);
+    IF (v_max < 1) THEN v_max := 1; END IF;
+    IF (v_max > 500) THEN v_max := 500; END IF;
+
+    -- 7 binds: xmn, xmx, ymn, ymx, region(IS NULL test), region, region.
+    v_bounds :=
+        ' FROM OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS a' ||
+        ' WHERE a.GEOMETRY IS NOT NULL' ||
+        '   AND ST_X(a.GEOMETRY) BETWEEN ? AND ?' ||
+        '   AND ST_Y(a.GEOMETRY) BETWEEN ? AND ?' ||
+        '   AND ( ? IS NULL OR ST_WITHIN(a.GEOMETRY, (' ||
+        '         SELECT BOUNDARY FROM OPENROUTESERVICE_APP.CORE.REGION_CATALOG' ||
+        '         WHERE BOUNDARY IS NOT NULL' ||
+        '           AND (UPPER(LOOKUP_NAME) = UPPER(?) OR UPPER(REGION_KEY) = UPPER(?))' ||
+        '         ORDER BY COALESCE(BOUNDARY_AREA_KM2, 1e15) ASC LIMIT 1)) )';
+
+    IF (v_mode = 'list') THEN
+        v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''id'', id, ''longitude'', lon, ''latitude'', lat,' ||
+                 '   ''city'', city, ''postcode'', postcode)) AS out_rows, COUNT(*) AS cnt FROM (' ||
+                 '  SELECT a.ID AS id, ST_X(a.GEOMETRY) AS lon, ST_Y(a.GEOMETRY) AS lat,' ||
+                 '         a.ADDRESS_LEVELS[1]:value::STRING AS city, a.POSTCODE::STRING AS postcode' ||
+                 v_bounds ||
+                 '   LIMIT ' || v_max::STRING || ')';
+    ELSE
+        v_sql := 'SELECT ARRAY_AGG(OBJECT_CONSTRUCT(''city'', city, ''address_count'', cnt))' ||
+                 '         WITHIN GROUP (ORDER BY cnt DESC) AS out_rows, SUM(cnt) AS cnt FROM (' ||
+                 '  SELECT a.ADDRESS_LEVELS[1]:value::STRING AS city, COUNT(*) AS cnt' ||
+                 v_bounds ||
+                 '   AND a.ADDRESS_LEVELS[1]:value IS NOT NULL GROUP BY 1 ORDER BY cnt DESC LIMIT ' || v_max::STRING || ')';
+    END IF;
+
+    res := (EXECUTE IMMEDIATE :v_sql USING (
+        v_xmn, v_xmx, v_ymn, v_ymx,
+        v_region, v_region, v_region));
+    LET dc CURSOR FOR res;
+    OPEN dc;
+    FETCH dc INTO v_rows, v_cnt;
+    CLOSE dc;
+
+    RETURN OBJECT_CONSTRUCT(
+        'status', 'SUCCESS',
+        'region', REGION,
+        'mode', v_mode,
+        'bbox', OBJECT_CONSTRUCT('min_lon', v_xmn, 'min_lat', v_ymn, 'max_lon', v_xmx, 'max_lat', v_ymx),
+        'boundary_refined', v_region_found,
+        'count', COALESCE(v_cnt, 0),
+        'rows', COALESCE(v_rows, ARRAY_CONSTRUCT()));
+EXCEPTION
+    WHEN OTHER THEN
+        RETURN OBJECT_CONSTRUCT('error', 'TOOL_OVERTURE_ADDRESSES failed: ' || SQLERRM, 'sqlcode', SQLCODE, 'status', 'FAILED');
+END;
+$$;
+
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES(VARCHAR, VARCHAR, NUMBER, FLOAT, FLOAT, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- TOOL_ROUTE_OPTIMIZATION: Wraps ORS OPTIMIZATION with AI geocoding (Python)
 CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(
     DELIVERY_LOCATIONS VARCHAR,
