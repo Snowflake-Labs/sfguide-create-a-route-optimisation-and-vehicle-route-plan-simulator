@@ -147,6 +147,7 @@ export function buildFleetWithDiagnostics(
       profile_type: profileType,
       detour_prob: profileCfg.detour_probability,
       speeding_prob: profileCfg.speeding_probability,
+      speeding_ratio: assetRow?.speedingRatio ?? 1.08,
       hos_violation_prob: profileCfg.hos_violation_probability || 0,
       speed_variance: profileCfg.speed_variance,
       base_speed_kmh: baseSpeed,

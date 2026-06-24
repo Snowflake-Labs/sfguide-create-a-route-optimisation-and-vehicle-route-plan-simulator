@@ -102,7 +102,7 @@ function interpolateRouteLegacy(
   const jitterCfg = config.telemetry.gps_jitter;
   const postedSpeeds = config.routing.posted_speeds;
   const defaultSpeed = postedSpeeds.default || 30;
-  const speedingThreshold = 1.08;
+  const speedingThreshold = lifecycle.vehicle.speeding_ratio;
   const vehicle = lifecycle.vehicle;
   const hosMaxDriveMin = config.breaks?.max_daily_driving_hours
     ? config.breaks.max_daily_driving_hours * 60 : Infinity;
@@ -206,7 +206,7 @@ function interpolateRouteHgvHos(
   const jitterCfg = config.telemetry.gps_jitter;
   const postedSpeeds = config.routing.posted_speeds;
   const defaultSpeed = postedSpeeds.default || 30;
-  const speedingThreshold = 1.08;
+  const speedingThreshold = lifecycle.vehicle.speeding_ratio;
   const vehicle = lifecycle.vehicle;
   const routeStartTime = lifecycle.currentTime;
 

@@ -60,6 +60,7 @@ export interface VehicleProfileRow {
   // Evaluation thresholds consumed by the SA_APP analytics packs.
   deviationDistanceRatio: number; // fraction over expected distance that flags a deviation
   teleportDistanceM: number;      // GPS jump (m) between consecutive pings that flags a teleport
+  speedingRatio: number;          // posted-speed multiplier above which a ping is flagged IS_SPEEDING
   dwellSla: DwellSlaRow[];         // per LOCATION_TYPE warn/critical minutes + geofence buffer
 }
 
@@ -101,7 +102,7 @@ function operatingModeFor(vt: VehicleType): string {
 const ASSET_SPEC: Record<VehicleType, {
   weightTons: number; heightM: number; lengthM: number; widthM: number; axleloadT: number;
   hazmatProb: number; subtypeDist: SubtypeShare[] | null;
-  deviationDistanceRatio: number; teleportDistanceM: number;
+  deviationDistanceRatio: number; teleportDistanceM: number; speedingRatio: number;
 }> = {
   hgv: {
     weightTons: 40.0, heightM: 4.00, lengthM: 16.50, widthM: 2.55, axleloadT: 11.50,
@@ -112,17 +113,17 @@ const ASSET_SPEC: Record<VehicleType, {
       { subtype: 'FLAT', pct: 12 },
       { subtype: 'TANKER', pct: 3 },
     ],
-    deviationDistanceRatio: 0.25, teleportDistanceM: 2500,
+    deviationDistanceRatio: 0.25, teleportDistanceM: 2500, speedingRatio: 1.05,
   },
   car: {
     weightTons: 2.0, heightM: 2.00, lengthM: 4.50, widthM: 1.85, axleloadT: 1.20,
     hazmatProb: 0, subtypeDist: null,
-    deviationDistanceRatio: 0.20, teleportDistanceM: 1000,
+    deviationDistanceRatio: 0.20, teleportDistanceM: 1000, speedingRatio: 1.08,
   },
   ebike: {
     weightTons: 0.1, heightM: 1.20, lengthM: 1.80, widthM: 0.70, axleloadT: 0.05,
     hazmatProb: 0, subtypeDist: null,
-    deviationDistanceRatio: 0.15, teleportDistanceM: 300,
+    deviationDistanceRatio: 0.15, teleportDistanceM: 300, speedingRatio: 1.15,
   },
 };
 
@@ -135,6 +136,7 @@ export const VEHICLE_PROFILE_CATALOG: VehicleProfileRow[] = (Object.keys(ASSET_S
     weightTons: a.weightTons, heightM: a.heightM, lengthM: a.lengthM, widthM: a.widthM, axleloadT: a.axleloadT,
     hazmatProb: a.hazmatProb, subtypeDist: a.subtypeDist,
     deviationDistanceRatio: a.deviationDistanceRatio, teleportDistanceM: a.teleportDistanceM,
+    speedingRatio: a.speedingRatio,
     dwellSla: scaledDwellSla(vt),
   };
 });
@@ -155,8 +157,14 @@ const PROFILE_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHI
   HAZMAT_PROB             FLOAT,
   SUBTYPE_DIST            VARIANT,
   DEVIATION_DISTANCE_RATIO FLOAT   NOT NULL,
-  TELEPORT_DISTANCE_M     NUMBER   NOT NULL
+  TELEPORT_DISTANCE_M     NUMBER   NOT NULL,
+  SPEEDING_RATIO          FLOAT
 ) COMMENT = '${TRACK}'`;
+
+// Idempotent column add for accounts whose DIM_VEHICLE_PROFILE predates SPEEDING_RATIO
+// (the CREATE IF NOT EXISTS above won't alter an existing table). Nullable so the ADD
+// never violates NOT NULL on tables that still hold rows; the MERGE always supplies a value.
+const PROFILE_ALTER = `ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS SPEEDING_RATIO FLOAT`;
 
 const DWELL_SLA_DDL = `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
   VEHICLE_TYPE    VARCHAR NOT NULL,
@@ -171,7 +179,7 @@ function profileMergeSql(): string {
     const dist = r.subtypeDist ? `PARSE_JSON($$${JSON.stringify(r.subtypeDist)}$$)` : 'NULL';
     return `SELECT '${r.vehicleType}' AS VEHICLE_TYPE, '${r.orsProfile}' AS ORS_PROFILE, '${r.operatingMode}' AS OPERATING_MODE, ` +
       `${r.weightTons} AS WEIGHT_TONS, ${r.heightM} AS HEIGHT_M, ${r.lengthM} AS LENGTH_M, ${r.widthM} AS WIDTH_M, ${r.axleloadT} AS AXLELOAD_T, ` +
-      `${r.hazmatProb} AS HAZMAT_PROB, ${dist} AS SUBTYPE_DIST, ${r.deviationDistanceRatio} AS DEVIATION_DISTANCE_RATIO, ${r.teleportDistanceM} AS TELEPORT_DISTANCE_M`;
+      `${r.hazmatProb} AS HAZMAT_PROB, ${dist} AS SUBTYPE_DIST, ${r.deviationDistanceRatio} AS DEVIATION_DISTANCE_RATIO, ${r.teleportDistanceM} AS TELEPORT_DISTANCE_M, ${r.speedingRatio} AS SPEEDING_RATIO`;
   }).join('\n      UNION ALL ');
   // MERGE updates existing rows too, so re-tuned defaults propagate on next boot.
   return `MERGE INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE tgt
@@ -184,9 +192,9 @@ function profileMergeSql(): string {
       WEIGHT_TONS = src.WEIGHT_TONS, HEIGHT_M = src.HEIGHT_M, LENGTH_M = src.LENGTH_M,
       WIDTH_M = src.WIDTH_M, AXLELOAD_T = src.AXLELOAD_T, HAZMAT_PROB = src.HAZMAT_PROB,
       SUBTYPE_DIST = src.SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO = src.DEVIATION_DISTANCE_RATIO,
-      TELEPORT_DISTANCE_M = src.TELEPORT_DISTANCE_M
-    WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M)
-      VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.OPERATING_MODE, src.WEIGHT_TONS, src.HEIGHT_M, src.LENGTH_M, src.WIDTH_M, src.AXLELOAD_T, src.HAZMAT_PROB, src.SUBTYPE_DIST, src.DEVIATION_DISTANCE_RATIO, src.TELEPORT_DISTANCE_M)`;
+      TELEPORT_DISTANCE_M = src.TELEPORT_DISTANCE_M, SPEEDING_RATIO = src.SPEEDING_RATIO
+    WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO)
+      VALUES (src.VEHICLE_TYPE, src.ORS_PROFILE, src.OPERATING_MODE, src.WEIGHT_TONS, src.HEIGHT_M, src.LENGTH_M, src.WIDTH_M, src.AXLELOAD_T, src.HAZMAT_PROB, src.SUBTYPE_DIST, src.DEVIATION_DISTANCE_RATIO, src.TELEPORT_DISTANCE_M, src.SPEEDING_RATIO)`;
 }
 
 function dwellSlaMergeSql(): string {
@@ -211,7 +219,7 @@ function dwellSlaMergeSql(): string {
 // every boot. Must run BEFORE any contract view/UDTF that reads the catalog
 // and before generation stamps DIM_FLEET.
 export async function ensureVehicleProfileCatalog(snowSql: SnowSqlFn): Promise<void> {
-  const stmts = [PROFILE_DDL, profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
+  const stmts = [PROFILE_DDL, PROFILE_ALTER, profileMergeSql(), DWELL_SLA_DDL, dwellSlaMergeSql()];
   for (const sql of stmts) {
     await snowSql(sql, 'FLEET_INTELLIGENCE', 'CORE');
   }

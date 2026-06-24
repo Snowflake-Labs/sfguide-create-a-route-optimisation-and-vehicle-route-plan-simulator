@@ -33,8 +33,16 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE (
   HAZMAT_PROB             FLOAT,
   SUBTYPE_DIST            VARIANT,
   DEVIATION_DISTANCE_RATIO FLOAT   NOT NULL,
-  TELEPORT_DISTANCE_M     NUMBER   NOT NULL
+  TELEPORT_DISTANCE_M     NUMBER   NOT NULL,
+  SPEEDING_RATIO          FLOAT
 ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+-- Idempotent column add for accounts whose DIM_VEHICLE_PROFILE predates SPEEDING_RATIO
+-- (CREATE IF NOT EXISTS above won't alter an existing table). Nullable so the ADD
+-- never violates NOT NULL on tables that still hold rows; the INSERT below always
+-- supplies a value. SPEEDING_RATIO = posted-speed multiplier above which a synthetic
+-- ping is flagged IS_SPEEDING (read by the Data Studio generator, interpolate.ts).
+ALTER TABLE FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE ADD COLUMN IF NOT EXISTS SPEEDING_RATIO FLOAT;
 
 CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
   VEHICLE_TYPE    VARCHAR NOT NULL,
@@ -47,13 +55,13 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
 -- Profiles (VALUES cannot hold PARSE_JSON, so use SELECT ... UNION ALL).
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
 INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
-  (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M)
+  (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO)
 SELECT 'hgv','driving-hgv','trucking',40.00,4.00,16.50,2.55,11.50,0.18,
-       PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500
+       PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500,1.05
 UNION ALL
-SELECT 'car','driving-car','urban_mobility',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000
+SELECT 'car','driving-car','urban_mobility',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000,1.08
 UNION ALL
-SELECT 'ebike','cycling-electric','food_delivery',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300;
+SELECT 'ebike','cycling-electric','food_delivery',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300,1.15;
 
 -- Dwell SLA (per vehicle_type x location_type; scaled per TS DWELL_SCALE).
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA;

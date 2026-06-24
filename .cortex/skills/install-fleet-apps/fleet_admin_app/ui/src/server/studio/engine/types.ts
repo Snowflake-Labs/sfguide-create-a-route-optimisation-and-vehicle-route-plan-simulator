@@ -80,6 +80,7 @@ export interface FleetMember {
   profile_type: string;
   detour_prob: number;
   speeding_prob: number;
+  speeding_ratio: number; // posted-speed multiplier above which a ping is flagged IS_SPEEDING (from DIM_VEHICLE_PROFILE)
   hos_violation_prob: number;
   speed_variance: number;
   base_speed_kmh: number;
