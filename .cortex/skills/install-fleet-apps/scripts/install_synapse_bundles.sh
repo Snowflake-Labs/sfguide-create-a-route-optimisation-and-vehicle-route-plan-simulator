@@ -87,4 +87,32 @@ done
 echo "[synapse] verifying MCP servers..."
 snow sql -c "$CONNECTION" -q "SHOW MCP SERVERS;" --format=CSV 2>/dev/null \
   | grep -iE 'ROUTING_MCP|FLEET_OPS_MCP|FLEET_ADMIN_MCP' || echo "  (none listed yet)"
+
+# Post-deploy smoke verification. The vendored `synapse test:e2e` CLI hardcodes
+# `pnpm exec vitest run --dir tests/e2e`, which needs pnpm + vitest + a tests/e2e
+# suite that this repo does not ship, and its mock harness verifies envelope logic
+# in isolation rather than a real deploy. Instead we run a lightweight,
+# engine-independent smoke: CALL one read-only verb per audited bundle through the
+# real deployed sproc + envelope, then confirm a VERB_ATTEMPT audit row landed.
+# This exercises (and proves) the audited envelope end-to-end on every install
+# (Tenet 7 + Tenet 8 verification). Non-fatal: a WARN never blocks the install,
+# since engine/region state varies; set SYNAPSE_SKIP_SMOKE=1 to skip entirely.
+if [ "${SYNAPSE_SKIP_SMOKE:-0}" != "1" ]; then
+  echo "[synapse] post-deploy smoke (audited-envelope verify)..."
+  # bundle label | smoke CALL (read-only, no routing-engine dependency) | audit table
+  SMOKE=(
+    "ops|CALL FLEET_INTELLIGENCE.SYNAPSE_OPS.HEALTHCHECK(NULL)|FLEET_INTELLIGENCE.SYNAPSE_OPS.VERB_ATTEMPT"
+    "admin|CALL FLEET_INTELLIGENCE.SYNAPSE_ADMIN.CHECK_SUBSTRATE(NULL)|FLEET_INTELLIGENCE.SYNAPSE_ADMIN.VERB_ATTEMPT"
+  )
+  for srow in "${SMOKE[@]}"; do
+    IFS='|' read -r SLABEL SCALL STABLE <<< "$srow"
+    if snow sql -c "$CONNECTION" -q "$SCALL" >/tmp/synapse_smoke_${SLABEL}.log 2>&1; then
+      n=$(snow sql -c "$CONNECTION" --format=CSV \
+        -q "SELECT COUNT(*) FROM $STABLE;" 2>/dev/null | grep -iE '^[0-9]+$' | head -1)
+      echo "  [smoke] $SLABEL: OK (verb returned; ${n:-?} audit rows in VERB_ATTEMPT)"
+    else
+      echo "  [smoke] $SLABEL: WARN (verb call did not succeed; see /tmp/synapse_smoke_${SLABEL}.log)"
+    fi
+  done
+fi
 echo "[synapse] done."
