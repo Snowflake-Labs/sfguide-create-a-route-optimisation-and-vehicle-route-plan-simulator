@@ -51,6 +51,22 @@ interface Inventory {
   services?: ServiceInfo[];
 }
 
+// A row from the synapse audit trail (VERB_ATTEMPT), unified across the user/ops/
+// admin bundles by the recent_verb_attempts ops verb.
+interface AttemptRow {
+  bundle?: string;
+  id?: string;
+  at?: string;
+  verb?: string;
+  actor?: string;
+  actor_role?: string;
+  outcome?: string;
+  error_code?: string | null;
+  error_message?: string | null;
+  idempotency_key?: string | null;
+  args_json?: string | null;
+}
+
 async function ops(verb: string, args: unknown[]): Promise<unknown> {
   const res = await fetch('/api/ops', {
     method: 'POST',
@@ -70,6 +86,9 @@ export function OpsConsoleView() {
   const [log, setLog] = useState<string[]>([]);
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [invLoading, setInvLoading] = useState(true);
+  const [attempts, setAttempts] = useState<AttemptRow[]>([]);
+  const [auditLoading, setAuditLoading] = useState(true);
+  const [auditOutcome, setAuditOutcome] = useState<'' | 'ok' | 'error' | 'idempotent_replay'>('');
 
   const append = (line: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${line}`, ...l].slice(0, 40));
 
@@ -89,6 +108,27 @@ export function OpsConsoleView() {
     const interval = setInterval(fetchInventory, 15000);
     return () => clearInterval(interval);
   }, [fetchInventory]);
+
+  // Reads the synapse audit trail via the recent_verb_attempts ops verb. Until
+  // this view existed, VERB_ATTEMPT was written on every verb call but never read
+  // back; this surfaces it (Tenet 7) so an operator can audit who ran what.
+  const fetchAudit = useCallback(async () => {
+    setAuditLoading(true);
+    try {
+      const r = (await ops('recent_verb_attempts', [100, null, auditOutcome || null])) as {
+        attempts?: AttemptRow[];
+      };
+      setAttempts(Array.isArray(r?.attempts) ? r.attempts : []);
+    } catch (err) {
+      append(`audit error: ${err instanceof Error ? err.message : 'failed'}`);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [auditOutcome]);
+
+  useEffect(() => {
+    fetchAudit();
+  }, [fetchAudit]);
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
@@ -279,6 +319,65 @@ export function OpsConsoleView() {
           {log.length ? log.join('\n') : 'No actions yet.'}
         </pre>
       </div>
+
+      <div style={card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ ...label, marginBottom: 0 }}>Audit trail (VERB_ATTEMPT)</div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <select
+              value={auditOutcome}
+              onChange={(e) => setAuditOutcome(e.target.value as typeof auditOutcome)}
+              style={{ padding: '5px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-default, #e5e7eb)' }}
+            >
+              <option value="">All outcomes</option>
+              <option value="ok">ok</option>
+              <option value="error">error</option>
+              <option value="idempotent_replay">idempotent_replay</option>
+            </select>
+            <button onClick={fetchAudit} disabled={auditLoading} style={btn(auditLoading)}>{auditLoading ? 'Loading\u2026' : 'Refresh'}</button>
+          </div>
+        </div>
+        <p style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', margin: '0 0 8px' }}>
+          Every synapse verb call across the routing, ops, and admin bundles is recorded by the audited envelope. Most recent {attempts.length} shown.
+        </p>
+        {auditLoading && attempts.length === 0 ? (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)' }}>{'Loading audit trail\u2026'}</div>
+        ) : attempts.length === 0 ? (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)' }}>No verb attempts recorded yet.</div>
+        ) : (
+          <div style={{ maxHeight: '320px', overflow: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--text-secondary, #6b7280)' }}>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Time</th>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Bundle</th>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Verb</th>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Actor</th>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Outcome</th>
+                  <th style={{ padding: '4px 6px', position: 'sticky', top: 0, background: 'var(--surface-primary, #fff)' }}>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attempts.map((a, i) => {
+                  const kind = a.outcome === 'ok' ? 'ok' : a.outcome === 'error' ? 'warn' : 'muted';
+                  const detail = a.outcome === 'error' ? `${a.error_code ?? ''} ${a.error_message ?? ''}`.trim() : (a.idempotency_key ? `key=${a.idempotency_key}` : '');
+                  return (
+                    <tr key={a.id ?? i} style={{ borderTop: '1px solid var(--border-default, #f0f0f0)' }}>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{(a.at ?? '').replace('T', ' ').slice(0, 19)}</td>
+                      <td style={{ padding: '4px 6px' }}>{a.bundle ?? ''}</td>
+                      <td style={{ padding: '4px 6px', fontFamily: 'monospace' }}>{a.verb ?? ''}</td>
+                      <td style={{ padding: '4px 6px' }}>{a.actor ?? ''}<span style={{ color: 'var(--text-secondary, #9ca3af)' }}>{a.actor_role ? ` (${a.actor_role})` : ''}</span></td>
+                      <td style={{ padding: '4px 6px' }}><span style={badge(kind)}>{a.outcome ?? ''}</span></td>
+                      <td style={{ padding: '4px 6px', color: 'var(--text-secondary, #6b7280)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={detail}>{detail}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
 
       <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)' }}>
         Heavy provisioning (region graph builds, matrix builds, synthetic Data Studio, Function Tester) remains in the ORS control app per the hybrid design. Config-stage editing of app-config.json / app-views.json is managed via the deploy stage (FLEET_APP_STAGE/config) + service restart.

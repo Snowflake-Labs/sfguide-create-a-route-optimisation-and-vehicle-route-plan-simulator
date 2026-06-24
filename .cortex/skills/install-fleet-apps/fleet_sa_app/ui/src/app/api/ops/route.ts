@@ -24,6 +24,7 @@ const DEFAULT_VERBS: Record<string, number> = {
   service_status: 1,
   service_inventory: 0,
   healthcheck: 0,
+  recent_verb_attempts: 3,
 };
 
 function resolveOps(): { schema: string; verbs: Record<string, number> } {
