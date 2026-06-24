@@ -200,10 +200,10 @@ tools:
         properties:
           region:
             type: string
-            description: "Provisioned region name (e.g. 'SanFrancisco'). Provide this OR a full bbox."
+            description: "Provisioned region name (e.g. 'SanFrancisco'). Pass the active region unless the user names a different place. Provide this OR a full bbox."
           poi_category:
             type: string
-            description: "Optional category filter, e.g. 'hospital', 'coffee_shop', 'supermarket'. Omit to count/list all places."
+            description: "Optional category filter. Lowercase Overture BASIC_CATEGORY, e.g. coffee_shop, restaurant, grocery_store, supermarket, gas_station, pharmacy, hospital, hotel, bank, school. Matched with a LIKE fallback. Omit to count/list all places."
           group_by:
             type: string
             description: "'list' (default; individual places), 'city' (counts per city), or 'category' (counts per basic_category)."
@@ -232,7 +232,7 @@ tools:
         properties:
           region:
             type: string
-            description: "Provisioned region name. Provide this OR a full bbox."
+            description: "Provisioned region name. Pass the active region unless the user names a different place. Provide this OR a full bbox."
           group_by:
             type: string
             description: "'city' (default; address counts per city) or 'list' (sampled addresses)."

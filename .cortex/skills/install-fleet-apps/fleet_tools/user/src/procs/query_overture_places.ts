@@ -25,11 +25,11 @@ export const query_overture_places = defineProc({
     region: t
       .string({ max: 80 })
       .nullable()
-      .describe('Provisioned region name (e.g. "SanFrancisco"). Resolves the boundary polygon. Provide this OR a full bbox.'),
+      .describe('Provisioned region name (e.g. "SanFrancisco"). Resolves the boundary polygon. Pass the active region by default unless the user names a different place; provide this OR a full bbox.'),
     poi_category: t
       .string({ max: 80 })
       .nullable()
-      .describe('Optional category filter (e.g. "hospital", "coffee_shop", "supermarket"). Matches BASIC_CATEGORY / primary category with a LIKE fallback. Omit to count/list all places.'),
+      .describe('Optional category filter. Use a single lowercase Overture BASIC_CATEGORY, e.g. coffee_shop, restaurant, fast_food_restaurant, grocery_store, supermarket, convenience_store, gas_station, pharmacy, hospital, clothing_store, electronics_store, gym, bakery, bar, hotel, bank, school. Matched against BASIC_CATEGORY / primary category with a LIKE fallback, so partial words work. Omit to count/list all places.'),
     group_by: t
       .string({ max: 20 })
       .nullable()

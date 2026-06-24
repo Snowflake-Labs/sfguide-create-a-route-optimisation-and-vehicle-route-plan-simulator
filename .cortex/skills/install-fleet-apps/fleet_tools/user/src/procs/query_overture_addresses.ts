@@ -24,7 +24,7 @@ export const query_overture_addresses = defineProc({
     region: t
       .string({ max: 80 })
       .nullable()
-      .describe('Provisioned region name (e.g. "SanFrancisco"). Resolves the boundary polygon. Provide this OR a full bbox.'),
+      .describe('Provisioned region name (e.g. "SanFrancisco"). Resolves the boundary polygon. Pass the active region by default unless the user names a different place; provide this OR a full bbox.'),
     group_by: t
       .string({ max: 20 })
       .nullable()
