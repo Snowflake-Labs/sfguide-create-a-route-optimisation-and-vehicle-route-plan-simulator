@@ -214,6 +214,8 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
       PRIMARY KEY (POI_ID)
     , cities AS FLEET_INTELLIGENCE.CATCHMENT.CITIES_BY_STATE
       PRIMARY KEY (REGION, STATE, CITY)
+    , addresses AS FLEET_INTELLIGENCE.CATCHMENT.REGIONAL_ADDRESSES
+      PRIMARY KEY (ID)
   )
 
   FACTS (
@@ -231,6 +233,9 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
     , cities.cities_state AS STATE COMMENT = 'State (cities aggregate)'
     , cities.cities_city AS CITY COMMENT = 'City (cities aggregate)'
     , cities.cities_region AS REGION COMMENT = 'Region (cities aggregate)'
+    , addresses.addr_city AS CITY COMMENT = 'Address city (Overture addresses)'
+    , addresses.addr_postcode AS POSTCODE WITH SYNONYMS ('zip', 'postal code') COMMENT = 'Address postcode (Overture addresses)'
+    , addresses.addr_region AS REGION COMMENT = 'Region (Overture addresses)'
   )
 
   METRICS (
@@ -238,17 +243,20 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
     , pois.unique_cities AS COUNT(DISTINCT CITY) WITH SYNONYMS ('number of cities') COMMENT = 'Distinct cities'
     , pois.unique_categories AS COUNT(DISTINCT BASIC_CATEGORY) WITH SYNONYMS ('number of categories') COMMENT = 'Distinct POI categories'
     , cities.total_city_pois AS SUM(city_poi_count) WITH SYNONYMS ('total pois by city') COMMENT = 'Total POIs across cities (precomputed)'
+    , addresses.total_addresses AS COUNT(DISTINCT ID) WITH SYNONYMS ('number of addresses', 'address count', 'address coverage') COMMENT = 'Distinct Overture street-address count (density / coverage)'
   )
 
   COMMENT = 'Catchment demo: points of interest by category/city/state, plus precomputed POI counts per city.'
 
   AI_SQL_GENERATION 'Catchment semantic view.
-Entities (two independent facts):
+Entities (three independent entities):
 - pois (POIS): one row per POI. Use total_pois grouped by basic_category, city, or state for density/competition questions.
 - cities (CITIES_BY_STATE): precomputed POI counts per city.
+- addresses (REGIONAL_ADDRESSES): one row per Overture street address. Use total_addresses grouped by city/postcode for address-density and coverage questions.
 Conventions:
 - "how many coffee shops in X" -> total_pois filtered by basic_category and city.
-- "competition density" -> total_pois grouped by basic_category + city.'
+- "competition density" -> total_pois grouped by basic_category + city.
+- "how many addresses" / "address coverage per city" -> total_addresses grouped by addr_city.'
 ;
 
 -- ============ SV_DWELL_ANALYTICS (rebound onto FLEET_APP.DWELL.*) ============
