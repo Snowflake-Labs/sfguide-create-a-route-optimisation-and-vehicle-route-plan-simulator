@@ -9,7 +9,7 @@ export const set_active_region = defineProc({
   args: {
     region: t
       .string({ min: 1, max: 80 })
-      .describe('Region name to activate (e.g. "Europe").'),
+      .describe('Region name to activate (e.g. "SanFrancisco").'),
   },
   returns: {
     message: t.string().describe('Confirmation message from the substrate.'),

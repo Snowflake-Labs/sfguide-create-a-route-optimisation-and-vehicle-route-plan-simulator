@@ -65,7 +65,7 @@ async function ops(verb: string, args: unknown[]): Promise<unknown> {
 const RUNNING = (s?: string) => s === 'RUNNING' || s === 'READY';
 
 export function OpsConsoleView() {
-  const [region, setRegion] = useState('Europe');
+  const [region, setRegion] = useState('SanFrancisco');
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [inventory, setInventory] = useState<Inventory | null>(null);

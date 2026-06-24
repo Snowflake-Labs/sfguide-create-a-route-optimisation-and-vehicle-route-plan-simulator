@@ -7,7 +7,7 @@ export const set_active_region = defineProc({
     'routing substrate and projection views). Ops-only operation.',
   roles: ['ops'],
   args: {
-    region: t.string({ min: 1, max: 80 }).describe('Region name to activate (e.g. "Europe").'),
+    region: t.string({ min: 1, max: 80 }).describe('Region name to activate (e.g. "SanFrancisco").'),
   },
   returns: {
     message: t.string().describe('Confirmation message from the substrate.'),
