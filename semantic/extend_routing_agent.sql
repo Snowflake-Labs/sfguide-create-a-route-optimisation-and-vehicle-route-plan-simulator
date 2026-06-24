@@ -192,8 +192,66 @@ tools:
             description: "Transport mode. Default: driving-car"
         required: [site_description]
   - tool_spec:
-      type: cortex_analyst_text_to_sql
-      name: query_fleet_ops
+      type: generic
+      name: tool_overture_search
+      description: "Region-wide (NON-isochrone) Overture Maps place search/aggregation. Use for 'how many <category> in <region>', 'top cities by <category> count', or 'list <category> in <region>'. Bound by a provisioned region name OR a full bbox (min/max lon/lat). For 'within N minutes of a point' use tool_poi_in_isochrone instead."
+      input_schema:
+        type: object
+        properties:
+          region:
+            type: string
+            description: "Provisioned region name (e.g. 'SanFrancisco'). Provide this OR a full bbox."
+          poi_category:
+            type: string
+            description: "Optional category filter, e.g. 'hospital', 'coffee_shop', 'supermarket'. Omit to count/list all places."
+          group_by:
+            type: string
+            description: "'list' (default; individual places), 'city' (counts per city), or 'category' (counts per basic_category)."
+          max_results:
+            type: number
+            description: "Max rows/groups. Default 100, capped at 500."
+          min_lon:
+            type: number
+            description: "West longitude of the bbox (provide all four bbox bounds together, or none)."
+          min_lat:
+            type: number
+            description: "South latitude of the bbox."
+          max_lon:
+            type: number
+            description: "East longitude of the bbox."
+          max_lat:
+            type: number
+            description: "North latitude of the bbox."
+        required: []
+  - tool_spec:
+      type: generic
+      name: tool_overture_addresses
+      description: "Region/bbox-bounded Overture Maps address density. Use for 'how many addresses in <region>' or 'address coverage per city'. Bound by a provisioned region name OR a full bbox."
+      input_schema:
+        type: object
+        properties:
+          region:
+            type: string
+            description: "Provisioned region name. Provide this OR a full bbox."
+          group_by:
+            type: string
+            description: "'city' (default; address counts per city) or 'list' (sampled addresses)."
+          max_results:
+            type: number
+            description: "Max rows/groups. Default 100, capped at 500."
+          min_lon:
+            type: number
+            description: "West longitude of the bbox."
+          min_lat:
+            type: number
+            description: "South latitude of the bbox."
+          max_lon:
+            type: number
+            description: "East longitude of the bbox."
+          max_lat:
+            type: number
+            description: "North latitude of the bbox."
+        required: []
       description: "Universal, mode-agnostic fleet analytics: trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins, broken down by region, asset mode (vehicle_type: car/hgv/ebike/...), and operator. Use for 'how many trips', 'total/average distance or duration', 'detour rate', 'average speed', 'busiest origins', 'operators by shift'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
@@ -211,6 +269,10 @@ tools:
       type: cortex_analyst_text_to_sql
       name: query_catchment
       description: "Analytics over the Catchment demo: points of interest by category, city, and state. Use for 'how many POIs by category/city', 'competition density', 'distinct categories'."
+  - tool_spec:
+      type: cortex_analyst_text_to_sql
+      name: query_overture_global
+      description: "Global Overture Maps places catalog (66M+ POIs worldwide) via the vendor semantic view. Use for WORLDWIDE place questions outside the active region and for place attributes/quality: filter or list by category, brand, country, region, city, name, and data confidence. NOTE: exposes only confidence metrics (no row count) - for counts use query_catchment or tool_overture_search."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_asset_velocity
@@ -255,6 +317,16 @@ tool_resources:
     identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_CATCHMENT
     execution_environment:
       warehouse: ROUTING_ANALYTICS
+  tool_overture_search:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_SEARCH
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
+  tool_overture_addresses:
+    type: procedure
+    identifier: FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_OVERTURE_ADDRESSES
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
   query_fleet_ops:
     semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     execution_environment:
@@ -273,6 +345,10 @@ tool_resources:
       warehouse: ROUTING_ANALYTICS
   query_catchment:
     semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_CATCHMENT
+    execution_environment:
+      warehouse: ROUTING_ANALYTICS
+  query_overture_global:
+    semantic_view: OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_asset_velocity:
