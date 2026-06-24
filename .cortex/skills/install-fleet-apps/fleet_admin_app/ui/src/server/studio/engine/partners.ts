@@ -52,11 +52,13 @@ const NAME_ROOTS = [
 
 export function generatePartners(config: GenerationConfig, n = 80): Partner[] {
   const rng = createRng((config.region || '').length * 2017 + (config.ors_profile || '').length * 23 + 991);
-  const countries = countriesForRegion(config.region);
+  // Config overrides take precedence; the region-derived list / NAME_ROOTS are fallbacks.
+  const countries = config.partner_countries?.length ? config.partner_countries : countriesForRegion(config.region);
+  const nameRoots = config.partner_name_roots?.length ? config.partner_name_roots : NAME_ROOTS;
   const partners: Partner[] = [];
   for (let i = 0; i < n; i++) {
     const country = countries[Math.floor(rng() * countries.length)];
-    const root = NAME_ROOTS[Math.floor(rng() * NAME_ROOTS.length)];
+    const root = nameRoots[Math.floor(rng() * nameRoots.length)];
     const suffixes = nameSuffixForCountry(country);
     const suffix = suffixes[Math.floor(rng() * suffixes.length)];
     // Roughly 70% strong, 22% medium, 6% weak, 2% blacklisted.

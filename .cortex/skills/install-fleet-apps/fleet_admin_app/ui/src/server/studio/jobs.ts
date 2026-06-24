@@ -807,7 +807,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones, generateDemandCatalog } = await import('./engine.js');
       const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
       const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
@@ -930,6 +930,16 @@ export async function startGeneration(
         } catch (e: any) {
           log('WARN', 'Studio', `FACT_HAZARD_ZONES generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Hazard generation failed: ${e.message?.slice(0, 150)}` });
+        }
+      }
+      if (config.generates_demand) {
+        try {
+          const n = await generateDemandCatalog(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${n} demand-catalog items`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${n} demand-catalog items` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `DIM_DEMAND_CATALOG generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Demand catalog generation failed: ${e.message?.slice(0, 150)}` });
         }
       }
 

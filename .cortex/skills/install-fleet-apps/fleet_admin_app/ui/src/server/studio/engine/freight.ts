@@ -40,7 +40,10 @@ export function generateFreightOffers(
 ): FreightOffer[] {
   if (!pois || pois.length < 2) return [];
   const rng = createRng((config.region || '').length * 1009 + (config.ors_profile || '').length * 17);
-  const sources = sourceLabelsForRegion(config.region);
+  // Config overrides take precedence; the hardcoded arrays are fallbacks.
+  const sources = config.freight_sources?.length ? config.freight_sources : sourceLabelsForRegion(config.region);
+  const products = config.freight_products?.length ? config.freight_products : FREIGHT_PRODUCTS;
+  const equipments = config.freight_equipment?.length ? config.freight_equipment : EQUIPMENTS;
   const offers: FreightOffer[] = [];
   let safety = 0;
   while (offers.length < n && safety < n * 5) {
@@ -52,7 +55,7 @@ export function generateFreightOffers(
     const d = pois[dIdx];
     const wt = 800 + Math.floor(rng() * 24200);
     const distanceKm = Math.max(5, haversineKm(p.lat, p.lng, d.lat, d.lng));
-    const equipment = EQUIPMENTS[Math.floor(rng() * EQUIPMENTS.length)];
+    const equipment = equipments[Math.floor(rng() * equipments.length)];
     const haz = rng() < 0.08;
     const adrClass = haz ? ADR_CLASSES[Math.floor(rng() * ADR_CLASSES.length)] : null;
     const ldm = Math.round((1 + rng() * 12.5) * 10) / 10;
@@ -64,7 +67,7 @@ export function generateFreightOffers(
     const winStart = 60 + Math.floor(rng() * 1140);
     const winLen = 60 + Math.floor(rng() * 420);
     const src = sources[offers.length % sources.length];
-    const product = FREIGHT_PRODUCTS[offers.length % FREIGHT_PRODUCTS.length];
+    const product = products[offers.length % products.length];
     // Status: ~78% OPEN, 17% TAKEN, 5% EXPIRED — gives the page a live feel.
     const sRoll = rng();
     const status = sRoll < 0.78 ? 'OPEN' : sRoll < 0.95 ? 'TAKEN' : 'EXPIRED';

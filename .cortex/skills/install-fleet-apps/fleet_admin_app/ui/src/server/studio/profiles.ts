@@ -291,6 +291,19 @@ export interface GenerationConfig {
   generates_hazard?: boolean;
   // Neutral category-derived demand catalog -> DIM_DEMAND_CATALOG.
   generates_demand?: boolean;
+  // --- De-hardcoded freight/partner literals (config-driven; the engine arrays
+  // are fallbacks when these are unset, so existing presets are unchanged) -----
+  // Freight marketplace source labels (e.g. ['DAT','TRUCKSTOP']); default is the
+  // region-aware EU/NA list in engine/freight.ts.
+  freight_sources?: string[];
+  // Freight product descriptions cycled across offers.
+  freight_products?: string[];
+  // Freight equipment types.
+  freight_equipment?: string[];
+  // Fictional partner company name roots.
+  partner_name_roots?: string[];
+  // Partner ISO-2 country codes (overrides the region-derived list).
+  partner_countries?: string[];
 }
 
 export function resolveVehicleType(config: GenerationConfig): VehicleType {

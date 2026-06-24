@@ -44,6 +44,7 @@ export { probeRoutability } from './engine/routing';
 export { generateAnchors } from './engine/anchors';
 export { generateDemographics } from './engine/demographics';
 export { generateHazardZones } from './engine/hazard';
+export { generateDemandCatalog } from './engine/demand';
 
 interface VehicleDayResult {
   vehicleId: string;
