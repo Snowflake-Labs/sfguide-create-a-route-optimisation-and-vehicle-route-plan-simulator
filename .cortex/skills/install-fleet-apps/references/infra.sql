@@ -42,6 +42,22 @@ CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_CARTO_EAI
   ENABLED = TRUE
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+-- 3b. OSM catalog egress: Geofabrik + BBBike (mirrors OPENROUTESERVICE_APP.CORE.ORS_OSM_*).
+--     The Admin app's Region Builder "Refresh Catalog" scrapes these two hosts
+--     server-side (download.geofabrik.de / download.bbbike.org) to populate
+--     REGION_CATALOG. Without this EAI attached, every scrape fetch is blocked
+--     and the catalog silently stays empty. Mirrors the legacy control app,
+--     which ran with BOTH the carto EAI and the geofabrik/bbbike EAI attached.
+CREATE OR REPLACE NETWORK RULE FLEET_INTELLIGENCE.CORE.FLEET_APP_OSM_NETWORK_RULE
+  TYPE = HOST_PORT  MODE = EGRESS
+  VALUE_LIST = ('download.geofabrik.de:443','download.bbbike.org:443')
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLEET_APP_OSM_EAI
+  ALLOWED_NETWORK_RULES = (FLEET_INTELLIGENCE.CORE.FLEET_APP_OSM_NETWORK_RULE)
+  ENABLED = TRUE
+  COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- 4. Compute pool for the two Next.js app services (light vs the ORS engine pool).
 CREATE COMPUTE POOL IF NOT EXISTS FLEET_APPS_COMPUTE_POOL
   INSTANCE_FAMILY = CPU_X64_XS

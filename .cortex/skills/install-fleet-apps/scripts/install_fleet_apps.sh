@@ -108,7 +108,7 @@ snow sql -c "$CONNECTION" -q "
 # SKIP_INFRA only suppresses the self-provision CREATE (references/infra.sql);
 # it must NOT leave COMPUTE_POOL unset (that previously crashed the admin-app
 # deploy with "COMPUTE_POOL: unbound variable" under set -u).
-export IMAGE_REPO_SQL_NAME COMPUTE_POOL CARTO_EAI SPEC_STAGE_NAME
+export IMAGE_REPO_SQL_NAME COMPUTE_POOL CARTO_EAI OSM_EAI SPEC_STAGE_NAME
 note "[1/8] resolving SPCS infra..."
 if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
    && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
@@ -117,11 +117,13 @@ if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'im
   IMAGE_REPO_SQL_NAME="OPENROUTESERVICE_APP.core.image_repository"
   COMPUTE_POOL="OPENROUTESERVICE_APP_COMPUTE_POOL"
   CARTO_EAI="ORS_CARTO_EAI"
+  OSM_EAI="ORS_OSM_EAI"
   SPEC_STAGE_NAME="OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE"
 else
   IMAGE_REPO_SQL_NAME="FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY"
   COMPUTE_POOL="FLEET_APPS_COMPUTE_POOL"
   CARTO_EAI="FLEET_APP_CARTO_EAI"
+  OSM_EAI="FLEET_APP_OSM_EAI"
   SPEC_STAGE_NAME="FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE"
   if [ "${SKIP_INFRA:-0}" != "1" ]; then
     note "  self-provisioning FLEET-owned infra (references/infra.sql)"
@@ -131,7 +133,7 @@ else
     note "  SKIP_INFRA=1 -> not provisioning; assuming FLEET-owned infra already exists"
   fi
 fi
-note "  infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI stage=$SPEC_STAGE_NAME"
+note "  infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
 step "1 infra" OK
 
 # ── 2. data (reuse rows else seed the agnostic SF/ebike preset) ──
@@ -370,7 +372,7 @@ ELAPSED=$(( $(date +%s) - START_TS ))
   echo
   echo "- connection: \`$CONNECTION\`  account: \`$(snow sql -c "$CONNECTION" --format=CSV -q 'SELECT CURRENT_ACCOUNT();' 2>/dev/null | tail -1)\`"
   echo "- total duration: ${ELAPSED}s"
-  echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI stage=$SPEC_STAGE_NAME"
+  echo "- infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI,$OSM_EAI stage=$SPEC_STAGE_NAME"
   [ -n "$SA_URL" ]    && echo "- SA app:    $SA_URL"
   [ -n "$ADMIN_URL" ] && echo "- Admin app: $ADMIN_URL"
   echo

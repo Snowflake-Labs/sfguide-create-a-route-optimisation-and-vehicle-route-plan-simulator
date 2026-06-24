@@ -38,6 +38,11 @@ SPEC_STAGE_NAME="${SPEC_STAGE_NAME:-OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE}"
 SPEC_STAGE="@${SPEC_STAGE_NAME}/services/fleet_admin_app"
 IMAGE_REPO_SQL_NAME="${IMAGE_REPO_SQL_NAME:-OPENROUTESERVICE_APP.core.image_repository}"
 CARTO_EAI="${CARTO_EAI:-ORS_CARTO_EAI}"
+# OSM catalog egress (geofabrik + bbbike) for Region Builder "Refresh Catalog".
+# Resolved by install_fleet_apps.sh (reuse ORS_OSM_EAI else FLEET_APP_OSM_EAI);
+# default preserves standalone use. The legacy control app ran with BOTH the
+# carto EAI and this OSM EAI attached.
+OSM_EAI="${OSM_EAI:-ORS_OSM_EAI}"
 COMPUTE_POOL="${COMPUTE_POOL:-OPENROUTESERVICE_APP_COMPUTE_POOL}"
 
 # ── 0. Pre-flight ───────────────────────────────────────────────
@@ -128,7 +133,7 @@ if [ "${SKIP_SERVICE:-0}" != "1" ]; then
     ALTER SERVICE $SERVICE_FQN
       FROM ${SPEC_STAGE}
       SPECIFICATION_FILE = 'fleet_admin_app_service.yaml';
-    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI);
+    ALTER SERVICE $SERVICE_FQN SET EXTERNAL_ACCESS_INTEGRATIONS = ($CARTO_EAI, $OSM_EAI);
     ALTER SERVICE $SERVICE_FQN RESUME;
   " >/tmp/fleet_admin_alter.log 2>&1 || { echo "ERROR: service alter failed"; tail -30 /tmp/fleet_admin_alter.log; exit 1; }
 else
