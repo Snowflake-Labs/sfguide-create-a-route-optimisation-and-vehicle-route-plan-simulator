@@ -1,19 +1,19 @@
 ---
 name: routing-agent
-description: "Create Snowflake Intelligence agent for OpenRouteService routing functions. Use when: setting up ORS demo, creating route planning agent, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing agent, ORS agent, routing intelligence."
+description: "Deploy the routing TOOL_* procedures (AI-geocoded directions, isochrones, POI-in-isochrone, optimization, catchment, delivery/network demos) into FLEET_INTELLIGENCE.ROUTING_TOOLS. These are wrapped by the synapse ROUTING_MCP verbs that the app-level FLEET_AGENT attaches — there is no separate standalone routing agent. Use when: setting up the ORS routing tool substrate the fleet app depends on, integrating directions/isochrones/optimization with Cortex. Do NOT use for: deploying fleet intelligence demos, route deviation analysis, or changing ORS configuration. Triggers: openrouteservice demo, routing tools, ORS tool procedures, routing substrate."
 depends_on:
   - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
-  version: 1.1.0
+  version: 1.2.0
   category: intelligence-agent
 ---
 
-# OpenRouteService Intelligence Demo
+# OpenRouteService Routing Tool Substrate
 
-Create a Snowflake Intelligence agent that provides AI-powered route planning using OpenRouteService functions with natural language geocoding.
+Deploy the AI-geocoded routing procedures into `FLEET_INTELLIGENCE.ROUTING_TOOLS`. These `TOOL_*` procedures are the implementation layer wrapped by the synapse `ROUTING_MCP` verbs that the app-level **FLEET_AGENT** attaches. The previous standalone `ROUTING_AGENT` Cortex Agent has been **retired** — `FLEET_AGENT` (created by `install-fleet-apps`) is now the single routing + analytics agent, so this skill only deploys the procedures, not an agent.
 
-The agent registers seven tools:
+The procedures provide seven LLM-facing capabilities:
 
 - `tool_directions` — multi-region driving / cycling / walking directions.
 - `tool_isochrone` — multi-region reachability polygons.
@@ -32,9 +32,8 @@ they fail gracefully with a "run setup-agent-playground" message if the data is 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
-| `SCHEMA` | `ROUTING_AGENT` | Schema for agent procedures and agent definition |
+| `SCHEMA` | `ROUTING_TOOLS` | Schema for the routing TOOL_* procedures |
 | `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for geocoding and routing queries |
-| `AGENT_NAME` | `ROUTING_AGENT` | Name of the Cortex Agent to create |
 
 ## Prerequisites
 
@@ -50,9 +49,8 @@ they fail gracefully with a "run setup-agent-playground" message if the data is 
 | CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
 | USAGE ON DATABASE FLEET_INTELLIGENCE | Database | Uses the setup database |
-| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_AGENT schema |
-| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_POI_IN_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION |
-| CREATE CORTEX AGENT | Schema (FLEET_INTELLIGENCE.ROUTING_AGENT) | Creates ROUTING_AGENT |
+| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates ROUTING_TOOLS schema |
+| CREATE PROCEDURE | Schema (FLEET_INTELLIGENCE.ROUTING_TOOLS) | Creates the routing TOOL_* procedures |
 | USAGE ON DATABASE OPENROUTESERVICE_APP | Database | Calls ORS DIRECTIONS, ISOCHRONES, ISOCHRONES_CLIPPED, OPTIMIZATION functions |
 | IMPORT SHARE | Account | Acquires OVERTURE_MAPS__PLACES from Marketplace (one-time) |
 | USAGE ON DATABASE OVERTURE_MAPS__PLACES | Database | Reads Overture POI data for TOOL_POI_IN_ISOCHRONE |
@@ -82,7 +80,7 @@ The Agent Playground (control-app page) is region- and vehicle-aware end-to-end:
 
 ## Quick Start
 
-No seed data or pre-computed tables required. The routing agent consists of stored procedures and a Cortex Agent definition. Run `snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>` to create all objects.
+No seed data or pre-computed tables required. This skill deploys only the routing `TOOL_*` stored procedures (no agent — the app-level FLEET_AGENT wraps them via ROUTING_MCP). Run `snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>` to create all procedures.
 
 ## Workflow
 
@@ -123,16 +121,16 @@ Create dedicated objects for the routing agent.
 ```sql
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
-CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT
+CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
     COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-deploy-snowflake-intelligence-routing-agent", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
-### Step 4: Deploy All Procedures and Agent
+### Step 4: Deploy All Procedures
 
-**Goal:** Create all 3 tool procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION) and the Cortex Agent in a single step.
+**Goal:** Create the routing TOOL_* procedures (TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_POI_IN_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION, TOOL_OVERTURE_SEARCH, TOOL_OVERTURE_ADDRESSES, TOOL_CATCHMENT, TOOL_DELIVERY_OPTIMIZATION, TOOL_NETWORK_OPTIMIZATION) in a single step. No agent is created — FLEET_AGENT wraps these via ROUTING_MCP.
 
 ```bash
 snow sql -f .cortex/skills/routing-agent/references/deploy-agent.sql -c <connection>
@@ -143,27 +141,15 @@ This creates:
 - **TOOL_ISOCHRONE**: Wraps ORS ISOCHRONES with AI geocoding for reachability analysis
 - **TOOL_POI_IN_ISOCHRONE**: Joins an isochrone polygon with Overture Maps POIs (cafes, restaurants, shops, etc.) via `ST_WITHIN`
 - **TOOL_ROUTE_OPTIMIZATION**: Python procedure wrapping ORS OPTIMIZATION for multi-stop delivery routing
-- **ROUTING_AGENT**: Cortex Agent with tool bindings to all 4 procedures
+- Plus **TOOL_OVERTURE_SEARCH**, **TOOL_OVERTURE_ADDRESSES**, **TOOL_CATCHMENT**, **TOOL_DELIVERY_OPTIMIZATION**, **TOOL_NETWORK_OPTIMIZATION**
+
+No Cortex Agent is created by this skill. The app-level `FLEET_AGENT` (created by `install-fleet-apps`) attaches `OPENROUTESERVICE_APP.ROUTING.ROUTING_MCP`, whose verbs wrap these procedures.
 
 > **Reference:** For annotated explanations of each procedure, see [references/agent-definitions.md](references/agent-definitions.md).
 
-### Step 5: Register Agent with Snowflake Intelligence (Optional)
+### Step 5: Test the procedures (via FLEET_AGENT)
 
-> **Note:** This step requires Snowflake Intelligence to be enabled on the account. On accounts where it is not provisioned, `SHOW SNOWFLAKE INTELLIGENCE` / the `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` below fail with `002003 ... 'SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT' does not exist or not authorized` (observed on tib85385, friction-log F5). This is expected and non-blocking: the agent is fully functional via the control-app **Agent Playground** and via direct `INVOKE_AGENT` REST/SQL calls without SI registration. Skip the rest of this step if SI is not enabled.
-
-1. **Check** if Snowflake Intelligence is available:
-   ```sql
-   SHOW SNOWFLAKE INTELLIGENCE;
-   ```
-   If this returns an error or no results, skip the rest of this step.
-
-2. **Register** the agent:
-   ```sql
-   ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT 
-   ADD AGENT FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
-   ```
-
-### Step 6: Test the Agent
+The routing capabilities are exposed to users through the app-level `FLEET_AGENT` (created by `install-fleet-apps`), which attaches `ROUTING_MCP`. There is no separate agent to register with Snowflake Intelligence from this skill. Test through the fleet app chat, or call a procedure directly to confirm it works.
 
 Test queries must use locations within the ORS-configured region. To determine the region:
 
@@ -186,28 +172,16 @@ Before testing, verify all services are RUNNING (see Step 2b).
 
 Use central city locations as depots.
 
-### Step 7: Open Snowflake Intelligence UI
-
-Get org/account names, then open the UI:
-
-```sql
-SELECT CURRENT_ORGANIZATION_NAME() AS org_name, CURRENT_ACCOUNT_NAME() AS account_name;
-```
-
-Open: `https://ai.snowflake.com/<org_name>/<account_name>/#/ai`
-
-
 ## Examples
 
-### Example 1: Deploy routing agent for San Francisco
-User says: "Create a routing agent"
+### Example 1: Deploy routing tool procedures for San Francisco
+User says: "Deploy the routing tools"
 Actions:
 1. Verify ORS functions and services (Step 2)
 2. Create database/schema (Step 3)
-3. Create TOOL_DIRECTIONS, TOOL_ISOCHRONE, TOOL_ROUTE_OPTIMIZATION procedures (Steps 4-6)
-4. Create Cortex Agent (Step 7)
-5. Test with: "Driving directions from Union Square to Fisherman's Wharf"
-Result: Routing agent accessible via Snowflake Intelligence UI
+3. Create the routing TOOL_* procedures (Step 4)
+4. Test via FLEET_AGENT: "Driving directions from Union Square to Fisherman's Wharf"
+Result: Routing capabilities available to the app-level FLEET_AGENT (via ROUTING_MCP)
 
 ### Example 2: Test agent with different region
 User says: "Test the routing agent with London locations"
@@ -222,22 +196,21 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 - **Step 2**: Verify ORS functions exist before proceeding
 - **Step 3**: Verify database, schema, and warehouse exist
 - **Step 4**: Verify deploy-agent.sql completes without errors
-- **Step 6**: Confirm all 3 tools work correctly
+- **Step 4**: Confirm all 9 procedures deploy correctly
 
 ## Output
 
 - 1 database: `FLEET_INTELLIGENCE`
-- 1 schema: `FLEET_INTELLIGENCE.ROUTING_AGENT`
+- 1 schema: `FLEET_INTELLIGENCE.ROUTING_TOOLS`
 - 1 warehouse: `ROUTING_ANALYTICS`
-- 4 stored procedures with AI geocoding and error handling
-- 1 Cortex Agent registered in Snowflake Intelligence
-- Agent accessible via Snowsight UI and REST API
+- 9 stored procedures with AI geocoding and error handling
+- Routing capabilities surfaced through the app-level `FLEET_AGENT` (via `ROUTING_MCP`)
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| Agent not visible in UI | Run `ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT` |
+| Routing tools not available to FLEET_AGENT | Confirm `ROUTING_MCP` lists the verbs and that the procedures exist in `FLEET_INTELLIGENCE.ROUTING_TOOLS` |
 | Geocoding fails | Check Cortex AI access and model availability |
 | Empty directions | Verify ORS map data covers the requested region |
 | Routing functions fail | Check service status with `SHOW SERVICES IN SCHEMA OPENROUTESERVICE_APP.CORE;` and resume suspended services |
@@ -250,13 +223,14 @@ Result: Agent returns London-specific routing results (no redeployment needed --
 To remove all objects created by this skill:
 
 ```sql
--- Reverse dependency order: agent first, then procedures, schema, warehouse, database
-DROP CORTEX AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_ISOCHRONE(VARCHAR, NUMBER);
-DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT;
+-- Drop the routing procedures, then the schema and warehouse.
+-- (The standalone ROUTING_AGENT agent is retired; on a pre-relocation install
+--  also run: DROP AGENT IF EXISTS FLEET_INTELLIGENCE.ROUTING_AGENT.ROUTING_AGENT;)
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ROUTE_OPTIMIZATION(VARCHAR, VARCHAR, NUMBER, VARCHAR, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_POI_IN_ISOCHRONE(VARCHAR, NUMBER, VARCHAR, VARCHAR, NUMBER);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_ISOCHRONE(VARCHAR, NUMBER, VARCHAR);
+DROP PROCEDURE IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_DIRECTIONS(VARCHAR, VARCHAR);
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTING_TOOLS;
 DROP WAREHOUSE IF EXISTS ROUTING_ANALYTICS;
 ```
 
