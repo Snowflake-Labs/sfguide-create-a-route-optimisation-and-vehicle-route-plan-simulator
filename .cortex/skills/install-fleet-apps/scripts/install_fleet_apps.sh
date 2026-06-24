@@ -71,32 +71,52 @@ snow sql -c "$CONNECTION" -q "SELECT CURRENT_ACCOUNT();" >/dev/null 2>&1 \
   || { echo "ERROR: connection '$CONNECTION' does not work"; exit 1; }
 step "0 preflight" OK
 
+# ── 0.5 pre-create FLEET_APP_* roles (before any GRANT target needs them) ──
+# The routing contract (step 3), packs (step 4), and role binding (step 6) all
+# GRANT to these roles. Step 3 runs BEFORE the role-binding step, so on a fresh
+# install its grants to FLEET_APP_USER previously failed ("Role 'FLEET_APP_USER'
+# does not exist") and left routing verbs ungranted to the consumer. Create the
+# role NAMES up front (idempotent, empty until step 6 binds objects) so every
+# downstream GRANT target exists regardless of step ordering.
+note "[0.5/8] pre-creating FLEET_APP_* role names..."
+snow sql -c "$CONNECTION" -q "
+  CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
+  CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
+  CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
+  CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER;
+" >/tmp/ifa_preroles.log 2>&1 || note "  WARN: role pre-create reported errors (see /tmp/ifa_preroles.log)"
+
 # ── 1. infra (reuse OPENROUTESERVICE_APP else self-provision FLEET-owned) ──
+# Var RESOLUTION always runs (cheap SHOW probes) so downstream steps (esp. the
+# apps step, which needs $COMPUTE_POOL) have bound vars even under SKIP_INFRA.
+# SKIP_INFRA only suppresses the self-provision CREATE (references/infra.sql);
+# it must NOT leave COMPUTE_POOL unset (that previously crashed the admin-app
+# deploy with "COMPUTE_POOL: unbound variable" under set -u).
 export IMAGE_REPO_SQL_NAME COMPUTE_POOL CARTO_EAI SPEC_STAGE_NAME
-if [ "${SKIP_INFRA:-0}" != "1" ]; then
-  note "[1/8] resolving SPCS infra..."
-  if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
-     && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
-     && obj_exists "SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'ORS_CARTO_EAI';" 'ORS_CARTO_EAI'; then
-    note "  reusing OPENROUTESERVICE_APP infra"
-    IMAGE_REPO_SQL_NAME="OPENROUTESERVICE_APP.core.image_repository"
-    COMPUTE_POOL="OPENROUTESERVICE_APP_COMPUTE_POOL"
-    CARTO_EAI="ORS_CARTO_EAI"
-    SPEC_STAGE_NAME="OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE"
-  else
+note "[1/8] resolving SPCS infra..."
+if obj_exists "SHOW IMAGE REPOSITORIES IN SCHEMA OPENROUTESERVICE_APP.CORE;" 'image_repository' \
+   && obj_exists "SHOW COMPUTE POOLS LIKE 'OPENROUTESERVICE_APP_COMPUTE_POOL';" 'OPENROUTESERVICE_APP_COMPUTE_POOL' \
+   && obj_exists "SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'ORS_CARTO_EAI';" 'ORS_CARTO_EAI'; then
+  note "  reusing OPENROUTESERVICE_APP infra"
+  IMAGE_REPO_SQL_NAME="OPENROUTESERVICE_APP.core.image_repository"
+  COMPUTE_POOL="OPENROUTESERVICE_APP_COMPUTE_POOL"
+  CARTO_EAI="ORS_CARTO_EAI"
+  SPEC_STAGE_NAME="OPENROUTESERVICE_APP.CORE.ORS_SPCS_STAGE"
+else
+  IMAGE_REPO_SQL_NAME="FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY"
+  COMPUTE_POOL="FLEET_APPS_COMPUTE_POOL"
+  CARTO_EAI="FLEET_APP_CARTO_EAI"
+  SPEC_STAGE_NAME="FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE"
+  if [ "${SKIP_INFRA:-0}" != "1" ]; then
     note "  self-provisioning FLEET-owned infra (references/infra.sql)"
     snow sql -c "$CONNECTION" -f "$REF/infra.sql" >/tmp/ifa_infra.log 2>&1 \
       || { echo "ERROR: infra provisioning failed"; tail -30 /tmp/ifa_infra.log; step "1 infra" FAILED; exit 1; }
-    IMAGE_REPO_SQL_NAME="FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY"
-    COMPUTE_POOL="FLEET_APPS_COMPUTE_POOL"
-    CARTO_EAI="FLEET_APP_CARTO_EAI"
-    SPEC_STAGE_NAME="FLEET_INTELLIGENCE.CORE.FLEET_SPEC_STAGE"
+  else
+    note "  SKIP_INFRA=1 -> not provisioning; assuming FLEET-owned infra already exists"
   fi
-  note "  infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI stage=$SPEC_STAGE_NAME"
-  step "1 infra" OK
-else
-  step "1 infra" SKIPPED
 fi
+note "  infra: repo=$IMAGE_REPO_SQL_NAME pool=$COMPUTE_POOL eai=$CARTO_EAI stage=$SPEC_STAGE_NAME"
+step "1 infra" OK
 
 # ── 2. data (reuse rows else seed the agnostic SF/ebike preset) ──
 if [ "${SKIP_DATA:-0}" != "1" ]; then
@@ -121,21 +141,31 @@ if [ "${SKIP_DATA:-0}" != "1" ]; then
       || note "  WARN: canonical loader reported errors (some engine-only sections may not apply); continuing"
     snow sql -c "$CONNECTION" -f "$SCRIPTS/seed_data.sql" >/tmp/ifa_purge.log 2>&1 || true
   fi
-  # Vehicle-profile catalog (DIM_VEHICLE_PROFILE / DIM_VEHICLE_DWELL_SLA) + the
-  # DIM_FLEET asset-column stamp the unified_fleet/dwell packs + scoped_contract
-  # need. SQL port of the admin-app Studio TS so a from-scratch install does not
-  # need the admin app to boot first. MUST run BEFORE projection_views.sql because
-  # it drops V_DIM_FLEET_CURRENT (SELECT f.*) to ALTER DIM_FLEET. Idempotent.
-  snow sql -c "$CONNECTION" -f "$SCRIPTS/vehicle_profile_catalog.sql" >/tmp/ifa_vpcatalog.log 2>&1 \
-    || note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"
-  # Agnostic V_*_CURRENT projection views (the packs bind to these). Authored here
-  # in SQL because the agnostic install does not run the admin-app boot (init.ts)
-  # before the pack step. Idempotent; safe whether seeding ran or data was reused.
-  snow sql -c "$CONNECTION" -f "$SCRIPTS/projection_views.sql" >/tmp/ifa_projviews.log 2>&1 \
-    || note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"
   step "2 data" OK
 else
   step "2 data" SKIPPED
+fi
+
+# ── 2.5 vehicle-profile catalog + projection views (ALWAYS run; NOT gated by SKIP_DATA) ──
+# The packs depend on the DIM_FLEET asset-column stamp (DIM_VEHICLE_PROFILE /
+# DIM_VEHICLE_DWELL_SLA + WEIGHT_TONS/HEIGHT_M/... on DIM_FLEET) and the agnostic
+# V_*_CURRENT projection views. These are decoupled from SKIP_DATA on purpose:
+# SKIP_DATA=1 is the "data already loaded, shorten the re-run" shortcut, but the
+# catalog/views still need (re)asserting against existing data. Gating them behind
+# SKIP_DATA previously left DIM_FLEET un-stamped, so the pack step failed creating
+# F_DIM_FLEET_SCOPED with "invalid identifier 'F.WEIGHT_TONS'". Idempotent and
+# best-effort (a WARN never aborts). vehicle_profile_catalog MUST run BEFORE
+# projection_views (it drops V_DIM_FLEET_CURRENT to ALTER DIM_FLEET). Use
+# SKIP_PROJECTIONS=1 only when you know both are already current.
+if [ "${SKIP_PROJECTIONS:-0}" != "1" ]; then
+  note "[2.5/8] vehicle-profile catalog + projection views (DIM_FLEET stamp; packs depend on these)..."
+  snow sql -c "$CONNECTION" -f "$SCRIPTS/vehicle_profile_catalog.sql" >/tmp/ifa_vpcatalog.log 2>&1 \
+    || note "  WARN: vehicle-profile catalog seed reported errors (see /tmp/ifa_vpcatalog.log)"
+  snow sql -c "$CONNECTION" -f "$SCRIPTS/projection_views.sql" >/tmp/ifa_projviews.log 2>&1 \
+    || note "  WARN: projection-view creation reported errors (see /tmp/ifa_projviews.log)"
+  step "2.5 projections" OK
+else
+  step "2.5 projections" SKIPPED
 fi
 
 # ── 3. engine detect/delegate, THEN the routing contract (owned) ────────
@@ -194,16 +224,9 @@ fi
 # ── 4. data-contract packs (ALL 7 agnostic packs, unconditional) ──
 if [ "${SKIP_PACKS:-0}" != "1" ]; then
   note "[4/8] installing agnostic FLEET_APP packs..."
-  # Pack setup.sql (and the neutral substrate) GRANT to the FLEET_APP_* roles. The
-  # FULL role binding (object grants + QUERY_DYNAMIC, which needs FLEET_APP.CORE) runs
-  # in step 6 AFTER packs, so just ensure the role names exist here (idempotent) to
-  # break the circular dependency (pack grants <-> role binding).
-  snow sql -c "$CONNECTION" -q "
-    CREATE ROLE IF NOT EXISTS FLEET_APP_USER;
-    CREATE ROLE IF NOT EXISTS FLEET_APP_OPS;
-    CREATE ROLE IF NOT EXISTS FLEET_APP_ADMIN;
-    CREATE ROLE IF NOT EXISTS FLEET_APP_DYNAMIC_READER;
-  " >/tmp/ifa_preroles.log 2>&1 || note "  WARN: role pre-create reported errors (see /tmp/ifa_preroles.log)"
+  # Pack setup.sql (and the neutral substrate) GRANT to the FLEET_APP_* roles,
+  # which are pre-created in step 0.5 (before step 3) so every GRANT target exists.
+  # The FULL role binding (object grants + QUERY_DYNAMIC) runs in step 6 after packs.
   python3 "$PACKS_INSTALL" --regenerate -c "$CONNECTION" >/tmp/ifa_packs.log 2>&1 \
     || { echo "ERROR: pack install failed"; tail -40 /tmp/ifa_packs.log; step "4 packs" FAILED; exit 1; }
   python3 "$PACKS_INSTALL" --probe -c "$CONNECTION" 2>/dev/null | tail -20 || true
@@ -264,6 +287,9 @@ fi
 SA_URL=""; ADMIN_URL=""
 if [ "${SKIP_APPS:-0}" != "1" ]; then
   note "[8/8] deploying FLEET_SA_APP + FLEET_ADMIN_APP..."
+  # Defensive: the infra step always resolves COMPUTE_POOL now, but guard anyway
+  # so a future regression fails loudly here instead of as an opaque unbound-var.
+  : "${COMPUTE_POOL:?COMPUTE_POOL is unset — the infra step (1/8) must resolve it before apps}"
   bash "$SCRIPTS/deploy_fleet_sa_app.sh" "$CONNECTION" \
     || { echo "ERROR: SA app deploy failed"; step "8 apps" FAILED; exit 1; }
   COMPUTE_POOL="$COMPUTE_POOL" bash "$SCRIPTS/deploy_fleet_admin_app.sh" "$CONNECTION" \
