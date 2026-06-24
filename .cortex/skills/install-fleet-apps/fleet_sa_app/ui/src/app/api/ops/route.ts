@@ -21,6 +21,7 @@ const DEFAULT_SCHEMA = 'FLEET_INTELLIGENCE.SYNAPSE_OPS';
 const DEFAULT_VERBS: Record<string, number> = {
   set_active_region: 1,
   set_active_context: 2,
+  activate_dataset: 1,
   service_control: 2,
   service_status: 1,
   service_inventory: 0,
