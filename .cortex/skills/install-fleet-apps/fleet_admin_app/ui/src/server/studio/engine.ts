@@ -43,6 +43,7 @@ export { probeRoutability } from './engine/routing';
 // region-scoped, JOB_ID-versioned SYNTHETIC_DATASETS.UNIFIED entity table.
 export { generateAnchors } from './engine/anchors';
 export { generateDemographics } from './engine/demographics';
+export { generateHazardZones } from './engine/hazard';
 
 interface VehicleDayResult {
   vehicleId: string;

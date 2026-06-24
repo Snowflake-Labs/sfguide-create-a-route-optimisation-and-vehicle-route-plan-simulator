@@ -807,7 +807,7 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics } = await import('./engine.js');
+      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones } = await import('./engine.js');
       const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
       const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
@@ -920,6 +920,16 @@ export async function startGeneration(
         } catch (e: any) {
           log('WARN', 'Studio', `DIM_AREA_DEMOGRAPHICS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Demographics generation failed: ${e.message?.slice(0, 150)}` });
+        }
+      }
+      if (config.generates_hazard) {
+        try {
+          const n = await generateHazardZones(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${n} hazard zones`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${n} hazard zones` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `FACT_HAZARD_ZONES generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Hazard generation failed: ${e.message?.slice(0, 150)}` });
         }
       }
 
