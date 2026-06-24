@@ -89,27 +89,7 @@
   },
   "hasWorkflows": false,
   "contextBar": [
-    {
-      "id": "region",
-      "type": "readonly",
-      "label": "Region",
-      "configColumn": "REGION",
-      "options": [
-        { "value": "SanFrancisco", "label": "San Francisco" }
-      ]
-    },
-    {
-      "id": "vehicle_type",
-      "type": "readonly",
-      "label": "Vehicle",
-      "configColumn": "VEHICLE_TYPE",
-      "options": [
-        { "value": "hgv", "label": "Heavy Goods Vehicle" },
-        { "value": "car", "label": "Car / Van" },
-        { "value": "cycling-regular", "label": "Cycle" },
-        { "value": "ebike", "label": "E-Bike" }
-      ]
-    },
+
     {
       "id": "dataset_id",
       "type": "dataset",
