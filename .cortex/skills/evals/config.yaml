@@ -16,7 +16,7 @@ exclude_skills:
   - backload-matching                  # legacy industry-vertical demo (excluded pack)
   - freight-exchange                   # legacy industry-vertical demo (excluded pack)
   - retail-catchment                   # legacy industry-vertical demo
-  - build-routing-solution             # RETIRED (Phase C tombstone; superseded by install-fleet-apps --with-engine)
+  - build-routing-solution             # RETIRED (Phase C tombstone; superseded by install-fleet-apps, engine on by default)
 
 scoring:
   quality_pass_threshold: 10  # out of 13

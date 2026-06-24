@@ -1,6 +1,6 @@
 ---
 name: install-fleet-apps
-description: "Primary one-command installer for the synapse-based, vehicle/industry-AGNOSTIC fleet analytics architecture on Snowflake: the FLEET_SA_APP consumer app, the FLEET_ADMIN_APP build console, the three role-scoped synapse MCP tool bundles, the neutral FLEET_APP data contract, roles, Cortex agents, and (optionally, via --with-engine) the live ORS/VROOM routing engine. Use when: install the fleet apps, deploy FLEET_SA_APP and FLEET_ADMIN_APP, set up the agnostic fleet analytics solution, install the synapse fleet stack, provision the routing engine. Self-owning and idempotent: detects-and-reuses-else-creates SPCS infra, seed data, and the ORS engine. Do NOT use for: changing routing maps/profiles (use routing-customization) or the legacy per-vehicle demo skills (fleet-intelligence-taxis, route-deviation, etc.). Triggers: install fleet apps, install-fleet-apps, deploy fleet sa app, deploy fleet admin app, install synapse fleet stack, set up agnostic fleet solution, provision routing engine, with-engine."
+description: "Primary one-command installer for the synapse-based, vehicle/industry-AGNOSTIC fleet analytics architecture on Snowflake: the FLEET_SA_APP consumer app, the FLEET_ADMIN_APP build console, the three role-scoped synapse MCP tool bundles, the neutral FLEET_APP data contract, roles, Cortex agents, and (by default) the live ORS/VROOM routing engine. Use when: install the fleet apps, deploy FLEET_SA_APP and FLEET_ADMIN_APP, set up the agnostic fleet analytics solution, install the synapse fleet stack, provision the routing engine. Self-owning and idempotent: detects-and-reuses-else-creates SPCS infra, seed data, and the ORS engine; pass --no-engine to skip the heavy engine build. Do NOT use for: changing routing maps/profiles (use routing-customization) or the legacy per-vehicle demo skills (fleet-intelligence-taxis, route-deviation, etc.). Triggers: install fleet apps, install-fleet-apps, deploy fleet sa app, deploy fleet admin app, install synapse fleet stack, set up agnostic fleet solution, provision routing engine, no-engine."
 depends_on:
   - routing-prerequisites
 metadata:
@@ -11,9 +11,9 @@ metadata:
 
 # Install Fleet Apps (primary agnostic installer)
 
-One command stands up the entire new-architecture analytics stack and is the **primary** installation path for it. It also **owns the live ORS/VROOM routing engine build** (Phase C): the optional `--with-engine` flag provisions the engine natively, so this skill is fully self-contained.
+One command stands up the entire new-architecture analytics stack and is the **primary** installation path for it. It also **owns the live ORS/VROOM routing engine build** (Phase C): the engine is provisioned natively **by default**, so this skill is fully self-contained. Pass `--no-engine` to skip the heavy engine build.
 
-This skill **owns** all of its artifacts (relocated here), so the stack installs and runs without any other skill. The analytics layer (dashboards, Cortex Analyst, agents) works with no engine; live routing verbs require the ORS engine, which `--with-engine` builds and provisions.
+This skill **owns** all of its artifacts (relocated here), so the stack installs and runs without any other skill. The analytics layer (dashboards, Cortex Analyst, agents) works with no engine; live routing verbs require the ORS engine, which the installer builds and provisions by default (skip with `--no-engine`).
 
 ## Scope: vehicle/industry-AGNOSTIC only
 
@@ -39,7 +39,7 @@ The installer always installs the **complete** agnostic set — there is no per-
 ## Prerequisites
 
 - Container runtime (Podman or Docker) running; Node.js >= 20 + npm; Python 3; Snowflake CLI (`snow`).
-  - The engine build (`--with-engine`) auto-detects **docker first** (a default 2 GB podman machine OOMs the ORS image build). Force a runtime with `CONTAINER_CMD=docker|podman`.
+  - The engine build (on by default) auto-detects **docker first** (a default 2 GB podman machine OOMs the ORS image build). Force a runtime with `CONTAINER_CMD=docker|podman`.
   - Install **crane** (`brew install crane`) for reliable SPCS image pushes — `docker push` to the SPCS registry intermittently hangs on the final manifest commit; `build_push` prefers crane when present (docker runtime). Disable with `USE_CRANE_PUSH=0`.
 - `export SNOWFLAKE_CLI_NO_UPDATE_CHECK=true`.
 - An active connection whose role can create databases, schemas, services, compute pools, image repositories, external access integrations, roles, and agents (see `## Required Privileges`).
@@ -63,23 +63,24 @@ The orchestrator runs these layers in order (detect-and-reuse-else-create throug
 7. **Roles** — applies `fleet_sa_app/app/role_binding.sql` (agnostic grants only).
 8. **Agents** — `CREATE OR REPLACE AGENT FLEET_AGENT` (consumer) + `FLEET_OPS_AGENT` (ops) from the trimmed specs.
 9. **Apps** — `scripts/deploy_fleet_sa_app.sh` and `scripts/deploy_fleet_admin_app.sh`; prints both endpoint URLs.
-10. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent **and `--with-engine` is set**, builds + provisions it natively via `scripts/provision_engine.sh`; otherwise verbs install inert. See `references/routing-engine.md`.
+10. **Routing engine** — probes `ROUTING_PLATFORM.CONTRACT.ROUTING_STATUS()` / `SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP`; binds verbs LIVE if the engine is present. If absent (and not `--no-engine`), builds + provisions it natively via `scripts/provision_engine.sh`; with `--no-engine` the verbs install inert. See `references/routing-engine.md`.
 
-## Live routing engine (`--with-engine`)
+## Live routing engine (default; skip with `--no-engine`)
 
-Live routing verbs (directions, isochrones, matrix, VRP optimization, find_poi, catchment) require the ORS/VROOM engine. The analytics stack installs and runs without it; pass `--with-engine` to build + provision it in the same run:
+Live routing verbs (directions, isochrones, matrix, VRP optimization, find_poi, catchment) require the ORS/VROOM engine. The analytics stack installs and runs without it; by default the installer builds + provisions the engine in the same run. To skip the heavy engine build (routing verbs install inert):
 
 ```bash
-bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection <connection> --with-engine
+bash .cortex/skills/install-fleet-apps/scripts/install_fleet_apps.sh --connection <connection> --no-engine
 ```
 
-This is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes), so it is off by default and skipped automatically when an engine is already present. `provision_engine.sh` ensures the `OPENROUTESERVICE_APP.CORE` infra, builds + pushes the 4 engine images (`references/build-images.md`), stages the map/config + service specs, loads SQL modules `01-08`/`15`, and lets module `03` bootstrap the default region. The engine keeps the `OPENROUTESERVICE_APP.CORE` namespace behind the `ROUTING_PLATFORM.CONTRACT` seam, and preserves the AUTO_SUSPEND_SECS, REBUILD_GRAPHS reuse, and per-region VROOM invariants (see `references/available-functions.md`, `references/snowflake-scripting-guidelines.md`, `references/snowflake-sql-gotchas.md`, `references/troubleshooting.md`).
+The engine build is HEAVY (builds 4 SPCS images + a region routing graph, tens of minutes) but runs by default and is skipped automatically when an engine is already present. `provision_engine.sh` ensures the `OPENROUTESERVICE_APP.CORE` infra, builds + pushes the 4 engine images (`references/build-images.md`), stages the map/config + service specs, loads SQL modules `01-08`/`15`, and lets module `03` bootstrap the default region. The engine keeps the `OPENROUTESERVICE_APP.CORE` namespace behind the `ROUTING_PLATFORM.CONTRACT` seam, and preserves the AUTO_SUSPEND_SECS, REBUILD_GRAPHS reuse, and per-region VROOM invariants (see `references/available-functions.md`, `references/snowflake-scripting-guidelines.md`, `references/snowflake-sql-gotchas.md`, `references/troubleshooting.md`).
 
 ## Configuration
 
 | Parameter | Default | Purpose |
 |---|---|---|
 | `--connection` | (required) | Snow CLI connection name |
+| `--no-engine` | (unset; engine on) | Skip the heavy ORS engine build (verbs install inert). Env equivalents: `NO_ENGINE=1` or `PROVISION_ENGINE=0`. `--with-engine` is accepted as a no-op (engine is the default). |
 | `IMAGE_REPO_SQL_NAME` | resolved (reuse `OPENROUTESERVICE_APP.core.image_repository` else `FLEET_INTELLIGENCE.CORE.IMAGE_REPOSITORY`) | SPCS image repo |
 | `COMPUTE_POOL` | resolved (`OPENROUTESERVICE_APP_COMPUTE_POOL` else `FLEET_APPS_COMPUTE_POOL`) | SPCS compute pool |
 | `CARTO_EAI` | resolved (`ORS_CARTO_EAI` else `FLEET_APP_CARTO_EAI`) | basemap tile egress |
@@ -131,7 +132,7 @@ The agnostic `FLEET_INTELLIGENCE.*` analytic objects the packs read are owned by
 - `scripts/projection_views.sql` — the dataset-scoped `SYNTHETIC_DATASETS.UNIFIED.V_*_CURRENT` views.
 - `scripts/analytic_layer.sql` (step 3.5) — `DWELL_ANALYSIS.CONFIG`, `ROUTE_DEVIATION` CONFIG + projection views + `TRIP_DEVIATION_ANALYSIS` (a plain VIEW), the `ROUTE_OPTIMIZATION.CONFIG` cost-column safety-net, and the Overture-sourced `CATCHMENT` tables.
 
-These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design); its legacy DWELL asset-velocity views are gated on `DWELL_ANALYSIS.DT_DWELL_ENRICHED` (absent on the agnostic install → skipped) and its `MARKETPLACE`/`BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. The legacy `build-routing-solution` Vite control app (also containing an `init.ts`) is slated for retirement once a clean-account `--with-engine` e2e confirms parity; there is no obligation to keep it in sync.
+These skill SQL files are the single source of truth for a fresh install. The new admin app's `fleet_admin_app/ui/src/server/lib/init.ts` is a secondary, idempotent runtime owner that overlaps only on the `V_*_CURRENT` projection views (kept consistent with `projection_views.sql` by design); its legacy DWELL asset-velocity views are gated on `DWELL_ANALYSIS.DT_DWELL_ENRICHED` (absent on the agnostic install → skipped) and its `MARKETPLACE`/`BACKLOAD` creations reference purged tables → best-effort skip, so init.ts never clobbers the agnostic analytic layer. The legacy `build-routing-solution` Vite control app (also containing an `init.ts`) is slated for retirement once a clean-account engine e2e confirms parity; there is no obligation to keep it in sync.
 
 ## References
 
@@ -139,7 +140,7 @@ These skill SQL files are the single source of truth for a fresh install. The ne
 - `references/infra.sql` — detect-and-reuse-else-create infra provisioning.
 - `references/seed-data.md` — agnostic seed-data probe + load path.
 - `references/synapse-bundles.md` — per-account materialize + deploy.
-- `references/routing-engine.md` — engine detection + native `--with-engine` provisioning.
+- `references/routing-engine.md` — engine detection + native provisioning (default; skip with `--no-engine`).
 - `references/build-images.md` — build + push the 4 ORS/VROOM engine images.
 - `references/available-functions.md` — engine SQL functions, profiles, service limits, matrix builders.
 - `references/snowflake-scripting-guidelines.md` — SQL Scripting rules for the engine modules.

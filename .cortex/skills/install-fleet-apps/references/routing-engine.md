@@ -20,12 +20,12 @@ SHOW SERVICES IN DATABASE OPENROUTESERVICE_APP;  -- expect ORS_SERVICE_* + ROUTI
 | Engine state | Result |
 |---|---|
 | Services present | Routing verbs are LIVE (directions, isochrones, optimization, matrix, find_poi, catchment). |
-| Absent, `--with-engine` set | Engine is built + provisioned natively (see below), then verbs go LIVE once `ORS_SERVICE_<region>` finishes building its graph. |
-| Absent, no flag | Routing verbs install but are INERT. Analytics dashboards + Cortex Analyst + agents are UNAFFECTED. |
+| Absent (default) | Engine is built + provisioned natively (see below), then verbs go LIVE once `ORS_SERVICE_<region>` finishes building its graph. |
+| Absent, `--no-engine` | Routing verbs install but are INERT. Analytics dashboards + Cortex Analyst + agents are UNAFFECTED. |
 
-## Native provisioning (`--with-engine`)
+## Native provisioning (default; skip with `--no-engine`)
 
-When the engine is absent and `--with-engine` (or `PROVISION_ENGINE=1`) is set,
+When the engine is absent (and `--no-engine` / `NO_ENGINE=1` / `PROVISION_ENGINE=0` is NOT set),
 layer 3 runs `scripts/provision_engine.sh <connection>`, which:
 
 1. Ensures `OPENROUTESERVICE_APP` infra (DB, `CORE` + `TRAVEL_MATRIX` schemas,
@@ -43,8 +43,9 @@ layer 3 runs `scripts/provision_engine.sh <connection>`, which:
 6. The tail of `03_region_management.sql` bootstraps the default region
    (SanFrancisco) via the per-region ORS + VROOM creation path.
 
-This is HEAVY (4 image builds + a region graph, tens of minutes). It is off by
-default and skipped automatically when an engine is already present. ARM-Mac
+This is HEAVY (4 image builds + a region graph, tens of minutes). It runs by
+default and is skipped automatically when an engine is already present; pass
+`--no-engine` to skip it entirely. ARM-Mac
 podman / stuck-push (`crane`) caveats are in `references/troubleshooting.md`.
 
 ### Invariants preserved verbatim (do not break in a move)
@@ -71,7 +72,7 @@ nothing else re-installs. Confirm health with
 | SA app + Admin console UI, dashboards, Cortex Analyst | Yes |
 | FLEET_APP data contract, packs, roles, agents, synapse MCP servers | Yes |
 | Routing contract seam (`ROUTING_PLATFORM.CONTRACT`) | Yes |
-| LIVE routing verbs (directions/isochrone/VRP/matrix) | Yes (`--with-engine`) |
+| LIVE routing verbs (directions/isochrone/VRP/matrix) | Yes (default; skip with `--no-engine`) |
 | Dynamic data generation (Data Studio) | Yes (FLEET_ADMIN_APP) |
 
 There is no external skill dependency for any of the above — `build-routing-solution`

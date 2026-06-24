@@ -66,8 +66,8 @@ No global build/lint step — each skill is independently deployable via its own
 
 | Skill | Category | Purpose |
 |-------|----------|---------|
-| `install-fleet-apps` | infrastructure | **PRIMARY** and sole installer for the synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents + (via `--with-engine`) the live ORS/VROOM routing engine. Self-owning: relocated artifacts, self-provisioned infra, static seed, and the engine build substrate (SQL modules + 4 engine images + build scripts). |
-| `build-routing-solution` | infrastructure (RETIRED) | Phase C tombstone. The ORS engine build was absorbed into `install-fleet-apps` (`--with-engine`). This folder only redirects there; its legacy Vite control app awaits deletion after a clean-account e2e. |
+| `install-fleet-apps` | infrastructure | **PRIMARY** and sole installer for the synapse-based, vehicle/industry-AGNOSTIC architecture: FLEET_SA_APP + FLEET_ADMIN_APP + synapse MCP bundles + FLEET_APP data contract + roles + agents + (by default; skip with `--no-engine`) the live ORS/VROOM routing engine. Self-owning: relocated artifacts, self-provisioned infra, static seed, and the engine build substrate (SQL modules + 4 engine images + build scripts). |
+| `build-routing-solution` | infrastructure (RETIRED) | Phase C tombstone. The ORS engine build was absorbed into `install-fleet-apps` (engine on by default). This folder only redirects there; its legacy Vite control app awaits deletion after a clean-account e2e. |
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
@@ -113,7 +113,7 @@ Key rules:
 - **App behavior fixes** (React/server) -> the source under `services/ors_control_app/` PLUS an image-version bump (`image-versions.env` + service YAML + `references/snowflake-scripting-guidelines.md`, enforced by `check_image_versions.sh`). NOT just a redeploy of an unchanged image.
 - **Config/pointer/seed fixes** -> seed them in the loader or the boot init (data-derived, not hardcoded), so a fresh install never depends on a demo skill or a restart to become correct.
 
-Before considering any fix done, reason through the fresh-install path (`install-fleet-apps` orchestrator layers 0-8, plus `--with-engine` for the routing engine): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
+Before considering any fix done, reason through the fresh-install path (`install-fleet-apps` orchestrator layers 0-8, with the routing engine built by default unless `--no-engine`): "does a brand-new deploy of this repo already include this fix without manual intervention?" If not, fix the source first, then (optionally) apply the same change to the live install. When both are needed, do the repo source edit BEFORE the live hotfix.
 
 ## Error Logging
 
@@ -173,7 +173,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ## Friction Logging
 
-**MANDATORY:** After every `install-fleet-apps` execution (especially `--with-engine`, regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
+**MANDATORY:** After every `install-fleet-apps` execution (which builds the engine by default, regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
 
 File name: `friction-log_{YYYY-MM-DD}_{HH-MM}.md`
 
@@ -226,7 +226,7 @@ If no friction was encountered, the log should still be created with "No frictio
 > `install-fleet-apps` (`references/build-images.md` + `scripts/provision_engine.sh`).
 > The block below covers only the legacy Vite `ors_control_app` UI (superseded by
 > `fleet_admin_app`); it still lives under `build-routing-solution/` and will be
-> deleted after a clean-account `--with-engine` e2e confirms parity.
+> deleted after a clean-account engine e2e confirms parity.
 
 When changing any source file (`src/`, `server/`, or config), rebuild and push the Docker image.
 The multi-stage `Dockerfile.runtime` compiles both the React frontend and the server automatically —
@@ -312,7 +312,7 @@ WHERE name = 'ors-control-app';
 
 ```mermaid
 graph TD
-    RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY + engine via --with-engine]
+    RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY + engine by default]
     IFA --> RC[routing-customization]
     IFA --> RO[route-optimization]
     IFA --> FIT[fleet-intelligence-taxis]
@@ -335,9 +335,9 @@ graph TD
  style RC fill:#9cf,stroke:#333
 ```
 
-**Legend:** Green = primary + sole installer (owns the analytics stack AND the ORS engine build via `--with-engine`). Blue = configuration/prerequisites. White = legacy demo/feature skills.
+**Legend:** Green = primary + sole installer (owns the analytics stack AND the ORS engine build, on by default; skip with `--no-engine`). Blue = configuration/prerequisites. White = legacy demo/feature skills.
 
-`install-fleet-apps` is the single infrastructure skill: it self-provisions infra/data, builds + provisions the live ORS engine (`--with-engine`), and owns the FLEET_APP data contract. `build-routing-solution` is retired (Phase C) — a tombstone redirecting here. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) now depend on `install-fleet-apps` and are NOT part of the agnostic installer.
+`install-fleet-apps` is the single infrastructure skill: it self-provisions infra/data, builds + provisions the live ORS engine by default (skip with `--no-engine`), and owns the FLEET_APP data contract. `build-routing-solution` is retired (Phase C) — a tombstone redirecting here. The legacy per-vehicle/vertical demo skills (taxis, food-delivery, retail-catchment, backload, freight-exchange) now depend on `install-fleet-apps` and are NOT part of the agnostic installer.
 
 ## Common Patterns
 

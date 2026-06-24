@@ -7,8 +7,8 @@
 # replacement for the retired build-routing-solution skill (Phase C).
 #
 # It is intentionally HEAVY (builds 4 SPCS images + a region routing graph, tens
-# of minutes), so install_fleet_apps.sh only calls it when --with-engine is set
-# AND the engine is absent.
+# of minutes), so install_fleet_apps.sh calls it by default (unless --no-engine)
+# AND only when the engine is absent.
 #
 # The engine keeps the OPENROUTESERVICE_APP.CORE runtime namespace (the
 # ROUTING_PLATFORM.PROVIDERS adapters abstract the DB name). Engine images are
