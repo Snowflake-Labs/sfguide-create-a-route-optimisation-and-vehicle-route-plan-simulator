@@ -1,7 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
-import { RoutingCodes, SUPPORTED_PROFILES } from '../codes.js';
+import { RoutingCodes, SUPPORTED_PROFILES, resolveProfile } from '../codes.js';
 
 export const optimize_routes = defineProc({
   name: 'optimize_routes',
@@ -25,7 +25,7 @@ export const optimize_routes = defineProc({
     profile: t
       .string({ max: 40 })
       .nullable()
-      .describe('Routing profile: driving-car, driving-hgv, cycling-regular, or foot-walking. Defaults to the active vehicle profile when null.'),
+      .describe('Routing profile or vehicle type: driving-car / car, driving-hgv / hgv, or ebike (cycling). Defaults to the active vehicle profile when null.'),
     region: t
       .string({ max: 80 })
       .nullable()
@@ -42,11 +42,15 @@ export const optimize_routes = defineProc({
         `num_vehicles must be a positive whole number; got ${args.num_vehicles}.`,
       );
     }
-    // 2. Profile, when supplied, must be a supported ORS profile (zero-SQL guard).
-    if (args.profile != null && !SUPPORTED_PROFILES.includes(args.profile as (typeof SUPPORTED_PROFILES)[number])) {
+    // 2. Profile, when supplied, must resolve to a built ORS profile (zero-SQL
+    //    guard). resolveProfile maps vehicle types / cycling variants (ebike,
+    //    cycling-regular) to the built cycling-electric; only a genuinely unknown
+    //    value fails here.
+    const resolved = resolveProfile(args.profile);
+    if (resolved != null && !SUPPORTED_PROFILES.includes(resolved as (typeof SUPPORTED_PROFILES)[number])) {
       ctx.fail(
         RoutingCodes.UNSUPPORTED_PROFILE,
-        `profile '${args.profile}' is not supported. Use one of: ${SUPPORTED_PROFILES.join(', ')} (or null for the active vehicle profile).`,
+        `profile '${args.profile}' is not supported. Use one of: ${SUPPORTED_PROFILES.join(', ')}, a vehicle type (car, hgv, ebike), or null for the active vehicle profile.`,
       );
     }
     // 3. Region, when supplied, must be a provisioned region. Checked through the
@@ -71,7 +75,7 @@ export const optimize_routes = defineProc({
       args.delivery_locations,
       args.depot_location,
       args.num_vehicles,
-      args.profile,
+      resolveProfile(args.profile),
       args.region,
     ]);
     return { result };

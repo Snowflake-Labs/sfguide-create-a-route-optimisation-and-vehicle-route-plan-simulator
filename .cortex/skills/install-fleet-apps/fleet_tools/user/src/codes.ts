@@ -39,13 +39,59 @@ export const OVERTURE_PLACES_GROUP_BY = ['list', 'city', 'category'] as const;
 /** Supported group_by modes for query_overture_addresses. */
 export const OVERTURE_ADDRESSES_GROUP_BY = ['list', 'city'] as const;
 
-/** Supported ORS routing profiles. Used by verb validate hooks. */
+/**
+ * Supported ORS routing profiles — the graphs the engine actually builds.
+ * Used by verb validate hooks AFTER the profile is resolved via resolveProfile().
+ * The default region builds driving-car, driving-hgv, and cycling-electric only;
+ * cycling-regular / foot-walking are NOT built, so they are mapped to a built
+ * profile by resolveProfile() rather than listed here (an unmapped value that is
+ * not in this list is rejected with UNSUPPORTED_PROFILE instead of erroring at
+ * the engine with an opaque ORS 2003 "profile unknown").
+ */
 export const SUPPORTED_PROFILES = [
   'driving-car',
   'driving-hgv',
-  'cycling-regular',
-  'foot-walking',
+  'cycling-electric',
 ] as const;
+
+/**
+ * Maps a vehicle_type (from DIM_DATASETS / the context bar) OR a loosely-named
+ * routing profile to the ORS profile the engine actually builds. The engine
+ * builds 'cycling-electric' as its only cycling graph, so every cycling variant
+ * and the 'ebike' vehicle_type resolve to it — otherwise a cycle/ebike request
+ * either errored (ORS 2003 for the unbuilt cycling-regular) or silently routed
+ * as driving-car (wrong travel mode). Mirrors the SQL whitelist in
+ * routing-agent/references/deploy-agent.sql and DIM_VEHICLE_PROFILE.
+ */
+export const VEHICLE_TYPE_TO_PROFILE: Record<string, string> = {
+  car: 'driving-car',
+  van: 'driving-car',
+  'driving-car': 'driving-car',
+  hgv: 'driving-hgv',
+  truck: 'driving-hgv',
+  'driving-hgv': 'driving-hgv',
+  ebike: 'cycling-electric',
+  'e-bike': 'cycling-electric',
+  bike: 'cycling-electric',
+  bicycle: 'cycling-electric',
+  cycle: 'cycling-electric',
+  'cycling-regular': 'cycling-electric',
+  'cycling-mountain': 'cycling-electric',
+  'cycling-road': 'cycling-electric',
+  'cycling-electric': 'cycling-electric',
+};
+
+/**
+ * Resolve a caller-supplied profile/vehicle string to a built ORS profile.
+ * Returns null unchanged (the TOOL_* proc then applies the active-context
+ * default). Unknown values are passed through so the verb's validate hook can
+ * reject them with a typed UNSUPPORTED_PROFILE rather than masking a typo.
+ */
+export function resolveProfile(profile: string | null | undefined): string | null {
+  if (profile === null || profile === undefined || profile === '') return null;
+  const key = String(profile).trim().toLowerCase();
+  return VEHICLE_TYPE_TO_PROFILE[key] ?? profile;
+}
 
 // Error codes for the render_view verb (agent-emitted dynamic pages).
 export const RenderCodes = {

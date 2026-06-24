@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { resolveProfile } from '../codes.js';
 
 export const catchment = defineProc({
   name: 'catchment',
@@ -18,7 +19,7 @@ export const catchment = defineProc({
     profile: t
       .string({ max: 40 })
       .nullable()
-      .describe('Routing profile: driving-car, driving-hgv, cycling-regular, or foot-walking. Defaults to the active vehicle profile when null.'),
+      .describe('Routing profile or vehicle type: driving-car / car, driving-hgv / hgv, or ebike (cycling). Defaults to the active vehicle profile when null.'),
   },
   returns: {
     result: t.object({}).describe('Catchment response: catchment polygon and reachable metrics.'),
@@ -27,7 +28,7 @@ export const catchment = defineProc({
     const result = await callTool(ctx.conn, Procs.catchment, [
       args.site_description,
       args.range_minutes,
-      args.profile,
+      resolveProfile(args.profile),
     ]);
     return { result };
   },

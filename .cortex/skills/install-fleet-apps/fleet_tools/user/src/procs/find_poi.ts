@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { resolveProfile } from '../codes.js';
 
 export const find_poi = defineProc({
   name: 'find_poi',
@@ -21,7 +22,7 @@ export const find_poi = defineProc({
     profile: t
       .string({ max: 40 })
       .nullable()
-      .describe('Routing profile: driving-car, driving-hgv, cycling-regular, or foot-walking. Defaults to the active vehicle profile when null.'),
+      .describe('Routing profile or vehicle type: driving-car / car, driving-hgv / hgv, or ebike (cycling). Defaults to the active vehicle profile when null.'),
     max_results: t
       .number()
       .nullable()
@@ -35,7 +36,7 @@ export const find_poi = defineProc({
       args.location_description,
       args.range_minutes,
       args.poi_category,
-      args.profile,
+      resolveProfile(args.profile),
       args.max_results,
     ]);
     return { result };

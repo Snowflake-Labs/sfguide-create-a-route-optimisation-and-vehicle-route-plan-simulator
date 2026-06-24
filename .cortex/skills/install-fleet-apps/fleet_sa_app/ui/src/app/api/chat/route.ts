@@ -50,9 +50,27 @@ export async function POST(request: NextRequest) {
   // the user does not name a place; the analytics views are already scoped, but
   // this lets the agent name its region and pick the right routing defaults.
   const activeCtx = (panelContext?.context || {}) as Record<string, unknown>;
+  // Map the active vehicle_type to the ORS routing profile the engine actually
+  // builds, so the agent passes a profile that routes instead of one the engine
+  // rejects. The engine builds 'cycling-electric' as its only cycling graph, so
+  // ebike / any cycling vehicle resolve to it (raw 'ebike' would silently route
+  // as a car; 'cycling-regular' would error with ORS 2003). Mirrors
+  // fleet_tools/user/src/codes.ts VEHICLE_TYPE_TO_PROFILE.
+  const vehicleToProfile: Record<string, string> = {
+    car: 'driving-car', van: 'driving-car', 'driving-car': 'driving-car',
+    hgv: 'driving-hgv', truck: 'driving-hgv', 'driving-hgv': 'driving-hgv',
+    ebike: 'cycling-electric', 'e-bike': 'cycling-electric', bike: 'cycling-electric',
+    bicycle: 'cycling-electric', cycle: 'cycling-electric',
+    'cycling-regular': 'cycling-electric', 'cycling-mountain': 'cycling-electric',
+    'cycling-road': 'cycling-electric', 'cycling-electric': 'cycling-electric',
+  };
   const ctxBits: string[] = [];
   if (activeCtx.region) ctxBits.push(`region = ${activeCtx.region}`);
-  if (activeCtx.vehicle_type) ctxBits.push(`vehicle type = ${activeCtx.vehicle_type}`);
+  if (activeCtx.vehicle_type) {
+    const vt = String(activeCtx.vehicle_type).trim().toLowerCase();
+    const orsProfile = vehicleToProfile[vt] ?? 'driving-car';
+    ctxBits.push(`vehicle type = ${activeCtx.vehicle_type} (routing profile: ${orsProfile})`);
+  }
   if (activeCtx.dataset_id) ctxBits.push(`dataset = ${activeCtx.dataset_id}`);
   if (activeCtx.date_range_start || activeCtx.date_range_end) {
     ctxBits.push(`date range = ${activeCtx.date_range_start ?? 'any'}..${activeCtx.date_range_end ?? 'any'}`);
@@ -61,7 +79,7 @@ export async function POST(request: NextRequest) {
   if (ctxBits.length > 0) {
     activeContextPrefix =
       `[Active context: ${ctxBits.join('; ')}. ` +
-      `When a routing tool needs a region or profile and the user did not name one, default to this region and vehicle. ` +
+      `When a routing tool needs a region or profile and the user did not name one, default to this region and pass the routing profile shown above (or null to use the active vehicle). ` +
       `State the active region when it is relevant to your answer. Do not override an explicit place the user names.]\n\n`;
   }
 

@@ -1,6 +1,7 @@
 import { defineProc, t } from '@snowflake/synapse';
 import { Procs } from '../catalog.js';
 import { callTool } from '../helpers.js';
+import { resolveProfile } from '../codes.js';
 
 export const get_directions = defineProc({
   name: 'get_directions',
@@ -15,7 +16,7 @@ export const get_directions = defineProc({
     profile: t
       .string({ max: 40 })
       .nullable()
-      .describe('Routing profile: driving-car, driving-hgv, cycling-regular, or foot-walking. Defaults to the active vehicle profile when null.'),
+      .describe('Routing profile or vehicle type: driving-car / car, driving-hgv / hgv, or ebike (cycling). Defaults to the active vehicle profile when null.'),
   },
   returns: {
     result: t.object({}).describe('Routing service response: route geometry, distance, duration, and any waypoints.'),
@@ -23,7 +24,7 @@ export const get_directions = defineProc({
   execute: async (args, ctx) => {
     const result = await callTool(ctx.conn, Procs.directions, [
       args.locations_description,
-      args.profile,
+      resolveProfile(args.profile),
     ]);
     return { result };
   },

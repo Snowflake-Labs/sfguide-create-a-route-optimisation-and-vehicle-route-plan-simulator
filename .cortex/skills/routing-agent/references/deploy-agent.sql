@@ -49,10 +49,16 @@ BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
         WHEN 'DRIVING-HGV' THEN 'driving-hgv'
-        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
-        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
-        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        -- The engine builds 'cycling-electric' as the only cycling graph, so map
+        -- every cycling variant AND the 'ebike' vehicle_type to it. Without this a
+        -- cycle/ebike request either errored (ORS 2003 'profile unknown' for the
+        -- unbuilt cycling-regular/mountain/road) or silently fell through to
+        -- driving-car (wrong travel mode). Keeps cycle/ebike routing as a bike.
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
         WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
         WHEN 'FOOT-WALKING' THEN 'foot-walking'
         WHEN 'FOOT-HIKING' THEN 'foot-hiking'
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
@@ -210,10 +216,16 @@ BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
         WHEN 'DRIVING-HGV' THEN 'driving-hgv'
-        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
-        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
-        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        -- The engine builds 'cycling-electric' as the only cycling graph, so map
+        -- every cycling variant AND the 'ebike' vehicle_type to it. Without this a
+        -- cycle/ebike request either errored (ORS 2003 'profile unknown' for the
+        -- unbuilt cycling-regular/mountain/road) or silently fell through to
+        -- driving-car (wrong travel mode). Keeps cycle/ebike routing as a bike.
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
         WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
         WHEN 'FOOT-WALKING' THEN 'foot-walking'
         WHEN 'FOOT-HIKING' THEN 'foot-hiking'
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
@@ -365,10 +377,16 @@ BEGIN
     v_safe_profile := CASE UPPER(PROFILE)
         WHEN 'DRIVING-CAR' THEN 'driving-car'
         WHEN 'DRIVING-HGV' THEN 'driving-hgv'
-        WHEN 'CYCLING-REGULAR' THEN 'cycling-regular'
-        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-mountain'
-        WHEN 'CYCLING-ROAD' THEN 'cycling-road'
+        -- The engine builds 'cycling-electric' as the only cycling graph, so map
+        -- every cycling variant AND the 'ebike' vehicle_type to it. Without this a
+        -- cycle/ebike request either errored (ORS 2003 'profile unknown' for the
+        -- unbuilt cycling-regular/mountain/road) or silently fell through to
+        -- driving-car (wrong travel mode). Keeps cycle/ebike routing as a bike.
+        WHEN 'CYCLING-REGULAR' THEN 'cycling-electric'
+        WHEN 'CYCLING-MOUNTAIN' THEN 'cycling-electric'
+        WHEN 'CYCLING-ROAD' THEN 'cycling-electric'
         WHEN 'CYCLING-ELECTRIC' THEN 'cycling-electric'
+        WHEN 'EBIKE' THEN 'cycling-electric'
         WHEN 'FOOT-WALKING' THEN 'foot-walking'
         WHEN 'FOOT-HIKING' THEN 'foot-hiking'
         WHEN 'WHEELCHAIR' THEN 'wheelchair'
