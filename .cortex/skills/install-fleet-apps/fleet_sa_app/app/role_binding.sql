@@ -48,6 +48,16 @@ GRANT SELECT ON ALL VIEWS  IN SCHEMA FLEET_INTELLIGENCE.CATCHMENT TO ROLE FLEET_
 GRANT SELECT ON ALL VIEWS  IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_APP_USER;
 GRANT SELECT ON ALL TABLES IN SCHEMA SYNTHETIC_DATASETS.UNIFIED TO ROLE FLEET_APP_USER;
 
+-- Overture Maps marketplace shares. The consumer's Cortex Analyst tool
+-- (query_overture_global) reads the vendor Places semantic view
+-- OVERTURE_MAPS__PLACES.CARTO.OVERTUREMAPS_PLACES_SEMANTIC_VIEW in the agent's
+-- role context, so FLEET_APP_USER needs imported privileges on the share. The
+-- deterministic Overture verbs (query_overture_places / query_overture_addresses)
+-- run owner's-rights and do NOT depend on these grants. Best-effort: the shares
+-- are only present when the analytic-layer catchment step acquired them.
+GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__PLACES TO ROLE FLEET_APP_USER;
+GRANT IMPORTED PRIVILEGES ON DATABASE OVERTURE_MAPS__ADDRESSES TO ROLE FLEET_APP_USER;
+
 -- Consumer agent + routing MCP + routing verbs (Step 4B: relocated to the
 -- Routing Platform schema OPENROUTESERVICE_APP.ROUTING; ROUTING_MCP replaces the
 -- retired FLEET_USER_MCP).
