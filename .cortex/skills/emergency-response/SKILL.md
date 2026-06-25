@@ -76,6 +76,21 @@ OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS          (participant address pool)
 
 Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) ratings; wildfire = `WFIR_RISKR`. Ratings map to ordinal 1–5 (`Very Low`..`Very High`); `No Rating`/`Insufficient Data`/`Not Applicable` → 0.
 
+> **Relationship to Data Studio universal generation.** The fleet stack now has a
+> region-scoped hazard primitive — `SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES`
+> (FEMA NRI × Overture Divisions county polygons, surfaced via
+> `V_FACT_HAZARD_ZONES_CURRENT`) — and a location-anchor primitive
+> (`V_DIM_ANCHORS_CURRENT`, `ANCHOR_TYPE='HEALTH_FACILITY'`). Emergency Response
+> intentionally **retains** its own `V_ZIP_RISK` and curated `CARECONNECT_CENTERS`
+> because it has two requirements the universal tables do not yet meet:
+> (1) **ZIP-level** risk for the ZIP choropleth (FACT_HAZARD_ZONES is county-level),
+> and (2) **multi-state** scope (CA/CO/PA at once; the universal tables hold a
+> single active region) with **curated, named** PACE centers. Migrating this demo
+> onto the universal tables requires per-state generation + a ZIP-level hazard
+> rollup, and is tracked as a future enhancement; until then `V_ZIP_RISK` +
+> `CARECONNECT_CENTERS` remain the source of truth here by design.
+
+
 ## Workflow
 
 ### Step 1 — Deploy the SQL pipeline

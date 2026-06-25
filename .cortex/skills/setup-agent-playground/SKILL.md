@@ -19,9 +19,22 @@ metadata:
 > and routable-filtered) and read the active region from
 > `FLEET_INTELLIGENCE.CATCHMENT.CONFIG`. They **no longer read the static `DEMO_*`
 > tables**. A fresh `install-fleet-apps` already uploads `agent-demos.json` (step
-> 4.6), so this skill is needed **only** to re-seed the legacy static `DEMO_*`
-> dataset for demos that still expect it, or to re-upload `agent-demos.json`
-> standalone. `references/deploy-demo-data.sql` is retained for that purpose.
+> 4.6), so this skill is needed **only** to re-upload `agent-demos.json` standalone.
+>
+> **Retired (universal generation):** The static `DEMO_*` tables are fully
+> superseded and should NOT be seeded for new deployments. Their content is now
+> produced, region-scoped and config-driven, by Data Studio's universal-generation
+> engines (Overture + free Marketplace) and read via `V_*_CURRENT` projection views:
+>
+> | Legacy static table | Universal-generation replacement |
+> |---|---|
+> | `DEMO_KEY_SITES`, `DEMO_DELIVERY_STOPS`, `DEMO_DEPOT` | `SYNTHETIC_DATASETS.UNIFIED.V_DIM_ANCHORS_CURRENT` (`ANCHOR_TYPE` = KEY_SITE / DELIVERY_STOP / DEPOT) |
+> | `DEMO_AREA_DEMOGRAPHICS` | `SYNTHETIC_DATASETS.UNIFIED.V_DIM_AREA_DEMOGRAPHICS_CURRENT` (SafeGraph Open Census) |
+> | `DEMO_DEMAND_CATALOG` | `SYNTHETIC_DATASETS.UNIFIED.V_DIM_DEMAND_CATALOG_CURRENT` (neutral category tiers) |
+>
+> `references/deploy-demo-data.sql` is retained only for legacy standalone demos
+> that still hard-reference `DEMO_*`; it is not part of the `install-fleet-apps`
+> path and is slated for deletion once no demo references it.
 
 Deploys the industry-agnostic SF catchment/delivery/network demo data and uploads the
 Agent Playground scenario config (`agent-demos.json`) to the ORS stage. After
