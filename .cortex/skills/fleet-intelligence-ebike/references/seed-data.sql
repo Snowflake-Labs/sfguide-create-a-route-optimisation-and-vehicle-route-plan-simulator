@@ -1,5 +1,5 @@
 /*
- * seed-data.sql — Fleet Intelligence Food Delivery
+ * seed-data.sql — Fleet Intelligence E-Bike Fleet
  * Creates projection views over SYNTHETIC_DATASETS.UNIFIED tables.
  * Source data is loaded by build-routing-solution Step 8 (datasets/ seed).
  * No S3 external stages — all data comes from UNIFIED.

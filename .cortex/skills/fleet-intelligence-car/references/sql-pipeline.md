@@ -1,4 +1,4 @@
-# SQL Pipeline — Fleet Intelligence Taxis
+# SQL Pipeline — Fleet Intelligence Car Fleet
 
 All SQL below must be executed **one statement per `snowflake_sql_execute` call** with fully qualified object names. Never use `SET` session variables — substitute literal values directly.
 

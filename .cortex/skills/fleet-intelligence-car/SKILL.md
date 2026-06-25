@@ -1,6 +1,6 @@
 ---
 name: fleet-intelligence-car
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-ebike), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
+description: "Generate realistic vehicle/driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying the fleet dashboard. Do NOT use for: e-bike fleet simulation (use fleet-intelligence-ebike), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard, car fleet simulation."
 depends_on:
   - install-fleet-apps
   - routing-customization
@@ -12,7 +12,7 @@ metadata:
 
 # Generate Driver Locations & Deploy Fleet Intelligence Dashboard
 
-Generates realistic taxi driver location data using Overture Maps Places/Addresses, OpenRouteService Native App routing, route interpolation, and configurable location/fleet size. Also provides Data Studio projection views that read from `SYNTHETIC_DATASETS.UNIFIED` filtered by CONFIG table (vehicle type + region), making it compatible with any synthetic dataset.
+Generates realistic vehicle/driver location data using Overture Maps Places/Addresses, OpenRouteService Native App routing, route interpolation, and configurable location/fleet size. Also provides Data Studio projection views that read from `SYNTHETIC_DATASETS.UNIFIED` filtered by CONFIG table (vehicle type + region), making it compatible with any synthetic dataset.
 
 ---
 
@@ -28,7 +28,7 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `LOCATION` | New York | City/region for the simulation |
-| `NUM_DRIVERS` | 80 | Total number of taxi drivers |
+| `NUM_DRIVERS` | 80 | Total number of drivers |
 | `NUM_DAYS` | 1 | Number of days to simulate |
 | `START_DATE` | 2015-06-24 | First day of simulation |
 | `WAREHOUSE_SIZE` | MEDIUM | Warehouse size for data generation |
@@ -106,7 +106,7 @@ These projection views are now dataset-scoped (`V_FACT_TRIPS_CURRENT`, `V_FACT_V
 SELECT COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR.TRIP_SUMMARY;
 ```
 
-> **Note:** Seed data uses `vehicle_type=ebike` (San Francisco E-Bike Couriers). The CONFIG table is set to `ebike`/`SanFrancisco` accordingly. To see realistic taxi data, generate a new dataset via Data Studio with a taxi/driving-car profile.
+> **Note:** Seed data uses `vehicle_type=ebike` (San Francisco e-bike fleet). The CONFIG table is set to `ebike`/`SanFrancisco` accordingly. To see car-fleet data, generate a new dataset via Data Studio with a car/driving-car profile.
 
 ### Create views
 
@@ -257,21 +257,21 @@ The React Demo Dashboard pages query these exact tables and columns. If the pipe
 ## Examples
 
 ### Example 1: Quick deploy with seed data
-User says: "Set up the taxi fleet dashboard"
+User says: "Set up the car fleet dashboard"
 Actions:
 1. Run `references/seed-data.sql` to create projection views over UNIFIED tables
 2. Verify TRIP_SUMMARY view returns rows
-Result: Fleet dashboard shows San Francisco e-bike courier data via projection views (~2 min)
+Result: Fleet dashboard shows San Francisco e-bike fleet data via projection views (~2 min)
 
 ### Example 2: Full generation for New York
-User says: "Generate taxi data for New York with 80 drivers"
+User says: "Generate car-fleet data for New York with 80 drivers"
 Actions:
 1. Verify ORS is configured for New York (Step 2)
 2. Create database/schema (Step 3), install Overture Maps (Step 3b)
 3. Create base locations from Overture POIs (Step 4), drivers (Step 5), trips (Step 6)
 4. Generate ORS routes (Step 7), interpolate locations (Step 8)
 5. Create analytics views (Step 9)
-Result: 80 taxi drivers with ~18,000 realistic GPS points across New York (~8 min)
+Result: 80 drivers with ~18,000 realistic GPS points across New York (~8 min)
 
 ## Troubleshooting
 

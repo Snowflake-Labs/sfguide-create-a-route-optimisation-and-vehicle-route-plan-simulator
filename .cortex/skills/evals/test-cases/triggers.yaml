@@ -107,20 +107,20 @@ fleet-intelligence-car:
     - "create driver data"
     - "setup fleet data"
     - "fleet intelligence dashboard"
-    - "taxi fleet simulation"
+    - "car fleet simulation"
   should_not_trigger:
-    - "food delivery simulation"
+    - "e-bike fleet simulation"
     - "route deviation analysis"
     - "route optimization demo"
 
 fleet-intelligence-ebike:
   should_trigger:
-    - "generate courier locations"
-    - "create delivery data"
-    - "setup food delivery fleet"
+    - "generate e-bike locations"
+    - "setup e-bike fleet"
+    - "e-bike fleet intelligence"
     - "deploy app"
   should_not_trigger:
-    - "taxi fleet simulation"
+    - "car fleet simulation"
     - "route deviation analysis"
     - "route optimization demo"
 
@@ -133,8 +133,8 @@ dwell-analysis:
     - "H3 heatmap"
   should_not_trigger:
     - "route deviation analysis"
-    - "food delivery fleet"
-    - "taxi fleet simulation"
+    - "e-bike fleet"
+    - "car fleet simulation"
 
 
 routing-agent:

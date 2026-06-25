@@ -1,10 +1,10 @@
 -- =============================================================================
--- Food Delivery Projection Views - Complete SQL Pipeline
+-- E-Bike Fleet Projection Views - Complete SQL Pipeline
 -- Target: FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE
 -- Source: SYNTHETIC_DATASETS.UNIFIED (Data Studio output)
 -- =============================================================================
 -- This file creates all views needed by the React ORS Control App
--- (Fleet Delivery page: FleetMap + CatchmentPanel).
+-- (fleet page: FleetMap + CatchmentPanel).
 --
 -- Pattern follows dwell-analysis: CONFIG table filters UNIFIED by vehicle type + region.
 -- =============================================================================
