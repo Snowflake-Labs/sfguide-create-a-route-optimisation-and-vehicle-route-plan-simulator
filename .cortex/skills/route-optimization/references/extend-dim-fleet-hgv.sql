@@ -123,4 +123,4 @@ SELECT
   COUNT_IF(HAZMAT = TRUE)                                                  AS HAZMAT_CNT,
   ROUND(AVG(WEIGHT_TONS), 2)                                               AS AVG_WEIGHT
 FROM FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.VW_FLEET_HGV_PROFILE
-WHERE OPERATING_MODE = 'trucking';
+WHERE OPERATING_MODE = 'regional_hgv';

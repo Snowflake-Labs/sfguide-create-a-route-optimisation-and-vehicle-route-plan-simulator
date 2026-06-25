@@ -113,20 +113,20 @@ entities:
       SELECT
         f.VEHICLE_ID, f.REGION, f.VEHICLE_TYPE, f.ORS_PROFILE, f.OPERATING_MODE,
         CASE
-          WHEN f.OPERATING_MODE <> 'trucking' THEN NULL
+          WHEN f.OPERATING_MODE <> 'regional_hgv' THEN NULL
           WHEN f.BKT <  60 THEN 'DRY'
           WHEN f.BKT <  85 THEN 'REEFER'
           WHEN f.BKT <  97 THEN 'FLAT'
           ELSE 'TANKER'
         END AS VEHICLE_SUBTYPE,
-        CASE WHEN f.OPERATING_MODE = 'trucking' AND f.BKT = 99 THEN TRUE ELSE FALSE END AS HAZMAT,
-        CASE WHEN f.OPERATING_MODE = 'trucking'
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' AND f.BKT = 99 THEN TRUE ELSE FALSE END AS HAZMAT,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv'
              THEN ROUND(38 + (MOD(ABS(HASH(f.VEHICLE_ID || '_w')), 600) / 100.0), 2)
              ELSE 2.0 END AS WEIGHT_TONS,
-        CASE WHEN f.OPERATING_MODE = 'trucking' THEN 4.00 ELSE 2.00 END AS HEIGHT_M,
-        CASE WHEN f.OPERATING_MODE = 'trucking' THEN 16.50 ELSE 4.50 END AS LENGTH_M,
-        CASE WHEN f.OPERATING_MODE = 'trucking' THEN 2.55 ELSE 1.85 END AS WIDTH_M,
-        CASE WHEN f.OPERATING_MODE = 'trucking' THEN 11.50 ELSE 1.20 END AS AXLELOAD_T
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 4.00 ELSE 2.00 END AS HEIGHT_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 16.50 ELSE 4.50 END AS LENGTH_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 2.55 ELSE 1.85 END AS WIDTH_M,
+        CASE WHEN f.OPERATING_MODE = 'regional_hgv' THEN 11.50 ELSE 1.20 END AS AXLELOAD_T
       FROM filtered f
 
   # ---- Consumer-facing derived primitives -----------------------------------

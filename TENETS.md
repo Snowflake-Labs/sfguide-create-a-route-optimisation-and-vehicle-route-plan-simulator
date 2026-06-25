@@ -122,7 +122,7 @@ per-mode behavior is driven by declarative profile fields — `base_speed_kmh`, 
 row (or saving a preset), with zero generator code edits.** Mode-specific asset dims + evaluation
 thresholds come from the sibling `DIM_VEHICLE_PROFILE` / `DIM_VEHICLE_DWELL_SLA` catalog (see Tenet 1).
 
-**Anti-pattern.** Re-introducing `vt === 'hgv'` / `config.mode === 'food_delivery'` branches in
+**Anti-pattern.** Re-introducing `vt === 'hgv'` / `config.mode === 'urban_ebike'` branches in
 `server/studio/engine/*`, or hardcoding a generation knob in TypeScript instead of a profile field.
 
 **Accepted physical-schema decisions (intentionally NOT changed).** The few mode-specific physical

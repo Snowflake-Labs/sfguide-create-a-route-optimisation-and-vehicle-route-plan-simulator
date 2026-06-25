@@ -53,10 +53,19 @@ function seedMergeSql(): string {
       VALUES (src.TEMPLATE_ID, src.NAME, src.DESCRIPTION, src.VEHICLE_TYPE, src.ORS_PROFILE, src.REGION_SCALE, src.FEEDS, src.DEFAULT_CONFIG, TRUE)`;
 }
 
-// Idempotent: CREATE TABLE IF NOT EXISTS + MERGE upsert of the built-in rows.
-// Safe to call on every boot.
+// One-time cleanup of the legacy built-in template ids (renamed to the neutral
+// vehicle-class scheme: urban-car / urban-ebike / regional-hgv). On existing
+// accounts these stale rows would otherwise linger forever (the MERGE only
+// upserts the new ids and never deletes). User-added rows are never touched.
+const STALE_BUILTIN_CLEANUP = `DELETE FROM FLEET_INTELLIGENCE.CORE.GENERATION_PROFILE_CATALOG
+  WHERE IS_BUILTIN = TRUE
+    AND TEMPLATE_ID IN ('city-taxis', 'ebike-couriers', 'hgv-logistics')`;
+
+// Idempotent: CREATE TABLE IF NOT EXISTS + stale-builtin cleanup + MERGE upsert
+// of the built-in rows. Safe to call on every boot.
 export async function ensureGenerationProfileCatalog(snowSql: SnowSqlFn): Promise<void> {
   await snowSql(DDL, 'FLEET_INTELLIGENCE', 'CORE');
+  await snowSql(STALE_BUILTIN_CLEANUP, 'FLEET_INTELLIGENCE', 'CORE');
   await snowSql(seedMergeSql(), 'FLEET_INTELLIGENCE', 'CORE');
 }
 

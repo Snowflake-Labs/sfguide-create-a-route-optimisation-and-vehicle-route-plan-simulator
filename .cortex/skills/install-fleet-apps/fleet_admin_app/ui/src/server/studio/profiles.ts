@@ -14,15 +14,15 @@ export interface ProfileTemplate {
 
 export const PROFILE_TEMPLATES: ProfileTemplate[] = [
   {
-    id: 'city-taxis',
-    name: 'City Taxis',
-    description: 'Car-based taxi and rideshare fleet operating within a city',
+    id: 'urban-car',
+    name: 'Urban Car Fleet',
+    description: 'Car fleet operating within a city',
     vehicleType: 'car',
     orsProfile: 'driving-car',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-taxis', 'emergency-response'],
+    feeds: ['fleet-intelligence-car', 'emergency-response'],
     defaultConfig: {
-      mode: 'urban_mobility',
+      mode: 'urban_car',
       fleet: { num_vehicles: 50, weekday_operating_rate: 0.9, weekend_operating_rate: 0.6, trips_per_day: { min: 8, max: 20 } },
       shifts: [
         { name: 'Morning', start: 6, end: 14, proportion: 0.4 },
@@ -64,15 +64,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     },
   },
   {
-    id: 'ebike-couriers',
-    name: 'E-Bike Couriers',
-    description: 'Electric bike food delivery couriers in an urban area',
+    id: 'urban-ebike',
+    name: 'Urban E-Bike Fleet',
+    description: 'Electric-bike fleet operating within an urban area',
     vehicleType: 'ebike',
     orsProfile: 'cycling-electric',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-food-delivery', 'emergency-response'],
+    feeds: ['fleet-intelligence-ebike', 'emergency-response'],
     defaultConfig: {
-      mode: 'food_delivery',
+      mode: 'urban_ebike',
       fleet: { num_vehicles: 100, daily_operating_rate: 0.85, trips_per_day: { min: 15, max: 35 } },
       shifts: [
         { name: 'Lunch', start: 10, end: 15, proportion: 0.3 },
@@ -118,15 +118,15 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     },
   },
   {
-    id: 'hgv-logistics',
-    name: 'HGV Logistics',
+    id: 'regional-hgv',
+    name: 'Regional HGV Fleet',
     description: 'Heavy goods vehicles operating at regional or country scale',
     vehicleType: 'hgv',
     orsProfile: 'driving-hgv',
     regionScale: 'country',
     feeds: ['route-deviation', 'emergency-response'],
     defaultConfig: {
-      mode: 'trucking',
+      mode: 'regional_hgv',
       fleet: { num_vehicles: 30, weekday_operating_rate: 0.85, weekend_operating_rate: 0.35, trips_per_day: { min: 2, max: 4 } },
       shifts: [
         { name: 'Day', start: 5, end: 17, proportion: 0.7 },
@@ -251,7 +251,7 @@ export interface GenerationConfig {
   // `vt==='ebike'?15-22:vt==='hgv'?60-85:30-55` branch in engine/fleet.ts.
   base_speed_kmh?: { min: number; max: number };
   // Home-base POI location types for the fleet (null/empty => any POI). Replaces
-  // the `mode==='food_delivery'->RESTAURANT / 'trucking'->WAREHOUSE` branch.
+  // the `mode==='urban_ebike'->RESTAURANT / 'regional_hgv'->WAREHOUSE` branch.
   home_location_types?: string[];
   // Overture BASIC_CATEGORY -> LOCATION_TYPE mapping. Keys are target
   // LOCATION_TYPE values mapped to the category lists that resolve to them;

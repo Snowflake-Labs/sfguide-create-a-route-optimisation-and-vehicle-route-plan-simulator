@@ -12,7 +12,7 @@
 -- Values mirror the TS catalog: asset dims + thresholds from ASSET_SPEC; dwell SLA
 -- from BASELINE_DWELL_SLA scaled by DWELL_SCALE (hgv 1.0 / car 0.6 / ebike 0.5;
 -- IDLE never scaled; crit = max(warn+1, round(crit*f))). ebike ORS_PROFILE /
--- OPERATING_MODE reflect the seeded SF dataset (cycling-electric / food_delivery).
+-- OPERATING_MODE reflect the seeded SF dataset (cycling-electric / urban_ebike).
 -- Idempotent: CREATE IF NOT EXISTS + DELETE/INSERT.
 -- =============================================================================
 
@@ -56,12 +56,12 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA (
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE;
 INSERT INTO FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_PROFILE
   (VEHICLE_TYPE, ORS_PROFILE, OPERATING_MODE, WEIGHT_TONS, HEIGHT_M, LENGTH_M, WIDTH_M, AXLELOAD_T, HAZMAT_PROB, SUBTYPE_DIST, DEVIATION_DISTANCE_RATIO, TELEPORT_DISTANCE_M, SPEEDING_RATIO)
-SELECT 'hgv','driving-hgv','trucking',40.00,4.00,16.50,2.55,11.50,0.18,
+SELECT 'hgv','driving-hgv','regional_hgv',40.00,4.00,16.50,2.55,11.50,0.18,
        PARSE_JSON('[{"subtype":"DRY","pct":60},{"subtype":"REEFER","pct":25},{"subtype":"FLAT","pct":12},{"subtype":"TANKER","pct":3}]'),0.25,2500,1.05
 UNION ALL
-SELECT 'car','driving-car','urban_mobility',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000,1.08
+SELECT 'car','driving-car','urban_car',2.00,2.00,4.50,1.85,1.20,0,NULL,0.20,1000,1.08
 UNION ALL
-SELECT 'ebike','cycling-electric','food_delivery',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300,1.15;
+SELECT 'ebike','cycling-electric','urban_ebike',0.10,1.20,1.80,0.70,0.05,0,NULL,0.15,300,1.15;
 
 -- Dwell SLA (per vehicle_type x location_type; scaled per TS DWELL_SCALE).
 DELETE FROM FLEET_INTELLIGENCE.CORE.DIM_VEHICLE_DWELL_SLA;
