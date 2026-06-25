@@ -20,7 +20,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     vehicleType: 'car',
     orsProfile: 'driving-car',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-taxis'],
+    feeds: ['fleet-intelligence-taxis', 'emergency-response'],
     defaultConfig: {
       mode: 'urban_mobility',
       fleet: { num_vehicles: 50, weekday_operating_rate: 0.9, weekend_operating_rate: 0.6, trips_per_day: { min: 8, max: 20 } },
@@ -70,7 +70,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     vehicleType: 'ebike',
     orsProfile: 'cycling-electric',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-food-delivery'],
+    feeds: ['fleet-intelligence-food-delivery', 'emergency-response'],
     defaultConfig: {
       mode: 'food_delivery',
       fleet: { num_vehicles: 100, daily_operating_rate: 0.85, trips_per_day: { min: 15, max: 35 } },
@@ -100,6 +100,12 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
         _default: 'ADDRESS',
       },
       generates_freight: false,
+      // Universal-generation entities (Overture + free Marketplace) for the
+      // canonical seed preset. Emergency Response reads hazard + anchors.
+      generates_anchors: true,
+      generates_demographics: true,
+      generates_hazard: true,
+      generates_demand: true,
       ghost_trailer: {
         probability: 0.08,
         start_day_min: 0,
@@ -118,7 +124,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     vehicleType: 'hgv',
     orsProfile: 'driving-hgv',
     regionScale: 'country',
-    feeds: ['route-deviation'],
+    feeds: ['route-deviation', 'emergency-response'],
     defaultConfig: {
       mode: 'trucking',
       fleet: { num_vehicles: 30, weekday_operating_rate: 0.85, weekend_operating_rate: 0.35, trips_per_day: { min: 2, max: 4 } },
@@ -154,6 +160,10 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
         _default: 'DESTINATION',
       },
       generates_freight: true,
+      generates_anchors: true,
+      generates_demographics: true,
+      generates_hazard: true,
+      generates_demand: true,
       ghost_trailer: {
         probability: 0.10,
         start_day_min: 0,
