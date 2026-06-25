@@ -1,24 +1,71 @@
 ---
 name: emergency-response
-description: "Deploy the Emergency Response evacuation-planning demo: a single-page, multi-step React wizard that finds at-risk ZIP codes for a flood or wildfire scenario (FEMA National Risk Index), seeds CareConnect PACE centers plus synthetic participant addresses from Overture Maps inside drive-time isochrones, and solves a capacitated multi-depot evacuation VRP with ORS OPTIMIZATION. Use when: setting up emergency response demo, evacuation planning, hazard risk by ZIP, flood or wildfire exposure, CareConnect / PACE / paratransit evacuation routing, participant pickup optimization. Do NOT use for: standard fleet tracking (use fleet-intelligence-taxis), retail trade area analysis (use retail-catchment), route deviation analytics (use route-deviation), generic dispatch (use route-optimization). Triggers: emergency response, evacuation planning, hazard risk, wildfire risk, flood risk, ZIP risk, FEMA National Risk Index, NRI, evacuation routing, participant pickup, CareConnect, PACE."
+description: "Region-generic Emergency Response evacuation-planning demo: a multi-step wizard in the FLEET_SA_APP that, for WHATEVER US region is active, colors counties by FEMA National Risk Index (flood/wildfire), seeds routable participants inside the drive-time isochrone union of the region's health-anchor care centers, and solves a capacitated multi-depot evacuation VRP. Data is produced by Data Studio (generates_hazard + generates_anchors); the wizard binds to the FLEET_APP.EMERGENCY_RESPONSE contract + evac_seed/evac_solve verbs. Use when: setting up emergency response demo, evacuation planning, hazard risk, flood or wildfire exposure, paratransit evacuation routing, participant pickup optimization. Do NOT use for: standard fleet tracking (use fleet-intelligence-taxis), retail trade area analysis (use retail-catchment), route deviation analytics (use route-deviation), generic dispatch (use route-optimization). Triggers: emergency response, evacuation planning, hazard risk, wildfire risk, flood risk, FEMA National Risk Index, NRI, evacuation routing, participant pickup, evacuation VRP."
 depends_on:
   - install-fleet-apps
 metadata:
   author: Snowflake SIT-IS
-  version: 2.0.0
+  version: 3.0.0
   category: demo
 ---
 
-# Deploy Emergency Response (Evacuation Planning Wizard)
+# Emergency Response (region-generic evacuation wizard)
 
-A single-page, multi-step wizard inside the existing `ors_control_app`. The operator walks four steps on one map:
+**v3 — region-generic.** Emergency Response is now a normal Data Studio-generated
+use case that runs for **whatever US region/dataset is active**, not a hardcoded
+CA/CO/PA demo. The full 4-step wizard lives in the **FLEET_SA_APP** (view
+`emergency_response`), binds to the neutral `FLEET_APP.EMERGENCY_RESPONSE`
+contract for reads, and reaches routing through the `evac_seed` / `evac_solve`
+User verbs. No ZIP-code share, no CareConnect CSV, no `STATE_REGION_MAP`.
 
-1. **Find risky areas** — pick a disaster type (flood or wildfire) and a US state; the map colors every ZIP code by its FEMA National Risk Index level (1 Very Low … 5 Very High).
-2. **Seed data** — enter a number of patient locations and a drive time (minutes); the app places the state's CareConnect PACE centers, draws the union of per-center drive-time isochrones (sanity overlay), and samples participant addresses from Overture Maps uniformly across that union.
-3. **Vehicles** — for each center, set a vehicle count and per-vehicle passenger capacity, plus a max trips per vehicle (vans shuttle back to the center to evacuate everyone).
-4. **Plan evacuation** — pick a risk threshold; the app solves a capacitated multi-depot, multi-trip VRP (`OPENROUTESERVICE_APP.CORE.OPTIMIZATION`, `pickup:[1]` jobs) over every seeded participant whose home ZIP is at the selected risk level or higher. Each van is expanded into up to `maxTrips` round trips; the panel lists every trip and selecting one highlights its route with numbered stop markers. KPIs report evacuated / trips / drive minutes and warn if the trip cap leaves an overflow.
+The operator walks four steps on one map:
 
-The wizard is fully client-driven: every step issues a read-only `SELECT` via `/api/query` (risk ZIPs, the isochrone union + Overture sampling in one query, VROOM solve), mirroring `route-optimization` / `asset-velocity` / `backload-matching`. No server-side scenario state is persisted.
+1. **Risk** — pick flood or wildfire; the map colors the active region's **counties**
+   by FEMA National Risk Index level (1 Very Low … 5 Very High) from
+   `FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES`.
+2. **Seed participants** — set isochrone minutes + participant count; `evac_seed`
+   unions the drive-time isochrones of the region's health-anchor care centers
+   (`VW_CARE_CENTERS`), samples routable Overture addresses inside it
+   (MATRIX snap-filter ≤ 350 m), and tags each with county risk.
+3. **Vans** — set vehicle count, per-van capacity, and max trips per van.
+4. **Plan evacuation** — the wizard builds a capacitated multi-depot, multi-trip
+   `pickup:[1]` challenge (each van → up to `maxTrips` virtual vehicles across the
+   care centers) and solves it via `evac_solve` (ORS `OPTIMIZATION`); routes render
+   on the map.
+
+### How to run
+
+1. In the **Admin app → Data Studio**, run a generation for your region with
+   **Hazard** and **Anchors** enabled (every built-in preset already does — see
+   `feeds: ['emergency-response']`). This populates `FACT_HAZARD_ZONES` +
+   `DIM_ANCHORS` for that region.
+2. In the **SA app**, select that region's dataset in the context bar and open
+   **Emergency Response**. If the region has no hazard/anchor data the view shows
+   an actionable empty state.
+
+**US-only:** FEMA NRI covers the US, so hazard data generates only for US regions;
+the wizard shows the empty state elsewhere.
+
+### Architecture (source of truth)
+
+| Layer | Object | Authored in |
+|---|---|---|
+| Data | `FACT_HAZARD_ZONES`, `DIM_ANCHORS` | Data Studio engines (`generates_hazard` / `generates_anchors`) |
+| Contract | `FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES` / `VW_CARE_CENTERS` (+ `F_VW_*_SCOPED`) | `fleet_sa_app/app/scoped_contract.sql` |
+| Pack/gate | `emergency_response` (probe `VW_HAZARD_ZONES`) | `fleet_sa_app/app/packs/manifest.yaml` |
+| Routing procs | `ROUTING_TOOLS.TOOL_EVAC_SEED` / `TOOL_EVAC_SOLVE` | `routing-agent/references/deploy-agent.sql` |
+| Verbs | `evac_seed` / `evac_solve` | `fleet_tools/user/src/procs/` |
+| Wizard | SA view `emergency_response` | `fleet_sa_app/ui/src/components/views/areas/emergency-response.tsx` |
+
+### Retired (v2 CA/CO/PA)
+
+The v2 pipeline is **retired** and no longer part of any install:
+`EMERGENCY_RESPONSE.CONFIG.STATE_REGION_MAP`, `PIPELINE.V_ZIP_RISK` (ZIP-share),
+`CORE.CARECONNECT_CENTERS` (the `careconnect_centers_geocoded.csv`), and
+`ORS_ISOCHRONE_FOR_CENTER`. `references/sql-pipeline.sql` and the CSV remain only
+as a historical reference for the old control-app wizard and are slated for
+deletion. The county-level choropleth replaces the ZIP choropleth; generated
+health anchors replace the curated PACE centers.
 
 ## Prerequisites
 
@@ -76,19 +123,10 @@ OVERTURE_MAPS__ADDRESSES.CARTO.ADDRESS          (participant address pool)
 
 Flood level = the higher of riverine (`RFLD_RISKR`) and coastal (`CFLD_RISKR`) ratings; wildfire = `WFIR_RISKR`. Ratings map to ordinal 1–5 (`Very Low`..`Very High`); `No Rating`/`Insufficient Data`/`Not Applicable` → 0.
 
-> **Relationship to Data Studio universal generation.** The fleet stack now has a
-> region-scoped hazard primitive — `SYNTHETIC_DATASETS.UNIFIED.FACT_HAZARD_ZONES`
-> (FEMA NRI × Overture Divisions county polygons, surfaced via
-> `V_FACT_HAZARD_ZONES_CURRENT`) — and a location-anchor primitive
-> (`V_DIM_ANCHORS_CURRENT`, `ANCHOR_TYPE='HEALTH_FACILITY'`). Emergency Response
-> intentionally **retains** its own `V_ZIP_RISK` and curated `CARECONNECT_CENTERS`
-> because it has two requirements the universal tables do not yet meet:
-> (1) **ZIP-level** risk for the ZIP choropleth (FACT_HAZARD_ZONES is county-level),
-> and (2) **multi-state** scope (CA/CO/PA at once; the universal tables hold a
-> single active region) with **curated, named** PACE centers. Migrating this demo
-> onto the universal tables requires per-state generation + a ZIP-level hazard
-> rollup, and is tracked as a future enhancement; until then `V_ZIP_RISK` +
-> `CARECONNECT_CENTERS` remain the source of truth here by design.
+> **Superseded.** Everything below this line documents the **retired v2** CA/CO/PA
+> pipeline (ZIP-share `V_ZIP_RISK`, CareConnect CSV, `STATE_REGION_MAP`) and the
+> control-app wizard. It is kept for historical reference only; the live,
+> region-generic model is the v3 architecture described above.
 
 
 ## Workflow

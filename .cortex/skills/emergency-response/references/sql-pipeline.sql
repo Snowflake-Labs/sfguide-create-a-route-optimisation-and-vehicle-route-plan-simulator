@@ -1,4 +1,15 @@
 -- =============================================================================
+-- RETIRED (v2). This CA/CO/PA pipeline is superseded by the region-generic v3
+-- model: Emergency Response data is now produced by Data Studio
+-- (generates_hazard -> FACT_HAZARD_ZONES, generates_anchors -> DIM_ANCHORS) and
+-- consumed via the FLEET_APP.EMERGENCY_RESPONSE contract + evac_seed/evac_solve
+-- verbs by the FLEET_SA_APP `emergency_response` wizard. STATE_REGION_MAP,
+-- V_ZIP_RISK (US ZIP-code share), CARECONNECT_CENTERS (the committed CSV) and
+-- ORS_ISOCHRONE_FOR_CENTER below are NOT part of any current install. This file
+-- is kept only as historical reference for the retired control-app wizard and is
+-- slated for deletion. See emergency-response/SKILL.md (v3) for the live model.
+-- =============================================================================
+-- =============================================================================
 -- Emergency Response -- Evacuation Planning Wizard -- SQL Pipeline (v2.0.0)
 -- =============================================================================
 -- Single-page, multi-step evacuation planner. Replaces the v1 5-page
