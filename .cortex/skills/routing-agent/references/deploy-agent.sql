@@ -1758,6 +1758,144 @@ $$;
 
 ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_CATCHMENT(VARCHAR, FLOAT, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-deploy-snowflake-intelligence-routing-agent","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
+----------------------------------------------------------------------
+-- TOOL_EVAC_SEED: region-generic Emergency Response participant seeder.
+-- Builds the drive-time isochrone UNION over the active region's health-anchor
+-- care centers (FLEET_APP.EMERGENCY_RESPONSE.VW_CARE_CENTERS), uniformly samples
+-- Overture addresses within that union, keeps only road-network-routable points
+-- (MATRIX snapped_distance <= 350m — one off-network point aborts the VROOM
+-- solve), and tags each with the county FEMA risk for the chosen hazard
+-- (FACT_HAZARD_ZONES point-in-county). No CA/CO/PA lock, no ZIP share, no CSV.
+-- Returns { union_geojson, participants[], region }.
+----------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SEED(
+    REGION VARCHAR DEFAULT NULL,
+    HAZARD_TYPE VARCHAR DEFAULT 'WILDFIRE',
+    RANGE_MINUTES FLOAT DEFAULT 15,
+    TARGET_COUNT FLOAT DEFAULT 60
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+function resolveActiveRegion() {
+    if (REGION) return REGION;
+    var sqls = [
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CATCHMENT.CONFIG LIMIT 1",
+        "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1"
+    ];
+    for (var i = 0; i < sqls.length; i++) {
+        try { var rs = snowflake.createStatement({ sqlText: sqls[i] }).execute();
+              if (rs.next()) { var r = rs.getColumnValue(1); if (r) return r; } } catch(e) {}
+    }
+    return 'SanFrancisco';
+}
+try {
+    var region = resolveActiveRegion();
+    var hz = String(HAZARD_TYPE || 'WILDFIRE').toUpperCase();
+    if (hz !== 'WILDFIRE' && hz !== 'FLOOD' && hz !== 'COMPOSITE') hz = 'WILDFIRE';
+    var mins = Math.max(1, Math.min(60, Math.floor(Number(RANGE_MINUTES) || 15)));
+    var target = Math.max(1, Math.min(500, Math.floor(Number(TARGET_COUNT) || 60)));
+    var rowcount = target * 10;
+
+    // One statement: centers -> per-center isochrone -> union -> bbox sample ->
+    // inside-union -> MATRIX snap-filter (<=350m) -> county-risk tag -> aggregate.
+    var sql =
+      "WITH centers AS (" +
+      "  SELECT LON, LAT FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_CARE_CENTERS_SCOPED(?, CAST(NULL AS VARCHAR))) " +
+      "  WHERE LON IS NOT NULL AND LAT IS NOT NULL LIMIT 25)," +
+      " iso AS (SELECT TO_GEOGRAPHY(i.GEOJSON) AS g FROM centers c, " +
+      "    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car', c.LON, c.LAT, " + mins + ", ?)) i)," +
+      " u AS (SELECT ST_UNION_AGG(g) AS area FROM iso WHERE g IS NOT NULL)," +
+      " b AS (SELECT area, ST_XMIN(area) xmin, ST_XMAX(area) xmax, ST_YMIN(area) ymin, ST_YMAX(area) ymax FROM u)," +
+      " cand AS (SELECT b.area, b.xmin+(b.xmax-b.xmin)*UNIFORM(0::FLOAT,1::FLOAT,RANDOM()) AS LON, " +
+      "    b.ymin+(b.ymax-b.ymin)*UNIFORM(0::FLOAT,1::FLOAT,RANDOM()) AS LAT " +
+      "  FROM b, TABLE(GENERATOR(ROWCOUNT => " + rowcount + ")))," +
+      " inside AS (SELECT LON, LAT, ST_MAKEPOINT(LON,LAT) AS PT FROM cand WHERE ST_WITHIN(ST_MAKEPOINT(LON,LAT), area))," +
+      " samp AS (SELECT LON, LAT, PT, ROW_NUMBER() OVER (ORDER BY RANDOM()) AS RN FROM inside LIMIT " + target + ")," +
+      " coords AS (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON,LAT)) WITHIN GROUP (ORDER BY RN) AS C FROM samp)," +
+      " snap AS (SELECT f.INDEX AS IDX, f.VALUE:snapped_distance::FLOAT AS SD " +
+      "    FROM coords, LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.MATRIX('driving-car', C::ARRAY, ?):destinations) f)," +
+      " ok AS (SELECT s.LON, s.LAT, s.PT, 'P'||s.RN AS PID FROM samp s JOIN snap n ON n.IDX = s.RN-1 " +
+      "    WHERE n.SD IS NOT NULL AND n.SD <= 350)," +
+      " risk AS (SELECT o.PID, o.LON, o.LAT, h.COUNTY AS CNTY, COALESCE(h.RISK_LEVEL,0) AS LVL, " +
+      "    COALESCE(h.RISK_RATING,'No Rating') AS LBL FROM ok o " +
+      "    LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_HAZARD_ZONES_CURRENT h " +
+      "      ON h.HAZARD_TYPE = '" + hz + "' AND h.REGION = ? AND ST_WITHIN(o.PT, h.GEOM)) " +
+      "SELECT (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 200))::STRING FROM u) AS UNION_GEOJSON, " +
+      "  (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('pid',PID::STRING,'lon',LON,'lat',LAT," +
+      "     'county',CNTY::STRING,'lvl',LVL,'lbl',LBL::STRING)) FROM risk) AS PARTICIPANTS";
+    var rs = snowflake.createStatement({ sqlText: sql, binds: [region, region, region, region] }).execute();
+    if (!rs.next()) {
+        return { status: 'FAILED', region: region,
+                 error: 'No care centers / isochrone coverage for region ' + region +
+                        '. Generate Emergency Response data (hazard + anchors) in Data Studio.' };
+    }
+    var ug = rs.getColumnValue(1);
+    var parts = rs.getColumnValue(2);
+    parts = parts ? ((typeof parts === 'string') ? JSON.parse(parts) : parts) : [];
+    if (!parts || parts.length === 0) {
+        return { status: 'FAILED', region: region, hazard_type: hz, range_minutes: mins,
+                 union_geojson: ug ? ((typeof ug==='string')?JSON.parse(ug):ug) : null,
+                 participants: [],
+                 error: 'No routable participants sampled. Region may lack Overture address coverage inside the isochrone union.' };
+    }
+    return {
+        status: 'SUCCESS', region: region, hazard_type: hz, range_minutes: mins,
+        union_geojson: ug ? ((typeof ug === 'string') ? JSON.parse(ug) : ug) : null,
+        participants: parts, participant_count: parts.length
+    };
+} catch(err) {
+    return { status: 'FAILED', error: err.message };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SEED(VARCHAR, VARCHAR, FLOAT, FLOAT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
+----------------------------------------------------------------------
+-- TOOL_EVAC_SOLVE: thin owner's-rights wrapper over ORS OPTIMIZATION for the
+-- evacuation VRP. The multi-depot / multi-trip pickup challenge is built
+-- client-side (each van -> up to maxTrips virtual vehicles, each participant a
+-- pickup:[1] job) and passed as JSON. Returns the routes + geometry.
+----------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SOLVE(
+    CHALLENGE VARCHAR,
+    REGION VARCHAR DEFAULT NULL
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+EXECUTE AS OWNER
+AS
+$$
+try {
+    var region = REGION;
+    if (!region) {
+        try { var rr = snowflake.createStatement({
+            sqlText: "SELECT REGION FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1" }).execute();
+            if (rr.next()) region = rr.getColumnValue(1); } catch(e) {}
+        if (!region) region = 'SanFrancisco';
+    }
+    var sql = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
+              "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
+    var rs = snowflake.createStatement({ sqlText: sql, binds: [CHALLENGE, region] }).execute();
+    if (!rs.next()) {
+        return { status: 'FAILED', region: region, error: 'OPTIMIZATION returned no results (check participant routability / region graph).' };
+    }
+    var rawResp = rs.getColumnValue(1);
+    var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
+    var gj = rs.getColumnValue(2);
+    return {
+        status: 'SUCCESS', region: region,
+        routes: response.routes || [], unassigned: response.unassigned || [],
+        summary: response.summary || {},
+        geometry: gj ? ((typeof gj === 'string') ? JSON.parse(gj) : gj) : null
+    };
+} catch(err) {
+    return { status: 'FAILED', error: err.message };
+}
+$$;
+ALTER PROCEDURE FLEET_INTELLIGENCE.ROUTING_TOOLS.TOOL_EVAC_SOLVE(VARCHAR, VARCHAR) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+
 -- Validation
 SELECT 'TOOL_DIRECTIONS' AS OBJECT, 'PROCEDURE' AS TYPE FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_DIRECTIONS'
 UNION ALL SELECT 'TOOL_ISOCHRONE', 'PROCEDURE' FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_SCHEMA = 'ROUTING_TOOLS' AND PROCEDURE_NAME = 'TOOL_ISOCHRONE'
