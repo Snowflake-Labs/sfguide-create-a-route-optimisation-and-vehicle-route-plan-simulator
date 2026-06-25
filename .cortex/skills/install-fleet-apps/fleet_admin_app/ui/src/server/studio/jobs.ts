@@ -1,5 +1,7 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles';
-import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress } from './engine';
+import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
+import { buildFleetWithDiagnostics } from './engine/fleet';
+import { spreadStats, binDegForArea, bboxAreaKm2 } from './engine/spatial';
 import { log } from '../diagnostics';
 import { normalizeRegion } from '../lib/region';
 import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers';
@@ -807,9 +809,6 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: msg });
       }
 
-      const { loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones, generateDemandCatalog } = await import('./engine.js');
-      const { buildFleetWithDiagnostics } = await import('./engine/fleet.js');
-      const { spreadStats, binDegForArea, bboxAreaKm2 } = await import('./engine/spatial.js');
       const pois = await loadPOIs(config, snowSql);
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
