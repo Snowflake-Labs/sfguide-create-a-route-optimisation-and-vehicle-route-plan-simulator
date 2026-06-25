@@ -46,7 +46,13 @@ async function apiTool(verb: string, args: unknown[]): Promise<Record<string, un
   });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return (body.result as Record<string, unknown>) || {};
+  // The synapse envelope nests the proc output under result.result; unwrap one
+  // level when present so callers read { status, participants, ... } directly.
+  const r = body.result as Record<string, unknown> | null;
+  if (r && typeof r === 'object' && 'result' in r && r.result && typeof r.result === 'object') {
+    return r.result as Record<string, unknown>;
+  }
+  return r || {};
 }
 
 const ER = 'FLEET_APP.EMERGENCY_RESPONSE';
