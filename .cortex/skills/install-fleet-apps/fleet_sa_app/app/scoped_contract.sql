@@ -930,17 +930,16 @@ GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA FLEET_APP.CORE TO ROLE FLEET_APP_ADMIN
 -- generic Emergency Response wizard. Replaces the CA/CO/PA-locked
 -- EMERGENCY_RESPONSE.PIPELINE.V_ZIP_RISK (ZIP-share) + CORE.CARECONNECT_CENTERS
 -- (CSV) with data produced by Data Studio (generates_hazard + generates_anchors)
--- for WHATEVER region is active. US-only (FEMA NRI); 0 rows elsewhere -> the
--- wizard shows an actionable empty state. Hazard is COUNTY-level (FEMA NRI x
--- Overture Divisions); care centers are Overture health anchors.
+-- for WHATEVER region is active. Hazard is a procedural sub-county H3 hexagon
+-- grid (worldwide); care centers are Overture health anchors.
 -- Same scope contract as FLEET_OPS: F_VW_*_SCOPED(P_REGION,P_DATASET_ID) +
 -- global-active VW_* wrappers (NULL args). Source of truth: this file.
 -- ============================================================================
 CREATE SCHEMA IF NOT EXISTS FLEET_APP.EMERGENCY_RESPONSE
   COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql","component":"emergency-response-contract"}}';
 
--- County hazard, pivoted to one row per county (wildfire/flood/composite) with
--- the county polygon as GeoJSON for the choropleth. FACT_HAZARD_ZONES is
+-- Per-cell hazard, pivoted to one row per H3 hexagon (wildfire/flood/composite)
+-- with the hexagon polygon as GeoJSON for the choropleth. FACT_HAZARD_ZONES is
 -- region-keyed (no VEHICLE_TYPE), so the dataset join mirrors DIM_POIS.
 CREATE OR REPLACE FUNCTION FLEET_APP.EMERGENCY_RESPONSE.F_VW_HAZARD_ZONES_SCOPED(P_REGION VARCHAR, P_DATASET_ID VARCHAR)
 RETURNS TABLE (
@@ -951,7 +950,10 @@ RETURNS TABLE (
 COMMENT='{"origin":"sf_sit-is-fleet","name":"oss-emergency-response","version":{"major":2,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 $$
-  SELECT h.REGION, h.STATE, h.COUNTY, h.FIPS,
+  SELECT h.REGION,
+         ANY_VALUE(h.STATE)  AS STATE,
+         ANY_VALUE(h.COUNTY) AS COUNTY,
+         ANY_VALUE(h.FIPS)   AS FIPS,
          ANY_VALUE(ST_ASGEOJSON(h.GEOM))::STRING AS GEOJSON,
          MAX(CASE WHEN h.HAZARD_TYPE='WILDFIRE'  THEN h.RISK_LEVEL  END) AS WILDFIRE_LEVEL,
          MAX(CASE WHEN h.HAZARD_TYPE='WILDFIRE'  THEN h.RISK_RATING END) AS WILDFIRE_LABEL,
@@ -965,7 +967,9 @@ $$
   WHERE (P_REGION IS NULL OR h.REGION = P_REGION)
     AND ( (P_DATASET_ID IS NOT NULL AND d.DATASET_ID = P_DATASET_ID)
           OR (P_DATASET_ID IS NULL AND d.IS_ACTIVE = TRUE) )
-  GROUP BY h.REGION, h.STATE, h.COUNTY, h.FIPS
+  -- Per-zone key = ZONE_ID minus the hazard suffix. Works for both the procedural
+  -- H3 grid (ZONE_ID = '<h3>-WILDFIRE') and legacy county data ('<fips>-WILDFIRE').
+  GROUP BY h.REGION, SPLIT_PART(h.ZONE_ID,'-',1)
 $$;
 
 -- Care centers = Overture health anchors for the active region/dataset. Column
