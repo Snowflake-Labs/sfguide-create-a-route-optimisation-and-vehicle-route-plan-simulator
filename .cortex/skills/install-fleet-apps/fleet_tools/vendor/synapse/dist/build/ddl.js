@@ -37,8 +37,13 @@ export function quoteArg(name) {
 export function procDDL(proc, opts) {
     const argEntries = Object.entries(proc.args).map(([name, schema]) => `${quoteArg(name)} ${sqlType(schema)}`);
     // IDEMPOTENCY_KEY appended as the last arg of every emitted DDL. Every proc
-    // has it; runtime decides whether it's used.
-    argEntries.push('IDEMPOTENCY_KEY STRING');
+    // has it; runtime decides whether it's used. DEFAULT NULL is required so the
+    // Cortex Agent MCP server (which calls these procs with named args and omits
+    // idempotency_key, since it is optional in the MCP input_schema) matches the
+    // signature. Without the default, the agent's `CALL p(a => ?, b => ?)` raises
+    // "named arguments [...] do not match any signature" and the agent surfaces a
+    // generic "Error parsing response" tool failure. Must be the LAST arg.
+    argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL');
     return `CREATE OR REPLACE PROCEDURE ${proc.name}(${argEntries.join(', ')})
 RETURNS OBJECT LANGUAGE JAVASCRIPT EXECUTE AS ${opts.executeAs ?? 'OWNER'} AS
 $$

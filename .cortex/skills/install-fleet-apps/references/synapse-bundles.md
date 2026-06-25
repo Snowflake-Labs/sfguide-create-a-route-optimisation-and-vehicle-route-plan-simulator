@@ -46,3 +46,35 @@ deferred to the optional full-absorption phase.
 - Keep the materialize `--install` target dir SEPARATE from the bundle source
   dir; materialize writes a runtime `package.json` into the target.
 - Do not use `LIKE ... ESCAPE '\'` in proc SQL; use `STARTSWITH`.
+
+## MCP <-> agent invariants (do not regress)
+
+Two load-bearing rules. Violating either reproduces the exact same symptom: the
+agent says something like "the routing service is currently experiencing an
+issue", `OPENROUTESERVICE_APP.ROUTING.VERB_ATTEMPT` shows NO row for the verb,
+and the SSE tool event carries `MCP error calling tool ...: Error parsing
+response`. Both were root-caused 2026-06-25.
+
+1. **Verb procs MUST declare `IDEMPOTENCY_KEY STRING DEFAULT NULL`** (last arg).
+   The Cortex Agent MCP server invokes each tool with NAMED args and OMITS
+   `idempotency_key` (it is optional in the MCP `input_schema`, so the LLM does
+   not pass it). The call looks like `CALL p(locations_description => ?, profile
+   => ?)`. Without a default on the trailing arg, Snowflake raises *"named
+   arguments [...] do not match any signature"* BEFORE the proc body runs (hence
+   no audit row), and the agent surfaces it as the generic "Error parsing
+   response". The default is emitted by the vendored generator
+   `fleet_tools/vendor/synapse/dist/build/ddl.js` (`procDDL`, the
+   `argEntries.push('IDEMPOTENCY_KEY STRING DEFAULT NULL')` line). Do NOT drop
+   the `DEFAULT NULL` if that file is ever re-synced from upstream.
+
+2. **Recreate the agents AFTER (re)deploying the bundles.** `npx synapse deploy`
+   does `CREATE OR REPLACE MCP SERVER`, which replaces `ROUTING_MCP` /
+   `FLEET_OPS_MCP` / `FLEET_ADMIN_MCP`. The agents bind to the MCP server at
+   agent-creation time, so any bundle redeploy leaves the existing agents bound
+   to a since-replaced server and they can no longer invoke the tools. The
+   orchestrator (`install_fleet_apps.sh`) already runs bundles (step 5) before
+   agents (step 6), so a fresh install is correct. But ANY out-of-band
+   `install_synapse_bundles.sh` run (e.g. adding a verb, an evac/feature deploy)
+   MUST be followed by `create_agents.sh <connection>`. Quick check: every agent
+   `created_on` must be newer than its referenced MCP server `created_on`
+   (`SHOW AGENTS IN SCHEMA FLEET_INTELLIGENCE.SYNAPSE_USER` vs `SHOW MCP SERVERS`).
