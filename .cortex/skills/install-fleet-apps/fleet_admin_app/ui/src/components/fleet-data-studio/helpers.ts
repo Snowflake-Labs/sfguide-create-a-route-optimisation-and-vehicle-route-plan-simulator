@@ -1,6 +1,6 @@
 // Pure types and constants for FleetDataStudio.tsx.
 
-import { CarTaxiFront, Bike, Truck } from 'lucide-react';
+import { Car, Bike, Truck } from 'lucide-react';
 
 export interface Preset {
   preset_id: string;
@@ -44,7 +44,7 @@ export interface CoverageEntry {
 }
 
 export const VEHICLE_ICONS: Record<string, any> = {
-  car: CarTaxiFront,
+  car: Car,
   ebike: Bike,
   hgv: Truck,
 };
@@ -56,15 +56,15 @@ export const VEHICLE_COLORS: Record<string, string> = {
 };
 
 export const VEHICLE_LABELS: Record<string, string> = {
-  car: 'City Taxis',
-  ebike: 'E-Bike Couriers',
-  hgv: 'HGV Logistics',
+  car: 'Urban Car Fleet',
+  ebike: 'Urban E-Bike Fleet',
+  hgv: 'Regional HGV Fleet',
 };
 
 export const SKILL_MAP: Record<string, string> = {
   'dwell-analysis': 'Dwell Analysis',
-  'fleet-intelligence-car': 'Fleet Taxis',
-  'fleet-intelligence-ebike': 'Food Delivery',
+  'fleet-intelligence-car': 'Urban Car Fleet',
+  'fleet-intelligence-ebike': 'Urban E-Bike Fleet',
   'route-deviation': 'Route Deviation',
 };
 
