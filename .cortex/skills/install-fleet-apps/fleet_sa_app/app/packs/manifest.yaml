@@ -70,5 +70,18 @@ packs:
     semantic_views: [FLEET_INTELLIGENCE.SEMANTIC.SV_ASSET_VELOCITY]
     self_building: true
 
+  # Region-generic Emergency Response. Hazard (county FEMA NRI x Overture
+  # Divisions) + care centers (Overture health anchors) are produced by Data
+  # Studio (generates_hazard + generates_anchors). The contract views live in
+  # app/scoped_contract.sql; this pack's setup.sql only ensures the schema +
+  # role USAGE so install ordering + the surfacing probe resolve. The probe
+  # gates the pack OFF account-wide when no region has hazard data yet (e.g. a
+  # non-US-only install); per-region availability is handled in the wizard.
+  - name: emergency_response
+    app_schema: FLEET_APP.EMERGENCY_RESPONSE
+    depends_on: [unified_fleet]
+    probe: FLEET_APP.EMERGENCY_RESPONSE.VW_HAZARD_ZONES
+    self_building: true
+
   # NOTE: the industry-vertical packs (marketplace / backload / dhl_ntbo) are
   # intentionally EXCLUDED from this vehicle/industry-agnostic installer.
