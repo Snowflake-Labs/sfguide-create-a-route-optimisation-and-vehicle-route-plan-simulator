@@ -75,7 +75,7 @@ export function buildFleetWithDiagnostics(
   const { num_vehicles } = config.fleet;
   const profiles = Object.entries(config.driver_profiles);
   // Home-base POIs by declarative location types (config-driven, mode-agnostic).
-  // Empty/unset => any POI. Replaces the former mode==='food_delivery'/'trucking' branch.
+  // Empty/unset => any POI. Replaces the former mode==='urban_ebike'/'regional_hgv' branch.
   const homeTypes = config.home_location_types;
   const homePois = (homeTypes && homeTypes.length)
     ? pois.filter(p => homeTypes.includes(p.location_type))

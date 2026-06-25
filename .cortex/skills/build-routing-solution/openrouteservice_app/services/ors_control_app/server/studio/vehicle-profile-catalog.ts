@@ -5,7 +5,7 @@
 // WHY THIS EXISTS
 // Before this module, per-vehicle-type knowledge was scattered across three
 // disconnected places: generation knobs in profiles.ts (TS-only, never
-// persisted), faked HGV dimensions via `CASE WHEN OPERATING_MODE='trucking'`
+// persisted), faked HGV dimensions via `CASE WHEN OPERATING_MODE='regional_hgv'`
 // in route-optimization/references/extend-dim-fleet-hgv.sql (a branching
 // anti-pattern), and evaluation thresholds hardcoded as SQL literals
 // (deviation 0.20, teleport 2000m) or keyed only by LOCATION_TYPE
