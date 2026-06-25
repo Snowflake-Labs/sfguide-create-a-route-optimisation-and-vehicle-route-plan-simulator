@@ -52,6 +52,14 @@ async function insertAnchorsForType(
 ): Promise<number> {
   if (!categories || categories.length === 0) return 0;
   const catFilter = categories.map(c => sqlLit(c)).join(',');
+  // Per-type row cap: a preset may pin a small, demo-sized set for one anchor
+  // type (e.g. { HEALTH_FACILITY: 10 }) via config.anchor_limits without
+  // shrinking the others. Falls back to MAX_PER_TYPE. ORDER BY RANDOM() so a
+  // capped set is a representative random sample, not the first N by scan order.
+  const rawLimit = config.anchor_limits?.[anchorType];
+  const limit = Number.isFinite(rawLimit) && (rawLimit as number) > 0
+    ? Math.floor(rawLimit as number)
+    : MAX_PER_TYPE;
   const sql = `
     INSERT INTO ${ANCHORS} ${ANCHOR_COLS}
     WITH ${regionBoundaryCte(config.region)}
@@ -73,7 +81,8 @@ async function insertAnchorsForType(
     WHERE p.GEOMETRY IS NOT NULL
       AND p.BASIC_CATEGORY IN (${catFilter})
       AND ${spatialFilter('p.GEOMETRY', config.bbox)}
-    LIMIT ${MAX_PER_TYPE}`;
+    ORDER BY RANDOM()
+    LIMIT ${limit}`;
   const rows = await snowSql(sql, 'OVERTURE_MAPS__PLACES', 'CARTO');
   // Snowflake INSERT returns a single row with "number of rows inserted".
   const n = Number(rows?.[0]?.['number of rows inserted'] ?? rows?.[0]?.['rows_inserted'] ?? 0);

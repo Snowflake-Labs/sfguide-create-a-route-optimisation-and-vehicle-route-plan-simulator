@@ -52,6 +52,12 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      // Emergency Response: 10 random medical centers + a 50km raw Overture-address
+      // participant sample. The wizard's isochrone step filters this sample.
+      anchor_limits: { HEALTH_FACILITY: 10 },
+      generates_participants: true,
+      participant_radius_km: 50,
+      participant_sample_size: 3000,
       ghost_trailer: {
         probability: 0.05,
         start_day_min: 0,
@@ -106,6 +112,12 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      // Emergency Response: 10 random medical centers + a 50km raw Overture-address
+      // participant sample. The wizard's isochrone step filters this sample.
+      anchor_limits: { HEALTH_FACILITY: 10 },
+      generates_participants: true,
+      participant_radius_km: 50,
+      participant_sample_size: 3000,
       ghost_trailer: {
         probability: 0.08,
         start_day_min: 0,
@@ -164,6 +176,12 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       generates_demographics: true,
       generates_hazard: true,
       generates_demand: true,
+      // Emergency Response: 10 random medical centers + a 50km raw Overture-address
+      // participant sample. The wizard's isochrone step filters this sample.
+      anchor_limits: { HEALTH_FACILITY: 10 },
+      generates_participants: true,
+      participant_radius_km: 50,
+      participant_sample_size: 3000,
       ghost_trailer: {
         probability: 0.10,
         start_day_min: 0,
@@ -303,6 +321,23 @@ export interface GenerationConfig {
   // ANCHOR_TYPE -> Overture BASIC_CATEGORY list. Depot is special-cased to a
   // Buildings/POI centroid, so it needs no category list.
   anchor_categories?: Record<string, string[]>;
+  // ANCHOR_TYPE -> max rows kept (random sample) for that type. When unset for a
+  // type the engine falls back to its internal MAX_PER_TYPE cap. Lets a preset
+  // pin a small, demo-sized set (e.g. { HEALTH_FACILITY: 10 }) for one anchor
+  // type without shrinking the others (KEY_SITE / DELIVERY_STOP feed other demos).
+  anchor_limits?: Record<string, number>;
+  // Passenger/participant locations: a raw sample of real Overture addresses
+  // within participant_radius_km (straight-line ST_DWITHIN) of the region's
+  // HEALTH_FACILITY anchors -> DIM_PARTICIPANTS. The emergency-response wizard's
+  // isochrone step later filters this raw sample. Requires generates_anchors so
+  // the centers exist; the engine runs after generateAnchors.
+  generates_participants?: boolean;
+  // Straight-line radius (km) around each HEALTH_FACILITY anchor when sampling
+  // participant addresses. Default 50.
+  participant_radius_km?: number;
+  // Number of raw participant addresses to sample (ORDER BY RANDOM() LIMIT).
+  // The isochrone step subsets this further. Default 3000.
+  participant_sample_size?: number;
   // Area demographics from SafeGraph Open Census (block-group) -> DIM_AREA_DEMOGRAPHICS.
   generates_demographics?: boolean;
   // Hazard/disaster zones from FEMA NRI (+ optional Overture Divisions boundary)

@@ -109,6 +109,16 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       ADDRESS VARCHAR, CITY VARCHAR, STATE VARCHAR, POSTCODE VARCHAR,
       SOURCE VARCHAR(40), JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Participant/passenger locations: a raw sample of real Overture addresses
+    // within a straight-line radius (ST_DWITHIN) of the region's HEALTH_FACILITY
+    // anchors. The emergency-response wizard's isochrone step filters this raw
+    // sample at demo time. Dataset-versioned via JOB_ID.
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_PARTICIPANTS (
+      PARTICIPANT_ID VARCHAR, REGION VARCHAR(100),
+      LAT FLOAT, LNG FLOAT, GEOM GEOGRAPHY,
+      ADDRESS VARCHAR, CITY VARCHAR, STATE VARCHAR, POSTCODE VARCHAR,
+      NEAREST_ANCHOR_ID VARCHAR, SOURCE VARCHAR(40), JOB_ID VARCHAR
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // Hazard / disaster zones: FEMA NRI (+ optional Divisions boundary).
     // Generalises emergency-response's V_ZIP_RISK to any region.
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_HAZARD_ZONES (

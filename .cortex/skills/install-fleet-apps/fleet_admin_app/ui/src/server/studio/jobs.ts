@@ -1,5 +1,5 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles';
-import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
+import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateFreightOffers, generatePartners, generatePartnerHistory, generateAnchors, generateParticipants, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
 import { buildFleetWithDiagnostics } from './engine/fleet';
 import { spreadStats, binDegForArea, bboxAreaKm2 } from './engine/spatial';
 import { log } from '../diagnostics';
@@ -145,6 +145,8 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   const tables = [
     'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_FREIGHT_OFFERS',
     'DIM_PARTNERS', 'FACT_PARTNER_HISTORY',
+    // Universal-generation entities (all JOB_ID-versioned) — purge with the dataset.
+    'DIM_ANCHORS', 'DIM_PARTICIPANTS', 'FACT_HAZARD_ZONES', 'DIM_AREA_DEMOGRAPHICS', 'DIM_DEMAND_CATALOG',
   ];
   const deleted: Record<string, number> = {};
   for (const tbl of tables) {
@@ -909,6 +911,18 @@ export async function startGeneration(
         } catch (e: any) {
           log('WARN', 'Studio', `DIM_ANCHORS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
           broadcast(job, 'warning', { message: `Anchors generation failed: ${e.message?.slice(0, 150)}` });
+        }
+      }
+      // Participants depend on the HEALTH_FACILITY anchors just inserted, so this
+      // runs after generates_anchors and before the dataset flip.
+      if (config.generates_participants) {
+        try {
+          const n = await generateParticipants(config, snowSql, jobId);
+          log('INFO', 'Studio', `Inserted ${n} participants`, { jobId });
+          broadcast(job, 'progress', { status: `Inserted ${n} participants` });
+        } catch (e: any) {
+          log('WARN', 'Studio', `DIM_PARTICIPANTS generation failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+          broadcast(job, 'warning', { message: `Participants generation failed: ${e.message?.slice(0, 150)}` });
         }
       }
       if (config.generates_demographics) {

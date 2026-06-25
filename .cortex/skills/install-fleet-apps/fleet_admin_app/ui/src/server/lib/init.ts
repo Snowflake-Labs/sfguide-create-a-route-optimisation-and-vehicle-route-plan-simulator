@@ -995,6 +995,18 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_DIM_PARTICIPANTS_CURRENT
+        COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
+        AS
+        SELECT p.*
+        FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTICIPANTS p
+        JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
+          ON d.DATASET_ID = p.JOB_ID
+         AND d.REGION = p.REGION
+         AND d.IS_ACTIVE = TRUE`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
       sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_HAZARD_ZONES_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
