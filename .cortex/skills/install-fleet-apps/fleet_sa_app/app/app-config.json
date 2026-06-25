@@ -35,7 +35,9 @@
       "find_poi": 5,
       "catchment": 3,
       "delivery_optimization": 1,
-      "network_optimization": 1
+      "network_optimization": 1,
+      "evac_seed": 4,
+      "evac_solve": 2
     },
     "mapTools": [
       "get_directions",
@@ -45,6 +47,8 @@
       "catchment",
       "delivery_optimization",
       "network_optimization",
+      "evac_seed",
+      "evac_solve",
       "query_overture_places",
       "query_overture_addresses"
     ]

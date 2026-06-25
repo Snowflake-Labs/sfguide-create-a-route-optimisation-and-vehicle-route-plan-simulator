@@ -26,6 +26,8 @@ const DEFAULT_VERBS: Record<string, number> = {
   catchment: 3,
   delivery_optimization: 1,
   network_optimization: 1,
+  evac_seed: 4,
+  evac_solve: 2,
 };
 
 function resolveTools(): { schema: string; verbs: Record<string, number> } {
