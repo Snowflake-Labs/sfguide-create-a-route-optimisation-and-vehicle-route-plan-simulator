@@ -27,13 +27,13 @@ export function registerViews(_disabledSchemas?: Set<string>): void {
   });
 
   viewRegistry.register({
-    id: 'emergency_wizard',
-    label: 'Emergency Response Coverage',
-    description: 'Compute the drive-time reachability around an incident location.',
+    id: 'emergency_response',
+    label: 'Emergency Response',
+    description: 'Plan a capacitated multi-depot evacuation for the active region: county FEMA risk, isochrone-seeded participants, and a solved van routing plan. Available when the region has generated hazard + health-anchor data.',
     category: 'Optimization',
     component: lazy(() =>
-      import('@/components/views/areas/emergency-wizard').then((mod) => ({
-        default: mod.EmergencyWizardView,
+      import('@/components/views/areas/emergency-response').then((mod) => ({
+        default: mod.EmergencyResponseView,
       })),
     ),
   });
