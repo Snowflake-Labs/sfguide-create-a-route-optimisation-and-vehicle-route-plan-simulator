@@ -71,8 +71,8 @@ No global build/lint step — each skill is independently deployable via its own
 | `routing-prerequisites` | infrastructure | Checks local build prerequisites (Docker, Snow CLI) |
 | `routing-customization` | configuration | Router with 3 subskills for ORS config changes |
 | `route-optimization` | demo | VRP demo with Marketplace data + notebook |
-| `fleet-intelligence-taxis` | fleet-intelligence | Taxi GPS telemetry generation + React dashboard |
-| `fleet-intelligence-food-delivery` | fleet-intelligence | Food delivery courier telemetry + React app |
+| `fleet-intelligence-car` | fleet-intelligence | Taxi GPS telemetry generation + React dashboard |
+| `fleet-intelligence-ebike` | fleet-intelligence | Food delivery courier telemetry + React app |
 | `retail-catchment` | demo | Retail location analysis with isochrone catchment zones |
 | `route-deviation` | demo | Detour detection ETL pipeline + React dashboard |
 | `dwell-analysis` | demo | 12-step Dynamic Table pipeline for dwell/congestion |
@@ -164,7 +164,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 - Stage only files related to the current change — never use blanket `git add .` if unrelated edits exist
 - Commit message format: `<type>(<scope>): <subject>` where type is one of `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
   - Examples:
-    - `feat(fleet-intelligence-taxis): add H3 resolution config parameter`
+    - `feat(fleet-intelligence-car): add H3 resolution config parameter`
     - `fix(build-routing-solution): handle ARM Mac esbuild segfault`
     - `docs(AGENTS.md): add commit discipline rule`
 - If a change spans multiple skills, prefer multiple smaller commits over one large one
@@ -315,8 +315,8 @@ graph TD
     RP[routing-prerequisites] --> IFA[install-fleet-apps PRIMARY + engine by default]
     IFA --> RC[routing-customization]
     IFA --> RO[route-optimization]
-    IFA --> FIT[fleet-intelligence-taxis]
-    IFA --> FIFD[fleet-intelligence-food-delivery]
+    IFA --> FIT[fleet-intelligence-car]
+    IFA --> FIFD[fleet-intelligence-ebike]
     IFA --> RET[retail-catchment]
     IFA --> RD[route-deviation]
     IFA --> RA[routing-agent]

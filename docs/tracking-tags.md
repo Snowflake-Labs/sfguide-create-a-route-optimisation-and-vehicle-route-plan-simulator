@@ -92,9 +92,9 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 | `FLEET_INTELLIGENCE` | Database | Account |
 | `FLEET_INTELLIGENCE.CORE` | Schema | Database |
 
-### fleet-intelligence-taxis
+### fleet-intelligence-car
 
-**Tracking name:** `oss-fleet-intelligence-taxis`
+**Tracking name:** `oss-fleet-intelligence-car`
 
 | Object | Type | Location |
 |--------|------|----------|
@@ -118,9 +118,9 @@ ALTER TABLE <name> SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-<skill
 | `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS` | View | Schema |
 | `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY` | View | Schema |
 
-### fleet-intelligence-food-delivery
+### fleet-intelligence-ebike
 
-**Tracking name:** `oss-fleet-intelligence-food-delivery`
+**Tracking name:** `oss-fleet-intelligence-ebike`
 
 | Object | Type | Location |
 |--------|------|----------|
@@ -457,8 +457,8 @@ Both modes set the tracking name `oss-build-routing-solution`.
 | Skill | Tracking Name |
 |-------|---------------|
 | build-routing-solution | `oss-build-routing-solution-in-snowflake` |
-| fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` |
-| fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` |
+| fleet-intelligence-car | `oss-fleet-intelligence-car` |
+| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` |
 | retail-catchment | `oss-retail-catchment` |
 | route-deviation | `oss-route-deviation` |
 | route-optimization | `oss-route-optimization` |

@@ -20,7 +20,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     vehicleType: 'car',
     orsProfile: 'driving-car',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-taxis'],
+    feeds: ['fleet-intelligence-car'],
     defaultConfig: {
       mode: 'urban_mobility',
       fleet: { num_vehicles: 50, weekday_operating_rate: 0.9, weekend_operating_rate: 0.6, trips_per_day: { min: 8, max: 20 } },
@@ -61,7 +61,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
     vehicleType: 'ebike',
     orsProfile: 'cycling-electric',
     regionScale: 'city',
-    feeds: ['fleet-intelligence-food-delivery'],
+    feeds: ['fleet-intelligence-ebike'],
     defaultConfig: {
       mode: 'food_delivery',
       fleet: { num_vehicles: 100, daily_operating_rate: 0.85, trips_per_day: { min: 15, max: 35 } },

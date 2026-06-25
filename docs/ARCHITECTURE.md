@@ -124,8 +124,8 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 | Schema | Skill | Key objects |
 |--------|-------|-------------|
 | `CORE` | build-routing-solution | `REGION_REGISTRY`, `GENERATION_JOBS`, `PROVISION_REGION` procedure |
-| `FLEET_INTELLIGENCE_TAXIS` | fleet-intelligence-taxis | Driver locations, trip summaries, route analytics views |
-| `FLEET_INTELLIGENCE_FOOD_DELIVERY` | fleet-intelligence-food-delivery | CONFIG, `DELIVERIES` view, `RESTAURANTS_ENRICHED` view |
+| `FLEET_INTELLIGENCE_TAXIS` | fleet-intelligence-car | Driver locations, trip summaries, route analytics views |
+| `FLEET_INTELLIGENCE_FOOD_DELIVERY` | fleet-intelligence-ebike | CONFIG, `DELIVERIES` view, `RESTAURANTS_ENRICHED` view |
 | `ROUTE_DEVIATION` | route-deviation | CONFIG, 5 projection views, `TRIP_DEVIATION_ANALYSIS`, deviation trends |
 | `DWELL_ANALYSIS` | dwell-analysis | CONFIG, 8 Dynamic Tables, `SLA_ALERT_LOG`, geofences, SLA thresholds |
 | `CATCHMENT` | retail-catchment | `POIS`, regional addresses, competitor data |

@@ -1,7 +1,7 @@
 ################################################################################
 # Preset: bikes (cycling + foot)
 #
-# Use when: fleet-intelligence-food-delivery, retail-catchment, last-mile
+# Use when: fleet-intelligence-ebike, retail-catchment, last-mile
 # delivery demos that exercise cycling, e-bike, and walking profiles.
 #
 # Differences vs standard.yml:

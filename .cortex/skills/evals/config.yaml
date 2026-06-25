@@ -11,8 +11,8 @@ eval_types:
 # protects. The folders still exist and remain invocable; remove a name here to
 # bring it back under eval enforcement.
 exclude_skills:
-  - fleet-intelligence-food-delivery   # legacy per-vehicle demo (not in agnostic installer)
-  - fleet-intelligence-taxis           # legacy per-vehicle demo
+  - fleet-intelligence-ebike   # legacy per-vehicle demo (not in agnostic installer)
+  - fleet-intelligence-car           # legacy per-vehicle demo
   - backload-matching                  # legacy industry-vertical demo (excluded pack)
   - freight-exchange                   # legacy industry-vertical demo (excluded pack)
   - retail-catchment                   # legacy industry-vertical demo

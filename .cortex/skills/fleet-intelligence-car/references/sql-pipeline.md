@@ -7,7 +7,7 @@ All SQL below must be executed **one statement per `snowflake_sql_execute` call*
 ## Step 1: Set Query Tag
 
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1, "minor":0},"attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ---
@@ -70,7 +70,7 @@ CALL SYSTEM$GET_SERVICE_LOGS('OPENROUTESERVICE_APP.CORE.ORS_SERVICE', 0, 'ors', 
 
 ```sql
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-car", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
@@ -78,18 +78,18 @@ CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-car", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS
-    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-taxis", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet", "name":"oss-fleet-intelligence-car", "version":{"major":1, "minor":0}, "attributes":{"is_quickstart":1, "source":"sql"}}';
 ```
 
 ```sql
 CREATE STAGE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.STREAMLIT_STAGE
     DIRECTORY = (ENABLE = TRUE)
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ---
@@ -181,7 +181,7 @@ WHERE
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -245,7 +245,7 @@ LEFT JOIN home_locations hl ON da.driver_num = hl.rn;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_DRIVERS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -279,7 +279,7 @@ WHERE NAME IS NOT NULL AND LENGTH(NAME) > 3;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 6b — Create Trip Assignments (DRIVER_TRIPS)
@@ -346,7 +346,7 @@ CROSS JOIN loc_count lc;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 6c — Attach Coordinates (DRIVER_TRIPS_WITH_COORDS)
@@ -370,7 +370,7 @@ JOIN FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TAXI_LOCATIONS_NUMBERED d ON t.
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -423,7 +423,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_TRIPS_WITH_COORDS;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 7b — Parse Route Responses (DRIVER_ROUTES_PARSED)
@@ -468,7 +468,7 @@ WHERE ROUTE_RESPONSE IS NOT NULL;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTES_PARSED SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### 7c — Build Route Geometries with Timing (DRIVER_ROUTE_GEOMETRIES)
@@ -514,7 +514,7 @@ FROM cumulative_timing;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -656,7 +656,7 @@ FROM expanded;
 
 ```sql
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify
@@ -714,7 +714,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### TRIPS_ASSIGNED_TO_DRIVERS
@@ -736,7 +736,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### ROUTE_NAMES
@@ -751,7 +751,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### TRIP_ROUTE_PLAN
@@ -789,7 +789,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_ROUTE_GEOMETRIES rg;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### TRIP_SUMMARY
@@ -814,7 +814,7 @@ LEFT JOIN trip_stats ts ON rg.TRIP_ID = ts.TRIP_ID;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify All Views
@@ -858,7 +858,7 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION)
     VALUES (src.VEHICLE_TYPE, src.REGION);
 
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### VW_DRIVER_LOCATIONS (telemetry projection)
@@ -891,7 +891,7 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### VW_TRIP_SUMMARY (trip projection with all columns the React UI needs)
@@ -950,7 +950,7 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM cfg)
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Replace Native Views with Data Studio Wrappers
@@ -971,7 +971,7 @@ SELECT * FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -991,7 +991,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -1002,7 +1002,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -1015,7 +1015,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ```sql
@@ -1034,7 +1034,7 @@ FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 ```sql
 ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Verify All Views

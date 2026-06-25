@@ -63,8 +63,8 @@ export const VEHICLE_LABELS: Record<string, string> = {
 
 export const SKILL_MAP: Record<string, string> = {
   'dwell-analysis': 'Dwell Analysis',
-  'fleet-intelligence-taxis': 'Fleet Taxis',
-  'fleet-intelligence-food-delivery': 'Food Delivery',
+  'fleet-intelligence-car': 'Fleet Taxis',
+  'fleet-intelligence-ebike': 'Food Delivery',
   'route-deviation': 'Route Deviation',
 };
 

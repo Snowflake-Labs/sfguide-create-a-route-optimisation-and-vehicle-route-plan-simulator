@@ -101,7 +101,7 @@ retail-catchment:
     - "route optimization"
     - "dwell analysis"
 
-fleet-intelligence-taxis:
+fleet-intelligence-car:
   should_trigger:
     - "generate driver locations"
     - "create driver data"
@@ -113,7 +113,7 @@ fleet-intelligence-taxis:
     - "route deviation analysis"
     - "route optimization demo"
 
-fleet-intelligence-food-delivery:
+fleet-intelligence-ebike:
   should_trigger:
     - "generate courier locations"
     - "create delivery data"

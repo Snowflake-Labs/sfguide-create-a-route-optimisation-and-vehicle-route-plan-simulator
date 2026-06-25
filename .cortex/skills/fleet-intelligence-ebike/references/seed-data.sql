@@ -5,17 +5,17 @@
  * No S3 external stages — all data comes from UNIFIED.
  */
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE WAREHOUSE IF NOT EXISTS ROUTING_ANALYTICS
     WAREHOUSE_SIZE = 'XSMALL'
     AUTO_SUSPEND = 60
     AUTO_RESUME = TRUE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -30,7 +30,7 @@ ON TRUE
 WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION) VALUES (src.VEHICLE_TYPE, src.REGION);
 
 ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG SET
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- DELIVERIES (FleetMap.tsx + CatchmentPanel.tsx)
@@ -55,7 +55,7 @@ FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_TRIPS_CURRENT t
 WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
   AND t.REGION       = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1);
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- RESTAURANTS_ENRICHED (CatchmentPanel.tsx)
@@ -77,7 +77,7 @@ WHERE p.LOCATION_TYPE = 'RESTAURANT'
   AND p.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG LIMIT 1)
 GROUP BY p.LOCATION_ID, p.NAME, p.REGION;
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-food-delivery","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- VALIDATION

@@ -1,6 +1,6 @@
 ---
-name: fleet-intelligence-taxis
-description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-food-delivery), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
+name: fleet-intelligence-car
+description: "Generate realistic taxi driver location data for the Fleet Intelligence solution using Overture Maps data and OpenRouteService for actual road routes. Also supports Data Studio projection views from SYNTHETIC_DATASETS.UNIFIED for any vehicle type via CONFIG table. Configurable location (New York, London, San Francisco, etc.), number of drivers (default 80), days of simulation (default 1), and shift patterns. Use when: setting up driver location data, generating route-based simulation, deploying fleet dashboard. Do NOT use for: food delivery simulation (use fleet-intelligence-ebike), route deviation analysis (use route-deviation), or route optimization demos. Triggers: generate driver locations, create driver data, setup fleet data, fleet intelligence dashboard."
 depends_on:
   - install-fleet-apps
   - routing-customization
@@ -92,7 +92,7 @@ Generates realistic taxi driver location data using Overture Maps Places/Address
 
 ## Error Logging
 
-> Follow the Error Logging convention in AGENTS.md. Log file prefix: `fleet-intelligence-taxis`.
+> Follow the Error Logging convention in AGENTS.md. Log file prefix: `fleet-intelligence-car`.
 
 ## Quick Start
 
@@ -118,7 +118,7 @@ To generate data for a region other than San Francisco, use the full pipeline st
 
 Or use the centralized provisioner:
 ```sql
-CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('fleet-intelligence-taxis'));
+CALL FLEET_INTELLIGENCE.CORE.PROVISION_REGION('<RegionName>', ARRAY_CONSTRUCT('fleet-intelligence-car'));
 ```
 
 ## Workflow
@@ -133,13 +133,13 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 > 2. **Always use fully qualified object names** (`FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.<object>`). Session context from `USE` statements does not persist across calls.
 > 3. **Never use `SET` session variables.** Substitute literal values directly into SQL.
 > 4. **Verify row counts after each CTAS.**
-> 5. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis",...}'`. See `references/sql-pipeline.md` for tagged SQL.
+> 5. **All CREATE statements must include a COMMENT tracking tag** per AGENTS.md convention: `COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car",...}'`. See `references/sql-pipeline.md` for tagged SQL.
 
 ### Step 1: Set Query Tag
 
 Execute:
 ```sql
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 2: Detect ORS Configuration, Choose Location, Verify Services

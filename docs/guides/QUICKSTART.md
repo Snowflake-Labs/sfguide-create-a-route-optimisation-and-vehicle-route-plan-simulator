@@ -68,8 +68,8 @@ routing-prerequisites
         ├── retail-catchment
         ├── routing-agent
         ├── travel-time-matrix
-        ├── fleet-intelligence-taxis (also needs routing-customization)
-        ├── fleet-intelligence-food-delivery (also needs routing-customization)
+        ├── fleet-intelligence-car (also needs routing-customization)
+        ├── fleet-intelligence-ebike (also needs routing-customization)
         └── route-deviation (also needs routing-customization)
               └── dwell-analysis (also needs synthetic-datasets-generator output)
 ```

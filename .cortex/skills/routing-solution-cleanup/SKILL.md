@@ -265,8 +265,8 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 | Skill | Tracking Name | Key Objects |
 |-------|--------------|-------------|
 | build-routing-solution | `oss-build-routing-solution` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs |
-| fleet-intelligence-taxis | `oss-fleet-intelligence-taxis` | FLEET_INTELLIGENCE_TAXIS schema, 10+ tables, views, CONFIG |
-| fleet-intelligence-food-delivery | `oss-fleet-intelligence-food-delivery` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
+| fleet-intelligence-car | `oss-fleet-intelligence-car` | FLEET_INTELLIGENCE_TAXIS schema, 10+ tables, views, CONFIG |
+| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |
 | dwell-analysis | `oss-dwell-analysis` | DWELL_ANALYSIS schema, 8 dynamic tables, task, geofence/SLA tables, views |
 | retail-catchment | `oss-retail-catchment` | CATCHMENT schema, POIs, addresses, cities, region config |

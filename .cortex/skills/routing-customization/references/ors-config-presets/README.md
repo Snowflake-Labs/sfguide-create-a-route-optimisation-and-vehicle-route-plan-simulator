@@ -36,8 +36,8 @@ All presets in this folder satisfy the same invariants, so it is safe to swap be
 
 | Skill | Recommended preset |
 |---|---|
-| `route-optimization`, `fleet-intelligence-taxis` | `standard` |
-| `fleet-intelligence-food-delivery`, `retail-catchment` | `bikes` |
+| `route-optimization`, `fleet-intelligence-car` | `standard` |
+| `fleet-intelligence-ebike`, `retail-catchment` | `bikes` |
 | `backload-matching`, `freight-exchange` | `hgv` |
 | Any demo running on a continental region (USA, EU) | `continental` |
 

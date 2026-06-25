@@ -5,12 +5,12 @@
  * No S3 external stages — all data comes from UNIFIED.
  */
 
-ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 CREATE DATABASE IF NOT EXISTS FLEET_INTELLIGENCE
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG (
     VEHICLE_TYPE VARCHAR NOT NULL,
     REGION       VARCHAR NOT NULL
 )
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 MERGE INTO FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG tgt
 USING (SELECT 'ebike' AS VEHICLE_TYPE, 'SanFrancisco' AS REGION) src
 ON TRUE
@@ -30,7 +30,7 @@ WHEN NOT MATCHED THEN INSERT (VEHICLE_TYPE, REGION)
 -- VW_DRIVER_LOCATIONS (telemetry projection)
 --------------------------------------------------------------------
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
     t.VEHICLE_ID AS DRIVER_ID,
@@ -59,7 +59,7 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TELEMETRY_ID ORDER BY t.TS) = 1;
 -- VW_TRIP_SUMMARY (trip projection)
 --------------------------------------------------------------------
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 WITH cfg AS (SELECT VEHICLE_TYPE, REGION FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.CONFIG LIMIT 1),
 trip_speeds AS (
@@ -114,12 +114,12 @@ WHERE t.VEHICLE_TYPE = (SELECT VEHICLE_TYPE FROM cfg)
 -- WRAPPER VIEWS (React UI compatibility)
 --------------------------------------------------------------------
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_SUMMARY
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT * FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.DRIVER_LOCATIONS_V
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT
     DRIVER_ID, TRIP_ID,
@@ -134,13 +134,13 @@ SELECT
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_DRIVER_LOCATIONS;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.ROUTE_NAMES
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT TRIP_ID, ORIGIN_ADDRESS || ' -> ' || DESTINATION_ADDRESS AS TRIP_NAME
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIPS_ASSIGNED_TO_DRIVERS
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT DRIVER_ID, TRIP_ID, GEOMETRY, ORIGIN, DESTINATION,
        ORIGIN_ADDRESS, DESTINATION_ADDRESS,
@@ -148,7 +148,7 @@ SELECT DRIVER_ID, TRIP_ID, GEOMETRY, ORIGIN, DESTINATION,
 FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.VW_TRIP_SUMMARY;
 
 CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS.TRIP_ROUTE_PLAN
-    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-taxis","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
+    COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-car","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'
 AS
 SELECT TRIP_ID, DRIVER_ID, ORIGIN_ADDRESS, ORIGIN_ADDRESS AS ORIGIN_STREET,
        DESTINATION_ADDRESS, DESTINATION_ADDRESS AS DESTINATION_STREET,

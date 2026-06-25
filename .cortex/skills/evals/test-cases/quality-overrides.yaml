@@ -2,10 +2,10 @@ route-optimization:
   skip:
     - "check_9"   # error handling — Execution Rules kept inline as acceptable (C4 KEPT)
 
-fleet-intelligence-taxis:
+fleet-intelligence-car:
   skip:
     - "check_11"  # progressive disclosure — local Streamlit approach by design (C8)
 
-fleet-intelligence-food-delivery:
+fleet-intelligence-ebike:
   skip:
     - "check_11"  # progressive disclosure — app deployment uses references/ already
