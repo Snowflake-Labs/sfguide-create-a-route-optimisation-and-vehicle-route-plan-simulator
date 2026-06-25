@@ -74,8 +74,8 @@ Sample data is pre-loaded so dashboards work out of the box:
 
 | Demo | What it does | Deploy with |
 |------|-------------|-------------|
-| **Fleet Taxis** | Realistic taxi GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable city, fleet size, and shift patterns. | `generate driver locations` |
-| **Food Delivery** | Food delivery courier telemetry with configurable restaurant density and courier counts. | `setup food delivery fleet` |
+| **Car Fleet** | Realistic vehicle GPS telemetry using Overture Maps POIs and ORS road-following routes. Configurable city, fleet size, and shift patterns. | `generate driver locations` |
+| **E-Bike Fleet** | E-bike fleet telemetry with configurable POI density and fleet size. | `setup e-bike fleet` |
 | **Route Deviation** | Compares actual GPS paths against planned routes to detect detours and analyze deviation patterns. | `deploy route deviation` |
 | **Dwell Analysis** | 12-step Dynamic Table pipeline: state detection, dwell sessionization, H3 congestion heatmaps, SLA breach alerts, facility utilization, daily trends. | `deploy dwell analysis` |
 | **Route Optimization** | VRP demo using Overture Maps and CARTO Marketplace data with Snowflake notebooks. | `deploy route optimization demo` |
@@ -112,8 +112,8 @@ Open this repo in Cortex Code and type any of these phrases:
 | Check environment | `check build prerequisites` |
 | Change to London | `change location to London` |
 | Enable cycling profile | `change routing profile` |
-| Deploy taxi fleet demo | `generate driver locations` |
-| Deploy food delivery demo | `setup food delivery fleet` |
+| Deploy car fleet demo | `generate driver locations` |
+| Deploy e-bike fleet demo | `setup e-bike fleet` |
 | Deploy route deviation | `deploy route deviation` |
 | Deploy dwell analysis | `deploy dwell analysis` |
 | Deploy retail catchment | `deploy retail catchment` |

@@ -260,7 +260,7 @@ export interface GenerationConfig {
   category_map?: Record<string, string[] | string>;
   // Whether this mode participates in the freight marketplace (freight offers /
   // partners / lane history). Defaults to generating when unset (back-compat
-  // for saved presets); set false for non-freight modes (taxi / courier).
+  // for saved presets); set false for non-freight modes (car / e-bike).
   generates_freight?: boolean;
   ghost_trailer?: {
     probability: number;

@@ -49,7 +49,7 @@ padding:
 ## When NOT to use `PageContainer`
 
 - Pure map / canvas pages where the map fills 100% of the area (e.g. Emergency
-  Response, Retail Catchment, Fleet Taxis Routes/Heatmap, Dwell Congestion Map,
+  Response, Retail Catchment, Car Fleet Routes/Heatmap, Dwell Congestion Map,
   Route Deviation Comparison, Agent Playground). Those manage their own
   layout intentionally.
 - Pages already known to scroll correctly under non-full-width `.app-main`

@@ -1,6 +1,6 @@
 ---
 name: backload-matching
-description: "Deploy the Backload Matching Engine demo: a fleet-wide VRP solve over idle-bound trailers + internal volumes + external freight-exchange offers, anchored on the OPENROUTESERVICE_APP.CORE.OPTIMIZATION function. The page picks one or many trailers, calls OPTIMIZATION once, and renders empty/loaded legs, KPI savings, and a Cortex rationale. Use when: setting up the DHL Freight backload demo, asset velocity / trailer rotation use cases, freight-exchange aggregation, internal-first vs external-second proposals, multi-trailer joint dispatch. Do NOT use for: route optimization VRP from PLACES (use route-optimization), route deviation analysis (use route-deviation), retail catchment (use retail-catchment), fleet intelligence taxi/food-delivery demos, or single-leg directions tests (use FunctionTester). Triggers: backload, backload matching, empty mile, empty leg, asset velocity, trailer rotation, freight exchange, freight exchanges, idle trailer, idle-bound trailer, Timocom, WTransnet, Teleroute, B2P, DHL, DHL Freight, dispatcher proposal, internal-first match, supply chain action engine, NTBO, line-haul VRP, drop-and-hook."
+description: "Deploy the Backload Matching Engine demo: a fleet-wide VRP solve over idle-bound trailers + internal volumes + external freight-exchange offers, anchored on the OPENROUTESERVICE_APP.CORE.OPTIMIZATION function. The page picks one or many trailers, calls OPTIMIZATION once, and renders empty/loaded legs, KPI savings, and a Cortex rationale. Use when: setting up the DHL Freight backload demo, asset velocity / trailer rotation use cases, freight-exchange aggregation, internal-first vs external-second proposals, multi-trailer joint dispatch. Do NOT use for: route optimization VRP from PLACES (use route-optimization), route deviation analysis (use route-deviation), retail catchment (use retail-catchment), fleet intelligence car/e-bike demos, or single-leg directions tests (use FunctionTester). Triggers: backload, backload matching, empty mile, empty leg, asset velocity, trailer rotation, freight exchange, freight exchanges, idle trailer, idle-bound trailer, Timocom, WTransnet, Teleroute, B2P, DHL, DHL Freight, dispatcher proposal, internal-first match, supply chain action engine, NTBO, line-haul VRP, drop-and-hook."
 depends_on:
   - install-fleet-apps
   - route-optimization
@@ -100,7 +100,7 @@ snow sql -f .cortex/skills/backload-matching/references/bootstrap.sql -c <ACTIVE
 
 This creates `FLEET_INTELLIGENCE.BACKLOAD_MATCHING.{CONFIG, VW_TRAILERS, VW_INTERNAL_VOLUMES, VW_EXTERNAL_OFFERS, PROPOSAL_DECISIONS}` as **projection views** over `SYNTHETIC_DATASETS.UNIFIED.*` filtered by the active Data Studio preset (CONFIG row).
 
-The active preset is auto-synced when the user switches in DatasetPicker (or runs a new Data Studio job) - same pattern that food-delivery, dwell-analysis, and route-deviation use.
+The active preset is auto-synced when the user switches in DatasetPicker (or runs a new Data Studio job) - same pattern that fleet-intelligence-ebike, dwell-analysis, and route-deviation use.
 
 ### Step 3b (one-time, existing accounts only): Backfill freight offers
 

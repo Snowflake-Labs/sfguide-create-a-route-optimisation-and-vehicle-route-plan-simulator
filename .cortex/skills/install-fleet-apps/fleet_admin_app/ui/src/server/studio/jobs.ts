@@ -815,7 +815,7 @@ export async function startGeneration(
       const fleet = fleetResult.fleet;
       // Freight marketplace data (offers / partners / lane history) is generated
       // only for modes that declare generates_freight. Defaults to ON when unset
-      // (back-compat for saved presets); the built-in taxi/courier templates set
+      // (back-compat for saved presets); the built-in car/e-bike templates set
       // it false so non-freight modes don't get semantically meaningless offers.
       const wantsFreight = config.generates_freight !== false;
       const partners = wantsFreight ? generatePartners(config, 80) : [];

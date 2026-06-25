@@ -51,8 +51,8 @@ Pick one (or more) of these demo skills:
 | Say this | What you get |
 |----------|-------------|
 | "Deploy route optimization demo" | VRP simulator with CARTO data + Streamlit |
-| "Generate taxi driver locations" | Realistic taxi fleet telemetry + Streamlit dashboard |
-| "Generate food delivery courier data" | Food delivery simulation + React app |
+| "Generate driver locations" | Realistic vehicle fleet telemetry + Streamlit dashboard |
+| "Generate e-bike fleet data" | E-bike fleet simulation + React app |
 | "Deploy retail catchment demo" | Retail location analysis with isochrone zones |
 | "Deploy route deviation demo" | Detour detection ETL + Streamlit dashboards |
 | "Deploy dwell analysis" | 12-step Dynamic Table pipeline for dwell/congestion |
