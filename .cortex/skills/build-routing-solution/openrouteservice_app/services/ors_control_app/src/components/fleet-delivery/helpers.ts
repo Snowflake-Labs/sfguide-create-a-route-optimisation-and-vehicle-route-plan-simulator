@@ -2,7 +2,7 @@ import { BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 
 const FD_DB = 'FLEET_INTELLIGENCE';
-const FD_SCHEMA = 'FLEET_INTELLIGENCE_FOOD_DELIVERY';
+const FD_SCHEMA = 'FLEET_INTELLIGENCE_EBIKE';
 const CARTO_LIGHT = '/api/tiles/{z}/{x}/{y}';
 
 export { FD_DB, FD_SCHEMA };

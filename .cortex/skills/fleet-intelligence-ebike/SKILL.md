@@ -20,7 +20,7 @@ Data is generated using **Data Studio** in the ORS Control Panel, which writes t
 - `SYNTHETIC_DATASETS.UNIFIED.FACT_VEHICLE_TELEMETRY`
 - `SYNTHETIC_DATASETS.UNIFIED.FACT_TRIPS`
 
-Projection views in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY` read active-dataset projections (`V_FACT_TRIPS_CURRENT`, `V_DIM_POIS_CURRENT`) and filter by vehicle type and region via a `CONFIG` table. See [`references/sql-projection-views.sql`](references/sql-projection-views.sql) for the complete view definitions.
+Projection views in `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE` read active-dataset projections (`V_FACT_TRIPS_CURRENT`, `V_DIM_POIS_CURRENT`) and filter by vehicle type and region via a `CONFIG` table. See [`references/sql-projection-views.sql`](references/sql-projection-views.sql) for the complete view definitions.
 
 **Objects created:**
 - `CONFIG` — single-row filter table (VEHICLE_TYPE + REGION)
@@ -35,7 +35,7 @@ The San Francisco baseline is loaded by `install-fleet-apps` Step 8 into UNIFIED
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `DATABASE` | `FLEET_INTELLIGENCE` | Target database for all objects |
-| `SCHEMA` | `FLEET_INTELLIGENCE_FOOD_DELIVERY` | Schema for projection views and CONFIG |
+| `SCHEMA` | `FLEET_INTELLIGENCE_EBIKE` | Schema for projection views and CONFIG |
 | `WAREHOUSE` | `ROUTING_ANALYTICS` | Warehouse for queries |
 | `VEHICLE_TYPE` | `ebike` | Vehicle type filter applied to UNIFIED tables |
 | `REGION` | `san_francisco` | Region filter applied to UNIFIED tables |
@@ -52,7 +52,7 @@ The San Francisco baseline is loaded by `install-fleet-apps` Step 8 into UNIFIED
 |-----------|-------|--------|
 | CREATE DATABASE | Account | Creates FLEET_INTELLIGENCE database |
 | CREATE WAREHOUSE | Account | Creates ROUTING_ANALYTICS warehouse |
-| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates FLEET_INTELLIGENCE_FOOD_DELIVERY schema |
+| CREATE SCHEMA | Database (FLEET_INTELLIGENCE) | Creates FLEET_INTELLIGENCE_EBIKE schema |
 | CREATE TABLE | Schema | Creates CONFIG table |
 | CREATE VIEW | Schema | Creates projection views |
 | SELECT ON SYNTHETIC_DATASETS.UNIFIED | Schema | Reads Data Studio output tables |
@@ -91,7 +91,7 @@ Execute each step in order using `snowflake_sql_execute`. Substitute `{PLACEHOLD
 >
 > 1. **One statement per `snowflake_sql_execute` tool call.** Never combine multiple SQL statements (CREATE, INSERT, SET, USE) in a single tool call. Multi-statement blocks can silently fail -- tables may be created with 0 rows and no error is reported. This rule applies to the `snowflake_sql_execute` tool only; `snow sql -f` and other CLI execution is fine.
 >
-> 2. **Always use fully qualified object names.** Use `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.<object>` instead of relying on `USE DATABASE` / `USE SCHEMA`. Session context from `USE` statements does not persist across `snowflake_sql_execute` calls.
+> 2. **Always use fully qualified object names.** Use `FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.<object>` instead of relying on `USE DATABASE` / `USE SCHEMA`. Session context from `USE` statements does not persist across `snowflake_sql_execute` calls.
 >
 > 3. **Never use `SET` session variables.** Variables set with `SET VAR = 'value'` do not persist across calls. Instead, substitute literal values directly into the SQL before execution.
 >
@@ -107,7 +107,7 @@ ALTER SESSION SET query_tag = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-int
 
 ### Step 2: Configure Database, Warehouse, and Schema
 
-Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_INTELLIGENCE_FOOD_DELIVERY` schema.
+Create `FLEET_INTELLIGENCE` database, `ROUTING_ANALYTICS` warehouse, and `FLEET_INTELLIGENCE_EBIKE` schema.
 
 ### Step 3: Create Projection Views
 
@@ -116,9 +116,9 @@ Run [`references/sql-projection-views.sql`](references/sql-projection-views.sql)
 ### Step 4: Verify
 
 ```sql
-SELECT 'CONFIG' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG
-UNION ALL SELECT 'DELIVERIES', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES
-UNION ALL SELECT 'RESTAURANTS_ENRICHED', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED;
+SELECT 'CONFIG' AS TBL, COUNT(*) AS CNT FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG
+UNION ALL SELECT 'DELIVERIES', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.DELIVERIES
+UNION ALL SELECT 'RESTAURANTS_ENRICHED', COUNT(*) FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.RESTAURANTS_ENRICHED;
 ```
 
 Expected: CONFIG=1, DELIVERIES and RESTAURANTS_ENRICHED > 0 (row counts depend on Data Studio generation or seed data).
@@ -137,10 +137,10 @@ Expected: CONFIG=1, DELIVERIES and RESTAURANTS_ENRICHED > 0 (row counts depend o
 To remove all objects created by this skill:
 
 ```sql
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS_ENRICHED;
-DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERIES;
-DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CONFIG;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.RESTAURANTS_ENRICHED;
+DROP VIEW IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.DELIVERIES;
+DROP TABLE IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CONFIG;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE;
 ```
 
 > **Tip:** Use the `cleanup` skill to auto-discover all tagged objects via COMMENT tracking.

@@ -50,7 +50,7 @@ export default function DriverRoutes() {
     if (!selectedTrip || gpsPoints.length === 0) return;
     setAiLoading(true);
     const summary = `Trip ${selectedTrip}: ${gpsPoints.length} GPS points, speeds ${Math.min(...gpsPoints.map((p: any) => Number(p.KMH || 0)))}-${Math.max(...gpsPoints.map((p: any) => Number(p.KMH || 0)))} km/h.`;
-    const rows = await sfQuery(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', 'Analyze this taxi trip and identify patterns or anomalies: ${summary.replace(/'/g, "''")}') AS ANALYSIS`, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_TAXIS');
+    const rows = await sfQuery(`SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', 'Analyze this taxi trip and identify patterns or anomalies: ${summary.replace(/'/g, "''")}') AS ANALYSIS`, 'FLEET_INTELLIGENCE', 'FLEET_INTELLIGENCE_CAR');
     setAiAnalysis(rows[0]?.ANALYSIS || 'No analysis available.');
     setAiLoading(false);
   }, [selectedTrip, gpsPoints]);

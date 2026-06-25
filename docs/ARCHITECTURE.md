@@ -64,8 +64,8 @@ graph LR
 
     subgraph fi ["FLEET_INTELLIGENCE"]
         CORE[CORE]
-        TAX[FLEET_INTELLIGENCE_TAXIS]
-        DEL[FLEET_INTELLIGENCE_FOOD_DELIVERY]
+        TAX[FLEET_INTELLIGENCE_CAR]
+        DEL[FLEET_INTELLIGENCE_EBIKE]
         RD[ROUTE_DEVIATION]
         DW[DWELL_ANALYSIS]
         RC[CATCHMENT]
@@ -124,8 +124,8 @@ Data Studio --> SYNTHETIC_DATASETS.UNIFIED
 | Schema | Skill | Key objects |
 |--------|-------|-------------|
 | `CORE` | build-routing-solution | `REGION_REGISTRY`, `GENERATION_JOBS`, `PROVISION_REGION` procedure |
-| `FLEET_INTELLIGENCE_TAXIS` | fleet-intelligence-car | Driver locations, trip summaries, route analytics views |
-| `FLEET_INTELLIGENCE_FOOD_DELIVERY` | fleet-intelligence-ebike | CONFIG, `DELIVERIES` view, `RESTAURANTS_ENRICHED` view |
+| `FLEET_INTELLIGENCE_CAR` | fleet-intelligence-car | Driver locations, trip summaries, route analytics views |
+| `FLEET_INTELLIGENCE_EBIKE` | fleet-intelligence-ebike | CONFIG, `DELIVERIES` view, `RESTAURANTS_ENRICHED` view |
 | `ROUTE_DEVIATION` | route-deviation | CONFIG, 5 projection views, `TRIP_DEVIATION_ANALYSIS`, deviation trends |
 | `DWELL_ANALYSIS` | dwell-analysis | CONFIG, 8 Dynamic Tables, `SLA_ALERT_LOG`, geofences, SLA thresholds |
 | `CATCHMENT` | retail-catchment | `POIS`, regional addresses, competitor data |
@@ -155,8 +155,8 @@ Deploy flow: `npm run build` then Docker build (linux/amd64), push to SPCS regis
 |---------|-------|-------------|
 | **Home** | Landing page with animated route visualization | Seed intro trips |
 | **Dwell Analysis** | Overview, Congestion Map, Facility Utilization, SLA Alerts, Trip Inspector, Driver Performance, Live Operations (7 pages) | `DWELL_ANALYSIS` Dynamic Tables |
-| **Fleet Delivery** | Delivery Dashboard, Fleet Map, Catchment Panel, Courier Heatmap (4 pages) | `FLEET_INTELLIGENCE_FOOD_DELIVERY` views |
-| **Fleet Taxis** | Fleet Overview, Driver Routes, Heat Map (3 pages) | `FLEET_INTELLIGENCE_TAXIS` tables |
+| **Fleet Delivery** | Delivery Dashboard, Fleet Map, Catchment Panel, Courier Heatmap (4 pages) | `FLEET_INTELLIGENCE_EBIKE` views |
+| **Fleet Taxis** | Fleet Overview, Driver Routes, Heat Map (3 pages) | `FLEET_INTELLIGENCE_CAR` tables |
 | **Route Deviation** | Deviation Dashboard, Route Comparison, Route Inspector (3 pages) | `ROUTE_DEVIATION` ETL tables |
 | **Route Optimization** | VRP simulator with interactive map | `ROUTE_OPTIMIZATION` + live ORS calls |
 | **Catchment** | Isochrone analysis with competitor mapping | `CATCHMENT` + live ORS calls |

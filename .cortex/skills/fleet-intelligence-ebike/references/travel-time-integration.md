@@ -238,10 +238,10 @@ ALTER TABLE FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.SF_TRAVEL_TIME_MATRIX
 ### Overture Maps-derived Tables
 
 ```sql
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.RESTAURANTS
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.RESTAURANTS
     ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.CUSTOMER_ADDRESSES
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.CUSTOMER_ADDRESSES
     ADD SEARCH OPTIMIZATION ON EQUALITY(CITY);
 ```
 
@@ -270,7 +270,7 @@ Ensure the scalable travel time matrix pipeline has completed (see `.cortex/skil
 
 **Progress monitoring:**
 ```sql
-CALL FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.MATRIX_PROGRESS();
+CALL FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.MATRIX_PROGRESS();
 ```
 Returns JSON per resolution:
 ```json
@@ -322,7 +322,7 @@ COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","ve
 Create a view that joins delivery orders with pre-computed travel times:
 
 ```sql
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.ORDERS_WITH_TRAVEL_TIMES AS
 WITH order_h3 AS (
     SELECT 
         o.*,
@@ -335,7 +335,7 @@ WITH order_h3 AS (
         H3_POINT_TO_CELL_STRING(o.CUSTOMER_LOCATION, 7) AS customer_h3_res7,
         -- Calculate straight-line distance for tier selection
         ST_DISTANCE(o.RESTAURANT_LOCATION, o.CUSTOMER_LOCATION) / 1000 AS straight_line_km
-    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.ORDERS_WITH_LOCATIONS o
 )
 SELECT 
     oh.*,
@@ -367,13 +367,13 @@ LEFT JOIN FLEET_INTELLIGENCE.TRAVEL_TIME_MATRIX.CA_TRAVEL_TIME_RES7 tt7
     ON (oh.restaurant_h3_res7 = tt7.origin_h3 AND oh.customer_h3_res7 = tt7.dest_h3)
     OR (oh.restaurant_h3_res7 = tt7.dest_h3 AND oh.customer_h3_res7 = tt7.origin_h3);
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.ORDERS_WITH_TRAVEL_TIMES SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 3: Create ETA Prediction Function
 
 ```sql
-CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+CREATE OR REPLACE FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.PREDICT_DELIVERY_ETA(
     restaurant_lon FLOAT,
     restaurant_lat FLOAT,
     customer_lon FLOAT,
@@ -432,7 +432,7 @@ $$
     FROM travel_lookup
 $$;
 
-ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.PREDICT_DELIVERY_ETA(FLOAT, FLOAT, FLOAT, FLOAT, INT) SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 4: Use ETA Predictions in Delivery Routes
@@ -440,12 +440,12 @@ ALTER FUNCTION FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIV
 Replace ORS DIRECTIONS calls with matrix lookups for faster route generation:
 
 ```sql
-CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 AS
+CREATE OR REPLACE TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.DELIVERY_ROUTE_GEOMETRIES_V2 AS
 WITH order_timing AS (
     SELECT 
         o.*,
         -- Get pre-computed travel time from matrix
-        FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+        FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.PREDICT_DELIVERY_ETA(
             ST_X(o.RESTAURANT_LOCATION),
             ST_Y(o.RESTAURANT_LOCATION),
             ST_X(o.CUSTOMER_LOCATION),
@@ -453,7 +453,7 @@ WITH order_timing AS (
             o.PREP_TIME_MINS
         ) AS eta_info,
         ROW_NUMBER() OVER (PARTITION BY o.COURIER_ID ORDER BY o.ORDER_HOUR, o.ORDER_NUMBER) AS COURIER_ORDER_SEQ
-    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.ORDERS_WITH_LOCATIONS o
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.ORDERS_WITH_LOCATIONS o
 ),
 cumulative_timing AS (
     SELECT 
@@ -498,7 +498,7 @@ SELECT
     eta_info:resolution_used::STRING AS TRAVEL_TIME_SOURCE
 FROM cumulative_timing;
 
-ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.DELIVERY_ROUTE_GEOMETRIES_V2 SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Step 5: Real-time ETA Updates View
@@ -506,7 +506,7 @@ ALTER TABLE FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.DELIVERY_ROUTE_G
 Create a view for real-time courier tracking with updated ETAs:
 
 ```sql
-CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS AS
+CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.LIVE_DELIVERY_ETAS AS
 SELECT 
     cl.COURIER_ID,
     cl.ORDER_ID,
@@ -543,14 +543,14 @@ SELECT
         WHEN cl.KMH < 30 THEN 'normal'
         ELSE 'fast'
     END AS traffic_status
-FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl
+FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.COURIER_LOCATIONS cl
 WHERE cl.POINT_INDEX = (
     SELECT MAX(POINT_INDEX) 
-    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.COURIER_LOCATIONS cl2 
+    FROM FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.COURIER_LOCATIONS cl2 
     WHERE cl2.ORDER_ID = cl.ORDER_ID
 );
 
-ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
+ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.LIVE_DELIVERY_ETAS SET COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-fleet-intelligence-ebike","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 ```
 
 ### Performance Comparison: Matrix Lookup vs ORS Calls
@@ -565,7 +565,7 @@ ALTER VIEW FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.LIVE_DELIVERY_ETA
 
 ```sql
 -- Instant ETA prediction using pre-computed matrix
-SELECT FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY.PREDICT_DELIVERY_ETA(
+SELECT FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE.PREDICT_DELIVERY_ETA(
     -122.4194, 37.7749,  -- Restaurant (SF City Hall)
     -122.3894, 37.7649,  -- Customer (Mission District)
     12                    -- Prep time (minutes)

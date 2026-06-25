@@ -173,8 +173,8 @@ DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CATCHMENT CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DWELL_ANALYSIS CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.ROUTE_DEVIATION CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_FOOD_DELIVERY CASCADE;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_TAXIS CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_EBIKE CASCADE;
+DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.FLEET_INTELLIGENCE_CAR CASCADE;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.CORE CASCADE;
 
 -- 18. Suspend and drop warehouse
@@ -265,8 +265,8 @@ To clean up objects from a single skill, set `SKILL_FILTER` to its tracking name
 | Skill | Tracking Name | Key Objects |
 |-------|--------------|-------------|
 | build-routing-solution | `oss-build-routing-solution` | compute pool, OPENROUTESERVICE_APP DB, SYNTHETIC_DATASETS DB, FLEET_INTELLIGENCE DB, ROUTING_ANALYTICS WH, seed data, EAIs |
-| fleet-intelligence-car | `oss-fleet-intelligence-car` | FLEET_INTELLIGENCE_TAXIS schema, 10+ tables, views, CONFIG |
-| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` | FLEET_INTELLIGENCE_FOOD_DELIVERY schema, projection views, CONFIG |
+| fleet-intelligence-car | `oss-fleet-intelligence-car` | FLEET_INTELLIGENCE_CAR schema, 10+ tables, views, CONFIG |
+| fleet-intelligence-ebike | `oss-fleet-intelligence-ebike` | FLEET_INTELLIGENCE_EBIKE schema, projection views, CONFIG |
 | route-deviation | `oss-route-deviation` | ROUTE_DEVIATION schema, deviation tables, views, CONFIG |
 | dwell-analysis | `oss-dwell-analysis` | DWELL_ANALYSIS schema, 8 dynamic tables, task, geofence/SLA tables, views |
 | retail-catchment | `oss-retail-catchment` | CATCHMENT schema, POIs, addresses, cities, region config |
