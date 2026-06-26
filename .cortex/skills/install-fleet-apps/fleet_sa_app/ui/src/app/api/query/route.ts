@@ -14,6 +14,7 @@ interface StatementResponse {
     numRows: number;
     format: string;
     rowType: Array<{ name: string; type: string }>;
+    partitionInfo?: Array<{ rowCount: number; uncompressedSize: number }>;
   };
   data?: string[][];
   code?: string;
@@ -118,6 +119,29 @@ async function executeStatement(sql: string, opts: ExecOpts = {}): Promise<State
   return res.json();
 }
 
+// The SQL API splits large result sets into partitions; the initial response
+// (or first poll) carries only partition 0 in `data`. Without this, a big query
+// like the 1182-cell hazard grid silently returns only the first ~partition of
+// rows, so the UI renders a fraction of the hexagons while server-side procs see
+// the full set -> visible mismatches. Fetch the remaining partitions and append.
+async function fetchPartition(handle: string, partition: number): Promise<string[][]> {
+  const auth = getSnowflakeAuth();
+  const url = `${auth.baseUrl}/api/v2/statements/${handle}?partition=${partition}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+      Accept: 'application/json',
+      'X-Snowflake-Authorization-Token-Type': auth.tokenType,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Partition ${partition} error ${res.status}: ${text}`);
+  }
+  const data: StatementResponse = await res.json();
+  return data.data || [];
+}
+
 async function pollForResults(handle: string, sqlPreview: string): Promise<StatementResponse> {
   const auth = getSnowflakeAuth();
   const url = `${auth.baseUrl}/api/v2/statements/${handle}`;
@@ -197,7 +221,20 @@ async function handleQuery(request: NextRequest): Promise<Response> {
       type: col.type,
     }));
 
-    const rows = (result.data || []).map((row) => {
+    // Assemble all partitions, not just partition 0, so large result sets (e.g.
+    // the full hazard-zone grid) are returned in their entirety.
+    let allData: string[][] = result.data || [];
+    const partitions = result.resultSetMetaData?.partitionInfo;
+    const handle = result.statementHandle;
+    if (handle && partitions && partitions.length > 1) {
+      for (let p = 1; p < partitions.length; p++) {
+        const pd = await fetchPartition(handle, p);
+        allData = allData.concat(pd);
+      }
+      logger.debug('sf-partitions', { count: partitions.length, rows: allData.length, sql: sqlPreview });
+    }
+
+    const rows = allData.map((row) => {
       const obj: Record<string, unknown> = {};
       columns.forEach((col, i) => {
         const raw = row[i];

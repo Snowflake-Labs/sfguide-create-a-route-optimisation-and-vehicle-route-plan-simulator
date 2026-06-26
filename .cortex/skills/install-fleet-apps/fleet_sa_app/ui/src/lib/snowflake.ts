@@ -17,7 +17,12 @@ interface SnowflakeResponse {
 
 async function callSnowflake(sql: string, bindings?: Record<string, { type: string; value: string }>): Promise<SnowflakeResponse> {
   const auth = getSnowflakeAuth();
-  const body: Record<string, unknown> = { statement: sql, timeout: 60, warehouse, role };
+  // 80s statement timeout: must stay under the 90s SPCS ingress connection
+  // timeout so a slow-but-valid call (e.g. routing/isochrone ops while ORS is
+  // under load) still returns synchronously instead of going async + polling
+  // past the ingress limit (which surfaces to the browser as a 504
+  // "upstream request timeout" that fails JSON.parse).
+  const body: Record<string, unknown> = { statement: sql, timeout: 80, warehouse, role };
   if (bindings) body.bindings = bindings;
 
   const response = await fetch(`${auth.baseUrl}/api/v2/statements`, {

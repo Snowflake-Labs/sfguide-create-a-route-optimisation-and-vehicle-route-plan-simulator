@@ -1800,51 +1800,117 @@ try {
     var mins = Math.max(1, Math.min(60, Math.floor(Number(RANGE_MINUTES) || 15)));
     var target = Math.max(1, Math.min(500, Math.floor(Number(TARGET_COUNT) || 60)));
 
-    // One statement: centers -> per-center isochrone -> union -> filter the raw
-    // 50km Overture-address sample (DIM_PARTICIPANTS, via the contract) to those
-    // inside the union -> MATRIX snap-filter (<=350m, one off-network point
-    // aborts the VROOM solve) -> county-risk tag -> aggregate.
+    // Profile follows the active dataset's vehicle_type (ebike->cycling, hgv->
+    // driving-hgv, ...) via RESOLVE_PROFILE, which canonicalizes the vehicle_type
+    // and falls back to a built profile when the requested graph is not available
+    // (e.g. only driving-car is built today, so ebike -> driving-car until the
+    // cycling graph is built). Returns an OBJECT; we want .used.
+    var profile = 'driving-car';
+    try {
+        var prs = snowflake.createStatement({ sqlText:
+          "SELECT FLEET_INTELLIGENCE.ROUTING_TOOLS.RESOLVE_PROFILE(" +
+          "  (SELECT VEHICLE_TYPE FROM FLEET_INTELLIGENCE.CORE.DIM_DATASETS WHERE IS_ACTIVE = TRUE LIMIT 1)," +
+          "  (SELECT ARRAY_AGG(f.KEY) FROM LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.ORS_STATUS(?):profiles) f)" +
+          "):used::STRING", binds: [region] }).execute();
+        if (prs.next()) { var p = prs.getColumnValue(1); if (p) profile = p; }
+    } catch(eProf) { profile = 'driving-car'; }
+
+    // Step 1: materialize the per-center isochrones into a temp table, fetched in
+    // BATCHES via the multi-location ISOCHRONES endpoint (_ISOCHRONES_RAW takes a
+    // locations array; engine cap is 5/call). 10 centers -> 2 calls instead of 10.
+    // Rationale (measured): a single ORS instance on a small node is slow/unstable
+    // per request (~14s under load); minimizing round-trips keeps the whole seed
+    // well under the app's 80s statement timeout + 90s SPCS ingress. Each batch is
+    // in try/catch so a failed batch is skipped, not fatal. Also avoids the ~140s
+    // spherical ST_UNION_AGG entirely (membership = inside ANY isochrone, Step 2).
+    snowflake.execute({ sqlText:
+      "CREATE OR REPLACE TEMPORARY TABLE FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO (g GEOGRAPHY)" });
+    var crs = snowflake.createStatement({ sqlText:
+      "SELECT LON, LAT FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_CARE_CENTERS_SCOPED(?, CAST(NULL AS VARCHAR))) " +
+      "WHERE LON IS NOT NULL AND LAT IS NOT NULL LIMIT 25", binds: [region] }).execute();
+    var centers = [];
+    while (crs.next()) { centers.push([crs.getColumnValue(1), crs.getColumnValue(2)]); }
+    var CHUNK = 5; // ORS isochrones_maximum_locations cap per call (gateway max)
+    var insSql =
+      "INSERT INTO FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO " +
+      "SELECT TO_GEOGRAPHY(f.value:geometry) " +
+      "FROM TABLE(FLATTEN(input => OPENROUTESERVICE_APP.CORE._ISOCHRONES_RAW('" + profile + "', " +
+      "  OBJECT_CONSTRUCT('locations', PARSE_JSON(?), 'range', ARRAY_CONSTRUCT(" + (mins * 60) + "), 'range_type', 'time'), ?):features)) f " +
+      "WHERE f.value:geometry IS NOT NULL AND ST_NPOINTS(TO_GEOGRAPHY(f.value:geometry)) > 0";
+    // Insert one batch; on failure fall back to per-center calls. A fresh ORS
+    // install ships isochrones_maximum_locations=2 (< CHUNK), so a 5-location
+    // request would be rejected (request_too_large) -> the per-center fallback
+    // preserves coverage regardless of the region's effective limit, without
+    // needing to read/raise the limit first.
+    function insertBatch(batch) {
+        try { snowflake.createStatement({ sqlText: insSql,
+                  binds: [JSON.stringify(batch), region] }).execute(); return true; }
+        catch(eIso) { return false; }
+    }
+    for (var start = 0; start < centers.length; start += CHUNK) {
+        var batch = centers.slice(start, start + CHUNK);
+        if (!insertBatch(batch) && batch.length > 1) {
+            for (var k = 0; k < batch.length; k++) { insertBatch([batch[k]]); }
+        }
+    }
+    var nrs = snowflake.createStatement({ sqlText:
+      "SELECT COUNT(*) FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO" }).execute();
+    nrs.next();
+    var nIso = Number(nrs.getColumnValue(1) || 0);
+    if (nIso === 0) {
+        return { status: 'FAILED', region: region,
+                 error: 'No care-center isochrone coverage for region ' + region +
+                        ' (the routing engine may be warming up, or no care centers exist). ' +
+                        'Generate Emergency Response data (hazard + anchors + participants) in Data Studio and ensure ORS is running, then retry.' };
+    }
+
+    // Step 2: filter the raw 50km participant sample to those inside ANY isochrone
+    // (JOIN + DISTINCT), then tag each participant with BOTH the wildfire and flood
+    // risk of the hazard zone it sits in (spatial join) so the UI can recolor dots
+    // to match the hexagon layer when the hazard toggle flips -- without re-seeding.
+    // The map "reachable area" is a TRUE dissolve: ST_UNION_AGG over simplified
+    // isochrones (measured ~sub-second for 10 polygons) -> one clean union outline
+    // instead of overlapping per-center polygons.
+    // No live MATRIX snap: participants are real Overture addresses (already
+    // on-network), the snap was a fragile extra ORS call that over-filtered to
+    // zero, and evac_solve snaps/validates routability anyway.
     var sql =
-      "WITH centers AS (" +
-      "  SELECT LON, LAT FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_CARE_CENTERS_SCOPED(?, CAST(NULL AS VARCHAR))) " +
-      "  WHERE LON IS NOT NULL AND LAT IS NOT NULL LIMIT 25)," +
-      " iso AS (SELECT TO_GEOGRAPHY(i.GEOJSON) AS g FROM centers c, " +
-      "    TABLE(OPENROUTESERVICE_APP.CORE.ISOCHRONES('driving-car', c.LON, c.LAT, " + mins + ", ?)) i)," +
-      " u AS (SELECT ST_UNION_AGG(g) AS area FROM iso WHERE g IS NOT NULL)," +
-      " raw AS (SELECT PARTICIPANT_ID, LON, LAT, LOC AS PT " +
+      "WITH iso AS (SELECT g FROM FLEET_INTELLIGENCE.ROUTING_TOOLS.TMP_EVAC_ISO)," +
+      " raw AS (SELECT PARTICIPANT_ID, LON, LAT, LOC AS PT, ADDRESS " +
       "    FROM TABLE(FLEET_APP.EMERGENCY_RESPONSE.F_VW_PARTICIPANTS_SCOPED(?, CAST(NULL AS VARCHAR))) " +
       "    WHERE LOC IS NOT NULL AND LON IS NOT NULL AND LAT IS NOT NULL)," +
-      " inside AS (SELECT r.PARTICIPANT_ID, r.LON, r.LAT, r.PT FROM raw r, u WHERE ST_WITHIN(r.PT, u.area))," +
-      " samp AS (SELECT PARTICIPANT_ID, LON, LAT, PT, ROW_NUMBER() OVER (ORDER BY RANDOM()) AS RN FROM inside LIMIT " + target + ")," +
-      " coords AS (SELECT ARRAY_AGG(ARRAY_CONSTRUCT(LON,LAT)) WITHIN GROUP (ORDER BY RN) AS C FROM samp)," +
-      " snap AS (SELECT f.INDEX AS IDX, f.VALUE:snapped_distance::FLOAT AS SD " +
-      "    FROM coords, LATERAL FLATTEN(input => OPENROUTESERVICE_APP.CORE.MATRIX('driving-car', C::ARRAY, ?):destinations) f)," +
-      " ok AS (SELECT s.LON, s.LAT, s.PT, COALESCE(s.PARTICIPANT_ID, 'P'||s.RN) AS PID FROM samp s JOIN snap n ON n.IDX = s.RN-1 " +
-      "    WHERE n.SD IS NOT NULL AND n.SD <= 350)," +
-      " risk AS (SELECT o.PID, o.LON, o.LAT, h.COUNTY AS CNTY, COALESCE(h.RISK_LEVEL,0) AS LVL, " +
-      "    COALESCE(h.RISK_RATING,'No Rating') AS LBL FROM ok o " +
+      " inside AS (SELECT DISTINCT r.PARTICIPANT_ID, r.LON, r.LAT, r.PT, r.ADDRESS " +
+      "    FROM raw r JOIN iso i ON ST_WITHIN(r.PT, i.g))," +
+      " samp AS (SELECT PARTICIPANT_ID, LON, LAT, PT, ADDRESS, ROW_NUMBER() OVER (ORDER BY RANDOM()) AS RN FROM inside LIMIT " + target + ")," +
+      " risk AS (SELECT COALESCE(s.PARTICIPANT_ID, 'P'||s.RN) AS PID, s.LON, s.LAT, s.ADDRESS, " +
+      "    MAX(IFF(h.HAZARD_TYPE='WILDFIRE', h.RISK_LEVEL, NULL))  AS WF_LVL, " +
+      "    MAX(IFF(h.HAZARD_TYPE='WILDFIRE', h.RISK_RATING, NULL)) AS WF_LBL, " +
+      "    MAX(IFF(h.HAZARD_TYPE='FLOOD',    h.RISK_LEVEL, NULL))  AS FL_LVL, " +
+      "    MAX(IFF(h.HAZARD_TYPE='FLOOD',    h.RISK_RATING, NULL)) AS FL_LBL, " +
+      "    ANY_VALUE(h.COUNTY) AS CNTY " +
+      "    FROM samp s " +
       "    LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_HAZARD_ZONES_CURRENT h " +
-      "      ON h.HAZARD_TYPE = '" + hz + "' AND h.REGION = ? AND ST_WITHIN(o.PT, h.GEOM)) " +
-      "SELECT (SELECT ST_ASGEOJSON(ST_SIMPLIFY(area, 200))::STRING FROM u) AS UNION_GEOJSON, " +
-      "  (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('pid',PID::STRING,'lon',LON,'lat',LAT," +
-      "     'county',CNTY::STRING,'lvl',LVL,'lbl',LBL::STRING)) FROM risk) AS PARTICIPANTS";
-    var rs = snowflake.createStatement({ sqlText: sql, binds: [region, region, region, region, region] }).execute();
-    if (!rs.next()) {
-        return { status: 'FAILED', region: region,
-                 error: 'No care centers / isochrone coverage for region ' + region +
-                        '. Generate Emergency Response data (hazard + anchors + participants) in Data Studio.' };
-    }
+      "      ON h.REGION = ? AND h.HAZARD_TYPE IN ('WILDFIRE','FLOOD') AND ST_WITHIN(s.PT, h.GEOM) " +
+      "    GROUP BY 1, 2, 3, 4) " +
+      "SELECT (SELECT ST_ASGEOJSON(ST_UNION_AGG(ST_SIMPLIFY(g, 150)))::STRING FROM iso) AS UNION_GEOJSON, " +
+      "  (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('pid',PID::STRING,'lon',LON,'lat',LAT,'address',ADDRESS::STRING," +
+      "     'county',CNTY::STRING,'wf_lvl',COALESCE(WF_LVL,0),'wf_lbl',COALESCE(WF_LBL,'No Rating')," +
+      "     'fl_lvl',COALESCE(FL_LVL,0),'fl_lbl',COALESCE(FL_LBL,'No Rating'))) FROM risk) AS PARTICIPANTS";
+    var rs = snowflake.createStatement({ sqlText: sql, binds: [region, region] }).execute();
+    rs.next();
     var ug = rs.getColumnValue(1);
     var parts = rs.getColumnValue(2);
     parts = parts ? ((typeof parts === 'string') ? JSON.parse(parts) : parts) : [];
+
     if (!parts || parts.length === 0) {
         return { status: 'FAILED', region: region, hazard_type: hz, range_minutes: mins,
                  union_geojson: ug ? ((typeof ug==='string')?JSON.parse(ug):ug) : null,
-                 participants: [],
-                 error: 'No routable participants in the raw 50km sample fall inside the isochrone union. Increase drive minutes, or regenerate Data Studio data with a larger participant sample / radius.' };
+                 participants: [], isochrone_count: nIso,
+                 error: 'No participants from the 50km sample fall inside the ' + mins + '-min isochrone area. Increase travel time, or regenerate Data Studio data with participants closer to the care centers.' };
     }
     return {
         status: 'SUCCESS', region: region, hazard_type: hz, range_minutes: mins,
+        profile: profile, isochrone_count: nIso,
         union_geojson: ug ? ((typeof ug === 'string') ? JSON.parse(ug) : ug) : null,
         participants: parts, participant_count: parts.length
     };
@@ -1877,20 +1943,39 @@ try {
             if (rr.next()) region = rr.getColumnValue(1); } catch(e) {}
         if (!region) region = 'SanFrancisco';
     }
-    var sql = "SELECT o.RESPONSE, ST_ASGEOJSON(o.GEOJSON) AS GEOJSON " +
-              "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o LIMIT 1";
+    // OPTIMIZATION flattens resp:routes -> one row per vehicle, each with that
+    // vehicle's GEOJSON LineString. RESPONSE (full VROOM JSON: routes/unassigned/
+    // summary) is identical on every row. Aggregate ALL per-vehicle geometries
+    // into one FeatureCollection (tagged with the vehicle id) so the UI draws
+    // every trip's route -- the old LIMIT 1 dropped all but the first vehicle.
+    var sql = "SELECT o.VEHICLE AS VID, o.RESPONSE AS RESP, ST_ASGEOJSON(o.GEOJSON) AS GJ " +
+              "FROM TABLE(OPENROUTESERVICE_APP.CORE.OPTIMIZATION(PARSE_JSON(?), ?)) o";
     var rs = snowflake.createStatement({ sqlText: sql, binds: [CHALLENGE, region] }).execute();
-    if (!rs.next()) {
+    var response = null;
+    var features = [];
+    var rowCount = 0;
+    while (rs.next()) {
+        rowCount++;
+        if (response === null) {
+            var rawResp = rs.getColumnValue(2);
+            response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
+        }
+        var vid = rs.getColumnValue(1);
+        var gj = rs.getColumnValue(3);
+        if (gj) {
+            var geom = (typeof gj === 'string') ? JSON.parse(gj) : gj;
+            if (geom) features.push({ type: 'Feature', geometry: geom, properties: { vehicle: vid } });
+        }
+    }
+    if (rowCount === 0) {
         return { status: 'FAILED', region: region, error: 'OPTIMIZATION returned no results (check participant routability / region graph).' };
     }
-    var rawResp = rs.getColumnValue(1);
-    var response = (typeof rawResp === 'string') ? JSON.parse(rawResp || '{}') : (rawResp || {});
-    var gj = rs.getColumnValue(2);
+    if (response === null) response = {};
     return {
         status: 'SUCCESS', region: region,
         routes: response.routes || [], unassigned: response.unassigned || [],
         summary: response.summary || {},
-        geometry: gj ? ((typeof gj === 'string') ? JSON.parse(gj) : gj) : null
+        geometry: { type: 'FeatureCollection', features: features }
     };
 } catch(err) {
     return { status: 'FAILED', error: err.message };
