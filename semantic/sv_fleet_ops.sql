@@ -52,7 +52,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     , trips.operator_id AS OPERATOR_ID
       WITH SYNONYMS ('operator', 'driver', 'rider', 'courier')
       COMMENT = 'Mode-neutral operator identifier'
-    , trips.trip_status AS STATUS
+    , trips.status AS STATUS
       WITH SYNONYMS ('trip state')
       COMMENT = 'Trip status'
     , trips.is_detour AS IS_DETOUR
