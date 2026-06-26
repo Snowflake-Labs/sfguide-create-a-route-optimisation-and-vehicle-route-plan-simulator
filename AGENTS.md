@@ -126,19 +126,21 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 ### Branching Rules (NON-NEGOTIABLE)
 - **NEVER commit directly to `main`.** `main` is protected — changes only land via merged PRs from `dev`.
 - **NEVER commit directly to `dev`.** `dev` is the integration branch — changes only land via merged PRs from per-user branches.
-- **All work happens on ONE per-user long-lived branch named `feat/<GITHUB_LOGIN>-feat`.** The GitHub login MUST be detected dynamically at the start of every session — never hardcoded.
+- **All work happens on ONE long-lived branch per user per feature, named `feat/<GITHUB_LOGIN>-<feat-name>`** (e.g. `feat/sfc-gh-obielov-sa-synapse-app`). The GitHub login MUST be detected dynamically at the start of every session — never hardcoded. `<feat-name>` is a short kebab-case feature topic chosen once for the branch.
   ```bash
   GITHUB_LOGIN=$(gh api user --jq .login)
-  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  FEAT_NAME="sa-synapse-app"   # short kebab-case feature topic for this branch
+  USER_BRANCH="feat/${GITHUB_LOGIN}-${FEAT_NAME}"
   ```
-  Example: for login `sfc-gh-preszke` the branch is `feat/sfc-gh-preszke-feat`.
-  This single branch is shared by all parallel Cortex Code chats on the user's machine, so no branch switching is ever needed mid-session.
-- **Do NOT create additional branches.** No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. One user, one branch. Multiple parallel chats sharing one working tree cannot each own their own branch — that causes constant `git checkout` thrashing and lost work. Commit straight onto the user's branch instead.
+  Example: for login `sfc-gh-obielov` and feature `sa-synapse-app` the branch is `feat/sfc-gh-obielov-sa-synapse-app`.
+  The feature branch is shared by all parallel Cortex Code chats working on the same feature on the user's machine, so no branch switching is needed mid-feature.
+- **Do NOT create per-change branches.** No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. One feature, one branch (per user). Multiple parallel chats working on the same feature share one working tree and must all commit to that feature branch — separate per-change branches cause constant `git checkout` thrashing and lost work.
 - **All PRs target `dev`** (not `main`). Only release/promotion PRs go from `dev` → `main`, and those are opened by humans, not assistants.
 - Before starting work, detect the user branch and verify you are on it:
   ```bash
   GITHUB_LOGIN=$(gh api user --jq .login)
-  USER_BRANCH="feat/${GITHUB_LOGIN}-feat"
+  FEAT_NAME="sa-synapse-app"   # short kebab-case feature topic for this branch
+  USER_BRANCH="feat/${GITHUB_LOGIN}-${FEAT_NAME}"
   CURRENT=$(git branch --show-current)
   if [ "$CURRENT" != "$USER_BRANCH" ]; then
     git checkout "$USER_BRANCH" 2>/dev/null || git checkout -b "$USER_BRANCH"
@@ -157,7 +159,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 
 ### Commit Rules
 - One commit per logical change (one skill edit, one bug fix, one doc update, one refactor)
-- Commits land on `$USER_BRANCH` (i.e. `feat/<GITHUB_LOGIN>-feat`). Never on a fresh per-change branch.
+- Commits land on `$USER_BRANCH` (i.e. `feat/<GITHUB_LOGIN>-<feat-name>`). Never on a fresh per-change branch.
 - After every commit, run `git push origin "$USER_BRANCH"` immediately. A change is not "done" until it is pushed to remote.
   - **CRITICAL: Plain `git push` will fail with SSH permission denied.** Before your first push in a session, ALWAYS read `/memories/git-push-method.md` for the working command (uses `gh auth token` + `GIT_CONFIG_GLOBAL=/dev/null` to bypass the global SSH `insteadOf` rule). Do NOT attempt `git push origin <branch>` directly — it always fails for this repo.
 - Verify the change works (SQL compiles, skill evals pass, notebook runs) BEFORE committing
@@ -169,7 +171,7 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
     - `docs(AGENTS.md): add commit discipline rule`
 - If a change spans multiple skills, prefer multiple smaller commits over one large one
 - Never amend or force-push commits the user has not explicitly authorized
-- Never push directly to `main` or `dev` — push only to `$USER_BRANCH` (`feat/<GITHUB_LOGIN>-feat`)
+- Never push directly to `main` or `dev` — push only to `$USER_BRANCH` (`feat/<GITHUB_LOGIN>-<feat-name>`)
 
 ### Deploy → Commit Immediately (preserve history, avoid overwrites)
 **MANDATORY: a deploy is not "done" until the source it was built from is committed AND pushed.** As soon as a build/deploy succeeds (SPCS image push + `ALTER SERVICE`, app redeploy, or any artifact that ships edited source), commit and push the exact source that produced it — before any further iteration, and never at "end of turn only."
@@ -226,10 +228,10 @@ If no friction was encountered, the log should still be created with "No frictio
 - **Duplicate conventions** — point to `skill-optimiser` references instead of repeating rules
 - **Require ACCOUNTADMIN** — document minimum privileges in `## Required Privileges`; never assume ACCOUNTADMIN
 - **Skip cleanup instructions** — every deployment skill must have a `## Cleanup` section with DROP statements
-- **Skip committing AND pushing after a completed change** — every verified change must result in a commit AND a push to `feat/<GITHUB_LOGIN>-feat` before the turn ends (see `## Commit Discipline`)
-- **Commit directly to `main` or `dev`** — both are protected. All work goes on `feat/<GITHUB_LOGIN>-feat` with PRs targeting `dev`. Only humans promote `dev` → `main`.
-- **Hardcode the user branch name** — always derive it from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-preszke-feat` into AGENTS.md, skill files, or scripts.
-- **Create a new branch per change or per topic** — there is exactly one branch per user (`feat/<GITHUB_LOGIN>-feat`). No `<username>/work`, no `<username>/<topic>`, no `feat/*` / `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same branch.
+- **Skip committing AND pushing after a completed change** — every verified change must result in a commit AND a push to `feat/<GITHUB_LOGIN>-<feat-name>` before the turn ends (see `## Commit Discipline`)
+- **Commit directly to `main` or `dev`** — both are protected. All work goes on `feat/<GITHUB_LOGIN>-<feat-name>` with PRs targeting `dev`. Only humans promote `dev` → `main`.
+- **Hardcode the user branch name** — always derive the login from `gh api user --jq .login` at session start. Do not paste a literal branch like `feat/sfc-gh-obielov-sa-synapse-app` into AGENTS.md, skill files, or scripts.
+- **Create a new branch per change** — there is one branch per user per feature (`feat/<GITHUB_LOGIN>-<feat-name>`). No `<username>/work`, no `<username>/<topic>`, no `fix/*` / `docs/*` per-change branches. Multiple Cortex Code chats running in parallel against the same working tree must all commit to the same feature branch.
 - **Create any Snowflake object or run any query without tracking tags** — this is a hard requirement with no exceptions. Every new Snowflake object (TABLE, VIEW, PROCEDURE, FUNCTION, STAGE, SCHEMA, DATABASE, WAREHOUSE, TASK, DYNAMIC TABLE, STREAMLIT, SERVICE, AGENT) MUST have a COMMENT tracking tag. Every SQL session MUST set `query_tag` before executing statements. This applies to all skills, notebooks, stored procedures, dynamic SQL inside procedure bodies, ORS control app server code, and any other code path that creates objects or runs queries. For objects created via CTAS or dynamic SQL, use `ALTER ... SET COMMENT` immediately after creation. For service functions (`SERVICE=...` clause) that do not support COMMENT, document the limitation and ensure the parent procedure has a COMMENT tag.
 
 ## Control App Image Deployment (ors_control_app) — LEGACY / pending deletion
