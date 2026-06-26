@@ -171,6 +171,18 @@ When any step fails or produces unexpected results (SQL errors, missing objects,
 - Never amend or force-push commits the user has not explicitly authorized
 - Never push directly to `main` or `dev` — push only to `$USER_BRANCH` (`feat/<GITHUB_LOGIN>-feat`)
 
+### Deploy → Commit Immediately (preserve history, avoid overwrites)
+**MANDATORY: a deploy is not "done" until the source it was built from is committed AND pushed.** As soon as a build/deploy succeeds (SPCS image push + `ALTER SERVICE`, app redeploy, or any artifact that ships edited source), commit and push the exact source that produced it — before any further iteration, and never at "end of turn only."
+
+Why this is non-negotiable here:
+- The per-user branch is ONE shared working tree used by multiple parallel Cortex Code chats AND by the human via GitHub Desktop. An external **"Discard changes"** (or another chat's `git checkout`) can silently revert your uncommitted edits to the HEAD baseline **even though those edits are already live in SPCS** — leaving the repo and the running app out of sync and the work apparently lost.
+- Tag-bump deploys (`image-versions.env` + the service YAML) only make sense paired with the source change in the same commit; committing the source promptly keeps the deployed image tag and the source in lockstep.
+
+Rules:
+- After a successful deploy, run the verified-and-tested change through the normal commit+push flow right away (one logical commit, pushed to `$USER_BRANCH`).
+- Do NOT keep deploying newer image tags on top of still-uncommitted source — every deployed tag should correspond to a pushed commit.
+- If you discover deployed-but-uncommitted source has been reverted on disk, you can usually recover it: the last local `.next/server/chunks/*.js` from the build (minified, not clean source) plus the conversation edit history let you reconstruct the file; then `tsc`/build to verify and cross-check distinctive strings against the built bundle to confirm parity with what is deployed, and commit immediately.
+
 ## Friction Logging
 
 **MANDATORY:** After every `install-fleet-apps` execution (which builds the engine by default, regardless of success or failure), generate a friction log in `logs/`. This is NOT optional — every run produces a friction log, even if everything went smoothly.
