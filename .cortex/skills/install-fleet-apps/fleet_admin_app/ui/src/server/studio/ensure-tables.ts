@@ -93,8 +93,24 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       OUTCOME VARCHAR(20),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // -----------------------------------------------------------------
-    // Universal-generation entity tables (Overture + free Marketplace).
+    // Deliveries rename migration for EXISTING installs (guarded no-op on fresh
+    // installs / when the old column is absent): rename the pre-rename
+    // FACT_PARTNER_HISTORY columns so generation INSERTs (VEHICLE_EQUIPMENT /
+    // COST_PER_KM) match. Runs before any generation insert.
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_PARTNER_HISTORY RENAME COLUMN EQUIPMENT TO VEHICLE_EQUIPMENT;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_PARTNER_HISTORY RENAME COLUMN EUR_PER_KM TO COST_PER_KM;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // All region-keyed (no VEHICLE_TYPE — they describe the place/area,
     // not the fleet) and JOB_ID-versioned like DIM_POIS. V_*_CURRENT
     // projection views live in init.ts.

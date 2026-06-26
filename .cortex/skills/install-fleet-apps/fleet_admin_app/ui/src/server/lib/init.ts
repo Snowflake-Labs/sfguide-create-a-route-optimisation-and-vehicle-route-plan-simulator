@@ -805,6 +805,32 @@ export async function ensureBackloadAndAssetVelocityObjects(
       ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
+    // Deliveries rename migration for EXISTING installs: CREATE TABLE IF NOT
+    // EXISTS never renames columns, so a FACT_PARTNER_HISTORY that predates the
+    // freight->deliveries rename keeps EQUIPMENT / EUR_PER_KM. Rename them in
+    // place (guarded: no-op on fresh installs where the new columns already
+    // exist, or when the old column is absent). Must run BEFORE the partner /
+    // lane views below, which reference VEHICLE_EQUIPMENT / COST_PER_KM.
+    {
+      sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY RENAME COLUMN EQUIPMENT TO VEHICLE_EQUIPMENT;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
+    {
+      sql: `EXECUTE IMMEDIATE $$
+BEGIN
+  ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY RENAME COLUMN EUR_PER_KM TO COST_PER_KM;
+  RETURN 'ok';
+EXCEPTION WHEN OTHER THEN RETURN 'skipped';
+END;
+$$`,
+      db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
+    },
     {
       sql: `ALTER TABLE FLEET_INTELLIGENCE.ROUTE_OPTIMIZATION.PLACES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
