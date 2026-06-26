@@ -178,7 +178,7 @@ export async function insertDimPois(pois: any[], config: GenerationConfig, snowS
   }
 }
 
-export async function insertFactFreightOffers(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+export async function insertFactDeliveries(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
   if (offers.length === 0) return 0;
   const vt = resolveVehicleType(config);
   const batchSize = 500;
@@ -193,24 +193,24 @@ export async function insertFactFreightOffers(offers: any[], config: GenerationC
       `DATEADD(MINUTE, ${o.pickup_to_offset_min}, CURRENT_TIMESTAMP()),` +
       `${o.weight_kg},${escVal(o.product)},${o.price_usd},${o.hazmat ? 'TRUE' : 'FALSE'},` +
       `${escVal(o.listing_text)},DATEADD(MINUTE, ${o.posted_at_offset_min || 0}, CURRENT_TIMESTAMP()),${escVal(jobId)},` +
-      `${escVal(o.equipment || null)},${escVal(o.adr_class || null)},${o.ldm !== undefined && o.ldm !== null ? o.ldm : 'NULL'},` +
+      `${escVal(o.vehicle_equipment || null)},` +
       `${o.distance_km !== undefined && o.distance_km !== null ? o.distance_km : 'NULL'},` +
       `${o.price_per_km_usd !== undefined && o.price_per_km_usd !== null ? o.price_per_km_usd : 'NULL'},` +
       `${escVal(o.partner_id || null)},${escVal(o.status || 'OPEN')}`
     ).join(' UNION ALL\n');
-    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS
+    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES
       (OFFER_ID,REGION,VEHICLE_TYPE,SOURCE,
        PICKUP_POI_ID,PICKUP_LAT,PICKUP_LON,PICKUP_GEOM,
        DROPOFF_POI_ID,DROPOFF_LAT,DROPOFF_LON,DROPOFF_GEOM,
        PICKUP_FROM_TS,PICKUP_TO_TS,WEIGHT_KG,PRODUCT,PRICE_USD,HAZMAT,
        LISTING_TEXT,POSTED_AT,JOB_ID,
-       EQUIPMENT,ADR_CLASS,LDM,DISTANCE_KM,PRICE_PER_KM_USD,PARTNER_ID,STATUS)
+       VEHICLE_EQUIPMENT,DISTANCE_KM,PRICE_PER_KM_USD,PARTNER_ID,STATUS)
       ${selects}`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
     } catch (e: any) {
-      const msg = `FACT_FREIGHT_OFFERS insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+      const msg = `FACT_DELIVERIES insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }
@@ -255,13 +255,13 @@ export async function insertFactPartnerHistory(rows: any[], config: GenerationCo
     const chunk = rows.slice(i, i + batchSize);
     const selects = chunk.map((r: any) =>
       `SELECT ${escVal(r.partner_id)},${escVal(config.region)},${escVal(vt)},` +
-      `${escVal(r.origin_country)},${escVal(r.dest_country)},${escVal(r.equipment)},` +
-      `DATEADD(DAY, ${r.shipped_at_offset_days}, CURRENT_TIMESTAMP()),${r.eur_per_km},` +
+      `${escVal(r.origin_country)},${escVal(r.dest_country)},${escVal(r.vehicle_equipment)},` +
+      `DATEADD(DAY, ${r.shipped_at_offset_days}, CURRENT_TIMESTAMP()),${r.cost_per_km},` +
       `${escVal(r.outcome)},${escVal(jobId)}`
     ).join(' UNION ALL\n');
     const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_PARTNER_HISTORY
-      (PARTNER_ID,REGION,VEHICLE_TYPE,ORIGIN_COUNTRY,DEST_COUNTRY,EQUIPMENT,
-       SHIPPED_AT,EUR_PER_KM,OUTCOME,JOB_ID)
+      (PARTNER_ID,REGION,VEHICLE_TYPE,ORIGIN_COUNTRY,DEST_COUNTRY,VEHICLE_EQUIPMENT,
+       SHIPPED_AT,COST_PER_KM,OUTCOME,JOB_ID)
       ${selects}`;
     try {
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);

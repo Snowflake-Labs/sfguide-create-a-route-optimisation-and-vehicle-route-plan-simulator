@@ -122,7 +122,7 @@ export default function DatasetsPanel() {
   };
 
   const remove = async (id: string, region: string, vt: string) => {
-    if (!confirm(`Permanently delete dataset for ${region} / ${vt}?\n\nThis purges all rows in DIM_POIS / DIM_FLEET / FACT_FREIGHT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY / FACT_TRIPS / FACT_VEHICLE_TELEMETRY where JOB_ID = ${id}.\n\nThis cannot be undone.`)) return;
+    if (!confirm(`Permanently delete dataset for ${region} / ${vt}?\n\nThis purges all rows in DIM_POIS / DIM_FLEET / FACT_DELIVERIES / DIM_PARTNERS / FACT_PARTNER_HISTORY / FACT_TRIPS / FACT_VEHICLE_TELEMETRY where JOB_ID = ${id}.\n\nThis cannot be undone.`)) return;
     setBusy(id);
     try {
       const res = await fetch(`/api/studio/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -170,7 +170,7 @@ export default function DatasetsPanel() {
               <th style={headStyle}>Active</th>
               <th style={{ ...headStyle, textAlign: 'right' }}>POIs</th>
               <th style={{ ...headStyle, textAlign: 'right' }}>Fleet</th>
-              <th style={{ ...headStyle, textAlign: 'right' }}>Offers</th>
+              <th style={{ ...headStyle, textAlign: 'right' }}>Deliveries</th>
               <th style={{ ...headStyle, textAlign: 'right' }}>Trips</th>
               <th style={{ ...headStyle, textAlign: 'right' }}>Telemetry</th>
               <th style={headStyle}>Actions</th>
@@ -209,7 +209,7 @@ export default function DatasetsPanel() {
                   </td>
                   <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.pois)}</td>
                   <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.fleet)}</td>
-                  <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.offers)}</td>
+                  <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.deliveries)}</td>
                   <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.trips)}</td>
                   <td style={{ ...cellStyle, textAlign: 'right' }}>{fmt(c.telemetry)}</td>
                   <td style={cellStyle}>

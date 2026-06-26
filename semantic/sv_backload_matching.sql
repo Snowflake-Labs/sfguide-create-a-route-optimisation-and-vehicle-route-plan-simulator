@@ -1,5 +1,5 @@
 -- SV_BACKLOAD_MATCHING — Backload matching demo semantic view
--- Source: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS + VW_TRAILERS
+-- Source: FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_DELIVERIES + VW_TRAILERS
 -- Deploy target: FLEET_INTELLIGENCE.SEMANTIC (via fleet_test_evals connection)
 -- NOTE: offers/trailers views may be empty until the backload-matching demo generates data;
 -- PROPOSAL_DECISIONS is written by the Backload Matching / Freight Exchange pages.
@@ -8,7 +8,7 @@
 CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
 
   TABLES (
-    offers AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
+    offers AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_DELIVERIES
       PRIMARY KEY (OFFER_ID)
     , trailers AS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_TRAILERS
       PRIMARY KEY (TRAILER_ID)
@@ -67,7 +67,7 @@ CREATE OR REPLACE SEMANTIC VIEW FLEET_INTELLIGENCE.SEMANTIC.SV_BACKLOAD_MATCHING
 
   AI_SQL_GENERATION 'Backload matching semantic view.
 Entities (three independent facts):
-- offers (VW_EXTERNAL_OFFERS): external freight offers available to fill a backload.
+- offers (VW_EXTERNAL_DELIVERIES): external freight offers available to fill a backload.
 - trailers (VW_TRAILERS): trailers in transit / available, with ETA and capacity.
 - decisions (PROPOSAL_DECISIONS): recorded accept decisions with match score, empty (deadhead) km, and net benefit. Use for "matches", "deadhead/empty km", "net benefit", and breakdowns by decision_source, decision_type, or decided_by.
 Conventions:

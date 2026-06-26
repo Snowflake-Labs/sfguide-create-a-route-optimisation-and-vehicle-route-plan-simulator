@@ -1,0 +1,74 @@
+sv_name: FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+evals:
+  - question: "How many deliveries are there for each vehicle equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT VEHICLE_EQUIPMENT AS VEHICLE_EQUIPMENT, COUNT(DISTINCT OFFER_ID) AS TOTAL_DELIVERIES
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED
+      GROUP BY 1 ORDER BY TOTAL_DELIVERIES DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        DIMENSIONS deliveries.vehicle_equipment METRICS deliveries.total_deliveries
+      ) ORDER BY total_deliveries DESC
+
+  - question: "What is the average delivery price in USD for each marketplace source?"
+    category: group_by
+    gold_sql: |
+      SELECT SOURCE AS SOURCE, AVG(PRICE_USD) AS AVG_PRICE_USD
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED
+      GROUP BY 1 ORDER BY AVG_PRICE_USD DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        DIMENSIONS deliveries.source METRICS deliveries.avg_price_usd
+      ) ORDER BY avg_price_usd DESC
+
+  - question: "How many deliveries are priced below market for each vehicle equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT VEHICLE_EQUIPMENT AS VEHICLE_EQUIPMENT,
+             COUNT_IF(MARKET_BADGE = 'BELOW_MARKET') AS BELOW_MARKET_DELIVERIES
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED
+      GROUP BY 1 ORDER BY BELOW_MARKET_DELIVERIES DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        DIMENSIONS deliveries.vehicle_equipment METRICS deliveries.below_market_deliveries
+      ) ORDER BY below_market_deliveries DESC
+
+  - question: "What is the total number of deliveries from green-trust partners?"
+    category: simple_aggregation
+    gold_sql: |
+      SELECT COUNT_IF(TRUST_BADGE = 'GREEN') AS GREEN_TRUST_DELIVERIES
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        METRICS deliveries.green_trust_deliveries
+      )
+
+  - question: "What is the on-time delivery rate percentage for each destination country?"
+    category: group_by
+    gold_sql: |
+      SELECT DEST_COUNTRY AS DEST_COUNTRY,
+             DIV0(SUM(ON_TIME), SUM(SHIPMENTS)) * 100 AS ON_TIME_RATE_PCT
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+      GROUP BY 1 ORDER BY ON_TIME_RATE_PCT DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        DIMENSIONS lane_history.dest_country METRICS lane_history.on_time_rate_pct
+      ) ORDER BY on_time_rate_pct DESC
+
+  - question: "What is the total number of historical deliveries for each vehicle equipment type?"
+    category: group_by
+    gold_sql: |
+      SELECT VEHICLE_EQUIPMENT AS VEHICLE_EQUIPMENT, SUM(SHIPMENTS) AS TOTAL_SHIPMENTS
+      FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_LANE_HISTORY
+      GROUP BY 1 ORDER BY TOTAL_SHIPMENTS DESC
+    sv_sql: |
+      SELECT * FROM SEMANTIC_VIEW(
+        FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+        DIMENSIONS lane_history.vehicle_equipment METRICS lane_history.total_shipments
+      ) ORDER BY total_shipments DESC

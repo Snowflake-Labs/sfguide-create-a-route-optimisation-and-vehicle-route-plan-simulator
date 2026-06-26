@@ -1,7 +1,7 @@
 // Synthetic partner / shipper directory + lane-history generator. Mirrors the
-// FreightOffer engine's deterministic-RNG style so per-preset jobs produce a
+// delivery engine's deterministic-RNG style so per-preset jobs produce a
 // stable Partner pool (and stable lane history) across reruns. Powers the
-// Freight Exchange page's trust badges and lane-history tooltip.
+// deliveries marketplace page's trust badges and lane-history tooltip.
 
 import { GenerationConfig, createRng } from '../profiles';
 import { Partner, PartnerHistoryRow } from './types';
@@ -102,7 +102,11 @@ export function generatePartnerHistory(
   rowsPerPartner = 6,
 ): PartnerHistoryRow[] {
   const rng = createRng((config.region || '').length * 433 + (config.ors_profile || '').length * 53 + 17);
-  const equipments = ['TAUTLINER', 'MEGA', 'REEFER', 'BOX', 'FLATBED'];
+  // Vehicle-appropriate equipment for lane history; config override wins, else
+  // the delivery-class default, else a neutral fallback.
+  const equipments = config.delivery_equipment?.length
+    ? config.delivery_equipment
+    : ['CARGO_BAY', 'BOX', 'REEFER', 'FLATBED', 'VAN'];
   const countries = countriesForRegion(config.region);
   const rows: PartnerHistoryRow[] = [];
   for (const p of partners) {
@@ -112,7 +116,7 @@ export function generatePartnerHistory(
       let dc = countries[Math.floor(rng() * countries.length)];
       if (dc === oc && countries.length > 1) dc = countries[(countries.indexOf(oc) + 1) % countries.length];
       const eq = equipments[Math.floor(rng() * equipments.length)];
-      const eurPerKm = 0.85 + rng() * 1.05;
+      const costPerKm = 0.85 + rng() * 1.05;
       // Stronger partners produce better outcomes.
       const outcomeRoll = rng() * (p.credit_score >= 70 ? 0.25 : p.credit_score >= 40 ? 0.6 : 1.0);
       const outcome = outcomeRoll < 0.05 ? 'DAMAGED' : outcomeRoll < 0.15 ? 'LATE' : 'DELIVERED';
@@ -120,9 +124,9 @@ export function generatePartnerHistory(
         partner_id: p.partner_id,
         origin_country: oc,
         dest_country: dc,
-        equipment: eq,
+        vehicle_equipment: eq,
         shipped_at_offset_days: -(1 + Math.floor(rng() * 180)),
-        eur_per_km: Math.round(eurPerKm * 100) / 100,
+        cost_per_km: Math.round(costPerKm * 100) / 100,
         outcome,
       });
     }

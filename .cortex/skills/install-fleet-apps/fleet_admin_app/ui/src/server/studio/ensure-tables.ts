@@ -58,7 +58,7 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       DISTANCE_KM FLOAT, DURATION_MINUTES FLOAT, STATUS VARCHAR(20),
       JOB_ID VARCHAR
     ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS (
+    { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES (
       OFFER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       SOURCE VARCHAR(30),
       PICKUP_POI_ID VARCHAR, PICKUP_LAT FLOAT, PICKUP_LON FLOAT, PICKUP_GEOM GEOGRAPHY,
@@ -66,18 +66,18 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
       PICKUP_FROM_TS TIMESTAMP_NTZ, PICKUP_TO_TS TIMESTAMP_NTZ,
       WEIGHT_KG NUMBER, PRODUCT VARCHAR, PRICE_USD NUMBER, HAZMAT BOOLEAN,
       LISTING_TEXT VARCHAR, POSTED_AT TIMESTAMP_NTZ,
-      JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Freight Exchange (Phase A/B) — enrichment columns on FACT_FREIGHT_OFFERS.
-    // Idempotent ALTERs so older deployments pick them up on next boot.
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS EQUIPMENT VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS ADR_CLASS VARCHAR(8)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS LDM FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_FREIGHT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
-    // Freight Exchange — partner directory and lane history per preset.
+      JOB_ID VARCHAR,
+      VEHICLE_EQUIPMENT VARCHAR(30), DISTANCE_KM FLOAT, PRICE_PER_KM_USD FLOAT,
+      PARTNER_ID VARCHAR, STATUS VARCHAR(20)
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Vehicle-agnostic deliveries — idempotent enrichment ALTERs so older
+    // deployments pick the columns up on next boot.
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS VEHICLE_EQUIPMENT VARCHAR(30)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    { sql: `ALTER TABLE ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    // Delivery marketplace — partner directory and lane history per preset.
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.DIM_PARTNERS (
       PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       NAME VARCHAR, COUNTRY VARCHAR(4),
@@ -88,11 +88,11 @@ export async function ensureTables(snowSql: SnowSqlFn): Promise<void> {
     { sql: `CREATE TABLE IF NOT EXISTS ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_PARTNER_HISTORY (
       PARTNER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
       ORIGIN_COUNTRY VARCHAR(4), DEST_COUNTRY VARCHAR(4),
-      EQUIPMENT VARCHAR(20),
-      SHIPPED_AT TIMESTAMP_NTZ, EUR_PER_KM FLOAT,
+      VEHICLE_EQUIPMENT VARCHAR(30),
+      SHIPPED_AT TIMESTAMP_NTZ, COST_PER_KM FLOAT,
       OUTCOME VARCHAR(20),
       JOB_ID VARCHAR
-    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
+    ) COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}'`, db: UNIFIED_DB, schema: UNIFIED_SCHEMA },
     // -----------------------------------------------------------------
     // Universal-generation entity tables (Overture + free Marketplace).
     // All region-keyed (no VEHICLE_TYPE — they describe the place/area,
@@ -202,7 +202,7 @@ $$`, db: 'FLEET_INTELLIGENCE', schema: 'CORE' },
       (DATASET_ID, REGION, VEHICLE_TYPE, LABEL, IS_ACTIVE, CREATED_AT)
       WITH all_jobs AS (
         SELECT REGION, VEHICLE_TYPE, JOB_ID, MAX(POSTED_AT) AS LAST_TS
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES
         WHERE JOB_ID IS NOT NULL AND REGION IS NOT NULL AND VEHICLE_TYPE IS NOT NULL
         GROUP BY REGION, VEHICLE_TYPE, JOB_ID
         UNION ALL

@@ -7,11 +7,10 @@
 -- the unified_fleet pack's CREATE VIEW ... AS SELECT * FROM V_*_CURRENT fails at
 -- definition time and breaks the whole pack install.
 --
--- DDL mirrors fleet_admin_app/ui/src/server/lib/init.ts (the runtime owner). Only
--- the vehicle/industry-AGNOSTIC views are created here; the freight/partner views
--- (V_FACT_FREIGHT_OFFERS_CURRENT / V_DIM_PARTNERS_CURRENT /
--- V_FACT_PARTNER_HISTORY_CURRENT) are intentionally omitted because seed_data.sql
--- purges their base tables on the agnostic path.
+-- DDL mirrors fleet_admin_app/ui/src/server/lib/init.ts (the runtime owner). The
+-- delivery/partner views (V_FACT_DELIVERIES_CURRENT / V_DIM_PARTNERS_CURRENT /
+-- V_FACT_PARTNER_HISTORY_CURRENT) are created at app boot by init.ts (deliveries
+-- are now vehicle-agnostic and retained), so they are not duplicated here.
 --
 -- Each view returns only rows from the active dataset (DIM_DATASETS.IS_ACTIVE),
 -- so it requires the loader to have created DIM_DATASETS + the base tables. Run

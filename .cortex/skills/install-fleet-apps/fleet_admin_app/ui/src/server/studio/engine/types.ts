@@ -116,7 +116,13 @@ export interface GenerationProgress {
 
 export type RouteFetchResult = RouteGeometry | null | 'UNROUTABLE';
 
-export interface FreightOffer {
+// A vehicle-agnostic delivery offer. Replaces the HGV-specific FreightOffer:
+// `vehicle_equipment` is the (vehicle-appropriate) carrier/equipment label
+// (e.g. INSULATED_BAG for an e-bike, CARGO_VAN for a van, TAUTLINER for an HGV);
+// the trucking-only ADR_CLASS / LDM columns were dropped. Generated for ANY
+// fleet type — content (products, equipment, weight band, rate) scales to the
+// selected vehicle class.
+export interface DeliveryOffer {
   offer_id: string;
   source: string;
   product: string;
@@ -132,9 +138,7 @@ export interface FreightOffer {
   pickup_from_offset_min: number;
   pickup_to_offset_min: number;
   listing_text: string;
-  equipment: string;
-  adr_class: string | null;
-  ldm: number;
+  vehicle_equipment: string;
   distance_km: number;
   price_per_km_usd: number;
   partner_id: string;
@@ -157,9 +161,9 @@ export interface PartnerHistoryRow {
   partner_id: string;
   origin_country: string;
   dest_country: string;
-  equipment: string;
+  vehicle_equipment: string;
   shipped_at_offset_days: number;
-  eur_per_km: number;
+  cost_per_km: number;
   outcome: string;
 }
 

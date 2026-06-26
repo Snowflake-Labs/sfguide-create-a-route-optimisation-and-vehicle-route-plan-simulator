@@ -77,7 +77,7 @@ a derived DT chain reproducing the former `DT_*` outputs (verified bit-for-bit).
 | route_optimization | FLEET_APP.ROUTE_OPTIMIZATION | asset_velocity; SV_ASSET_VELOCITY |
 | dwell | FLEET_APP.DWELL | dwell_overview/congestion/facilities/drivers/sla; SV_DWELL_ANALYTICS (self-building: derived DT chain) |
 | unified_fleet | FLEET_APP.UNIFIED_FLEET | fleet_operations, fleet_map; SV_FLEET_OPERATIONS (cross-DB) |
-| marketplace | FLEET_APP.MARKETPLACE | freight_exchange (TSX); SV_FREIGHT_MARKETPLACE |
+| marketplace | FLEET_APP.MARKETPLACE | freight_exchange (TSX); SV_DELIVERIES |
 | backload | FLEET_APP.BACKLOAD_MATCHING | backload_matching (TSX); SV_BACKLOAD_MATCHING |
 | dhl_ntbo | FLEET_APP.DHL_NTBO | (agent-only) SV_DHL_BACKLOAD |
 

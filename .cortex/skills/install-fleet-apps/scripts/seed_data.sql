@@ -138,16 +138,12 @@ CREATE FILE FORMAT IF NOT EXISTS FLEET_INTELLIGENCE.CORE.PARQUET_FF
   TYPE = PARQUET
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
--- 3. AGNOSTIC GUARD: remove industry-vertical synthetic data. The canonical
---    loader also populates freight/partner tables (used only by the excluded
---    marketplace/backload/dhl packs). Dropping them keeps the data layer
---    vehicle/industry-agnostic with no orphaned vertical rows. The agnostic
---    packs (unified_fleet, fleet_ops, dwell, route_deviation, route_optimization,
---    catchment) never read these objects.
-DROP TABLE  IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_FREIGHT_OFFERS;
-DROP TABLE  IF EXISTS SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS;
-DROP TABLE  IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY;
-DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE;
+-- 3. AGNOSTIC GUARD: remove the remaining industry-vertical showcase schemas.
+--    Deliveries (FACT_DELIVERIES / DIM_PARTNERS / FACT_PARTNER_HISTORY + the
+--    MARKETPLACE projection views) are now VEHICLE-AGNOSTIC -- Data Studio
+--    generates vehicle-appropriate deliveries for every fleet type -- so they
+--    are RETAINED. Only the still-vertical Backload Matching and DHL NTBO
+--    showcase schemas are dropped.
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING;
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.DHL_NTBO;
 
