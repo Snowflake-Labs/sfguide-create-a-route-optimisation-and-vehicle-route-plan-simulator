@@ -5,6 +5,32 @@ import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
 
+// Build a graceful fallback message when a stream ends with no usable text part
+// (e.g. the agent gave up after a failed/blocked tool call). Derives a short
+// reason from the last tool error so the user is never left with a blank turn.
+function synthesizeNoTextFallback(parts: MessagePart[]): string {
+  let reason = '';
+  for (const p of parts) {
+    if (p.type === 'tool_error' && p.error) {
+      reason = p.error;
+    } else if (p.type === 'tool_result') {
+      const err = (p.output as { error?: unknown })?.error;
+      if (err) {
+        reason =
+          typeof err === 'string'
+            ? err
+            : String((err as { message?: unknown })?.message ?? '') || reason;
+      }
+    }
+  }
+  const base =
+    "I wasn't able to produce a response for that. The analytics tools couldn't answer it as asked";
+  return reason
+    ? `${base}: ${reason}. Try rephrasing, or ask about what's currently shown on the dashboard.`
+    : `${base}. Try rephrasing, or ask about what's currently shown on the dashboard.`;
+}
+
+
 interface ChatSlice {
   messages: Message[];
   status: ChatStatus;
@@ -284,6 +310,22 @@ export const useAppStore = create<AppStore>()(
               } catch {
                 // skip malformed chunks
               }
+            }
+          }
+
+          // Defensive: never leave the user staring at a blank turn. If the
+          // stream ended with no non-empty text part, synthesize a graceful
+          // message derived from the last tool error when present.
+          {
+            const msg = get().chat.messages.find((m) => m.id === assistantId);
+            const hasText = !!msg?.parts.some(
+              (p) => p.type === 'text' && p.content.trim() !== '',
+            );
+            if (msg && !hasText) {
+              appendAssistantPart(assistantId, {
+                type: 'text',
+                content: synthesizeNoTextFallback(msg.parts),
+              });
             }
           }
 
