@@ -11,12 +11,13 @@
 // Steps: 1) county risk choropleth  2) seed participants (isochrone union)
 //        3) configure vans  4) solve the capacitated multi-depot evacuation VRP.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import type { Layer } from '@deck.gl/core';
 import MapView from './map-view';
 import { useAppStore } from '@/lib/store';
 import type { LngLat } from '@/lib/map/map-fit';
+import type { ViewProps } from '@/lib/types';
 
 type Hazard = 'WILDFIRE' | 'FLOOD';
 interface County { county: string; geojson: string; wildfire_level: number; flood_level: number; }
@@ -140,7 +141,7 @@ async function apiTool(verb: string, args: unknown[]): Promise<Record<string, un
 
 const ER = 'FLEET_APP.EMERGENCY_RESPONSE';
 
-export function EmergencyResponseView() {
+export function EmergencyResponseView({ onStateChange }: Partial<ViewProps> = {}) {
   const region = useAppStore((s) => s.context['region']) as string | undefined;
 
   const [avail, setAvail] = useState<'checking' | 'ready' | 'unavailable'>('checking');
@@ -163,6 +164,42 @@ export function EmergencyResponseView() {
   const [unassignedPids, setUnassignedPids] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Publish a compact, scalar-only summary of the on-screen state into panel
+  // context so the left-side agent can answer "analyse results in dashboard"
+  // directly from injected context (no tool call, no misroute). Geometry and
+  // per-participant arrays are intentionally excluded to keep the context line
+  // small. onStateChange is held in a ref (its identity changes every render),
+  // and we only publish when the serialized summary actually changes, so this
+  // never loops with the store write-back.
+  const summary = useMemo(() => ({
+    view: 'emergency_response',
+    region: region ?? null,
+    hazard,
+    isochrone_minutes: minutes,
+    participants_seeded: participants.length,
+    risk_threshold: `${RISK_LABELS[evacLevel]} (level ${evacLevel})`,
+    vans: numVehicles,
+    capacity_per_van: capacity,
+    max_trips_per_van: maxTrips,
+    evacuees: planStats?.evacuees ?? null,
+    assigned: planStats?.assigned ?? null,
+    trips: planStats?.trips ?? null,
+    total_drive_min: planStats?.totalMin ?? null,
+    overflow: planStats?.overflow ?? null,
+    step,
+    availability: avail,
+  }), [region, hazard, minutes, participants.length, evacLevel, numVehicles, capacity, maxTrips, planStats, step, avail]);
+
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  const lastSentRef = useRef<string>('');
+  useEffect(() => {
+    const json = JSON.stringify(summary);
+    if (json === lastSentRef.current) return;
+    lastSentRef.current = json;
+    onStateChangeRef.current?.(summary);
+  }, [summary]);
 
   // Availability + Step 1 data load whenever the active region changes.
   useEffect(() => {
