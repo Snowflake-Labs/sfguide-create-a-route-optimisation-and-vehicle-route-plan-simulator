@@ -73,7 +73,7 @@ graph TD
 | `STATE_REGION_MAP` (3 rows) | `sql-pipeline.sql` | S | derive from active region + Divisions | - | Make data-driven |
 | `DEMO_DEMAND_CATALOG` (drugs) | `deploy-demo-data.sql` | S | neutral category-derived tiers (config) | - | **Migrate -> demand gen (neutral)** |
 | `DIM_FLEET` | `studio/engine/fleet.ts` | G+S specs | config-driven (no movement source) | - | Keep generated; de-hardcode specs |
-| `FACT_FREIGHT_OFFERS` | `studio/engine/freight.ts` | G+S lists | geography-derived + optional firmographics | maybe | De-hardcode lists; firmographics optional |
+| `FACT_OFFERS` | `studio/engine/offers.ts` | G+S lists | geography-derived + optional firmographics | maybe | De-hardcode lists; firmographics optional |
 | `DIM_PARTNERS`, `FACT_PARTNER_HISTORY` | `studio/engine/partners.ts` | G+S names | geography-derived + optional firmographics | maybe | De-hardcode `NAME_ROOTS`/country maps |
 | `profiles.ts` `poi_categories` | `studio/profiles.ts` | S | persisted profile catalog (already exists for templates) | - | Move category lists to catalog |
 | region boundaries | Geofabrik/BBBike parquet | S/O-poly | keep Geofabrik for provisioning; Overture Divisions for display/spatial | Y | Augment, don't replace provisioning |
@@ -122,7 +122,7 @@ Known reality of the Overture semantic views (see Appendix A): `OVERTUREMAPS_PLA
 New generators are added as **sibling modules** under `server/studio/engine/`, mirroring the existing seams:
 
 - **Orchestration** — register each generator step in [`engine.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/engine.ts) (the `generateTelemetry` async generator) and the job lifecycle in `jobs.ts`.
-- **DDL** — add `CREATE TABLE IF NOT EXISTS` for each new entity in [`ensure-tables.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/ensure-tables.ts) (today owns `FACT_VEHICLE_TELEMETRY`, `FACT_TRIPS`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `FACT_FREIGHT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, plus CORE `GENERATION_JOBS`/`JOB_EVENTS`/`DIM_DATASETS`).
+- **DDL** — add `CREATE TABLE IF NOT EXISTS` for each new entity in [`ensure-tables.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/ensure-tables.ts) (today owns `FACT_VEHICLE_TELEMETRY`, `FACT_TRIPS`, `DIM_FLEET`, `DIM_POIS`, `DIM_TRIP_SCHEDULE`, `FACT_OFFERS`, `DIM_PARTNERS`, `FACT_PARTNER_HISTORY`, plus CORE `GENERATION_JOBS`/`JOB_EVENTS`/`DIM_DATASETS`).
 - **Inserts** — add batch INSERT helpers in `inserters.ts`.
 - **Config** — gate each generator with flags on `GenerationConfig` in [`profiles.ts`](../../.cortex/skills/install-fleet-apps/fleet_admin_app/ui/src/server/studio/profiles.ts) (`export interface GenerationConfig` ~line 183); move the hardcoded `poi_categories` arrays (lines 43/86/139) into the persisted profile catalog (`generation-profile-catalog.ts` already persists templates into `GENERATION_PROFILE_CATALOG`).
 - **Versioning** — every new table carries `JOB_ID` + flows through the `DIM_DATASETS` IS_ACTIVE / `V_*_CURRENT` projection-view discipline (AGENTS.md invariant). Consumers read `V_*_CURRENT`, never base tables.

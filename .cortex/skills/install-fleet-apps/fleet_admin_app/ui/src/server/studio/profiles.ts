@@ -42,7 +42,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
       detour: { probability: 0.05, max_detour_factor: 1.4 },
       poi_categories: ['restaurant', 'bar', 'hotel', 'corporate_or_business_office', 'shopping_mall', 'hospital', 'airport', 'cafe', 'coffee_shop', 'lounge'],
       base_speed_kmh: { min: 30, max: 55 },
-      generates_deliveries: true,
+      generates_offers: true,
       // Universal-generation entities (Overture + free Marketplace). Enabled on
       // the canonical seed preset so one Data Studio run produces anchors,
       // demographics, hazard zones, and the demand catalog. Demographics/hazard
@@ -105,7 +105,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
         RESTAURANT: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery', 'pizzaria', 'casual_eatery', 'coffee_shop', 'sandwich_shop', 'chicken_restaurant'],
         _default: 'ADDRESS',
       },
-      generates_deliveries: true,
+      generates_offers: true,
       // Universal-generation entities (Overture + free Marketplace) for the
       // canonical seed preset. Emergency Response reads hazard + anchors.
       generates_anchors: true,
@@ -171,7 +171,7 @@ export const PROFILE_TEMPLATES: ProfileTemplate[] = [
         REST_STOP: ['gas_station', 'parking', 'transportation_location', 'ground_transport_facility_or_service'],
         _default: 'DESTINATION',
       },
-      generates_deliveries: true,
+      generates_offers: true,
       generates_anchors: true,
       generates_demographics: true,
       generates_hazard: true,
@@ -276,13 +276,16 @@ export interface GenerationConfig {
   // optional `_default` is the fallback LOCATION_TYPE (default 'LOCATION').
   // Replaces mapCategoryToType(category, mode) in engine/routability.ts.
   category_map?: Record<string, string[] | string>;
-  // Whether this mode generates deliveries (delivery offers / partners / lane
-  // history) for the marketplace. Defaults to generating when unset; deliveries
-  // are vehicle-agnostic, so EVERY fleet type produces them (content scales to
-  // the vehicle class). `generates_freight` is the deprecated legacy name, still
-  // honoured as a fallback by the generator so saved presets keep working.
+  // Whether this mode generates offers (delivery/freight offers + partners +
+  // lane history) for the marketplace. Defaults to generating when unset;
+  // offers are vehicle-agnostic, so EVERY fleet type produces them (content
+  // scales to the vehicle class). `generates_deliveries` and `generates_freight`
+  // are deprecated legacy names, still honoured as fallbacks so saved presets
+  // keep working.
+  generates_offers?: boolean;
+  /** @deprecated use generates_offers */
   generates_deliveries?: boolean;
-  /** @deprecated use generates_deliveries */
+  /** @deprecated use generates_offers */
   generates_freight?: boolean;
   ghost_trailer?: {
     probability: number;

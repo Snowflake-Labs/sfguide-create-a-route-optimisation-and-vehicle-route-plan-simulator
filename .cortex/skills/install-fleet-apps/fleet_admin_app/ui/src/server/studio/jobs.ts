@@ -1,5 +1,5 @@
 import { GenerationConfig, createRng, uuid, resolveVehicleType } from './profiles';
-import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateDeliveries, generatePartners, generatePartnerHistory, generateAnchors, generateParticipants, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
+import { generateTelemetry, TelemetryPoint, TripRecord, GenerationEvent, GenerationProgress, loadPOIs, generateOffers, generatePartners, generatePartnerHistory, generateAnchors, generateParticipants, generateDemographics, generateHazardZones, generateDemandCatalog } from './engine';
 import { buildFleetWithDiagnostics } from './engine/fleet';
 import { spreadStats, binDegForArea, bboxAreaKm2 } from './engine/spatial';
 import { log } from '../diagnostics';
@@ -8,7 +8,7 @@ import { escVal, UNIFIED_DB, UNIFIED_SCHEMA } from './sql-helpers';
 import { ScalingState, captureAndScaleUp, scaleDown, waitForOrsReady } from './scaling';
 import { ensureTables } from './ensure-tables';
 import { syncRegionRegistryAndConfig } from './region-sync';
-import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactDeliveries, insertDimPartners, insertFactPartnerHistory } from './inserters';
+import { insertTelemetryBatch, insertTripBatch, insertTripScheduleBatch, insertDimFleet, insertDimPois, insertFactOffers, insertDimPartners, insertFactPartnerHistory } from './inserters';
 
 type SnowSqlFn = (sql: string, database?: string, schema?: string) => Promise<any[]>;
 type SseCallback = (event: string, data: any) => void;
@@ -143,7 +143,7 @@ export async function reconcileStaleJobs(snowSql: SnowSqlFn, staleMinutes: numbe
 
 export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<{ deleted: Record<string, number> }> {
   const tables = [
-    'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_DELIVERIES',
+    'FACT_VEHICLE_TELEMETRY', 'FACT_TRIPS', 'DIM_FLEET', 'DIM_POIS', 'DIM_TRIP_SCHEDULE', 'FACT_OFFERS',
     'DIM_PARTNERS', 'FACT_PARTNER_HISTORY',
     // Universal-generation entities (all JOB_ID-versioned) — purge with the dataset.
     'DIM_ANCHORS', 'DIM_PARTICIPANTS', 'FACT_HAZARD_ZONES', 'DIM_AREA_DEMOGRAPHICS', 'DIM_DEMAND_CATALOG',
@@ -181,12 +181,12 @@ export async function deleteJobData(jobId: string, snowSql: SnowSqlFn): Promise<
   }
   try {
     const rows = await snowSql(
-      `DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES WHERE JOB_ID = ${escVal(jobId)}`,
+      `DELETE FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES WHERE JOB_ID = ${escVal(jobId)}`,
       'FLEET_INTELLIGENCE', 'MARKETPLACE',
     );
-    deleted['MARKETPLACE.FACT_DELIVERY_ROUTES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = rows?.[0]?.['number of rows deleted'] ?? 0;
   } catch {
-    deleted['MARKETPLACE.FACT_DELIVERY_ROUTES'] = -1;
+    deleted['MARKETPLACE.FACT_OFFER_ROUTES'] = -1;
   }
   try {
     await snowSql(
@@ -241,11 +241,11 @@ async function precomputeOfferRoutes(
   const enabled = (process.env.STUDIO_PRECOMPUTE_OFFER_ROUTES ?? 'true').toLowerCase() !== 'false';
   if (!enabled) return;
   await snowSql(
-    `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+    `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
     'FLEET_INTELLIGENCE', 'MARKETPLACE',
   );
   await snowSql(
-    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES tgt
+    `MERGE INTO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES tgt
      USING (
        SELECT
          o.OFFER_ID,
@@ -254,7 +254,7 @@ async function precomputeOfferRoutes(
          d.DURATION / 60.0 AS ROAD_MIN,
          ST_ASGEOJSON(d.GEOJSON)::VARCHAR AS GEOMETRY,
          ${escVal(profile)} AS PROFILE
-       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES o,
+       FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS o,
             TABLE(OPENROUTESERVICE_APP.CORE.DIRECTIONS(
               ${escVal(profile)},
               ARRAY_CONSTRUCT(o.PICKUP_LON, o.PICKUP_LAT),
@@ -594,7 +594,7 @@ async function updateDatasetRowCounts(
        SET ROW_COUNTS = OBJECT_CONSTRUCT(
          'pois',      (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_POIS              WHERE JOB_ID = ${escVal(jobId)}),
          'fleet',     (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_FLEET             WHERE JOB_ID = ${escVal(jobId)}),
-         'deliveries', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES        WHERE JOB_ID = ${escVal(jobId)}),
+         'offers', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS        WHERE JOB_ID = ${escVal(jobId)}),
          'partners',  (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_PARTNERS          WHERE JOB_ID = ${escVal(jobId)}),
          'history',   (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.FACT_PARTNER_HISTORY  WHERE JOB_ID = ${escVal(jobId)}),
          'trip_schedule', (SELECT COUNT(*) FROM SYNTHETIC_DATASETS.UNIFIED.DIM_TRIP_SCHEDULE WHERE JOB_ID = ${escVal(jobId)}),
@@ -814,15 +814,15 @@ export async function startGeneration(
       const pois = await loadPOIs(config, snowSql);
       const fleetResult = buildFleetWithDiagnostics(config, pois, createRng(config.fleet.num_vehicles * 31));
       const fleet = fleetResult.fleet;
-      // Delivery marketplace data (offers / partners / lane history) is generated
-      // for every fleet type as vehicle-appropriate "deliveries". Defaults to ON
-      // when unset; the legacy generates_freight flag is still honoured as a
-      // fallback so saved presets keep working.
-      const wantsDeliveries = (config.generates_deliveries ?? config.generates_freight) !== false;
-      const partners = wantsDeliveries ? generatePartners(config, 80) : [];
-      const partnerHistory = wantsDeliveries ? generatePartnerHistory(partners, config, 6) : [];
+      // Marketplace data (offers / partners / lane history) is generated for
+      // every fleet type as vehicle-appropriate "offers". Defaults to ON when
+      // unset; the legacy generates_deliveries/generates_freight flags are still
+      // honoured as fallbacks so saved presets keep working.
+      const wantsOffers = (config.generates_offers ?? config.generates_deliveries ?? config.generates_freight) !== false;
+      const partners = wantsOffers ? generatePartners(config, 80) : [];
+      const partnerHistory = wantsOffers ? generatePartnerHistory(partners, config, 6) : [];
       const offerCount = Math.max(1, Math.floor(Number(config.offers?.count ?? 300)));
-      const offers = wantsDeliveries ? generateDeliveries(pois, config, offerCount, partners) : [];
+      const offers = wantsOffers ? generateOffers(pois, config, offerCount, partners) : [];
 
       // Region-agnostic spatial spread diagnostics. Logged once at fleet build
       // time so users can verify on any of the 5,194 regions in REGION_CATALOG
@@ -875,12 +875,12 @@ export async function startGeneration(
         broadcast(job, 'warning', { message: `DIM_FLEET insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
-        const n = await insertFactDeliveries(offers, config, snowSql, jobId);
-        log('INFO', 'Studio', `Inserted ${n} deliveries`, { jobId });
-        broadcast(job, 'progress', { status: `Inserted ${n} deliveries` });
+        const n = await insertFactOffers(offers, config, snowSql, jobId);
+        log('INFO', 'Studio', `Inserted ${n} offers`, { jobId });
+        broadcast(job, 'progress', { status: `Inserted ${n} offers` });
       } catch (e: any) {
-        log('WARN', 'Studio', `FACT_DELIVERIES insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
-        broadcast(job, 'warning', { message: `FACT_DELIVERIES insert failed: ${e.message?.slice(0, 150)}` });
+        log('WARN', 'Studio', `FACT_OFFERS insert failed (non-fatal): ${e.message?.slice(0, 200)}`, { jobId });
+        broadcast(job, 'warning', { message: `FACT_OFFERS insert failed: ${e.message?.slice(0, 150)}` });
       }
       try {
         const n = await insertDimPartners(partners, config, snowSql, jobId);

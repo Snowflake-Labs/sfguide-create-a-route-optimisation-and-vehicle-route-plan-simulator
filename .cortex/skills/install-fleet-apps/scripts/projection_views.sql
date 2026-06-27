@@ -8,8 +8,8 @@
 -- definition time and breaks the whole pack install.
 --
 -- DDL mirrors fleet_admin_app/ui/src/server/lib/init.ts (the runtime owner). The
--- delivery/partner views (V_FACT_DELIVERIES_CURRENT / V_DIM_PARTNERS_CURRENT /
--- V_FACT_PARTNER_HISTORY_CURRENT) are created at app boot by init.ts (deliveries
+-- delivery/partner views (V_FACT_OFFERS_CURRENT / V_DIM_PARTNERS_CURRENT /
+-- V_FACT_PARTNER_HISTORY_CURRENT) are created at app boot by init.ts (offers
 -- are now vehicle-agnostic and retained), so they are not duplicated here.
 --
 -- Each view returns only rows from the active dataset (DIM_DATASETS.IS_ACTIVE),

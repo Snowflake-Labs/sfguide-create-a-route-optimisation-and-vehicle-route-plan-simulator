@@ -303,6 +303,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
   const TRACK_RO = `'{"origin":"sf_sit-is-fleet","name":"oss-route-optimization","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const TRACK_FX = `'{"origin":"sf_sit-is-fleet","name":"oss-freight-exchange","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'`;
   const stmts: { sql: string; db?: string; schema?: string }[] = [
+    // Table rename migration for existing deploys: FACT_DELIVERIES -> FACT_OFFERS.
+    // Fresh installs create FACT_OFFERS directly via ensure-tables.ts; the ALTER
+    // is a no-op (object doesn't exist) and continues via try/catch.
+    { sql: `ALTER TABLE IF EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES RENAME TO SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `ALTER TABLE IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES RENAME TO FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES`, db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE' },
     // Asset-attribute migration for existing installs (boot-only). DIM_FLEET's
     // V_DIM_FLEET_CURRENT view is `SELECT f.*`, so ADD COLUMN invalidates its
     // declared column count — drop it FIRST, then add columns; the view is
@@ -499,7 +504,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
         COMMENT = ${TRACK}
         AS
         WITH poi AS (
-          -- Same pre-aggregation as VW_EXTERNAL_DELIVERIES / VW_TRAILERS:
+          -- Same pre-aggregation as VW_EXTERNAL_OFFERS / VW_TRAILERS:
           -- DIM_POIS may have multiple rows per LOCATION_ID after Studio
           -- re-runs, which would otherwise multiply trip rows here.
           SELECT LOCATION_ID,
@@ -565,7 +570,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING',
     },
     {
-      sql: `CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES (
+      sql: `CREATE TABLE IF NOT EXISTS SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS (
         OFFER_ID VARCHAR, REGION VARCHAR(100), VEHICLE_TYPE VARCHAR(20),
         SOURCE VARCHAR(30),
         PICKUP_POI_ID VARCHAR, PICKUP_LAT FLOAT, PICKUP_LON FLOAT, PICKUP_GEOM GEOGRAPHY,
@@ -580,7 +585,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_DELIVERIES
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_OFFERS
         COMMENT = ${TRACK}
         AS
         WITH poi AS (
@@ -595,11 +600,11 @@ export async function ensureBackloadAndAssetVelocityObjects(
           GROUP BY LOCATION_ID
         ),
         offers AS (
-          -- Dedupe FACT_DELIVERIES by OFFER_ID. The seed pipeline can
+          -- Dedupe FACT_OFFERS by OFFER_ID. The seed pipeline can
           -- accumulate multiple rows per OFFER_ID across runs; keep the
           -- newest by POSTED_AT (and PICKUP_FROM_TS as tiebreaker).
           SELECT *
-          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_DELIVERIES_CURRENT
+          FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
           WHERE REGION = ${currentRegionScalar('BACKLOAD_MATCHING')}
           QUALIFY ROW_NUMBER() OVER (
             PARTITION BY OFFER_ID
@@ -624,7 +629,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
           f.DROPOFF_LAT,
           f.PICKUP_FROM_TS,
           f.PICKUP_TO_TS,
-          -- Class-aware weight clamp: rescale FACT_DELIVERIES.WEIGHT_KG
+          -- Class-aware weight clamp: rescale FACT_OFFERS.WEIGHT_KG
           -- (which is HGV-shaped at the table level) into the active class's
           -- [SHIPMENT_KG_MIN, SHIPMENT_KG_MAX] band so a fresh ebike preset
           -- never gets 25t shipments.
@@ -711,10 +716,10 @@ export async function ensureBackloadAndAssetVelocityObjects(
     // time and may not exist yet on a fresh boot.
     // ---------------------------------------------------------------
     // Freight Exchange (Phase A/B): MARKETPLACE schema + projection views
-    // over SYNTHETIC_DATASETS.UNIFIED.{FACT_DELIVERIES, DIM_PARTNERS,
+    // over SYNTHETIC_DATASETS.UNIFIED.{FACT_OFFERS, DIM_PARTNERS,
     // FACT_PARTNER_HISTORY} filtered by MARKETPLACE.CONFIG. Also creates a
     // RATE_INDEX dynamic table at 15-minute lag and a denormalized
-    // VW_DELIVERY_ENRICHED that the React page reads.
+    // VW_OFFER_ENRICHED that the React page reads.
     // ---------------------------------------------------------------
     {
       sql: `CREATE SCHEMA IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE COMMENT = ${TRACK_FX}`,
@@ -755,7 +760,7 @@ export async function ensureBackloadAndAssetVelocityObjects(
             ) src
             ON TRUE
             WHEN MATCHED AND NOT EXISTS (
-              SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES o
+              SELECT 1 FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS o
               WHERE o.VEHICLE_TYPE = tgt.VEHICLE_TYPE AND o.REGION = tgt.REGION
             )
               THEN UPDATE SET tgt.VEHICLE_TYPE = src.VEHICLE_TYPE, tgt.REGION = src.REGION
@@ -763,25 +768,25 @@ export async function ensureBackloadAndAssetVelocityObjects(
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     // Idempotent ALTERs in case the page is deployed against an older
-    // FACT_DELIVERIES that pre-dates the enrichment columns.
+    // FACT_OFFERS that pre-dates the enrichment columns.
     {
-      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS VEHICLE_EQUIPMENT VARCHAR(30)`,
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS VEHICLE_EQUIPMENT VARCHAR(30)`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`,
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS DISTANCE_KM FLOAT`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`,
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS PRICE_PER_KM_USD FLOAT`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`,
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS PARTNER_ID VARCHAR`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`,
+      sql: `ALTER TABLE SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS ADD COLUMN IF NOT EXISTS STATUS VARCHAR(20)`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
@@ -840,7 +845,7 @@ $$`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
-      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES (
+      sql: `CREATE TABLE IF NOT EXISTS FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES (
         JOB_ID       VARCHAR    NOT NULL,
         OFFER_ID     VARCHAR    NOT NULL,
         ROAD_KM      FLOAT,
@@ -848,12 +853,12 @@ $$`,
         GEOMETRY     VARCHAR,
         PROFILE      VARCHAR(20),
         COMPUTED_AT  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-        CONSTRAINT PK_FACT_DELIVERY_ROUTES PRIMARY KEY (JOB_ID, OFFER_ID)
+        CONSTRAINT PK_FACT_OFFER_ROUTES PRIMARY KEY (JOB_ID, OFFER_ID)
       ) COMMENT = ${TRACK_FX}`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
-      sql: `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
+      sql: `ALTER TABLE FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES ADD COLUMN IF NOT EXISTS JOB_ID VARCHAR`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
@@ -922,11 +927,11 @@ $$`,
       db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED',
     },
     {
-      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_DELIVERIES_CURRENT
+      sql: `CREATE OR REPLACE VIEW SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT
         COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-build-routing-solution","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"app"}}'
         AS
         SELECT f.*
-        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES f
+        FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS f
         JOIN FLEET_INTELLIGENCE.CORE.DIM_DATASETS d
           ON d.DATASET_ID = f.JOB_ID
          AND d.REGION = f.REGION
@@ -1222,17 +1227,17 @@ $$`,
       db: 'FLEET_INTELLIGENCE', schema: 'ROUTE_OPTIMIZATION',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_DELIVERY_ROUTES_CURRENT
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_OFFER_ROUTES_CURRENT
         COMMENT = ${TRACK_FX}
         AS
         SELECT fr.*
-        FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES fr
-        JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_DELIVERIES_CURRENT o
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
+        JOIN SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT o
           ON o.OFFER_ID = fr.OFFER_ID AND o.JOB_ID = fr.JOB_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERIES
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS
         COMMENT = ${TRACK_FX}
         AS
         SELECT
@@ -1251,7 +1256,7 @@ $$`,
           f.DISTANCE_KM, f.PRICE_PER_KM_USD,
           COALESCE(f.STATUS, 'OPEN')              AS STATUS,
           DATEDIFF('minute', f.POSTED_AT, CURRENT_TIMESTAMP()) AS POSTED_AGE_MIN
-        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_DELIVERIES_CURRENT f
+        FROM SYNTHETIC_DATASETS.UNIFIED.V_FACT_OFFERS_CURRENT f
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT p ON p.LOCATION_ID = f.PICKUP_POI_ID
         LEFT JOIN SYNTHETIC_DATASETS.UNIFIED.V_DIM_POIS_CURRENT d ON d.LOCATION_ID = f.DROPOFF_POI_ID
         WHERE f.REGION = (SELECT REGION FROM FLEET_INTELLIGENCE.MARKETPLACE.CONFIG LIMIT 1)
@@ -1314,7 +1319,7 @@ $$`,
             o.PICKUP_LON, o.PICKUP_LAT,
             o.DROPOFF_LON, o.DROPOFF_LAT
           FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNER_HISTORY h
-          LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERIES o
+          LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
             ON o.PARTNER_ID = h.PARTNER_ID
         )
         SELECT
@@ -1340,7 +1345,7 @@ $$`,
             VEHICLE_EQUIPMENT,
             DATE_TRUNC('week', POSTED_AT)        AS WEEK,
             PRICE_PER_KM_USD
-          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES
+          FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
           WHERE PRICE_PER_KM_USD IS NOT NULL
             AND VEHICLE_EQUIPMENT IS NOT NULL
         )
@@ -1355,7 +1360,7 @@ $$`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED
         COMMENT = ${TRACK_FX}
         AS
         WITH e AS (
@@ -1381,7 +1386,7 @@ $$`,
               WHEN o.PRICE_PER_KM_USD < ri.P50_USD_PER_KM THEN 'BELOW_MARKET'
               ELSE 'ABOVE_MARKET'
             END AS MARKET_BADGE
-          FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERIES o
+          FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFERS o
           LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.VW_PARTNERS p ON p.PARTNER_ID = o.PARTNER_ID
           LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.RATE_INDEX ri
             ON ri.VEHICLE_EQUIPMENT = o.VEHICLE_EQUIPMENT
@@ -1404,12 +1409,12 @@ $$`,
                ELSE 'DIRECT'
           END AS ROUTE_DETOUR_BADGE
         FROM e
-        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES fr
+        LEFT JOIN FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES fr
           ON fr.OFFER_ID = e.OFFER_ID AND fr.JOB_ID = e.JOB_ID`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
     {
-      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_DEADHEAD
+      sql: `CREATE OR REPLACE VIEW FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_DEADHEAD
         COMMENT = ${TRACK_FX}
         AS
         WITH ranked AS (
@@ -1432,7 +1437,7 @@ $$`,
           r.DEADHEAD_KM        AS BEST_DEADHEAD_KM,
           r.DEADHEAD_MIN       AS BEST_DEADHEAD_MIN,
           r.COMPUTED_AT        AS BEST_COMPUTED_AT
-        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED o
+        FROM FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED o
         LEFT JOIN ranked r
           ON r.OFFER_ID = o.OFFER_ID AND r.BEST_RANK = 1`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
@@ -1441,6 +1446,13 @@ $$`,
       sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_OFFER_ENRICHED_V2`,
       db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE',
     },
+    // Cleanup orphaned old-name views from the FACT_DELIVERIES -> FACT_OFFERS rename.
+    { sql: `DROP VIEW IF EXISTS SYNTHETIC_DATASETS.UNIFIED.V_FACT_DELIVERIES_CURRENT`, db: 'SYNTHETIC_DATASETS', schema: 'UNIFIED' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING.VW_EXTERNAL_DELIVERIES`, db: 'FLEET_INTELLIGENCE', schema: 'BACKLOAD_MATCHING' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERIES`, db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_ENRICHED`, db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.VW_DELIVERY_DEADHEAD`, db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE' },
+    { sql: `DROP VIEW IF EXISTS FLEET_INTELLIGENCE.MARKETPLACE.V_FACT_DELIVERY_ROUTES_CURRENT`, db: 'FLEET_INTELLIGENCE', schema: 'MARKETPLACE' },
   ];
   for (const { sql, db, schema } of stmts) {
     try {
@@ -1471,7 +1483,7 @@ $$`,
   // turn the two highest-impact silent failures into diagnosable ERROR lines:
   //   * Asset Velocity views missing (e.g. CREATE VIEW threw because
   //     DWELL_ANALYSIS.DT_DWELL_ENRICHED did not exist yet at boot).
-  //   * MARKETPLACE.CONFIG empty -> VW_DELIVERY_ENRICHED filters to 0 rows.
+  //   * MARKETPLACE.CONFIG empty -> VW_OFFER_ENRICHED filters to 0 rows.
   // -----------------------------------------------------------------
   try {
     await sqlFn(
@@ -1490,7 +1502,7 @@ $$`,
     );
     const n = Number(cfgRows?.[0]?.N ?? cfgRows?.[0]?.n ?? 0);
     if (n === 0) {
-      log('ERROR', 'Init', 'MARKETPLACE.CONFIG empty after boot init -> Deliveries VW_DELIVERY_ENRICHED returns 0 rows. Re-run datasets/load-seed-data.sql post-seed.');
+      log('ERROR', 'Init', 'MARKETPLACE.CONFIG empty after boot init -> Deliveries VW_OFFER_ENRICHED returns 0 rows. Re-run datasets/load-seed-data.sql post-seed.');
     }
   } catch (e: any) {
     log('ERROR', 'Init', `MARKETPLACE.CONFIG probe failed after boot init: ${e?.message?.slice(0, 200)}`);

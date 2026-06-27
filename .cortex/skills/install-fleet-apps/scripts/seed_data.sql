@@ -139,9 +139,9 @@ CREATE FILE FORMAT IF NOT EXISTS FLEET_INTELLIGENCE.CORE.PARQUET_FF
   COMMENT = '{"origin":"sf_sit-is-fleet","name":"oss-install-fleet-apps","version":{"major":1,"minor":0},"attributes":{"is_quickstart":1,"source":"sql"}}';
 
 -- 3. AGNOSTIC GUARD: remove the remaining industry-vertical showcase schemas.
---    Deliveries (FACT_DELIVERIES / DIM_PARTNERS / FACT_PARTNER_HISTORY + the
+--    Offers (FACT_OFFERS / DIM_PARTNERS / FACT_PARTNER_HISTORY + the
 --    MARKETPLACE projection views) are now VEHICLE-AGNOSTIC -- Data Studio
---    generates vehicle-appropriate deliveries for every fleet type -- so they
+--    generates vehicle-appropriate offers for every fleet type -- so they
 --    are RETAINED. Only the still-vertical Backload Matching and DHL NTBO
 --    showcase schemas are dropped.
 DROP SCHEMA IF EXISTS FLEET_INTELLIGENCE.BACKLOAD_MATCHING;

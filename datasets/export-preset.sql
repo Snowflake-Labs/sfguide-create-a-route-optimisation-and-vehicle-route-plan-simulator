@@ -95,9 +95,9 @@ HEADER = TRUE
 OVERWRITE = TRUE;
 
 --------------------------------------------------------------------------------
--- FACT_DELIVERIES
+-- FACT_OFFERS
 --------------------------------------------------------------------------------
-COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_deliveries/
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offers/
 FROM (
   SELECT
     OFFER_ID, REGION, VEHICLE_TYPE, SOURCE,
@@ -108,7 +108,7 @@ FROM (
     PICKUP_FROM_TS, PICKUP_TO_TS, WEIGHT_KG, PRODUCT, PRICE_USD, HAZMAT,
     LISTING_TEXT, POSTED_AT, JOB_ID,
     VEHICLE_EQUIPMENT, DISTANCE_KM, PRICE_PER_KM_USD, PARTNER_ID, STATUS
-  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_DELIVERIES
+  FROM SYNTHETIC_DATASETS.UNIFIED.FACT_OFFERS
   WHERE JOB_ID = $JOB_ID
 )
 FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)
@@ -204,10 +204,10 @@ OVERWRITE = TRUE;
 --------------------------------------------------------------------------------
 -- FACT_OFFER_ROUTES
 --------------------------------------------------------------------------------
-COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_delivery_routes/
+COPY INTO @OPENROUTESERVICE_APP.CORE.SEED_DATA_STAGE/synthetic_ebikes/fact_offer_routes/
 FROM (
   SELECT *
-  FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_DELIVERY_ROUTES
+  FROM FLEET_INTELLIGENCE.MARKETPLACE.FACT_OFFER_ROUTES
   WHERE JOB_ID = $JOB_ID
 )
 FILE_FORMAT = (TYPE = PARQUET COMPRESSION = SNAPPY)

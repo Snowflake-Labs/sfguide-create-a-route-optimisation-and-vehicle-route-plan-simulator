@@ -178,7 +178,7 @@ export async function insertDimPois(pois: any[], config: GenerationConfig, snowS
   }
 }
 
-export async function insertFactDeliveries(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
+export async function insertFactOffers(offers: any[], config: GenerationConfig, snowSql: SnowSqlFn, jobId: string): Promise<number> {
   if (offers.length === 0) return 0;
   const vt = resolveVehicleType(config);
   const batchSize = 500;
@@ -198,7 +198,7 @@ export async function insertFactDeliveries(offers: any[], config: GenerationConf
       `${o.price_per_km_usd !== undefined && o.price_per_km_usd !== null ? o.price_per_km_usd : 'NULL'},` +
       `${escVal(o.partner_id || null)},${escVal(o.status || 'OPEN')}`
     ).join(' UNION ALL\n');
-    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_DELIVERIES
+    const sql = `INSERT INTO ${UNIFIED_DB}.${UNIFIED_SCHEMA}.FACT_OFFERS
       (OFFER_ID,REGION,VEHICLE_TYPE,SOURCE,
        PICKUP_POI_ID,PICKUP_LAT,PICKUP_LON,PICKUP_GEOM,
        DROPOFF_POI_ID,DROPOFF_LAT,DROPOFF_LON,DROPOFF_GEOM,
@@ -210,7 +210,7 @@ export async function insertFactDeliveries(offers: any[], config: GenerationConf
       await snowSql(sql, UNIFIED_DB, UNIFIED_SCHEMA);
       inserted += chunk.length;
     } catch (e: any) {
-      const msg = `FACT_DELIVERIES insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
+      const msg = `FACT_OFFERS insert error (batch ${i}-${i + batchSize}): ${e.message?.slice(0, 200)}`;
       log('ERROR', 'Studio', msg);
       throw new Error(msg);
     }

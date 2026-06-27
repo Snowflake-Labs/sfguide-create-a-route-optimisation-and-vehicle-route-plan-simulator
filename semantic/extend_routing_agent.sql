@@ -64,7 +64,7 @@ instructions:
       speed, detours, status), operator breakdowns (shift, profile), and top origins,
       by region/vehicle_type/operator => query_fleet_ops
     - Freight marketplace: offers, prices, price-vs-market, partner trust/credit, lane on-time
-      reliability => query_deliveries
+      reliability => query_offers
     - Dwell analysis: dwell time, facility utilization, H3 congestion, per-driver SLA breaches
       => query_dwell_analytics
     - Route deviation: planned-vs-actual per trip, deviation rate, excess km, time lost, by driver
@@ -255,8 +255,8 @@ tools:
       description: "Universal, mode-agnostic fleet analytics: trips (distance, duration, speed, detours, status), operator breakdowns (shift, profile), and top origins, broken down by region, asset mode (vehicle_type: car/hgv/ebike/...), and operator. Use for 'how many trips', 'total/average distance or duration', 'detour rate', 'average speed', 'busiest origins', 'operators by shift'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
-      name: query_deliveries
-      description: "Analytics over the vehicle-agnostic deliveries marketplace: live delivery offers with price, weight, vehicle equipment, price-vs-market benchmark, partner trust/credit/KYC, and historical partner-lane on-time reliability. Use for 'deliveries by equipment', 'average price', 'below/above market', 'green-trust partners', 'on-time delivery rate'."
+      name: query_offers
+      description: "Analytics over the vehicle-agnostic offers marketplace: live offers with price, weight, vehicle equipment, price-vs-market benchmark, partner trust/credit/KYC, and historical partner-lane on-time reliability. Use for 'offers by equipment', 'average price', 'below/above market', 'green-trust partners', 'on-time rate'."
   - tool_spec:
       type: cortex_analyst_text_to_sql
       name: query_dwell_analytics
@@ -331,8 +331,8 @@ tool_resources:
     semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_FLEET_OPS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
-  query_deliveries:
-    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_DELIVERIES
+  query_offers:
+    semantic_view: FLEET_INTELLIGENCE.SEMANTIC.SV_OFFERS
     execution_environment:
       warehouse: ROUTING_ANALYTICS
   query_dwell_analytics:

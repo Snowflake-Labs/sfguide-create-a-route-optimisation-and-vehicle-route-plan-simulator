@@ -29,12 +29,14 @@ import { emitDwell, emitLongIdleDwell } from './engine/dwell';
 
 export type {
   TelemetryPoint, TripRecord, GenerationEvent, POI, RouteGeometry,
-  FleetMember, GenerationProgress, RouteFetchResult, DeliveryOffer,
+  FleetMember, GenerationProgress, RouteFetchResult, Offer, DeliveryOffer,
   Partner, PartnerHistoryRow,
 } from './engine/types';
 
 // Re-exports kept for backwards-compatibility with jobs.ts and tests.
-export { generateDeliveries } from './engine/deliveries';
+export { generateOffers } from './engine/offers';
+/** @deprecated Use generateOffers */
+export { generateOffers as generateDeliveries } from './engine/offers';
 export { generatePartners, generatePartnerHistory } from './engine/partners';
 export { buildFleet } from './engine/fleet';
 export { loadPOIs } from './engine/routability';
