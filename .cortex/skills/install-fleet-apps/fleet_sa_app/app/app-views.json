@@ -198,9 +198,28 @@
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
     "layout": {
-      "default": { "columns": "320px 1fr", "rows": "1.4fr auto", "grid": "\"journeys map\"\n\"speed speed\"" }
+      "default": { "columns": "340px 1fr", "rows": "auto 1fr 1fr auto auto", "grid": "\"kpi kpi\"\n\"journeys map\"\n\"stops map\"\n\"replay replay\"\n\"speed speed\"" }
     },
     "areas": {
+      "kpi": {
+        "component": "MetricCards",
+        "data": {
+          "query": "WITH j AS (SELECT DISTANCE_VALUE, PLANNED_DISTANCE_VALUE, DURATION_SEC, DEVIATION_DISTANCE_VALUE FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1), s AS (SELECT COUNT(*) AS stops, COALESCE(SUM(DWELL_DURATION_SEC),0)/60 AS dwell_min FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), e AS (SELECT COUNT(*) AS events FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey), p AS (SELECT ROUND(AVG(SPEED_VALUE),1) AS avg_kmh, ROUND(MAX(SPEED_VALUE),1) AS max_kmh FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE JOURNEY_ID = :selected_journey) SELECT ROUND(j.DISTANCE_VALUE,1) AS dist_km, ROUND(j.PLANNED_DISTANCE_VALUE,1) AS planned_km, ROUND(j.DURATION_SEC/60,1) AS dur_min, p.avg_kmh, s.stops, ROUND(s.dwell_min,1) AS dwell_min, e.events, CASE WHEN j.PLANNED_DISTANCE_VALUE > 0 THEN (j.DISTANCE_VALUE - j.PLANNED_DISTANCE_VALUE)/j.PLANNED_DISTANCE_VALUE ELSE NULL END AS deviation_frac FROM j CROSS JOIN s CROSS JOIN e CROSS JOIN p",
+          "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" },
+          "mapping": {
+            "metrics": [
+              { "column": "dist_km", "label": "Distance", "format": "number", "unit": "distance" },
+              { "column": "planned_km", "label": "Planned", "format": "number", "unit": "distance" },
+              { "column": "dur_min", "label": "Duration (min)", "format": "number" },
+              { "column": "avg_kmh", "label": "Avg Speed (km/h)", "format": "number" },
+              { "column": "stops", "label": "Stops", "format": "number" },
+              { "column": "dwell_min", "label": "Dwell (min)", "format": "number" },
+              { "column": "events", "label": "Safety Events", "format": "number" },
+              { "column": "deviation_frac", "label": "Deviation", "format": "percent" }
+            ]
+          }
+        }
+      },
       "journeys": {
         "component": "ClickableTable",
         "data": {
@@ -209,6 +228,15 @@
         },
         "config": { "rowKey": "journey_id", "maxRows": 100, "defaultSort": { "column": "deviated", "direction": "desc" }, "exceptionFirst": { "column": "deviated", "values": ["yes"] } },
         "emits": { "selected_journey": "selection" }
+      },
+      "stops": {
+        "component": "ClickableTable",
+        "data": {
+          "query": "SELECT SEQUENCE_NUM AS seq, COALESCE(SITE_LABEL,'(transit/idle)') AS site, ARRIVAL_TS AS arrival, DEPARTURE_TS AS departure, ROUND(DWELL_DURATION_SEC/60,1) AS dwell_min, SLA_STATUS_ENUM AS sla FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY SEQUENCE_NUM LIMIT 200",
+          "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": { "rowKey": "seq", "maxRows": 200, "defaultSort": { "column": "seq", "direction": "asc" }, "exceptionFirst": { "column": "sla", "values": ["CRITICAL", "WARNING"] } },
+        "emits": { "selected_stop": "selection" }
       },
       "map": {
         "component": "Map",
@@ -258,6 +286,54 @@
                 "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 5000",
                 "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
               }
+            },
+            {
+              "type": "scatterplot",
+              "id": "dwell",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": { "column": "sla", "palette": { "CRITICAL": [209, 55, 78, 230], "WARNING": [255, 160, 0, 230], "OK": [46, 204, 113, 200] }, "default": [120, 120, 120, 200] },
+              "radius": 90,
+              "radiusMinPixels": 6,
+              "radiusMaxPixels": 20,
+              "pickable": true,
+              "tooltip": "<b>{site}</b><br/>Dwell: {dwell_min} min<br/>SLA: {sla}",
+              "data": {
+                "query": "SELECT COALESCE(SITE_LABEL,'Stop') AS site, SLA_STATUS_ENUM AS sla, ROUND(DWELL_DURATION_SEC/60,1) AS dwell_min, ST_X(STOP_GEOG) AS lng, ST_Y(STOP_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND STOP_GEOG IS NOT NULL LIMIT 500",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "od",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": { "column": "kind", "palette": { "origin": [46, 204, 113, 235], "destination": [231, 76, 60, 235] }, "default": [120, 120, 120, 200] },
+              "radius": 120,
+              "radiusMinPixels": 7,
+              "radiusMaxPixels": 16,
+              "pickable": true,
+              "tooltip": "<b>{kind}</b><br/>{site}",
+              "data": {
+                "query": "SELECT 'origin' AS kind, COALESCE(so.SITE_LABEL,'Origin') AS site, ST_X(j.ORIGIN) AS lng, ST_Y(j.ORIGIN) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) j LEFT JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) so ON so.SITE_ID = j.ORIGIN_SITE_ID WHERE :selected_journey IS NOT NULL AND j.JOURNEY_ID = :selected_journey AND j.ORIGIN IS NOT NULL UNION ALL SELECT 'destination', COALESCE(sd.SITE_LABEL,'Destination'), ST_X(j.DESTINATION), ST_Y(j.DESTINATION) FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) j LEFT JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) sd ON sd.SITE_ID = j.DESTINATION_SITE_ID WHERE :selected_journey IS NOT NULL AND j.JOURNEY_ID = :selected_journey AND j.DESTINATION IS NOT NULL",
+                "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
+            },
+            {
+              "type": "scatterplot",
+              "id": "replay",
+              "lng": "lng",
+              "lat": "lat",
+              "fillColor": [0, 229, 255, 255],
+              "radius": 110,
+              "radiusMinPixels": 8,
+              "radiusMaxPixels": 18,
+              "pickable": true,
+              "tooltip": "<b>Replay</b><br/>{t}<br/>{speed} km/h",
+              "data": {
+                "query": "SELECT ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat, ROUND(SPEED_VALUE,1) AS speed, TO_VARCHAR(TS,'HH24:MI:SS') AS t FROM (SELECT LOCATION_GEOG, SPEED_VALUE, TS, PERCENT_RANK() OVER (ORDER BY TS) AS pr FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey AND LOCATION_GEOG IS NOT NULL) QUALIFY ROW_NUMBER() OVER (ORDER BY ABS(pr - TO_NUMBER(COALESCE(:replay_pct,'0'))/100.0)) = 1",
+                "params": { "selected_journey": "viewState.selected_journey", "replay_pct": "viewState.replay_pct", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+              }
             }
           ]
         }
@@ -265,10 +341,64 @@
       "speed": {
         "component": "Chart",
         "data": {
-          "query": "SELECT TO_VARCHAR(TS,'HH24:MI:SS') AS t, ROUND(SPEED_VALUE,1) AS speed FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY TS LIMIT 500",
+          "query": "SELECT TO_VARCHAR(TS,'HH24:MI:SS') AS t, ROUND(SPEED_VALUE,1) AS speed, ROUND(POSTED_SPEED_VALUE,1) AS posted FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY TS LIMIT 500",
           "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
-        "config": { "title": "Speed Profile", "xAxis": { "field": "t", "fieldType": "category" }, "series": [ { "type": "line", "field": "speed", "label": "Speed", "color": "#29B5E8" } ] }
+        "config": { "title": "Speed Profile vs Posted Limit", "xAxis": { "field": "t", "fieldType": "category" }, "series": [ { "type": "line", "field": "speed", "label": "Speed", "color": "#29B5E8" }, { "type": "line", "field": "posted", "label": "Posted Limit", "color": "#9AA5B1" } ] }
+      },
+      "replay": {
+        "component": "Slider",
+        "config": { "label": "Replay position (%)", "min": 0, "max": 100, "step": 2, "default": 0, "play": true },
+        "emits": { "replay_pct": "" }
+      },
+      "detail": {
+        "component": "DetailPanel",
+        "data": {
+          "query": "WITH j AS (SELECT * FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey LIMIT 1) SELECT j.JOURNEY_ID AS journey_id, j.ENTITY_ID AS entity, j.ENTITY_TYPE AS vehicle_type, j.OPERATOR_ID AS operator, j.STATUS_ENUM AS status, j.START_TS AS started, j.END_TS AS ended, ROUND(j.DISTANCE_VALUE,1) AS dist_km, ROUND(j.PLANNED_DISTANCE_VALUE,1) AS planned_km, ROUND(j.DURATION_SEC/60,1) AS dur_min, ROUND(COALESCE(j.DEVIATION_DISTANCE_VALUE,0),1) AS deviation_km, so.SITE_LABEL AS origin, sd.SITE_LABEL AS destination FROM j LEFT JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) so ON so.SITE_ID = j.ORIGIN_SITE_ID LEFT JOIN TABLE(FLEET_APP.CORE.F_DIM_SITE_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) sd ON sd.SITE_ID = j.DESTINATION_SITE_ID",
+          "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
+        },
+        "config": {
+          "position": "drawer",
+          "triggerKey": "selected_journey",
+          "titleField": "journey_id",
+          "subtitleFields": ["status"],
+          "emptyMessage": "Select a {{labels.journey}} to inspect its details.",
+          "properties": [
+            { "field": "origin", "label": "Origin" },
+            { "field": "destination", "label": "Destination" },
+            { "field": "vehicle_type", "label": "{{labels.entity}} Type" },
+            { "field": "entity", "label": "{{labels.entity}}" },
+            { "field": "operator", "label": "{{labels.operator}}" },
+            { "field": "status", "label": "Status" },
+            { "field": "started", "label": "Start", "format": "datetime" },
+            { "field": "ended", "label": "End", "format": "datetime" },
+            { "field": "dist_km", "label": "Distance (km)", "format": "number" },
+            { "field": "planned_km", "label": "Planned (km)", "format": "number" },
+            { "field": "dur_min", "label": "Duration (min)", "format": "number" },
+            { "field": "deviation_km", "label": "Deviation (km)", "format": "number" }
+          ],
+          "actions": [
+            { "label": "{{labels.operator}} Performance", "view": "responsible_party_performance", "carry": { "selected_operator": "operator" }, "style": "primary" }
+          ],
+          "sections": [
+            {
+              "type": "related_table",
+              "title": "Stops on this {{labels.journey}}",
+              "query": "SELECT SEQUENCE_NUM AS seq, COALESCE(SITE_LABEL,'(transit/idle)') AS site, ROUND(DWELL_DURATION_SEC/60,1) AS dwell_min, SLA_STATUS_ENUM AS sla, ARRIVAL_TS AS arrival FROM TABLE(FLEET_APP.CORE.F_FACT_STOP_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY SEQUENCE_NUM LIMIT 50",
+              "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No dwell stops on this journey.",
+              "columns": [ { "field": "seq", "header": "#" }, { "field": "site", "header": "Site" }, { "field": "dwell_min", "header": "Dwell (min)", "format": "number" }, { "field": "sla", "header": "SLA" }, { "field": "arrival", "header": "Arrival", "format": "datetime" } ]
+            },
+            {
+              "type": "related_table",
+              "title": "Safety & Compliance Events",
+              "query": "SELECT EVENT_TYPE AS event_type, SEVERITY_ENUM AS severity, ROUND(METRIC_VALUE,1) AS value, EVENT_TS AS occurred FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE :selected_journey IS NOT NULL AND JOURNEY_ID = :selected_journey ORDER BY EVENT_TS DESC LIMIT 25",
+              "params": { "selected_journey": "viewState.selected_journey", "region": "context.region", "dataset_id": "context.dataset_id" },
+              "emptyMessage": "No safety events on this journey.",
+              "columns": [ { "field": "event_type", "header": "Type" }, { "field": "severity", "header": "Severity" }, { "field": "value", "header": "Value", "format": "number" }, { "field": "occurred", "header": "When", "format": "datetime" } ]
+            }
+          ]
+        }
       }
     }
   },
