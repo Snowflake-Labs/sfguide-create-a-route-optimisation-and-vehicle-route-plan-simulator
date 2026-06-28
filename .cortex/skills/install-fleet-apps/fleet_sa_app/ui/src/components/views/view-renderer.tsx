@@ -104,7 +104,7 @@ function getScrollableAreas(grid: string, rows: string): Set<string> {
   const scrollable = new Set<string>();
   gridLines.forEach((line, rowIdx) => {
     const rowSpec = rowTokens[rowIdx] || 'auto';
-    if (/fr/.test(rowSpec)) {
+    if (/fr|px/.test(rowSpec)) {
       const areas = line.replace(/"/g, '').trim().split(/\s+/);
       areas.forEach((a) => scrollable.add(a));
     }
@@ -118,6 +118,11 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
   const areaNames = allAreaNames.filter((n) => !isDrawerArea(viewDef.areas[n]));
   const drawerAreaNames = allAreaNames.filter((n) => isDrawerArea(viewDef.areas[n]));
   const scrollableAreas = getScrollableAreas(layout.grid, layout.rows || 'auto');
+  // When the layout has no flexible (fr) row, its rows are auto/fixed and the
+  // grid sizes to content — taller than the viewport once an auto detail row
+  // grows — so the view itself must scroll vertically. Views with an fr row
+  // keep the current behavior (grid fills 100% height, fr areas scroll inside).
+  const hasFlexRow = /\bfr\b/.test(layout.rows ?? 'auto');
 
   // viewState keys that represent a user selection (emit-type "selection" from a
   // ClickableTable / ComboBox), as opposed to filters (Slider / Checkbox emit "").
@@ -139,7 +144,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
   );
 
   return (
-    <div style={{ position: 'relative', height: '100%', minHeight: 0 }}>
+    <div style={{ position: 'relative', height: '100%', minHeight: 0, overflowY: hasFlexRow ? undefined : 'auto' }}>
     <div
       style={{
         display: 'grid',
@@ -147,7 +152,8 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
         gridTemplateRows: resolveRows(layout.rows || 'auto'),
         gridTemplateAreas: parseGridTemplate(layout.grid),
         gap: '1px',
-        height: '100%',
+        height: hasFlexRow ? '100%' : 'auto',
+        minHeight: hasFlexRow ? undefined : '100%',
         backgroundColor: 'var(--border-default, #e5e7eb)',
       }}
     >

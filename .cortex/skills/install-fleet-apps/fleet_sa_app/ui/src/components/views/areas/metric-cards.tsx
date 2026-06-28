@@ -67,9 +67,9 @@ export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', gap: '16px', padding: '16px' }}>
+      <div style={{ display: 'flex', gap: '10px', padding: '10px' }}>
         {[1, 2, 3, 4].map((i) => (
-          <div key={i} style={{ flex: 1, height: '80px', borderRadius: '12px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', animation: 'pulse 2s ease-in-out infinite' }} />
+          <div key={i} style={{ flex: 1, height: '52px', borderRadius: '10px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', animation: 'pulse 2s ease-in-out infinite' }} />
         ))}
       </div>
     );
@@ -83,7 +83,7 @@ export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
   if (!row) return null;
 
   return (
-    <div style={{ display: 'flex', gap: '16px', padding: '16px', flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: '10px', padding: '10px', flexWrap: 'wrap' }}>
       {metrics.map((m) => {
         const raw = row[m.column];
         const suffix = unitSuffix(display, m.unit);
@@ -96,19 +96,19 @@ export function MetricCardsArea({ areaConfig }: MetricCardsAreaProps) {
             key={m.column}
             onClick={clickable ? () => updateViewState({ [emitKey!]: isSel ? null : emitVal }) : undefined}
             style={{
-              flex: '1 1 140px',
-              padding: '16px',
-              borderRadius: '12px',
+              flex: '1 1 120px',
+              padding: '8px 12px',
+              borderRadius: '10px',
               border: `1px solid ${isSel ? 'var(--border-accent, #93b4f5)' : 'var(--border-default, #e5e7eb)'}`,
               backgroundColor: isSel ? 'var(--surface-accent, #eff6ff)' : 'var(--surface-primary, #fff)',
               cursor: clickable ? 'pointer' : 'default',
             }}
           >
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary, #6b7280)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary, #6b7280)', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
               {interpolateTokens(m.label, display)}
             </div>
-            <div style={{ fontSize: '24px', fontWeight: 700, color: color ?? 'var(--text-primary, #111827)' }}>
-              {formatValue(raw, m.format)}{suffix ? <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-secondary, #6b7280)', marginLeft: '4px' }}>{suffix}</span> : null}
+            <div style={{ fontSize: '18px', fontWeight: 700, color: color ?? 'var(--text-primary, #111827)' }}>
+              {formatValue(raw, m.format)}{suffix ? <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary, #6b7280)', marginLeft: '4px' }}>{suffix}</span> : null}
             </div>
           </div>
         );

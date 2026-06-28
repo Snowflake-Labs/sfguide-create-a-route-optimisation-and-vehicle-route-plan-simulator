@@ -31,6 +31,7 @@ interface DetailActionDef {
 
 export interface DetailPanelConfig {
   triggerKey: string;                 // viewState key watched for show/hide (e.g. "selected_entity")
+  position?: 'drawer' | 'inline';     // "drawer" = absolute slide-over; anything else = inline grid section
   title?: string;                     // static fallback title
   titleField?: string;                // header row field used as the title
   subtitleFields?: string[];          // header row fields joined with " · " as subtitle
@@ -55,10 +56,12 @@ function DetailPanelBody({
   headerQuery,
   headerParams,
   config,
+  inline = false,
 }: {
   headerQuery?: string;
   headerParams?: Record<string, string>;
   config: DetailPanelConfig;
+  inline?: boolean;
 }) {
   const display = useDisplayConfig();
   const showView = useAppStore((s) => s.showView);
@@ -87,8 +90,8 @@ function DetailPanelBody({
 
   return (
     <>
-      {/* Sticky header: title + subtitle + actions */}
-      <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)', flexShrink: 0 }}>
+      {/* Header: title + subtitle + actions */}
+      <div style={{ padding: inline ? '0 0 12px' : '14px 16px', borderBottom: '1px solid var(--border-default, #e5e7eb)', flexShrink: inline ? undefined : 0 }}>
         <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text-primary, #111827)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {title || '—'}
         </h2>
@@ -119,8 +122,8 @@ function DetailPanelBody({
         )}
       </div>
 
-      {/* Scrollable body: properties + sub-query sections */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+      {/* Body: properties + sub-query sections. Drawer scrolls internally; inline grows with the page. */}
+      <div style={inline ? { padding: '16px 0 0' } : { flex: 1, overflow: 'auto', padding: '16px' }}>
         {loading && !row ? (
           <div>
             {Array.from({ length: 4 }).map((_, i) => (
@@ -134,7 +137,9 @@ function DetailPanelBody({
         ) : (
           <>
             {(config.properties ?? []).length > 0 && (
-              <div style={{ marginBottom: '24px', border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', padding: '4px 12px' }}>
+              <div style={inline
+                ? { marginBottom: '24px', border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', padding: '4px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', columnGap: '28px' }
+                : { marginBottom: '24px', border: '1px solid var(--border-default, #e5e7eb)', borderRadius: '6px', padding: '4px 12px' }}>
                 {config.properties!.map((prop) => {
                   const val = row[prop.field];
                   if (prop.conditional && (val === null || val === undefined || val === '')) return null;
@@ -151,14 +156,23 @@ function DetailPanelBody({
               </div>
             )}
 
-            {(config.sections ?? []).map((section, idx) => (
-              <RelatedTableSection
-                key={idx}
-                section={{ ...section, title: tr(section.title) }}
-                params={section.params}
-                showViewFn={showView}
-              />
-            ))}
+            {(() => {
+              const secs = (config.sections ?? []).map((section, idx) => (
+                <RelatedTableSection
+                  key={idx}
+                  section={{ ...section, title: tr(section.title) }}
+                  params={section.params}
+                  showViewFn={showView}
+                />
+              ));
+              return inline ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px', alignItems: 'start' }}>
+                  {secs}
+                </div>
+              ) : (
+                <>{secs}</>
+              );
+            })()}
           </>
         )}
       </div>
@@ -177,8 +191,44 @@ export function DetailPanelArea({ areaConfig }: DetailPanelAreaProps) {
 
   const open = selectionValue != null && selectionValue !== '';
   const width = config.width ?? 380;
+  const inline = config.position !== 'drawer';
 
   const close = useCallback(() => updateViewState({ [triggerKey]: null }), [updateViewState, triggerKey]);
+
+  // Inline mode: render as a normal full-width grid section that grows with the
+  // page (the view scrolls). When nothing is selected, show a muted prompt.
+  if (inline) {
+    return (
+      <div style={{ backgroundColor: 'var(--surface-primary, #fff)' }}>
+        {open ? (
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={close}
+              aria-label="Close detail panel"
+              style={{
+                position: 'absolute', top: 0, right: 0, zIndex: 1,
+                width: '26px', height: '26px', borderRadius: '6px', cursor: 'pointer',
+                border: '1px solid var(--border-default, #e5e7eb)', backgroundColor: 'var(--surface-secondary, #f3f4f6)',
+                color: 'var(--text-secondary, #6b7280)', fontSize: '15px', lineHeight: 1, padding: 0,
+              }}
+            >
+              ×
+            </button>
+            <DetailPanelBody
+              inline
+              headerQuery={areaData?.query}
+              headerParams={areaData?.params}
+              config={config}
+            />
+          </div>
+        ) : (
+          <div style={{ padding: '20px 2px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>
+            {interpolateTokens('Select a {{labels.entity}} above to view details.', display)}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <aside

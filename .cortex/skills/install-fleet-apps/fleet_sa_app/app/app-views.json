@@ -4,8 +4,8 @@
     "category": "Core",
     "description": "Where is every {{labels.entity}} now — live positions, status, and fleet health (merges Fleet Status, Asset Map, Live Operations).",
     "layout": {
-      "default": { "columns": "340px 1fr", "rows": "auto 1fr", "grid": "\"kpi kpi\"\n\"entities map\"" },
-      "mobile": { "columns": "1fr", "rows": "auto auto 1fr", "grid": "\"kpi\"\n\"entities\"\n\"map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto 460px auto", "grid": "\"kpi kpi\"\n\"entities map\"\n\"detail detail\"" },
+      "mobile": { "columns": "1fr", "rows": "auto 360px 320px auto", "grid": "\"kpi\"\n\"entities\"\n\"map\"\n\"detail\"" }
     },
     "areas": {
       "kpi": {
@@ -40,13 +40,25 @@
           "layers": [
             {
               "type": "path",
-              "id": "breadcrumb",
+              "id": "breadcrumb_history",
               "geojsonColumn": "trail_geojson",
-              "color": [41, 181, 232, 150],
-              "width": 4,
-              "widthMinPixels": 2,
+              "color": [120, 144, 156, 110],
+              "width": 3,
+              "widthMinPixels": 1,
               "data": {
-                "query": "SELECT ENTITY_ID AS entity_id, '{\"type\":\"LineString\",\"coordinates\":[' || LISTAGG('[' || lng || ',' || lat || ']', ',') WITHIN GROUP (ORDER BY ts) || ']}' AS trail_geojson FROM (SELECT ENTITY_ID, TS AS ts, ST_X(LOCATION_GEOG) AS lng, ST_Y(LOCATION_GEOG) AS lat FROM TABLE(FLEET_APP.CORE.F_FACT_POSITION_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE LOCATION_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY TS DESC) <= 300) GROUP BY ENTITY_ID HAVING COUNT(*) >= 2",
+                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, ACTUAL_PATH_GEOG FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(TO_DATE(START_TS)) AS last_day, MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE TO_DATE(j.START_TS) = d.last_day AND j.START_TS < d.last_ts",
+                "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
+              }
+            },
+            {
+              "type": "path",
+              "id": "breadcrumb_latest",
+              "geojsonColumn": "trail_geojson",
+              "color": [41, 181, 232, 230],
+              "width": 5,
+              "widthMinPixels": 3,
+              "data": {
+                "query": "WITH j AS (SELECT JOURNEY_ID, START_TS, ACTUAL_PATH_GEOG FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE ACTUAL_PATH_GEOG IS NOT NULL AND :selected_entity IS NOT NULL AND ENTITY_ID = :selected_entity AND (:date_range_start IS NULL OR START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ))), d AS (SELECT MAX(START_TS) AS last_ts FROM j) SELECT j.JOURNEY_ID AS journey_id, ST_ASGEOJSON(j.ACTUAL_PATH_GEOG)::STRING AS trail_geojson FROM j, d WHERE j.START_TS = d.last_ts",
                 "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
               }
             },
@@ -83,7 +95,7 @@
           "params": { "selected_entity": "viewState.selected_entity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
         "config": {
-          "position": "drawer",
+          "position": "inline",
           "triggerKey": "selected_entity",
           "titleField": "entity_id",
           "subtitleFields": ["state"],
