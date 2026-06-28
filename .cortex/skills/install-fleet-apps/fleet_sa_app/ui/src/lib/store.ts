@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Message, MessagePart, PanelContext, ChatStatus, AppRole, DisplayConfig } from './types';
+import type { Message, MessagePart, PanelContext, ChatStatus, AppRole, DisplayConfig, StyleConfig } from './types';
 import { viewRegistry } from './view-registry';
 import { registerDynamicView } from './load-views';
 import { parseDynamicSpec } from './view-spec-schema';
@@ -58,6 +58,8 @@ interface AppState {
   abortController: AbortController | null;
   // Zero-code retargeting surface from app-config.json (labels/units/thresholds).
   displayConfig: DisplayConfig | null;
+  // Centralized view styling surface from app-config.json (row heights/palette/density).
+  styleConfig: StyleConfig | null;
   // Simulated role-evaluation state. `selectedRole` drives which views/capabilities
   // the UI surfaces; `detectedRole` is the user's real role from /api/whoami (hint only).
   selectedRole: AppRole;
@@ -90,6 +92,7 @@ interface AppActions {
   setDetectedRole: (role: AppRole) => void;
   setAdminAppUrl: (url: string | null) => void;
   setDisplayConfig: (cfg: DisplayConfig | null) => void;
+  setStyleConfig: (cfg: StyleConfig | null) => void;
 }
 
 export type AppStore = AppState & AppActions;
@@ -123,6 +126,7 @@ export const useAppStore = create<AppStore>()(
       snowflakeFqn: null,
       abortController: null,
       displayConfig: null,
+      styleConfig: null,
       selectedRole: 'admin' as AppRole,
       detectedRole: null,
       adminAppUrl: null,
@@ -404,6 +408,10 @@ export const useAppStore = create<AppStore>()(
 
       setDisplayConfig: (cfg: DisplayConfig | null) => {
         set({ displayConfig: cfg });
+      },
+
+      setStyleConfig: (cfg: StyleConfig | null) => {
+        set({ styleConfig: cfg });
       },
 
       setSelectedRole: (role: AppRole) => {

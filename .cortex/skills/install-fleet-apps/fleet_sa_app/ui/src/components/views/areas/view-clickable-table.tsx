@@ -8,6 +8,7 @@
 
 import { useViewData } from '@/hooks/use-view-data';
 import { useAppStore } from '@/lib/store';
+import { useStyleConfig, resolveDefaultMaxRows } from '@/lib/style-config';
 import { FreshnessBadge } from './freshness-badge';
 
 interface TableColumn {
@@ -48,6 +49,7 @@ function compareValues(a: unknown, b: unknown, dir: 'asc' | 'desc'): number {
 export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaProps) {
   const { data, loading, error, fetchedAt } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
+  const styleConfig = useStyleConfig();
   const updateViewState = useAppStore((s) => s.updateViewState);
   const viewState = useAppStore((s) => s.panel.viewState);
 
@@ -79,7 +81,7 @@ export function ViewClickableTableArea({ areaConfig }: ViewClickableTableAreaPro
       });
     }
   }
-  rows = rows.slice(0, config?.maxRows ?? 200);
+  rows = rows.slice(0, config?.maxRows ?? resolveDefaultMaxRows(styleConfig));
   if (!rows.length) {
     return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
   }

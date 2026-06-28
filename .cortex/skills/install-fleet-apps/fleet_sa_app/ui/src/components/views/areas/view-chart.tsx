@@ -21,17 +21,7 @@ import {
   Legend,
 } from 'recharts';
 import { useViewData } from '@/hooks/use-view-data';
-
-const CHART_COLORS = [
-  'var(--chart-1, #2563eb)',
-  'var(--chart-2, #16a34a)',
-  'var(--chart-3, #d97706)',
-  'var(--chart-4, #dc2626)',
-  'var(--chart-5, #7c3aed)',
-  '#06b6d4',
-  '#ec4899',
-  '#84cc16',
-];
+import { useStyleConfig, resolveChartPalette } from '@/lib/style-config';
 
 interface SeriesConfig {
   type: string;
@@ -60,6 +50,9 @@ interface ViewChartAreaProps {
 export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
   const { data, loading, error } = useViewData(areaConfig.data.query, areaConfig.data.params);
   const config = areaConfig.config;
+  // Chart palette comes from the centralized style config (app-config.json),
+  // falling back to the bundled Snowflake-forward defaults.
+  const CHART_COLORS = resolveChartPalette(useStyleConfig());
 
   const chartData = useMemo(() => {
     if (!data?.rows) return [];
@@ -103,18 +96,18 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
   if (loading) {
     return (
-      <div style={{ padding: '16px', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: '100%', height: '200px', borderRadius: '8px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', animation: 'pulse 2s ease-in-out infinite' }} />
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
+        <div style={{ width: '100%', height: '100%', borderRadius: '8px', backgroundColor: 'var(--surface-secondary, #f3f4f6)', animation: 'pulse 2s ease-in-out infinite' }} />
       </div>
     );
   }
 
   if (error) {
-    return <div style={{ padding: '16px', color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
+    return <div style={{ color: 'var(--text-error, #dc2626)', fontSize: '13px' }}>Error: {error}</div>;
   }
 
   if (!chartData.length && !groupedData) {
-    return <div style={{ padding: '16px', color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
+    return <div style={{ color: 'var(--text-secondary, #6b7280)', fontSize: '13px' }}>No data</div>;
   }
 
   const hasBar = config.series.some((s) => s.type === 'bar' || s.type === 'stackedBar');
@@ -126,7 +119,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
   if (hasPie) {
     const valueField = config.series[0].field;
     return (
-      <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+      <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
@@ -144,7 +137,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
   if (hasScatter) {
     return (
-      <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+      <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
@@ -163,7 +156,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
   if (hasArea) {
     return (
-      <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+      <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
@@ -191,7 +184,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
   if (hasGroupBy && groupedData) {
     return (
-      <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+      <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={groupedData.data}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
@@ -210,7 +203,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
 
   if (hasBar) {
     return (
-      <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+      <div style={{ height: '100%', minHeight: '220px' }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />
@@ -228,7 +221,7 @@ export function ViewChartArea({ areaConfig }: ViewChartAreaProps) {
   }
 
   return (
-    <div style={{ padding: '16px', height: '100%', minHeight: '250px' }}>
+    <div style={{ height: '100%', minHeight: '220px' }}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default, #e5e7eb)" />

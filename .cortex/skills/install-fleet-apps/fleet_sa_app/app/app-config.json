@@ -1,6 +1,11 @@
 {
   "name": "Fleet Intelligence",
   "domainPack": "fleet",
+  "style": {
+    "rowHeights": { "kpi": 96, "content": 360, "map": 440, "heroMap": 460 },
+    "chart": { "palette": ["#29B5E8", "#11567F", "#16A34A", "#D97706", "#7C3AED", "#DC2626", "#06B6D4", "#EC4899"] },
+    "table": { "defaultMaxRows": 50, "boardMaxRows": 100 }
+  },
   "description": "Agent-first fleet analytics and routing, organized by business problem and applicable to any asset mode (car, HGV, e-bike, and beyond). Inspect fleet status, demand density, trips, operator performance, and top origins; analyze dwell, route deviation, and asset utilization; optimize multi-stop routes and compute drive-time isochrones - all scoped to a selectable region and dataset.",
   "targetUsers": [
     "Fleet Operations Analyst",

@@ -97,6 +97,19 @@ export interface DisplayConfig {
   defaultWindows?: Record<string, string>;
 }
 
+// Centralized view styling surface (app-config.json "style" block). Drives row
+// heights ($kpi/$content/$map/$heroMap tokens in app-views.json), chart palette,
+// and table density. All fields optional; consumers fall back to bundled defaults
+// (see style-config.ts), so a config without "style" renders the legacy look.
+export interface StyleConfig {
+  // Token name -> pixel height (e.g. content -> 360, map -> 440).
+  rowHeights?: Record<string, number>;
+  // Chart series colors, in order.
+  chart?: { palette?: string[] };
+  // Table row caps: default for triage tables, board for denser boards.
+  table?: { defaultMaxRows?: number; boardMaxRows?: number };
+}
+
 export interface InlineComponentDef<TProps = Record<string, unknown>> {
   toolName: string;
   component: ComponentType<TProps>;

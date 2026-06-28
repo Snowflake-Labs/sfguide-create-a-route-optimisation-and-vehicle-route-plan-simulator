@@ -10,7 +10,7 @@
       "gotchas": "Positions are GPS pings; utilization is the share of pings in a MOVING state, not a duty-cycle measure."
     },
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 420px auto", "grid": "\"kpi kpi\"\n\"entities map\"\n\"detail detail\"" },
+      "default": { "columns": "1fr 1fr", "rows": "auto $map auto", "grid": "\"kpi kpi\"\n\"entities map\"\n\"detail detail\"" },
       "mobile": { "columns": "1fr", "rows": "auto 360px 320px auto", "grid": "\"kpi\"\n\"entities\"\n\"map\"\n\"detail\"" }
     },
     "areas": {
@@ -224,7 +224,7 @@
     "category": "Core",
     "description": "Reconstruct one {{labels.journey}}: path, events, and speed over time (merges Trip Inspector, Trip Inspection, Route Inspector).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 96px 440px auto auto auto", "grid": "\"vehicle vehicle\"\n\"vsummary vsummary\"\n\"kpi kpi\"\n\"journeys map\"\n\"replay replay\"\n\"detail detail\"\n\"speed speed\"" },
+      "default": { "columns": "1fr 1fr", "rows": "auto auto $kpi $map auto auto auto", "grid": "\"vehicle vehicle\"\n\"vsummary vsummary\"\n\"kpi kpi\"\n\"journeys map\"\n\"replay replay\"\n\"detail detail\"\n\"speed speed\"" },
       "mobile": { "columns": "1fr", "rows": "auto auto auto 260px 360px auto auto auto", "grid": "\"vehicle\"\n\"vsummary\"\n\"kpi\"\n\"journeys\"\n\"map\"\n\"replay\"\n\"detail\"\n\"speed\"" }
     },
     "areas": {
@@ -485,7 +485,7 @@
     "category": "Core",
     "description": "Compare {{labels.operator_plural}} on trips, distance, deviations, and safety events (merges Driver and Operator Performance).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1fr", "grid": "\"kpi kpi\"\n\"factor table\"\n\"map map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $content $map", "grid": "\"kpi kpi\"\n\"factor table\"\n\"map map\"" }
     },
     "areas": {
       "kpi": {
@@ -514,10 +514,10 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "WITH j AS (SELECT JOURNEY_ID, OPERATOR_ID, DISTANCE_VALUE, IS_DEVIATION FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), e AS (SELECT JOURNEY_ID, COUNT(*) AS ev_count FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY JOURNEY_ID) SELECT j.OPERATOR_ID AS operator, COUNT(DISTINCT j.JOURNEY_ID) AS journeys, ROUND(SUM(j.DISTANCE_VALUE),0) AS total_km, SUM(IFF(j.IS_DEVIATION,1,0)) AS deviations, COALESCE(SUM(e.ev_count),0) AS safety_events FROM j LEFT JOIN e ON e.JOURNEY_ID = j.JOURNEY_ID GROUP BY j.OPERATOR_ID ORDER BY safety_events DESC NULLS LAST LIMIT 100",
+          "query": "WITH j AS (SELECT JOURNEY_ID, OPERATOR_ID, DISTANCE_VALUE, IS_DEVIATION FROM TABLE(FLEET_APP.CORE.F_FACT_JOURNEY_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR)))), e AS (SELECT JOURNEY_ID, COUNT(*) AS ev_count FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) GROUP BY JOURNEY_ID) SELECT j.OPERATOR_ID AS operator, COUNT(DISTINCT j.JOURNEY_ID) AS journeys, ROUND(SUM(j.DISTANCE_VALUE),0) AS total_km, SUM(IFF(j.IS_DEVIATION,1,0)) AS deviations, COALESCE(SUM(e.ev_count),0) AS safety_events FROM j LEFT JOIN e ON e.JOURNEY_ID = j.JOURNEY_ID GROUP BY j.OPERATOR_ID ORDER BY safety_events DESC NULLS LAST LIMIT 50",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id" }
         },
-        "config": { "rowKey": "operator", "maxRows": 100, "defaultSort": { "column": "safety_events", "direction": "desc" } },
+        "config": { "rowKey": "operator", "defaultSort": { "column": "safety_events", "direction": "desc" } },
         "emits": { "selected_operator": "selection" }
       },
       "map": {
@@ -547,7 +547,7 @@
     "category": "Core",
     "description": "Where activity concentrates over space and time - H3 hexbins by hour (press play to animate). Merges Congestion Map and Demand Density.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metric controls\"\n\"map map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $heroMap", "grid": "\"metric controls\"\n\"map map\"" }
     },
     "areas": {
       "metric": {
@@ -597,7 +597,7 @@
       "gotchas": "Deviation compares the actual path against the planned route; a journey with no planned route is excluded, not counted as zero deviation."
     },
     "layout": {
-      "default": { "columns": "1fr", "rows": "auto 1.3fr auto", "grid": "\"kpi\"\n\"map\"\n\"table\"" }
+      "default": { "columns": "1fr", "rows": "auto $heroMap auto", "grid": "\"kpi\"\n\"map\"\n\"table\"" }
     },
     "areas": {
       "kpi": {
@@ -663,7 +663,7 @@
     "category": "Core",
     "description": "Manage scheduled {{labels.work_item}}s against plan - jobs list, resource board, and planned-vs-actual by day.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1.2fr auto", "grid": "\"kpi kpi\"\n\"jobs map\"\n\"resource timeline\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $map $content", "grid": "\"kpi kpi\"\n\"jobs map\"\n\"resource timeline\"" }
     },
     "areas": {
       "kpi": {
@@ -684,10 +684,10 @@
       "jobs": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT WORK_ITEM_ID AS job_id, ENTITY_ID AS entity, OPERATOR_ID AS operator, ORIGIN_SITE_ID AS origin, DESTINATION_SITE_ID AS destination, TO_VARCHAR(REQUESTED_START_TS,'MM-DD HH24:MI') AS planned_start, COALESCE(STATUS_ENUM,'scheduled') AS status FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY REQUESTED_START_TS DESC NULLS LAST LIMIT 200",
+          "query": "SELECT WORK_ITEM_ID AS job_id, ENTITY_ID AS entity, OPERATOR_ID AS operator, ORIGIN_SITE_ID AS origin, DESTINATION_SITE_ID AS destination, TO_VARCHAR(REQUESTED_START_TS,'MM-DD HH24:MI') AS planned_start, COALESCE(STATUS_ENUM,'scheduled') AS status FROM TABLE(FLEET_APP.CORE.F_FACT_WORK_ITEM_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:date_range_start IS NULL OR REQUESTED_START_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR REQUESTED_START_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY REQUESTED_START_TS DESC NULLS LAST LIMIT 100",
           "params": { "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "job_id", "maxRows": 200, "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["MISSED", "LATE", "DELAYED"] }, "showFreshness": true },
+        "config": { "rowKey": "job_id", "maxRows": 100, "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["MISSED", "LATE", "DELAYED"] }, "showFreshness": true },
         "emits": { "selected_entity": "selection" }
       },
       "map": {
@@ -749,7 +749,7 @@
     "category": "Core",
     "description": "Operational risk by severity - click a KPI tile to filter, review the event queue, and map hot spots.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr 1.2fr", "grid": "\"kpi kpi\"\n\"factor queue\"\n\"map map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $content $map", "grid": "\"kpi kpi\"\n\"factor queue\"\n\"map map\"" }
     },
     "areas": {
       "kpi": {
@@ -779,10 +779,10 @@
       "queue": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT EVENT_ID AS event_id, EVENT_TYPE AS type, SEVERITY_ENUM AS severity, ENTITY_ID AS entity, TO_VARCHAR(EVENT_TS,'MM-DD HH24:MI') AS ts FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:selected_severity IS NULL OR :selected_severity = 'all' OR SEVERITY_ENUM = :selected_severity) AND (:date_range_start IS NULL OR EVENT_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR EVENT_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY EVENT_TS DESC LIMIT 200",
+          "query": "SELECT EVENT_ID AS event_id, EVENT_TYPE AS type, SEVERITY_ENUM AS severity, ENTITY_ID AS entity, TO_VARCHAR(EVENT_TS,'MM-DD HH24:MI') AS ts FROM TABLE(FLEET_APP.CORE.F_FACT_EVENT_SCOPED(CAST(:region AS VARCHAR), CAST(:dataset_id AS VARCHAR))) WHERE (:selected_severity IS NULL OR :selected_severity = 'all' OR SEVERITY_ENUM = :selected_severity) AND (:date_range_start IS NULL OR EVENT_TS >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR EVENT_TS < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY EVENT_TS DESC LIMIT 50",
           "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "dataset_id": "context.dataset_id", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "event_id", "maxRows": 200, "defaultSort": { "column": "severity", "direction": "asc" }, "exceptionFirst": { "column": "severity", "values": ["high", "medium"] }, "showFreshness": true },
+        "config": { "rowKey": "event_id", "defaultSort": { "column": "severity", "direction": "asc" }, "exceptionFirst": { "column": "severity", "values": ["high", "medium"] }, "showFreshness": true },
         "emits": { "selected_entity": "selection" }
       },
       "map": {
@@ -825,7 +825,7 @@
     "layout": {
       "default": {
         "columns": "1fr 1fr",
-        "rows": "auto 1fr",
+        "rows": "auto $content",
         "grid": "\"metrics metrics\"\n\"trends facilities\""
       },
       "mobile": {
@@ -884,7 +884,7 @@
     "category": "Core",
     "description": "Dwell load by facility and facility type - where vehicles spend the most time.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byfac bytype\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $content", "grid": "\"metrics metrics\"\n\"byfac bytype\"" }
     },
     "areas": {
       "metrics": {
@@ -939,7 +939,7 @@
       "gotchas": "Dwell sessions are sessionized from position pings; a stop shorter than the SLA threshold is not counted as a breach."
     },
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"bystatus table\"\n\"detail detail\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto $content $map", "grid": "\"metrics metrics\"\n\"filter filter\"\n\"bystatus table\"\n\"detail detail\"" }
     },
     "areas": {
       "filter": {
@@ -983,10 +983,10 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 100",
+          "query": "SELECT VEHICLE_ID AS driver, SUBSTR(LOCATION_NAME,1,24) AS location, SLA_STATUS AS status, ROUND(DWELL_MINUTES,0) AS dwell_min, ROUND(MINUTES_OVER_WARNING,0) AS over_warning FROM FLEET_APP.DWELL.VW_SLA_ALERTS WHERE (:selected_severity IS NULL OR SLA_STATUS = :selected_severity) AND (:date_range_start IS NULL OR SESSION_START >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR SESSION_START < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY MINUTES_OVER_WARNING DESC NULLS LAST LIMIT 50",
           "params": { "selected_severity": "viewState.selected_severity", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "driver", "maxRows": 100, "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["CRITICAL", "WARNING"] }, "showFreshness": true },
+        "config": { "rowKey": "driver", "defaultSort": { "column": "status", "direction": "asc" }, "exceptionFirst": { "column": "status", "values": ["CRITICAL", "WARNING"] }, "showFreshness": true },
         "emits": { "selected_driver": "selection" }
       },
       "detail": {
@@ -1024,7 +1024,7 @@
     "category": "Core",
     "description": "Busiest origin locations by trip volume - where journeys begin (any origin type).",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto 1fr", "grid": "\"metrics metrics\"\n\"byorigin map\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto $map", "grid": "\"metrics metrics\"\n\"byorigin map\"" }
     },
     "areas": {
       "metrics": {
@@ -1085,7 +1085,7 @@
     "category": "Location",
     "description": "Points of interest - filter by category, click a POI to highlight it and its nearby competitors.",
     "layout": {
-      "default": { "columns": "340px 1fr", "rows": "auto auto 1fr", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
+      "default": { "columns": "340px 1fr", "rows": "auto auto $map", "grid": "\"metrics metrics\"\n\"filter density\"\n\"pois map\"" }
     },
     "areas": {
       "metrics": {
@@ -1122,10 +1122,10 @@
       "pois": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 500",
+          "query": "SELECT POI_NAME AS poi_name, BASIC_CATEGORY AS category FROM FLEET_APP.CATCHMENT.VW_POIS WHERE LATITUDE IS NOT NULL AND (:selected_category IS NULL OR BASIC_CATEGORY = :selected_category) ORDER BY POI_NAME LIMIT 100",
           "params": { "selected_category": "viewState.selected_category", "region": "context.region", "vehicle_type": "context.vehicle_type" }
         },
-        "config": { "rowKey": "poi_name", "maxRows": 500 },
+        "config": { "rowKey": "poi_name", "maxRows": 100 },
         "emits": { "selected_poi": "selection" }
       },
       "map": {
@@ -1194,7 +1194,7 @@
     "category": "Asset Pool",
     "description": "Idle trailers, cost of idleness, and where they are parked - set a minimum idle and click a trailer to highlight it.",
     "layout": {
-      "default": { "columns": "1fr 1fr", "rows": "auto auto 1fr 1fr auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
+      "default": { "columns": "1fr 1fr", "rows": "auto auto $map $content auto", "grid": "\"metrics metrics\"\n\"controls controls\"\n\"byseverity map\"\n\"table table\"\n\"rationale rationale\"" }
     },
     "areas": {
       "controls": {
@@ -1284,10 +1284,10 @@
       "table": {
         "component": "ClickableTable",
         "data": {
-          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 200",
+          "query": "SELECT VEHICLE_ID AS vehicle_id, VEHICLE_SUBTYPE AS subtype, SUBSTR(LAST_LOCATION_NAME,1,24) AS last_location, ROUND(IDLE_DAYS,1) AS idle_days, IDLE_SEVERITY AS severity, ASSIGNED_DISPATCHER AS dispatcher, ROUND(COST_OF_IDLENESS_USD,0) AS cost_usd FROM FLEET_APP.ROUTE_OPTIMIZATION.VW_TRAILER_COST_OF_IDLENESS WHERE (:idle_min IS NULL OR IDLE_MINUTES >= :idle_min) AND (:date_range_start IS NULL OR IDLE_SINCE >= :date_range_start::TIMESTAMP_NTZ) AND (:date_range_end IS NULL OR IDLE_SINCE < DATEADD('day',1,:date_range_end::TIMESTAMP_NTZ)) ORDER BY COST_OF_IDLENESS_USD DESC NULLS LAST LIMIT 50",
           "params": { "idle_min": "viewState.idle_min", "region": "context.region", "vehicle_type": "context.vehicle_type", "date_range_start": "context.date_range_start", "date_range_end": "context.date_range_end" }
         },
-        "config": { "rowKey": "vehicle_id", "maxRows": 200, "defaultSort": { "column": "cost_usd", "direction": "desc" }, "exceptionFirst": { "column": "severity", "values": ["CRITICAL", "WARNING"] } },
+        "config": { "rowKey": "vehicle_id", "defaultSort": { "column": "cost_usd", "direction": "desc" }, "exceptionFirst": { "column": "severity", "values": ["CRITICAL", "WARNING"] } },
         "emits": { "selected_trailer": "selection" }
       },
       "rationale": {

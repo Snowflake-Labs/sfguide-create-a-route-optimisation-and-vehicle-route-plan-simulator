@@ -10,8 +10,9 @@ import { registerViewsFromConfig, type ViewsConfig } from '@/lib/load-views';
 import { registerWorkflowViews, registerRoleAccessView } from '@/lib/framework-views';
 import { PACK_REGISTRY } from '@/lib/packs/registry';
 import { useAppStore } from '@/lib/store';
-import type { DisplayConfig } from '@/lib/types';
+import type { DisplayConfig, StyleConfig } from '@/lib/types';
 import { setDisplayConfigGlobal } from '@/lib/display-config';
+import { setStyleConfigGlobal, resolveRowHeights, resolveChartPalette } from '@/lib/style-config';
 import { AboutDialog } from './about-dialog';
 
 export interface AppConfig {
@@ -39,6 +40,8 @@ export interface AppConfig {
   tools?: { mapTools?: string[] };
   // Zero-code retargeting surface (labels/units/thresholds/statusEnums/icons/windows).
   display?: DisplayConfig;
+  // Centralized view styling (row-height tokens, chart palette, table density).
+  style?: StyleConfig;
 }
 
 const DEFAULT_APP_CONFIG: AppConfig = {
@@ -77,6 +80,7 @@ export function AppShell() {
   const setSelectedRole = useAppStore((s) => s.setSelectedRole);
   const setAdminAppUrl = useAppStore((s) => s.setAdminAppUrl);
   const setDisplayConfig = useAppStore((s) => s.setDisplayConfig);
+  const setStyleConfig = useAppStore((s) => s.setStyleConfig);
 
   // Seed the role dropdown from the user's detected role (hint only; the
   // operator can still pick any role to evaluate). Failures are non-fatal.
@@ -115,6 +119,23 @@ export function AppShell() {
         const display: DisplayConfig | null = appConfig.display ?? null;
         setDisplayConfig(display);
         setDisplayConfigGlobal(display);
+
+        // Publish the centralized style config (row heights / chart palette / table
+        // density) to the store + module mirror, and mirror its tokens onto :root as
+        // CSS custom properties so charts (var(--chart-N)) and any CSS consumer pick
+        // up the configured palette/heights without a per-component edit.
+        const style: StyleConfig | null = appConfig.style ?? null;
+        setStyleConfig(style);
+        setStyleConfigGlobal(style);
+        if (typeof document !== 'undefined') {
+          const root = document.documentElement;
+          const palette = resolveChartPalette(style);
+          palette.forEach((c, i) => root.style.setProperty(`--chart-${i + 1}`, c));
+          const heights = resolveRowHeights(style);
+          for (const [k, v] of Object.entries(heights)) {
+            root.style.setProperty(`--row-${k}`, `${v}px`);
+          }
+        }
 
         // Surfacing gate: schemas whose pack data did not resolve are hidden.
         const schemaStatus = packStatus?.schemas ?? {};

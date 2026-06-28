@@ -15,12 +15,18 @@ import {
 import { EntityDetailArea } from './areas/entity-detail';
 import { DetailPanelArea } from './areas/detail-panel';
 import type { AreaComponentName } from '@/lib/area-components';
+import { useStyleConfig, resolveRowHeights } from '@/lib/style-config';
+import { useDisplayConfig, interpolateTokens } from '@/lib/display-config';
 
 export interface AreaConfig {
   component: string;
   data: Record<string, unknown>;
   config?: Record<string, unknown>;
   emits?: Record<string, string>;
+  // Optional area heading: renders a consistent header bar above the component.
+  // Omit for areas that own their header (KPI cards, controls, detail panels).
+  title?: string;
+  subtitle?: string;
 }
 
 export interface ViewLayout {
@@ -80,11 +86,20 @@ function parseGridTemplate(grid: string): string {
     .join(' ');
 }
 
-function resolveRows(rows: string): string {
+// Resolve a rows string in two passes: first swap $tokens ($content/$map/...) for
+// their pixel height from the style config, then expand any `fr` to a minmax so
+// flexible rows keep a sensible minimum. Literal `auto`/`<n>px`/`<n>fr` pass through.
+function resolveRows(rows: string, heights: Record<string, number>): string {
   const FR_BASE_PX = 200;
   return rows
     .split(/\s+/)
     .map((val) => {
+      const tokenMatch = val.match(/^\$(\w+)$/);
+      if (tokenMatch) {
+        const px = heights[tokenMatch[1]];
+        if (px != null) return `${px}px`;
+        return 'auto';
+      }
       const frMatch = val.match(/^(\d+(?:\.\d+)?)fr$/);
       if (frMatch) {
         return `minmax(${Math.round(Number(frMatch[1]) * FR_BASE_PX)}px, ${val})`;
@@ -92,6 +107,42 @@ function resolveRows(rows: string): string {
       return val;
     })
     .join(' ');
+}
+
+// Consistent area header bar rendered above charts/tables/maps when an area
+// declares a `title`. Style language mirrors the polished metric cards
+// (11px uppercase label, subtle bottom border).
+function AreaHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div
+      style={{
+        flexShrink: 0,
+        padding: '8px 12px',
+        borderBottom: '1px solid var(--border-default, #e5e7eb)',
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: '8px',
+        backgroundColor: 'var(--surface-primary, #fff)',
+      }}
+    >
+      <span
+        style={{
+          fontSize: '11px',
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          color: 'var(--text-secondary, #6b7280)',
+        }}
+      >
+        {title}
+      </span>
+      {subtitle && (
+        <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--text-tertiary, #9ca3af)' }}>
+          {subtitle}
+        </span>
+      )}
+    </div>
+  );
 }
 
 interface ViewRendererProps {
@@ -114,14 +165,19 @@ function getScrollableAreas(grid: string, rows: string): Set<string> {
 
 export function ViewRenderer({ viewDef }: ViewRendererProps) {
   const layout = viewDef.layout.default;
+  const styleConfig = useStyleConfig();
+  const displayConfig = useDisplayConfig();
+  const rowHeights = resolveRowHeights(styleConfig);
+  const resolvedRows = resolveRows(layout.rows || 'auto', rowHeights);
   const allAreaNames = Object.keys(viewDef.areas);
   const areaNames = allAreaNames.filter((n) => !isDrawerArea(viewDef.areas[n]));
   const drawerAreaNames = allAreaNames.filter((n) => isDrawerArea(viewDef.areas[n]));
-  const scrollableAreas = getScrollableAreas(layout.grid, layout.rows || 'auto');
-  // When the layout has no flexible (fr) row, its rows are auto/fixed and the
+  const scrollableAreas = getScrollableAreas(layout.grid, resolvedRows);
+  // When the layout has no flexible (fr) row, its rows are auto/fixed/token and the
   // grid sizes to content - taller than the viewport once an auto detail row
   // grows - so the view itself must scroll vertically. Views with an fr row
   // keep the current behavior (grid fills 100% height, fr areas scroll inside).
+  // $tokens resolve to fixed px, so a token-only layout opts into page scroll.
   const hasFlexRow = /\bfr\b/.test(layout.rows ?? 'auto');
 
   // viewState keys that represent a user selection (emit-type "selection" from a
@@ -149,7 +205,7 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
       style={{
         display: 'grid',
         gridTemplateColumns: layout.columns,
-        gridTemplateRows: resolveRows(layout.rows || 'auto'),
+        gridTemplateRows: resolvedRows,
         gridTemplateAreas: parseGridTemplate(layout.grid),
         gap: '1px',
         height: hasFlexRow ? '100%' : 'auto',
@@ -172,17 +228,38 @@ export function ViewRenderer({ viewDef }: ViewRendererProps) {
         }
 
         const noPad = areaConfig.config?.noPad === true;
+        // Header source: explicit area title, else a chart's config.title (so every
+        // titled chart gets a consistent header bar without per-area JSON edits).
+        const rawTitle =
+          areaConfig.title ?? (areaConfig.config as { title?: string } | undefined)?.title;
+        const headerTitle = rawTitle ? interpolateTokens(rawTitle, displayConfig) : null;
+        const headerSubtitle = areaConfig.subtitle
+          ? interpolateTokens(areaConfig.subtitle, displayConfig)
+          : undefined;
+        const scrolls = scrollableAreas.has(areaName);
         return (
           <div
             key={areaName}
             style={{
               gridArea: areaName,
-              overflow: noPad ? 'hidden' : (scrollableAreas.has(areaName) ? 'auto' : 'visible'),
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
+              overflow: 'hidden',
               backgroundColor: 'var(--surface-primary, #fff)',
-              padding: noPad ? '0' : '16px',
             }}
           >
-            <Component areaConfig={areaConfig} selectionKeys={selectionKeys} />
+            {headerTitle && <AreaHeader title={headerTitle} subtitle={headerSubtitle} />}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflow: noPad ? 'hidden' : scrolls ? 'auto' : 'visible',
+                padding: noPad ? '0' : '16px',
+              }}
+            >
+              <Component areaConfig={areaConfig} selectionKeys={selectionKeys} />
+            </div>
           </div>
         );
       })}
